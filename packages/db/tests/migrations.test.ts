@@ -111,14 +111,14 @@ describe("Pi AI Client migration", () => {
   it("adds Pi to the persisted source runtime enum idempotently", async () => {
     const [journalText, migrationSql] = await Promise.all([
       readDrizzleFile("meta/_journal.json"),
-      readDrizzleFile("0031_pi_source_runtime.sql")
+      readDrizzleFile("0032_pi_source_runtime.sql")
     ]);
     const journal = JSON.parse(journalText) as {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    expect(journal.entries[31]).toEqual(
-      expect.objectContaining({ idx: 31, tag: "0031_pi_source_runtime" })
+    expect(journal.entries[32]).toEqual(
+      expect.objectContaining({ idx: 32, tag: "0032_pi_source_runtime" })
     );
     expect(migrationSql).toContain(
       `ALTER TYPE "public"."source_runtime" ADD VALUE IF NOT EXISTS 'pi'`

@@ -35,9 +35,9 @@ pnpm pi:configure
 pnpm pi:check
 ```
 
-Setup copies Koed-owned package to `$KOED_HOME/integrations/pi/` and runs `pi install` with that stable local path. Pi records package in active global profile. Next ordinary `pi` startup loads integration; no wrapper or separate extension command needed.
+Setup stages and validates the Koed-owned package beside `$KOED_HOME/integrations/pi/`, atomically replaces that stable path, and then runs `pi install`. A failed install restores the previous package and registration. Pi records the stable package path in the active global profile. The next ordinary `pi` startup loads the integration; no wrapper or separate extension command is needed.
 
-Koed canonicalizes the Pi executable before invoking it and passes a bounded
+Koed canonicalizes the Pi executable before invoking it. On Windows, npm command shims are resolved to the verifiable Pi Node entry point and are never passed directly to process-spawn APIs. Koed passes a bounded
 setup environment containing profile/system essentials plus `KOED_HOME`, not
 Koed API Tokens, database credentials, or provider keys. Setup also requires at
 least one authenticated Pi model. The installed extension derives custom
@@ -73,7 +73,8 @@ Watcher:
 - baselines files present before activation;
 - journals complete LF-terminated records only;
 - keeps independent durable `canonical_live` source cursor;
-- verifies covered segment digest before append;
+- verifies only the terminal covered journal segment before append, avoiding repeated prefix replay;
+- consumes canonical source bytes in bounded journal pages;
 - stops visibly on malformed complete records, unsupported session versions, truncation, or covered-prefix mutation;
 - enforces Capture Policy and Capture Pause before source creation, journal append, and raw ingestion;
 - creates Personal Memory only;
@@ -115,7 +116,7 @@ Koed launches Pi with strict-LF JSONL RPC using:
 - minimal environment allowlist;
 - timeout and process-tree termination.
 
-Structured-result bridge validates schema-constrained final tool arguments and terminates task. Koed records actual provider/model from Pi RPC events. No fallback to Codex or Claude occurs.
+Structured-result bridge validates schema-constrained final tool arguments and terminates task. Koed records actual provider/model from Pi RPC events. Capability discovery selects each effective Pi model and queries its model-specific thinking levels through locked-down RPC; Koed does not advertise hard-coded reasoning settings. RPC processing enforces per-record and aggregate output bounds and retains only a bounded diagnostic event tail. No fallback to Codex or Claude occurs.
 
 ## Diagnostics
 
@@ -132,6 +133,7 @@ Relevant environment:
 - `PI_CODING_AGENT_DIR`: Pi profile home
 - `PI_CODING_AGENT_SESSION_DIR`: explicit Pi session root
 - `MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED=false`: disable watcher intentionally
+- `MEMORY_PI_TRANSCRIPT_MAX_BYTES_PER_BATCH`: maximum Pi journal bytes appended and parsed per page (default `4194304`, maximum `16777216`)
 
 Common failures:
 
@@ -147,4 +149,4 @@ Common failures:
 pnpm pi:remove
 ```
 
-Removal runs `pi remove $KOED_HOME/integrations/pi`, deletes only Koed-owned package directory, and preserves unrelated Pi configuration. Captured Personal Memory remains in Koed until removed through normal Memory controls.
+Removal runs `pi remove $KOED_HOME/integrations/pi` and verifies that the active profile no longer references the package before deleting the Koed-owned directory. A failed or unverifiable removal preserves the package and reports an error. Unrelated Pi configuration is preserved. Captured Personal Memory remains in Koed until removed through normal Memory controls.

@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync
 } from "node:fs";
@@ -92,17 +93,39 @@ if (!piCommand) {
   process.exit(1);
 }
 piCommand = realpathSync(piCommand);
+if (
+  process.platform === "win32" &&
+  [".cmd", ".bat", ".ps1"].some((extension) =>
+    piCommand.toLowerCase().endsWith(extension)
+  )
+) {
+  const entry = resolve(
+    dirname(piCommand),
+    "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+  );
+  if (!existsSync(entry) || !statSync(entry).isFile()) {
+    console.error(
+      `Pi launcher ${piCommand} cannot be executed safely. Install Pi through npm with a verifiable package entry or configure a native executable.`
+    );
+    process.exit(1);
+  }
+  piCommand = realpathSync(entry);
+}
 if (!statSync(piCommand).isFile()) {
   console.error(`Pi executable is not a file: ${piCommand}`);
   process.exit(1);
 }
 if (process.platform !== "win32") accessSync(piCommand, constants.X_OK);
-const run = (args) =>
-  spawnSync(piCommand, args, {
+const run = (args) => {
+  const invocation = piCommand.toLowerCase().endsWith(".js")
+    ? { command: process.execPath, args: [piCommand, ...args] }
+    : { command: piCommand, args };
+  return spawnSync(invocation.command, invocation.args, {
     encoding: "utf8",
     env: childEnvironment,
     timeout: 30_000
   });
+};
 
 const version = run(["--version"]);
 if (mode !== "remove" && version.status !== 0) {
@@ -148,7 +171,27 @@ if (mode !== "remove") {
 }
 
 if (mode === "remove") {
-  run(["remove", target]);
+  const removal = run(["remove", target]);
+  if (removal.error || removal.status !== 0) {
+    console.error(
+      removal.error?.message ||
+        removal.stderr?.trim() ||
+        "Pi package removal failed; the Koed package was preserved."
+    );
+    process.exit(1);
+  }
+  const listed = run(["list"]);
+  if (
+    listed.error ||
+    listed.status !== 0 ||
+    listed.stdout.includes(target) ||
+    (existsSync(target) && listed.stdout.includes(realpathSync(target)))
+  ) {
+    console.error(
+      "Pi still reports the Koed package as registered; the package was preserved."
+    );
+    process.exit(1);
+  }
   rmSync(target, { recursive: true, force: true });
   console.log(
     "Koed Pi integration removed; unrelated Pi settings and packages were preserved."
@@ -172,13 +215,42 @@ if (mode === "check") {
 }
 
 mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-rmSync(target, { recursive: true, force: true });
-cpSync(source, target, { recursive: true });
-const install = run(["install", target]);
-if (install.status !== 0) {
-  console.error(install.stderr?.trim() || "Pi package installation failed.");
+const suffix = `${process.pid}-${Date.now()}`;
+const staged = `${target}.stage-${suffix}`;
+const backup = `${target}.backup-${suffix}`;
+rmSync(staged, { recursive: true, force: true });
+rmSync(backup, { recursive: true, force: true });
+cpSync(source, staged, { recursive: true });
+if (
+  !existsSync(resolve(staged, "package.json")) ||
+  !existsSync(resolve(staged, "extensions/koed.mjs"))
+) {
+  rmSync(staged, { recursive: true, force: true });
+  console.error("The staged Koed Pi package is incomplete.");
   process.exit(1);
 }
+const hadPrevious = existsSync(target);
+if (hadPrevious) renameSync(target, backup);
+renameSync(staged, target);
+const install = run(["install", target]);
+if (install.status !== 0) {
+  rmSync(target, { recursive: true, force: true });
+  if (hadPrevious) {
+    renameSync(backup, target);
+    const rollback = run(["install", target]);
+    if (rollback.error || rollback.status !== 0) {
+      console.error(
+        `${install.stderr?.trim() || "Pi package installation failed."} The previous package was restored, but its registration could not be verified: ${rollback.error?.message || rollback.stderr?.trim() || `exit ${rollback.status ?? 1}`}`
+      );
+      process.exit(1);
+    }
+  }
+  console.error(
+    `${install.stderr?.trim() || "Pi package installation failed."} ${hadPrevious ? "The previous Koed Pi package was restored." : "The failed package candidate was removed."}`
+  );
+  process.exit(1);
+}
+rmSync(backup, { recursive: true, force: true });
 console.log("Pi integration configured.");
 console.log(`KOED_HOME: ${koedHome}`);
 console.log(`Package: ${target}`);

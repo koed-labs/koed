@@ -39,6 +39,8 @@ describe("Pi transcript watcher", () => {
     let artifact: Record<string, unknown> | null = null;
     let cursor: Record<string, unknown> | null = null;
     const segments: Array<Record<string, unknown>> = [];
+    const segmentContent = new Map<string, string>();
+    const listedAfterOffsets: number[] = [];
     const createdExternalItemIds: string[] = [];
     const client = {
       async lookupConversationSourceArtifact() {
@@ -75,6 +77,7 @@ describe("Pi transcript watcher", () => {
           plaintextSize: bytes.length
         };
         segments.push(segment);
+        segmentContent.set(segment.id, String(input.bytesBase64));
         artifact = {
           ...artifact,
           id: artifactId,
@@ -87,6 +90,7 @@ describe("Pi transcript watcher", () => {
         _artifactId: string,
         input: { afterOffset: number; limit: number }
       ) {
+        listedAfterOffsets.push(input.afterOffset);
         return {
           segments: segments
             .filter(
@@ -94,6 +98,12 @@ describe("Pi transcript watcher", () => {
             )
             .slice(0, input.limit)
         };
+      },
+      async getConversationSourceSegmentContent(
+        _artifactId: string,
+        segmentId: string
+      ) {
+        return { bytesBase64: segmentContent.get(segmentId) };
       },
       async getConversationSourceCursor() {
         return { cursor };
@@ -125,7 +135,8 @@ describe("Pi transcript watcher", () => {
     } as unknown as MemoryApiClient;
     const env = {
       KOED_HOME: path.join(root, "koed"),
-      PI_CODING_AGENT_SESSION_DIR: sessions
+      PI_CODING_AGENT_SESSION_DIR: sessions,
+      MEMORY_PI_TRANSCRIPT_MAX_BYTES_PER_BATCH: "1024"
     };
     const state = {
       version: 1 as const,
@@ -146,24 +157,36 @@ describe("Pi transcript watcher", () => {
 
     fs.appendFileSync(
       transcriptPath,
-      line({
-        type: "message",
-        id: "assistant-1",
-        parentId: "user-1",
-        timestamp: "2026-04-01T00:00:01.000Z",
-        message: {
-          role: "assistant",
-          provider: "openai-codex",
-          model: "gpt-5.4-mini",
-          content: [{ type: "text", text: "Pi remembered" }]
-        }
-      })
+      Array.from({ length: 8 }, (_, index) =>
+        line({
+          type: "message",
+          id: `assistant-${index + 1}`,
+          parentId: index === 0 ? "user-1" : `assistant-${index}`,
+          timestamp: `2026-04-01T00:00:0${index + 1}.000Z`,
+          message: {
+            role: "assistant",
+            provider: "openai-codex",
+            model: "gpt-5.4-mini",
+            content: [{ type: "text", text: "x".repeat(256) }]
+          }
+        })
+      ).join("")
     );
+    listedAfterOffsets.length = 0;
     await processPiTranscriptSignal(client, state, signal, env);
+    expect(listedAfterOffsets).not.toContain(0);
+    expect(
+      (cursor as { sourceOffset?: number } | null)?.sourceOffset
+    ).toBeLessThan(fs.statSync(transcriptPath).size);
+    while (
+      (cursor as { sourceOffset?: number } | null)?.sourceOffset !==
+      fs.statSync(transcriptPath).size
+    )
+      await processPiTranscriptSignal(client, state, signal, env);
     expect(createdExternalItemIds).toEqual([
       `${sourceSessionId}:0`,
       "user-1:0",
-      "assistant-1:0"
+      ...Array.from({ length: 8 }, (_, index) => `assistant-${index + 1}:0`)
     ]);
     expect((cursor as { sourceOffset?: unknown } | null)?.sourceOffset).toBe(
       fs.statSync(transcriptPath).size

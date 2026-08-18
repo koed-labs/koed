@@ -2,15 +2,16 @@ import {
   chmodSync,
   mkdtempSync,
   mkdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { setupPi } from "./pi-setup.js";
+import { resolvePiSetupExecutable, setupPi } from "./pi-setup.js";
 
 const temporaryDirectories: string[] = [];
 const spawnResult = (stdout = "", status = 0) =>
@@ -112,5 +113,61 @@ describe("Pi setup", () => {
 
     expect(result).toMatchObject({ ok: false, state: "needs_attention" });
     expect(result.error).toContain("no authenticated models");
+  });
+
+  it("resolves Windows npm launchers to the package Node entry", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-win-setup-"));
+    temporaryDirectories.push(root);
+    const shim = resolve(root, "pi.cmd");
+    const entry = resolve(
+      root,
+      "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+    );
+    mkdirSync(resolve(entry, ".."), { recursive: true });
+    writeFileSync(shim, "@echo off\r\n");
+    writeFileSync(entry, "console.log('0.84.2');\n");
+
+    expect(resolvePiSetupExecutable({ PATH: root }, "win32")).toBe(
+      realpathSync(entry)
+    );
+  });
+
+  it("restores the last working package when replacement fails", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-rollback-"));
+    temporaryDirectories.push(root);
+    const source = resolve(root, "packages/mcp-server/integrations/pi");
+    const target = resolve(root, "koed/integrations/pi");
+    const executable = resolve(root, "pi");
+    mkdirSync(resolve(source, "extensions"), { recursive: true });
+    mkdirSync(resolve(target, "extensions"), { recursive: true });
+    writeFileSync(resolve(source, "package.json"), '{"version":"new"}\n');
+    writeFileSync(resolve(source, "extensions/koed.mjs"), "// new\n");
+    writeFileSync(resolve(target, "package.json"), '{"version":"old"}\n');
+    writeFileSync(resolve(target, "extensions/koed.mjs"), "// old\n");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o700);
+    let installs = 0;
+
+    const result = setupPi(
+      {
+        HOME: root,
+        KOED_HOME: resolve(root, "koed"),
+        KOED_REPO_ROOT: root,
+        KOED_PI_EXECUTABLE: executable
+      },
+      ((_command: string, args: string[]) => {
+        if (args[0] === "--version") return spawnResult("0.84.2\n");
+        if (args[0] === "--list-models")
+          return spawnResult("provider model\nopenai gpt-5.4\n");
+        installs += 1;
+        return installs === 1 ? spawnResult("", 1) : spawnResult("restored\n");
+      }) as never
+    );
+
+    expect(result).toMatchObject({ ok: false, state: "needs_attention" });
+    expect(installs).toBe(2);
+    expect(readFileSync(join(target, "package.json"), "utf8")).toContain(
+      '"old"'
+    );
   });
 });

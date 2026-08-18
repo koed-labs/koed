@@ -23,6 +23,7 @@ import { collectUpstreamRegistryStatus } from "./upstream-registry.js";
 import {
   isSupportedPiVersion,
   MINIMUM_PI_VERSION,
+  piSetupInvocation,
   piModelIdsFromListOutput,
   piSetupEnvironment,
   resolvePiSetupExecutable
@@ -179,11 +180,16 @@ export const inspectPi = (
     };
   }
   const childEnvironment = piSetupEnvironment(environment, paths.koedHome);
-  const version = deps.spawnSync(executable, ["--version"], {
-    encoding: "utf8",
-    env: childEnvironment,
-    timeout: 5_000
-  });
+  const runPi = (args: string[], timeout: number, maxBuffer?: number) => {
+    const invocation = piSetupInvocation(executable, args);
+    return deps.spawnSync(invocation.command, invocation.args, {
+      encoding: "utf8",
+      env: childEnvironment,
+      timeout,
+      ...(maxBuffer ? { maxBuffer } : {})
+    });
+  };
+  const version = runPi(["--version"], 5_000);
   const versionText = version.stdout?.trim() ?? "";
   if (version.error || version.status !== 0) {
     return {
@@ -217,11 +223,7 @@ export const inspectPi = (
       detected: true
     };
   }
-  const listed = deps.spawnSync(executable, ["list"], {
-    encoding: "utf8",
-    env: childEnvironment,
-    timeout: 5_000
-  });
+  const listed = runPi(["list"], 5_000);
   if (listed.error || listed.status !== 0) {
     return {
       ...needsAttention(
@@ -244,12 +246,7 @@ export const inspectPi = (
       detected: true
     };
   }
-  const listedModels = deps.spawnSync(executable, ["--list-models"], {
-    encoding: "utf8",
-    env: childEnvironment,
-    timeout: 15_000,
-    maxBuffer: 4 * 1024 * 1024
-  });
+  const listedModels = runPi(["--list-models"], 15_000, 4 * 1024 * 1024);
   const models =
     listedModels.error || listedModels.status !== 0
       ? []

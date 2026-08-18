@@ -16,6 +16,10 @@ import type {
 
 export const MINIMUM_SUPPORTED_PI_VERSION = "0.84.2";
 const execFileAsync = promisify(execFile);
+const PI_RPC_MAX_RECORD_BYTES = 4 * 1024 * 1024;
+const PI_RPC_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+const PI_RPC_DIAGNOSTIC_EVENT_BYTES = 256 * 1024;
+const PI_RPC_DIAGNOSTIC_EVENTS = 64;
 
 const numericVersion = (value: string): number[] | null => {
   const match = value.trim().match(/^(\d+)\.(\d+)\.(\d+)(?:\D|$)/);
@@ -40,10 +44,54 @@ export const assertPiVersionCompatibility = (value: string): void => {
   }
 };
 
-const executableOnPath = (env: NodeJS.ProcessEnv): string | undefined => {
-  const names =
-    process.platform === "win32" ? ["pi.exe", "pi.cmd", "pi"] : ["pi"];
-  for (const directory of (env.PATH ?? "").split(path.delimiter)) {
+export interface PiExecutableDiscoveryOptions {
+  platform?: NodeJS.Platform;
+}
+
+const WINDOWS_PI_SHIM_EXTENSIONS = new Set([".cmd", ".bat", ".ps1"]);
+
+export const resolvePiNodeExecutablePath = (
+  candidate: string,
+  platform: NodeJS.Platform = process.platform
+): string => {
+  if (
+    platform !== "win32" ||
+    !WINDOWS_PI_SHIM_EXTENSIONS.has(path.extname(candidate).toLowerCase())
+  )
+    return candidate;
+  const entry = path.join(
+    path.dirname(candidate),
+    "node_modules",
+    "@earendil-works",
+    "pi-coding-agent",
+    "dist",
+    "cli.js"
+  );
+  try {
+    if (fs.statSync(entry).isFile()) return fs.realpathSync(entry);
+  } catch {
+    /* fail with the actionable error below */
+  }
+  throw new Error(
+    `Pi launcher ${candidate} cannot be executed safely. Install Pi through npm with a verifiable package entry or configure a native executable.`
+  );
+};
+
+export const piExecutableInvocation = (
+  executablePath: string,
+  args: string[]
+): { command: string; args: string[] } =>
+  path.extname(executablePath).toLowerCase() === ".js"
+    ? { command: process.execPath, args: [executablePath, ...args] }
+    : { command: executablePath, args };
+
+const executableOnPath = (
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform
+): string | undefined => {
+  const names = platform === "win32" ? ["pi.exe", "pi.cmd", "pi"] : ["pi"];
+  const delimiter = platform === "win32" ? ";" : path.delimiter;
+  for (const directory of (env.PATH ?? "").split(delimiter)) {
     if (!path.isAbsolute(directory)) continue;
     for (const name of names) {
       const candidate = path.join(directory, name);
@@ -58,21 +106,25 @@ const executableOnPath = (env: NodeJS.ProcessEnv): string | undefined => {
 };
 
 export const resolvePiExecutable = (
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  options: PiExecutableDiscoveryOptions = {}
 ): string => {
+  const platform = options.platform ?? process.platform;
   const configured = env.KOED_PI_EXECUTABLE?.trim();
   if (configured && !path.isAbsolute(configured)) {
     throw new Error("KOED_PI_EXECUTABLE must be an absolute path.");
   }
-  const candidate = configured ?? executableOnPath(env);
+  const candidate = configured ?? executableOnPath(env, platform);
   if (!candidate)
     throw new Error(
       "Pi was not found. Install and authenticate Pi, or set KOED_PI_EXECUTABLE to its absolute path."
     );
-  const canonical = fs.realpathSync(candidate);
+  const canonical = fs.realpathSync(
+    resolvePiNodeExecutablePath(candidate, platform)
+  );
   if (!fs.statSync(canonical).isFile())
     throw new Error(`Pi executable is not a file: ${canonical}`);
-  if (process.platform !== "win32") fs.accessSync(canonical, fs.constants.X_OK);
+  if (platform !== "win32") fs.accessSync(canonical, fs.constants.X_OK);
   return canonical;
 };
 
@@ -124,46 +176,200 @@ export const piRpcEnvironment = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "NO_PROXY",
-    "PI_CODING_AGENT_DIR"
+    "PI_CODING_AGENT_DIR",
+    "SYSTEMROOT",
+    "COMSPEC",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PATHEXT"
   ];
   return Object.fromEntries(
     allowed.flatMap((name) => (env[name] ? [[name, env[name]]] : []))
   );
 };
 
+type PiRpcResponse = {
+  id?: string;
+  type?: string;
+  command?: string;
+  success?: boolean;
+  data?: Record<string, unknown>;
+  error?: string;
+};
+
+const queryPiModelCapabilities = async (
+  executablePath: string,
+  env: NodeJS.ProcessEnv
+): Promise<PiModelInfo[]> => {
+  const workerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-probe-"));
+  const args = [
+    "--mode",
+    "rpc",
+    "--no-session",
+    "--no-builtin-tools",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-themes",
+    "--no-context-files",
+    "--no-extensions"
+  ];
+  const invocation = piExecutableInvocation(executablePath, args);
+  const child = spawn(invocation.command, invocation.args, {
+    cwd: workerRoot,
+    env: piRpcEnvironment(env),
+    detached: process.platform !== "win32",
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  let stdout = Buffer.alloc(0);
+  let stderr = "";
+  let aggregateBytes = 0;
+  let fatalError: Error | null = null;
+  const pending = new Map<
+    string,
+    {
+      resolve: (response: PiRpcResponse) => void;
+      reject: (error: Error) => void;
+      timer: NodeJS.Timeout;
+    }
+  >();
+  const fail = (error: Error): void => {
+    if (fatalError) return;
+    fatalError = error;
+    for (const request of pending.values()) {
+      clearTimeout(request.timer);
+      request.reject(error);
+    }
+    pending.clear();
+    terminateProcessTree(child);
+  };
+  child.stderr.on("data", (chunk) => {
+    stderr = `${stderr}${String(chunk)}`.slice(-64_000);
+  });
+  child.stdout.on("data", (chunk: Buffer) => {
+    aggregateBytes += chunk.length;
+    if (aggregateBytes > 8 * 1024 * 1024) {
+      fail(new Error("Pi RPC capability output exceeded 8 MiB"));
+      return;
+    }
+    stdout = Buffer.concat([stdout, chunk]);
+    while (true) {
+      const newline = stdout.indexOf(0x0a);
+      if (newline < 0) {
+        if (stdout.length > 4 * 1024 * 1024)
+          fail(new Error("Pi RPC capability record exceeded 4 MiB"));
+        return;
+      }
+      if (newline > 4 * 1024 * 1024) {
+        fail(new Error("Pi RPC capability record exceeded 4 MiB"));
+        return;
+      }
+      const record = stdout.subarray(0, newline);
+      stdout = stdout.subarray(newline + 1);
+      if (record.includes(0x0d)) {
+        fail(new Error("Pi RPC requires strict-LF JSONL framing"));
+        return;
+      }
+      if (record.length === 0) continue;
+      let response: PiRpcResponse;
+      try {
+        response = JSON.parse(record.toString("utf8")) as PiRpcResponse;
+      } catch (error) {
+        fail(
+          new Error("Pi RPC emitted malformed capability JSONL", {
+            cause: error
+          })
+        );
+        return;
+      }
+      if (response.type !== "response" || typeof response.id !== "string")
+        continue;
+      const request = pending.get(response.id);
+      if (!request) continue;
+      pending.delete(response.id);
+      clearTimeout(request.timer);
+      if (response.success === true) request.resolve(response);
+      else
+        request.reject(
+          new Error(
+            `Pi RPC ${response.command ?? "capability query"} failed: ${response.error ?? "unknown error"}`
+          )
+        );
+    }
+  });
+  child.once("error", (error) => fail(error));
+  child.once("exit", (code) => {
+    if (!fatalError && pending.size > 0)
+      fail(
+        new Error(
+          `Pi RPC capability probe exited with code ${code}: ${stderr.trim()}`
+        )
+      );
+  });
+  const request = (
+    command: Record<string, unknown>
+  ): Promise<PiRpcResponse> => {
+    if (fatalError) return Promise.reject(fatalError);
+    const id = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        const error = new Error("Pi RPC capability query timed out");
+        reject(error);
+        fail(error);
+      }, 10_000);
+      pending.set(id, { resolve, reject, timer });
+      child.stdin.write(`${JSON.stringify({ id, ...command })}\n`);
+    });
+  };
+  try {
+    const available = await request({ type: "get_available_models" });
+    const models = Array.isArray(available.data?.models)
+      ? available.data.models
+      : [];
+    const capabilities: PiModelInfo[] = [];
+    for (const value of models.slice(0, 1_000)) {
+      if (!value || typeof value !== "object") continue;
+      const model = value as Record<string, unknown>;
+      if (typeof model.provider !== "string" || typeof model.id !== "string")
+        continue;
+      try {
+        await request({
+          type: "set_model",
+          provider: model.provider,
+          modelId: model.id
+        });
+        const thinking = await request({
+          type: "get_available_thinking_levels"
+        });
+        const levels = Array.isArray(thinking.data?.levels)
+          ? thinking.data.levels.filter(
+              (level): level is string => typeof level === "string"
+            )
+          : [];
+        if (levels.length === 0) continue;
+        capabilities.push({
+          id: `${model.provider}/${model.id}`,
+          provider: model.provider,
+          model: model.id,
+          supportedReasoningEfforts: levels
+        });
+      } catch {
+        // Fail this model closed without hiding other independently usable models.
+      }
+    }
+    return capabilities;
+  } finally {
+    terminateProcessTree(child);
+    fs.rmSync(workerRoot, { recursive: true, force: true });
+  }
+};
+
 export const listPiModels = async (
   env: NodeJS.ProcessEnv = process.env
 ): Promise<PiModelInfo[]> => {
   const executable = resolvePiExecutable(env);
-  const { stdout } = await execFileAsync(executable, ["--list-models"], {
-    env: piRpcEnvironment(env),
-    timeout: 15_000,
-    maxBuffer: 4 * 1024 * 1024
-  });
-  return stdout
-    .split(/\r?\n/)
-    .slice(1)
-    .flatMap((line) => {
-      const match = line.trim().match(/^(\S+)\s+(\S+)/);
-      return match
-        ? [
-            {
-              id: `${match[1]}/${match[2]}`,
-              provider: match[1]!,
-              model: match[2]!,
-              supportedReasoningEfforts: [
-                "off",
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ]
-            }
-          ]
-        : [];
-    });
+  return queryPiModelCapabilities(executable, env);
 };
 
 export const checkPiAvailability = async (
@@ -171,10 +377,15 @@ export const checkPiAvailability = async (
 ): Promise<PiAvailability> => {
   try {
     const executablePath = resolvePiExecutable(env);
-    const { stdout } = await execFileAsync(executablePath, ["--version"], {
-      env: piRpcEnvironment(env),
-      timeout: 10_000
-    });
+    const invocation = piExecutableInvocation(executablePath, ["--version"]);
+    const { stdout } = await execFileAsync(
+      invocation.command,
+      invocation.args,
+      {
+        env: piRpcEnvironment(env),
+        timeout: 10_000
+      }
+    );
     assertPiVersionCompatibility(stdout);
     const models = await listPiModels({
       ...env,
@@ -266,24 +477,31 @@ export const runPiRpcTask = async (
       .filter(Boolean)
       .join("\n\n")
   ];
-  const child = spawn(config.executablePath, args, {
+  const invocation = piExecutableInvocation(config.executablePath, args);
+  const child = spawn(invocation.command, invocation.args, {
     cwd: workerRoot,
     env: { ...piRpcEnvironment(config.env), KOED_PI_RESULT_SCHEMA: schemaPath },
     detached: process.platform !== "win32",
     stdio: ["pipe", "pipe", "pipe"]
   });
   const events: unknown[] = [];
+  const eventSizes: number[] = [];
+  let eventBytes = 0;
+  let aggregateOutputBytes = 0;
   let stdout = Buffer.alloc(0);
   let stderr = "";
   let settled = false;
+  let finished = false;
   let resultValue: unknown;
   let actualModel = config.model;
   const done = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       terminateProcessTree(child);
-      reject(new Error(`Pi RPC timed out after ${timeoutMs}ms`));
+      finish(new Error(`Pi RPC timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     const finish = (error?: Error) => {
+      if (finished) return;
+      finished = true;
       clearTimeout(timer);
       config.signal?.removeEventListener("abort", abort);
       if (error) reject(error);
@@ -299,17 +517,23 @@ export const runPiRpcTask = async (
       stderr = `${stderr}${String(chunk)}`.slice(-64_000);
     });
     child.stdout.on("data", (chunk: Buffer) => {
+      aggregateOutputBytes += chunk.length;
+      if (aggregateOutputBytes > PI_RPC_MAX_OUTPUT_BYTES) {
+        terminateProcessTree(child);
+        finish(new Error("Pi RPC aggregate output exceeded 8 MiB"));
+        return;
+      }
       stdout = Buffer.concat([stdout, chunk]);
       while (true) {
         const newline = stdout.indexOf(0x0a);
         if (newline < 0) {
-          if (stdout.length > 4 * 1024 * 1024) {
+          if (stdout.length > PI_RPC_MAX_RECORD_BYTES) {
             terminateProcessTree(child);
             finish(new Error("Pi RPC JSONL record exceeded 4 MiB"));
           }
           break;
         }
-        if (newline > 4 * 1024 * 1024) {
+        if (newline > PI_RPC_MAX_RECORD_BYTES) {
           terminateProcessTree(child);
           finish(new Error("Pi RPC JSONL record exceeded 4 MiB"));
           return;
@@ -325,12 +549,16 @@ export const runPiRpcTask = async (
         if (!line) continue;
         try {
           const event = JSON.parse(line) as Record<string, unknown>;
-          if (events.length >= 100_000) {
-            terminateProcessTree(child);
-            finish(new Error("Pi RPC emitted too many events"));
-            return;
-          }
           events.push(event);
+          eventSizes.push(record.length);
+          eventBytes += record.length;
+          while (
+            events.length > PI_RPC_DIAGNOSTIC_EVENTS ||
+            eventBytes > PI_RPC_DIAGNOSTIC_EVENT_BYTES
+          ) {
+            events.shift();
+            eventBytes -= eventSizes.shift() ?? 0;
+          }
           const message = event.message as Record<string, unknown> | undefined;
           if (
             message?.role === "assistant" &&

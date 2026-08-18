@@ -5,6 +5,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  renameSync,
   realpathSync,
   rmSync,
   statSync
@@ -81,11 +82,47 @@ export const piModelIdsFromListOutput = (stdout: string): string[] =>
       return match ? [`${match[1]}/${match[2]}`] : [];
     });
 
-const executableNames = (): string[] =>
-  process.platform === "win32" ? ["pi.exe", "pi.cmd", "pi"] : ["pi"];
+const executableNames = (platform: NodeJS.Platform): string[] =>
+  platform === "win32" ? ["pi.exe", "pi.cmd", "pi"] : ["pi"];
+
+const WINDOWS_PI_SHIM_EXTENSIONS = new Set([".cmd", ".bat", ".ps1"]);
+
+export const resolvePiSetupNodeEntry = (
+  candidate: string,
+  platform: NodeJS.Platform = process.platform
+): string => {
+  if (
+    platform !== "win32" ||
+    !WINDOWS_PI_SHIM_EXTENSIONS.has(
+      candidate.slice(candidate.lastIndexOf(".")).toLowerCase()
+    )
+  )
+    return candidate;
+  const entry = join(
+    dirname(candidate),
+    "node_modules",
+    "@earendil-works",
+    "pi-coding-agent",
+    "dist",
+    "cli.js"
+  );
+  if (existsSync(entry) && statSync(entry).isFile()) return realpathSync(entry);
+  throw new Error(
+    `Pi launcher ${candidate} cannot be executed safely. Install Pi through npm with a verifiable package entry or configure a native executable.`
+  );
+};
+
+export const piSetupInvocation = (
+  executablePath: string,
+  args: string[]
+): { command: string; args: string[] } =>
+  executablePath.toLowerCase().endsWith(".js")
+    ? { command: process.execPath, args: [executablePath, ...args] }
+    : { command: executablePath, args };
 
 export const resolvePiSetupExecutable = (
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
 ): string => {
   const configured = environment.KOED_PI_EXECUTABLE?.trim();
   if (configured && !isAbsolute(configured)) {
@@ -93,9 +130,10 @@ export const resolvePiSetupExecutable = (
   }
   let candidate = configured;
   if (!candidate) {
-    for (const directory of (environment.PATH ?? "").split(delimiter)) {
+    const pathDelimiter = platform === "win32" ? ";" : delimiter;
+    for (const directory of (environment.PATH ?? "").split(pathDelimiter)) {
       if (!isAbsolute(directory)) continue;
-      candidate = executableNames()
+      candidate = executableNames(platform)
         .map((name) => join(directory, name))
         .find((path) => {
           try {
@@ -112,11 +150,11 @@ export const resolvePiSetupExecutable = (
       "Pi was not found. Install Pi, or set KOED_PI_EXECUTABLE to its absolute path."
     );
   }
-  const canonical = realpathSync(candidate);
+  const canonical = realpathSync(resolvePiSetupNodeEntry(candidate, platform));
   if (!statSync(canonical).isFile()) {
     throw new Error(`Pi executable is not a file: ${canonical}`);
   }
-  if (process.platform !== "win32") accessSync(canonical, constants.X_OK);
+  if (platform !== "win32") accessSync(canonical, constants.X_OK);
   return canonical;
 };
 
@@ -163,11 +201,16 @@ export const setupPi = (
   try {
     const executable = resolvePiSetupExecutable(environment);
     const childEnvironment = piSetupEnvironment(environment, paths.koedHome);
-    const version = spawnSync(executable, ["--version"], {
-      env: childEnvironment,
-      encoding: "utf8",
-      timeout: 10_000
-    });
+    const runPi = (args: string[], timeout: number) => {
+      const invocation = piSetupInvocation(executable, args);
+      return spawnSync(invocation.command, invocation.args, {
+        env: childEnvironment,
+        encoding: "utf8",
+        timeout,
+        ...(args[0] === "--list-models" ? { maxBuffer: 4 * 1024 * 1024 } : {})
+      });
+    };
+    const version = runPi(["--version"], 10_000);
     if (
       version.error ||
       version.status !== 0 ||
@@ -177,12 +220,7 @@ export const setupPi = (
         `Pi ${version.stdout?.trim() || "version"} is unsupported. Koed requires Pi ${MINIMUM_PI_VERSION} or newer.`
       );
     }
-    const listedModels = spawnSync(executable, ["--list-models"], {
-      env: childEnvironment,
-      encoding: "utf8",
-      timeout: 15_000,
-      maxBuffer: 4 * 1024 * 1024
-    });
+    const listedModels = runPi(["--list-models"], 15_000);
     const models =
       listedModels.error || listedModels.status !== 0
         ? []
@@ -193,14 +231,39 @@ export const setupPi = (
       );
     }
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-    rmSync(target, { recursive: true, force: true });
-    cpSync(source, target, { recursive: true });
-    const result = spawnSync(executable, ["install", target], {
-      env: childEnvironment,
-      encoding: "utf8",
-      timeout: 30_000
-    });
+    const suffix = `${process.pid}-${Date.now()}`;
+    const staged = `${target}.stage-${suffix}`;
+    const backup = `${target}.backup-${suffix}`;
+    rmSync(staged, { recursive: true, force: true });
+    rmSync(backup, { recursive: true, force: true });
+    cpSync(source, staged, { recursive: true });
+    if (
+      !existsSync(resolve(staged, "package.json")) ||
+      !existsSync(resolve(staged, "extensions/koed.mjs"))
+    ) {
+      rmSync(staged, { recursive: true, force: true });
+      throw new Error("The staged Koed Pi package is incomplete.");
+    }
+    const hadPrevious = existsSync(target);
+    if (hadPrevious) renameSync(target, backup);
+    renameSync(staged, target);
+    const result = runPi(["install", target], 30_000);
     const ok = !result.error && result.status === 0;
+    let rollbackError: string | undefined;
+    if (ok) {
+      rmSync(backup, { recursive: true, force: true });
+    } else {
+      rmSync(target, { recursive: true, force: true });
+      if (hadPrevious) {
+        renameSync(backup, target);
+        const rollback = runPi(["install", target], 30_000);
+        if (rollback.error || rollback.status !== 0)
+          rollbackError =
+            rollback.error?.message ||
+            rollback.stderr?.trim() ||
+            `rollback exited with code ${rollback.status ?? 1}`;
+      }
+    }
     return {
       ok,
       state: ok ? "healthy" : "needs_attention",
@@ -217,8 +280,11 @@ export const setupPi = (
               result.error?.message ??
               result.stderr?.trim() ??
               `Pi setup failed with exit code ${result.status ?? 1}.`,
-            action:
-              "Fix the Pi package installation error, then rerun koed-server setup pi --json."
+            action: rollbackError
+              ? `The previous package was restored but its Pi registration could not be verified: ${rollbackError}. Fix Pi, then rerun koed-server setup pi --json.`
+              : hadPrevious
+                ? "The previous Koed Pi package was restored. Fix the Pi package installation error, then rerun koed-server setup pi --json."
+                : "The failed package candidate was removed. Fix the Pi package installation error, then rerun koed-server setup pi --json."
           }
         : {})
     };

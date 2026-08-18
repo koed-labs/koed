@@ -50,6 +50,13 @@ type Segment = {
   plaintextSize: number;
 };
 
+const piJournalPageBytes = (env: NodeJS.ProcessEnv): number => {
+  const configured = Number(env.MEMORY_PI_TRANSCRIPT_MAX_BYTES_PER_BATCH);
+  return Number.isSafeInteger(configured) && configured >= 1024
+    ? Math.min(configured, 16 * 1024 * 1024)
+    : 4 * 1024 * 1024;
+};
+
 const hash = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const koedHome = (env: NodeJS.ProcessEnv): string =>
@@ -215,6 +222,25 @@ const readRange = (target: string, start: number, end: number): Buffer => {
     fs.closeSync(descriptor);
   }
 };
+const journalSegmentBytes = async (
+  client: MemoryApiClient,
+  artifactId: string,
+  segment: Segment
+): Promise<Buffer> => {
+  const response = await client.getConversationSourceSegmentContent(
+    artifactId,
+    segment.id
+  );
+  if (typeof response.bytesBase64 !== "string")
+    throw new Error("pi_journal_segment_content_missing");
+  const bytes = Buffer.from(response.bytesBase64, "base64");
+  if (
+    bytes.length !== segment.plaintextSize ||
+    createHash("sha256").update(bytes).digest("hex") !== segment.plaintextDigest
+  )
+    throw new Error("pi_journal_segment_verification_failed");
+  return bytes;
+};
 const policyAllowsCapture = async (
   client: MemoryApiClient,
   signal: PiTranscriptWatcherSignal
@@ -319,35 +345,24 @@ export const processPiTranscriptSignal = async (
   if (file.size < artifact.providerCursorOffset)
     throw new Error("pi_session_truncated");
   if (artifact.providerCursorOffset > 0) {
-    let verifiedOffset = 0;
-    while (verifiedOffset < artifact.providerCursorOffset) {
-      const page = await client.listConversationSourceSegments(artifact.id, {
-        afterOffset: verifiedOffset,
-        limit: 100
-      });
-      const segments = (page.segments as Segment[] | undefined) ?? [];
-      if (segments.length === 0)
-        throw new Error("pi_journal_segment_chain_incomplete");
-      for (const segment of segments) {
-        if (segment.sourceStartOffset !== verifiedOffset)
-          throw new Error("pi_journal_segment_chain_incomplete");
-        const covered = readRange(
-          target,
-          segment.sourceStartOffset,
-          segment.sourceEndOffset
-        );
-        if (
-          covered.length !== segment.plaintextSize ||
-          createHash("sha256").update(covered).digest("hex") !==
-            segment.plaintextDigest
-        )
-          throw new Error("pi_session_covered_prefix_mutation");
-        verifiedOffset = segment.sourceEndOffset;
-        if (verifiedOffset >= artifact.providerCursorOffset) break;
-      }
-    }
-    if (verifiedOffset !== artifact.providerCursorOffset)
+    const page = await client.listConversationSourceSegments(artifact.id, {
+      afterOffset: artifact.providerCursorOffset - 1,
+      limit: 1
+    });
+    const segment = (page.segments as Segment[] | undefined)?.[0];
+    if (!segment || segment.sourceEndOffset !== artifact.providerCursorOffset)
       throw new Error("pi_journal_segment_chain_incomplete");
+    const covered = readRange(
+      target,
+      segment.sourceStartOffset,
+      segment.sourceEndOffset
+    );
+    if (
+      covered.length !== segment.plaintextSize ||
+      createHash("sha256").update(covered).digest("hex") !==
+        segment.plaintextDigest
+    )
+      throw new Error("pi_session_covered_prefix_mutation");
   }
   while (artifact.providerCursorOffset < boundary) {
     if (!(await policyAllowsCapture(client, signal))) {
@@ -356,7 +371,7 @@ export const processPiTranscriptSignal = async (
     }
     const end = Math.min(
       boundary,
-      artifact.providerCursorOffset + 16 * 1024 * 1024
+      artifact.providerCursorOffset + piJournalPageBytes(env)
     );
     let bytes = readRange(target, artifact.providerCursorOffset, end);
     if (end < boundary) {
@@ -415,7 +430,25 @@ export const processPiTranscriptSignal = async (
           0
         )
       : 0;
-  const bytes = readRange(target, captureStart, boundary);
+  const page = await client.listConversationSourceSegments(artifact.id, {
+    afterOffset: captureStart,
+    limit: 1
+  });
+  const segment = (page.segments as Segment[] | undefined)?.[0];
+  if (
+    !segment ||
+    segment.sourceStartOffset > captureStart ||
+    segment.sourceEndOffset <= captureStart
+  )
+    throw new Error("pi_journal_segment_chain_incomplete");
+  const segmentContent = await journalSegmentBytes(
+    client,
+    artifact.id,
+    segment
+  );
+  const bytes = segmentContent.subarray(
+    captureStart - segment.sourceStartOffset
+  );
   const parsed = parsePiSessionJournalBytes({
     bytes,
     absoluteStartOffset: captureStart,
@@ -436,17 +469,10 @@ export const processPiTranscriptSignal = async (
       persisted,
       `Pi session ${identity.id}`
     );
-  const page = await client.listConversationSourceSegments(artifact.id, {
-    afterOffset: boundary - 1,
-    limit: 1
-  });
-  const segment = (page.segments as Segment[] | undefined)?.[0];
-  if (!segment || segment.sourceEndOffset !== boundary)
-    throw new Error("pi_journal_terminal_segment_missing");
   await client.advanceConversationSourceCursor(artifact.id, {
     consumerKind: "canonical_live",
     expectedSourceOffset: cursorOffset,
-    sourceOffset: boundary,
+    sourceOffset: parsed.checkpoint.offset,
     sourceLine: parsed.checkpoint.lineCount,
     segmentIndex: segment.segmentIndex,
     lastVerifiedDigest: segment.plaintextDigest,

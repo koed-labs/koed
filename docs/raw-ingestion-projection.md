@@ -84,8 +84,10 @@ derivations and reprojects retained canonical items under the new policy.
 
 Pi persistent sessions use `sourceKind=pi`, `sourceRuntime=pi`,
 `artifactFormat=pi_session_jsonl`, and `sourceAdapterVersion=pi-session-v1`.
-Watcher journals complete LF-terminated records and advances independent durable
-live cursor only after raw ingestion and Projection succeed. User, AI Client
+Watcher journals complete LF-terminated records, verifies only the terminal
+covered segment on each pass, consumes bounded journal pages, and advances its
+independent durable live cursor only after raw ingestion and Projection succeed.
+User, AI Client
 text, tool calls/results, and direct bash records may project. Compaction and
 branch summaries, thinking, custom/unsupported records, model changes, and
 other controls remain raw provenance. Entry ID, parent ID, append position,

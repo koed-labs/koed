@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -76,4 +77,73 @@ if (args[0] === "list") console.log((value.packages || []).join("\\n"));
   for (const line of readFileSync(environmentLog, "utf8").trim().split("\n")) {
     assert.deepEqual(JSON.parse(line), {});
   }
+});
+
+test("Pi configure restores the previous package after install failure", () => {
+  const temporary = mkdtempSync(join(tmpdir(), "koed-configure-pi-rollback-"));
+  const koedHome = join(temporary, "koed");
+  const target = join(koedHome, "integrations", "pi");
+  const fakePi = join(temporary, "pi");
+  const attempts = join(temporary, "attempts");
+  mkdirSync(join(target, "extensions"), { recursive: true });
+  writeFileSync(join(target, "package.json"), '{"version":"old"}\n');
+  writeFileSync(join(target, "extensions", "koed.mjs"), "// old\n");
+  writeFileSync(
+    fakePi,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args[0] === "--version") { console.log("0.84.2"); process.exit(0); }
+if (args[0] === "--list-models") { console.log("provider model\\nopenai gpt-5.4"); process.exit(0); }
+if (args[0] === "install") {
+  if (!fs.existsSync(${JSON.stringify(attempts)})) { fs.writeFileSync(${JSON.stringify(attempts)}, "1"); process.exit(1); }
+  process.exit(0);
+}
+`
+  );
+  chmodSync(fakePi, 0o700);
+
+  assert.throws(() =>
+    execFileSync(process.execPath, [join(root, "scripts/configure-pi.mjs")], {
+      cwd: root,
+      env: {
+        ...process.env,
+        KOED_HOME: koedHome,
+        KOED_PI_EXECUTABLE: fakePi
+      },
+      stdio: "pipe"
+    })
+  );
+  assert.match(readFileSync(join(target, "package.json"), "utf8"), /old/);
+});
+
+test("Pi remove preserves the package when profile removal fails", () => {
+  const temporary = mkdtempSync(join(tmpdir(), "koed-configure-pi-remove-"));
+  const koedHome = join(temporary, "koed");
+  const target = join(koedHome, "integrations", "pi");
+  const fakePi = join(temporary, "pi");
+  mkdirSync(target, { recursive: true });
+  writeFileSync(join(target, "package.json"), "{}\n");
+  writeFileSync(
+    fakePi,
+    '#!/bin/sh\nif [ "$1" = "remove" ]; then exit 1; fi\nexit 0\n'
+  );
+  chmodSync(fakePi, 0o700);
+
+  assert.throws(() =>
+    execFileSync(
+      process.execPath,
+      [join(root, "scripts/configure-pi.mjs"), "--remove"],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          KOED_HOME: koedHome,
+          KOED_PI_EXECUTABLE: fakePi
+        },
+        stdio: "pipe"
+      }
+    )
+  );
+  assert.equal(existsSync(target), true);
 });
