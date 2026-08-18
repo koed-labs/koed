@@ -110,6 +110,7 @@ export const conversationSourceReplicationOutboxState = pgEnum(
   ["pending", "in_flight", "succeeded", "failed", "quarantined"]
 );
 export const memoryQuestionStatus = pgEnum("memory_question_status", [
+  "pending",
   "answered",
   "error"
 ]);
@@ -9091,6 +9092,8 @@ export const memoryQuestions = pgTable(
     }),
     threadId: text("thread_id"),
     threadName: text("thread_name"),
+    askThreadId: uuid("ask_thread_id"),
+    askTurnIndex: integer("ask_turn_index"),
     idempotencyKey: text("idempotency_key").notNull(),
     query: text("query").notNull(),
     answerMarkdown: text("answer_markdown"),
@@ -9127,13 +9130,29 @@ export const memoryQuestions = pgTable(
       table.ownerUserId,
       table.idempotencyKey
     ),
+    uniqueIndex("memory_questions_owner_ask_turn_idx")
+      .on(table.ownerUserId, table.askThreadId, table.askTurnIndex)
+      .where(sql`${table.origin} = 'desktop_ask'`),
+    index("memory_questions_owner_ask_recent_idx")
+      .on(
+        table.ownerUserId,
+        table.askThreadId,
+        table.updatedAt.desc(),
+        table.id.desc()
+      )
+      .where(sql`${table.origin} = 'desktop_ask'`),
     check(
       "memory_questions_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
     ),
     check(
       "memory_questions_origin_check",
-      sql`${table.origin} = 'mcp_memory_answer'`
+      sql`${table.origin} in ('mcp_memory_answer', 'desktop_ask')`
+    ),
+    check(
+      "memory_questions_ask_identity_check",
+      sql`(${table.origin} = 'mcp_memory_answer' and ${table.askThreadId} is null and ${table.askTurnIndex} is null)
+        or (${table.origin} = 'desktop_ask' and ${table.askThreadId} is not null and ${table.askTurnIndex} >= 0 and ${table.teamWorkspaceId} is null and ${table.searchDomain} = 'global')`
     ),
     check(
       "memory_questions_retrieval_scope_check",
@@ -9147,8 +9166,9 @@ export const memoryQuestions = pgTable(
     ),
     check(
       "memory_questions_status_check",
-      sql`(${table.status} = 'answered' and ${table.answerMarkdown} is not null and ${table.errorMessage} is null)
-        or (${table.status} = 'error' and ${table.errorMessage} is not null)`
+      sql`(${table.status} = 'pending' and ${table.answerMarkdown} is null and ${table.errorMessage} is null and ${table.answeredAt} is null)
+        or (${table.status} = 'answered' and ${table.answerMarkdown} is not null and ${table.errorMessage} is null and ${table.answeredAt} is not null)
+        or (${table.status} = 'error' and ${table.answerMarkdown} is null and ${table.errorMessage} is not null and ${table.answeredAt} is not null)`
     )
   ]
 );

@@ -3047,7 +3047,7 @@ describe("CollaborationApp", () => {
   it("uses concise, page-specific breadcrumbs across Personal and Team routes", async () => {
     await render();
     expect(
-      document.body.querySelector('[aria-label="Breadcrumb: Notes to self"]')
+      document.body.querySelector('[aria-label="Breadcrumb: Personal / Notes"]')
     ).not.toBeNull();
     expect(document.body.querySelector(".collab-day-divider")).toBeNull();
 
@@ -4141,10 +4141,11 @@ pnpm test
     expect(onViewShare).toHaveBeenCalledWith(`grant:${ids.grant}`);
   });
 
-  it("does not send when Enter confirms an IME composition", async () => {
+  it("requires the explicit Save Note action after IME composition", async () => {
     const client = await render();
+    await click(container, "New");
     const textarea = document.body.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Message Notes to self"]'
+      'textarea[aria-label="Note content"]'
     )!;
     await act(async () => setValue(textarea, "変換中"));
     expect(document.body.textContent).not.toContain(
@@ -4184,13 +4185,14 @@ pnpm test
         })
       );
     });
-    await vi.waitFor(() => expect(client.sendMessage).toHaveBeenCalledTimes(1));
+    expect(client.sendMessage).not.toHaveBeenCalled();
   });
 
-  it("keeps per-thread drafts but purges the current draft on a same-thread canPost downgrade", async () => {
+  it("does not carry an unsaved Note draft across navigation", async () => {
     const client = await render();
+    await click(container, "New");
     const notesComposer = document.body.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Message Notes to self"]'
+      'textarea[aria-label="Note content"]'
     )!;
     await act(async () => setValue(notesComposer, "Personal draft"));
 
@@ -4199,44 +4201,17 @@ pnpm test
       'textarea[aria-label="Message research"]'
     )!;
     await act(async () => setValue(researchComposer, "Research draft"));
-    await click(container, "Notes to self");
+    await click(container, "Notes");
+    await click(container, "New");
     expect(
       document.body.querySelector<HTMLTextAreaElement>(
-        'textarea[aria-label="Message Notes to self"]'
+        'textarea[aria-label="Note content"]'
       )?.value
-    ).toBe("Personal draft");
-
-    const current = baseSnapshot();
-    const readOnlyNotes = { ...notes(), canPost: false };
-    await act(async () =>
-      client.emit({
-        ...current,
-        navigation: {
-          ...current.navigation,
-          personal: {
-            ...current.navigation.personal,
-            notesToSelf: readOnlyNotes
-          }
-        },
-        selection: { kind: "notes_to_self" },
-        view: {
-          kind: "thread",
-          thread: readOnlyNotes,
-          messages:
-            current.view.kind === "thread"
-              ? current.view.messages
-              : page(ids.notes)
-        }
-      })
-    );
-    const downgradedComposer = document.body.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Message Notes to self"]'
-    )!;
-    expect(downgradedComposer.disabled).toBe(true);
-    expect(downgradedComposer.value).toBe("");
+    ).toBe("");
+    expect(client.sendMessage).not.toHaveBeenCalled();
   });
 
-  it("renders a long collaboration thread through the bounded ChatTimeline route", async () => {
+  it("renders a long Notes-to-self history through the Notes list", async () => {
     const messages = Array.from({ length: 100 }, (_, index) => ({
       ...message(
         uuid(1_000 + index),
@@ -4268,14 +4243,12 @@ pnpm test
     await render(client);
 
     expect(
-      container
-        .querySelector(".collab-message-history")
-        ?.getAttribute("data-rendered-count")
-    ).toBe("100");
+      container.querySelectorAll(".personal-note-items button")
+    ).toHaveLength(100);
     expect(document.body.textContent).toContain("Long thread message 100");
   });
 
-  it("renders sender receipts as sent, delivered to everyone, and read by everyone", async () => {
+  it("renders Notes without chat receipt chrome", async () => {
     const messages = (["sent", "delivered", "read"] as const).map(
       (recipientStatus, index) => ({
         ...message(
@@ -4310,16 +4283,19 @@ pnpm test
       )
     );
 
-    expect(document.querySelectorAll('[aria-label="Sent"]')).toHaveLength(1);
+    expect(
+      container.querySelectorAll(".personal-note-items button")
+    ).toHaveLength(3);
+    expect(document.querySelectorAll('[aria-label="Sent"]')).toHaveLength(0);
     expect(
       document.querySelectorAll('[aria-label="Delivered to everyone"]')
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(
       document.querySelectorAll('[aria-label="Read by everyone"]')
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(
       document.querySelector('.collab-recipient-status[data-status="read"]')
-    ).not.toBeNull();
+    ).toBeNull();
   });
 
   it("replaces Team and Workspace content for suspended, deleting, revoked, and archived lifecycles", async () => {

@@ -3,6 +3,7 @@ import path from "node:path";
 import { readLocalEdgeClientCredentialAuthorization } from "@koed/shared";
 import {
   answerWithMemoryWorker,
+  type MemoryAnswerConversationTurn,
   type MemoryAnswerRetrievalClient,
   type MemoryAnswerResponseDetail,
   resolveMemoryAnswerWorkerConfig
@@ -119,6 +120,101 @@ export interface MemoryToolExecutorServices {
   answerWithMemoryWorker?: typeof answerWithMemoryWorker;
 }
 
+export interface TrustedMemoryAnswerExecutionOptions {
+  conversationContext?: readonly MemoryAnswerConversationTurn[];
+  origin: "desktop_ask" | "mcp_memory_answer";
+  pendingQuestionId?: string;
+}
+
+export interface DesktopAskExecutionInput {
+  askThreadId?: string;
+  idempotencyKey: string;
+  query: string;
+}
+
+type DesktopAskQuestion = McpMemoryQuestion & {
+  answerMarkdown?: string | null;
+  answeredAt?: string | null;
+  askThreadId: string;
+  askTurnIndex: number;
+  createdAt: string;
+  errorMessage?: string | null;
+  query: string;
+  status: "pending" | "answered" | "error";
+  updatedAt: string;
+};
+
+const desktopAskQuestionFromResponse = (
+  response: Record<string, unknown>
+): DesktopAskQuestion => {
+  const question = questionFromResponse(
+    response
+  ) as Partial<DesktopAskQuestion>;
+  if (
+    typeof question.askThreadId !== "string" ||
+    typeof question.askTurnIndex !== "number" ||
+    typeof question.query !== "string" ||
+    !["pending", "answered", "error"].includes(question.status ?? "") ||
+    typeof question.createdAt !== "string" ||
+    typeof question.updatedAt !== "string"
+  ) {
+    throw new Error("Desktop Ask response did not include a valid Ask turn");
+  }
+  return question as DesktopAskQuestion;
+};
+
+const displaySafeDesktopAskQuestion = (question: DesktopAskQuestion) => ({
+  id: question.id,
+  askThreadId: question.askThreadId,
+  askTurnIndex: question.askTurnIndex,
+  query: question.query,
+  answerMarkdown: question.answerMarkdown ?? null,
+  errorMessage: question.errorMessage ?? null,
+  status: question.status,
+  createdAt: question.createdAt,
+  updatedAt: question.updatedAt,
+  answeredAt: question.answeredAt ?? null
+});
+
+export const boundedDesktopAskConversationContext = (
+  value: unknown
+): MemoryAnswerConversationTurn[] => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const questions = (value as { questions?: unknown }).questions;
+  if (!Array.isArray(questions)) return [];
+  const completed = questions
+    .filter((turn): turn is Record<string, unknown> =>
+      Boolean(
+        turn &&
+        typeof turn === "object" &&
+        !Array.isArray(turn) &&
+        (turn as { status?: unknown }).status === "answered" &&
+        typeof (turn as { query?: unknown }).query === "string" &&
+        typeof (turn as { answerMarkdown?: unknown }).answerMarkdown ===
+          "string"
+      )
+    )
+    .map((turn) => ({
+      question: turn.query as string,
+      answer: turn.answerMarkdown as string
+    }))
+    .slice(-20);
+  let byteLength = completed.reduce(
+    (total, turn) =>
+      total +
+      Buffer.byteLength(turn.question, "utf8") +
+      Buffer.byteLength(turn.answer, "utf8"),
+    0
+  );
+  while (completed.length > 0 && byteLength > 64 * 1024) {
+    const removed = completed.shift()!;
+    byteLength -=
+      Buffer.byteLength(removed.question, "utf8") +
+      Buffer.byteLength(removed.answer, "utf8");
+  }
+  return completed;
+};
+
 export class MemoryToolExecutor {
   constructor(
     readonly client: MemoryApiClient,
@@ -128,6 +224,58 @@ export class MemoryToolExecutor {
 
   async capabilities(): Promise<BackendToolCapabilities> {
     return backendToolCapabilitiesFrom(await this.client.capabilities());
+  }
+
+  async executeDesktopAsk(
+    input: DesktopAskExecutionInput,
+    caller: LocalRuntimeCallerContext,
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown>> {
+    const pending = desktopAskQuestionFromResponse(
+      await this.client.createPendingDesktopAsk({
+        ask_thread_id: input.askThreadId,
+        idempotency_key: input.idempotencyKey,
+        query: input.query
+      })
+    );
+    if (pending.status !== "pending") {
+      return { question: displaySafeDesktopAskQuestion(pending) };
+    }
+    const conversationContext = input.askThreadId
+      ? boundedDesktopAskConversationContext(
+          await this.client.getDesktopAskThread(pending.askThreadId)
+        )
+      : [];
+    try {
+      await this.executeMemoryAnswer(
+        {
+          include_evidence: false,
+          limit: 10,
+          query: pending.query,
+          response_detail: "answer_only",
+          retrieval_hints: {},
+          search_domain: "global"
+        },
+        caller,
+        {
+          origin: "desktop_ask",
+          conversationContext,
+          pendingQuestionId: pending.id
+        },
+        signal
+      );
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      await this.client.completePendingDesktopAsk(pending.id, {
+        status: "error",
+        error_message: "Koed could not answer this question. Try again.",
+        attempt_count: 1
+      });
+    }
+    const completed = desktopAskQuestionFromResponse(
+      await this.client.getQuestion(pending.id)
+    );
+    return { question: displaySafeDesktopAskQuestion(completed) };
   }
 
   async execute(
@@ -147,9 +295,10 @@ export class MemoryToolExecutor {
         })) as unknown as Record<string, unknown>;
       }
       case "memory_answer":
-        return await this.memoryAnswer(
+        return await this.executeMemoryAnswer(
           memoryAnswerInputSchema.parse(rawInput),
           caller,
+          { origin: "mcp_memory_answer" },
           signal
         );
       case "memory_intake_propose": {
@@ -184,11 +333,15 @@ export class MemoryToolExecutor {
     }
   }
 
-  private async memoryAnswer(
+  async executeMemoryAnswer(
     input: MemoryAnswerToolInput,
     caller: LocalRuntimeCallerContext,
+    execution: TrustedMemoryAnswerExecutionOptions,
     signal?: AbortSignal
   ): Promise<Record<string, unknown>> {
+    if (execution.origin === "desktop_ask" && !execution.pendingQuestionId) {
+      throw new Error("Desktop Ask requires a durable pending question");
+    }
     const requestedResponseDetail: MemoryAnswerResponseDetail =
       input.include_evidence ? "with_evidence" : input.response_detail;
     const {
@@ -312,60 +465,88 @@ export class MemoryToolExecutor {
       limit: input.limit,
       responseDetail: "with_evidence",
       retrievalHints: retrieval_hints,
+      conversationContext: execution.conversationContext,
       signal
     });
     if (signal?.aborted) throw new Error("Koed memory request was cancelled");
     let recordedQuestion: McpMemoryQuestion | null = null;
-    try {
-      const finalQuestionInput = answer.localMemoryWorker.usedFallback
-        ? {
-            idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
-            query: answerInput.query,
-            origin: "mcp_memory_answer",
-            retrieval_scope: retrievalScope,
-            search_domain: input.search_domain,
-            project_id: projectId,
-            team_workspace_id: teamWorkspaceId,
-            session_id: input.session_id,
-            status: "error",
-            error_message: errorMessageFromAnswer(answer),
-            attempt_count: 1,
-            response: persistedAnswerResponse(answer),
-            retrieval: retrievalFromAnswer(answer),
-            local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
-          }
-        : {
-            idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
-            query: answerInput.query,
-            origin: "mcp_memory_answer",
-            retrieval_scope: retrievalScope,
-            search_domain: input.search_domain,
-            project_id: projectId,
-            team_workspace_id: teamWorkspaceId,
-            session_id: input.session_id,
-            status: "answered",
-            answer_markdown: answerMarkdownFromAnswer(answer),
-            attempt_count: 1,
-            response: persistedAnswerResponse(answer),
-            evidence: evidenceFromAnswer(answer),
-            citations: citationsFromAnswer(answer),
-            retrieval: retrievalFromAnswer(answer),
-            local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
-          };
+    const finalQuestionInput = answer.localMemoryWorker.usedFallback
+      ? {
+          idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
+          query: answerInput.query,
+          origin: execution.origin,
+          retrieval_scope: retrievalScope,
+          search_domain: input.search_domain,
+          project_id: projectId,
+          team_workspace_id: teamWorkspaceId,
+          session_id: input.session_id,
+          status: "error",
+          error_message: errorMessageFromAnswer(answer),
+          attempt_count: 1,
+          response: persistedAnswerResponse(answer),
+          retrieval: retrievalFromAnswer(answer),
+          local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
+        }
+      : {
+          idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
+          query: answerInput.query,
+          origin: execution.origin,
+          retrieval_scope: retrievalScope,
+          search_domain: input.search_domain,
+          project_id: projectId,
+          team_workspace_id: teamWorkspaceId,
+          session_id: input.session_id,
+          status: "answered",
+          answer_markdown: answerMarkdownFromAnswer(answer),
+          attempt_count: 1,
+          response: persistedAnswerResponse(answer),
+          evidence: evidenceFromAnswer(answer),
+          citations: citationsFromAnswer(answer),
+          retrieval: retrievalFromAnswer(answer),
+          local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
+        };
+    if (execution.pendingQuestionId) {
       recordedQuestion = questionFromResponse(
-        teamWorkspaceId && upstreamBackendId
-          ? await this.client.createFinalTeamQuestion(
-              upstreamBackendId,
-              finalQuestionInput,
-              localEdgeClientCredential!.authorization
-            )
-          : await this.client.createFinalQuestion(finalQuestionInput)
+        await this.client.completePendingDesktopAsk(
+          execution.pendingQuestionId,
+          finalQuestionInput.status === "answered"
+            ? {
+                status: "answered",
+                answer_markdown: finalQuestionInput.answer_markdown,
+                attempt_count: finalQuestionInput.attempt_count,
+                response: finalQuestionInput.response,
+                evidence: finalQuestionInput.evidence,
+                citations: finalQuestionInput.citations,
+                retrieval: finalQuestionInput.retrieval,
+                local_memory_worker: finalQuestionInput.local_memory_worker
+              }
+            : {
+                status: "error",
+                error_message: finalQuestionInput.error_message,
+                attempt_count: finalQuestionInput.attempt_count,
+                response: finalQuestionInput.response,
+                retrieval: finalQuestionInput.retrieval,
+                local_memory_worker: finalQuestionInput.local_memory_worker
+              }
+        )
       );
-    } catch (error) {
-      logger.warn(
-        { err: error, jobId: answer.localMemoryWorker.jobId },
-        "koed memory_answer question history persistence skipped"
-      );
+    } else {
+      try {
+        recordedQuestion = questionFromResponse(
+          teamWorkspaceId && upstreamBackendId
+            ? await this.client.createFinalTeamQuestion(
+                upstreamBackendId,
+                finalQuestionInput,
+                localEdgeClientCredential!.authorization
+              )
+            : await this.client.createFinalQuestion(finalQuestionInput)
+        );
+      } catch (error) {
+        logger.warn(
+          { err: error, jobId: answer.localMemoryWorker.jobId },
+          "koed memory_answer question history persistence skipped"
+        );
+      }
     }
     await this.recordTokenUsage(
       answer,

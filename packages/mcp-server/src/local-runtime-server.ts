@@ -59,6 +59,19 @@ const toolRequestSchema = z
   })
   .strict();
 
+const desktopAskRequestSchema = z
+  .object({
+    input: z
+      .object({
+        askThreadId: z.string().uuid().optional(),
+        idempotencyKey: z.string().trim().min(1).max(500),
+        query: z.string().trim().min(1).max(32_000)
+      })
+      .strict(),
+    caller: callerSchema
+  })
+  .strict();
+
 const positiveInteger = (
   value: string | undefined,
   fallback: number
@@ -238,6 +251,11 @@ export interface LocalAiRuntimeToolExecutor {
     caller: z.infer<typeof callerSchema>,
     signal?: AbortSignal
   ): Promise<Record<string, unknown>>;
+  executeDesktopAsk(
+    input: z.infer<typeof desktopAskRequestSchema>["input"],
+    caller: z.infer<typeof callerSchema>,
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown>>;
 }
 
 export interface LocalAiRuntimeServices {
@@ -362,6 +380,26 @@ export const startLocalAiRuntime = async ({
             curatedMemoryIntakeAvailable:
               capabilities.curatedMemoryIntakeAvailable
           });
+          return;
+        }
+        if (
+          request.method === "POST" &&
+          requestUrl.pathname === "/v1/desktop/ask"
+        ) {
+          const parsed = desktopAskRequestSchema.parse(
+            await readJsonBody(request)
+          );
+          const release = await answerAdmission.acquire(requestAbort.signal);
+          try {
+            const result = await executor.executeDesktopAsk(
+              parsed.input,
+              parsed.caller,
+              requestAbort.signal
+            );
+            if (!requestAbort.signal.aborted) json(response, 200, result);
+          } finally {
+            release();
+          }
           return;
         }
         const toolPrefix = "/v1/tools/";

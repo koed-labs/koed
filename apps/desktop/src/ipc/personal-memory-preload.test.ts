@@ -35,8 +35,11 @@ describe("Personal Memory preload bridge", () => {
     await expect(api.listProjects()).resolves.toEqual([]);
     expect(Object.keys(api).sort()).toEqual([
       "assignSessionProject",
+      "listAskThreads",
       "listProjects",
+      "loadAskThread",
       "loadEventPage",
+      "submitAsk",
       "subscribe",
       "updateSessionTitle"
     ]);

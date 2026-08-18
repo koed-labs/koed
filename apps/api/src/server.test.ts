@@ -3892,6 +3892,170 @@ const createFakeRepository = () => {
         memoryEventScopes: []
       };
     },
+    async createPendingDesktopAsk(actor, input) {
+      const existing = [...memoryQuestions.values()].find(
+        (question) =>
+          question.ownerUserId === actor.userId &&
+          (question as MemoryQuestionDetailRecord & { idempotencyKey?: string })
+            .idempotencyKey === input.idempotencyKey
+      ) as
+        | (MemoryQuestionDetailRecord & { idempotencyKey?: string })
+        | undefined;
+      if (existing) return existing;
+      const askThreadId = input.askThreadId ?? randomUUID();
+      const ownedTurns = [...memoryQuestions.values()].filter(
+        (question) =>
+          question.ownerUserId === actor.userId &&
+          question.origin === "desktop_ask" &&
+          question.askThreadId === askThreadId
+      );
+      if (input.askThreadId && ownedTurns.length === 0) {
+        throw new Error("Ask thread not found or not visible");
+      }
+      const now = new Date().toISOString();
+      const record: MemoryQuestionDetailRecord & { idempotencyKey: string } = {
+        id: randomUUID(),
+        idempotencyKey: input.idempotencyKey,
+        ownerUserId: actor.userId,
+        visibility: "personal",
+        origin: "desktop_ask",
+        retrievalScope: "personal",
+        teamWorkspaceId: null,
+        searchDomain: "global",
+        projectId: null,
+        projectName: null,
+        projectPath: null,
+        sessionId: null,
+        threadId: null,
+        threadName: null,
+        askThreadId,
+        askTurnIndex: ownedTurns.length,
+        query: input.query,
+        answerPreview: null,
+        answerMarkdown: null,
+        errorMessage: null,
+        evidence: null,
+        citations: null,
+        retrieval: null,
+        localMemoryWorker: null,
+        response: null,
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+        answeredAt: null,
+        attemptCount: 0,
+        evidenceCount: 0
+      };
+      memoryQuestions.set(record.id, record);
+      return record;
+    },
+    async completePendingDesktopAsk(actor, input) {
+      const existing = memoryQuestions.get(input.questionId);
+      if (
+        !existing ||
+        existing.ownerUserId !== actor.userId ||
+        existing.origin !== "desktop_ask"
+      ) {
+        throw new Error("Ask turn not found or not visible");
+      }
+      if (existing.status !== "pending") return existing;
+      const now = new Date().toISOString();
+      const completed: MemoryQuestionDetailRecord = {
+        ...existing,
+        answerPreview:
+          input.status === "answered"
+            ? input.answerMarkdown.slice(0, 280)
+            : null,
+        answerMarkdown:
+          input.status === "answered" ? input.answerMarkdown : null,
+        errorMessage: input.status === "error" ? input.errorMessage : null,
+        evidence: input.status === "answered" ? (input.evidence ?? null) : null,
+        citations:
+          input.status === "answered" ? (input.citations ?? null) : null,
+        retrieval: input.retrieval ?? null,
+        localMemoryWorker: input.localMemoryWorker ?? null,
+        response: input.response ?? null,
+        status: input.status,
+        updatedAt: now,
+        answeredAt: now,
+        attemptCount: input.attemptCount ?? 1,
+        evidenceCount:
+          input.status === "answered" ? (input.evidence?.length ?? 0) : 0
+      };
+      memoryQuestions.set(completed.id, completed);
+      return completed;
+    },
+    async listDesktopAskThreads(actor, input = {}) {
+      const grouped = new Map<string, MemoryQuestionDetailRecord[]>();
+      for (const question of memoryQuestions.values()) {
+        if (
+          question.ownerUserId !== actor.userId ||
+          question.origin !== "desktop_ask" ||
+          !question.askThreadId
+        ) {
+          continue;
+        }
+        const turns = grouped.get(question.askThreadId) ?? [];
+        turns.push(question);
+        grouped.set(question.askThreadId, turns);
+      }
+      const limit = input.limit ?? 50;
+      const threads = [...grouped.entries()]
+        .map(([askThreadId, turns]) => {
+          const ordered = turns.sort(
+            (left, right) => left.askTurnIndex! - right.askTurnIndex!
+          );
+          const latest = [...turns].sort((left, right) =>
+            right.updatedAt.localeCompare(left.updatedAt)
+          )[0]!;
+          return {
+            askThreadId,
+            firstQuestion: ordered[0]!.query,
+            latestStatus: latest.status,
+            turnCount: turns.length,
+            updatedAt: latest.updatedAt,
+            latestQuestionId: latest.id
+          };
+        })
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      const start = input.cursor
+        ? Math.max(
+            0,
+            threads.findIndex(
+              (thread) =>
+                thread.latestQuestionId === input.cursor?.latestQuestionId
+            ) + 1
+          )
+        : 0;
+      const selected = threads.slice(start, start + limit);
+      const last = selected.at(-1);
+      return {
+        threads: selected.map((thread) => ({
+          askThreadId: thread.askThreadId,
+          firstQuestion: thread.firstQuestion,
+          latestStatus: thread.latestStatus,
+          turnCount: thread.turnCount,
+          updatedAt: thread.updatedAt
+        })),
+        nextCursor:
+          start + limit < threads.length && last
+            ? {
+                latestQuestionId: last.latestQuestionId,
+                updatedAt: last.updatedAt
+              }
+            : null
+      };
+    },
+    async getDesktopAskThread(actor, askThreadId) {
+      return [...memoryQuestions.values()]
+        .filter(
+          (question) =>
+            question.ownerUserId === actor.userId &&
+            question.origin === "desktop_ask" &&
+            question.askThreadId === askThreadId
+        )
+        .sort((left, right) => left.askTurnIndex! - right.askTurnIndex!);
+    },
     async createFinalMemoryQuestion(actor, input) {
       const now = new Date().toISOString();
       const record: MemoryQuestionDetailRecord = {
@@ -3908,6 +4072,8 @@ const createFakeRepository = () => {
         sessionId: input.sessionId ?? null,
         threadId: input.threadId ?? null,
         threadName: input.threadName ?? null,
+        askThreadId: null,
+        askTurnIndex: null,
         query: input.query,
         answerPreview:
           input.status === "answered"
@@ -15114,6 +15280,154 @@ describe("account and access flows", () => {
       searchDomain: "project",
       projectId: "project-1"
     });
+  });
+
+  it("creates and completes ordered Desktop Ask turns idempotently", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "desktop-ask@example.com", password: "password123" }
+    });
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: browserSessionHeaders(cookieHeader(registered)),
+      payload: { name: "Desktop" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
+    };
+    const idempotencyKey = `desktop-ask-${randomUUID()}`;
+    const initial = await app.inject({
+      method: "POST",
+      url: "/v1/memory/ask/questions",
+      headers,
+      payload: {
+        idempotency_key: idempotencyKey,
+        query: "What did I decide?"
+      }
+    });
+    const retried = await app.inject({
+      method: "POST",
+      url: "/v1/memory/ask/questions",
+      headers,
+      payload: {
+        idempotency_key: idempotencyKey,
+        query: "This retry must not create a second turn."
+      }
+    });
+    const initialQuestion = jsonBody<MemoryQuestionResponse>(initial).question;
+    const followUp = await app.inject({
+      method: "POST",
+      url: "/v1/memory/ask/questions",
+      headers,
+      payload: {
+        ask_thread_id: initialQuestion.askThreadId,
+        idempotency_key: `desktop-ask-follow-up-${randomUUID()}`,
+        query: "What happened next?"
+      }
+    });
+    const completed = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/ask/questions/${initialQuestion.id}`,
+      headers,
+      payload: {
+        status: "answered",
+        answer_markdown: "You selected the Personal Memory design.",
+        evidence: [{ id: "evidence-1" }]
+      }
+    });
+    const completedAgain = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/ask/questions/${initialQuestion.id}`,
+      headers,
+      payload: { status: "error", error_message: "must not replace answer" }
+    });
+    const threads = await app.inject({
+      method: "GET",
+      url: "/v1/memory/ask/threads?limit=50",
+      headers
+    });
+    const thread = await app.inject({
+      method: "GET",
+      url: `/v1/memory/ask/threads/${initialQuestion.askThreadId}`,
+      headers
+    });
+    const otherRegistered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "desktop-ask-other@example.com",
+        password: "password123"
+      }
+    });
+    const otherToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: browserSessionHeaders(cookieHeader(otherRegistered)),
+      payload: { name: "Other Desktop" }
+    });
+    const hidden = await app.inject({
+      method: "GET",
+      url: `/v1/memory/ask/threads/${initialQuestion.askThreadId}`,
+      headers: {
+        authorization: `Bearer ${jsonBody<TokenResponse>(otherToken).token}`
+      }
+    });
+    const malformed = await app.inject({
+      method: "POST",
+      url: "/v1/memory/ask/questions",
+      headers,
+      payload: {
+        idempotency_key: `desktop-ask-malformed-${randomUUID()}`,
+        query: "Question",
+        retrieval_scope: "team"
+      }
+    });
+    await app.close();
+
+    expect(initial.statusCode).toBe(200);
+    expect(initialQuestion).toMatchObject({
+      origin: "desktop_ask",
+      searchDomain: "global",
+      retrievalScope: "personal",
+      askTurnIndex: 0,
+      status: "pending"
+    });
+    expect(initialQuestion.askThreadId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
+    expect(jsonBody<MemoryQuestionResponse>(retried).question.id).toBe(
+      initialQuestion.id
+    );
+    expect(jsonBody<MemoryQuestionResponse>(followUp).question).toMatchObject({
+      askThreadId: initialQuestion.askThreadId,
+      askTurnIndex: 1,
+      status: "pending"
+    });
+    expect(jsonBody<MemoryQuestionResponse>(completed).question).toMatchObject({
+      status: "answered",
+      answerMarkdown: "You selected the Personal Memory design.",
+      evidenceCount: 1
+    });
+    expect(
+      jsonBody<MemoryQuestionResponse>(completedAgain).question.status
+    ).toBe("answered");
+    expect(jsonBody<{ threads: unknown[] }>(threads).threads).toEqual([
+      expect.objectContaining({
+        askThreadId: initialQuestion.askThreadId,
+        firstQuestion: "What did I decide?",
+        turnCount: 2
+      })
+    ]);
+    expect(
+      jsonBody<{ questions: MemoryQuestionDetailRecord[] }>(
+        thread
+      ).questions.map((question) => question.askTurnIndex)
+    ).toEqual([0, 1]);
+    expect(hidden.statusCode).toBe(404);
+    expect(malformed.statusCode).toBe(400);
   });
 
   it("records final MCP memory answer questions", async () => {

@@ -59,6 +59,61 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
+  it("submits Personal Ask through the fixed local runtime operation", async () => {
+    const question = {
+      id: "11111111-1111-4111-8111-111111111111",
+      askThreadId: "22222222-2222-4222-8222-222222222222",
+      askTurnIndex: 0,
+      query: "What did I decide?",
+      answerMarkdown: "You chose the Ask welcome page.",
+      errorMessage: null,
+      status: "answered" as const,
+      createdAt: "2026-08-17T12:00:00.000Z",
+      updatedAt: "2026-08-17T12:00:01.000Z",
+      answeredAt: "2026-08-17T12:00:01.000Z"
+    };
+    const askDesktop = vi.fn(async () => ({ question }));
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: {}
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(null, JSON.stringify({ ok: true }), ""),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      localAiRuntimeClient: { askDesktop }
+    });
+
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.ask.submit",
+        input: {
+          idempotencyKey: "desktop-ask-request-1",
+          query: question.query
+        }
+      })
+    ).resolves.toEqual({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.ask.submit",
+      ok: true,
+      data: { question }
+    });
+    expect(askDesktop).toHaveBeenCalledWith(
+      {
+        idempotencyKey: "desktop-ask-request-1",
+        query: question.query
+      },
+      { cwd: "/repo" }
+    );
+  });
+
   it("allows a cold-start status inspection to use the two-minute budget", async () => {
     let timeout: number | undefined;
     const manager = createKoedServerManager({
@@ -195,6 +250,23 @@ describe("Koed server desktop manager", () => {
           threadId: "thread-1"
         }
       ]
+    });
+    expect(
+      personalMemoryChangeFromSseFrame(
+        `event: graph_update\ndata: ${JSON.stringify({
+          table: "memory_questions",
+          operation: "UPDATE",
+          id: "00000000-0000-4000-8000-000000000003",
+          questionIds: [
+            "00000000-0000-4000-8000-000000000003",
+            "00000000-0000-4000-8000-000000000003"
+          ]
+        })}`
+      )
+    ).toEqual({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      type: "ask_questions_changed",
+      questionIds: ["00000000-0000-4000-8000-000000000003"]
     });
     expect(
       personalMemoryChangeFromSseFrame("event: heartbeat\ndata: {}")

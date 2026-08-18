@@ -288,6 +288,10 @@ Renderer restart, replay, backpressure, authorization loss, stale events, and
 unknown revocation subscriptions are fail-closed. A revoked or unrecognized
 authority purges Team state before another snapshot can render.
 
+The Personal area also provides the protected Ask and Notes workspaces. See
+[Personal Ask and Notes](personal-ask-and-notes.md) for the durable workflow,
+Local AI Runtime boundary, Recents behavior, and Notes presentation.
+
 ![Team channel in dark theme](assets/desktop-ui/team-channel-dark.png)
 
 ## Validation

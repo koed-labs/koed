@@ -13,7 +13,6 @@ import {
   type SharedMemorySession,
   type SharedMemorySourceItem,
   type SharedMemorySourcePage,
-  TEAM_ACTIVITY_WRITE_THROTTLE_MS,
   deriveTeamPresenceSnapshot
 } from "@koed/shared/collaboration";
 import {
@@ -5274,44 +5273,6 @@ export function CollaborationRoutes({
   selectionLoading = false,
   snapshot
 }: CollaborationRoutesProps) {
-  const lastActivityReportAt = useRef(0);
-
-  useEffect(() => {
-    const teamIds = snapshot.navigation.teams
-      .filter((team) => team.lifecycle === "active")
-      .map((team) => team.id);
-    if (teamIds.length === 0) return;
-    const report = () => {
-      if (
-        document.visibilityState !== "visible" ||
-        Date.now() - lastActivityReportAt.current <
-          TEAM_ACTIVITY_WRITE_THROTTLE_MS
-      ) {
-        return;
-      }
-      lastActivityReportAt.current = Date.now();
-      void client.reportTeamActivity(teamIds).catch(() => {
-        lastActivityReportAt.current = 0;
-      });
-    };
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") report();
-    };
-    window.addEventListener("pointerdown", report, { capture: true });
-    window.addEventListener("keydown", report, { capture: true });
-    window.addEventListener("focus", report);
-    document.addEventListener("visibilitychange", onVisibility);
-    if (document.visibilityState === "visible" && document.hasFocus()) {
-      report();
-    }
-    return () => {
-      window.removeEventListener("pointerdown", report, { capture: true });
-      window.removeEventListener("keydown", report, { capture: true });
-      window.removeEventListener("focus", report);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [client, snapshot.navigation.teams]);
-
   useEffect(() => {
     drafts.reconcileAuthorized?.((authority) => {
       const thread = threadForDraftAuthority(snapshot, authority);

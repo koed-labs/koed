@@ -484,7 +484,10 @@ describe("memory answer worker", () => {
           "including recency/conflict reasoning when evidence differs over time",
           '"searchHistory"',
           '"retrievalCoverage"',
-          '"remainingBudgets"'
+          '"remainingBudgets"',
+          '"conversationContext"',
+          "We chose the Personal route.",
+          "What did we choose?"
         ]
       });
 
@@ -504,6 +507,12 @@ describe("memory answer worker", () => {
         retrievalScope: "personal",
         searchDomain: "project",
         projectId: "workspace-1",
+        conversationContext: [
+          {
+            answer: "We chose the Personal route.",
+            question: "What did we choose?"
+          }
+        ],
         config: resolveMemoryAnswerWorkerConfig({
           MEMORY_ANSWER_PROVIDER: "codex",
           MEMORY_ANSWER_CODEX_BINARY: appServerBinary,

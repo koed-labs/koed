@@ -1,4 +1,6 @@
 export type PersonalRoute =
+  | { kind: "personal-memory-ask"; askThreadId?: string }
+  | { kind: "personal-memory-notes"; noteId?: string; newNote?: true }
   | { kind: "personal-memory-projects" }
   | { kind: "personal-memory-shares"; shareKey?: string }
   | { kind: "personal-memory-project"; projectId: string }
@@ -146,6 +148,16 @@ export const routePath = (route: DesktopRoute): string => {
       return "/inbox";
     case "personal-memory-projects":
       return "/personal/memory/projects";
+    case "personal-memory-ask":
+      return route.askThreadId
+        ? `/personal/memory/ask/${encodeURIComponent(route.askThreadId)}`
+        : "/personal/memory/ask";
+    case "personal-memory-notes":
+      return route.newNote
+        ? "/personal/memory/notes/new"
+        : route.noteId
+          ? `/personal/memory/notes/${encodeURIComponent(route.noteId)}`
+          : "/personal/memory/notes";
     case "personal-memory-shares":
       return route.shareKey
         ? `/personal/memory/shares/${encodeURIComponent(route.shareKey)}`

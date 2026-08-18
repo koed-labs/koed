@@ -181,6 +181,17 @@
   padding-block-end: 24px;
 }
 
+.desktop-personal-context-content {
+  display: flex;
+  min-block-size: 100%;
+  flex-direction: column;
+}
+
+.desktop-sidebar-recents-section {
+  margin-block-start: auto;
+  border-block-start: 1px solid var(--sidebar-border);
+}
+
 .desktop-sidebar-header {
   display: flex;
   min-block-size: 64px;
@@ -319,6 +330,34 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.desktop-sidebar-ask-recent small {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  text-transform: capitalize;
+}
+
+.desktop-sidebar-load-more {
+  min-block-size: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.desktop-sidebar-load-more:hover {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+}
+
+.desktop-sidebar-section-state {
+  margin: 6px 8px;
+  color: var(--muted-foreground);
+  font-size: 11px;
 }
 
 .desktop-sidebar-unread {

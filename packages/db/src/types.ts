@@ -42,9 +42,9 @@ export type CaptureState = "enabled" | "disabled" | "ask";
 
 export type CapturePolicyTarget = "global" | "project" | "thread";
 
-export type MemoryQuestionStatus = "answered" | "error";
+export type MemoryQuestionStatus = "pending" | "answered" | "error";
 
-export type MemoryQuestionOrigin = "mcp_memory_answer";
+export type MemoryQuestionOrigin = "desktop_ask" | "mcp_memory_answer";
 
 export type MemoryQuestionSearchDomain = "global" | "project" | "session";
 
@@ -1550,6 +1550,8 @@ export interface MemoryQuestionShellRecord {
   sessionId: string | null;
   threadId: string | null;
   threadName: string | null;
+  askThreadId: string | null;
+  askTurnIndex: number | null;
   query: string;
   answerPreview: string | null;
   errorMessage: string | null;
@@ -1568,6 +1570,24 @@ export interface MemoryQuestionDetailRecord extends MemoryQuestionShellRecord {
   retrieval: Record<string, unknown> | null;
   localMemoryWorker: Record<string, unknown> | null;
   response: Record<string, unknown> | null;
+}
+
+export interface DesktopAskThreadCursor {
+  latestQuestionId: string;
+  updatedAt: string;
+}
+
+export interface DesktopAskThreadShellRecord {
+  askThreadId: string;
+  firstQuestion: string;
+  latestStatus: MemoryQuestionStatus;
+  turnCount: number;
+  updatedAt: string;
+}
+
+export interface DesktopAskThreadPage {
+  nextCursor: DesktopAskThreadCursor | null;
+  threads: DesktopAskThreadShellRecord[];
 }
 
 export interface LocalMemoryAgentSettingRecord {

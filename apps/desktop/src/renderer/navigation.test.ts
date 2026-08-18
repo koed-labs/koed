@@ -116,5 +116,20 @@ describe("routePath", () => {
         shareKey: "pending:share/one"
       })
     ).toBe("/personal/memory/shares/pending%3Ashare%2Fone");
+    expect(
+      routePath({
+        kind: "personal-memory-ask",
+        askThreadId: "ask/thread one"
+      })
+    ).toBe("/personal/memory/ask/ask%2Fthread%20one");
+    expect(
+      routePath({
+        kind: "personal-memory-notes",
+        noteId: "note/one"
+      })
+    ).toBe("/personal/memory/notes/note%2Fone");
+    expect(routePath({ kind: "personal-memory-notes", newNote: true })).toBe(
+      "/personal/memory/notes/new"
+    );
   });
 });

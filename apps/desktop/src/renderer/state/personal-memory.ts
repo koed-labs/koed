@@ -84,6 +84,7 @@ export class PersonalMemoryStore {
     this.#api = api;
     this.#retryBaseMs = Math.max(0, retryBaseMs);
     api.subscribe((change) => {
+      if (change.type !== "conversation_events_changed") return;
       for (const { id, projectId, threadId } of change.eventRefs) {
         const key = `${projectId}:${threadId}`;
         const eventIds = this.#detailRefreshEventIds.get(key) ?? new Set();

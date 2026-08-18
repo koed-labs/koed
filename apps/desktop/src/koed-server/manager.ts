@@ -11,6 +11,9 @@ import {
   readDesktopLocalCredentialAuthorization,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   personalDesktopChangeSchema,
+  personalDesktopAskSubmitDataSchema,
+  personalDesktopAskThreadDataSchema,
+  personalDesktopAskThreadsDataSchema,
   personalDesktopEventsDataSchema,
   personalDesktopProjectsDataSchema,
   personalDesktopRequestSchema,
@@ -30,7 +33,8 @@ import {
 import {
   existsSync as nodeExistsSync,
   readFileSync,
-  readdirSync
+  readdirSync,
+  statSync
 } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -138,6 +142,16 @@ export interface KoedServerManagerOptions {
   collaborationNow?: () => number;
   collaborationSleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
   personalMemoryFetch?: typeof fetch;
+  localAiRuntimeClient?: {
+    askDesktop(
+      input: {
+        askThreadId?: string;
+        idempotencyKey: string;
+        query: string;
+      },
+      caller: { cwd: string }
+    ): Promise<Record<string, unknown>>;
+  };
   startPairingServer?: typeof startPersonalDevicePairingServer;
 }
 
@@ -568,6 +582,19 @@ export const personalMemoryChangeFromSseFrame = (
             }
           ]
         : [];
+    const questionIds = Array.isArray(payload.questionIds)
+      ? payload.questionIds
+      : payload.table === "memory_questions" && typeof payload.id === "string"
+        ? [payload.id]
+        : [];
+    if (questionIds.length > 0) {
+      const parsed = personalDesktopChangeSchema.safeParse({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        type: "ask_questions_changed",
+        questionIds: [...new Set(questionIds)]
+      });
+      return parsed.success ? parsed.data : null;
+    }
     const seen = new Set<string>();
     const eventRefs = payloadEventRefs.flatMap((value) => {
       const ref = objectValue(value);
@@ -1040,6 +1067,7 @@ export const createKoedServerManager = ({
   openPath,
   selectRecoveryKitPath,
   personalMemoryFetch = globalThis.fetch,
+  localAiRuntimeClient,
   startPairingServer = startPersonalDevicePairingServer
 }: KoedServerManagerOptions): KoedServerManager => {
   let serverProcess: ChildProcess | null = null;
@@ -1054,6 +1082,81 @@ export const createKoedServerManager = ({
     null;
   let personalDevicePairingServerError: string | null = null;
   void environment;
+
+  const callLocalDesktopAsk = async (
+    input: {
+      askThreadId?: string;
+      idempotencyKey: string;
+      query: string;
+    },
+    caller: { cwd: string }
+  ): Promise<Record<string, unknown>> => {
+    const configuredHome = environment.KOED_HOME?.trim();
+    const koedHome = !configuredHome
+      ? resolve(homedir(), ".koed")
+      : configuredHome === "~"
+        ? homedir()
+        : configuredHome.startsWith("~/")
+          ? resolve(homedir(), configuredHome.slice(2))
+          : resolve(configuredHome);
+    const registrationPath = resolve(koedHome, "run", "local-ai-runtime.json");
+    const stats = statSync(registrationPath);
+    if (
+      !stats.isFile() ||
+      (process.platform !== "win32" && (stats.mode & 0o077) !== 0) ||
+      (typeof process.getuid === "function" && stats.uid !== process.getuid())
+    ) {
+      throw new PersonalMemoryBoundaryError("not_ready", true);
+    }
+    const registration = JSON.parse(readFileSync(registrationPath, "utf8")) as {
+      authorization?: unknown;
+      protocolVersion?: unknown;
+      url?: unknown;
+    };
+    if (
+      registration.protocolVersion !== 1 ||
+      typeof registration.authorization !== "string" ||
+      !/^Bearer [A-Za-z0-9_-]{32,}$/u.test(registration.authorization) ||
+      typeof registration.url !== "string"
+    ) {
+      throw new PersonalMemoryBoundaryError("not_ready", true);
+    }
+    const runtimeUrl = new URL(registration.url);
+    if (
+      runtimeUrl.protocol !== "http:" ||
+      !isLoopbackHostname(runtimeUrl.hostname)
+    ) {
+      throw new PersonalMemoryBoundaryError("not_ready", true);
+    }
+    const remote = await fetchBoundedJsonObject(
+      personalMemoryFetch,
+      new URL("/v1/desktop/ask", runtimeUrl),
+      {
+        method: "POST",
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          authorization: registration.authorization,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({ input, caller })
+      },
+      { timeoutMs: 180_000, maxBytes: 2 * 1_024 * 1_024 }
+    );
+    if (!remote.response.ok) {
+      throw new PersonalMemoryBoundaryError(
+        remote.response.status === 404 ? "not_ready" : "request_failed",
+        remote.response.status === 408 ||
+          remote.response.status === 429 ||
+          remote.response.status >= 500
+      );
+    }
+    return remote.payload;
+  };
+
+  const desktopAskRuntime = localAiRuntimeClient ?? {
+    askDesktop: callLocalDesktopAsk
+  };
 
   const runJson = (args: string[], timeout = 30_000) =>
     new Promise<unknown>((resolvePromise) => {
@@ -2416,17 +2519,75 @@ export const createKoedServerManager = ({
     });
   };
 
+  const listPersonalAskThreads = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.ask.threads.list" }
+    >["input"]
+  ) => {
+    const query = new URLSearchParams({ limit: String(input.limit) });
+    if (input.cursor) query.set("cursor", input.cursor);
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(`/v1/memory/ask/threads?${query.toString()}`, apiOrigin),
+        init: { method: "GET" }
+      }),
+      1 * 1_024 * 1_024
+    );
+    return personalDesktopAskThreadsDataSchema.parse({
+      threads: payload.threads,
+      nextCursor: payload.next_cursor ?? null
+    });
+  };
+
+  const loadPersonalAskThread = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.ask.thread.load" }
+    >["input"]
+  ) => {
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/memory/ask/threads/${encodeURIComponent(input.askThreadId)}`,
+          apiOrigin
+        ),
+        init: { method: "GET" }
+      }),
+      16 * 1_024 * 1_024
+    );
+    return personalDesktopAskThreadDataSchema.parse({
+      turns: payload.questions
+    });
+  };
+
+  const submitPersonalAsk = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.ask.submit" }
+    >["input"]
+  ) =>
+    personalDesktopAskSubmitDataSchema.parse(
+      await desktopAskRuntime.askDesktop(input, { cwd: repoRoot })
+    );
+
   const personalMemory: PersonalMemoryDesktopHandler = async (value) => {
     const request = personalDesktopRequestSchema.parse(value);
     try {
       const data =
-        request.operation === "personal.projects.list"
-          ? await listPersonalProjects()
-          : request.operation === "personal.events.load_page"
-            ? await loadPersonalEventPage(request.input)
-            : request.operation === "personal.sessions.assign_project"
-              ? await assignPersonalSessionProject(request.input)
-              : await updatePersonalSessionTitle(request.input);
+        request.operation === "personal.ask.threads.list"
+          ? await listPersonalAskThreads(request.input)
+          : request.operation === "personal.ask.thread.load"
+            ? await loadPersonalAskThread(request.input)
+            : request.operation === "personal.ask.submit"
+              ? await submitPersonalAsk(request.input)
+              : request.operation === "personal.projects.list"
+                ? await listPersonalProjects()
+                : request.operation === "personal.events.load_page"
+                  ? await loadPersonalEventPage(request.input)
+                  : request.operation === "personal.sessions.assign_project"
+                    ? await assignPersonalSessionProject(request.input)
+                    : await updatePersonalSessionTitle(request.input);
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,

@@ -29,7 +29,7 @@ import {
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 120_000;
-export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-codex-worker-v4";
+export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-codex-worker-v5";
 export const MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION = "memory-answer-v1";
 const MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE = "koed_memory";
 
@@ -109,6 +109,11 @@ export interface MemoryAnswerRetrievalHints {
   semantic?: string[];
   entities?: string[];
   temporalIntent?: string;
+}
+
+export interface MemoryAnswerConversationTurn {
+  answer: string;
+  question: string;
 }
 
 /** Direct-call-only controls for isolated Retrieval Arena runs. */
@@ -589,6 +594,7 @@ interface MemoryAnswerToolState {
   servedCachedScan: boolean;
   ledger: MemoryAnswerBudgetLedger;
   evaluation: ResolvedMemoryAnswerEvaluationController;
+  conversationContext?: readonly MemoryAnswerConversationTurn[];
 }
 
 interface MemoryAnswerAttemptRun {
@@ -2207,6 +2213,7 @@ const buildDynamicMemoryAnswerPrompt = (
         citations: state.citations,
         retrievals: state.retrievals,
         retrievalHints: state.retrievalHints,
+        conversationContext: state.conversationContext,
         evaluationController: isDefaultMemoryAnswerEvaluation(state.evaluation)
           ? undefined
           : state.evaluation,
@@ -3162,6 +3169,8 @@ const runDynamicToolMemoryAnswer = async (
     promptTemplate: LoadedPrompt;
     signal?: AbortSignal;
     captureProcessMetrics?: boolean;
+    /** Trusted local conversation context. This value never changes retrieval authorization. */
+    conversationContext?: readonly MemoryAnswerConversationTurn[];
   }
 ): Promise<{
   markdown: string;
@@ -3276,7 +3285,8 @@ const runDynamicToolMemoryAnswer = async (
     retrievalHints: options.retrievalHints,
     servedCachedScan: false,
     ledger,
-    evaluation: options.evaluation
+    evaluation: options.evaluation,
+    conversationContext: options.conversationContext
   };
   let promptTokens = countTokensForModel("", { model: options.config.model });
   const appServerExecutions: MemoryAnswerAppServerExecution[] = [];
@@ -3546,6 +3556,8 @@ export const answerWithMemoryWorker = async (
     evaluationController?: MemoryAnswerEvaluationController;
     /** Direct-call Retrieval Arena telemetry; never exposed through API/MCP input. */
     captureProcessMetrics?: boolean;
+    /** Trusted local conversation context. This value never changes retrieval authorization. */
+    conversationContext?: readonly MemoryAnswerConversationTurn[];
   } = {}
 ): Promise<MemoryAnswerWorkerResponse> => {
   const config = options.config ?? resolveMemoryAnswerWorkerConfig();
@@ -3626,6 +3638,7 @@ export const answerWithMemoryWorker = async (
       evaluation,
       promptTemplate,
       captureProcessMetrics: options.captureProcessMetrics,
+      conversationContext: options.conversationContext,
       signal: options.signal
     });
     return compactMemoryAnswerPayload(

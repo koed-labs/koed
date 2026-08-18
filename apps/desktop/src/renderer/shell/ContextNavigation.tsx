@@ -11,8 +11,10 @@ import {
   MessagesSquare,
   NotebookPen,
   Plus,
+  Sparkles,
   UsersRound
 } from "lucide-react";
+import type { PersonalDesktopAskThread } from "@koed/shared/personal-desktop";
 import { useState, type ReactNode } from "react";
 
 export type ContextNavItem = {
@@ -57,14 +59,18 @@ function SidebarHeader({
 function Section({
   action,
   children,
+  className,
   title
 }: {
   action?: ReactNode;
   children: ReactNode;
+  className?: string;
   title: string;
 }) {
   return (
-    <section className="desktop-sidebar-section">
+    <section
+      className={`desktop-sidebar-section${className ? ` ${className}` : ""}`}
+    >
       <header>
         <span>{title}</span>
         {action}
@@ -133,6 +139,34 @@ function NavItem({
   );
 }
 
+function AskRecentItem({
+  onSelect,
+  selected,
+  thread
+}: {
+  onSelect: (askThreadId: string) => void;
+  selected: boolean;
+  thread: PersonalDesktopAskThread;
+}) {
+  return (
+    <button
+      aria-current={selected ? "page" : undefined}
+      className="desktop-sidebar-nav-item desktop-sidebar-ask-recent"
+      data-selected={selected || undefined}
+      onClick={() => onSelect(thread.askThreadId)}
+      type="button"
+    >
+      <span className="desktop-sidebar-nav-icon">
+        <Sparkles aria-hidden="true" />
+      </span>
+      <span className="desktop-sidebar-nav-label">{thread.firstQuestion}</span>
+      {thread.latestStatus !== "answered" ? (
+        <small>{thread.latestStatus}</small>
+      ) : null}
+    </button>
+  );
+}
+
 export function LockedFeatureRow({
   explanation,
   label
@@ -149,34 +183,57 @@ export function LockedFeatureRow({
 }
 
 export function PersonalContextNavigation({
+  askRecents = [],
+  askRecentsError,
+  askRecentsNextCursor = null,
+  askSelected = false,
   channels,
   notesSelected,
   onCreateChannel,
+  onLoadOlderAskThreads,
+  onNewAsk,
+  onOpenAsk = () => undefined,
   onOpenNotes,
   onOpenProjects,
   onOpenShares,
   onSelectChannel,
+  onSelectAskThread,
   projectsSelected,
+  selectedAskThreadId,
   sharesSelected,
   sharesUnavailable = false
 }: {
+  askRecents?: readonly PersonalDesktopAskThread[];
+  askRecentsError?: string | null;
+  askRecentsNextCursor?: string | null;
+  askSelected?: boolean;
   channels: readonly ContextNavItem[];
   notesSelected: boolean;
   onCreateChannel: () => void;
+  onLoadOlderAskThreads?: () => void;
+  onNewAsk?: () => void;
+  onOpenAsk?: () => void;
   onOpenNotes: () => void;
   onOpenProjects: () => void;
   onOpenShares: () => void;
   onSelectChannel: (threadId: string) => void;
+  onSelectAskThread?: (askThreadId: string) => void;
   projectsSelected: boolean;
+  selectedAskThreadId?: string;
   sharesSelected: boolean;
   sharesUnavailable?: boolean;
 }) {
   const activeChannels = channels.filter((item) => !item.archived);
   const archivedChannels = channels.filter((item) => item.archived);
   return (
-    <div className="desktop-context-content">
+    <div className="desktop-context-content desktop-personal-context-content">
       <SidebarHeader eyebrow="Private to you" title="Personal" />
       <Section title="Memory">
+        <NavItem
+          icon={<Sparkles aria-hidden="true" />}
+          item={{ id: "ask", label: "Ask", selected: askSelected }}
+          onSelect={onOpenAsk}
+        />
         <NavItem
           icon={<Folder aria-hidden="true" />}
           item={{
@@ -196,9 +253,14 @@ export function PersonalContextNavigation({
           }}
           onSelect={onOpenShares}
         />
-        <LockedFeatureRow
-          explanation="Memory Answer needs a dedicated protected Desktop contract."
-          label="Ask Memory"
+        <NavItem
+          icon={<NotebookPen aria-hidden="true" />}
+          item={{
+            id: "notes",
+            label: "Notes",
+            selected: notesSelected
+          }}
+          onSelect={onOpenNotes}
         />
       </Section>
       <Section
@@ -209,15 +271,6 @@ export function PersonalContextNavigation({
           </IconButton>
         }
       >
-        <NavItem
-          icon={<NotebookPen aria-hidden="true" />}
-          item={{
-            id: "notes",
-            label: "Notes to self",
-            selected: notesSelected
-          }}
-          onSelect={onOpenNotes}
-        />
         {activeChannels.map((item) => (
           <NavItem
             icon={<Hash aria-hidden="true" />}
@@ -242,6 +295,40 @@ export function PersonalContextNavigation({
             />
           ))}
         </details>
+      ) : null}
+      {askRecents.length || askRecentsError || onSelectAskThread ? (
+        <Section
+          className="desktop-sidebar-recents-section"
+          title="Recents"
+          action={
+            <IconButton label="New Ask thread" onClick={onNewAsk ?? onOpenAsk}>
+              <Plus aria-hidden="true" />
+            </IconButton>
+          }
+        >
+          {askRecents.map((thread) => (
+            <AskRecentItem
+              key={thread.askThreadId}
+              onSelect={onSelectAskThread ?? (() => undefined)}
+              selected={thread.askThreadId === selectedAskThreadId}
+              thread={thread}
+            />
+          ))}
+          {askRecentsNextCursor && onLoadOlderAskThreads ? (
+            <button
+              className="desktop-sidebar-load-more"
+              onClick={onLoadOlderAskThreads}
+              type="button"
+            >
+              Load older
+            </button>
+          ) : null}
+          {askRecentsError ? (
+            <p className="desktop-sidebar-section-state" role="status">
+              {askRecentsError}
+            </p>
+          ) : null}
+        </Section>
       ) : null}
     </div>
   );

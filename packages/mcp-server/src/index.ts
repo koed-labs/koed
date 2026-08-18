@@ -623,6 +623,32 @@ export class MemoryApiClient {
     return this.request("POST", "/v1/memory/questions/final", input);
   }
 
+  async createPendingDesktopAsk(
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/memory/ask/questions", input);
+  }
+
+  async completePendingDesktopAsk(
+    questionId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "PATCH",
+      `/v1/memory/ask/questions/${encodeURIComponent(questionId)}`,
+      input
+    );
+  }
+
+  async getDesktopAskThread(
+    askThreadId: string
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "GET",
+      `/v1/memory/ask/threads/${encodeURIComponent(askThreadId)}`
+    );
+  }
+
   async getQuestion(questionId: string): Promise<Record<string, unknown>> {
     return this.request(
       "GET",

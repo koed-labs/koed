@@ -15609,6 +15609,181 @@ describeDb("memory repository visibility", () => {
     expect(hidden).toBeNull();
   });
 
+  it("creates, orders, owns, and completes Desktop Ask turns", async () => {
+    const questionRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 63).toString("base64")
+      )
+    });
+    const alice = await repo.createUser({
+      email: `alice-desktop-ask-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-desktop-ask-${randomUUID()}@example.com`
+    });
+    const idempotencyKey = `desktop-ask-${randomUUID()}`;
+    const initial = await questionRepo.createPendingDesktopAsk(
+      { userId: alice.id },
+      { idempotencyKey, query: "What did I decide about Desktop Ask?" }
+    );
+    const retry = await questionRepo.createPendingDesktopAsk(
+      { userId: alice.id },
+      { idempotencyKey, query: "A retry must keep the first question." }
+    );
+    const followUps = await Promise.all([
+      questionRepo.createPendingDesktopAsk(
+        { userId: alice.id },
+        {
+          askThreadId: initial.askThreadId!,
+          idempotencyKey: `desktop-ask-follow-up-${randomUUID()}`,
+          query: "What came next?"
+        }
+      ),
+      questionRepo.createPendingDesktopAsk(
+        { userId: alice.id },
+        {
+          askThreadId: initial.askThreadId!,
+          idempotencyKey: `desktop-ask-follow-up-${randomUUID()}`,
+          query: "And after that?"
+        }
+      )
+    ]);
+    const answered = await questionRepo.completePendingDesktopAsk(
+      { userId: alice.id },
+      {
+        questionId: initial.id,
+        status: "answered",
+        answerMarkdown: "You approved an Ask-focused Personal welcome page.",
+        evidence: [{ id: "source-1" }]
+      }
+    );
+    const finalRetry = await questionRepo.completePendingDesktopAsk(
+      { userId: alice.id },
+      {
+        questionId: initial.id,
+        status: "error",
+        errorMessage: "This must not replace the final answer."
+      }
+    );
+    const secondThread = await questionRepo.createPendingDesktopAsk(
+      { userId: alice.id },
+      {
+        idempotencyKey: `desktop-ask-second-${randomUUID()}`,
+        query: "What is the next thread?"
+      }
+    );
+    const firstPage = await questionRepo.listDesktopAskThreads(
+      { userId: alice.id },
+      { limit: 1 }
+    );
+    const secondPage = await questionRepo.listDesktopAskThreads(
+      { userId: alice.id },
+      { cursor: firstPage.nextCursor!, limit: 1 }
+    );
+    const loadedThread = await questionRepo.getDesktopAskThread(
+      { userId: alice.id },
+      initial.askThreadId!
+    );
+
+    expect(initial).toMatchObject({
+      origin: "desktop_ask",
+      retrievalScope: "personal",
+      searchDomain: "global",
+      askTurnIndex: 0,
+      status: "pending"
+    });
+    expect(initial.askThreadId).toBeTruthy();
+    expect(retry.id).toBe(initial.id);
+    expect(followUps.map((turn) => turn.askTurnIndex).sort()).toEqual([1, 2]);
+    expect(answered).toMatchObject({
+      id: initial.id,
+      status: "answered",
+      answerMarkdown: "You approved an Ask-focused Personal welcome page.",
+      evidenceCount: 1
+    });
+    expect(finalRetry.status).toBe("answered");
+    expect(finalRetry.answerMarkdown).toBe(answered.answerMarkdown);
+    expect(firstPage.threads).toHaveLength(1);
+    expect(firstPage.nextCursor).not.toBeNull();
+    expect(secondPage.threads).toHaveLength(1);
+    expect(
+      new Set(
+        [...firstPage.threads, ...secondPage.threads].map(
+          (thread) => thread.askThreadId
+        )
+      )
+    ).toEqual(new Set([initial.askThreadId, secondThread.askThreadId]));
+    expect(loadedThread.map((turn) => turn.askTurnIndex)).toEqual([0, 1, 2]);
+    await expect(
+      questionRepo.createPendingDesktopAsk(
+        { userId: bob.id },
+        {
+          askThreadId: initial.askThreadId!,
+          idempotencyKey: `desktop-ask-hidden-${randomUUID()}`,
+          query: "Can I append to Alice's thread?"
+        }
+      )
+    ).rejects.toThrow("Ask thread not found or not visible");
+    expect(
+      await questionRepo.getMemoryQuestion({ userId: bob.id }, initial.id)
+    ).toBeNull();
+    expect(
+      await questionRepo.getDesktopAskThread(
+        { userId: bob.id },
+        initial.askThreadId!
+      )
+    ).toEqual([]);
+  });
+
+  it("encrypts Desktop Ask pending and final text", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 64).toString("base64")
+      );
+      const questionRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const alice = await repo.createUser({
+        email: `alice-desktop-ask-encrypted-${randomUUID()}@example.com`
+      });
+      const query = "ORCHID_DESKTOP_ASK_PENDING_SECRET";
+      const answer = "ORCHID_DESKTOP_ASK_ANSWER_SECRET";
+      const pending = await questionRepo.createPendingDesktopAsk(
+        { userId: alice.id },
+        {
+          idempotencyKey: `desktop-ask-encrypted-${randomUUID()}`,
+          query
+        }
+      );
+      const rawPending = await pool.query<{
+        answer_markdown: string | null;
+        query: string;
+      }>("select query, answer_markdown from memory_questions where id = $1", [
+        pending.id
+      ]);
+      const completed = await questionRepo.completePendingDesktopAsk(
+        { userId: alice.id },
+        {
+          questionId: pending.id,
+          status: "answered",
+          answerMarkdown: answer
+        }
+      );
+      const rawCompleted = await pool.query<{
+        answer_markdown: string | null;
+        query: string;
+      }>("select query, answer_markdown from memory_questions where id = $1", [
+        pending.id
+      ]);
+
+      expect(pending.query).toBe(query);
+      expect(rawPending.rows[0]?.query).not.toContain(query);
+      expect(completed.answerMarkdown).toBe(answer);
+      expect(rawCompleted.rows[0]?.query).not.toContain(query);
+      expect(rawCompleted.rows[0]?.answer_markdown).not.toContain(answer);
+    });
+  });
+
   it("encrypts managed-cloud final Memory Question payloads", async () => {
     await withPaidManagedCloudProfile(async () => {
       const provider = createLocalTestKeyEnvelopeEncryptionProvider(

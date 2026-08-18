@@ -121,4 +121,23 @@ export class LocalAiRuntimeClient {
       signal
     );
   }
+
+  async askDesktop(
+    input: {
+      askThreadId?: string;
+      idempotencyKey: string;
+      query: string;
+    },
+    caller: LocalRuntimeCallerContext,
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown>> {
+    return await this.request(
+      "/v1/desktop/ask",
+      {
+        method: "POST",
+        body: JSON.stringify({ input, caller })
+      },
+      signal
+    );
+  }
 }

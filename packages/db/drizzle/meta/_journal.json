@@ -225,6 +225,13 @@
       "when": 1786880923838,
       "tag": "0031_thin_celestials",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1786985796874,
+      "tag": "0032_simple_rage",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,9 @@
 import {
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   personalDesktopChangeSchema,
+  personalDesktopAskListInputSchema,
+  personalDesktopAskSubmitInputSchema,
+  personalDesktopAskThreadInputSchema,
   personalDesktopEventPageInputSchema,
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
@@ -49,6 +52,54 @@ export const createPersonalMemoryPreloadApi = (
   events: { on: On; removeListener: RemoveListener }
 ): PersonalDesktopApi =>
   Object.freeze({
+    listAskThreads: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["listAskThreads"]>>[0]
+    ) => {
+      const input = personalDesktopAskListInputSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.ask.threads.list",
+          input
+        })
+      );
+      if (result.operation !== "personal.ask.threads.list") {
+        throw new Error("Invalid Personal Ask threads result.");
+      }
+      return result.data;
+    },
+    loadAskThread: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["loadAskThread"]>>[0]
+    ) => {
+      const input = personalDesktopAskThreadInputSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.ask.thread.load",
+          input
+        })
+      );
+      if (result.operation !== "personal.ask.thread.load") {
+        throw new Error("Invalid Personal Ask thread result.");
+      }
+      return result.data.turns;
+    },
+    submitAsk: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["submitAsk"]>>[0]
+    ) => {
+      const input = personalDesktopAskSubmitInputSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.ask.submit",
+          input
+        })
+      );
+      if (result.operation !== "personal.ask.submit") {
+        throw new Error("Invalid Personal Ask submit result.");
+      }
+      return result.data.question;
+    },
     listProjects: async () => {
       const result = requireSuccess(
         await invokePersonalMemory(invoke, {

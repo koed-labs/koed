@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import pg from "pg";
 import {
   createEncryptedPayloadRepository,
@@ -7,6 +8,8 @@ import { truncateDisplayText } from "./value-helpers.js";
 import type { EnvelopeEncryptionProvider } from "@koed/shared";
 import type {
   ActorContext,
+  DesktopAskThreadCursor,
+  DesktopAskThreadPage,
   MemoryQuestionDetailRecord,
   MemoryQuestionOrigin,
   MemoryQuestionRetrievalScope,
@@ -22,6 +25,40 @@ export interface MemoryQuestionRepositoryOptions {
 }
 
 export interface MemoryQuestionRepository {
+  createPendingDesktopAsk(
+    actor: ActorContext,
+    input: {
+      askThreadId?: string;
+      idempotencyKey: string;
+      query: string;
+    }
+  ): Promise<MemoryQuestionDetailRecord>;
+  completePendingDesktopAsk(
+    actor: ActorContext,
+    input: {
+      attemptCount?: number;
+      localMemoryWorker?: Record<string, unknown>;
+      questionId: string;
+      response?: Record<string, unknown>;
+      retrieval?: Record<string, unknown>;
+    } & (
+      | {
+          answerMarkdown: string;
+          citations?: unknown[];
+          evidence?: unknown[];
+          status: "answered";
+        }
+      | { errorMessage: string; status: "error" }
+    )
+  ): Promise<MemoryQuestionDetailRecord>;
+  listDesktopAskThreads(
+    actor: ActorContext,
+    input?: { cursor?: DesktopAskThreadCursor; limit?: number }
+  ): Promise<DesktopAskThreadPage>;
+  getDesktopAskThread(
+    actor: ActorContext,
+    askThreadId: string
+  ): Promise<MemoryQuestionDetailRecord[]>;
   createFinalMemoryQuestion(
     actor: ActorContext,
     input: {
@@ -86,6 +123,8 @@ type MemoryQuestionShellRow = {
   session_id: string | null;
   thread_id: string | null;
   thread_name: string | null;
+  ask_thread_id: string | null;
+  ask_turn_index: string | number | null;
   query: string;
   answer_markdown?: string | null;
   answer_preview?: string | null;
@@ -106,6 +145,13 @@ type MemoryQuestionDetailRow = MemoryQuestionShellRow & {
   retrieval: Record<string, unknown> | null;
   local_memory_worker: Record<string, unknown> | null;
   response: Record<string, unknown> | null;
+};
+
+type DesktopAskThreadRow = MemoryQuestionShellRow & {
+  latest_question_id: string;
+  latest_status: MemoryQuestionStatus;
+  latest_updated_at: Date;
+  turn_count: string | number;
 };
 
 const ENCRYPTED_MEMORY_QUESTION_TEXT = "[koed encrypted memory question]";
@@ -165,6 +211,8 @@ const mapMemoryQuestionShell = (
   sessionId: row.session_id,
   threadId: row.thread_id,
   threadName: row.thread_name,
+  askThreadId: row.ask_thread_id,
+  askTurnIndex: row.ask_turn_index === null ? null : Number(row.ask_turn_index),
   query: row.query,
   answerPreview:
     row.answer_preview ?? previewMarkdown(row.answer_markdown ?? null),
@@ -359,6 +407,387 @@ export const createMemoryQuestionRepository = (
   };
 
   return {
+    async createPendingDesktopAsk(actor, input) {
+      const suppressPlaintextPayload =
+        memoryQuestionSensitiveFieldsRequireEncryption();
+      if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
+        throw new Error(
+          "Envelope encryption provider is required when plaintext Memory Question storage is disabled"
+        );
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const existing = await client.query<MemoryQuestionDetailRow>(
+          `
+            select
+              id, owner_user_id, visibility, origin, retrieval_scope,
+              team_workspace_id, search_domain, project_id, project_name,
+              project_path, session_id, thread_id, thread_name, ask_thread_id,
+              ask_turn_index, query, answer_markdown, error_message, evidence,
+              citations, retrieval, local_memory_worker, response, status,
+              created_at, updated_at, answered_at, attempt_count,
+              jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
+            from memory_questions
+            where owner_user_id = $1 and idempotency_key = $2
+            limit 1
+          `,
+          [actor.userId, input.idempotencyKey]
+        );
+        if (existing.rows[0]) {
+          if (existing.rows[0].origin !== "desktop_ask") {
+            throw new Error("Memory Question idempotency key is unavailable");
+          }
+          await client.query("commit");
+          return mapMemoryQuestionDetail(
+            await hydrateQuestionRow(actor, existing.rows[0])
+          );
+        }
+
+        const askThreadId = input.askThreadId ?? randomUUID();
+        let askTurnIndex = 0;
+        if (input.askThreadId) {
+          await client.query(
+            "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+            [askThreadId]
+          );
+          const thread = await client.query<{
+            count: string | number;
+            next_turn_index: string | number;
+          }>(
+            `
+              select
+                count(*) as count,
+                coalesce(max(ask_turn_index), -1) + 1 as next_turn_index
+              from memory_questions
+              where owner_user_id = $1
+                and visibility = 'personal'
+                and origin = 'desktop_ask'
+                and ask_thread_id = $2
+            `,
+            [actor.userId, askThreadId]
+          );
+          if (Number(thread.rows[0]?.count ?? 0) === 0) {
+            throw new Error("Ask thread not found or not visible");
+          }
+          askTurnIndex = Number(thread.rows[0]!.next_turn_index);
+        }
+
+        const result = await client.query<MemoryQuestionDetailRow>(
+          `
+            insert into memory_questions (
+              owner_user_id, visibility, origin, retrieval_scope,
+              search_domain, ask_thread_id, ask_turn_index, idempotency_key,
+              query, status, attempt_count
+            )
+            values (
+              $1, 'personal', 'desktop_ask', 'personal', 'global', $2, $3, $4,
+              $5, 'pending'::memory_question_status, 0
+            )
+            returning
+              id, owner_user_id, visibility, origin, retrieval_scope,
+              team_workspace_id, search_domain, project_id, project_name,
+              project_path, session_id, thread_id, thread_name, ask_thread_id,
+              ask_turn_index, query, answer_markdown, error_message, evidence,
+              citations, retrieval, local_memory_worker, response, status,
+              created_at, updated_at, answered_at, attempt_count,
+              jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
+          `,
+          [
+            actor.userId,
+            askThreadId,
+            askTurnIndex,
+            input.idempotencyKey,
+            suppressPlaintextPayload
+              ? ENCRYPTED_MEMORY_QUESTION_TEXT
+              : input.query
+          ]
+        );
+        const row = result.rows[0]!;
+        if (suppressPlaintextPayload) {
+          await persistEncryptedQuestionFields(
+            client,
+            actor,
+            row.id,
+            row.visibility,
+            { query: input.query }
+          );
+        }
+        await client.query("commit");
+        return mapMemoryQuestionDetail(await hydrateQuestionRow(actor, row));
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async completePendingDesktopAsk(actor, input) {
+      const suppressPlaintextPayload =
+        memoryQuestionSensitiveFieldsRequireEncryption();
+      if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
+        throw new Error(
+          "Envelope encryption provider is required when plaintext Memory Question storage is disabled"
+        );
+      }
+      const answerMarkdown =
+        input.status === "answered" ? input.answerMarkdown : null;
+      const errorMessage = input.status === "error" ? input.errorMessage : null;
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const result = await client.query<MemoryQuestionDetailRow>(
+          `
+            update memory_questions
+            set
+              status = $3::memory_question_status,
+              answer_markdown = $4,
+              error_message = $5,
+              response = $6::jsonb,
+              evidence = $7::jsonb,
+              citations = $8::jsonb,
+              retrieval = $9::jsonb,
+              local_memory_worker = $10::jsonb,
+              answered_at = now(),
+              updated_at = now(),
+              attempt_count = greatest(attempt_count, $11)
+            where id = $2
+              and owner_user_id = $1
+              and visibility = 'personal'
+              and origin = 'desktop_ask'
+              and status = 'pending'
+            returning
+              id, owner_user_id, visibility, origin, retrieval_scope,
+              team_workspace_id, search_domain, project_id, project_name,
+              project_path, session_id, thread_id, thread_name, ask_thread_id,
+              ask_turn_index, query, answer_markdown, error_message, evidence,
+              citations, retrieval, local_memory_worker, response, status,
+              created_at, updated_at, answered_at, attempt_count,
+              jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
+          `,
+          [
+            actor.userId,
+            input.questionId,
+            input.status,
+            answerMarkdown
+              ? suppressPlaintextPayload
+                ? ENCRYPTED_MEMORY_QUESTION_TEXT
+                : answerMarkdown
+              : null,
+            errorMessage
+              ? suppressPlaintextPayload
+                ? ENCRYPTED_MEMORY_QUESTION_TEXT
+                : errorMessage
+              : null,
+            input.response
+              ? JSON.stringify(
+                  suppressPlaintextPayload
+                    ? encryptedMemoryQuestionJsonMarker()
+                    : input.response
+                )
+              : null,
+            input.status === "answered" && input.evidence
+              ? JSON.stringify(
+                  suppressPlaintextPayload
+                    ? encryptedMemoryQuestionArrayMarker()
+                    : input.evidence
+                )
+              : null,
+            input.status === "answered" && input.citations
+              ? JSON.stringify(
+                  suppressPlaintextPayload
+                    ? encryptedMemoryQuestionArrayMarker()
+                    : input.citations
+                )
+              : null,
+            input.retrieval
+              ? JSON.stringify(
+                  suppressPlaintextPayload
+                    ? encryptedMemoryQuestionJsonMarker()
+                    : input.retrieval
+                )
+              : null,
+            input.localMemoryWorker
+              ? JSON.stringify(
+                  suppressPlaintextPayload
+                    ? encryptedMemoryQuestionJsonMarker()
+                    : input.localMemoryWorker
+                )
+              : null,
+            input.attemptCount ?? 1
+          ]
+        );
+        let row = result.rows[0];
+        if (!row) {
+          row = (
+            await client.query<MemoryQuestionDetailRow>(
+              `
+                select
+                  id, owner_user_id, visibility, origin, retrieval_scope,
+                  team_workspace_id, search_domain, project_id, project_name,
+                  project_path, session_id, thread_id, thread_name,
+                  ask_thread_id, ask_turn_index, query, answer_markdown,
+                  error_message, evidence, citations, retrieval,
+                  local_memory_worker, response, status, created_at,
+                  updated_at, answered_at, attempt_count,
+                  jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
+                from memory_questions
+                where id = $2
+                  and owner_user_id = $1
+                  and visibility = 'personal'
+                  and origin = 'desktop_ask'
+                limit 1
+              `,
+              [actor.userId, input.questionId]
+            )
+          ).rows[0];
+          if (!row) throw new Error("Ask turn not found or not visible");
+          if (row.status === "pending") {
+            throw new Error("Ask turn completion did not change state");
+          }
+          await client.query("commit");
+          return mapMemoryQuestionDetail(await hydrateQuestionRow(actor, row));
+        }
+        if (suppressPlaintextPayload) {
+          await persistEncryptedQuestionFields(
+            client,
+            actor,
+            row.id,
+            row.visibility,
+            {
+              answer_markdown:
+                input.status === "answered" ? input.answerMarkdown : undefined,
+              error_message:
+                input.status === "error" ? input.errorMessage : undefined,
+              response: input.response,
+              evidence:
+                input.status === "answered" ? input.evidence : undefined,
+              citations:
+                input.status === "answered" ? input.citations : undefined,
+              retrieval: input.retrieval,
+              local_memory_worker: input.localMemoryWorker
+            }
+          );
+        }
+        await client.query("commit");
+        return mapMemoryQuestionDetail(await hydrateQuestionRow(actor, row));
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async listDesktopAskThreads(actor, input = {}) {
+      const limit = Math.min(Math.max(input.limit ?? 50, 1), 50);
+      const cursor = input.cursor;
+      const result = await pool.query<DesktopAskThreadRow>(
+        `
+          with ranked as (
+            select
+              mq.*,
+              row_number() over (
+                partition by mq.ask_thread_id
+                order by mq.updated_at desc, mq.id desc
+              ) as latest_rank,
+              count(*) over (partition by mq.ask_thread_id) as turn_count
+            from memory_questions mq
+            where mq.owner_user_id = $1
+              and mq.visibility = 'personal'
+              and mq.origin = 'desktop_ask'
+          )
+          select
+            first_question.id, first_question.owner_user_id,
+            first_question.visibility, first_question.origin,
+            first_question.retrieval_scope, first_question.team_workspace_id,
+            first_question.search_domain, first_question.project_id,
+            first_question.project_name, first_question.project_path,
+            first_question.session_id, first_question.thread_id,
+            first_question.thread_name, first_question.ask_thread_id,
+            first_question.ask_turn_index, first_question.query,
+            first_question.answer_markdown, first_question.error_message,
+            first_question.status, first_question.created_at,
+            first_question.updated_at, first_question.answered_at,
+            first_question.attempt_count,
+            jsonb_array_length(coalesce(first_question.evidence, '[]'::jsonb)) as evidence_count,
+            latest.id as latest_question_id,
+            latest.status as latest_status,
+            latest.updated_at as latest_updated_at,
+            latest.turn_count
+          from ranked latest
+          join memory_questions first_question
+            on first_question.owner_user_id = latest.owner_user_id
+            and first_question.ask_thread_id = latest.ask_thread_id
+            and first_question.origin = 'desktop_ask'
+            and first_question.ask_turn_index = 0
+          where latest.latest_rank = 1
+            and (
+              $2::timestamptz is null
+              or (latest.updated_at, latest.id) < ($2::timestamptz, $3::uuid)
+            )
+          order by latest.updated_at desc, latest.id desc
+          limit $4
+        `,
+        [
+          actor.userId,
+          cursor?.updatedAt ?? null,
+          cursor?.latestQuestionId ?? null,
+          limit + 1
+        ]
+      );
+      const hasMore = result.rows.length > limit;
+      const selected = result.rows.slice(0, limit);
+      const hydrated = await Promise.all(
+        selected.map((row) => hydrateQuestionRow(actor, row))
+      );
+      const last = selected.at(-1);
+      return {
+        threads: hydrated.map((row) => ({
+          askThreadId: row.ask_thread_id!,
+          firstQuestion: row.query,
+          latestStatus: row.latest_status,
+          turnCount: Number(row.turn_count),
+          updatedAt: row.latest_updated_at.toISOString()
+        })),
+        nextCursor:
+          hasMore && last
+            ? {
+                latestQuestionId: last.latest_question_id,
+                updatedAt: last.latest_updated_at.toISOString()
+              }
+            : null
+      };
+    },
+
+    async getDesktopAskThread(actor, askThreadId) {
+      const result = await pool.query<MemoryQuestionDetailRow>(
+        `
+          select
+            id, owner_user_id, visibility, origin, retrieval_scope,
+            team_workspace_id, search_domain, project_id, project_name,
+            project_path, session_id, thread_id, thread_name, ask_thread_id,
+            ask_turn_index, query, answer_markdown, error_message, evidence,
+            citations, retrieval, local_memory_worker, response, status,
+            created_at, updated_at, answered_at, attempt_count,
+            jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
+          from memory_questions
+          where owner_user_id = $1
+            and visibility = 'personal'
+            and origin = 'desktop_ask'
+            and ask_thread_id = $2
+          order by ask_turn_index asc, id asc
+        `,
+        [actor.userId, askThreadId]
+      );
+      return await Promise.all(
+        result.rows.map(async (row) =>
+          mapMemoryQuestionDetail(await hydrateQuestionRow(actor, row))
+        )
+      );
+    },
+
     async createFinalMemoryQuestion(actor, input) {
       const suppressPlaintextPayload =
         memoryQuestionSensitiveFieldsRequireEncryption();
@@ -385,6 +814,8 @@ export const createMemoryQuestionRepository = (
           session_id,
           thread_id,
           thread_name,
+          ask_thread_id,
+          ask_turn_index,
           idempotency_key,
           query,
           status,
@@ -399,7 +830,7 @@ export const createMemoryQuestionRepository = (
           attempt_count
         )
         values (
-          $1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+          $1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, null, null, $12, $13,
           $14::memory_question_status, $15, $16, $17::jsonb, $18::jsonb,
           $19::jsonb, $20::jsonb, $21::jsonb, now(), $22
         )
@@ -407,7 +838,7 @@ export const createMemoryQuestionRepository = (
         returning
           id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, search_domain,
           project_id, project_name, project_path, session_id, thread_id,
-          thread_name, query, answer_markdown, error_message, evidence,
+          thread_name, ask_thread_id, ask_turn_index, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, response, status,
           created_at, updated_at, answered_at, attempt_count,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
@@ -486,7 +917,7 @@ export const createMemoryQuestionRepository = (
                 select
                   id, owner_user_id, visibility, origin, retrieval_scope,
                   team_workspace_id, search_domain, project_id, project_name, project_path,
-                  session_id, thread_id, thread_name, query, answer_markdown,
+                  session_id, thread_id, thread_name, ask_thread_id, ask_turn_index, query, answer_markdown,
                   error_message, evidence, citations, retrieval,
                   local_memory_worker, response, status, created_at,
                   updated_at, answered_at, attempt_count,
@@ -548,7 +979,7 @@ export const createMemoryQuestionRepository = (
           select
             id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, search_domain,
             project_id, project_name, project_path, session_id, thread_id,
-            thread_name, query, answer_markdown, left(answer_markdown, 280) as answer_preview,
+            thread_name, ask_thread_id, ask_turn_index, query, answer_markdown, left(answer_markdown, 280) as answer_preview,
             error_message, status, created_at, updated_at, answered_at,
             attempt_count, evidence,
             jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
@@ -623,7 +1054,7 @@ export const createMemoryQuestionRepository = (
         select
           id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, search_domain,
           project_id, project_name, project_path, session_id, thread_id,
-          thread_name, query, answer_markdown, left(answer_markdown, 280) as answer_preview,
+          thread_name, ask_thread_id, ask_turn_index, query, answer_markdown, left(answer_markdown, 280) as answer_preview,
           error_message, status, created_at, updated_at, answered_at,
           attempt_count, evidence,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
@@ -669,7 +1100,7 @@ export const createMemoryQuestionRepository = (
         select
           id, owner_user_id, visibility, origin, retrieval_scope, team_workspace_id, search_domain,
           project_id, project_name, project_path, session_id, thread_id,
-          thread_name, query, answer_markdown, error_message, evidence,
+          thread_name, ask_thread_id, ask_turn_index, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, response, status,
           created_at, updated_at, answered_at, attempt_count,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count

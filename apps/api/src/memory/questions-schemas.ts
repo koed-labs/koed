@@ -56,7 +56,7 @@ export const finalMemoryQuestionSchema = z
 export const memoryQuestionsQuerySchema = z.object({
   query: z.string().min(1).optional(),
   search_domain: searchDomainSchema.optional(),
-  status: z.enum(["answered", "error"]).optional(),
+  status: z.enum(["pending", "answered", "error"]).optional(),
   project_id: z.string().min(1).optional(),
   session_id: z.string().uuid().optional(),
   limit: z.coerce.number().int().positive().max(500).default(100),
@@ -66,3 +66,51 @@ export const memoryQuestionsQuerySchema = z.object({
 export const memoryQuestionParamsSchema = z.object({
   questionId: z.string().uuid()
 });
+
+export const desktopAskCreateSchema = z
+  .object({
+    ask_thread_id: z.string().uuid().optional(),
+    idempotency_key: z.string().trim().min(1).max(500),
+    query: z.string().trim().min(1).max(32_000)
+  })
+  .strict();
+
+const desktopAskCompleteBaseSchema = z
+  .object({
+    attempt_count: z.number().int().positive().optional(),
+    local_memory_worker: z.record(z.string(), z.unknown()).optional(),
+    response: z.record(z.string(), z.unknown()).optional(),
+    retrieval: z.record(z.string(), z.unknown()).optional()
+  })
+  .strict();
+
+export const desktopAskCompleteSchema = z.discriminatedUnion("status", [
+  desktopAskCompleteBaseSchema.extend({
+    answer_markdown: z.string().min(1),
+    citations: z.array(z.unknown()).optional(),
+    evidence: z.array(z.unknown()).optional(),
+    status: z.literal("answered")
+  }),
+  desktopAskCompleteBaseSchema.extend({
+    error_message: z.string().min(1).max(8_192),
+    status: z.literal("error")
+  })
+]);
+
+export const desktopAskThreadsQuerySchema = z
+  .object({
+    cursor: z.string().trim().min(1).max(512).optional(),
+    limit: z.coerce.number().int().positive().max(50).default(50)
+  })
+  .strict();
+
+export const desktopAskThreadParamsSchema = z.object({
+  askThreadId: z.string().uuid()
+});
+
+export const desktopAskThreadCursorSchema = z
+  .object({
+    latestQuestionId: z.string().uuid(),
+    updatedAt: z.string().datetime({ offset: true })
+  })
+  .strict();
