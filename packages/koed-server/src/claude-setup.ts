@@ -61,7 +61,10 @@ export const resolveClaudeSettingsPath = (
 ): string =>
   resolve(
     environment.CLAUDE_SETTINGS_PATH?.trim() ||
-      `${environment.HOME?.trim() || homedir()}/.claude/settings.json`
+      `${
+        environment.CLAUDE_CONFIG_DIR?.trim() ||
+        `${environment.HOME?.trim() || homedir()}/.claude`
+      }/settings.json`
   );
 
 export const hasClaudeKoedHook = (

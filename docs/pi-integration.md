@@ -21,8 +21,12 @@ node packages/koed-server/dist/cli.js setup pi --json
 
 In Koed Desktop, open **Preferences → Advanced Diagnostics** and choose **Set up Pi
 integration**. The same screen reports active-profile health and offers an
-idempotent repair action. Pi remains optional; leaving it unconfigured does not
-block Codex or Claude Code setup or Koed's local runtime health.
+idempotent repair action. Pi remains optional when it is not installed or
+detected. On first run, Desktop treats an available Pi executable or Pi global
+profile as evidence that Pi is in use, lists Pi among the detected AI Clients,
+and configures it automatically. A detected but unauthenticated Pi installation
+stops guided setup with an actionable authentication error; it does not affect
+Koed's local runtime health.
 
 Contributor checkout alternative:
 

@@ -28,7 +28,11 @@ describe("Pi session parser", () => {
         id: "u1",
         parentId: null,
         timestamp: "2026-01-01T00:00:01Z",
-        message: { role: "user", content: "hello", timestamp: 1767225601000 }
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "hello" }],
+          timestamp: 1767225601000
+        }
       },
       {
         type: "message",
@@ -80,6 +84,7 @@ describe("Pi session parser", () => {
       "tool_result",
       "bash_execution"
     ]);
+    expect(result.items[1]?.rawText).toBe("hello");
     expect(result.items[2]?.metadata.modelIdentity).toBe(
       "anthropic/claude-opus-4-6"
     );

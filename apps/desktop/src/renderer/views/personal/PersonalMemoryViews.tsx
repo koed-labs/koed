@@ -120,13 +120,58 @@ const projectActivity = (project: PersonalDesktopProject): string | null =>
     .sort()
     .at(-1) ?? null;
 
-const sourceAiClientLabel = (
+const sourceAiClientIdentity = (
   source: PersonalDesktopProjectThread["sourceAiClient"]
-): string | null => {
-  if (source === "codex") return "Codex";
-  if (source === "codex-cli") return null;
+): { id: "claude" | "codex" | "pi"; label: string } | null => {
+  if (source === "codex" || source === "codex-cli") {
+    return { id: "codex", label: "Codex" };
+  }
+  if (source === "claude-code") {
+    return { id: "claude", label: "Claude Code" };
+  }
+  if (source === "pi") return { id: "pi", label: "Pi" };
   return null;
 };
+
+function PiSourceLogo() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path d="M4 3h11v3H8v4h7V6h4v7H8v8H4V3Zm11 13h4v5h-4v-5Z" />
+    </svg>
+  );
+}
+
+function AiClientSourceMark({
+  source
+}: {
+  source: PersonalDesktopProjectThread["sourceAiClient"];
+}) {
+  const identity = sourceAiClientIdentity(source);
+  if (!identity) {
+    return (
+      <span className="personal-memory-mark" aria-hidden="true">
+        ◇
+      </span>
+    );
+  }
+  return (
+    <span
+      aria-label={`Captured with ${identity.label}`}
+      className="personal-memory-mark personal-ai-client-mark"
+      data-client={identity.id}
+      role="img"
+      title={identity.label}
+    >
+      {identity.id === "pi" ? (
+        <PiSourceLogo />
+      ) : identity.id === "claude" ? (
+        <span aria-hidden="true">✳</span>
+      ) : (
+        <span aria-hidden="true">C</span>
+      )}
+    </span>
+  );
+}
 
 function ProjectRow({
   project,
@@ -307,9 +352,6 @@ function SessionRow({
   onSelect: () => void;
   thread: PersonalDesktopProjectThread;
 }) {
-  const source = thread.sessionId
-    ? sourceAiClientLabel(thread.sourceAiClient)
-    : null;
   return (
     <button
       className="personal-session-row"
@@ -317,13 +359,12 @@ function SessionRow({
       onClick={onSelect}
       type="button"
     >
-      <span className="personal-memory-mark" aria-hidden="true">
-        ◇
-      </span>
+      <AiClientSourceMark
+        source={thread.sessionId ? thread.sourceAiClient : null}
+      />
       <span className="personal-session-copy">
         <span>
           <strong>{thread.name || "Untitled session"}</strong>
-          {source ? <small>{source}</small> : null}
           {thread.invalidatedCount ? (
             <small className="personal-invalidated-label">
               {thread.invalidatedCount} invalidated

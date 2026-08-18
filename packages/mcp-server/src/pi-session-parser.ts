@@ -35,17 +35,15 @@ const timestamp = (
 };
 const contentText = (value: unknown): string => {
   if (typeof value === "string") return value;
-  if (!Array.isArray(value)) return "";
-  return value
-    .flatMap((block) => {
-      const item = record(block);
-      return typeof item.text === "string"
-        ? [item.text]
-        : typeof item.thinking === "string"
-          ? [item.thinking]
-          : [];
-    })
-    .join("\n");
+  if (!Array.isArray(value)) {
+    const item = record(value);
+    return typeof item.text === "string"
+      ? item.text
+      : typeof item.thinking === "string"
+        ? item.thinking
+        : "";
+  }
+  return value.map(contentText).filter(Boolean).join("\n");
 };
 
 export const parsePiSessionJournalBytes = (input: {

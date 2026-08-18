@@ -223,7 +223,7 @@ describe("PersonalMemoryWorkspace", () => {
   });
 
   it("loads the normalized Project index and restores focus through drilldown", async () => {
-    const source = project([thread(1)]);
+    const source = project([thread(1, { sourceAiClient: "pi" })]);
     const store = new PersonalMemoryStore(
       api({ listProjects: vi.fn(async () => [source]) })
     );
@@ -274,6 +274,12 @@ describe("PersonalMemoryWorkspace", () => {
     expect(
       container.querySelector(".personal-session-row .lucide-brain")
     ).not.toBeNull();
+    const sourceMark = container.querySelector(
+      '.personal-ai-client-mark[data-client="pi"]'
+    );
+    expect(sourceMark?.getAttribute("aria-label")).toBe("Captured with Pi");
+    expect(sourceMark?.getAttribute("title")).toBe("Pi");
+    expect(sourceMark?.querySelector("svg path")).not.toBeNull();
     expect(container.querySelector(".personal-sessions > header")).toBeNull();
   });
 

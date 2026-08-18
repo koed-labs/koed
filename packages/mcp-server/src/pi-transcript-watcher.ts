@@ -390,10 +390,12 @@ export const processPiTranscriptSignal = async (
       artifact.id,
       "canonical_live"
     );
-    const cursor = response.cursor as Record<string, unknown>;
-    cursorOffset = Number(cursor.sourceOffset);
-    cursorLine = Number(cursor.sourceLine);
-    parserState = cursor.parserState as PiSessionParserState | undefined;
+    if (response.cursor && typeof response.cursor === "object") {
+      const cursor = response.cursor as Record<string, unknown>;
+      cursorOffset = Number(cursor.sourceOffset);
+      cursorLine = Number(cursor.sourceLine);
+      parserState = cursor.parserState as PiSessionParserState | undefined;
+    }
   } catch (error) {
     if (!(error instanceof MemoryApiError) || error.status !== 404) throw error;
   }

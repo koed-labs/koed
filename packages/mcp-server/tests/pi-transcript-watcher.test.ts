@@ -96,7 +96,6 @@ describe("Pi transcript watcher", () => {
         };
       },
       async getConversationSourceCursor() {
-        if (!cursor) throw new MemoryApiError("not found", { status: 404 });
         return { cursor };
       },
       async createConversationItems(input: {

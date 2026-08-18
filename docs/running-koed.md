@@ -25,15 +25,19 @@ For server/private VPS terminology and migration notes, see
 ## Manual control-plane commands
 
 `pnpm desktop:start` opens Koed Desktop, which auto-starts `koed-server`, runs
-Codex bootstrap when needed, and keeps the startup screen visible until the
+AI Client bootstrap when needed, and keeps the startup screen visible until the
 system is ready.
 
 After a verified setup, Desktop resumes its managed local `koed-server` before
 loading the main window. A fresh or incomplete setup opens the guided setup
 without silently installing runtime or model assets. After explicit User
 confirmation, Desktop checks and runs the package, native runtime, embedding
-model, local services, Codex integration, and final verification stages in
-order. Completed stages are skipped. Only the active stage is shown as running,
+model, local services, AI Client integration, and final verification stages in
+order. Codex remains part of first-run setup. Desktop also detects Claude Code
+and Pi from their executable or global profile files, lists detected clients on
+the setup page, and configures each one automatically. A detected client that
+is installed but unsupported or unauthenticated stops setup with its actionable
+client-specific error. Completed stages are skipped. Only the active stage is shown as running,
 model download progress comes from transferred artifact bytes, and a failure
 stops the workflow with a retry that re-inspects local state. The automatic
 resume wait is bounded so broken local runtime state remains diagnosable from

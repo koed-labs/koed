@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
   spawnSync as nodeSpawnSync,
@@ -153,6 +154,15 @@ export const inspectPi = (
 ): KoedServerStatus["pi"] => {
   const packagePath = resolve(paths.koedHome, "integrations/pi");
   const extensionPath = resolve(packagePath, "extensions/koed.mjs");
+  const profilePath = resolve(
+    environment.PI_CODING_AGENT_DIR?.trim() ||
+      `${environment.HOME?.trim() || homedir()}/.pi/agent`
+  );
+  const detectedFromConfig = [
+    "settings.json",
+    "auth.json",
+    "models-store.json"
+  ].some((name) => deps.existsSync(resolve(profilePath, name)));
   let executable: string;
   try {
     executable = deps.resolvePiExecutable(environment);
@@ -164,7 +174,8 @@ export const inspectPi = (
           : "Pi is not installed or could not be started.",
         `Install Pi ${MINIMUM_PI_VERSION} or newer, then set up Pi integration.`
       ),
-      configured: false
+      configured: false,
+      detected: detectedFromConfig
     };
   }
   const childEnvironment = piSetupEnvironment(environment, paths.koedHome);
@@ -180,7 +191,8 @@ export const inspectPi = (
         "Pi is not installed or could not be started.",
         `Install Pi ${MINIMUM_PI_VERSION} or newer, then set up Pi integration.`
       ),
-      configured: false
+      configured: false,
+      detected: detectedFromConfig
     };
   }
   if (!isSupportedPiVersion(versionText)) {
@@ -190,7 +202,8 @@ export const inspectPi = (
         `Install Pi ${MINIMUM_PI_VERSION} or newer, then repair Pi integration.`,
         { executable, version: versionText }
       ),
-      configured: false
+      configured: false,
+      detected: true
     };
   }
   if (!deps.existsSync(extensionPath)) {
@@ -200,7 +213,8 @@ export const inspectPi = (
         "Set up Pi integration from Koed Desktop.",
         { executable, version: versionText, packagePath }
       ),
-      configured: false
+      configured: false,
+      detected: true
     };
   }
   const listed = deps.spawnSync(executable, ["list"], {
@@ -215,7 +229,8 @@ export const inspectPi = (
         "Repair Pi integration from Koed Desktop.",
         { executable, version: versionText, packagePath }
       ),
-      configured: false
+      configured: false,
+      detected: true
     };
   }
   if (!listed.stdout.includes(packagePath)) {
@@ -225,7 +240,8 @@ export const inspectPi = (
         "Set up Pi integration from Koed Desktop.",
         { executable, version: versionText, packagePath }
       ),
-      configured: false
+      configured: false,
+      detected: true
     };
   }
   const listedModels = deps.spawnSync(executable, ["--list-models"], {
@@ -252,7 +268,8 @@ export const inspectPi = (
           modelCount: 0
         }
       ),
-      configured: true
+      configured: true,
+      detected: true
     };
   }
   return {
@@ -264,7 +281,8 @@ export const inspectPi = (
       authenticated: true,
       modelCount: models.length
     }),
-    configured: true
+    configured: true,
+    detected: true
   };
 };
 
@@ -276,6 +294,7 @@ export const inspectClaudeCode = (
   const executable =
     environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
   const settingsPath = resolveClaudeSettingsPath(environment);
+  const detectedFromConfig = deps.existsSync(settingsPath);
   const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
   const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
   const childEnvironment = claudeProcessEnvironment(environment);
@@ -291,7 +310,8 @@ export const inspectClaudeCode = (
         "Claude Code is not installed or could not be started.",
         `Install Claude Code ${MINIMUM_CLAUDE_CODE_VERSION} or newer, then set up its integration.`
       ),
-      configured: false
+      configured: false,
+      detected: detectedFromConfig
     };
   }
   if (!isSupportedClaudeCodeVersion(versionText)) {
@@ -301,7 +321,8 @@ export const inspectClaudeCode = (
         `Install Claude Code ${MINIMUM_CLAUDE_CODE_VERSION} or newer, then repair its integration.`,
         { executable, version: versionText, settingsPath }
       ),
-      configured: false
+      configured: false,
+      detected: true
     };
   }
   if (
@@ -314,7 +335,8 @@ export const inspectClaudeCode = (
         "Repair Koed, then repair the Claude Code integration.",
         { executable, version: versionText, settingsPath }
       ),
-      configured: false
+      configured: false,
+      detected: true
     };
   }
   if (!deps.existsSync(settingsPath)) {
@@ -324,7 +346,8 @@ export const inspectClaudeCode = (
         "Set up Claude Code integration from Koed Desktop.",
         { executable, version: versionText, settingsPath }
       ),
-      configured: false
+      configured: false,
+      detected: true
     };
   }
   let settings: { hooks?: Record<string, unknown> };
@@ -339,7 +362,8 @@ export const inspectClaudeCode = (
         "Fix the settings file, then repair the Claude Code integration.",
         { executable, version: versionText, settingsPath }
       ),
-      configured: false
+      configured: false,
+      detected: true
     };
   }
   const missingHooks = CLAUDE_HOOK_EVENTS.filter(
@@ -362,7 +386,8 @@ export const inspectClaudeCode = (
         "Rename or remove the conflicting entry before setting up Koed.",
         { executable, version: versionText, settingsPath, mcpName }
       ),
-      configured: false
+      configured: false,
+      detected: true
     };
   }
   if (mcp.error || mcp.status !== 0 || missingHooks.length > 0) {
@@ -377,7 +402,8 @@ export const inspectClaudeCode = (
           missingHooks
         }
       ),
-      configured: false
+      configured: false,
+      detected: true
     };
   }
   const auth = deps.spawnSync(executable, ["auth", "status", "--json"], {
@@ -392,7 +418,8 @@ export const inspectClaudeCode = (
         "Run `claude auth login`, then refresh status.",
         { executable, version: versionText, settingsPath }
       ),
-      configured: false
+      configured: false,
+      detected: true
     };
   }
   return {
@@ -401,7 +428,8 @@ export const inspectClaudeCode = (
       version: versionText,
       settingsPath
     }),
-    configured: true
+    configured: true,
+    detected: true
   };
 };
 

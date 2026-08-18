@@ -106,7 +106,11 @@ describe("Pi integration status", () => {
             : spawnResult(`${packagePath}\n`)
     } as never);
 
-    expect(status).toMatchObject({ state: "healthy", configured: true });
+    expect(status).toMatchObject({
+      state: "healthy",
+      configured: true,
+      detected: true
+    });
     expect(status.details).toMatchObject({
       executable: "/opt/pi",
       packagePath,
@@ -152,6 +156,7 @@ describe("Pi integration status", () => {
     const environment = { KOED_HOME: root };
 
     const status = inspectPi(environment, resolveKoedServerPaths(environment), {
+      existsSync: () => false,
       resolvePiExecutable: () => {
         throw new Error("Pi was not found.");
       }
@@ -159,9 +164,31 @@ describe("Pi integration status", () => {
 
     expect(status).toMatchObject({
       state: "not_configured",
-      configured: false
+      configured: false,
+      detected: false
     });
     expect(status.action).toContain("Install Pi");
+  });
+
+  it("detects Pi from its global profile when the executable is unavailable", () => {
+    const root = tempDir();
+    const profilePath = resolve(root, ".pi/agent");
+    mkdirSync(profilePath, { recursive: true });
+    writeFileSync(resolve(profilePath, "settings.json"), "{}");
+    const environment = { HOME: root, KOED_HOME: root };
+
+    const status = inspectPi(environment, resolveKoedServerPaths(environment), {
+      existsSync,
+      resolvePiExecutable: () => {
+        throw new Error("Pi was not found.");
+      }
+    } as never);
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: true
+    });
   });
 });
 
@@ -223,7 +250,11 @@ describe("Claude Code integration status", () => {
       } as never
     );
 
-    expect(status).toMatchObject({ state: "healthy", configured: true });
+    expect(status).toMatchObject({
+      state: "healthy",
+      configured: true,
+      detected: true
+    });
     expect(status.details).toMatchObject({
       version: "2.1.227 (Claude Code)",
       settingsPath
@@ -237,14 +268,35 @@ describe("Claude Code integration status", () => {
     const status = inspectClaudeCode(
       environment,
       resolveKoedServerPaths(environment),
-      { spawnSync: () => spawnResult("", 1) } as never
+      { existsSync: () => false, spawnSync: () => spawnResult("", 1) } as never
     );
 
     expect(status).toMatchObject({
       state: "not_configured",
-      configured: false
+      configured: false,
+      detected: false
     });
     expect(status.action).toContain("Install Claude Code");
+  });
+
+  it("detects Claude Code from its global settings when the executable is unavailable", () => {
+    const root = tempDir();
+    const settingsPath = resolve(root, ".claude/settings.json");
+    mkdirSync(resolve(root, ".claude"), { recursive: true });
+    writeFileSync(settingsPath, "{}");
+    const environment = { HOME: root, KOED_HOME: root, KOED_REPO_ROOT: root };
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      { existsSync, spawnSync: () => spawnResult("", 1) } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: true
+    });
   });
 });
 

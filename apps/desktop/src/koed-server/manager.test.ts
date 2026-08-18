@@ -14,12 +14,15 @@ import {
 } from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
+  configureDetectedSetupAiClients,
   createKoedEnvironment,
   createKoedServerManager,
+  detectedSetupAiClients,
   desktopCodexSetupCommand,
   personalMemoryChangeFromSseFrame,
   setupStartupReady,
-  setupServicesHealthy
+  setupServicesHealthy,
+  setupIntegrationHealthy
 } from "./manager.js";
 
 type FakeChildProcess = EventEmitter & {
@@ -117,6 +120,65 @@ describe("Koed server desktop manager", () => {
       ["setup", "claude", "--json"],
       ["setup", "claude", "--json"]
     ]);
+  });
+
+  it("includes detected optional AI Clients in first-run integration readiness", () => {
+    const status = {
+      apiToken: { state: "healthy" },
+      mcpServer: { state: "healthy" },
+      captureHook: { state: "healthy" },
+      lcmSummaryService: { state: "healthy" },
+      codex: { state: "healthy" },
+      claudeCode: { state: "not_configured", detected: true },
+      pi: { state: "healthy", detected: true }
+    };
+
+    expect(detectedSetupAiClients(status).map(({ label }) => label)).toEqual([
+      "Codex",
+      "Claude Code",
+      "Pi"
+    ]);
+    expect(setupIntegrationHealthy(status)).toBe(false);
+    expect(
+      setupIntegrationHealthy({
+        ...status,
+        claudeCode: { state: "healthy", detected: true }
+      })
+    ).toBe(true);
+  });
+
+  it("automatically configures every detected, incomplete AI Client", async () => {
+    const run = vi.fn(async (args: string[]) => {
+      void args;
+      return { ok: true, state: "healthy" };
+    });
+    const progress: string[] = [];
+
+    const result = await configureDetectedSetupAiClients(
+      {
+        apiToken: { state: "healthy" },
+        codex: { state: "not_configured" },
+        claudeCode: { state: "not_configured", detected: true },
+        pi: { state: "not_configured", detected: true }
+      },
+      run,
+      (message) => progress.push(message)
+    );
+
+    expect(run.mock.calls.map(([args]) => args)).toEqual([
+      ["repair", "codex"],
+      ["setup", "claude"],
+      ["setup", "pi"]
+    ]);
+    expect(progress).toEqual([
+      "Configuring Codex capture and recall…",
+      "Configuring Claude Code capture and recall…",
+      "Configuring Pi capture and recall…"
+    ]);
+    expect(result).toEqual({
+      ok: true,
+      message: "Codex, Claude Code, and Pi integrations are configured."
+    });
   });
 
   it("treats local services as ready before later setup stages finish", () => {

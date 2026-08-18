@@ -195,8 +195,12 @@ Installing one integration neither configures nor disables the other.
 
 ## Current setup boundaries
 
-- Claude Code remains optional. Its setup or authentication state does not block
-  Codex, Pi, or core Koed runtime health.
+- Claude Code remains optional when it is not installed or detected. Guided
+  first-run setup treats an available executable or global settings file as
+  evidence that Claude Code is in use, lists it among detected AI Clients, and
+  configures its MCP and hooks automatically. A detected but unsupported or
+  unauthenticated installation stops guided setup with an actionable error; it
+  does not affect core Koed runtime health.
 - Desktop setup configures MCP and hooks but does not run an automated end-to-end
   capture fixture. Verify a fresh live session explicitly.
 - Existing synthesis defaults remain Codex-oriented. A Claude-only installation

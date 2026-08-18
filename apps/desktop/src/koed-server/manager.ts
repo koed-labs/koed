@@ -884,6 +884,97 @@ export const desktopCodexSetupCommand = (
     ? ["repair", "codex"]
     : ["setup", "codex"];
 
+type SetupAiClient = {
+  component: "codex" | "claudeCode" | "pi";
+  id: "codex" | "claude" | "pi";
+  label: "Codex" | "Claude Code" | "Pi";
+  setupArgs: ["setup", "codex" | "claude" | "pi"];
+};
+
+const formatAiClientList = (labels: readonly string[]): string =>
+  labels.length < 2
+    ? (labels[0] ?? "AI Clients")
+    : labels.length === 2
+      ? labels.join(" and ")
+      : `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
+
+export const detectedSetupAiClients = (
+  statusValue: unknown
+): SetupAiClient[] => {
+  const status = objectValue(statusValue);
+  const clients: SetupAiClient[] = [
+    {
+      component: "codex",
+      id: "codex",
+      label: "Codex",
+      setupArgs: ["setup", "codex"]
+    }
+  ];
+  if (objectValue(status?.claudeCode)?.detected === true) {
+    clients.push({
+      component: "claudeCode",
+      id: "claude",
+      label: "Claude Code",
+      setupArgs: ["setup", "claude"]
+    });
+  }
+  if (objectValue(status?.pi)?.detected === true) {
+    clients.push({
+      component: "pi",
+      id: "pi",
+      label: "Pi",
+      setupArgs: ["setup", "pi"]
+    });
+  }
+  return clients;
+};
+
+export const setupIntegrationHealthy = (statusValue: unknown): boolean => {
+  const status = objectValue(statusValue);
+  return (
+    [
+      status?.apiToken,
+      status?.mcpServer,
+      status?.captureHook,
+      status?.lcmSummaryService
+    ].every(componentHealthy) &&
+    detectedSetupAiClients(status).every(({ component }) =>
+      componentHealthy(status?.[component])
+    )
+  );
+};
+
+export const configureDetectedSetupAiClients = async (
+  statusValue: unknown,
+  run: (args: string[]) => Promise<unknown>,
+  onProgress: (message: string) => void
+): Promise<DesktopSetupActionResult> => {
+  const status = objectValue(statusValue);
+  const clients = detectedSetupAiClients(status);
+  for (const client of clients) {
+    if (componentHealthy(status?.[client.component])) continue;
+    onProgress(`Configuring ${client.label} capture and recall…`);
+    const args =
+      client.id === "codex"
+        ? desktopCodexSetupCommand(status)
+        : client.setupArgs;
+    const result = await run(args);
+    if (!resultOk(result)) {
+      return {
+        ok: false,
+        message: resultMessage(
+          result,
+          `${client.label} integration could not be configured.`
+        )
+      };
+    }
+  }
+  return {
+    ok: true,
+    message: `${formatAiClientList(clients.map(({ label }) => label))} integration${clients.length === 1 ? " is" : "s are"} configured.`
+  };
+};
+
 const browserActivationUrlFromResult = (value: unknown): string | null => {
   const activationUrl = activationUrlFromResult(value);
   if (!activationUrl) return null;
@@ -2677,13 +2768,8 @@ export const createKoedServerManager = ({
             resolveServerPackageInstallPlan(environment)
           );
           const servicesComplete = setupServicesHealthy(status);
-          const integrationComplete = [
-            status?.apiToken,
-            status?.mcpServer,
-            status?.captureHook,
-            status?.codex,
-            status?.lcmSummaryService
-          ].every(componentHealthy);
+          const detectedAiClients = detectedSetupAiClients(status);
+          const integrationComplete = setupIntegrationHealthy(status);
           const verificationComplete = componentHealthy(
             status?.lastVerification
           );
@@ -2726,9 +2812,10 @@ export const createKoedServerManager = ({
             },
             integration: {
               complete: integrationComplete,
+              detectedAiClients: detectedAiClients.map(({ label }) => label),
               message: integrationComplete
-                ? "Codex integration is configured."
-                : "Codex, MCP, and Capture Hook need to be configured."
+                ? `${formatAiClientList(detectedAiClients.map(({ label }) => label))} integration${detectedAiClients.length === 1 ? " is" : "s are"} configured.`
+                : `Capture and recall need to be configured for ${formatAiClientList(detectedAiClients.map(({ label }) => label))}.`
             },
             verification: {
               complete: verificationComplete,
@@ -2829,15 +2916,16 @@ export const createKoedServerManager = ({
         };
       }
       case "integration": {
-        onProgress({
-          completedBytes: null,
-          message: "Configuring Codex, MCP, and Capture Hook…",
-          totalBytes: null
-        });
         const current = objectValue(await statusWithEnrollmentReconciliation());
-        return setupActionResult(
-          await runJson(desktopCodexSetupCommand(current), 120_000),
-          "Codex integration could not be configured."
+        return configureDetectedSetupAiClients(
+          current,
+          (args) => runJson(args, 120_000),
+          (message) =>
+            onProgress({
+              completedBytes: null,
+              message,
+              totalBytes: null
+            })
         );
       }
       case "verification": {

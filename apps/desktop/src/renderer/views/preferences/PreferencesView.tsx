@@ -460,8 +460,23 @@ function AdvancedSection({
   const status = snapshot.status;
 
   useEffect(() => {
-    if (!status) void statusStore.refresh();
-  }, [status, statusStore]);
+    void statusStore.refresh();
+  }, [statusStore]);
+
+  const servicesAreStarting = status
+    ? [
+        status.api,
+        status.database,
+        status.workerQueues,
+        status.embeddingService
+      ].some((component) => component.state === "starting")
+    : false;
+
+  useEffect(() => {
+    if (!servicesAreStarting) return;
+    const timeout = setTimeout(() => void statusStore.refresh(), 1_500);
+    return () => clearTimeout(timeout);
+  }, [servicesAreStarting, snapshot.revision, statusStore]);
 
   const run = async (
     action:

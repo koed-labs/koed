@@ -3,7 +3,7 @@
 Koed Desktop is the Electron control surface for Koed.
 
 It wraps the same local `koed-server` command surface, shows service status,
-runs the first-time Codex setup and health checks automatically, and provides
+runs first-time AI Client setup and health checks automatically, and provides
 the local Project, Captured Session, and raw Conversation UI in one window.
 
 The main Desktop experience is Project-first. On wide windows it uses a
@@ -132,9 +132,12 @@ ports automatically. The first successful allocation is persisted under
 `KOED_HOME/config/local-ports.json` so subsequent Desktop launches keep stable
 API, Postgres, and Embedding Service ports while avoiding common
 local development or Docker port collisions. First-run setup inspects package,
-runtime, model, service, Codex integration, and final verification state before
-making changes. After one explicit confirmation, Desktop runs only incomplete
-stages in order and stops at the first failure. The model stage reports actual
+runtime, model, service, AI Client integration, and final verification state
+before making changes. Codex is configured as the primary supported client;
+when Claude Code or Pi is detected from an executable or its global profile,
+the setup page names it and configures it in the same integration stage. After
+one explicit confirmation, Desktop runs only incomplete stages in order and
+stops at the first failure. The model stage reports actual
 downloaded and total bytes from the pinned artifact response before checksum
 verification. Retrying re-inspects local state and resumes from the first
 incomplete stage.

@@ -41,7 +41,8 @@ export const visibilityScope = pgEnum("visibility_scope", ["personal"]);
 export const sourceRuntime = pgEnum("source_runtime", [
   "codex",
   "codex-cli",
-  "claude-code"
+  "claude-code",
+  "pi"
 ]);
 export const captureMethod = pgEnum("capture_method", [
   "transcript",
