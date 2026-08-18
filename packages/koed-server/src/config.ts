@@ -11,6 +11,7 @@ export interface KoedServerConfig {
   dependencyMode: KoedDependencyMode;
   codexTranscriptWatcherEnabled: boolean;
   claudeTranscriptWatcherEnabled: boolean;
+  codexGlobalMemoryGuidanceEnabled: boolean;
   external?: {
     databaseUrl?: string;
     redisUrl?: string;
@@ -22,7 +23,8 @@ export const defaultKoedServerConfig: KoedServerConfig = {
   runtimeMode: "developer",
   dependencyMode: "external",
   codexTranscriptWatcherEnabled: true,
-  claudeTranscriptWatcherEnabled: true
+  claudeTranscriptWatcherEnabled: true,
+  codexGlobalMemoryGuidanceEnabled: true
 };
 
 export interface KoedServerConfigDeps {
@@ -57,6 +59,7 @@ const codexTranscriptWatcherSetting = (
 };
 
 const claudeTranscriptWatcherSetting = codexTranscriptWatcherSetting;
+const booleanSetting = codexTranscriptWatcherSetting;
 
 const readConfig = (
   paths: KoedServerPaths,
@@ -115,6 +118,10 @@ export const resolveKoedServerConfig = (
     claudeTranscriptWatcherEnabled:
       resolvedClaudeTranscriptWatcherSetting ??
       resolvedRuntimeMode !== "external",
+    codexGlobalMemoryGuidanceEnabled:
+      booleanSetting(environment.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED) ??
+      booleanSetting(file.codexGlobalMemoryGuidanceEnabled) ??
+      defaultKoedServerConfig.codexGlobalMemoryGuidanceEnabled,
     external: {
       databaseUrl:
         trim(environment.KOED_EXTERNAL_DATABASE_URL) ??
@@ -141,6 +148,43 @@ export const writeKoedServerConfig = (
   (deps.writeFileSync ?? writeFileSync)(
     paths.serverConfigPath,
     `${JSON.stringify(config, null, 2)}\n`,
+    { mode: 0o600 }
+  );
+};
+
+export const writeCodexGlobalMemoryGuidancePreference = (
+  paths: KoedServerPaths,
+  enabled: boolean,
+  deps: KoedServerConfigDeps = {}
+): void => {
+  const fileExists = deps.existsSync ?? existsSync;
+  const read = deps.readFileSync ?? readFileSync;
+  let existing: Record<string, unknown> = {};
+  if (fileExists(paths.serverConfigPath)) {
+    try {
+      const parsed: unknown = JSON.parse(
+        read(paths.serverConfigPath, "utf8") as string
+      );
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("expected a JSON object");
+      }
+      existing = parsed as Record<string, unknown>;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Cannot update Codex memory guidance preference because ${paths.serverConfigPath} is malformed: ${message}.`,
+        { cause: error }
+      );
+    }
+  }
+  mkdirSync(dirname(paths.serverConfigPath), { recursive: true, mode: 0o700 });
+  (deps.writeFileSync ?? writeFileSync)(
+    paths.serverConfigPath,
+    `${JSON.stringify(
+      { ...existing, codexGlobalMemoryGuidanceEnabled: enabled },
+      null,
+      2
+    )}\n`,
     { mode: 0o600 }
   );
 };

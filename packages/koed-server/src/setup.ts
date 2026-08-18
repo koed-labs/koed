@@ -18,7 +18,11 @@ import {
   resolveLocalApiToken,
   writeLocalAppCredential
 } from "./credentials.js";
-import { resolveKoedServerConfig } from "./config.js";
+import {
+  resolveKoedServerConfig,
+  writeCodexGlobalMemoryGuidancePreference,
+  type KoedServerConfig
+} from "./config.js";
 import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
 import {
   localPostgresEnv,
@@ -52,6 +56,12 @@ import {
   parseCodexOwnershipBlock,
   stripCodexOwnershipBlock
 } from "./codex-ownership-marker.js";
+import {
+  reconcileManagedCodexGuidance,
+  removeManagedCodexGuidance,
+  resolveCodexGlobalInstructionsPath,
+  resolveCodexGuidancePath
+} from "./codex-global-instructions.js";
 
 export interface KoedServerSetupCoreResult {
   ok: boolean;
@@ -103,6 +113,39 @@ export interface KoedServerRepairCodexResult {
   action?: string;
 }
 
+interface ManagedFileSnapshot {
+  content: string | null;
+  mode: number | null;
+}
+
+const captureManagedFile = (
+  path: string,
+  existsSync: typeof nodeExistsSync,
+  readFileSync: typeof nodeReadFileSync
+): ManagedFileSnapshot =>
+  existsSync(path)
+    ? {
+        content: String(readFileSync(path, "utf8")),
+        mode: nodeStatSync(path).mode & 0o777
+      }
+    : { content: null, mode: null };
+
+const restoreManagedFile = (
+  path: string,
+  snapshot: ManagedFileSnapshot,
+  existsSync: typeof nodeExistsSync,
+  writeFileSync: typeof nodeWriteFileSync,
+  mkdirSync: typeof nodeMkdirSync
+): void => {
+  if (snapshot.content === null) {
+    if (existsSync(path)) nodeUnlinkSync(path);
+    return;
+  }
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, snapshot.content, { mode: snapshot.mode ?? 0o600 });
+  if (snapshot.mode !== null) nodeChmodSync(path, snapshot.mode);
+};
+
 const tomlString = (value: string): string => JSON.stringify(value);
 
 const configureCodexIntegration = ({
@@ -112,7 +155,8 @@ const configureCodexIntegration = ({
   readFileSync,
   writeFileSync,
   mkdirSync,
-  existsSync
+  existsSync,
+  memoryGuidanceEnabled
 }: {
   paths: ReturnType<typeof resolveKoedServerPaths>;
   environment: NodeJS.ProcessEnv;
@@ -121,6 +165,7 @@ const configureCodexIntegration = ({
   writeFileSync: typeof nodeWriteFileSync;
   mkdirSync: typeof nodeMkdirSync;
   existsSync: typeof nodeExistsSync;
+  memoryGuidanceEnabled: boolean;
 }): { command: string; stdout: string } => {
   const runtime = resolveKoedAppRuntime(paths, environment, existsSync);
   const missing = [runtime.mcpCli, runtime.captureHook].filter(
@@ -139,6 +184,26 @@ const configureCodexIntegration = ({
     environment.CODEX_CONFIG_PATH ??
       `${environment.CODEX_HOME ?? `${homedir()}/.codex`}/config.toml`
   );
+  const codexInstructionsPath = resolveCodexGlobalInstructionsPath(environment);
+  const guidancePath = resolveCodexGuidancePath(runtime.mcpCli);
+  const existingInstructions = existsSync(codexInstructionsPath)
+    ? String(readFileSync(codexInstructionsPath, "utf8"))
+    : "";
+  let nextInstructions: string;
+  if (memoryGuidanceEnabled) {
+    if (!existsSync(guidancePath)) {
+      throw new Error(
+        `Packaged Codex memory guidance is missing: ${guidancePath}. Rebuild Koed so the MCP Server prompt assets are complete.`
+      );
+    }
+    const guidance = String(readFileSync(guidancePath, "utf8"));
+    nextInstructions = reconcileManagedCodexGuidance(
+      existingInstructions,
+      guidance
+    );
+  } else {
+    nextInstructions = removeManagedCodexGuidance(existingInstructions);
+  }
   const markerStart = "# >>> koed";
   const markerEnd = "# <<< koed";
   const hookCommand = [
@@ -187,6 +252,10 @@ ${markerEnd}
     codexConfigPath,
     `${withoutPrevious.trimEnd()}\n\n${koedBlock}`
   );
+  mkdirSync(dirname(codexInstructionsPath), { recursive: true, mode: 0o700 });
+  if (nextInstructions !== existingInstructions) {
+    writeFileSync(codexInstructionsPath, nextInstructions, { mode: 0o600 });
+  }
 
   return {
     command,
@@ -194,7 +263,10 @@ ${markerEnd}
       "Codex integration configured.",
       `Detected API URL: ${apiUrl}`,
       `Detected Node command: ${nodeCommand}`,
-      `Wrote Codex MCP config: ${codexConfigPath}`
+      `Wrote Codex MCP config: ${codexConfigPath}`,
+      memoryGuidanceEnabled
+        ? `Reconciled Codex global instructions: ${codexInstructionsPath}`
+        : `Koed global memory guidance disabled: ${codexInstructionsPath}`
     ].join("\n")
   };
 };
@@ -247,6 +319,7 @@ export const removeCodexIntegration = ({
     environment.CODEX_CONFIG_PATH ??
       `${environment.CODEX_HOME ?? `${homedir()}/.codex`}/config.toml`
   );
+  const codexInstructionsPath = resolveCodexGlobalInstructionsPath(environment);
   const checkedAt = now().toISOString();
   const base = {
     koedHome: paths.koedHome,
@@ -255,13 +328,24 @@ export const removeCodexIntegration = ({
     command: "remove Koed Codex integration"
   };
   let registrySnapshot;
-  let originalConfig: string | null = null;
+  let configSnapshot: ManagedFileSnapshot | undefined;
+  let instructionsSnapshot: ManagedFileSnapshot | undefined;
   try {
     assertAiClientRegistryWritable(environment);
     registrySnapshot = captureAiClientRegistry(environment);
-    if (existsSync(codexConfigPath)) {
-      originalConfig = String(readFileSync(codexConfigPath, "utf8"));
-      const parsed = parseCodexOwnershipBlock(originalConfig);
+    configSnapshot = captureManagedFile(
+      codexConfigPath,
+      existsSync,
+      readFileSync
+    );
+    instructionsSnapshot = captureManagedFile(
+      codexInstructionsPath,
+      existsSync,
+      readFileSync
+    );
+    let nextConfig = configSnapshot.content;
+    if (configSnapshot.content !== null) {
+      const parsed = parseCodexOwnershipBlock(configSnapshot.content);
       if (parsed.kind === "malformed") throw new Error(parsed.reason);
       if (
         parsed.kind === "valid" &&
@@ -271,30 +355,71 @@ export const removeCodexIntegration = ({
           "Codex Koed ownership block does not contain expected MCP and Supported Capture Hook configuration."
         );
       }
-      const withoutKoed = stripCodexOwnershipBlock(originalConfig);
-      if (withoutKoed !== originalConfig) {
-        mkdirSync(dirname(codexConfigPath), { recursive: true, mode: 0o700 });
-        writeFileSync(codexConfigPath, withoutKoed.trimEnd() + "\n", {
-          mode: 0o600
-        });
+      const withoutKoed = stripCodexOwnershipBlock(configSnapshot.content);
+      if (withoutKoed !== configSnapshot.content) {
+        nextConfig = withoutKoed.trimEnd() + "\n";
       }
+    }
+    const nextInstructions =
+      instructionsSnapshot.content === null
+        ? null
+        : removeManagedCodexGuidance(instructionsSnapshot.content);
+    if (nextConfig !== configSnapshot.content && nextConfig !== null) {
+      mkdirSync(dirname(codexConfigPath), { recursive: true, mode: 0o700 });
+      writeFileSync(codexConfigPath, nextConfig, {
+        mode: configSnapshot.mode ?? 0o600
+      });
+    }
+    if (
+      nextInstructions !== instructionsSnapshot.content &&
+      nextInstructions !== null
+    ) {
+      mkdirSync(dirname(codexInstructionsPath), {
+        recursive: true,
+        mode: 0o700
+      });
+      writeFileSync(codexInstructionsPath, nextInstructions, {
+        mode: instructionsSnapshot.mode ?? 0o600
+      });
     }
     removeExplicitAiClient({ environment, driverId: "codex" });
     return {
       ...base,
       ok: true,
       state: "healthy",
-      stdout: "Codex integration removed; unrelated settings were preserved.",
+      stdout:
+        "Codex integration and managed global guidance removed; unrelated settings were preserved.",
       action: "Restart Codex before starting new Conversations."
     };
   } catch (error) {
     const failures = [error instanceof Error ? error.message : String(error)];
-    if (originalConfig !== null) {
+    if (configSnapshot) {
       try {
-        writeFileSync(codexConfigPath, originalConfig, { mode: 0o600 });
+        restoreManagedFile(
+          codexConfigPath,
+          configSnapshot,
+          existsSync,
+          writeFileSync,
+          mkdirSync
+        );
       } catch (restoreError) {
         failures.push(
           `Codex configuration rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
+    if (instructionsSnapshot) {
+      try {
+        restoreManagedFile(
+          codexInstructionsPath,
+          instructionsSnapshot,
+          existsSync,
+          writeFileSync,
+          mkdirSync
+        );
+      } catch (restoreError) {
+        failures.push(
+          `Codex global instructions rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
         );
       }
     }
@@ -368,17 +493,25 @@ export const repairCodexIntegration = ({
     integrationEnvironment.CODEX_CONFIG_PATH ??
       `${integrationEnvironment.CODEX_HOME ?? `${homedir()}/.codex`}/config.toml`
   );
+  const codexInstructionsPath = resolveCodexGlobalInstructionsPath(
+    integrationEnvironment
+  );
   let registrySnapshot: ReturnType<typeof captureAiClientRegistry> | undefined;
-  let originalConfig: string | null = null;
-  let originalMode: number | null = null;
-  let profileWritten = false;
+  let configSnapshot: ManagedFileSnapshot | undefined;
+  let instructionsSnapshot: ManagedFileSnapshot | undefined;
   try {
     assertAiClientRegistryWritable(integrationEnvironment);
     registrySnapshot = captureAiClientRegistry(integrationEnvironment);
-    if (existsSync(codexConfigPath)) {
-      originalConfig = String(readFileSync(codexConfigPath, "utf8"));
-      originalMode = nodeStatSync(codexConfigPath).mode & 0o777;
-    }
+    configSnapshot = captureManagedFile(
+      codexConfigPath,
+      existsSync,
+      readFileSync
+    );
+    instructionsSnapshot = captureManagedFile(
+      codexInstructionsPath,
+      existsSync,
+      readFileSync
+    );
     const codexExecutablePath = resolveExecutablePath(
       integrationEnvironment.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex",
       integrationEnvironment
@@ -390,9 +523,13 @@ export const repairCodexIntegration = ({
       readFileSync,
       writeFileSync,
       mkdirSync,
-      existsSync
+      existsSync,
+      memoryGuidanceEnabled: resolveKoedServerConfig(
+        paths,
+        { ...repoEnv, ...environment },
+        { existsSync, readFileSync }
+      ).codexGlobalMemoryGuidanceEnabled
     });
-    profileWritten = true;
     const registered = registerAiClient({
       environment: integrationEnvironment,
       driverId: "codex",
@@ -416,18 +553,33 @@ export const repairCodexIntegration = ({
     return repaired;
   } catch (error) {
     const failures = [error instanceof Error ? error.message : String(error)];
-    if (profileWritten) {
+    if (configSnapshot) {
       try {
-        if (originalConfig === null) {
-          if (existsSync(codexConfigPath)) nodeUnlinkSync(codexConfigPath);
-        } else {
-          writeFileSync(codexConfigPath, originalConfig, { mode: 0o600 });
-          if (originalMode !== null)
-            nodeChmodSync(codexConfigPath, originalMode);
-        }
+        restoreManagedFile(
+          codexConfigPath,
+          configSnapshot,
+          existsSync,
+          writeFileSync,
+          mkdirSync
+        );
       } catch (restoreError) {
         failures.push(
           `Codex profile rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
+    if (instructionsSnapshot) {
+      try {
+        restoreManagedFile(
+          codexInstructionsPath,
+          instructionsSnapshot,
+          existsSync,
+          writeFileSync,
+          mkdirSync
+        );
+      } catch (restoreError) {
+        failures.push(
+          `Codex global instructions rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
         );
       }
     }
@@ -569,6 +721,7 @@ interface SetupCodexBaseContext {
   apiUrl: string;
   checkedAt: string;
   scriptPath: string;
+  config: KoedServerConfig;
 }
 
 interface SetupCodexContext extends SetupCodexBaseContext {
@@ -592,10 +745,14 @@ const resolveSetupCodexBase = (
   );
   let environment = setupRuntimeEnvironment(invocationEnvironment, runtime);
   const repoEnv = loadRepoEnv(paths.repoRoot);
-  const config = resolveKoedServerConfig(paths, {
-    ...repoEnv,
-    ...environment
-  });
+  const config = resolveKoedServerConfig(
+    paths,
+    { ...repoEnv, ...environment },
+    {
+      existsSync: options.existsSync,
+      readFileSync: options.readFileSync
+    }
+  );
   environment = applyPersistedLocalPorts(paths, environment, {
     force: config.dependencyMode === "bundled-local"
   });
@@ -606,7 +763,8 @@ const resolveSetupCodexBase = (
     dependencyMode: config.dependencyMode,
     apiUrl: resolveApiUrl(environment, repoEnv),
     checkedAt: (options.now ?? (() => new Date()))().toISOString(),
-    scriptPath: resolve(paths.repoRoot, "scripts/clients-bootstrap.mjs")
+    scriptPath: resolve(paths.repoRoot, "scripts/clients-bootstrap.mjs"),
+    config
   };
 };
 
@@ -652,7 +810,10 @@ const prepareSetupCodex = (
         ...base.environment,
         ...database.environment,
         KOED_HOME: base.paths.koedHome,
-        KOED_SERVER_MANAGED: "1"
+        KOED_SERVER_MANAGED: "1",
+        KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: String(
+          base.config.codexGlobalMemoryGuidanceEnabled
+        )
       }
     }
   };
@@ -847,6 +1008,20 @@ export const setupCodex = async (
       "Codex setup completed."
     );
     return failed;
+  }
+  if (
+    environment.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED === "true" ||
+    environment.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED === "false"
+  ) {
+    writeCodexGlobalMemoryGuidancePreference(
+      context.paths,
+      context.config.codexGlobalMemoryGuidanceEnabled,
+      {
+        existsSync: options.existsSync,
+        readFileSync: options.readFileSync,
+        writeFileSync
+      }
+    );
   }
   persistSetupApiToken(context);
   const result = runSetupBootstrap(

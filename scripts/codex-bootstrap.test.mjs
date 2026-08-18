@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { test } from "node:test";
-import { parseBootstrapArgs, runCodexBootstrap } from "./codex-bootstrap.mjs";
+import {
+  parseBootstrapArgs,
+  persistMemoryGuidancePreference,
+  runCodexBootstrap
+} from "./codex-bootstrap.mjs";
 
 test("codex bootstrap args respect env defaults and flags", () => {
   const args = parseBootstrapArgs(["--skip-build", "--name=Codex"], {
@@ -15,6 +28,7 @@ test("codex bootstrap args respect env defaults and flags", () => {
     skipBuild: true,
     skipVerify: false,
     skipDoctor: false,
+    memoryGuidanceEnabled: true,
     help: false
   });
 });
@@ -25,7 +39,8 @@ test("codex bootstrap runs the setup flow in order", async () => {
     MEMORY_API_URL: "http://127.0.0.1:3300",
     MEMORY_NODE_COMMAND: "node",
     KOED_HOME: "/tmp/koed-home",
-    CODEX_CONFIG_PATH: "/tmp/koed-config.toml"
+    CODEX_CONFIG_PATH: "/tmp/koed-config.toml",
+    KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "true"
   };
   const tokenResult = {
     ownerCreated: true,
@@ -85,7 +100,8 @@ test("codex bootstrap runs the setup flow in order", async () => {
 
   assert.equal(result.help, false);
   assert.deepEqual(result.paths, {
-    codexConfigPath: "/tmp/koed-config.toml"
+    codexConfigPath: "/tmp/koed-config.toml",
+    codexInstructionsPath: "/tmp/AGENTS.md"
   });
   assert.equal(result.tokenResult, tokenResult);
   assert.equal(result.doctorResult?.ok, true);
@@ -112,7 +128,9 @@ test("codex bootstrap runs the setup flow in order", async () => {
     MEMORY_API_URL: "http://127.0.0.1:3300",
     MEMORY_API_TOKEN: "cmt_test_token",
     MEMORY_NODE_COMMAND: "node",
-    KOED_HOME: "/tmp/koed-home"
+    KOED_HOME: "/tmp/koed-home",
+    CODEX_CONFIG_PATH: "/tmp/koed-config.toml",
+    KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "true"
   });
 
   const verifyCall = calls.find(([label]) => label === "Verify capture");
@@ -172,6 +190,72 @@ test("codex bootstrap loads root env before resolving defaults", async () => {
     MEMORY_API_URL: "http://127.0.0.1:3300",
     MEMORY_API_TOKEN: "cmt_env_token",
     MEMORY_NODE_COMMAND: "/opt/node",
-    KOED_HOME: "/tmp/loaded-koed-home"
+    KOED_HOME: "/tmp/loaded-koed-home",
+    CODEX_CONFIG_PATH: "/tmp/koed-config.toml",
+    KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "true"
   });
+});
+
+test("codex bootstrap supports opting out of global memory guidance", () => {
+  const args = parseBootstrapArgs(["--without-memory-guidance"], {});
+  assert.equal(args.memoryGuidanceEnabled, false);
+});
+
+test("codex bootstrap persists an explicit memory guidance preference", () => {
+  const koedHome = mkdtempSync(resolve(tmpdir(), "koed-bootstrap-guidance-"));
+  try {
+    persistMemoryGuidancePreference({ KOED_HOME: koedHome }, false);
+    assert.deepEqual(
+      JSON.parse(readFileSync(resolve(koedHome, "config/server.json"), "utf8")),
+      { codexGlobalMemoryGuidanceEnabled: false }
+    );
+  } finally {
+    rmSync(koedHome, { recursive: true, force: true });
+  }
+});
+
+test("codex bootstrap wires the explicit guidance choice into persisted config", async () => {
+  const koedHome = mkdtempSync(resolve(tmpdir(), "koed-bootstrap-guidance-"));
+  try {
+    await runCodexBootstrap({
+      argv: [
+        "--without-memory-guidance",
+        "--skip-build",
+        "--skip-verify",
+        "--skip-doctor"
+      ],
+      environment: { KOED_HOME: koedHome },
+      repo: { close() {} },
+      loadRootEnvFn: () => {},
+      createTokenBootstrap: async () => ({
+        owner: { email: "local@koed.ai" },
+        token: "test-token"
+      }),
+      runCommandFn: async () => ({ stdout: "", stderr: "" }),
+      skipSetup: true,
+      onTokenCreated: () => {},
+      onComplete: () => {}
+    });
+    assert.deepEqual(
+      JSON.parse(readFileSync(resolve(koedHome, "config/server.json"), "utf8")),
+      { codexGlobalMemoryGuidanceEnabled: false }
+    );
+  } finally {
+    rmSync(koedHome, { recursive: true, force: true });
+  }
+});
+
+test("codex bootstrap rejects malformed persisted server configuration", () => {
+  const koedHome = mkdtempSync(resolve(tmpdir(), "koed-bootstrap-guidance-"));
+  try {
+    const configPath = resolve(koedHome, "config/server.json");
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(configPath, "{");
+    assert.throws(
+      () => persistMemoryGuidancePreference({ KOED_HOME: koedHome }, false),
+      /server\.json is malformed/
+    );
+  } finally {
+    rmSync(koedHome, { recursive: true, force: true });
+  }
 });

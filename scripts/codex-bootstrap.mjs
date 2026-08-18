@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   createApiTokenBootstrap,
@@ -35,6 +35,8 @@ Options:
   --skip-build            Skip the @koed/mcp-server build step.
   --skip-verify           Skip capture verification.
   --skip-doctor           Skip the final doctor check.
+  --without-memory-guidance  Do not install the recommended global guidance.
+  --with-memory-guidance     Install the recommended global guidance (default).
   --help                  Show this help.
 
 Environment:
@@ -45,6 +47,14 @@ Environment:
 `;
 
 export const parseBootstrapArgs = (argv, environment = process.env) => {
+  if (
+    argv.includes("--with-memory-guidance") &&
+    argv.includes("--without-memory-guidance")
+  ) {
+    throw new UsageError(
+      `Use only one of --with-memory-guidance or --without-memory-guidance.\n\n${usageText}`
+    );
+  }
   const parsed = {
     ownerEmail: defaultOwnerEmail,
     name: defaultTokenName,
@@ -56,6 +66,8 @@ export const parseBootstrapArgs = (argv, environment = process.env) => {
     skipBuild: false,
     skipVerify: false,
     skipDoctor: false,
+    memoryGuidanceEnabled:
+      environment.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED !== "false",
     help: false
   };
 
@@ -75,6 +87,14 @@ export const parseBootstrapArgs = (argv, environment = process.env) => {
     }
     if (arg === "--skip-doctor") {
       parsed.skipDoctor = true;
+      continue;
+    }
+    if (arg === "--without-memory-guidance") {
+      parsed.memoryGuidanceEnabled = false;
+      continue;
+    }
+    if (arg === "--with-memory-guidance") {
+      parsed.memoryGuidanceEnabled = true;
       continue;
     }
     if (arg === "--owner-email") {
@@ -192,11 +212,22 @@ const runCommand = ({
   };
 };
 
-const resolveBootstrapPaths = (environment) => ({
-  codexConfigPath: resolve(
-    environment.CODEX_CONFIG_PATH ?? `${homedir()}/.codex/config.toml`
-  )
-});
+const resolveBootstrapPaths = (environment) => {
+  const codexConfigPath = resolve(
+    environment.CODEX_CONFIG_PATH ??
+      `${environment.CODEX_HOME ?? `${homedir()}/.codex`}/config.toml`
+  );
+  const codexHome = resolve(
+    environment.CODEX_HOME ??
+      (environment.CODEX_CONFIG_PATH
+        ? dirname(codexConfigPath)
+        : `${homedir()}/.codex`)
+  );
+  return {
+    codexConfigPath,
+    codexInstructionsPath: resolve(codexHome, "AGENTS.md")
+  };
+};
 
 const readCoreCredential = (environment) => {
   if (!environment.KOED_HOME) return null;
@@ -213,6 +244,38 @@ const readCoreCredential = (environment) => {
   } catch {
     return null;
   }
+};
+
+export const persistMemoryGuidancePreference = (environment, enabled) => {
+  const koedHome = resolve(
+    environment.KOED_HOME ?? resolve(homedir(), ".koed")
+  );
+  const configPath = resolve(koedHome, "config/server.json");
+  let existing = {};
+  if (existsSync(configPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("expected a JSON object");
+      }
+      existing = parsed;
+    } catch (error) {
+      throw new Error(
+        `Cannot update Codex memory guidance preference because ${configPath} is malformed: ${error instanceof Error ? error.message : String(error)}.`,
+        { cause: error }
+      );
+    }
+  }
+  mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
+  writeFileSync(
+    configPath,
+    `${JSON.stringify(
+      { ...existing, codexGlobalMemoryGuidanceEnabled: enabled },
+      null,
+      2
+    )}\n`,
+    { mode: 0o600 }
+  );
 };
 
 export const runCodexBootstrap = async ({
@@ -235,6 +298,9 @@ export const runCodexBootstrap = async ({
     console.log(`API URL: ${result.args.apiUrl}`);
     console.log(`Token owner: ${result.tokenResult.owner.email}`);
     console.log(`Codex config: ${result.paths.codexConfigPath}`);
+    console.log(
+      `Codex global instructions: ${result.paths.codexInstructionsPath}`
+    );
     console.log(
       `Capture verification: ${result.args.skipVerify ? "skipped" : "passed"}`
     );
@@ -262,6 +328,12 @@ export const runCodexBootstrap = async ({
     loadRootEnvFn(rootDir, environment);
 
     const args = parseBootstrapArgs(argv, environment);
+    if (
+      argv.includes("--with-memory-guidance") ||
+      argv.includes("--without-memory-guidance")
+    ) {
+      persistMemoryGuidancePreference(environment, args.memoryGuidanceEnabled);
+    }
     const resolvedPaths = resolveBootstrapPaths(environment);
     await runCommandFn({
       label: "Build @koed/db",
@@ -317,7 +389,16 @@ export const runCodexBootstrap = async ({
         MEMORY_API_URL: args.apiUrl,
         MEMORY_API_TOKEN: tokenResult.token,
         MEMORY_NODE_COMMAND: args.nodeCommand,
-        ...(environment.KOED_HOME ? { KOED_HOME: environment.KOED_HOME } : {})
+        ...(environment.KOED_HOME ? { KOED_HOME: environment.KOED_HOME } : {}),
+        ...(environment.CODEX_HOME
+          ? { CODEX_HOME: environment.CODEX_HOME }
+          : {}),
+        ...(environment.CODEX_CONFIG_PATH
+          ? { CODEX_CONFIG_PATH: environment.CODEX_CONFIG_PATH }
+          : {}),
+        KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: String(
+          args.memoryGuidanceEnabled
+        )
       }
     });
 

@@ -40,8 +40,26 @@ const spawnResult = (stdout: string, status = 0) =>
 
 const codexIntegrationConfig = (
   repoRoot: string,
-  koedHome = repoRoot
-) => `# >>> koed
+  koedHome = repoRoot,
+  codexHome = resolve(repoRoot, ".codex")
+) => {
+  const guidance = "# Koed Memory\n\nConsult Koed before substantive work.";
+  mkdirSync(resolve(repoRoot, "packages/mcp-server/dist/prompts"), {
+    recursive: true
+  });
+  writeFileSync(
+    resolve(
+      repoRoot,
+      "packages/mcp-server/dist/prompts/codex-global-agent-guidance.md"
+    ),
+    `${guidance}\n`
+  );
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(
+    resolve(codexHome, "AGENTS.md"),
+    `<!-- >>> koed-memory-guidance -->\n${guidance}\n<!-- <<< koed-memory-guidance -->\n`
+  );
+  return `# >>> koed
 [mcp_servers.koed]
 command = "node"
 args = ["${resolve(repoRoot, "packages/mcp-server/dist/cli.js")}"]
@@ -67,6 +85,7 @@ timeout = 10`
   .join("\n\n")}
 # <<< koed
 `;
+};
 
 afterEach(() => {
   for (const path of temps.splice(0)) {
@@ -1587,7 +1606,7 @@ describe("status and doctor JSON contracts", () => {
     writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
     writeFileSync(
       resolve(codexHome, "config.toml"),
-      codexIntegrationConfig(root)
+      codexIntegrationConfig(root, root, codexHome)
     );
 
     const status = await collectKoedServerStatus(
@@ -1623,6 +1642,118 @@ describe("status and doctor JSON contracts", () => {
     expect(status.codex.details?.codexConfigPath).toBe(
       resolve(codexHome, "config.toml")
     );
+    expect(status.codex.details?.codexInstructionsPath).toBe(
+      resolve(codexHome, "AGENTS.md")
+    );
+  });
+
+  it.each([
+    ["missing", null],
+    [
+      "stale",
+      "<!-- >>> koed-memory-guidance -->\nold\n<!-- <<< koed-memory-guidance -->\n"
+    ],
+    ["malformed", "<!-- >>> koed-memory-guidance -->\nbroken\n"]
+  ])("reports %s Codex global memory guidance", async (expected, content) => {
+    const root = tempDir();
+    mkdirSync(resolve(root, ".codex"), { recursive: true });
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(
+      resolve(root, ".codex/config.toml"),
+      codexIntegrationConfig(root)
+    );
+    if (content === null) {
+      rmSync(resolve(root, ".codex/AGENTS.md"));
+    } else {
+      writeFileSync(resolve(root, ".codex/AGENTS.md"), content);
+    }
+
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async () => response(false, 503, {}),
+        spawnSync: () => spawnResult("", 0),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.codex.state).toBe("needs_attention");
+    expect(status.codex.message).toContain(expected);
+    expect(status.codex.action).toContain(
+      expected === "malformed" ? "Repair or remove" : "Fix Codex integration"
+    );
+  });
+
+  it("reports healthy Codex integration when global guidance is disabled", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, ".codex"), { recursive: true });
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(
+      resolve(root, ".codex/config.toml"),
+      codexIntegrationConfig(root)
+    );
+    rmSync(resolve(root, ".codex/AGENTS.md"));
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({ codexGlobalMemoryGuidanceEnabled: false })
+    );
+
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async () => response(false, 503, {}),
+        spawnSync: () => spawnResult("", 0)
+      }
+    );
+
+    expect(status.codex.state).toBe("healthy");
+    expect(status.codex.message).toContain("guidance is disabled");
+    expect(status.codex.details?.guidanceState).toBe("disabled");
+  });
+
+  it("honors the repo environment global guidance opt-out", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, ".codex"), { recursive: true });
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(
+      resolve(root, ".codex/config.toml"),
+      codexIntegrationConfig(root)
+    );
+    rmSync(resolve(root, ".codex/AGENTS.md"));
+    writeFileSync(
+      resolve(root, ".env"),
+      "KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED=false\n"
+    );
+
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async () => response(false, 503, {}),
+        spawnSync: () => spawnResult("", 0)
+      }
+    );
+
+    expect(status.codex.state).toBe("healthy");
+    expect(status.codex.details?.guidanceState).toBe("disabled");
   });
 
   it("fails core readiness when prepared local runtime supervisor is stopped", async () => {
