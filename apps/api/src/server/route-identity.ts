@@ -965,6 +965,27 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/memory/ai-client-instances",
+    "session_or_api_token",
+    "local_synthesis",
+    "Read local AI Client instances and capability snapshots."
+  ),
+  route(
+    "PUT",
+    "/v1/memory/ai-client-instances/{instanceId}",
+    "session_or_api_token",
+    "local_synthesis",
+    "Register or update a local AI Client instance."
+  ),
+  route(
+    "POST",
+    "/v1/memory/ai-client-instances/{instanceId}/capability-snapshots",
+    "session_or_api_token",
+    "local_synthesis",
+    "Record a local AI Client capability snapshot."
+  ),
+  route(
+    "GET",
     "/v1/memory/local-agent-settings",
     "session_or_api_token",
     "local_synthesis",

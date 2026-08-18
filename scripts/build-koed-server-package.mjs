@@ -17,11 +17,15 @@ import {
 import { spawnSync } from "node:child_process";
 import { basename, resolve } from "node:path";
 import { prunePythonEmbeddingRuntimeFiles } from "./native-runtime/manifest-lib.mjs";
+import { removeClaudeAgentSdkPlatformRuntimes } from "./provider-runtime-package-policy.mjs";
 import {
   buildPackageManifest,
   buildPackageProvenance,
   isPnpmWorkspaceSelfSymlink,
+  normalizeDeployedWorkspaceDependencies,
   platformKey,
+  pruneStandalonePackageMetadata,
+  prunePnpmWorkspaceVirtualStorePaths,
   readPackageVersion,
   sha256File,
   validatePackageRoot,
@@ -404,8 +408,21 @@ const main = () => {
     deploy("@koed/embedding-service", runtimeRoot, "embedding-service");
     deploy("@koed/mcp-server", runtimeRoot, "mcp-server");
 
+    for (const manifestPath of [
+      resolve(packageRoot, "koed-server", "package.json"),
+      resolve(runtimeRoot, "api", "package.json"),
+      resolve(runtimeRoot, "worker", "package.json"),
+      resolve(runtimeRoot, "embedding-service", "package.json"),
+      resolve(runtimeRoot, "mcp-server", "package.json")
+    ]) {
+      normalizeDeployedWorkspaceDependencies(manifestPath);
+    }
+
     prunePythonEmbeddingRuntimeFiles(runtimeRoot);
+    removeClaudeAgentSdkPlatformRuntimes(packageRoot);
+    pruneStandalonePackageMetadata(packageRoot);
     dereferencePackageSymlinks(packageRoot);
+    prunePnpmWorkspaceVirtualStorePaths(packageRoot);
     validatePackagedCli(packageRoot);
     writeLauncher(packageRoot);
     writeReadme(packageRoot);

@@ -35,6 +35,7 @@ import {
   updateTeamMemberRoleSchema
 } from "../team/schemas.js";
 import {
+  sourceDownloadAuthorizationSchema,
   sourceDiscoverySchema,
   sourceReplicationRecipientKeySchema
 } from "../source-replication/schemas.js";
@@ -346,6 +347,8 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
     .object({
       action: z.literal("conversation_source.download"),
       sourceGenerationId: uuidSchema,
+      sourceComponentId:
+        sourceDownloadAuthorizationSchema.shape.sourceComponentId,
       targetDeploymentId: uuidSchema,
       firstSegmentIndex: z.number().int().safe().nonnegative(),
       recipientKey: sourceReplicationRecipientKeySchema
@@ -777,6 +780,10 @@ export const resolveHighRiskActionGrantOperation = (input: {
   intent: HighRiskActionGrantIntent;
   resolveWorkspaceTeamId?: (teamWorkspaceId: string) => Promise<string | null>;
   resolveLegalHoldTeamId?: (holdId: string) => Promise<string | null>;
+  resolveConversationSourceArtifactId?: (
+    sourceGenerationId: string,
+    sourceComponentId: string
+  ) => Promise<string | null>;
 }):
   | HighRiskResolvedActionGrantOperation
   | null
@@ -871,7 +878,18 @@ export const resolveHighRiskActionGrantOperation = (input: {
     case "conversation_source.discover":
       return bindConversationSourceDiscoveryOperation(intent);
     case "conversation_source.download":
-      return bindConversationSourceDownloadOperation(intent);
+      return input.resolveConversationSourceArtifactId
+        ? input
+            .resolveConversationSourceArtifactId(
+              intent.sourceGenerationId,
+              intent.sourceComponentId
+            )
+            .then((artifactId) =>
+              artifactId
+                ? bindConversationSourceDownloadOperation(intent, artifactId)
+                : null
+            )
+        : null;
     case "managed_conversation.handoff":
     case "managed_conversation.fork":
       return bindManagedConversationTransferOperation(intent);

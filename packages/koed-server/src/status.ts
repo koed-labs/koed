@@ -597,6 +597,47 @@ const inspectCodexTranscriptWatcher = (
   );
 };
 
+const inspectClaudeTranscriptWatcher = (
+  enabled: boolean,
+  runtime: KoedServerRuntimeState | null,
+  runtimeProcessRunning: boolean,
+  deps: Required<KoedServerStatusDependencies>
+): KoedServerComponentStatus => {
+  const localAiRuntimePid = runtime?.processes?.localAiRuntime;
+  const details = { enabled, localAiRuntimePid: localAiRuntimePid ?? null };
+  if (!enabled) {
+    return notConfigured(
+      "Claude Transcript Watcher is disabled.",
+      undefined,
+      details
+    );
+  }
+  if (!runtimeProcessRunning) {
+    return starting(
+      "Koed server supervisor is not currently running.",
+      details
+    );
+  }
+  if (!localAiRuntimePid) {
+    return needsAttention(
+      "Local AI Runtime process is not recorded in koed-server runtime state.",
+      "Verify an API Token is configured, then restart koed-server or inspect Koed logs.",
+      details
+    );
+  }
+  if (!deps.checkPid(localAiRuntimePid)) {
+    return needsAttention(
+      "Local AI Runtime process hosting the Claude Transcript Watcher is not running.",
+      "Run koed-server restart --json or inspect Koed logs.",
+      details
+    );
+  }
+  return healthy(
+    "Claude Transcript Watcher is running in the Local AI Runtime.",
+    details
+  );
+};
+
 const inspectLastVerification = (
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
@@ -766,6 +807,13 @@ export const collectKoedServerStatus = async (
                 MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: String(
                   runtime.codexTranscriptWatcherEnabled
                 )
+              }),
+          ...(runtime.claudeTranscriptWatcherEnabled === undefined
+            ? {}
+            : {
+                MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: String(
+                  runtime.claudeTranscriptWatcherEnabled
+                )
               })
         }
       : environment;
@@ -803,6 +851,12 @@ export const collectKoedServerStatus = async (
     deps
   );
   const mcpServer = inspectMcp(runtimeEnvironment, paths, deps);
+  const claudeTranscriptWatcher = inspectClaudeTranscriptWatcher(
+    serverConfig.claudeTranscriptWatcherEnabled,
+    runtime,
+    runtimeProcessRunning,
+    deps
+  );
   const externalRedisUrl =
     serverConfig.external?.redisUrl ??
     runtimeEnvironment.REDIS_URL ??
@@ -900,6 +954,7 @@ export const collectKoedServerStatus = async (
     mcpServer,
     captureHook,
     codexTranscriptWatcher,
+    claudeTranscriptWatcher,
     codex,
     lcmSummaryService,
     deviceIdentity,
@@ -942,6 +997,11 @@ export const collectKoedServerDoctor = async (
       "Codex Transcript Watcher",
       status.codexTranscriptWatcher
     ],
+    [
+      "claudeTranscriptWatcher",
+      "Claude Transcript Watcher",
+      status.claudeTranscriptWatcher
+    ],
     ["codex", "Codex configuration", status.codex],
     ["lcmSummaryService", "LCM Summary Service", status.lcmSummaryService],
     ["deviceIdentity", "Device identity", status.deviceIdentity],
@@ -957,7 +1017,8 @@ export const collectKoedServerDoctor = async (
       check.id !== "lastVerification" &&
       check.id !== "upstreamBackends" &&
       check.id !== "deviceIdentity" &&
-      check.id !== "codexTranscriptWatcher"
+      check.id !== "codexTranscriptWatcher" &&
+      check.id !== "claudeTranscriptWatcher"
   );
   const failed = blockingChecks.filter(
     (check) => check.state === "needs_attention"

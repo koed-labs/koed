@@ -1626,8 +1626,8 @@ describe("Retrieval Arena runner", () => {
     const directory = mkdtempSync(
       path.join(os.tmpdir(), "koed-arena-prompts-")
     );
-    const appServerDirectory = path.join(directory, "app-server");
-    mkdirSync(appServerDirectory, { recursive: true });
+    const aiClientDirectory = path.join(directory, "ai-client");
+    mkdirSync(aiClientDirectory, { recursive: true });
     const baseBody = "Effective test base instructions.";
     const developerBody = "Effective test developer instructions.";
     const workerBody = [
@@ -1641,12 +1641,12 @@ describe("Retrieval Arena runner", () => {
       .update(loadPrompt("memory-answer-worker").body)
       .digest("hex");
     writeFileSync(
-      path.join(appServerDirectory, "memory-answer-base.md"),
-      `---\nid: app-server-memory-answer-base\nversion: test-base-v1\n---\n${baseBody}\n`
+      path.join(aiClientDirectory, "memory-answer-base.md"),
+      `---\nid: ai-client-memory-answer-base\nversion: test-base-v1\n---\n${baseBody}\n`
     );
     writeFileSync(
-      path.join(appServerDirectory, "memory-answer-developer.md"),
-      `---\nid: app-server-memory-answer-developer\nversion: test-developer-v1\n---\n${developerBody}\n`
+      path.join(aiClientDirectory, "memory-answer-developer.md"),
+      `---\nid: ai-client-memory-answer-developer\nversion: test-developer-v1\n---\n${developerBody}\n`
     );
     writeFileSync(
       path.join(directory, "memory-answer-worker.md"),

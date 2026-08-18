@@ -233,7 +233,7 @@ const main = async (): Promise<void> => {
                 }
               : {}),
             worker: {
-              appServerBinary,
+              executablePath: appServerBinary,
               model: process.env.KOED_EVAL_PRODUCT_MODEL ?? readerConfig.model,
               reasoningEffort:
                 process.env.KOED_EVAL_PRODUCT_REASONING_EFFORT ??

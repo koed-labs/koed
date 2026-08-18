@@ -1,14 +1,63 @@
-import { CONVERSATION_SOURCE_REPLICATION_PROTOCOL } from "@koed/shared";
+import {
+  CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+  aiClientSourceAdapterRegistry,
+  isSupportedAiClientSourceAdapter
+} from "@koed/shared";
 import { z } from "zod";
 
 const uuid = z.uuid();
 const digest = z.string().regex(/^[0-9a-f]{64}$/);
+const sourceComponentId = z
+  .string()
+  .trim()
+  .min(1)
+  .max(160)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
+const downloadableSourceComponentId = z
+  .string()
+  .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/);
 const boundedBase64 = z
   .string()
   .min(1)
   .max(24 * 1024 * 1024)
   .regex(/^[A-Za-z0-9+/]+={0,2}$/);
 const encryptedPackageObjectClass = z.literal("sync_package");
+const sourceKinds = [
+  ...new Set(aiClientSourceAdapterRegistry.map(({ sourceKind }) => sourceKind))
+] as ["codex" | "claude-code", ...("codex" | "claude-code")[]];
+const sourceRuntimes = [
+  ...new Set(
+    aiClientSourceAdapterRegistry.map(({ sourceRuntime }) => sourceRuntime)
+  )
+] as [
+  "codex" | "codex-cli" | "claude-code",
+  ...("codex" | "codex-cli" | "claude-code")[]
+];
+const artifactFormats = [
+  ...new Set(
+    aiClientSourceAdapterRegistry.map(({ artifactFormat }) => artifactFormat)
+  )
+] as [
+  "codex_rollout_jsonl" | "claude_session_jsonl",
+  ...("codex_rollout_jsonl" | "claude_session_jsonl")[]
+];
+const artifactFormatVersions = [
+  ...new Set(
+    aiClientSourceAdapterRegistry.map(
+      ({ artifactFormatVersion }) => artifactFormatVersion
+    )
+  )
+] as [1, ...1[]];
+const sourceAdapterVersions = [
+  ...new Set(
+    aiClientSourceAdapterRegistry.map(
+      ({ sourceAdapterVersion }) => sourceAdapterVersion
+    )
+  )
+] as [
+  "codex-transcript-v1" | "claude-code-transcript-v1",
+  ...("codex-transcript-v1" | "claude-code-transcript-v1")[]
+];
 
 export const sourceReplicationRecipientKeySchema = z
   .object({
@@ -191,15 +240,25 @@ export const sourceReplicationUploadSchema = z
 
 const sourceDescriptorSchema = z
   .object({
-    sourceKind: z.literal("codex"),
+    sourceKind: z.enum(sourceKinds),
+    sourceComponentSchemaVersion: z.literal(1),
+    sourceComponentId,
+    sourceComponentRole: z.enum(["primary", "auxiliary"]),
+    parentSourceComponentId: sourceComponentId.nullable(),
+    contentFraming: z.enum(["jsonl", "immutable_blob"]),
     logicalSessionId: uuid,
     externalSessionId: z.string().min(1).max(1_024),
     forkedFromExternalThreadId: z.string().min(1).max(1_024).nullable(),
     sourceFingerprint: digest,
-    artifactFormat: z.literal("codex_rollout_jsonl"),
-    artifactFormatVersion: z.literal(1),
-    sourceAdapterVersion: z.literal("codex-transcript-v1"),
-    sourceRuntime: z.enum(["codex", "codex-cli"]),
+    artifactFormat: z.enum(artifactFormats),
+    artifactFormatVersion: z.union(
+      artifactFormatVersions.map((version) => z.literal(version)) as [
+        z.ZodLiteral<1>,
+        ...z.ZodLiteral<1>[]
+      ]
+    ),
+    sourceAdapterVersion: z.enum(sourceAdapterVersions),
+    sourceRuntime: z.enum(sourceRuntimes),
     redactedSourceLabel: z.string().trim().min(1).max(255),
     originDeploymentId: uuid,
     originDeviceId: uuid,
@@ -220,6 +279,13 @@ const sourceDescriptorSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (!isSupportedAiClientSourceAdapter(value)) {
+      context.addIssue({
+        code: "custom",
+        path: ["sourceAdapterVersion"],
+        message: "AI-client source adapter tuple is unsupported"
+      });
+    }
     if (
       value.liveStartOffset < value.journalStartOffset ||
       value.liveStartLine < value.journalStartLine
@@ -227,6 +293,19 @@ const sourceDescriptorSchema = z
       context.addIssue({
         code: "custom",
         message: "Source live boundary precedes its journal boundary"
+      });
+    }
+    if (
+      (value.sourceComponentRole === "primary" &&
+        (value.sourceComponentId !== "main" ||
+          value.parentSourceComponentId !== null)) ||
+      (value.sourceComponentRole === "auxiliary" &&
+        (!value.parentSourceComponentId ||
+          value.parentSourceComponentId === value.sourceComponentId))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Source component topology is invalid"
       });
     }
   });
@@ -252,7 +331,8 @@ export const sourceClosurePayloadSchema = z
   .object({
     protocol: z.literal(CONVERSATION_SOURCE_REPLICATION_PROTOCOL),
     operation: z.literal("close_generation"),
-    closure: z.record(z.string(), z.unknown())
+    closure: z.record(z.string(), z.unknown()),
+    sourceSetClosure: z.record(z.string(), z.unknown()).nullable()
   })
   .strict();
 
@@ -278,6 +358,7 @@ export const sourceReplicationIntakeContextSchema = z.object({}).strict();
 export const sourceDownloadAuthorizationSchema = z
   .object({
     sourceGenerationId: uuid,
+    sourceComponentId: downloadableSourceComponentId,
     targetDeploymentId: uuid,
     firstSegmentIndex: z.number().int().safe().nonnegative(),
     recipientKey: sourceReplicationRecipientKeySchema
@@ -313,7 +394,8 @@ export const sourceDiscoveryResultItemSchema = z
   .object({
     sourceGenerationId: uuid,
     redactedSourceLabel: z.string().trim().min(1).max(255),
-    sourceRuntime: z.enum(["codex", "codex-cli"]),
+    sourceRuntime: z.enum(sourceRuntimes),
+    sourceComponentId,
     sourceCreatedAt: z.iso.datetime({ offset: true }),
     sourceModifiedAt: z.iso.datetime({ offset: true }).nullable(),
     currentSourceLength: z.number().int().safe().nonnegative(),

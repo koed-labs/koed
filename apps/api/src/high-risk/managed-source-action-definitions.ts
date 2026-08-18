@@ -32,7 +32,9 @@ type ManagedSourceIntent = Extract<
 
 type ManagedSourceRepository = Pick<
   MemorySourceRepository,
-  "getManagedConversationExecution" | "listDeviceCredentials"
+  | "getConversationSourceArtifactByGeneration"
+  | "getManagedConversationExecution"
+  | "listDeviceCredentials"
 >;
 
 interface ManagedSourceAdmissionInput {
@@ -76,27 +78,31 @@ export const bindConversationSourceDownloadOperation = (
   intent: Extract<
     ManagedSourceIntent,
     { action: "conversation_source.download" }
-  >
+  >,
+  artifactId: string
 ): HighRiskResolvedActionGrantOperation => ({
   operationFamily: "source_download",
   action: intent.action,
   teamId: null,
-  targetId: intent.sourceGenerationId,
+  targetId: artifactId,
   method: "POST",
   path: "/v1/conversation-source-replication/download-authorizations",
   body: {
     sourceGenerationId: intent.sourceGenerationId,
+    sourceComponentId: intent.sourceComponentId,
     targetDeploymentId: intent.targetDeploymentId,
     firstSegmentIndex: intent.firstSegmentIndex,
     recipientKey: intent.recipientKey
   },
   scopeHash: calculateConversationSourceDownloadScopeHash({
     sourceGenerationId: intent.sourceGenerationId,
+    sourceComponentId: intent.sourceComponentId,
     targetDeploymentId: intent.targetDeploymentId,
     recipientKey: intent.recipientKey
   }),
   requestHash: calculateConversationSourceDownloadRequestHash({
     sourceGenerationId: intent.sourceGenerationId,
+    sourceComponentId: intent.sourceComponentId,
     targetDeploymentId: intent.targetDeploymentId,
     firstSegmentIndex: intent.firstSegmentIndex,
     recipientKey: intent.recipientKey
@@ -150,26 +156,40 @@ const sourceDiscoveryDefinition = {
 
 const sourceDownloadDefinition = {
   operationFamily: "source_download" as const,
-  admit(input: ManagedSourceAdmissionInput) {
+  async admit(input: ManagedSourceAdmissionInput) {
     if (input.intent.action !== "conversation_source.download") {
-      return Promise.resolve(null);
+      return null;
     }
     if (!input.upstreamBackendId || !input.currentDeviceInstanceId) {
       unavailable("Conversation source download");
     }
-    return Promise.resolve({
-      operation: bindConversationSourceDownloadOperation(input.intent),
+    const artifact =
+      await input.repository.getConversationSourceArtifactByGeneration(
+        { userId: input.userId },
+        input.intent.sourceGenerationId,
+        input.intent.sourceComponentId
+      );
+    if (!artifact) return null;
+    return {
+      operation: bindConversationSourceDownloadOperation(
+        input.intent,
+        artifact.id
+      ),
       policy: reviewed("step_up", {
         title: "Download a conversation source?",
         description:
           "This standalone source download is not attached to a reviewed handoff, fork, restore, or sync decision.",
         consequence:
-          "Approving authorizes only the exact source generation, target deployment, segment boundary, and recipient key.",
+          "Approving authorizes only the exact source generation and component, target deployment, segment boundary, and recipient key.",
         confirmLabel: "Authorize download",
         details: [
           {
             label: "Source generation",
             value: input.intent.sourceGenerationId
+          },
+          {
+            label: "Source component",
+            value: input.intent.sourceComponentId
           },
           {
             label: "Target deployment",
@@ -181,7 +201,7 @@ const sourceDownloadDefinition = {
           }
         ]
       })
-    });
+    };
   }
 };
 

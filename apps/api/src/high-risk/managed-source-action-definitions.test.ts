@@ -23,6 +23,7 @@ const ids = {
   backend: "backend-test",
   targetDeployment: randomUUID(),
   sourceGeneration: randomUUID(),
+  sourceArtifact: randomUUID(),
   operation: randomUUID()
 };
 
@@ -48,6 +49,9 @@ const credential = (input: {
 });
 
 const repository = (credentials: ReturnType<typeof credential>[] = []) => ({
+  getConversationSourceArtifactByGeneration: vi.fn(async () => ({
+    id: ids.sourceArtifact
+  })),
   getManagedConversationExecution: vi.fn(async () => execution as never),
   listDeviceCredentials: vi.fn(async () => credentials as never)
 });
@@ -225,24 +229,28 @@ describe("managed Conversation and source-transfer action definitions", () => {
     const intent = {
       action: "conversation_source.download",
       sourceGenerationId: ids.sourceGeneration,
+      sourceComponentId: "agent.researcher",
       targetDeploymentId: ids.targetDeployment,
       firstSegmentIndex: 3,
       recipientKey
     } as const satisfies HighRiskActionGrantIntent;
 
-    const admitted = await admit(intent);
+    const repo = repository();
+    const admitted = await admit(intent, repo);
 
     expect(admitted).toMatchObject({
       operation: {
         operationFamily: "source_download",
-        targetId: ids.sourceGeneration,
+        targetId: ids.sourceArtifact,
         scopeHash: calculateConversationSourceDownloadScopeHash({
           sourceGenerationId: ids.sourceGeneration,
+          sourceComponentId: "agent.researcher",
           targetDeploymentId: ids.targetDeployment,
           recipientKey
         }),
         requestHash: calculateConversationSourceDownloadRequestHash({
           sourceGenerationId: ids.sourceGeneration,
+          sourceComponentId: "agent.researcher",
           targetDeploymentId: ids.targetDeployment,
           firstSegmentIndex: 3,
           recipientKey
@@ -250,5 +258,13 @@ describe("managed Conversation and source-transfer action definitions", () => {
       },
       policy: { disposition: "step_up" }
     });
+    expect(
+      admitted && "operation" in admitted ? admitted.operation.body : null
+    ).toMatchObject({ sourceComponentId: "agent.researcher" });
+    expect(repo.getConversationSourceArtifactByGeneration).toHaveBeenCalledWith(
+      { userId: ids.actor },
+      ids.sourceGeneration,
+      "agent.researcher"
+    );
   });
 });

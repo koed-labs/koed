@@ -414,6 +414,7 @@ const createTransferSourceAuthorization = async (
       repository,
       ownerUserId: auth.userId,
       sourceGenerationId: input.sourceGenerationId,
+      sourceComponentId: "main",
       allowedReplicaRoles: new Set([
         "origin_local",
         "peer_personal",

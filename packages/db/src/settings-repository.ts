@@ -1,7 +1,9 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { auditEventValues } from "./audit-repository.js";
 import type { KoedDb } from "./connection.js";
 import {
+  aiClientCapabilitySnapshots,
+  aiClientInstances,
   auditEvents,
   capturePolicies,
   localMemoryAgentSettings,
@@ -9,6 +11,8 @@ import {
 } from "./schema.js";
 import type {
   ActorContext,
+  AiClientCapabilitySnapshotRecord,
+  AiClientInstanceRecord,
   CapturePolicyRecord,
   CapturePolicyTarget,
   CaptureState,
@@ -87,6 +91,7 @@ const mapLocalMemoryAgentSettingRecord = (row: {
   ownerUserId: string;
   flowKey: string;
   provider: string;
+  aiClientInstanceId: string;
   model: string;
   reasoningEffort: string;
   timeoutMs: number;
@@ -96,13 +101,58 @@ const mapLocalMemoryAgentSettingRecord = (row: {
 }): LocalMemoryAgentSettingRecord => ({
   ownerUserId: row.ownerUserId,
   flowKey: row.flowKey as LocalMemoryAgentSettingsFlowKey,
-  provider: row.provider as "codex",
+  provider: row.provider,
+  aiClientInstanceId: row.aiClientInstanceId,
   model: row.model,
   reasoningEffort: row.reasoningEffort,
   timeoutMs: Number(row.timeoutMs),
   maxAttempts: Number(row.maxAttempts),
   createdAt: timestampIso(row.createdAt),
   updatedAt: timestampIso(row.updatedAt)
+});
+
+const mapAiClientInstanceRecord = (row: {
+  ownerUserId: string;
+  instanceId: string;
+  driverId: string;
+  displayName: string;
+  configIdentityHash: string | null;
+  enabled: boolean;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}): AiClientInstanceRecord => ({
+  ...row,
+  createdAt: timestampIso(row.createdAt),
+  updatedAt: timestampIso(row.updatedAt)
+});
+
+const mapAiClientCapabilitySnapshotRecord = (row: {
+  id: string;
+  ownerUserId: string;
+  instanceId: string;
+  installationIdentityHash: string;
+  clientVersion: string | null;
+  authenticationState: string;
+  healthState: string;
+  models: Array<Record<string, unknown>>;
+  capabilities: Record<string, unknown>;
+  observedAt: Date | string;
+  expiresAt: Date | string;
+  createdAt: Date | string;
+}): AiClientCapabilitySnapshotRecord => ({
+  ...row,
+  authenticationState: row.authenticationState as
+    | "authenticated"
+    | "unauthenticated"
+    | "unknown",
+  healthState: row.healthState as
+    | "healthy"
+    | "unavailable"
+    | "incompatible"
+    | "error",
+  observedAt: timestampIso(row.observedAt),
+  expiresAt: timestampIso(row.expiresAt),
+  createdAt: timestampIso(row.createdAt)
 });
 
 const capturePolicyAuditMetadata = (policy: CapturePolicyRecord) => ({
@@ -118,6 +168,194 @@ const capturePolicyAuditMetadata = (policy: CapturePolicyRecord) => ({
 });
 
 export const createSettingsRepository = (db: KoedDb) => ({
+  async listAiClientInstances(
+    actor: ActorContext
+  ): Promise<AiClientInstanceRecord[]> {
+    const rows = await db
+      .select()
+      .from(aiClientInstances)
+      .where(eq(aiClientInstances.ownerUserId, actor.userId))
+      .orderBy(asc(aiClientInstances.instanceId));
+    return rows.map(mapAiClientInstanceRecord);
+  },
+
+  async upsertAiClientInstance(
+    actor: ActorContext,
+    input: {
+      instanceId: string;
+      driverId: string;
+      displayName: string;
+      configIdentityHash?: string | null;
+      enabled?: boolean;
+    }
+  ): Promise<AiClientInstanceRecord> {
+    const [row] = await db
+      .insert(aiClientInstances)
+      .values({
+        ownerUserId: actor.userId,
+        instanceId: input.instanceId,
+        driverId: input.driverId,
+        displayName: input.displayName,
+        configIdentityHash: input.configIdentityHash ?? null,
+        enabled: input.enabled ?? true
+      })
+      .onConflictDoUpdate({
+        target: [aiClientInstances.ownerUserId, aiClientInstances.instanceId],
+        set: {
+          driverId: input.driverId,
+          displayName: input.displayName,
+          configIdentityHash: input.configIdentityHash ?? null,
+          enabled: input.enabled ?? true,
+          updatedAt: sql`now()`
+        }
+      })
+      .returning();
+    return mapAiClientInstanceRecord(row!);
+  },
+
+  async recordAiClientCapabilitySnapshot(
+    actor: ActorContext,
+    input: {
+      instanceId: string;
+      installationIdentityHash: string;
+      clientVersion?: string | null;
+      authenticationState: "authenticated" | "unauthenticated" | "unknown";
+      healthState: "healthy" | "unavailable" | "incompatible" | "error";
+      models: Array<Record<string, unknown>>;
+      capabilities: Record<string, unknown>;
+      observedAt: string;
+      expiresAt: string;
+    }
+  ): Promise<AiClientCapabilitySnapshotRecord> {
+    const [current] = await db
+      .select()
+      .from(aiClientCapabilitySnapshots)
+      .where(
+        and(
+          eq(aiClientCapabilitySnapshots.ownerUserId, actor.userId),
+          eq(aiClientCapabilitySnapshots.instanceId, input.instanceId)
+        )
+      )
+      .orderBy(desc(aiClientCapabilitySnapshots.observedAt))
+      .limit(1);
+    if (
+      current &&
+      current.installationIdentityHash === input.installationIdentityHash &&
+      current.clientVersion === (input.clientVersion ?? null) &&
+      current.authenticationState === input.authenticationState &&
+      current.healthState === input.healthState &&
+      JSON.stringify(current.models) === JSON.stringify(input.models) &&
+      JSON.stringify(current.capabilities) ===
+        JSON.stringify(input.capabilities)
+    ) {
+      const observedAt = new Date(input.observedAt);
+      const expiresAt = new Date(input.expiresAt);
+      const [refreshed] = await db
+        .update(aiClientCapabilitySnapshots)
+        .set({
+          observedAt: sql`greatest(${aiClientCapabilitySnapshots.observedAt}, ${observedAt})`,
+          expiresAt: sql`case
+            when ${aiClientCapabilitySnapshots.observedAt} <= ${observedAt}
+            then greatest(${aiClientCapabilitySnapshots.expiresAt}, ${expiresAt})
+            else ${aiClientCapabilitySnapshots.expiresAt}
+          end`
+        })
+        .where(eq(aiClientCapabilitySnapshots.id, current.id))
+        .returning();
+      return mapAiClientCapabilitySnapshotRecord(refreshed!);
+    }
+    const [row] = await db
+      .insert(aiClientCapabilitySnapshots)
+      .values({
+        ownerUserId: actor.userId,
+        instanceId: input.instanceId,
+        installationIdentityHash: input.installationIdentityHash,
+        clientVersion: input.clientVersion ?? null,
+        authenticationState: input.authenticationState,
+        healthState: input.healthState,
+        models: input.models,
+        capabilities: input.capabilities,
+        observedAt: new Date(input.observedAt),
+        expiresAt: new Date(input.expiresAt)
+      })
+      .returning();
+    return mapAiClientCapabilitySnapshotRecord(row!);
+  },
+
+  async listCurrentAiClientCapabilitySnapshots(
+    actor: ActorContext
+  ): Promise<AiClientCapabilitySnapshotRecord[]> {
+    const currentRows = await db
+      .select()
+      .from(aiClientCapabilitySnapshots)
+      .where(
+        and(
+          eq(aiClientCapabilitySnapshots.ownerUserId, actor.userId),
+          gt(aiClientCapabilitySnapshots.expiresAt, sql`now()`)
+        )
+      )
+      .orderBy(
+        asc(aiClientCapabilitySnapshots.instanceId),
+        desc(aiClientCapabilitySnapshots.observedAt)
+      );
+    const seen = new Set<string>();
+    const current = currentRows.flatMap((row) => {
+      if (seen.has(row.instanceId)) return [];
+      seen.add(row.instanceId);
+      return [row];
+    });
+    if (current.length === 0) return [];
+    const healthyRows = await db
+      .select()
+      .from(aiClientCapabilitySnapshots)
+      .where(
+        and(
+          eq(aiClientCapabilitySnapshots.ownerUserId, actor.userId),
+          eq(aiClientCapabilitySnapshots.healthState, "healthy"),
+          inArray(
+            aiClientCapabilitySnapshots.instanceId,
+            current.map((row) => row.instanceId)
+          )
+        )
+      )
+      .orderBy(
+        asc(aiClientCapabilitySnapshots.instanceId),
+        desc(aiClientCapabilitySnapshots.observedAt)
+      );
+    return current.map((row) => {
+      const record = mapAiClientCapabilitySnapshotRecord(row);
+      if (record.healthState === "healthy") return record;
+      const lastKnownGood = healthyRows.find(
+        (candidate) =>
+          candidate.instanceId === row.instanceId &&
+          candidate.installationIdentityHash === row.installationIdentityHash &&
+          candidate.models.length > 0
+      );
+      if (!lastKnownGood) return record;
+      const currentModelIds = new Set(
+        record.models.flatMap((model) => {
+          const id = model.model ?? model.id;
+          return typeof id === "string" ? [id] : [];
+        })
+      );
+      return {
+        ...record,
+        models: [
+          ...record.models,
+          ...lastKnownGood.models.flatMap((model) => {
+            const id = model.model ?? model.id;
+            if (typeof id !== "string" || currentModelIds.has(id)) return [];
+            return [{ ...model, provenance: "last-known-good" }];
+          })
+        ],
+        capabilities: {
+          ...record.capabilities,
+          lastKnownGoodObservedAt: timestampIso(lastKnownGood.observedAt)
+        }
+      };
+    });
+  },
+
   async listLocalMemoryAgentSettings(
     actor: ActorContext
   ): Promise<LocalMemoryAgentSettingRecord[]> {
@@ -134,7 +372,8 @@ export const createSettingsRepository = (db: KoedDb) => ({
     actor: ActorContext,
     input: {
       flowKey: LocalMemoryAgentSettingsFlowKey;
-      provider: "codex";
+      provider: string;
+      aiClientInstanceId: string;
       model: string;
       reasoningEffort: string;
       timeoutMs: number;
@@ -147,6 +386,7 @@ export const createSettingsRepository = (db: KoedDb) => ({
         ownerUserId: actor.userId,
         flowKey: input.flowKey,
         provider: input.provider,
+        aiClientInstanceId: input.aiClientInstanceId,
         model: input.model,
         reasoningEffort: input.reasoningEffort,
         timeoutMs: input.timeoutMs,
@@ -159,6 +399,7 @@ export const createSettingsRepository = (db: KoedDb) => ({
         ],
         set: {
           provider: input.provider,
+          aiClientInstanceId: input.aiClientInstanceId,
           model: input.model,
           reasoningEffort: input.reasoningEffort,
           timeoutMs: input.timeoutMs,

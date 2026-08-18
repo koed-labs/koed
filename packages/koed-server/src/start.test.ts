@@ -62,6 +62,7 @@ const healthyStatus = (root: string): KoedServerStatus => ({
   mcpServer: { state: "healthy" },
   captureHook: { state: "healthy" },
   codexTranscriptWatcher: { state: "healthy" },
+  claudeTranscriptWatcher: { state: "healthy" },
   codex: { state: "healthy", configured: true },
   lcmSummaryService: { state: "healthy" },
   deviceIdentity: {
@@ -1629,11 +1630,19 @@ describe("start supervisor", () => {
       ]);
       expect(localAiRuntime?.env?.MEMORY_API_TOKEN).toBe("watcher-token");
       expect(localAiRuntime?.env?.KOED_HOME).toBe(root);
+      expect(localAiRuntime?.env?.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED).toBe(
+        "true"
+      );
+      expect(
+        localAiRuntime?.env?.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED
+      ).toBe("true");
       const runtime = JSON.parse(
         readFileSync(resolve(root, "run/koed-server.json"), "utf8")
       ) as { services: string[]; processes: Record<string, number> };
       expect(runtime.services).toContain("local-ai-runtime");
       expect(runtime.processes.localAiRuntime).toBeGreaterThan(0);
+      expect(runtime.processes).not.toHaveProperty("codexTranscriptWatcher");
+      expect(runtime.processes).not.toHaveProperty("claudeTranscriptWatcher");
     } finally {
       controller.abort();
       await running;

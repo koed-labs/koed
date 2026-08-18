@@ -205,7 +205,7 @@ export const createTargetSyncRelationshipSchema = z
       .object({
         originSessionId: uuidSchema,
         externalSessionId: z.string().max(500).nullable(),
-        sourceRuntime: z.enum(["codex", "codex-cli"]),
+        sourceRuntime: z.enum(["codex", "codex-cli", "claude-code"]),
         captureMethod: z.enum(["transcript", "mcp", "web", "api"]),
         capturedAt: z.iso.datetime(),
         title: z.string().max(500).nullable(),

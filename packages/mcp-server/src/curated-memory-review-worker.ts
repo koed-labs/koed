@@ -1,11 +1,18 @@
 import { countTokensForModel } from "@koed/core";
 import { z } from "zod";
 import {
-  koedAppServerWorkerDeveloperInstructions,
-  runCodexAppServerJsonTask,
   resolveCodexAppServerBinary,
   type CodexAppServerRunResult
 } from "./codex-app-server-runner.js";
+import {
+  resolveClaudeCodeExecutable,
+  runAiClientJsonTask,
+  type AiClientProvider
+} from "./ai-client-runner.js";
+import {
+  environmentForLocalAiClientInstance,
+  resolveLocalAiClientInstance
+} from "./ai-client-instance-registry.js";
 
 const PROVIDER = "codex";
 const DEFAULT_TIMEOUT_MS = 90_000;
@@ -14,14 +21,15 @@ export const CURATED_MEMORY_REVIEW_PROMPT_VERSION =
   "curated-memory-local-review-v1";
 
 export interface CuratedMemoryReviewConfig {
-  provider: string;
+  provider: AiClientProvider;
+  aiClientInstanceId: string;
   model: string;
   reasoningEffort: string;
   timeoutMs: number;
   maxAttempts: number;
   retryDelayMs: number;
   maxPromptTokens: number;
-  appServerBinary: string;
+  executablePath: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
 }
@@ -138,58 +146,84 @@ export const resolveCuratedMemoryReviewConfig = (
     Pick<
       CuratedMemoryReviewConfig,
       | "provider"
+      | "aiClientInstanceId"
       | "model"
       | "reasoningEffort"
       | "timeoutMs"
       | "maxAttempts"
       | "retryDelayMs"
       | "maxPromptTokens"
-      | "appServerBinary"
+      | "executablePath"
       | "cwd"
     >
   > = {}
-): CuratedMemoryReviewConfig => ({
-  provider:
+): CuratedMemoryReviewConfig => {
+  const provider =
     overrides.provider ??
     envValue(env, "MEMORY_CURATED_REVIEW_PROVIDER")?.toLowerCase() ??
-    PROVIDER,
-  model:
-    overrides.model ??
-    envValue(env, "MEMORY_CURATED_REVIEW_MODEL") ??
-    "gpt-5.6-luna",
-  reasoningEffort:
-    overrides.reasoningEffort ??
-    envValue(env, "MEMORY_CURATED_REVIEW_REASONING_EFFORT") ??
-    "low",
-  timeoutMs: Math.max(
-    1_000,
-    overrides.timeoutMs ??
-      intEnv(env, "MEMORY_CURATED_REVIEW_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)
-  ),
-  maxAttempts: Math.max(
-    1,
-    overrides.maxAttempts ??
-      intEnv(env, "MEMORY_CURATED_REVIEW_MAX_ATTEMPTS", 2)
-  ),
-  retryDelayMs: Math.max(
-    0,
-    overrides.retryDelayMs ??
-      intEnv(env, "MEMORY_CURATED_REVIEW_RETRY_DELAY_MS", 2_000)
-  ),
-  maxPromptTokens: Math.max(
-    2_000,
-    overrides.maxPromptTokens ??
-      intEnv(
-        env,
-        "MEMORY_CURATED_REVIEW_MAX_PROMPT_TOKENS",
-        DEFAULT_MAX_PROMPT_TOKENS
-      )
-  ),
-  appServerBinary:
-    overrides.appServerBinary ?? resolveCodexAppServerBinary(env),
-  cwd: overrides.cwd ?? process.cwd(),
-  env
-});
+    PROVIDER;
+  if (provider !== "codex" && provider !== "claude") {
+    throw new Error(`Unsupported Curated Memory review provider: ${provider}`);
+  }
+  const aiClientInstanceId =
+    overrides.aiClientInstanceId ??
+    envValue(env, "MEMORY_CURATED_REVIEW_AI_CLIENT_INSTANCE") ??
+    `${provider}.default`;
+  const instance = resolveLocalAiClientInstance({
+    instanceId: aiClientInstanceId,
+    driverId: provider,
+    env
+  });
+  const instanceEnv = environmentForLocalAiClientInstance({
+    instance,
+    driverId: provider,
+    env
+  });
+  return {
+    provider,
+    aiClientInstanceId,
+    model:
+      overrides.model ??
+      envValue(env, "MEMORY_CURATED_REVIEW_MODEL") ??
+      (provider === "claude" ? "haiku" : "gpt-5.6-luna"),
+    reasoningEffort:
+      overrides.reasoningEffort ??
+      envValue(env, "MEMORY_CURATED_REVIEW_REASONING_EFFORT") ??
+      "low",
+    timeoutMs: Math.max(
+      1_000,
+      overrides.timeoutMs ??
+        intEnv(env, "MEMORY_CURATED_REVIEW_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)
+    ),
+    maxAttempts: Math.max(
+      1,
+      overrides.maxAttempts ??
+        intEnv(env, "MEMORY_CURATED_REVIEW_MAX_ATTEMPTS", 2)
+    ),
+    retryDelayMs: Math.max(
+      0,
+      overrides.retryDelayMs ??
+        intEnv(env, "MEMORY_CURATED_REVIEW_RETRY_DELAY_MS", 2_000)
+    ),
+    maxPromptTokens: Math.max(
+      2_000,
+      overrides.maxPromptTokens ??
+        intEnv(
+          env,
+          "MEMORY_CURATED_REVIEW_MAX_PROMPT_TOKENS",
+          DEFAULT_MAX_PROMPT_TOKENS
+        )
+    ),
+    executablePath:
+      overrides.executablePath ??
+      instance?.executablePath ??
+      (provider === "claude"
+        ? resolveClaudeCodeExecutable(instanceEnv)
+        : resolveCodexAppServerBinary(instanceEnv)),
+    cwd: overrides.cwd ?? process.cwd(),
+    env: instanceEnv
+  };
+};
 
 export const buildCuratedMemoryReviewPrompt = (
   bundle: CuratedMemoryReviewBundle
@@ -260,23 +294,23 @@ export type CuratedMemoryReviewRunner = (
   timeoutMs: number
 ) => Promise<CodexAppServerRunResult>;
 
-export const runCodexCuratedMemoryReview: CuratedMemoryReviewRunner = (
+export const runCuratedMemoryReview: CuratedMemoryReviewRunner = (
   prompt,
   config,
   timeoutMs
 ) =>
-  runCodexAppServerJsonTask(
+  runAiClientJsonTask(
     prompt,
     {
-      appServerBinary: config.appServerBinary,
+      provider: config.provider,
+      executablePath: config.executablePath,
       model: config.model,
       reasoningEffort: config.reasoningEffort,
       cwd: config.cwd,
       env: config.env,
       clientName: "koed-curated-memory-review-worker",
-      baseInstructions:
-        "You are a private local Koed Curated Memory review worker. Return only the requested JSON object.",
-      developerInstructions: koedAppServerWorkerDeveloperInstructions
+      systemPrompt:
+        "You are a private local Koed Curated Memory review worker. Return only the requested JSON object."
     },
     timeoutMs
   );
@@ -284,7 +318,7 @@ export const runCodexCuratedMemoryReview: CuratedMemoryReviewRunner = (
 export const reviewCuratedMemoryProposal = async (
   bundle: CuratedMemoryReviewBundle,
   config: CuratedMemoryReviewConfig,
-  runner: CuratedMemoryReviewRunner = runCodexCuratedMemoryReview
+  runner: CuratedMemoryReviewRunner = runCuratedMemoryReview
 ): Promise<CuratedMemoryReviewResult> => {
   if (bundle.evidence.length === 0 || bundle.rejectedSourceCount > 0) {
     return {

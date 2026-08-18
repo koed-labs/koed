@@ -231,41 +231,37 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     await vi.waitFor(() => expect(observedSignal?.aborted).toBe(true));
   });
 
-  it("rejects the retired initialize protocol rather than starting legacy mode", async () => {
+  it("serves current initialize clients through the same stateless adapter", async () => {
+    const callTool = vi.fn(async () => ({ ok: true }));
     const runtimeClient = {
       capabilities: async () => ({
         protocolVersion: 1 as const,
         curatedMemoryIntakeAvailable: false
       }),
-      callTool: vi.fn()
+      callTool
     } as unknown as LocalAiRuntimeClient;
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
     const server = serveStdio(
       (context) => createKoedMcpServer(context, { runtimeClient }),
-      { transport: serverTransport, legacy: "reject" }
+      { transport: serverTransport, legacy: "serve" }
     );
-    await clientTransport.start();
-    const response = new Promise<unknown>((resolveResponse) => {
-      clientTransport.onmessage = resolveResponse;
-    });
-    await clientTransport.send({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: {
-        protocolVersion: "2025-11-25",
+    const client = new Client(
+      { name: "current-initialize-client", version: "1.0.0" },
+      {
         capabilities: {},
-        clientInfo: { name: "legacy-client", version: "1.0.0" }
+        versionNegotiation: { mode: "legacy" }
       }
-    });
-    const legacyResponse = (await response) as {
-      error: { message: string };
-      id: number;
-    };
-    expect(legacyResponse.id).toBe(1);
-    expect(legacyResponse.error.message).toContain("protocol");
-    await clientTransport.close();
+    );
+    await client.connect(clientTransport);
+    await expect(
+      client.callTool({
+        name: "memory_answer",
+        arguments: { query: "Can this AI Client recall memory?" }
+      })
+    ).resolves.toMatchObject({ structuredContent: { ok: true } });
+    expect(callTool).toHaveBeenCalledTimes(1);
+    await client.close();
     await server.close();
   });
 });

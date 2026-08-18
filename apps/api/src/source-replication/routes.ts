@@ -20,6 +20,9 @@ import {
   parseConversationSourceReplicationSegmentEnvelope,
   parseSignedConversationSourceClosureManifest,
   calculateConversationSourceClosureDigest,
+  calculateConversationSourceClosureOperationContentDigest,
+  calculateConversationSourceSetClosureDigest,
+  parseSignedConversationSourceSetClosureManifest,
   verifyConversationSourceReplicationManifestForAcceptance,
   type EncryptedJsonPackage,
   type EncryptedPayloadEnvelope,
@@ -331,6 +334,7 @@ export const registerConversationSourceReplicationRoutes = (
                 sourceGenerationId: artifact.sourceGenerationId,
                 redactedSourceLabel: artifact.redactedSourceLabel,
                 sourceRuntime: artifact.sourceRuntime,
+                sourceComponentId: artifact.sourceComponentId,
                 sourceCreatedAt: artifact.sourceCreatedAt,
                 sourceModifiedAt: artifact.sourceModifiedAt,
                 currentSourceLength: artifact.currentSourceLength,
@@ -381,6 +385,7 @@ export const registerConversationSourceReplicationRoutes = (
           repository,
           ownerUserId: auth.user.id,
           sourceGenerationId: input.sourceGenerationId,
+          sourceComponentId: input.sourceComponentId,
           allowedReplicaRoles
         });
       const capability = `csd_${randomBytes(32).toString("base64url")}`;
@@ -392,7 +397,7 @@ export const registerConversationSourceReplicationRoutes = (
         teamId: null,
         operationFamily: "source_download",
         action: "conversation_source.download",
-        targetId: input.sourceGenerationId,
+        targetId: artifact.id,
         scopeHash: calculateConversationSourceDownloadScopeHash(input),
         requestHash: calculateConversationSourceDownloadRequestHash(input),
         execute: async ({ sourceJournal }) => {
@@ -419,6 +424,7 @@ export const registerConversationSourceReplicationRoutes = (
               authorizationId: authorization.id,
               capability,
               sourceGenerationId: input.sourceGenerationId,
+              sourceComponentId: input.sourceComponentId,
               firstSegmentIndex: authorization.firstSegmentIndex,
               lastSegmentIndex: authorization.lastSegmentIndex,
               expiresAt: authorization.expiresAt,
@@ -668,6 +674,10 @@ export const registerConversationSourceReplicationRoutes = (
               ? "peer_personal"
               : "hosted_personal",
             sourceKind: source.sourceKind,
+            sourceComponentId: source.sourceComponentId,
+            sourceComponentRole: source.sourceComponentRole,
+            parentSourceComponentId: source.parentSourceComponentId,
+            contentFraming: source.contentFraming,
             sourceRuntime: source.sourceRuntime,
             externalSessionId: targetExternalSessionId,
             sourceFingerprint: source.sourceFingerprint,
@@ -684,7 +694,7 @@ export const registerConversationSourceReplicationRoutes = (
             ),
             sourceCreatedAt: registration.sourceCreatedAt,
             storageProvider: "envelope_db",
-            storagePrefix: `${registration.logicalSourceId}/${registration.sourceGenerationId}`,
+            storagePrefix: `${registration.logicalSourceId}/${registration.sourceGenerationId}/${source.sourceComponentId}`,
             originDeploymentId: source.originDeploymentId,
             originDeviceId: source.originDeviceId,
             originKeyId: registration.originKeyId,
@@ -774,7 +784,8 @@ export const registerConversationSourceReplicationRoutes = (
         { userId: auth.user.id },
         {
           logicalSourceId: manifest.logicalSourceId,
-          sourceGenerationId
+          sourceGenerationId,
+          sourceComponentId: manifest.sourceComponentId
         }
       );
       const expectedReplicaRole = localProfiles.has(
@@ -910,6 +921,11 @@ export const registerConversationSourceReplicationRoutes = (
       const closure = parseSignedConversationSourceClosureManifest(
         payload.closure
       );
+      const sourceSetClosure = payload.sourceSetClosure
+        ? parseSignedConversationSourceSetClosureManifest(
+            payload.sourceSetClosure
+          )
+        : null;
       if (closure.manifest.sourceGenerationId !== sourceGenerationId) {
         throw sourceReplicationError(
           "Source generation route binding is invalid",
@@ -917,13 +933,29 @@ export const registerConversationSourceReplicationRoutes = (
         );
       }
       const closureDigest = calculateConversationSourceClosureDigest(closure);
+      const sourceSetClosureDigest = sourceSetClosure
+        ? calculateConversationSourceSetClosureDigest(sourceSetClosure)
+        : null;
+      if (
+        (closure.manifest.sourceComponentId === "main") !==
+        (sourceSetClosure !== null)
+      ) {
+        throw sourceReplicationError(
+          "Source-set closure binding is invalid",
+          409
+        );
+      }
       const expectedRequestDigest =
         calculateConversationSourceReplicationOperationDigest({
           operationId: input.operationId,
           operationKind: "close_generation",
           logicalSourceId: closure.manifest.logicalSourceId,
           sourceGenerationId,
-          contentDigest: closureDigest,
+          contentDigest:
+            calculateConversationSourceClosureOperationContentDigest(
+              closureDigest,
+              sourceSetClosureDigest
+            ),
           targetDeploymentId: decrypted.identity.deploymentId!
         });
       if (input.requestDigest !== expectedRequestDigest) {
@@ -937,7 +969,8 @@ export const registerConversationSourceReplicationRoutes = (
         { userId: auth.user.id },
         {
           logicalSourceId: closure.manifest.logicalSourceId,
-          sourceGenerationId
+          sourceGenerationId,
+          sourceComponentId: closure.manifest.sourceComponentId
         }
       );
       const expectedReplicaRole = localProfiles.has(
@@ -955,13 +988,19 @@ export const registerConversationSourceReplicationRoutes = (
         { userId: auth.user.id },
         { artifactId: artifact.id, signedClosure: closure }
       );
-      await repository.releaseManagedConversationCommandsForSourceGeneration({
-        ownerUserId: auth.user.id,
-        sourceGenerationId,
-        targetDeploymentId: auth.deploymentId,
-        targetDeviceId: auth.deviceId,
-        readiness: "finalized"
-      });
+      if (sourceSetClosure) {
+        await repository.finalizeConversationSourceSet(
+          { userId: auth.user.id },
+          { sourceGenerationId, signedClosure: sourceSetClosure }
+        );
+        await repository.releaseManagedConversationCommandsForSourceGeneration({
+          ownerUserId: auth.user.id,
+          sourceGenerationId,
+          targetDeploymentId: auth.deploymentId,
+          targetDeviceId: auth.deviceId,
+          readiness: "finalized"
+        });
+      }
       return {
         status: finalized.replayed ? "replayed" : "accepted",
         closureHash: finalized.artifact.closureHash

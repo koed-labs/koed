@@ -223,7 +223,7 @@ const defaultSemanticJudgeRunner: LcmSummarySemanticJudgeRunner = async (
       cwd: config.cwd,
       env: config.env,
       clientName: "koed-evaluation-worker",
-      baseInstructions: loadPrompt("app-server-eval-base").body
+      baseInstructions: loadPrompt("ai-client-eval-base").body
     },
     timeoutMs
   );

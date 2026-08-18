@@ -80,6 +80,7 @@ describe("Managed Conversation runtime coordinator", () => {
       apiToken: "cmt_local",
       appServerBinary: "codex",
       model: "gpt-test",
+      claudeModel: "claude-haiku-4-5-20251001",
       reasoningEffort: "low",
       deviceId: "00000000-0000-4000-8000-000000000002",
       deploymentId: "00000000-0000-4000-8000-000000000003",

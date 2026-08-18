@@ -7,6 +7,10 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { isAbsolute, join } from "node:path";
+import {
+  assertNoClaudeAgentSdkPlatformRuntimes,
+  removeClaudeAgentSdkPlatformRuntimes
+} from "../../../scripts/provider-runtime-package-policy.mjs";
 
 /**
  * Electron's prebuilt macOS binary is ad-hoc signed without a sealed resource
@@ -70,7 +74,30 @@ export const normalizePackagedSymlinks = (directory) => {
   return removed;
 };
 
+export const packagedResourcesRoot = (context) =>
+  context.electronPlatformName === "darwin"
+    ? join(
+        context.appOutDir,
+        `${context.packager.appInfo.productFilename}.app`,
+        "Contents",
+        "Resources"
+      )
+    : join(context.appOutDir, "resources");
+
 export default async function afterPack(context) {
+  const resourcesRoot = packagedResourcesRoot(context);
+  const runtimeRoot = join(resourcesRoot, "koed-runtime");
+  if (!existsSync(runtimeRoot)) {
+    throw new Error(`Expected packaged Koed runtime at ${runtimeRoot}.`);
+  }
+  const providerRuntimes = removeClaudeAgentSdkPlatformRuntimes(runtimeRoot);
+  assertNoClaudeAgentSdkPlatformRuntimes(runtimeRoot);
+  if (providerRuntimes.length > 0) {
+    console.log(
+      `Removed ${providerRuntimes.length} verified Claude Agent SDK platform runtime package(s) from ${runtimeRoot}.`
+    );
+  }
+
   if (context.electronPlatformName !== "darwin") return;
 
   const appPath = join(

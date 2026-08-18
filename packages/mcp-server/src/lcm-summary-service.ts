@@ -69,6 +69,7 @@ export type LcmSummaryWorkerConfigOverrides = Partial<
   Pick<
     LcmSummaryWorkerConfig,
     | "provider"
+    | "aiClientInstanceId"
     | "model"
     | "reasoningEffort"
     | "timeoutMs"
@@ -76,7 +77,7 @@ export type LcmSummaryWorkerConfigOverrides = Partial<
     | "retryDelayMs"
     | "concurrency"
     | "maxPromptTokens"
-    | "appServerBinary"
+    | "executablePath"
     | "cwd"
   >
 >;
@@ -91,10 +92,11 @@ const definedWorkerOverrides = (
 export const resolveLcmSummaryWorkerConfigFromSettings = (
   env: NodeJS.ProcessEnv,
   settings: LocalMemoryAgentSettingRecord[],
-  overrides: LcmSummaryWorkerConfigOverrides = {}
+  overrides: LcmSummaryWorkerConfigOverrides = {},
+  flowKey: "lcm_summary" | "session_title" = "lcm_summary"
 ): LcmSummaryWorkerConfig => {
   const persistedWorkerOverrides = workerOverridesFromLocalMemorySetting(
-    localMemoryAgentSettingFor(settings, "lcm_summary")
+    localMemoryAgentSettingFor(settings, flowKey)
   );
   return resolveLcmSummaryWorkerConfig(env, {
     ...(persistedWorkerOverrides ?? {}),
@@ -106,14 +108,15 @@ export const resolvePersistedLcmSummaryWorkerConfig = async (
   client: Pick<MemoryApiClient, "listLocalMemoryAgentSettings">,
   env: NodeJS.ProcessEnv = process.env,
   overrides: LcmSummaryWorkerConfigOverrides = {},
-  fallbackConfig?: LcmSummaryWorkerConfig
+  fallbackConfig?: LcmSummaryWorkerConfig,
+  flowKey: "lcm_summary" | "session_title" = "lcm_summary"
 ): Promise<LcmSummaryWorkerConfig> => {
   const settings = await client
     .listLocalMemoryAgentSettings()
     .then((response) => response.settings)
     .catch(() => []);
   const persistedWorkerOverrides = workerOverridesFromLocalMemorySetting(
-    localMemoryAgentSettingFor(settings, "lcm_summary")
+    localMemoryAgentSettingFor(settings, flowKey)
   );
   if (persistedWorkerOverrides) {
     return resolveLcmSummaryWorkerConfig(env, {
@@ -237,10 +240,17 @@ export const startLcmSummaryService = (
           {},
           fallbackWorkerConfig
         ));
+      const titleWorkerConfig = await resolvePersistedLcmSummaryWorkerConfig(
+        client,
+        process.env,
+        {},
+        fallbackWorkerConfig,
+        "session_title"
+      );
       const sessionTitles = await generatePendingSessionTitles(client, {
         limit: serviceConfig.titleBatchLimit,
         minUserEvents: serviceConfig.titleMinUserEvents,
-        config: currentWorkerConfig
+        config: titleWorkerConfig
       });
       const lcmSummaries = await summarizePendingLcmNodes(client, {
         limit: runOptions.limit ?? serviceConfig.batchLimit,

@@ -1,6 +1,9 @@
-ALTER TYPE "public"."memory_question_status" ADD VALUE 'pending' BEFORE 'answered';--> statement-breakpoint
 ALTER TABLE "memory_questions" DROP CONSTRAINT "memory_questions_origin_check";--> statement-breakpoint
 ALTER TABLE "memory_questions" DROP CONSTRAINT "memory_questions_status_check";--> statement-breakpoint
+ALTER TABLE "memory_questions" ALTER COLUMN "status" SET DATA TYPE text USING "status"::text;--> statement-breakpoint
+DROP TYPE "public"."memory_question_status";--> statement-breakpoint
+CREATE TYPE "public"."memory_question_status" AS ENUM('pending', 'answered', 'error');--> statement-breakpoint
+ALTER TABLE "memory_questions" ALTER COLUMN "status" SET DATA TYPE "public"."memory_question_status" USING "status"::"public"."memory_question_status";--> statement-breakpoint
 ALTER TABLE "memory_questions" ADD COLUMN "ask_thread_id" uuid;--> statement-breakpoint
 ALTER TABLE "memory_questions" ADD COLUMN "ask_turn_index" integer;--> statement-breakpoint
 CREATE UNIQUE INDEX "memory_questions_owner_ask_turn_idx" ON "memory_questions" USING btree ("owner_user_id","ask_thread_id","ask_turn_index") WHERE "memory_questions"."origin" = 'desktop_ask';--> statement-breakpoint

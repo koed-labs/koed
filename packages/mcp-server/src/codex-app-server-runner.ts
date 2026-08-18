@@ -626,8 +626,8 @@ export const koedAppServerMinimalContextConfig = {
   }
 } as const;
 
-export const koedAppServerWorkerDeveloperInstructions = loadPrompt(
-  "app-server-worker-developer"
+export const koedAiClientWorkerDeveloperInstructions = loadPrompt(
+  "ai-client-worker-developer"
 ).body;
 
 const createIsolatedCodexHome = (
@@ -828,7 +828,8 @@ const processRss = (
       ],
       { encoding: "utf8", windowsHide: true }
     );
-    const bytes = Number(result.stdout.trim());
+    const stdout = typeof result.stdout === "string" ? result.stdout : "";
+    const bytes = Number(stdout.trim());
     return result.status === 0 && Number.isFinite(bytes) && bytes > 0
       ? { peakRssBytes: bytes, measurement: "powershell_working_set" }
       : null;
@@ -836,7 +837,8 @@ const processRss = (
   const result = spawnSync("ps", ["-o", "rss=", "-p", String(pid)], {
     encoding: "utf8"
   });
-  const kib = Number(result.stdout.trim());
+  const stdout = typeof result.stdout === "string" ? result.stdout : "";
+  const kib = Number(stdout.trim());
   return result.status === 0 && Number.isFinite(kib) && kib > 0
     ? { peakRssBytes: kib * 1024, measurement: "ps_rss" }
     : null;
@@ -2156,7 +2158,7 @@ export const runCodexAppServerJsonTask = (
       clientName: config.clientName,
       baseInstructions: config.baseInstructions,
       developerInstructions:
-        config.developerInstructions ?? koedAppServerWorkerDeveloperInstructions
+        config.developerInstructions ?? koedAiClientWorkerDeveloperInstructions
     },
     timeoutMs
   );

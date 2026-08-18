@@ -3,7 +3,10 @@ import { z } from "zod";
 const boundedOffset = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const boundedLine = z.number().int().min(0).max(2_147_483_647);
 const digest = z.string().regex(/^[0-9a-f]{64}$/);
-const sourceKind = z.literal("codex");
+const sourceKind = z.enum(["codex", "claude-code"]);
+const sourceComponentId = z
+  .string()
+  .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/);
 const maximumSegmentBytes = 16 * 1024 * 1024;
 const maximumSegmentBase64Bytes = Math.ceil(maximumSegmentBytes / 3) * 4;
 
@@ -12,7 +15,7 @@ export const conversationSourceArtifactSchema = z
     sourceSession: z
       .object({
         externalSessionId: z.string().min(1).max(1024),
-        sourceRuntime: z.enum(["codex", "codex-cli"]),
+        sourceRuntime: z.enum(["codex", "codex-cli", "claude-code"]),
         captureMethod: z.literal("api"),
         model: z.string().min(1).max(512).optional(),
         cwd: z.string().min(1).max(4096).optional(),
@@ -34,9 +37,13 @@ export const conversationSourceArtifactSchema = z
       })
       .strict(),
     sourceKind,
+    sourceComponentId: sourceComponentId.default("main"),
+    sourceComponentRole: z.enum(["primary", "auxiliary"]).default("primary"),
+    parentSourceComponentId: sourceComponentId.nullable().default(null),
+    contentFraming: z.enum(["jsonl", "immutable_blob"]).default("jsonl"),
     externalSessionId: z.string().min(1).max(1024),
     sourceFingerprint: digest,
-    artifactFormat: z.literal("codex_rollout_jsonl"),
+    artifactFormat: z.string().regex(/^[a-z][a-z0-9_]{0,127}$/),
     artifactFormatVersion: z.literal(1),
     journalStartOffset: boundedOffset,
     journalStartLine: boundedLine,
@@ -49,6 +56,35 @@ export const conversationSourceArtifactSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      (value.sourceComponentRole === "primary" &&
+        (value.sourceComponentId !== "main" ||
+          value.parentSourceComponentId !== null)) ||
+      (value.sourceComponentRole === "auxiliary" &&
+        (!value.parentSourceComponentId ||
+          value.parentSourceComponentId === value.sourceComponentId))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["sourceComponentRole"],
+        message: "Conversation source component relationship is invalid"
+      });
+    }
+    const validSourceTuple =
+      value.contentFraming === "immutable_blob" ||
+      (value.sourceKind === "codex" &&
+        value.artifactFormat === "codex_rollout_jsonl" &&
+        ["codex", "codex-cli"].includes(value.sourceSession.sourceRuntime)) ||
+      (value.sourceKind === "claude-code" &&
+        value.artifactFormat === "claude_session_jsonl" &&
+        value.sourceSession.sourceRuntime === "claude-code");
+    if (!validSourceTuple) {
+      context.addIssue({
+        code: "custom",
+        path: ["sourceKind"],
+        message: "Conversation source identity tuple is unsupported"
+      });
+    }
     if (value.sourceSession.externalSessionId !== value.externalSessionId) {
       context.addIssue({
         code: "custom",
@@ -79,7 +115,8 @@ export const conversationSourceArtifactSchema = z
 export const conversationSourceArtifactLookupSchema = z
   .object({
     source_kind: sourceKind,
-    external_session_id: z.string().min(1).max(1024)
+    external_session_id: z.string().min(1).max(1024),
+    source_component_id: sourceComponentId.default("main")
   })
   .strict();
 
@@ -89,6 +126,10 @@ export const conversationSourceArtifactParamsSchema = z
 
 export const conversationSourceGenerationParamsSchema = z
   .object({ sourceGenerationId: z.string().uuid() })
+  .strict();
+
+export const conversationSourceGenerationLookupSchema = z
+  .object({ source_component_id: sourceComponentId.default("main") })
   .strict();
 
 export const conversationSourceSegmentParamsSchema = z

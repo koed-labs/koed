@@ -20,7 +20,11 @@ const authorizationHeaders = (
     return { authorization: desktopAuthorization };
   }
   if (browserCookie) {
-    return { cookie: browserCookie, origin: requestOrigin };
+    return {
+      cookie: browserCookie,
+      origin: requestOrigin,
+      "sec-fetch-site": "same-origin"
+    };
   }
   throw new Error("Joining-device local authentication is required.");
 };

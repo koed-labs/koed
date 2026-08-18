@@ -35,7 +35,7 @@ export interface ManagedConversationExecutionRecord {
   id: string;
   ownerUserId: string;
   projectId: string;
-  provider: "codex";
+  provider: string;
   state: ManagedConversationExecutionState;
   stateVersion: number;
   executionGeneration: number;
@@ -120,6 +120,7 @@ export interface ManagedConversationRepository {
     actor: ActorContext,
     input: {
       projectId: string;
+      provider: string;
       runnerDeploymentId: string;
       runnerDeviceId: string;
       idempotencyKey: string;
@@ -291,7 +292,7 @@ export interface ManagedConversationRepository {
       executionGeneration: number;
       localSessionId: string;
       providerThreadId: string;
-      transcriptPath: string;
+      transcriptPath: string | null;
       managedHome: string;
       providerCliVersion?: string;
       sourceGenerationId?: string;
@@ -311,7 +312,7 @@ type ExecutionRow = {
   id: string;
   owner_user_id: string;
   project_id: string;
-  provider: "codex";
+  provider: string;
   state: ManagedConversationExecutionState;
   state_version: number;
   execution_generation: number;
@@ -658,6 +659,7 @@ export const createManagedConversationRepository = (
           JSON.stringify({
             kind: "start",
             projectId,
+            provider: input.provider,
             runnerDeploymentId: input.runnerDeploymentId,
             runnerDeviceId: input.runnerDeviceId,
             initialPrompt: input.initialPrompt ?? null,
@@ -666,14 +668,15 @@ export const createManagedConversationRepository = (
         );
         const executionResult = await client.query<ExecutionRow>(
           `insert into managed_conversation_executions (
-             id, owner_user_id, project_id, fencing_token_hash,
+             id, owner_user_id, project_id, provider, fencing_token_hash,
              runner_deployment_id, runner_device_id
-           ) values ($1, $2, $3, $4, $5, $6)
+           ) values ($1, $2, $3, $4, $5, $6, $7)
            returning ${EXECUTION_COLUMNS}`,
           [
             executionId,
             actor.userId,
             projectId,
+            input.provider,
             sha256(fencingToken),
             input.runnerDeploymentId,
             input.runnerDeviceId

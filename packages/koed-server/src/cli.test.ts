@@ -41,6 +41,7 @@ const status: KoedServerStatus = {
   mcpServer: { state: "healthy" },
   captureHook: { state: "healthy" },
   codexTranscriptWatcher: { state: "healthy" },
+  claudeTranscriptWatcher: { state: "healthy" },
   codex: { state: "healthy", configured: true },
   lcmSummaryService: { state: "healthy" },
   deviceIdentity: {

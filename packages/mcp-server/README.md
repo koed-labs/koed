@@ -1,10 +1,10 @@
 # Koed MCP Server
 
-This package contains Koed's supported Codex integration:
+This package contains Koed's supported Codex and Claude Code integrations:
 
 - a thin stdio MCP `2026-07-28` adapter;
 - the TypeScript Supported Capture Hook;
-- reusable local Codex worker and transcript integration code;
+- reusable provider-routed workers and transcript integration code;
 - the Local AI Runtime artifact supervised by `koed-server`.
 
 The adapter itself is intentionally side-effect free. Starting an MCP adapter
@@ -41,11 +41,19 @@ API Tokens and upstream device credentials are not MCP configuration. The
 adapter discovers an authenticated loopback Local AI Runtime contract through
 an owner-only registration beneath `KOED_HOME/run`.
 
+## Claude Code configuration
+
+Run `pnpm claude:configure` to merge Koed-owned MCP and content-free Hook
+entries into the User's Claude configuration. Koed preserves unrelated settings
+and uses the separately installed, authenticated Claude Code runtime through
+the pinned Agent SDK. See
+[Claude Code integration](../../docs/claude-code-integration.md).
+
 ## Tool surface
 
 The normal public tool is:
 
-- `memory_answer`: launches a fresh isolated local Codex worker through the
+- `memory_answer`: launches a fresh isolated selected-provider worker through the
   Local AI Runtime and returns a compact evidence-backed answer.
 
 `memory_answer` accepts optional bounded `retrieval_hints` for lexical terms,
@@ -115,10 +123,12 @@ source of transcript content.
 - `src/local-runtime-client.ts`: typed adapter-to-runtime client.
 - `src/local-runtime-server.ts`: authenticated supervised Local AI Runtime.
 - `src/memory-tool-executor.ts`: shared tool execution contract.
-- `src/answer-worker.ts`: isolated Memory Answer worker.
+- `src/answer-worker.ts`: provider-routed isolated Memory Answer worker.
 - `src/lcm-summary-service.ts`: local LCM Summary scheduling.
 - `src/curated-memory-review-service.ts`: local Curated Memory review.
 - `src/codex-transcript-watcher.ts`: transcript-growth capture.
+- `src/claude-transcript-watcher.ts`: hook-signalled Claude Conversation Source capture.
+- `src/ai-client-runner.ts`: Codex/Claude local synthesis transport boundary.
 - `src/capture-hook.ts`: short-lived content-free Capture Hook.
 
 See [ADR 0025](../../docs/adr/0025-mcp-v2-local-ai-runtime-ownership.md) and

@@ -149,6 +149,9 @@ CREATE TABLE "shared_memory_candidate_previews" (
 	"source_hash" text NOT NULL,
 	"redacted_content_hash" text NOT NULL,
 	"item_count" integer NOT NULL,
+	"excluded_item_count" integer DEFAULT 0 NOT NULL,
+	"candidate_manifest" jsonb NOT NULL,
+	"candidate_manifest_hash" text NOT NULL,
 	"byte_count" integer NOT NULL,
 	"representation_policy_revision" integer NOT NULL,
 	"representation_policy_hash" text NOT NULL,
@@ -167,12 +170,16 @@ CREATE TABLE "shared_memory_candidate_previews" (
         and "shared_memory_candidate_previews"."authority_source" in ('browser_session','device_action_grant')
         and "shared_memory_candidate_previews"."source_revision" >= 0
         and "shared_memory_candidate_previews"."item_count" between 1 and 100
+        and "shared_memory_candidate_previews"."excluded_item_count" >= 0
+        and jsonb_typeof("shared_memory_candidate_previews"."candidate_manifest") = 'array'
+        and jsonb_array_length("shared_memory_candidate_previews"."candidate_manifest") = "shared_memory_candidate_previews"."item_count"
         and "shared_memory_candidate_previews"."byte_count" between 1 and 262144
         and "shared_memory_candidate_previews"."representation_policy_revision" > 0
         and "shared_memory_candidate_previews"."content_policy_version" > 0
         and "shared_memory_candidate_previews"."classifier_version" > 0
         and "shared_memory_candidate_previews"."expires_at" > "shared_memory_candidate_previews"."created_at"),
 	CONSTRAINT "shared_memory_candidate_previews_hashes_check" CHECK (length("shared_memory_candidate_previews"."preview_hash") = 64
+        and length("shared_memory_candidate_previews"."candidate_manifest_hash") = 64
         and length("shared_memory_candidate_previews"."source_hash") = 64
         and length("shared_memory_candidate_previews"."redacted_content_hash") = 64
         and length("shared_memory_candidate_previews"."representation_policy_hash") = 64
@@ -224,4 +231,111 @@ ALTER TABLE "source_owner_representation_consents" ADD CONSTRAINT "source_owner_
         "source_owner_representation_consents"."state" = 'expired'
         and "source_owner_representation_consents"."revoked_at" is null
         and "source_owner_representation_consents"."expires_at" is not null
-      ));
+      ));--> statement-breakpoint
+CREATE FUNCTION invalidate_curated_representations_for_session()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  WITH invalidated AS (
+    UPDATE team_memory_representations representation
+       SET state='invalidated',
+           invalidated_at=coalesce(representation.invalidated_at,now()),
+           invalidation_reason_code=coalesce(
+             representation.invalidation_reason_code,
+             'curated_evidence_ineligible'
+           ),
+           record_version=representation.record_version+1,
+           updated_at=now()
+      FROM team_session_share_grants share_grant,
+           logical_memories memory
+     WHERE share_grant.id=representation.share_grant_id
+       AND memory.id=share_grant.logical_memory_id
+       AND memory.local_session_id=NEW.session_id
+       AND representation.representation='curated_assertions'
+       AND representation.state IN ('pending','available','stale')
+     RETURNING representation.id
+  )
+  DELETE FROM team_memory_semantic_items semantic_item
+   USING invalidated
+   WHERE semantic_item.representation_id=invalidated.id;
+  RETURN NEW;
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER invalidate_curated_representations_on_conversation_item
+AFTER UPDATE OF memory_excluded_at,personal_deleted_at ON conversation_items
+FOR EACH ROW
+WHEN (
+  OLD.memory_excluded_at IS DISTINCT FROM NEW.memory_excluded_at
+  OR OLD.personal_deleted_at IS DISTINCT FROM NEW.personal_deleted_at
+)
+EXECUTE FUNCTION invalidate_curated_representations_for_session();--> statement-breakpoint
+CREATE TRIGGER invalidate_curated_representations_on_memory_event
+AFTER UPDATE OF invalidated_at,personal_deleted_at ON memory_events
+FOR EACH ROW
+WHEN (
+  OLD.invalidated_at IS DISTINCT FROM NEW.invalidated_at
+  OR OLD.personal_deleted_at IS DISTINCT FROM NEW.personal_deleted_at
+)
+EXECUTE FUNCTION invalidate_curated_representations_for_session();--> statement-breakpoint
+CREATE TRIGGER invalidate_curated_representations_on_memory_node
+AFTER UPDATE OF invalidated_at,personal_deleted_at ON memory_nodes
+FOR EACH ROW
+WHEN (
+  OLD.invalidated_at IS DISTINCT FROM NEW.invalidated_at
+  OR OLD.personal_deleted_at IS DISTINCT FROM NEW.personal_deleted_at
+)
+EXECUTE FUNCTION invalidate_curated_representations_for_session();--> statement-breakpoint
+CREATE FUNCTION invalidate_curated_representations_for_assertion()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  WITH affected_sessions AS (
+    SELECT item.session_id
+      FROM curated_memory_sources source
+      JOIN conversation_items item ON item.id=source.conversation_item_id
+     WHERE source.assertion_id=NEW.id
+    UNION
+    SELECT event.session_id
+      FROM curated_memory_sources source
+      JOIN memory_events event ON event.id=source.memory_event_id
+     WHERE source.assertion_id=NEW.id
+    UNION
+    SELECT node.session_id
+      FROM curated_memory_sources source
+      JOIN memory_nodes node ON node.id=source.lcm_node_id
+     WHERE source.assertion_id=NEW.id
+  ), invalidated AS (
+    UPDATE team_memory_representations representation
+       SET state='invalidated',
+           invalidated_at=coalesce(representation.invalidated_at,now()),
+           invalidation_reason_code=coalesce(
+             representation.invalidation_reason_code,
+             'curated_assertion_changed'
+           ),
+           record_version=representation.record_version+1,
+           updated_at=now()
+      FROM team_session_share_grants share_grant,
+           logical_memories memory
+     WHERE share_grant.id=representation.share_grant_id
+       AND memory.id=share_grant.logical_memory_id
+       AND memory.local_session_id IN (
+         SELECT session_id FROM affected_sessions WHERE session_id IS NOT NULL
+       )
+       AND representation.representation='curated_assertions'
+       AND representation.state IN ('pending','available','stale')
+     RETURNING representation.id
+  )
+  DELETE FROM team_memory_semantic_items semantic_item
+   USING invalidated
+   WHERE semantic_item.representation_id=invalidated.id;
+  RETURN NEW;
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER invalidate_curated_representations_on_assertion
+AFTER UPDATE OF assertion_text,normalized_assertion,status,sensitivity,confidence,
+  tags,metadata,expires_at,observed_at,supersedes_assertion_id,
+  superseded_by_assertion_id,conflict_with_assertion_id,suppressed_at ON curated_memory_assertions
+FOR EACH ROW
+EXECUTE FUNCTION invalidate_curated_representations_for_assertion();

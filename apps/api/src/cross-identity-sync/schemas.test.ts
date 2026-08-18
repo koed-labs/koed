@@ -189,6 +189,16 @@ describe("Cross-Identity Sync response schemas", () => {
     expect(
       createTargetSyncRelationshipSchema.safeParse({
         ...relationship,
+        session: {
+          ...relationship.session,
+          sourceRuntime: "claude-code",
+          sourceAdapterVersion: "claude-code-transcript-v1"
+        }
+      }).success
+    ).toBe(true);
+    expect(
+      createTargetSyncRelationshipSchema.safeParse({
+        ...relationship,
         policy_manifest: {
           ...relationship.policy_manifest,
           note: "raw memory disguised as harmless metadata"

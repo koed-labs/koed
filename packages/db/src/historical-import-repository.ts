@@ -59,6 +59,10 @@ export interface HistoricalImportRepository {
   listHistoricalImportSourcesNeedingLcmFinalization(): Promise<
     Array<{ sourceId: string; ownerUserId: string; sessionId: string }>
   >;
+  reconcileHistoricalImportCompletion(): Promise<{
+    sourcesCompleted: number;
+    runsCompleted: number;
+  }>;
 }
 
 type CreateHistoricalImportSourceInput = {
@@ -123,6 +127,7 @@ type SourceRow = {
   artifact_id: string;
   ai_client: string;
   source_kind: string;
+  source_adapter_version: string;
   source_session_id: string;
   source_fingerprint: string;
   session_id: string;
@@ -131,6 +136,7 @@ type SourceRow = {
   historical_cursor_offset: string | number;
   historical_cursor_line: number;
   historical_cursor_digest: string | null;
+  historical_cursor_current_turn_id: string | null;
   provider_cursor_offset: string | number;
   provider_cursor_line: number;
   source_size_bytes: string | number;
@@ -178,6 +184,7 @@ const sourceSelect = (): string => {
   source.id, source.run_id, source.owner_user_id, source.state,
   source.artifact_id, source.ai_client,
   artifact.source_kind,
+  artifact.source_adapter_version,
   artifact.external_session_id as source_session_id,
   artifact.source_fingerprint,
   artifact.session_id,
@@ -188,6 +195,13 @@ const sourceSelect = (): string => {
   coalesce(historical_cursor.source_line, artifact.journal_start_line)
     as historical_cursor_line,
   historical_cursor.last_verified_digest as historical_cursor_digest,
+  case
+    when jsonb_typeof(historical_cursor.parser_state -> 'currentTurnId') = 'string'
+     and length(historical_cursor.parser_state ->> 'currentTurnId') between 1 and 512
+     and historical_cursor.parser_state ->> 'currentTurnId' !~ '[[:cntrl:]]'
+    then historical_cursor.parser_state ->> 'currentTurnId'
+    else null
+  end as historical_cursor_current_turn_id,
   artifact.provider_cursor_offset,
   artifact.provider_cursor_line,
   artifact.current_source_length as source_size_bytes,
@@ -390,6 +404,7 @@ const mapSource = (row: SourceRow): HistoricalImportSourceRecord => {
     artifactId: row.artifact_id,
     aiClient: row.ai_client,
     sourceKind: row.source_kind,
+    sourceAdapterVersion: row.source_adapter_version,
     sourceSessionId: row.source_session_id,
     sourceFingerprint: row.source_fingerprint,
     sessionId: row.session_id,
@@ -398,6 +413,11 @@ const mapSource = (row: SourceRow): HistoricalImportSourceRecord => {
     historicalCursorOffset: cursorOffset,
     historicalCursorLine: row.historical_cursor_line,
     historicalCursorDigest: row.historical_cursor_digest,
+    ...(row.historical_cursor_current_turn_id
+      ? {
+          historicalCursorCurrentTurnId: row.historical_cursor_current_turn_id
+        }
+      : {}),
     providerCursorOffset: Number(row.provider_cursor_offset),
     providerCursorLine: row.provider_cursor_line,
     sourceSizeBytes: Number(row.source_size_bytes),
@@ -981,14 +1001,14 @@ const importedItem = (
   sessionId: source.sessionId,
   turnId: undefined,
   sourceKind: source.sourceKind,
-  sourceAdapterVersion: "codex-transcript-v1",
+  sourceAdapterVersion: source.sourceAdapterVersion,
   sourceTransport: "historical_import" as const,
   externalSessionId: source.sourceSessionId,
   externalThreadId: source.sourceSessionId,
   importObservedAt: observedAt,
   sourceFingerprint: source.sourceFingerprint,
   projectionStatus: item.projectionStatus ?? ("pending" as const),
-  projectionVersion: item.projectionVersion ?? "codex-transcript-v1",
+  projectionVersion: item.projectionVersion ?? source.sourceAdapterVersion,
   metadata: {
     ...(item.metadata ?? {}),
     historicalImportRunId: source.runId,
@@ -1127,6 +1147,8 @@ const createSourceRecord = (
          on artifact.id = $3
         and artifact.owner_user_id = run.owner_user_id
         and artifact.lifecycle = 'active'
+        and (($4 = 'codex' and artifact.source_kind = 'codex')
+          or ($4 = 'claude' and artifact.source_kind = 'claude-code'))
        where run.id = $2 and run.owner_user_id = $1
          and run.state in ('discovered', 'eligible', 'queued', 'importing', 'paused')
        on conflict (owner_user_id, artifact_id)
@@ -1421,6 +1443,59 @@ const listSourcesNeedingLcmFinalization = async (
   }));
 };
 
+const reconcileHistoricalImportCompletion = async (
+  pool: pg.Pool
+): Promise<{ sourcesCompleted: number; runsCompleted: number }> => {
+  const sourceCandidates = await pool.query<{
+    id: string;
+    owner_user_id: string;
+  }>(
+    `select id, owner_user_id
+       from historical_import_sources
+      where state = 'importing'
+      order by updated_at, id
+      limit 1000`
+  );
+  let sourcesCompleted = 0;
+  for (const source of sourceCandidates.rows) {
+    const completed = await transitionSourceRecord(
+      pool,
+      { userId: source.owner_user_id },
+      {
+        sourceId: source.id,
+        expectedState: "importing",
+        state: "completed"
+      }
+    );
+    if (completed) sourcesCompleted += 1;
+  }
+
+  const runCandidates = await pool.query<{
+    id: string;
+    owner_user_id: string;
+  }>(
+    `select id, owner_user_id
+       from historical_import_runs
+      where state = 'importing'
+      order by updated_at, id
+      limit 1000`
+  );
+  let runsCompleted = 0;
+  for (const run of runCandidates.rows) {
+    const completed = await transitionRunRecord(
+      pool,
+      { userId: run.owner_user_id },
+      {
+        runId: run.id,
+        expectedState: "importing",
+        state: "completed"
+      }
+    );
+    if (completed) runsCompleted += 1;
+  }
+  return { sourcesCompleted, runsCompleted };
+};
+
 export const createHistoricalImportRepository = (
   pool: pg.Pool
 ): HistoricalImportRepository => ({
@@ -1475,14 +1550,11 @@ export const createHistoricalImportRepository = (
     return sourceQuery(pool, actor.userId, "source.id = $2", [sourceId]);
   },
   getHistoricalImportSourceByIdentity: (actor, identity) =>
-    sourceQuery(
-      pool,
-      actor.userId,
-      `source.ai_client = $2
-       and artifact.source_kind = $3
-       and artifact.external_session_id = $4`,
-      [identity.aiClient, identity.sourceKind, identity.sourceSessionId]
-    ),
+    sourceQuery(pool, actor.userId, "source.artifact_id = $2", [
+      identity.artifactId
+    ]),
   listHistoricalImportSourcesNeedingLcmFinalization: () =>
-    listSourcesNeedingLcmFinalization(pool)
+    listSourcesNeedingLcmFinalization(pool),
+  reconcileHistoricalImportCompletion: () =>
+    reconcileHistoricalImportCompletion(pool)
 });

@@ -35,14 +35,25 @@ const safeProjectProvenance = (
       .map((key) => [key, project[key]])
   );
 
-const presentSource = (source: HistoricalImportSourceRecord) => {
+const presentSource = (
+  source: HistoricalImportSourceRecord,
+  options: { includeResumeCursor?: boolean } = {}
+) => {
   const safe = Object.fromEntries(
     Object.entries(source).filter(
-      ([key]) => key !== "redactedSourceLabel" && key !== "detectedProject"
+      ([key]) =>
+        key !== "redactedSourceLabel" &&
+        key !== "detectedProject" &&
+        key !== "historicalCursorCurrentTurnId"
     )
   );
   return {
     ...safe,
+    ...(options.includeResumeCursor && source.historicalCursorCurrentTurnId
+      ? {
+          historicalCursorCurrentTurnId: source.historicalCursorCurrentTurnId
+        }
+      : {}),
     sourceLabel: source.redactedSourceLabel,
     detectedProject: safeProjectProvenance(source.detectedProject)
   };
@@ -52,7 +63,9 @@ const presentRun = (
   run: HistoricalImportRunRecord | HistoricalImportRunDetail
 ) => ({
   ...run,
-  ...("sources" in run ? { sources: run.sources.map(presentSource) } : {})
+  ...("sources" in run
+    ? { sources: run.sources.map((source) => presentSource(source)) }
+    : {})
 });
 
 const requireSource = async (
@@ -216,7 +229,9 @@ const registerSourceLookupRoute = (
           statusCode: 404
         });
       }
-      return { source: presentSource(source) };
+      return {
+        source: presentSource(source, { includeResumeCursor: true })
+      };
     }
   );
 };
@@ -283,25 +298,32 @@ const registerSourceTransitionRoute = (
   );
 };
 
-const ingestHistoricalBatch = (
+const ingestHistoricalBatch = async (
   context: ApiRouteContext,
   userId: string,
   sourceId: string,
   input: HistoricalBatchInput
-) =>
-  context.requireRepository().ingestHistoricalImportBatch(
+) => {
+  const repo = context.requireRepository();
+  const source = await requireSource(repo, userId, sourceId);
+  const sourceAdapterVersion =
+    source.sourceKind === "claude-code"
+      ? "claude-code-transcript-v1"
+      : "codex-transcript-v1";
+  return repo.ingestHistoricalImportBatch(
     { userId },
     {
       sourceId,
       ...input,
       items: input.items.map((item) => ({
         ...item,
-        sourceKind: "codex",
-        sourceAdapterVersion: "codex-transcript-v1",
+        sourceKind: source.sourceKind,
+        sourceAdapterVersion,
         sourceTransport: "historical_import"
       }))
     }
   );
+};
 
 const registerBatchRoute = (
   app: FastifyInstance,

@@ -1570,11 +1570,11 @@ export const runRetrievalArena = async (
 
   const cpus = os.cpus();
   const promptTemplates = retrievalArenaPromptTemplateContents();
-  const memoryAnswerBase = loadPrompt("app-server-memory-answer-base", {
+  const memoryAnswerBase = loadPrompt("ai-client-memory-answer-base", {
     env: process.env
   });
   const memoryAnswerDeveloper = loadPrompt(
-    "app-server-memory-answer-developer",
+    "ai-client-memory-answer-developer",
     { env: process.env }
   );
   const memoryAnswerWorker = loadPrompt("memory-answer-worker", {

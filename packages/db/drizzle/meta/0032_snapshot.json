@@ -1,9 +1,266 @@
 {
-  "id": "850f5e04-22a3-463e-abf1-c8ec6b956124",
-  "prevId": "84733a8f-7756-4e39-aba3-1f917f7ee6d6",
+  "id": "a5f22d65-781b-4db2-9f4f-db5a6bd27c80",
+  "prevId": "818179a8-ee42-4278-95b4-e1602e473581",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
+    "public.ai_client_capability_snapshots": {
+      "name": "ai_client_capability_snapshots",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "instance_id": {
+          "name": "instance_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "installation_identity_hash": {
+          "name": "installation_identity_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "client_version": {
+          "name": "client_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "authentication_state": {
+          "name": "authentication_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "health_state": {
+          "name": "health_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "models": {
+          "name": "models",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "capabilities": {
+          "name": "capabilities",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "ai_client_capability_snapshots_current_idx": {
+          "name": "ai_client_capability_snapshots_current_idx",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "instance_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "observed_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "ai_client_capability_snapshots_instance_fk": {
+          "name": "ai_client_capability_snapshots_instance_fk",
+          "tableFrom": "ai_client_capability_snapshots",
+          "tableTo": "ai_client_instances",
+          "columnsFrom": ["owner_user_id", "instance_id"],
+          "columnsTo": ["owner_user_id", "instance_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ai_client_capability_snapshots_identity_check": {
+          "name": "ai_client_capability_snapshots_identity_check",
+          "value": "\"ai_client_capability_snapshots\".\"installation_identity_hash\" ~ '^[0-9a-f]{64}$'"
+        },
+        "ai_client_capability_snapshots_state_check": {
+          "name": "ai_client_capability_snapshots_state_check",
+          "value": "\"ai_client_capability_snapshots\".\"authentication_state\" in ('authenticated', 'unauthenticated', 'unknown')\n        and \"ai_client_capability_snapshots\".\"health_state\" in ('healthy', 'unavailable', 'incompatible', 'error')"
+        },
+        "ai_client_capability_snapshots_expiry_check": {
+          "name": "ai_client_capability_snapshots_expiry_check",
+          "value": "\"ai_client_capability_snapshots\".\"expires_at\" > \"ai_client_capability_snapshots\".\"observed_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.ai_client_instances": {
+      "name": "ai_client_instances",
+      "schema": "",
+      "columns": {
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "instance_id": {
+          "name": "instance_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "driver_id": {
+          "name": "driver_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "config_identity_hash": {
+          "name": "config_identity_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "ai_client_instances_owner_driver_idx": {
+          "name": "ai_client_instances_owner_driver_idx",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "driver_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "ai_client_instances_owner_user_id_users_id_fk": {
+          "name": "ai_client_instances_owner_user_id_users_id_fk",
+          "tableFrom": "ai_client_instances",
+          "tableTo": "users",
+          "columnsFrom": ["owner_user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "ai_client_instances_owner_user_id_instance_id_pk": {
+          "name": "ai_client_instances_owner_user_id_instance_id_pk",
+          "columns": ["owner_user_id", "instance_id"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ai_client_instances_identity_check": {
+          "name": "ai_client_instances_identity_check",
+          "value": "\"ai_client_instances\".\"instance_id\" ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'\n        and \"ai_client_instances\".\"driver_id\" ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'"
+        },
+        "ai_client_instances_config_identity_check": {
+          "name": "ai_client_instances_config_identity_check",
+          "value": "\"ai_client_instances\".\"config_identity_hash\" is null\n        or \"ai_client_instances\".\"config_identity_hash\" ~ '^[0-9a-f]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.api_tokens": {
       "name": "api_tokens",
       "schema": "",
@@ -4823,6 +5080,33 @@
           "primaryKey": false,
           "notNull": true
         },
+        "source_component_id": {
+          "name": "source_component_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'main'"
+        },
+        "source_component_role": {
+          "name": "source_component_role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'primary'"
+        },
+        "parent_source_component_id": {
+          "name": "parent_source_component_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "content_framing": {
+          "name": "content_framing",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'jsonl'"
+        },
         "replica_role": {
           "name": "replica_role",
           "type": "conversation_source_replica_role",
@@ -4979,6 +5263,30 @@
           "primaryKey": false,
           "notNull": false
         },
+        "source_set_closure_hash": {
+          "name": "source_set_closure_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_set_closure_manifest": {
+          "name": "source_set_closure_manifest",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_set_closure_signature": {
+          "name": "source_set_closure_signature",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_set_finalized_at": {
+          "name": "source_set_finalized_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "origin_deployment_id": {
           "name": "origin_deployment_id",
           "type": "text",
@@ -5045,33 +5353,6 @@
         }
       },
       "indexes": {
-        "conversation_source_artifacts_generation_unique": {
-          "name": "conversation_source_artifacts_generation_unique",
-          "columns": [
-            {
-              "expression": "owner_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "logical_source_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "source_generation_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "conversation_source_artifacts_provider_identity_unique": {
           "name": "conversation_source_artifacts_provider_identity_unique",
           "columns": [
@@ -5095,6 +5376,12 @@
             },
             {
               "expression": "source_generation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_component_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -5151,10 +5438,48 @@
           "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "conversation_source_artifacts_parent_component_fk": {
+          "name": "conversation_source_artifacts_parent_component_fk",
+          "tableFrom": "conversation_source_artifacts",
+          "tableTo": "conversation_source_artifacts",
+          "columnsFrom": [
+            "owner_user_id",
+            "logical_source_id",
+            "source_generation_id",
+            "parent_source_component_id"
+          ],
+          "columnsTo": [
+            "owner_user_id",
+            "logical_source_id",
+            "source_generation_id",
+            "source_component_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
+        "conversation_source_artifacts_generation_component_unique": {
+          "name": "conversation_source_artifacts_generation_component_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "owner_user_id",
+            "logical_source_id",
+            "source_generation_id",
+            "source_component_id"
+          ]
+        },
+        "conversation_source_artifacts_generation_lookup_unique": {
+          "name": "conversation_source_artifacts_generation_lookup_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "owner_user_id",
+            "source_generation_id",
+            "source_component_id"
+          ]
+        },
         "conversation_source_artifacts_id_owner_unique": {
           "name": "conversation_source_artifacts_id_owner_unique",
           "nullsNotDistinct": false,
@@ -5163,6 +5488,10 @@
       },
       "policies": {},
       "checkConstraints": {
+        "conversation_source_artifacts_component_check": {
+          "name": "conversation_source_artifacts_component_check",
+          "value": "\"conversation_source_artifacts\".\"source_component_id\" ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'\n        and \"conversation_source_artifacts\".\"source_component_role\" in ('primary', 'auxiliary')\n        and \"conversation_source_artifacts\".\"content_framing\" in ('jsonl', 'immutable_blob')\n        and (\n          (\"conversation_source_artifacts\".\"source_component_role\" = 'primary' and \"conversation_source_artifacts\".\"parent_source_component_id\" is null)\n          or (\"conversation_source_artifacts\".\"source_component_role\" = 'auxiliary'\n              and \"conversation_source_artifacts\".\"parent_source_component_id\" ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'\n              and \"conversation_source_artifacts\".\"parent_source_component_id\" <> \"conversation_source_artifacts\".\"source_component_id\")\n        )"
+        },
         "conversation_source_artifacts_fingerprint_check": {
           "name": "conversation_source_artifacts_fingerprint_check",
           "value": "\"conversation_source_artifacts\".\"source_fingerprint\" ~ '^[0-9a-f]{64}$'"
@@ -5178,6 +5507,10 @@
         "conversation_source_artifacts_closure_check": {
           "name": "conversation_source_artifacts_closure_check",
           "value": "(\n          \"conversation_source_artifacts\".\"lifecycle\" in ('active','finalizing','failed','conflicted','deletion_pending','deleted')\n          and \"conversation_source_artifacts\".\"closure_hash\" is null\n          and \"conversation_source_artifacts\".\"closure_manifest\" is null\n          and \"conversation_source_artifacts\".\"closure_signature\" is null\n          and \"conversation_source_artifacts\".\"finalized_at\" is null\n        ) or (\n          \"conversation_source_artifacts\".\"lifecycle\" = 'finalized'\n          and \"conversation_source_artifacts\".\"closure_hash\" ~ '^[0-9a-f]{64}$'\n          and jsonb_typeof(\"conversation_source_artifacts\".\"closure_manifest\") = 'object'\n          and \"conversation_source_artifacts\".\"closure_manifest\" <> '{}'::jsonb\n          and \"conversation_source_artifacts\".\"closure_signature\" ~ '^[A-Za-z0-9_-]{86}$'\n          and \"conversation_source_artifacts\".\"finalized_at\" is not null\n        )"
+        },
+        "conversation_source_artifacts_source_set_closure_check": {
+          "name": "conversation_source_artifacts_source_set_closure_check",
+          "value": "(\"conversation_source_artifacts\".\"source_set_closure_hash\" is null\n          and \"conversation_source_artifacts\".\"source_set_closure_manifest\" is null\n          and \"conversation_source_artifacts\".\"source_set_closure_signature\" is null\n          and \"conversation_source_artifacts\".\"source_set_finalized_at\" is null)\n        or (\"conversation_source_artifacts\".\"source_component_id\" = 'main'\n          and \"conversation_source_artifacts\".\"source_component_role\" = 'primary'\n          and \"conversation_source_artifacts\".\"source_set_closure_hash\" ~ '^[0-9a-f]{64}$'\n          and jsonb_typeof(\"conversation_source_artifacts\".\"source_set_closure_manifest\") = 'object'\n          and \"conversation_source_artifacts\".\"source_set_closure_manifest\" <> '{}'::jsonb\n          and \"conversation_source_artifacts\".\"source_set_closure_signature\" ~ '^[A-Za-z0-9_-]{86}$'\n          and \"conversation_source_artifacts\".\"source_set_finalized_at\" is not null)"
         },
         "conversation_source_artifacts_origin_identity_check": {
           "name": "conversation_source_artifacts_origin_identity_check",
@@ -11722,6 +12055,13 @@
           "notNull": true,
           "default": "'codex'"
         },
+        "ai_client_instance_id": {
+          "name": "ai_client_instance_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'codex.default'"
+        },
         "model": {
           "name": "model",
           "type": "text",
@@ -11806,11 +12146,11 @@
       "checkConstraints": {
         "local_memory_agent_settings_flow_key_check": {
           "name": "local_memory_agent_settings_flow_key_check",
-          "value": "\"local_memory_agent_settings\".\"flow_key\" in ('mcp_memory_answer', 'lcm_summary', 'curated_memory_review')"
+          "value": "\"local_memory_agent_settings\".\"flow_key\" in ('mcp_memory_answer', 'manual_memory_answer', 'lcm_summary', 'curated_memory_review', 'session_title')"
         },
         "local_memory_agent_settings_provider_check": {
           "name": "local_memory_agent_settings_provider_check",
-          "value": "\"local_memory_agent_settings\".\"provider\" = 'codex'"
+          "value": "\"local_memory_agent_settings\".\"provider\" ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'\n        and \"local_memory_agent_settings\".\"ai_client_instance_id\" ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'"
         },
         "local_memory_agent_settings_model_check": {
           "name": "local_memory_agent_settings_model_check",
@@ -12978,7 +13318,7 @@
         },
         "managed_conversation_executions_provider_check": {
           "name": "managed_conversation_executions_provider_check",
-          "value": "\"managed_conversation_executions\".\"provider\" = 'codex'"
+          "value": "\"managed_conversation_executions\".\"provider\" ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'"
         },
         "managed_conversation_executions_generation_check": {
           "name": "managed_conversation_executions_generation_check",
@@ -27826,6 +28166,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "source_generation_id": {
+          "name": "source_generation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
         "owner_user_id": {
           "name": "owner_user_id",
           "type": "uuid",
@@ -27989,6 +28335,12 @@
           "columns": [
             {
               "expression": "logical_source_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_generation_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -33303,7 +33655,7 @@
     "public.source_runtime": {
       "name": "source_runtime",
       "schema": "public",
-      "values": ["codex", "codex-cli"]
+      "values": ["codex", "codex-cli", "claude-code"]
     },
     "public.sync_change_operation": {
       "name": "sync_change_operation",

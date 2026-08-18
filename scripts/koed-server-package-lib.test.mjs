@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   readFileSync,
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -14,6 +15,9 @@ import test from "node:test";
 import {
   buildPackageManifest,
   buildPackageProvenance,
+  normalizeDeployedWorkspaceDependencies,
+  pruneStandalonePackageMetadata,
+  prunePnpmWorkspaceVirtualStorePaths,
   sha256File,
   validatePackageRoot,
   writePackageManifest
@@ -222,6 +226,145 @@ test("rejects retired Explorer, native runtime, model, and Python leftovers", ()
   assert.match(result.errors.join("\n"), /model\.gguf/);
   assert.match(result.errors.join("\n"), /embedding-service\/app\.py/);
   assert.match(result.errors.join("\n"), /embedding-service\/\.venv/);
+});
+
+test("rejects a Claude Agent SDK provider runtime executable", () => {
+  const root = createPackageRoot();
+  writeExecutable(
+    resolve(
+      root,
+      "koed-runtime",
+      "mcp-server",
+      "node_modules",
+      "@anthropic-ai",
+      "claude-agent-sdk-linux-x64",
+      "claude"
+    )
+  );
+  writeManifest(root);
+
+  const result = validatePackageRoot(root);
+
+  assert.equal(result.ok, false);
+  assert.match(
+    result.errors.join("\n"),
+    /Claude Agent SDK provider executable\/runtime/
+  );
+});
+
+test("prunes deployment lockfiles and dependency-owned Claude metadata", () => {
+  const root = createPackageRoot();
+  const lockfile = resolve(root, "koed-runtime", "api", "pnpm-lock.yaml");
+  const claudeMetadata = resolve(
+    root,
+    "koed-runtime",
+    "api",
+    "node_modules",
+    "dependency",
+    ".claude",
+    "settings.local.json"
+  );
+  const virtualStoreLockfile = resolve(
+    root,
+    "koed-runtime",
+    "api",
+    "node_modules",
+    ".pnpm",
+    "lock.yaml"
+  );
+  const workspaceVirtualStorePath = resolve(
+    root,
+    "koed-runtime",
+    "api",
+    "node_modules",
+    ".pnpm",
+    "@koed+core@file++++private+build+packages+core"
+  );
+  writeFile(lockfile, "lockfileVersion: '9.0'\n");
+  writeFile(claudeMetadata, '{"permissions": {}}\n');
+  writeFile(virtualStoreLockfile, "lockfileVersion: '9.0'\n");
+  writeFile(
+    resolve(workspaceVirtualStorePath, "node_modules", "zod", "index.js")
+  );
+
+  pruneStandalonePackageMetadata(root);
+  prunePnpmWorkspaceVirtualStorePaths(root);
+
+  assert.equal(existsSync(lockfile), false);
+  assert.equal(existsSync(claudeMetadata), false);
+  assert.equal(existsSync(virtualStoreLockfile), false);
+  assert.equal(existsSync(workspaceVirtualStorePath), false);
+  const manifest = writeManifest(root);
+  assert.equal(
+    manifest.files.some(
+      (entry) =>
+        entry.path.endsWith("pnpm-lock.yaml") ||
+        entry.path.includes("/.claude/")
+    ),
+    false
+  );
+  assert.equal(validatePackageRoot(root).ok, true);
+});
+
+test("rejects deployment lockfiles and dependency-owned Claude metadata", () => {
+  const root = createPackageRoot();
+  writeFile(resolve(root, "koed-runtime", "api", "pnpm-lock.yaml"));
+  writeFile(
+    resolve(
+      root,
+      "koed-runtime",
+      "api",
+      "node_modules",
+      "dependency",
+      ".claude",
+      "settings.local.json"
+    )
+  );
+  writeFile(
+    resolve(root, "koed-runtime", "api", "node_modules", ".pnpm", "lock.yaml")
+  );
+  writeManifest(root);
+
+  const result = validatePackageRoot(root);
+
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("\n"), /pnpm-lock\.yaml/);
+  assert.match(result.errors.join("\n"), /\.claude/);
+});
+
+test("normalizes deployed workspace dependencies and rejects file references", () => {
+  const root = createPackageRoot();
+  const manifestPath = resolve(root, "koed-runtime", "api", "package.json");
+  writeFile(
+    resolve(
+      root,
+      "koed-runtime",
+      "api",
+      "node_modules",
+      "@koed",
+      "db",
+      "package.json"
+    ),
+    `${JSON.stringify({ name: "@koed/db", version: "0.1.0" })}\n`
+  );
+  writeFile(
+    manifestPath,
+    `${JSON.stringify({
+      name: "@koed/api",
+      version: "0.1.0",
+      dependencies: {
+        "@koed/db": "@koed/db@file:///private/build/packages/db"
+      }
+    })}\n`
+  );
+  writeManifest(root);
+  assert.equal(validatePackageRoot(root).ok, false);
+
+  assert.equal(normalizeDeployedWorkspaceDependencies(manifestPath), true);
+  const normalized = JSON.parse(readFileSync(manifestPath, "utf8"));
+  assert.equal(normalized.dependencies["@koed/db"], "0.1.0");
+  writeManifest(root);
+  assert.equal(validatePackageRoot(root).ok, true);
 });
 
 test("reports manifest file checksum mismatches", () => {

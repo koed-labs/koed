@@ -938,8 +938,9 @@ sequenceDiagram
    reported to the LLM for one repair attempt. A partial repair retains the
    valid summary and valid grounded anchors and drops anything still invalid.
    Other unsupported worker output fails at the worker boundary.
-6. The LCM worker runs Codex app-server mode locally under the user's Codex
-   subscription and parses the returned structured LCM Summary.
+6. The LCM worker runs the selected local AI Client. Codex uses app-server mode;
+   Claude uses the pinned Agent SDK and confirmed local Claude Code executable.
+   The worker parses the returned structured LCM Summary.
 7. App-server workflow telemetry is persisted as raw-only conversation items,
    and provider token usage is recorded for attribution.
 8. The LCM worker submits the completed LCM Summary to
@@ -1273,8 +1274,10 @@ grant-based visibility model.
    signed run boundary containing the exact admitted Share Grant set and
    authority-row versions. The MCP Server forwards it on every later search and
    expansion; the model cannot alter it.
-3. The Local AI Runtime starts a memory-answer worker in Codex app-server mode
-   with the original question, fixed effective boundary, caller hints, first-pass
+3. The Local AI Runtime starts a memory-answer worker through the selected AI
+   Client. Codex uses app-server mode; Claude uses the pinned Agent SDK and
+   confirmed local Claude Code executable. The worker receives the original
+   question, fixed effective boundary, caller hints, first-pass
    diagnostics, and initial evidence. The worker is given only Koed dynamic RAG
    tools: `scan`, `search`, and `expand`. Personal Project search uses Captured
    Sessions' effective
@@ -1377,7 +1380,7 @@ sequenceDiagram
   API->>DB: Search authorized semantic candidates
   DB-->>API: Initial evidence and retrieval metadata
   API-->>Runtime: Compact first-pass result
-  Runtime->>Answer: Start worker with hints and initial evidence
+  Runtime->>Answer: Start selected AI Client worker with hints and initial evidence
   Answer->>API: scan/search dynamic RAG calls
   API->>Embed: Query embedding when semantic retrieval runs
   API->>DB: Search Memory Nodes and fallback evidence
