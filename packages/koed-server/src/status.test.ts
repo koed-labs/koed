@@ -97,17 +97,53 @@ describe("Pi integration status", () => {
     const status = inspectPi(environment, resolveKoedServerPaths(environment), {
       existsSync: (path: PathLike) =>
         path === resolve(packagePath, "extensions/koed.mjs"),
+      resolvePiExecutable: () => "/opt/pi",
       spawnSync: (_command: string, args: string[]) =>
         args[0] === "--version"
           ? spawnResult("0.84.2\n")
-          : spawnResult(`${packagePath}\n`)
+          : args[0] === "--list-models"
+            ? spawnResult("provider model\nopenai gpt-5.4\n")
+            : spawnResult(`${packagePath}\n`)
     } as never);
 
     expect(status).toMatchObject({ state: "healthy", configured: true });
     expect(status.details).toMatchObject({
       executable: "/opt/pi",
       packagePath,
-      version: "0.84.2"
+      version: "0.84.2",
+      authenticated: true,
+      modelCount: 1
+    });
+  });
+
+  it("separates registered-package health from authenticated-model health", () => {
+    const root = tempDir();
+    const packagePath = resolve(root, "integrations/pi");
+
+    const status = inspectPi(
+      { KOED_HOME: root },
+      resolveKoedServerPaths({ KOED_HOME: root }),
+      {
+        existsSync: (path: PathLike) =>
+          path === resolve(packagePath, "extensions/koed.mjs"),
+        resolvePiExecutable: () => "/opt/pi",
+        spawnSync: (_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("0.84.2\n")
+            : args[0] === "--list-models"
+              ? spawnResult("provider model\n")
+              : spawnResult(`${packagePath}\n`)
+      } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "needs_attention",
+      configured: true
+    });
+    expect(status.details).toMatchObject({
+      packageRegistered: true,
+      authenticated: false,
+      modelCount: 0
     });
   });
 
@@ -116,7 +152,9 @@ describe("Pi integration status", () => {
     const environment = { KOED_HOME: root };
 
     const status = inspectPi(environment, resolveKoedServerPaths(environment), {
-      spawnSync: () => spawnResult("", 1)
+      resolvePiExecutable: () => {
+        throw new Error("Pi was not found.");
+      }
     } as never);
 
     expect(status).toMatchObject({
@@ -177,7 +215,11 @@ describe("Claude Code integration status", () => {
         spawnSync: (_command: string, args: string[]) =>
           args[0] === "--version"
             ? spawnResult("2.1.227 (Claude Code)\n")
-            : spawnResult("")
+            : args[0] === "mcp" && args[1] === "get"
+              ? spawnResult(
+                  `koed:\n  Type: stdio\n  Command: node\n  Args: ${resolve(root, "packages/mcp-server/dist/cli.js")}\n  Environment:\n    KOED_HOME=${resolve(root, "koed")}\n`
+                )
+              : spawnResult("")
       } as never
     );
 

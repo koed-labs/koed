@@ -67,7 +67,8 @@ describe("Claude Code setup", () => {
         KOED_CLAUDE_CODE_EXECUTABLE: "/opt/claude",
         MEMORY_API_TOKEN: "must-not-leak",
         MEMORY_API_URL: "https://must-not-leak.example",
-        ANTHROPIC_API_KEY: "provider-secret-must-not-leak"
+        ANTHROPIC_API_KEY: "provider-secret-must-not-leak",
+        OPENAI_API_KEY: "other-provider-secret-must-not-leak"
       },
       ((
         _command: string,
@@ -77,7 +78,9 @@ describe("Claude Code setup", () => {
         calls.push({ args, env: options?.env });
         return args[0] === "--version"
           ? spawnResult("2.1.227 (Claude Code)\n")
-          : spawnResult();
+          : args[0] === "mcp" && args[1] === "get"
+            ? spawnResult("", 1)
+            : spawnResult();
       }) as never
     );
 
@@ -90,6 +93,7 @@ describe("Claude Code setup", () => {
     expect(add?.env).not.toHaveProperty("MEMORY_API_TOKEN");
     expect(add?.env).not.toHaveProperty("MEMORY_API_URL");
     expect(add?.env).not.toHaveProperty("ANTHROPIC_API_KEY");
+    expect(add?.env).not.toHaveProperty("OPENAI_API_KEY");
 
     const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
       theme?: unknown;
@@ -105,5 +109,46 @@ describe("Claude Code setup", () => {
     for (const eventName of CLAUDE_HOOK_EVENTS) {
       expect(JSON.stringify(settings.hooks[eventName])).toContain(captureHook);
     }
+  });
+
+  it("refuses to replace an unrelated user-scoped MCP name collision", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-claude-collision-"));
+    temporaryDirectories.push(root);
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(
+      resolve(root, "packages/mcp-server/dist/capture-hook.js"),
+      ""
+    );
+    const calls: string[][] = [];
+
+    const result = setupClaude(
+      {
+        HOME: root,
+        KOED_HOME: resolve(root, "koed"),
+        KOED_REPO_ROOT: root,
+        KOED_CLAUDE_CODE_EXECUTABLE: "/opt/claude"
+      },
+      ((_command: string, args: string[]) => {
+        calls.push(args);
+        if (args[0] === "--version") {
+          return spawnResult("2.1.227 (Claude Code)\n");
+        }
+        if (args[0] === "mcp" && args[1] === "get") {
+          return spawnResult(
+            "koed:\n  Type: stdio\n  Command: node\n  Args: /tmp/unrelated.js\n  Environment:\n    KOED_HOME=/tmp/unrelated\n"
+          );
+        }
+        return spawnResult();
+      }) as never
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "needs_attention"
+    });
+    expect(result.error).toContain("unrelated user-scoped MCP server");
+    expect(calls).not.toContainEqual(expect.arrayContaining(["mcp", "remove"]));
+    expect(calls).not.toContainEqual(expect.arrayContaining(["mcp", "add"]));
   });
 });

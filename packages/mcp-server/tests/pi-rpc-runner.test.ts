@@ -100,4 +100,43 @@ describe("Pi RPC runtime boundaries", () => {
       PI_CODING_AGENT_DIR: "/profile"
     });
   });
+
+  it("rejects CRLF RPC framing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "koed-pi-crlf-"));
+    const executable = join(root, "pi");
+    const bridge = join(
+      root,
+      "integrations",
+      "pi",
+      "extensions",
+      "structured-result.mjs"
+    );
+    mkdirSync(join(root, "integrations", "pi", "extensions"), {
+      recursive: true
+    });
+    writeFileSync(bridge, "export default () => {};\n");
+    writeFileSync(
+      executable,
+      '#!/bin/sh\nwhile read line; do printf \'{"type":"agent_settled"}\\r\\n\'; sleep 1; done\n'
+    );
+    chmodSync(executable, 0o700);
+
+    await expect(
+      runPiRpcTask(
+        "test",
+        {
+          provider: "pi",
+          model: "test/model",
+          reasoningEffort: "off",
+          cwd: root,
+          env: { KOED_HOME: root, PATH: process.env.PATH },
+          executablePath: executable,
+          clientName: "test",
+          systemPrompt: "test",
+          outputSchema: { type: "object" }
+        },
+        5_000
+      )
+    ).rejects.toThrow("strict-LF");
+  });
 });

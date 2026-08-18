@@ -98,35 +98,48 @@ const withoutKoedHook = (
 export const claudeProcessEnvironment = (
   environment: NodeJS.ProcessEnv
 ): NodeJS.ProcessEnv => {
-  const {
-    MEMORY_API_TOKEN: _memoryApiToken,
-    CODEX_MEMORY_API_TOKEN: _codexMemoryApiToken,
-    MEMORY_API_URL: _memoryApiUrl,
-    API_TOKEN_PEPPER: _apiTokenPepper,
-    DATABASE_URL: _databaseUrl,
-    REDIS_URL: _redisUrl,
-    ANTHROPIC_API_KEY: _anthropicApiKey,
-    CLAUDE_CODE_OAUTH_TOKEN: _claudeCodeOauthToken,
-    AWS_ACCESS_KEY_ID: _awsAccessKeyId,
-    AWS_SECRET_ACCESS_KEY: _awsSecretAccessKey,
-    AWS_SESSION_TOKEN: _awsSessionToken,
-    GOOGLE_APPLICATION_CREDENTIALS: _googleApplicationCredentials,
-    ...safe
-  } = environment;
-  void _memoryApiToken;
-  void _codexMemoryApiToken;
-  void _memoryApiUrl;
-  void _apiTokenPepper;
-  void _databaseUrl;
-  void _redisUrl;
-  void _anthropicApiKey;
-  void _claudeCodeOauthToken;
-  void _awsAccessKeyId;
-  void _awsSecretAccessKey;
-  void _awsSessionToken;
-  void _googleApplicationCredentials;
-  return safe;
+  const allowed = [
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "PATH",
+    "SHELL",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "SYSTEMROOT",
+    "COMSPEC",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PATHEXT"
+  ];
+  return Object.fromEntries(
+    allowed.flatMap((name) =>
+      environment[name] ? [[name, environment[name]]] : []
+    )
+  );
 };
+
+export const claudeMcpEntryIsKoedOwned = (output: string): boolean =>
+  /^\s*Args:\s+.*(?:[/\\])mcp-server(?:[/\\])dist(?:[/\\])cli\.js["']?\s*$/m.test(
+    output
+  ) && /^\s*KOED_HOME=\S.*$/m.test(output);
 
 export const setupClaude = (
   environment: NodeJS.ProcessEnv = process.env,
@@ -210,11 +223,40 @@ export const setupClaude = (
       .map((value) => JSON.stringify(value))
       .join(" ");
 
-    spawnSync(executable, ["mcp", "remove", "--scope", "user", mcpName], {
+    const existingMcp = spawnSync(executable, ["mcp", "get", mcpName], {
       encoding: "utf8",
       env: childEnvironment,
       timeout: 10_000
     });
+    if (
+      existingMcp.status === 0 &&
+      !claudeMcpEntryIsKoedOwned(existingMcp.stdout ?? "")
+    ) {
+      return failure(
+        `Claude Code already has an unrelated user-scoped MCP server named ${mcpName}.`,
+        `Rename or remove that MCP entry, or set MEMORY_MCP_NAME to a distinct name before setup.`
+      );
+    }
+    if (existingMcp.status === 0) {
+      const remove = spawnSync(
+        executable,
+        ["mcp", "remove", "--scope", "user", mcpName],
+        {
+          encoding: "utf8",
+          env: childEnvironment,
+          timeout: 10_000
+        }
+      );
+      if (remove.error || remove.status !== 0) {
+        return failure(
+          remove.error?.message ??
+            remove.stderr?.trim() ??
+            "Claude MCP removal failed.",
+          "Fix the existing Koed-owned Claude MCP entry, then retry setup.",
+          remove
+        );
+      }
+    }
     const add = spawnSync(
       executable,
       [

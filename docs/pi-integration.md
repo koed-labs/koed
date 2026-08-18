@@ -33,6 +33,13 @@ pnpm pi:check
 
 Setup copies Koed-owned package to `$KOED_HOME/integrations/pi/` and runs `pi install` with that stable local path. Pi records package in active global profile. Next ordinary `pi` startup loads integration; no wrapper or separate extension command needed.
 
+Koed canonicalizes the Pi executable before invoking it and passes a bounded
+setup environment containing profile/system essentials plus `KOED_HOME`, not
+Koed API Tokens, database credentials, or provider keys. Setup also requires at
+least one authenticated Pi model. The installed extension derives custom
+`KOED_HOME` from its stable package path when an ordinary later Pi process does
+not inherit that environment variable.
+
 Custom profiles remain supported:
 
 ```bash

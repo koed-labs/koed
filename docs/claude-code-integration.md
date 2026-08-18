@@ -72,6 +72,13 @@ stateless MCP adapter discovers the authenticated Local AI Runtime through its
 owner-only registration. Neither the MCP adapter nor Capture Hook receives a
 Koed credential.
 
+Before replacing an existing user-scoped MCP entry, setup verifies that its
+command and `KOED_HOME` identify a Koed-owned adapter. An unrelated entry using
+the configured MCP name is preserved and reported as a collision. Claude Code
+setup subprocesses receive a strict system/profile environment allowlist; Koed
+service secrets and provider credential environment variables are not passed
+through.
+
 The watcher coalesces transcript filesystem writes and lifecycle signals for a
 short quiet period before reading the source frontier. This prevents a Stop or
 SessionEnd signal from sealing a turn before Claude Code has flushed its final

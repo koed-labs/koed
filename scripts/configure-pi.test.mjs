@@ -19,6 +19,7 @@ test("Pi configure/check/remove preserves unrelated profile settings", () => {
   const piHome = join(temporary, "pi-profile");
   const settingsPath = join(piHome, "settings.json");
   const fakePi = join(temporary, "pi");
+  const environmentLog = join(temporary, "pi-environment.jsonl");
   mkdirSync(piHome, { recursive: true });
   writeFileSync(
     settingsPath,
@@ -29,9 +30,11 @@ test("Pi configure/check/remove preserves unrelated profile settings", () => {
     `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
+fs.appendFileSync(${JSON.stringify(environmentLog)}, JSON.stringify({ MEMORY_API_TOKEN: process.env.MEMORY_API_TOKEN, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY, DATABASE_URL: process.env.DATABASE_URL }) + "\\n");
 const settingsPath = path.join(process.env.PI_CODING_AGENT_DIR, "settings.json");
 const args = process.argv.slice(2);
 if (args[0] === "--version") { console.log("0.84.2"); process.exit(0); }
+if (args[0] === "--list-models") { console.log("provider model\\nopenai gpt-5.4"); process.exit(0); }
 const value = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 if (args[0] === "install") { value.packages = [...new Set([...(value.packages || []), path.resolve(args[1])])]; fs.writeFileSync(settingsPath, JSON.stringify(value)); }
 if (args[0] === "remove") { value.packages = (value.packages || []).filter((item) => item !== path.resolve(args[1])); fs.writeFileSync(settingsPath, JSON.stringify(value)); }
@@ -43,7 +46,10 @@ if (args[0] === "list") console.log((value.packages || []).join("\\n"));
     ...process.env,
     KOED_HOME: koedHome,
     PI_CODING_AGENT_DIR: piHome,
-    KOED_PI_EXECUTABLE: fakePi
+    KOED_PI_EXECUTABLE: fakePi,
+    MEMORY_API_TOKEN: "must-not-leak",
+    ANTHROPIC_API_KEY: "must-not-leak",
+    DATABASE_URL: "postgres://must-not-leak"
   };
   execFileSync(process.execPath, [join(root, "scripts/configure-pi.mjs")], {
     cwd: root,
@@ -67,4 +73,7 @@ if (args[0] === "list") console.log((value.packages || []).join("\\n"));
   );
   settings = JSON.parse(readFileSync(settingsPath, "utf8"));
   assert.deepEqual(settings, { theme: "custom", packages: ["npm:unrelated"] });
+  for (const line of readFileSync(environmentLog, "utf8").trim().split("\n")) {
+    assert.deepEqual(JSON.parse(line), {});
+  }
 });

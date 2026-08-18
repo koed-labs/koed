@@ -155,7 +155,10 @@ AI Runtime.
    and sign-in, then preserves unrelated user settings while installing Koed's
    MCP and Supported Capture Hook entries. `koed-server setup pi --json`
    independently registers Koed's stable local package in the active Pi
-   profile. Both commands are idempotent and receive no provider credential.
+   profile after canonical executable and authenticated-model checks. Both
+   commands are idempotent and use strict subprocess environment allowlists.
+   Claude setup replaces only an MCP entry proven to be Koed-owned; Pi's
+   installed package derives custom `KOED_HOME` from its stable package path.
 10. Koed Desktop can start/connect to the same headless command surface, run
     the first-launch Codex bootstrap and health-check sequence, poll status,
     offer one-click Codex repair plus explicitly confirmed, optional Claude Code

@@ -314,11 +314,14 @@ export const runPiRpcTask = async (
           finish(new Error("Pi RPC JSONL record exceeded 4 MiB"));
           return;
         }
-        const line = stdout
-          .subarray(0, newline)
-          .toString("utf8")
-          .replace(/\r$/, "");
+        const record = stdout.subarray(0, newline);
         stdout = stdout.subarray(newline + 1);
+        if (record.includes(0x0d)) {
+          terminateProcessTree(child);
+          finish(new Error("Pi RPC requires strict-LF JSONL framing"));
+          return;
+        }
+        const line = record.toString("utf8");
         if (!line) continue;
         try {
           const event = JSON.parse(line) as Record<string, unknown>;

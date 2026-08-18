@@ -1,13 +1,13 @@
 /* global AbortController, AbortSignal, fetch */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { URL } from "node:url";
 import { Type } from "typebox";
+import { resolveInstalledKoedHome } from "../koed-home.mjs";
 
-const koedHome = resolve(process.env.KOED_HOME ?? join(homedir(), ".koed"));
+const koedHome = resolveInstalledKoedHome(process.env, import.meta.url);
 const registrationPath = join(koedHome, "run", "local-ai-runtime.json");
 const signalDirectory = join(koedHome, "run", "pi-transcript-signals");
 const wakePath = join(koedHome, "run", "pi-transcript-watcher.wake");

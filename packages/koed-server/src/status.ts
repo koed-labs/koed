@@ -19,9 +19,16 @@ import { applyPersistedLocalPorts } from "./ports.js";
 import { isProcessRunning } from "./process-liveness.js";
 import { inspectDeviceIdentityStatus } from "./device-identity.js";
 import { collectUpstreamRegistryStatus } from "./upstream-registry.js";
-import { isSupportedPiVersion, MINIMUM_PI_VERSION } from "./pi-setup.js";
+import {
+  isSupportedPiVersion,
+  MINIMUM_PI_VERSION,
+  piModelIdsFromListOutput,
+  piSetupEnvironment,
+  resolvePiSetupExecutable
+} from "./pi-setup.js";
 import {
   CLAUDE_HOOK_EVENTS,
+  claudeMcpEntryIsKoedOwned,
   claudeProcessEnvironment,
   hasClaudeKoedHook,
   isSupportedClaudeCodeVersion,
@@ -66,6 +73,7 @@ export interface KoedServerStatusDependencies {
   spawnSync?: SpawnSyncLike;
   existsSync?: typeof existsSync;
   readFileSync?: typeof readFileSync;
+  resolvePiExecutable?: typeof resolvePiSetupExecutable;
   checkPid?: (pid: number) => boolean;
   now?: () => Date;
 }
@@ -75,6 +83,7 @@ const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
   spawnSync: nodeSpawnSync as SpawnSyncLike,
   existsSync,
   readFileSync,
+  resolvePiExecutable: resolvePiSetupExecutable,
   checkPid: isProcessRunning,
   now: () => new Date()
 });
@@ -142,12 +151,26 @@ export const inspectPi = (
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
 ): KoedServerStatus["pi"] => {
-  const executable = environment.KOED_PI_EXECUTABLE?.trim() || "pi";
   const packagePath = resolve(paths.koedHome, "integrations/pi");
   const extensionPath = resolve(packagePath, "extensions/koed.mjs");
+  let executable: string;
+  try {
+    executable = deps.resolvePiExecutable(environment);
+  } catch (error) {
+    return {
+      ...notConfigured(
+        error instanceof Error
+          ? error.message
+          : "Pi is not installed or could not be started.",
+        `Install Pi ${MINIMUM_PI_VERSION} or newer, then set up Pi integration.`
+      ),
+      configured: false
+    };
+  }
+  const childEnvironment = piSetupEnvironment(environment, paths.koedHome);
   const version = deps.spawnSync(executable, ["--version"], {
     encoding: "utf8",
-    env: environment,
+    env: childEnvironment,
     timeout: 5_000
   });
   const versionText = version.stdout?.trim() ?? "";
@@ -182,7 +205,7 @@ export const inspectPi = (
   }
   const listed = deps.spawnSync(executable, ["list"], {
     encoding: "utf8",
-    env: { ...environment, KOED_HOME: paths.koedHome },
+    env: childEnvironment,
     timeout: 5_000
   });
   if (listed.error || listed.status !== 0) {
@@ -205,11 +228,41 @@ export const inspectPi = (
       configured: false
     };
   }
+  const listedModels = deps.spawnSync(executable, ["--list-models"], {
+    encoding: "utf8",
+    env: childEnvironment,
+    timeout: 15_000,
+    maxBuffer: 4 * 1024 * 1024
+  });
+  const models =
+    listedModels.error || listedModels.status !== 0
+      ? []
+      : piModelIdsFromListOutput(listedModels.stdout ?? "");
+  if (models.length === 0) {
+    return {
+      ...needsAttention(
+        "Pi's Koed package is registered, but Pi has no authenticated models.",
+        "Authenticate at least one Pi model, then refresh status.",
+        {
+          executable,
+          version: versionText,
+          packagePath,
+          packageRegistered: true,
+          authenticated: false,
+          modelCount: 0
+        }
+      ),
+      configured: true
+    };
+  }
   return {
-    ...healthy("Pi is configured for Koed capture and recall.", {
+    ...healthy("Pi is configured and authenticated for Koed.", {
       executable,
       version: versionText,
-      packagePath
+      packagePath,
+      packageRegistered: true,
+      authenticated: true,
+      modelCount: models.length
     }),
     configured: true
   };
@@ -298,6 +351,20 @@ export const inspectClaudeCode = (
     env: childEnvironment,
     timeout: 10_000
   });
+  if (
+    !mcp.error &&
+    mcp.status === 0 &&
+    !claudeMcpEntryIsKoedOwned(mcp.stdout ?? "")
+  ) {
+    return {
+      ...needsAttention(
+        `Claude Code has an unrelated user-scoped MCP server named ${mcpName}.`,
+        "Rename or remove the conflicting entry before setting up Koed.",
+        { executable, version: versionText, settingsPath, mcpName }
+      ),
+      configured: false
+    };
+  }
   if (mcp.error || mcp.status !== 0 || missingHooks.length > 0) {
     return {
       ...notConfigured(
