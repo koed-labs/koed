@@ -379,7 +379,7 @@ const authorizedAccessFromSql = `
    and workspace_access.access in ('read','write')
   join source_owner_representation_consents consent
     on consent.id = share_grant.consent_id
-   and consent.state = 'active' and consent.revoked_at is null
+   and consent.state in ('active','paused') and consent.revoked_at is null
    and (consent.expires_at is null or consent.expires_at > now())
 `;
 
@@ -544,7 +544,7 @@ export const createTeamConversationSourceRepository = (
             and source_access.disabled_at is null
            join source_owner_representation_consents consent
              on consent.id = share_grant.consent_id
-            and consent.state = 'active'
+            and consent.state in ('active','paused')
             and consent.revoked_at is null
             and (consent.expires_at is null or consent.expires_at > now())
           where share_grant.id = $1

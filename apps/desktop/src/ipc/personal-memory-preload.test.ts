@@ -37,12 +37,35 @@ describe("Personal Memory preload bridge", () => {
       "assignSessionProject",
       "listProjects",
       "loadEventPage",
-      "subscribe"
+      "subscribe",
+      "updateSessionTitle"
     ]);
     expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
       contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       operation: "personal.projects.list",
       input: {}
+    });
+  });
+
+  it("constructs a bounded Captured Session title request", async () => {
+    const invoke = vi.fn().mockResolvedValue(
+      success("personal.sessions.update_title", {
+        title: "Release planning"
+      })
+    );
+    const api = createPersonalMemoryPreloadApi(invoke, events());
+    const input = {
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      title: "Release planning"
+    };
+
+    await expect(api.updateSessionTitle(input)).resolves.toEqual({
+      title: "Release planning"
+    });
+    expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.sessions.update_title",
+      input
     });
   });
 

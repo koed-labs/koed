@@ -159,6 +159,15 @@ export class PersonalMemoryStore {
     }
   }
 
+  async updateSessionTitle(input: {
+    sessionId: string;
+    title: string;
+  }): Promise<{ title: string }> {
+    const result = await this.#api.updateSessionTitle(input);
+    await this.loadProjects({ silent: true });
+    return result;
+  }
+
   #scheduleLiveRefresh(): void {
     if (this.#liveRefreshRunning) {
       this.#liveRefreshAgain = true;

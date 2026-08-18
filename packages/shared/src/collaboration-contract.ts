@@ -15,7 +15,7 @@ import {
 } from "./personal-desktop-contract.js";
 import { aiClientIdentifierPattern } from "./ai-client-contract.js";
 
-export const COLLABORATION_CONTRACT_VERSION = 3;
+export const COLLABORATION_CONTRACT_VERSION = 4;
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
 export const COLLABORATION_DISPLAY_NAME_MAX_CODE_POINTS = 128;
 export const COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES = 1_024;
@@ -1554,6 +1554,10 @@ const actionGrantIntent = <const TName extends string, T extends z.ZodRawShape>(
     })
     .strict();
 
+export const sharedMemoryCandidateManifestEntrySchema = z
+  .object({ sourceId: z.uuid(), revisionHash: sha256Schema })
+  .strict();
+
 export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
   "intent",
   [
@@ -1622,7 +1626,29 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       representation: sharedMemoryRepresentationSchema,
-      allowedRepresentations: distinctSharedMemoryRepresentationsSchema
+      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
+      candidate: z
+        .object({
+          sessionId: z.uuid(),
+          candidateHash: sha256Schema,
+          sourceRevision: nonNegativeSequenceSchema,
+          itemCount: z.number().int().safe().positive(),
+          excludedItemCount: z.number().int().safe().nonnegative(),
+          manifest: z
+            .array(sharedMemoryCandidateManifestEntrySchema)
+            .min(1)
+            .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS),
+          byteCount: z
+            .number()
+            .int()
+            .safe()
+            .positive()
+            .max(256 * 1_024),
+          mode: z.enum(["snapshot", "continuous"]),
+          expiresAt: collaborationTimestampSchema.nullable()
+        })
+        .strict()
+        .optional()
     }),
     actionGrantIntent("collaboration.share_memory", {
       mutationId: z.uuid(),
@@ -1636,7 +1662,9 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
       selectedRepresentation: sharedMemoryRepresentationSchema,
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
-      expiresAt: collaborationTimestampSchema.nullable()
+      expiresAt: collaborationTimestampSchema.nullable(),
+      title: collaborationNameSchema.optional(),
+      candidateSessionId: z.uuid().optional()
     }),
     actionGrantIntent("collaboration.revoke_shared_memory", {
       mutationId: z.uuid(),
@@ -1681,7 +1709,8 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
       allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
-      expiresAt: collaborationTimestampSchema.nullable()
+      expiresAt: collaborationTimestampSchema.nullable(),
+      candidateSessionId: z.uuid()
     }),
     actionGrantIntent("collaboration.managed_conversation_handoff", {
       executionId: z.uuid(),
@@ -1979,6 +2008,53 @@ export const sharedMemoryPreviewSchema = z
     }
   });
 
+export const sharedMemoryCandidatePreviewSchema = z
+  .object({
+    sessionId: z.uuid(),
+    logicalMemoryId: z.uuid(),
+    representation: sharedMemoryRepresentationSchema,
+    sourceRevision: nonNegativeSequenceSchema,
+    candidateHash: sha256Schema,
+    itemCount: z.number().int().safe().nonnegative(),
+    excludedItemCount: z.number().int().safe().nonnegative(),
+    manifest: z
+      .array(sharedMemoryCandidateManifestEntrySchema)
+      .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS),
+    byteCount: z
+      .number()
+      .int()
+      .safe()
+      .nonnegative()
+      .max(256 * 1_024),
+    items: z
+      .array(sharedMemorySourceItemSchema)
+      .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS)
+  })
+  .strict()
+  .superRefine((candidate, context) => {
+    if (
+      candidate.items.some(
+        (item) => item.representation !== candidate.representation
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["items"],
+        message: "Candidate items must match the selected representation"
+      });
+    }
+    if (
+      candidate.itemCount !== candidate.items.length ||
+      candidate.itemCount !== candidate.manifest.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["manifest"],
+        message: "Candidate counts must match the complete reviewed manifest"
+      });
+    }
+  });
+
 export const sharedMemoryConsentSchema = z
   .object({
     id: z.uuid(),
@@ -2037,6 +2113,127 @@ export const sharedMemoryGrantSchema = z
     updatedAt: collaborationTimestampSchema,
     revokedAt: collaborationTimestampSchema.nullable(),
     companionThreadId: z.uuid()
+  })
+  .strict();
+
+export const pendingShareSchema = z
+  .object({
+    id: z.uuid(),
+    mutationId: z.uuid(),
+    logicalGrantId: z.uuid(),
+    consentId: z.uuid(),
+    logicalMemoryId: z.uuid(),
+    teamId: z.uuid(),
+    workspaceId: z.uuid(),
+    representation: sharedMemoryRepresentationSchema,
+    allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
+    mode: z.enum(["snapshot", "continuous"]),
+    sourceRevision: nonNegativeSequenceSchema,
+    state: z.enum([
+      "preparing",
+      "needs_attention",
+      "failed",
+      "activated",
+      "revoked"
+    ]),
+    stage: z.enum([
+      "accepted",
+      "syncing",
+      "uploading",
+      "processing",
+      "activating",
+      "complete"
+    ]),
+    workspaceAccessState: z.enum(["none", "active", "revoked"]),
+    sourceUpdateState: z.enum([
+      "preparing",
+      "active",
+      "paused",
+      "failed",
+      "stopped"
+    ]),
+    operationVersion: positiveVersionSchema,
+    attemptCount: nonNegativeSequenceSchema,
+    redactedFailureCode: z
+      .string()
+      .max(120)
+      .regex(/^[A-Za-z0-9_.:-]+$/)
+      .nullable(),
+    lastProgressAt: collaborationTimestampSchema,
+    createdAt: collaborationTimestampSchema,
+    updatedAt: collaborationTimestampSchema,
+    activatedAt: collaborationTimestampSchema.nullable(),
+    revokedAt: collaborationTimestampSchema.nullable(),
+    grantId: z.uuid().nullable()
+  })
+  .strict();
+
+export const ownedShareSummarySchema = z
+  .object({
+    sourceSessionId: z.uuid().nullable(),
+    companionThreadId: z.uuid().nullable().optional(),
+    sourceTitle: z.string().min(1).max(500),
+    teamName: z.string().min(1).max(80),
+    workspaceName: z.string().min(1).max(80),
+    mode: z.enum(["snapshot", "continuous"]),
+    authorizedPreview: z
+      .object({
+        previewId: z.uuid(),
+        previewHash: sha256Schema,
+        previewRevision: positiveVersionSchema,
+        sourceRevision: nonNegativeSequenceSchema
+      })
+      .strict()
+      .nullable(),
+    lastReadyRevision: nonNegativeSequenceSchema.nullable(),
+    lastSuccessfulUpdateAt: collaborationTimestampSchema.nullable()
+  })
+  .strict();
+
+const conversationSourceAccessSummarySchema = z
+  .object({
+    mode: z.enum(["snapshot", "continuous"]),
+    lifecycle: z.enum(["active", "revoked"]),
+    version: positiveVersionSchema
+  })
+  .strict()
+  .nullable();
+
+export const ownedShareItemSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("pending"),
+      pendingShare: pendingShareSchema,
+      sourceAccess: conversationSourceAccessSummarySchema,
+      summary: ownedShareSummarySchema,
+      preview: sharedMemoryPreviewSchema.nullable().optional()
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("grant"),
+      grant: sharedMemoryGrantSchema,
+      sourceAccess: conversationSourceAccessSummarySchema,
+      summary: ownedShareSummarySchema,
+      preview: sharedMemoryPreviewSchema.nullable().optional()
+    })
+    .strict()
+]);
+export type OwnedShareItem = z.infer<typeof ownedShareItemSchema>;
+
+export const conversationSourceAccessSchema = z
+  .object({
+    id: z.uuid(),
+    shareGrantId: z.uuid(),
+    sessionId: z.uuid(),
+    teamId: z.uuid(),
+    workspaceId: z.uuid(),
+    mode: z.enum(["snapshot", "continuous"]),
+    version: positiveVersionSchema,
+    lifecycle: z.enum(["active", "revoked"]),
+    createdAt: collaborationTimestampSchema,
+    updatedAt: collaborationTimestampSchema,
+    revokedAt: collaborationTimestampSchema.nullable()
   })
   .strict();
 
@@ -2245,6 +2442,50 @@ export const collaborationRendererCommandSchema = z
     command("collaboration.list_owned_shared_memory_grants", {
       logicalMemoryId: z.uuid()
     }),
+    command("collaboration.list_owned_shares", {
+      cursor: collaborationOpaqueCursorSchema.nullable().default(null),
+      limit: z.number().int().min(1).max(100).default(50),
+      history: z.boolean().default(false)
+    }),
+    command("collaboration.get_owned_share", {
+      kind: z.enum(["pending", "grant"]),
+      id: z.uuid()
+    }),
+    command("collaboration.rename_owned_share", {
+      kind: z.enum(["pending", "grant"]),
+      id: z.uuid(),
+      title: collaborationNameSchema
+    }),
+    command("collaboration.control_pending_share", {
+      pendingShareId: z.uuid(),
+      mutationId: z.uuid(),
+      expectedOperationVersion: positiveVersionSchema,
+      action: z.enum(["retry", "pause", "resume", "revoke"])
+    }),
+    command("collaboration.share_conversation_source", {
+      mutationId: z.uuid(),
+      teamId: z.uuid(),
+      shareGrantId: z.uuid(),
+      expectedVersion: z.number().int().safe().min(0),
+      mode: z.enum(["snapshot", "continuous"]),
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command("collaboration.revoke_conversation_source", {
+      mutationId: z.uuid(),
+      teamId: z.uuid(),
+      shareGrantId: z.uuid(),
+      expectedVersion: positiveVersionSchema,
+      reasonCode: z
+        .string()
+        .min(1)
+        .max(120)
+        .regex(/^[A-Za-z][A-Za-z0-9_.-]{0,119}$/),
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command("collaboration.preview_shared_memory_candidate", {
+      sessionId: z.uuid(),
+      representation: sharedMemoryRepresentationSchema
+    }),
     command("collaboration.prepare_shared_memory_source", {
       sessionId: z.uuid(),
       consentedAt: collaborationTimestampSchema
@@ -2264,6 +2505,28 @@ export const collaborationRendererCommandSchema = z
       workspaceId: z.uuid(),
       representation: sharedMemoryRepresentationSchema,
       allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
+      candidate: z
+        .object({
+          sessionId: z.uuid(),
+          candidateHash: sha256Schema,
+          sourceRevision: nonNegativeSequenceSchema,
+          itemCount: z.number().int().safe().positive(),
+          excludedItemCount: z.number().int().safe().nonnegative(),
+          manifest: z
+            .array(sharedMemoryCandidateManifestEntrySchema)
+            .min(1)
+            .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS),
+          byteCount: z
+            .number()
+            .int()
+            .safe()
+            .positive()
+            .max(256 * 1_024),
+          mode: z.enum(["snapshot", "continuous"]),
+          expiresAt: collaborationTimestampSchema.nullable()
+        })
+        .strict()
+        .optional(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.load_shared_memory_preview_page", {
@@ -2284,6 +2547,8 @@ export const collaborationRendererCommandSchema = z
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
+      title: collaborationNameSchema.optional(),
+      candidateSessionId: z.uuid().optional(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.revoke_shared_memory", {
@@ -2313,6 +2578,7 @@ export const collaborationRendererCommandSchema = z
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
+      candidateSessionId: z.uuid(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.subscribe", {
@@ -2468,6 +2734,13 @@ const commandNameSchema = z.enum([
   "collaboration.set_team_presence",
   "collaboration.report_team_activity",
   "collaboration.list_owned_shared_memory_grants",
+  "collaboration.list_owned_shares",
+  "collaboration.get_owned_share",
+  "collaboration.rename_owned_share",
+  "collaboration.control_pending_share",
+  "collaboration.share_conversation_source",
+  "collaboration.revoke_conversation_source",
+  "collaboration.preview_shared_memory_candidate",
   "collaboration.prepare_shared_memory_source",
   "collaboration.pause_shared_memory_sync",
   "collaboration.resume_shared_memory_sync",
@@ -2615,6 +2888,39 @@ export const collaborationCommandResultSchema = z.union([
     z.object({ grants: z.array(sharedMemoryGrantSchema).max(250) }).strict()
   ),
   successResult(
+    "collaboration.list_owned_shares",
+    z
+      .object({
+        shares: z.array(ownedShareItemSchema).max(100),
+        nextCursor: collaborationOpaqueCursorSchema.nullable()
+      })
+      .strict()
+  ),
+  successResult(
+    "collaboration.get_owned_share",
+    z.object({ share: ownedShareItemSchema }).strict()
+  ),
+  successResult(
+    "collaboration.rename_owned_share",
+    z.object({ share: ownedShareItemSchema }).strict()
+  ),
+  successResult(
+    "collaboration.control_pending_share",
+    z.object({ pendingShare: pendingShareSchema }).strict()
+  ),
+  successResult(
+    "collaboration.share_conversation_source",
+    z.object({ sourceAccess: conversationSourceAccessSchema }).strict()
+  ),
+  successResult(
+    "collaboration.revoke_conversation_source",
+    z.object({ sourceAccess: conversationSourceAccessSchema }).strict()
+  ),
+  successResult(
+    "collaboration.preview_shared_memory_candidate",
+    z.object({ candidate: sharedMemoryCandidatePreviewSchema }).strict()
+  ),
+  successResult(
     "collaboration.prepare_shared_memory_source",
     z.object({ entry: personalMemoryEntrySchema }).strict()
   ),
@@ -2640,7 +2946,10 @@ export const collaborationCommandResultSchema = z.union([
   ),
   successResult(
     "collaboration.share_memory",
-    z.object({ grant: sharedMemoryGrantSchema }).strict()
+    z.union([
+      z.object({ grant: sharedMemoryGrantSchema }).strict(),
+      z.object({ pendingShare: pendingShareSchema }).strict()
+    ])
   ),
   successResult(
     "collaboration.revoke_shared_memory",
@@ -2648,7 +2957,7 @@ export const collaborationCommandResultSchema = z.union([
   ),
   successResult(
     "collaboration.change_shared_memory_representation",
-    z.object({ grant: sharedMemoryGrantSchema }).strict()
+    z.object({ pendingShare: pendingShareSchema }).strict()
   ),
   successResult(
     "collaboration.subscribe",
@@ -2756,6 +3065,41 @@ export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
+      type: z.literal("owned_share_status_changed"),
+      pendingShareId: z.uuid(),
+      sourceTitle: z.string().min(1).max(500),
+      state: z.enum([
+        "preparing",
+        "needs_attention",
+        "failed",
+        "activated",
+        "revoked"
+      ]),
+      stage: z.enum([
+        "accepted",
+        "syncing",
+        "uploading",
+        "processing",
+        "activating",
+        "complete"
+      ]),
+      workspaceAccessState: z.enum(["none", "active", "revoked"]),
+      sourceUpdateState: z.enum([
+        "preparing",
+        "active",
+        "paused",
+        "failed",
+        "stopped"
+      ]),
+      redactedFailureCode: z
+        .string()
+        .max(120)
+        .regex(/^[A-Za-z0-9_.:-]+$/)
+        .nullable()
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("managed_conversation_upserted"),
       execution: z
         .object({
@@ -2811,6 +3155,7 @@ export const collaborationRealtimeEventFamilySchema = z.enum([
   "lcm_rollup_available",
   "shared_session_discussion_activity",
   "personal_memory_changed",
+  "pending_share_lifecycle",
   "managed_conversation_changed",
   "access_revoked"
 ]);
@@ -2972,6 +3317,7 @@ const realtimeUpdateDeliverySchema = z
         "thread_upserted"
       ]),
       personal_memory_changed: new Set(["personal_memory_upserted"]),
+      pending_share_lifecycle: new Set(["owned_share_status_changed"]),
       managed_conversation_changed: new Set(["managed_conversation_upserted"]),
       access_revoked: new Set(["shared_session_removed"])
     };
@@ -3016,6 +3362,23 @@ const realtimeUpdateDeliverySchema = z
         code: "custom",
         path: ["resource"],
         message: "Managed Conversation updates require a Personal-only resource"
+      });
+    }
+
+    if (
+      update.type === "owned_share_status_changed" &&
+      (resource.scope !== "personal" ||
+        resource.teamId !== null ||
+        resource.workspaceId !== null ||
+        resource.threadId !== null ||
+        resource.messageId !== null ||
+        resource.sharedSessionId !== null ||
+        resource.shareGrantId !== null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["resource"],
+        message: "Owned Share updates require a Personal-only resource"
       });
     }
 
@@ -3217,8 +3580,15 @@ export type CollaborationWorkspaceAccess = z.infer<
   typeof collaborationWorkspaceAccessSchema
 >;
 export type SharedMemoryPreview = z.infer<typeof sharedMemoryPreviewSchema>;
+export type SharedMemoryCandidatePreview = z.infer<
+  typeof sharedMemoryCandidatePreviewSchema
+>;
 export type SharedMemoryConsent = z.infer<typeof sharedMemoryConsentSchema>;
 export type SharedMemoryGrant = z.infer<typeof sharedMemoryGrantSchema>;
+export type PendingShare = z.infer<typeof pendingShareSchema>;
+export type ConversationSourceAccess = z.infer<
+  typeof conversationSourceAccessSchema
+>;
 export type CollaborationView = z.infer<typeof collaborationViewSchema>;
 export type CollaborationSnapshot = z.infer<typeof collaborationSnapshotSchema>;
 export type CollaborationRendererCommand = z.infer<

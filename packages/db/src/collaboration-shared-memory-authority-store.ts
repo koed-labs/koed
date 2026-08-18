@@ -149,10 +149,31 @@ export interface CollaborationSharedMemoryAuthorityStore {
     syncRelationshipId: string;
     localSessionId: string;
   } | null>;
+  resolvePreviewTargets(
+    identity: CollaborationSharedMemoryAuthorityIdentity,
+    inputs: Array<{
+      logicalMemoryId: string;
+      teamId: string;
+      workspaceId: string;
+      representation: SharedMemoryRepresentation;
+    }>
+  ): Promise<
+    Array<{
+      remoteReplicaId: string;
+      syncRelationshipId: string;
+      localSessionId: string;
+    } | null>
+  >;
   persistAuthoritativePreview(input: {
     identity: CollaborationSharedMemoryAuthorityIdentity;
     allowedRepresentations: SharedMemoryRepresentation[];
     preview: CollaborationRemoteSharedMemoryPreview;
+  }): Promise<CollaborationPersistedSharedMemoryPreview | null>;
+  persistAuthoritativeCandidatePreview(input: {
+    identity: CollaborationSharedMemoryAuthorityIdentity;
+    allowedRepresentations: SharedMemoryRepresentation[];
+    preview: CollaborationRemoteSharedMemoryPreview;
+    previewExpiresAt: string;
   }): Promise<CollaborationPersistedSharedMemoryPreview | null>;
   readAuthoritativePreview(
     input: CollaborationSharedMemoryAuthorityIdentity & { previewHash: string }
@@ -178,6 +199,10 @@ export interface CollaborationSharedMemoryAuthorityStore {
   readAuthoritativeGrant(
     input: CollaborationSharedMemoryAuthorityIdentity & { shareGrantId: string }
   ): Promise<CollaborationPersistedSharedMemoryGrant | null>;
+  readAuthoritativeGrants(
+    identity: CollaborationSharedMemoryAuthorityIdentity,
+    shareGrantIds: string[]
+  ): Promise<Array<CollaborationPersistedSharedMemoryGrant | null>>;
   listAuthoritativeGrants(
     input: CollaborationSharedMemoryAuthorityIdentity & {
       logicalMemoryId: string;
@@ -188,6 +213,28 @@ export interface CollaborationSharedMemoryAuthorityStore {
       sharedSessionId: string;
     }
   ): Promise<CollaborationPersistedSharedSessionBinding | null>;
+  persistPendingShareSourceWork(input: {
+    identity: CollaborationSharedMemoryAuthorityIdentity;
+    pendingShareId: string;
+    mutationId: string;
+    localSessionId: string;
+  }): Promise<boolean>;
+  claimPendingShareSourceWork(input?: { limit?: number }): Promise<
+    Array<{
+      workId: string;
+      backendId: string;
+      localOwnerUserId: string;
+      upstreamUserId: string;
+      pendingShareId: string;
+      mutationId: string;
+      localSessionId: string;
+    }>
+  >;
+  finishPendingShareSourceWork(input: {
+    workId: string;
+    outcome: "completed" | "retry";
+    redactedFailureCode?: string;
+  }): Promise<boolean>;
 }
 
 export interface CollaborationSharedMemoryAuthorityBindingRepository {
@@ -253,6 +300,7 @@ type PreviewRow = ProtectedRow & {
   source_hash: string;
   redacted_content_hash: string;
   item_count: number;
+  expires_at: Date | string;
 };
 
 type ConsentRow = ProtectedRow & {
@@ -783,7 +831,7 @@ const selectPreviewSql = `select preview_id, preview_hash, preview_revision,
                                  logical_memory_id, team_id, team_workspace_id,
                                  representation, source_revision, source_hash,
                                  redacted_content_hash, item_count,
-                                 protected_dto_hash, protected_dto
+                                 protected_dto_hash, protected_dto, expires_at
                             from collaboration_shared_memory_previews`;
 const selectConsentSql = `select consent_id, consent_version, preview_id,
                                  preview_hash, preview_revision,
@@ -841,7 +889,11 @@ export const createCollaborationSharedMemoryAuthorityStore = (
   const readPreviewRow = async (
     client: pg.Pool | pg.PoolClient,
     enrollmentId: string,
-    predicate: { previewHash?: string; previewId?: string }
+    predicate: {
+      includeExpired?: boolean;
+      previewHash?: string;
+      previewId?: string;
+    }
   ): Promise<PreviewRow | null> => {
     const column = predicate.previewHash ? "preview_hash" : "preview_id";
     const value = predicate.previewHash ?? predicate.previewId;
@@ -852,7 +904,12 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         limit 1`,
       [enrollmentId, value]
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0] ?? null;
+    return row &&
+      (predicate.includeExpired ||
+        new Date(row.expires_at).getTime() > Date.now())
+      ? row
+      : null;
   };
 
   const decodePreview = async (
@@ -1070,6 +1127,177 @@ export const createCollaborationSharedMemoryAuthorityStore = (
       });
     },
 
+    async resolvePreviewTargets(identity, inputs) {
+      if (
+        !validIdentity(identity) ||
+        inputs.length > 100 ||
+        inputs.some(
+          (input) =>
+            !isUuid(input.logicalMemoryId) ||
+            !isUuid(input.teamId) ||
+            !isUuid(input.workspaceId) ||
+            !isRepresentation(input.representation)
+        )
+      ) {
+        return inputs.map(() => null);
+      }
+      if (inputs.length === 0) return [];
+      return withTransaction(pool, async (client) => {
+        const enrollment = await activeEnrollment(client, identity, "share");
+        if (!enrollment) return inputs.map(() => null);
+        const result = await client.query<
+          CanonicalPreviewTargetRow & { logical_memory_id: string }
+        >(
+          `with requested(logical_memory_id) as (
+             select distinct unnest($2::uuid[])
+           )
+           select requested.logical_memory_id,
+                  relationship.id as relationship_id,
+                  relationship.remote_replica_id,
+                  replica.local_session_id
+             from requested
+             join collaboration_shared_memory_enrollments enrollment
+               on enrollment.id=$1 and enrollment.revoked_at is null
+             join deployment_identities deployment
+               on deployment.upstream_backend_id=enrollment.backend_id
+              and deployment.locality='remote' and deployment.disabled_at is null
+             join sync_external_user_identities remote_user
+               on remote_user.deployment_identity_id=deployment.id
+              and remote_user.external_subject_id=enrollment.upstream_user_id::text
+              and remote_user.status='active' and remote_user.revoked_at is null
+             join sync_principal_links principal_link
+               on principal_link.local_user_id=enrollment.local_owner_user_id
+              and principal_link.external_user_identity_id=remote_user.id
+              and principal_link.revoked_at is null
+             join cross_identity_sync_relationships relationship
+               on relationship.local_user_id=enrollment.local_owner_user_id
+              and relationship.remote_deployment_identity_id=deployment.id
+              and relationship.remote_user_identity_id=remote_user.id
+              and relationship.logical_memory_id=requested.logical_memory_id
+              and relationship.side='source'
+              and relationship.remote_replica_id is not null
+              and relationship.revoked_at is null
+              and relationship.state in
+                ('uploading','uploaded','verified','processing','partially_available',
+                 'ready','stale','paused')
+             join memory_replicas replica
+               on replica.id=relationship.local_replica_id
+              and replica.owner_user_id=enrollment.local_owner_user_id
+              and replica.local_session_id is not null`,
+          [enrollment.id, inputs.map((input) => input.logicalMemoryId)]
+        );
+        const byLogicalMemoryId = new Map(
+          result.rows.map((row) => [row.logical_memory_id, row])
+        );
+        return inputs.map((input) => {
+          const target = byLogicalMemoryId.get(input.logicalMemoryId);
+          return target
+            ? {
+                remoteReplicaId: target.remote_replica_id,
+                syncRelationshipId: target.relationship_id,
+                localSessionId: target.local_session_id
+              }
+            : null;
+        });
+      });
+    },
+
+    async persistAuthoritativeCandidatePreview(input) {
+      const { identity, allowedRepresentations, preview } = input;
+      if (
+        !validIdentity(identity) ||
+        !validPersistedPreview({
+          ...identity,
+          ...preview,
+          allowedRepresentations
+        })
+      ) {
+        return null;
+      }
+      return withTransaction(pool, async (client) => {
+        const enrollment = await activeEnrollment(client, identity, "update");
+        if (!enrollment) return null;
+        await lockBinding(
+          client,
+          `csm:candidate-preview:${preview.logicalMemoryId}:${preview.teamId}:${preview.teamWorkspaceId}:${preview.representation}`
+        );
+        const existingById = await readPreviewRow(client, enrollment.id, {
+          includeExpired: true,
+          previewId: preview.previewId
+        });
+        const existingByHash = await readPreviewRow(client, enrollment.id, {
+          includeExpired: true,
+          previewHash: preview.previewHash
+        });
+        const existing = existingById ?? existingByHash;
+        const persisted: CollaborationPersistedSharedMemoryPreview = {
+          ...identity,
+          ...preview,
+          allowedRepresentations
+        };
+        if (existing) {
+          if (
+            existing.preview_id !== preview.previewId ||
+            existing.preview_hash !== preview.previewHash ||
+            existing.preview_revision !== preview.previewRevision
+          ) {
+            return null;
+          }
+          const decoded = await decodePreview(existing, identity);
+          if (!decoded || !sameDto(decoded, persisted)) return null;
+          const refreshed = await client.query(
+            `update collaboration_shared_memory_previews
+                set expires_at = $3
+              where enrollment_id = $1 and preview_id = $2
+                and expires_at <= now()`,
+            [enrollment.id, preview.previewId, input.previewExpiresAt]
+          );
+          return refreshed.rowCount === 0 &&
+            new Date(existing.expires_at).getTime() <= Date.now()
+            ? null
+            : decoded;
+        }
+        const protectedValue = await encryptedDto(provider, {
+          table: "collaboration_shared_memory_previews",
+          sourceId: preview.previewId,
+          identity,
+          dto: persisted
+        });
+        try {
+          await client.query(
+            `insert into collaboration_shared_memory_previews
+               (enrollment_id, sync_relationship_id, preview_id, preview_hash,
+                preview_revision, logical_memory_id, team_id, team_workspace_id,
+                representation, source_revision, source_hash,
+                redacted_content_hash, item_count, protected_dto_hash, protected_dto,
+                expires_at)
+             values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+            [
+              enrollment.id,
+              preview.previewId,
+              preview.previewHash,
+              preview.previewRevision,
+              preview.logicalMemoryId,
+              preview.teamId,
+              preview.teamWorkspaceId,
+              preview.representation,
+              preview.sourceRevision,
+              preview.sourceHash,
+              preview.redactedContentHash,
+              preview.items.length,
+              protectedValue.hash,
+              protectedValue.envelope,
+              input.previewExpiresAt
+            ]
+          );
+        } catch (error) {
+          if (isObject(error) && error.code === "23505") return null;
+          throw error;
+        }
+        return persisted;
+      });
+    },
+
     async persistAuthoritativePreview(input) {
       const { identity, preview, allowedRepresentations } = input;
       if (
@@ -1098,9 +1326,11 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           `csm:preview:${target.relationship_id}:${preview.teamId}:${preview.teamWorkspaceId}:${preview.representation}`
         );
         const existingById = await readPreviewRow(client, enrollment.id, {
+          includeExpired: true,
           previewId: preview.previewId
         });
         const existingByHash = await readPreviewRow(client, enrollment.id, {
+          includeExpired: true,
           previewHash: preview.previewHash
         });
         const existing = existingById ?? existingByHash;
@@ -1113,14 +1343,24 @@ export const createCollaborationSharedMemoryAuthorityStore = (
             return null;
           }
           const decoded = await decodePreview(existing, identity);
-          return decoded &&
-            sameDto(decoded, {
+          if (
+            !decoded ||
+            !sameDto(decoded, {
               ...identity,
               ...preview,
               allowedRepresentations
             })
-            ? decoded
-            : null;
+          ) {
+            return null;
+          }
+          await client.query(
+            `update collaboration_shared_memory_previews
+                set expires_at = now() + interval '10 minutes'
+              where enrollment_id = $1 and preview_id = $2
+                and expires_at <= now()`,
+            [enrollment.id, preview.previewId]
+          );
+          return decoded;
         }
         const persisted: CollaborationPersistedSharedMemoryPreview = {
           ...identity,
@@ -1519,6 +1759,41 @@ export const createCollaborationSharedMemoryAuthorityStore = (
       });
     },
 
+    async readAuthoritativeGrants(identity, shareGrantIds) {
+      if (
+        !validIdentity(identity) ||
+        shareGrantIds.length > 100 ||
+        shareGrantIds.some((id) => !isUuid(id))
+      ) {
+        return shareGrantIds.map(() => null);
+      }
+      if (shareGrantIds.length === 0) return [];
+      return withTransaction(pool, async (client) => {
+        const enrollment = await activeEnrollment(client, identity, "share");
+        if (!enrollment) return shareGrantIds.map(() => null);
+        const result = await client.query<GrantRow>(
+          `select distinct on (share_grant_id)
+                  share_grant_id, logical_grant_id, logical_memory_id,
+                  consent_id, team_id, team_workspace_id,
+                  active_representation, source_revision, grant_version,
+                  lifecycle, protected_dto_hash, protected_dto
+             from collaboration_shared_memory_grants
+            where enrollment_id=$1 and share_grant_id=any($2::uuid[])
+            order by share_grant_id,grant_version desc`,
+          [enrollment.id, shareGrantIds]
+        );
+        const decoded = await Promise.all(
+          result.rows.map((row) => decodeGrant(row, identity))
+        );
+        const byId = new Map(
+          decoded.flatMap((grant) =>
+            grant ? [[grant.grant.id, grant] as const] : []
+          )
+        );
+        return shareGrantIds.map((id) => byId.get(id) ?? null);
+      });
+    },
+
     async listAuthoritativeGrants(input) {
       if (!validIdentity(input) || !isUuid(input.logicalMemoryId)) return null;
       return withTransaction(pool, async (client) => {
@@ -1552,6 +1827,151 @@ export const createCollaborationSharedMemoryAuthorityStore = (
             )
           : null;
       });
+    },
+
+    async persistPendingShareSourceWork(input) {
+      if (
+        !validIdentity(input.identity) ||
+        !isUuid(input.pendingShareId) ||
+        !isUuid(input.mutationId) ||
+        !isUuid(input.localSessionId)
+      ) {
+        return false;
+      }
+      return withTransaction(pool, async (client) => {
+        const enrollment = await activeEnrollment(
+          client,
+          input.identity,
+          "update"
+        );
+        if (!enrollment) return false;
+        const session = await client.query(
+          `select 1 from sessions
+            where id=$1 and owner_user_id=$2 and visibility='personal'
+            limit 1`,
+          [input.localSessionId, input.identity.localOwnerUserId]
+        );
+        if (!session.rowCount) return false;
+        await lockBinding(
+          client,
+          `csm:pending-source-work:${enrollment.id}:${input.mutationId}`
+        );
+        const existing = await client.query<{
+          mutation_id: string;
+          pending_share_id: string;
+          local_session_id: string;
+        }>(
+          `select mutation_id,pending_share_id,local_session_id
+             from collaboration_pending_share_source_work
+            where enrollment_id=$1 and mutation_id=$2
+            limit 1`,
+          [enrollment.id, input.mutationId]
+        );
+        if (existing.rows[0]) {
+          return (
+            existing.rows[0].mutation_id === input.mutationId &&
+            existing.rows[0].pending_share_id === input.pendingShareId &&
+            existing.rows[0].local_session_id === input.localSessionId
+          );
+        }
+        try {
+          await client.query(
+            `insert into collaboration_pending_share_source_work
+               (enrollment_id,pending_share_id,mutation_id,local_session_id)
+             values ($1,$2,$3,$4)`,
+            [
+              enrollment.id,
+              input.pendingShareId,
+              input.mutationId,
+              input.localSessionId
+            ]
+          );
+        } catch (error) {
+          if (isObject(error) && error.code === "23505") return false;
+          throw error;
+        }
+        return true;
+      });
+    },
+
+    async claimPendingShareSourceWork(input = {}) {
+      const limit = Math.max(1, Math.min(50, input.limit ?? 10));
+      return withTransaction(pool, async (client) => {
+        const result = await client.query<{
+          work_id: string;
+          backend_id: string;
+          local_owner_user_id: string;
+          upstream_user_id: string;
+          pending_share_id: string;
+          mutation_id: string;
+          local_session_id: string;
+        }>(
+          `with candidates as (
+             select work.id
+               from collaboration_pending_share_source_work work
+               join collaboration_shared_memory_enrollments enrollment
+                 on enrollment.id=work.enrollment_id
+                and enrollment.revoked_at is null
+              where ((work.state in ('pending','failed') and work.available_at<=now())
+                 or (work.state='processing' and
+                     work.locked_at<now()-interval '5 minutes'))
+              order by work.available_at,work.id
+              for update of work skip locked
+              limit $1
+           ), claimed as (
+             update collaboration_pending_share_source_work work
+                set state='processing',locked_at=now(),updated_at=now(),
+                    attempt_count=attempt_count+1
+               from candidates
+              where work.id=candidates.id
+            returning work.*
+           )
+           select claimed.id as work_id,enrollment.backend_id,
+                  enrollment.local_owner_user_id,enrollment.upstream_user_id,
+                  claimed.pending_share_id,claimed.mutation_id,
+                  claimed.local_session_id
+             from claimed
+             join collaboration_shared_memory_enrollments enrollment
+               on enrollment.id=claimed.enrollment_id`,
+          [limit]
+        );
+        return result.rows.map((row) => ({
+          workId: row.work_id,
+          backendId: row.backend_id,
+          localOwnerUserId: row.local_owner_user_id,
+          upstreamUserId: row.upstream_user_id,
+          pendingShareId: row.pending_share_id,
+          mutationId: row.mutation_id,
+          localSessionId: row.local_session_id
+        }));
+      });
+    },
+
+    async finishPendingShareSourceWork(input) {
+      if (!isUuid(input.workId)) return false;
+      const failureCode = input.redactedFailureCode ?? null;
+      if (
+        failureCode !== null &&
+        !/^[A-Za-z0-9_.:-]{1,120}$/.test(failureCode)
+      ) {
+        return false;
+      }
+      const result = await pool.query(
+        input.outcome === "completed"
+          ? `update collaboration_pending_share_source_work
+                set state='completed',locked_at=null,completed_at=now(),
+                    redacted_failure_code=null,updated_at=now()
+              where id=$1 and state='processing'`
+          : `update collaboration_pending_share_source_work
+                set state='failed',locked_at=null,
+                    available_at=now()+interval '30 seconds',
+                    redacted_failure_code=$2,updated_at=now()
+              where id=$1 and state='processing'`,
+        input.outcome === "completed"
+          ? [input.workId]
+          : [input.workId, failureCode ?? "source_preparation_failed"]
+      );
+      return result.rowCount === 1;
     },
 
     async readSharedSessionBinding(input) {

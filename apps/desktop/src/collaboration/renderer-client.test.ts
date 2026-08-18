@@ -537,6 +537,27 @@ const success = (
     case "collaboration.prepare_shared_memory_source":
       data = { entry: personalMemoryEntry() };
       break;
+    case "collaboration.preview_shared_memory_candidate": {
+      const candidate = sharedPreview();
+      data = {
+        candidate: {
+          sessionId: command.input.sessionId,
+          logicalMemoryId: ids.logicalMemory,
+          representation: command.input.representation,
+          sourceRevision: candidate.sourceRevision,
+          candidateHash: candidate.previewHash,
+          itemCount: candidate.itemCount,
+          excludedItemCount: 0,
+          manifest: candidate.items.map((item) => ({
+            sourceId: item.id,
+            revisionHash: candidate.previewHash
+          })),
+          byteCount: 512,
+          items: candidate.items
+        }
+      };
+      break;
+    }
     case "collaboration.preview_shared_memory":
     case "collaboration.load_shared_memory_preview_page":
       data = { preview: sharedPreview() };
@@ -1753,6 +1774,10 @@ describe("collaboration renderer client", () => {
     const client = createCollaborationRendererClient(mock.bridge);
     await client.load();
 
+    const candidate = await client.previewSharedMemoryCandidate({
+      sessionId: ids.capturedSession,
+      representation: "memory_events"
+    });
     const entry = await client.prepareSharedMemorySource({
       sessionId: ids.capturedSession
     });
@@ -1775,10 +1800,22 @@ describe("collaboration renderer client", () => {
       selectedRepresentation: "memory_events",
       previewRevision: preview.previewRevision,
       previewHash: preview.previewHash,
-      expiresAt: null
+      expiresAt: null,
+      title: "Launch review"
     });
 
     const commands = mock.command.mock.calls.map(([command]) => command);
+    expect(candidate).toMatchObject({
+      sessionId: ids.capturedSession,
+      itemCount: 1,
+      excludedItemCount: 0
+    });
+    expect(
+      commands.find(
+        (command) =>
+          command.command === "collaboration.preview_shared_memory_candidate"
+      )
+    ).not.toHaveProperty("input.actionGrant");
     const previewGrant = commands.find(
       (command) =>
         command.command === "collaboration.request_action_grant" &&
@@ -1791,6 +1828,7 @@ describe("collaboration renderer client", () => {
     );
     expect(previewGrant).not.toHaveProperty("input.intent.remoteReplicaId");
     expect(shareGrant).not.toHaveProperty("input.intent.previewId");
+    expect(shareGrant).toHaveProperty("input.intent.title", "Launch review");
     const protectedCommands = commands.filter(
       (command) =>
         command.command === "collaboration.preview_shared_memory" ||
@@ -3942,7 +3980,11 @@ describe("collaboration renderer client", () => {
           command.input.scope.scope === "team"
       )
     ).toHaveLength(2);
-    expect(updates.at(-1)).toEqual({ kind: "command", announcement: "" });
+    expect(updates.at(-1)).toEqual({
+      kind: "command",
+      announcement: "",
+      authoritativeRecovery: true
+    });
     client.dispose();
   });
 

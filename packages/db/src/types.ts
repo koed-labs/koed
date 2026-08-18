@@ -1784,6 +1784,7 @@ export interface CuratedMemoryProposalInput {
 export interface CuratedMemoryListInput {
   status?: CuratedMemoryAssertionStatus;
   topicId?: string;
+  sessionId?: string;
   includeSources?: boolean;
   limit?: number;
 }

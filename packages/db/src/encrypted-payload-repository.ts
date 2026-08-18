@@ -840,6 +840,70 @@ export const decryptAuthorizedEncryptedFieldPayloadWithClient = async (
   };
 };
 
+export const encryptedFieldReferenceKey = (
+  reference: EncryptedFieldReference
+): string =>
+  `${reference.sourceTable}\u0000${reference.sourceId}\u0000${reference.sourceColumn}`;
+
+export const decryptAuthorizedEncryptedFieldPayloadsWithClient = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  provider: EnvelopeEncryptionProvider,
+  references: EncryptedFieldReference[]
+): Promise<
+  Map<string, { record: StoredEncryptedFieldRecord; plaintext: unknown }>
+> => {
+  const unique = [
+    ...new Map(
+      references.map((reference) => [
+        encryptedFieldReferenceKey(reference),
+        reference
+      ])
+    ).values()
+  ];
+  if (unique.length === 0) return new Map();
+  const result = await client.query<EncryptedFieldRow>(
+    `select encrypted.*
+       from encrypted_field_payloads encrypted
+       join jsonb_to_recordset($2::jsonb)
+         as requested(source_table text,source_id uuid,source_column text)
+         on requested.source_table=encrypted.source_table
+        and requested.source_id=encrypted.source_id
+        and requested.source_column=encrypted.source_column
+      where encrypted.owner_user_id=$1
+        and encrypted.visibility='personal'
+        and encrypted.encryption_scope='personal'
+        and encrypted.invalidated_at is null`,
+    [
+      actor.userId,
+      JSON.stringify(
+        unique.map((reference) => ({
+          source_table: reference.sourceTable,
+          source_id: reference.sourceId,
+          source_column: reference.sourceColumn
+        }))
+      )
+    ]
+  );
+  const decrypted = await Promise.all(
+    result.rows.map(async (row) => {
+      const record = mapEncryptedFieldRow(row);
+      const plaintextUtf8 = await decryptEnvelopeToUtf8(
+        provider,
+        record.envelope
+      );
+      return [
+        encryptedFieldReferenceKey(record),
+        {
+          record,
+          plaintext: parsePlaintext(plaintextUtf8, record.plaintextContentType)
+        }
+      ] as const;
+    })
+  );
+  return new Map(decrypted);
+};
+
 export const decryptTeamEncryptedFieldAfterAuthorizationWithClient = async (
   client: pg.Pool | pg.PoolClient,
   provider: EnvelopeEncryptionProvider,

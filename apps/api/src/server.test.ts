@@ -5837,6 +5837,53 @@ describe("api health", () => {
     }
   });
 
+  it("keeps both Pending Share worker families idle behind the Team feature gate", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-worker-gate-"));
+    process.env.KOED_HOME = koedHome;
+    vi.useFakeTimers();
+    const processPendingShares = vi.fn(async () => ({
+      claimed: 0,
+      activated: 0,
+      failed: 0,
+      deferred: 0
+    }));
+    const claimPendingShareSourceWork = vi.fn(async () => []);
+    const authorityStore = {
+      claimPendingShareSourceWork,
+      finishPendingShareSourceWork: vi.fn(async () => true)
+    } as unknown as NonNullable<
+      BuildServerOptions["collaborationSharedMemoryAuthorityStore"]
+    >;
+    const repository = Object.assign(createFakeRepository(), {
+      processPendingShares
+    });
+
+    process.env.KOED_TEAM_COLLABORATION_ENABLED = "false";
+    const disabled = await buildServer({
+      repository,
+      collaborationSharedMemoryAuthorityStore: authorityStore
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(processPendingShares).not.toHaveBeenCalled();
+    expect(claimPendingShareSourceWork).not.toHaveBeenCalled();
+    await disabled.close();
+
+    process.env.KOED_TEAM_COLLABORATION_ENABLED = "true";
+    const enabled = await buildServer({
+      repository,
+      collaborationSharedMemoryAuthorityStore: authorityStore
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(processPendingShares).toHaveBeenCalledTimes(1);
+    expect(claimPendingShareSourceWork).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(processPendingShares).toHaveBeenCalledTimes(2);
+    expect(claimPendingShareSourceWork).toHaveBeenCalledTimes(2);
+    await enabled.close();
+    vi.useRealTimers();
+    rmSync(koedHome, { recursive: true, force: true });
+  });
+
   it("advertises KMS-backed application-layer encryption when configured", async () => {
     process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
     process.env.API_ENVELOPE_ENCRYPTION_PROVIDER = "managed_kms";
@@ -14640,6 +14687,11 @@ describe("account and access flows", () => {
       }
     });
     const session = jsonBody<SessionResponse>(sessionResponse).session;
+    const initialThreads = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?includeInvalidated=false",
+      headers: browserSessionHeaders(cookie)
+    });
     const renamed = await app.inject({
       method: "PATCH",
       url: `/v1/memory/graph/sessions/${session.id}/title`,
@@ -14654,6 +14706,11 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(renamed.statusCode).toBe(200);
+    expect(
+      jsonBody<GraphThreadIndexResponse>(initialThreads)
+        .projects.flatMap((project) => project.threads)
+        .find((thread) => thread.sessionId === session.id)
+    ).toMatchObject({ name: "thread-title-a" });
     expect(jsonBody<SessionResponse>(renamed).session).toMatchObject({
       id: session.id
     });

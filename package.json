@@ -61,6 +61,7 @@
     "pds-fixture:validate": "node scripts/personal-device-sync-fixture.mjs",
     "pds-pairing:e2e": "node scripts/personal-device-pairing-e2e.mjs",
     "team-launch:validate": "node scripts/team-saas-launch-validation.mjs",
+    "approval-activity:measure-sharing": "pnpm --filter @koed/shared build && node scripts/approval-activity-sharing-performance.mjs",
     "multi-device:prepare": "node scripts/multi-device-profile.mjs",
     "multi-device:validate": "node scripts/multi-device-dogfood.mjs",
     "hosted:backup": "node scripts/hosted-backup.mjs",

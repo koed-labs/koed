@@ -2074,6 +2074,72 @@ describe("local-edge collaboration command route", () => {
     expect(harness.calls).toHaveLength(0);
   });
 
+  it("routes candidate previews through Personal local control without a Team backend envelope", async () => {
+    const command: CollaborationRendererCommand = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: randomUUID(),
+      command: "collaboration.preview_shared_memory_candidate",
+      input: {
+        sessionId: ids.session,
+        representation: "memory_events"
+      }
+    };
+    const dispatches: unknown[] = [];
+    const harness = createHarness({
+      backend: null,
+      sharedMemoryControl: {
+        resolvePreviewTarget: async () => null,
+        resolveConsentPreview: async () => null,
+        loadInitialSharedSession: async () => null,
+        dispatch: async (input, context) => {
+          dispatches.push({ input, context });
+          return collaborationCommandResultSchema.parse({
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            requestId: command.requestId,
+            command: command.command,
+            ok: true,
+            data: {
+              candidate: {
+                sessionId: ids.session,
+                logicalMemoryId: ids.sharedLogicalMemory,
+                representation: "memory_events",
+                sourceRevision: 0,
+                candidateHash: "a".repeat(64),
+                itemCount: 0,
+                excludedItemCount: 0,
+                manifest: [],
+                byteCount: 0,
+                items: []
+              }
+            }
+          });
+        }
+      }
+    });
+
+    const response = await injectPersonalCommand(harness.app, command);
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(parseResult(response.body)).toMatchObject({
+      requestId: command.requestId,
+      command: command.command,
+      ok: true,
+      data: { candidate: { sessionId: ids.session } }
+    });
+    expect(dispatches).toEqual([
+      {
+        input: command,
+        context: {
+          localOwnerUserId: ids.actor,
+          desktopCredentialKeyId: `koed_desktop_${"a".repeat(40)}`
+        }
+      }
+    ]);
+    expect(harness.calls).toHaveLength(0);
+    expect(harness.localCredentialReads).toHaveLength(0);
+    await harness.app.close();
+  });
+
   it("executes the complete Personal command path locally without a Team backend", async () => {
     const harness = createHarness({
       backend: null,

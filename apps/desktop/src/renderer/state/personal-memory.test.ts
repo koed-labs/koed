@@ -61,6 +61,7 @@ const api = (overrides: Partial<PersonalDesktopApi> = {}) =>
     listProjects: vi.fn(async () => []),
     loadEventPage: vi.fn(async () => []),
     assignSessionProject: vi.fn(async () => ({ projectId: null })),
+    updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
     subscribe: vi.fn(() => () => undefined),
     ...overrides
   }) satisfies PersonalDesktopApi;

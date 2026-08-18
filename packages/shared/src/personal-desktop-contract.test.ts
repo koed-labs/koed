@@ -93,7 +93,7 @@ TRANSCRIPT DELTA END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb5596
     expect(display?.truncated).toBe(true);
   });
 
-  it("accepts only the three exact Personal Memory operations", () => {
+  it("accepts only the four exact Personal Memory operations", () => {
     expect(
       personalDesktopRequestSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
@@ -119,6 +119,16 @@ TRANSCRIPT DELTA END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb5596
         input: { action: "move", sessionId, targetProjectId: "project-2" }
       })
     ).toMatchObject({ operation: "personal.sessions.assign_project" });
+    expect(
+      personalDesktopRequestSchema.parse({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.sessions.update_title",
+        input: { sessionId, title: "Release planning" }
+      })
+    ).toMatchObject({
+      operation: "personal.sessions.update_title",
+      input: { title: "Release planning" }
+    });
   });
 
   it.each([
@@ -191,6 +201,25 @@ TRANSCRIPT DELTA END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb5596
         operation: "personal.projects.list",
         ok: true,
         data: { projects: [], apiToken: "raw-token" }
+      })
+    ).toThrow();
+  });
+
+  it("bounds Captured Session title updates", () => {
+    for (const title of ["", " ", "x".repeat(121)]) {
+      expect(() =>
+        personalDesktopRequestSchema.parse({
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.update_title",
+          input: { sessionId, title }
+        })
+      ).toThrow();
+    }
+    expect(() =>
+      personalDesktopRequestSchema.parse({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.sessions.update_title",
+        input: { sessionId, title: "Release planning", apiToken: "secret" }
       })
     ).toThrow();
   });

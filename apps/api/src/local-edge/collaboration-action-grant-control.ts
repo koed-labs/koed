@@ -427,6 +427,7 @@ export const createCollaborationActionGrantControl = (
               : null;
           if (
             intent.intent === "collaboration.preview_shared_memory" &&
+            !intent.candidate &&
             !previewTarget
           ) {
             return failure(command, new ControlFailure("permission_denied"));

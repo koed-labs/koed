@@ -119,6 +119,26 @@
   min-height: 0;
 }
 
+.collab-memory-tabs {
+  border-bottom: 1px solid var(--collab-border);
+  display: flex;
+  gap: 4px;
+  padding: 0 18px;
+}
+
+.collab-memory-tabs button {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--collab-muted);
+  padding: 10px 12px;
+}
+
+.collab-memory-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--collab-focus);
+  color: var(--collab-text);
+}
+
 .collab-memory-grid,
 .collab-shared-list {
   flex: 1 1 auto;
@@ -155,6 +175,617 @@
 .collab-memory-card h2,
 .collab-memory-card p {
   margin: 0;
+}
+
+.collab-visually-hidden {
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.collab-shares-split {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
+  min-height: 100%;
+}
+
+.collab-shares-list {
+  border-right: 1px solid var(--collab-border);
+  min-width: 0;
+}
+
+.collab-shares-list .collab-memory-card[aria-pressed="true"] {
+  background: var(--accent);
+}
+
+.collab-share-detail {
+  padding: 20px;
+}
+
+.collab-share-detail h2 {
+  margin-top: 0;
+}
+
+.collab-share-detail button {
+  margin: 6px 8px 6px 0;
+}
+
+.collab-share-detail .collab-danger {
+  color: var(--collab-danger);
+}
+
+@media (max-width: 760px) {
+  .collab-shares-split {
+    grid-template-columns: 1fr;
+  }
+
+  .collab-shares-list {
+    border-bottom: 1px solid var(--collab-border);
+    border-right: 0;
+  }
+}
+
+.collab-shares-workspace {
+  display: grid;
+  flex: 1 1 auto;
+  font-family: inherit;
+  grid-template-columns: minmax(16rem, 19rem) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.collab-shares-pane,
+.collab-share-detail-workspace,
+.collab-share-empty-detail,
+.collab-share-preview,
+.collab-share-preview-window,
+.collab-share-row-copy {
+  min-height: 0;
+  min-width: 0;
+}
+
+.collab-shares-pane {
+  border-right: 1px solid var(--collab-border);
+  display: flex;
+  flex-direction: column;
+}
+
+.collab-shares-pane > header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 16px;
+}
+
+.collab-shares-pane > header h1 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.5rem;
+  margin: 0;
+}
+
+.collab-shares-pane > header span {
+  color: inherit;
+  font-size: inherit;
+}
+
+.collab-share-search {
+  padding: 0 12px 12px;
+}
+
+.collab-share-search input {
+  background: var(--collab-surface);
+  border: 1px solid var(--collab-border-strong);
+  border-radius: var(--radius);
+  box-sizing: border-box;
+  box-shadow: inset 0 0 0 1px
+    color-mix(in oklab, var(--collab-border) 28%, transparent);
+  color: var(--collab-text);
+  min-height: 36px;
+  padding: 7px 10px;
+  width: 100%;
+}
+
+.collab-share-search input:focus-visible {
+  border-color: var(--collab-focus);
+  box-shadow: none;
+  outline: 2px solid color-mix(in oklab, var(--collab-focus) 42%, transparent);
+  outline-offset: 1px;
+}
+
+.collab-shares-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 8px 16px;
+  scrollbar-color: #c3c1b8 transparent;
+  scrollbar-width: thin;
+}
+
+.collab-share-section > header {
+  align-items: center;
+  color: var(--collab-muted);
+  display: flex;
+  font-size: 11px;
+  font-weight: 650;
+  justify-content: space-between;
+  letter-spacing: 0.035em;
+  padding: 12px 8px 5px;
+  text-transform: uppercase;
+}
+
+.collab-share-section {
+  border-top: 1px solid var(--collab-border);
+}
+
+.collab-share-section[data-empty="true"] {
+  padding-bottom: 0.75rem;
+}
+
+.collab-share-section > header h2 {
+  font-size: inherit;
+  margin: 0;
+}
+
+:is(.collab-route-root, .collab-modal) .collab-share-row {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--collab-text);
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  min-height: 0;
+  padding: 0.625rem;
+  text-align: left;
+  width: 100%;
+}
+
+:is(.collab-route-root, .collab-modal) .collab-share-row:hover,
+:is(.collab-route-root, .collab-modal) .collab-share-row[aria-current="page"] {
+  background: var(--accent);
+}
+
+.desktop-team-disc.collab-share-team-badge {
+  block-size: 2rem;
+  border-radius: 0.45rem;
+  font-size: 0.6875rem;
+  inline-size: 2rem;
+}
+
+.collab-share-row-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.collab-share-row-copy strong,
+.collab-share-row-copy small,
+.collab-share-row time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collab-share-row-title {
+  align-items: center;
+  display: flex;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.collab-share-row-title strong {
+  min-width: 0;
+}
+
+.collab-share-row-title .collab-share-row-error {
+  color: var(--collab-danger);
+  flex: 0 0 auto;
+  height: 0.875rem;
+  width: 0.875rem;
+}
+
+.collab-share-row-copy strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.collab-share-row-copy small,
+.collab-share-row time {
+  color: var(--collab-muted);
+  font-size: 0.75rem;
+}
+
+.collab-share-row time {
+  max-width: 4.5rem;
+  text-align: right;
+}
+
+.collab-shares-empty {
+  color: var(--collab-muted);
+  font-size: 12px;
+  padding: 24px 12px;
+  text-align: center;
+}
+
+.collab-shares-narrow-state {
+  display: none;
+}
+
+.collab-share-detail-workspace {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.collab-share-detail-header {
+  align-items: center;
+  background: color-mix(in oklab, var(--collab-surface) 92%, transparent);
+  border-bottom: 1px solid var(--collab-border);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 18px;
+  justify-content: space-between;
+  padding: 14px 20px;
+}
+
+.collab-share-detail-header > div {
+  min-width: 0;
+}
+
+.collab-share-header-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.collab-share-header-actions .danger-secondary,
+.collab-revoke-share-modal .collab-modal-actions .danger-secondary {
+  margin-right: 0;
+}
+
+.collab-revoke-share-modal .collab-modal-header h2 {
+  font-size: 0.875rem;
+}
+
+.collab-revoke-share-modal .collab-form,
+.collab-revoke-share-modal .collab-modal-actions button {
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.collab-share-detail-header h2 {
+  font-size: 17px;
+  letter-spacing: -0.012em;
+  margin: 4px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collab-share-detail-header p {
+  color: var(--collab-muted);
+  font-size: 11px;
+  margin: 3px 0 0;
+}
+
+.collab-share-state {
+  color: var(--collab-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.collab-share-state.active {
+  color: var(--collab-accent);
+}
+
+.collab-share-state.pending {
+  color: color-mix(in oklab, var(--warning-foreground) 82%, var(--collab-text));
+}
+
+:is(.collab-route-root, .collab-modal) .collab-share-modify-button {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
+:is(.collab-route-root, .collab-modal) .collab-share-revoke-button {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
+.collab-share-modify-button svg,
+.collab-share-revoke-button svg {
+  height: 14px;
+  width: 14px;
+}
+
+.collab-share-facts {
+  border-bottom: 1px solid var(--collab-border);
+  display: grid;
+  flex: 0 0 auto;
+  gap: 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 10px 20px;
+}
+
+.collab-share-facts > span {
+  color: var(--collab-muted);
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.collab-share-facts strong {
+  color: var(--collab-text);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+}
+
+.collab-share-preview {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 16px 20px 20px;
+}
+
+.collab-share-preview > header {
+  align-items: flex-end;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 16px;
+  justify-content: space-between;
+  padding-bottom: 10px;
+}
+
+.collab-share-preview > header p {
+  margin: 0;
+}
+
+.collab-share-preview > header p,
+.collab-share-preview > header > span {
+  color: var(--collab-muted);
+  font-size: 10px;
+}
+
+.collab-share-preview > header > span {
+  flex: 0 0 auto;
+}
+
+.collab-share-preview-window {
+  background: var(--collab-surface);
+  border: 1px solid var(--collab-border);
+  border-radius: calc(var(--radius) + 2px);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 4%);
+  flex: 1 1 auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.collab-share-preview-window > .collab-state {
+  min-height: 100%;
+}
+
+.collab-share-preview-body {
+  min-height: 100%;
+}
+
+.collab-share-preview-body .shared-conversation-preview {
+  min-height: 100%;
+}
+
+.collab-share-preview-notice {
+  background: color-mix(in oklab, var(--warning) 16%, transparent);
+  border-bottom: 1px solid var(--collab-border);
+  color: var(--collab-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 9px 14px;
+}
+
+.collab-owned-share-preview-list {
+  padding-block: 8px;
+}
+
+:is(.collab-route-root, .collab-modal) .collab-share-preview-more {
+  display: block;
+  margin: 4px auto 14px;
+}
+
+.collab-consent-action,
+.collab-share-cancel-action {
+  inline-size: 4.5rem;
+}
+
+.collab-share-complete {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 18rem;
+  padding: 2rem;
+  text-align: center;
+}
+
+.collab-share-complete-icon {
+  align-items: center;
+  animation: collab-share-complete-arrive 420ms cubic-bezier(0.2, 0.8, 0.2, 1)
+    both;
+  background: color-mix(in oklab, var(--collab-success) 14%, transparent);
+  border: 1px solid color-mix(in oklab, var(--collab-success) 32%, transparent);
+  border-radius: 999px;
+  color: var(--collab-success);
+  display: flex;
+  height: 3.25rem;
+  justify-content: center;
+  margin-bottom: 1rem;
+  width: 3.25rem;
+}
+
+.collab-share-complete-icon svg {
+  height: 1.75rem;
+  width: 1.75rem;
+}
+
+.collab-share-complete > strong {
+  font-size: 1rem;
+}
+
+.collab-share-complete > p {
+  color: var(--collab-muted);
+  line-height: 1.5;
+  margin: 0.4rem 0 0;
+  max-width: 24rem;
+}
+
+@keyframes collab-share-complete-arrive {
+  from {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.collab-share-empty-detail {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+}
+
+.collab-modify-share-modal {
+  max-width: min(38rem, calc(100vw - 2rem));
+}
+
+.collab-modify-share-context {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.collab-modify-share-context span,
+.collab-modify-share-form section p,
+.collab-modify-source-note {
+  color: var(--collab-muted);
+  font-size: 11px;
+}
+
+.collab-modify-share-form > section {
+  align-items: center;
+  border-top: 1px solid var(--collab-border);
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding-top: 12px;
+}
+
+.collab-modify-share-form > section > div:first-child {
+  min-width: 0;
+}
+
+.collab-modify-share-form h3,
+.collab-modify-share-form section p {
+  margin: 0;
+}
+
+.collab-modify-share-form h3 {
+  font-size: 12px;
+}
+
+.collab-modify-share-form section button {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin: 0;
+}
+
+.collab-modify-share-form section button svg {
+  height: 14px;
+  width: 14px;
+}
+
+.collab-modify-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.collab-modify-source-note {
+  line-height: 1.45;
+  margin: -2px 0 0;
+}
+
+@media (max-width: 800px) {
+  .collab-shares-workspace {
+    grid-template-columns: minmax(13rem, 15rem) minmax(0, 1fr);
+  }
+
+  .collab-share-facts {
+    grid-template-columns: 1fr;
+    gap: 7px;
+  }
+}
+
+@media (max-width: 1040px) {
+  .collab-shares-workspace {
+    display: block;
+  }
+
+  .collab-shares-workspace[data-narrow-view="detail"] .collab-shares-pane,
+  .collab-shares-workspace[data-narrow-view="list"]
+    > :is(.collab-share-detail-workspace, .collab-share-empty-detail) {
+    display: none;
+  }
+
+  .collab-shares-pane,
+  .collab-share-detail-workspace,
+  .collab-share-empty-detail {
+    height: 100%;
+  }
+
+  .collab-shares-narrow-state {
+    display: block;
+    min-height: 100%;
+  }
+
+  .collab-shares-narrow-state > .collab-state {
+    min-height: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .collab-share-complete-icon {
+    animation: none;
+  }
 }
 
 .collab-sync-state {
@@ -1315,6 +1946,121 @@
   max-width: min(48rem, calc(100vw - 2rem));
 }
 
+.collab-change-detail-modal {
+  max-width: min(42rem, calc(100vw - 2rem));
+}
+
+.collab-change-detail-form .collab-modal-state {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  min-height: 8rem;
+  padding: 20px 8px;
+}
+
+.collab-change-detail-form .collab-share-preparing {
+  flex-direction: column;
+  min-height: 12rem;
+  padding: 24px 16px;
+}
+
+.collab-change-detail-form .collab-preview-list {
+  max-height: min(22rem, 42vh);
+  min-height: 10rem;
+}
+
+.collab-change-detail-current {
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+  border: 1px solid var(--collab-border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px;
+}
+
+.collab-change-detail-current small,
+.collab-change-detail-comparison small {
+  color: var(--collab-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.collab-change-detail-current strong {
+  font-size: 14px;
+}
+
+.collab-change-detail-current span {
+  color: var(--collab-muted);
+  font-size: 11px;
+}
+
+.collab-change-detail-options {
+  display: grid;
+  gap: 8px;
+}
+
+.collab-change-detail-options .collab-check {
+  background: var(--background);
+  border: 1px solid var(--collab-border);
+  border-radius: 6px;
+  min-height: 46px;
+  padding: 9px 11px;
+}
+
+.collab-change-detail-options .collab-check:has(input:checked) {
+  background: var(--collab-accent-soft);
+  border-color: color-mix(in srgb, var(--collab-accent) 55%, transparent);
+}
+
+.collab-change-detail-options .collab-check:has(input:disabled:checked) {
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+  border-color: var(--collab-border);
+}
+
+.collab-change-detail-options .collab-check > span {
+  align-items: baseline;
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.collab-change-detail-options .collab-check small {
+  color: var(--collab-muted);
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.collab-change-detail-comparison {
+  align-items: center;
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+  border: 1px solid var(--collab-border);
+  border-radius: 6px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  padding: 10px 12px;
+}
+
+.collab-change-detail-comparison > span:not([aria-hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.collab-change-detail-comparison > span[aria-hidden] {
+  color: var(--collab-muted);
+}
+
+.collab-change-detail-unavailable {
+  min-height: 12rem;
+}
+
 .collab-share-memory-form .collab-preview-list {
   border: 1px solid var(--collab-border);
   border-radius: 5px;
@@ -1416,6 +2162,25 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.collab-modal-title {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.collab-modal-title input {
+  font-size: 15px;
+  font-weight: 600;
+  height: 30px;
+  max-width: min(28rem, calc(100vw - 9rem));
+  padding: 4px 8px;
+}
+
+.collab-modal-title .collab-title-edit-button {
+  flex: 0 0 auto;
 }
 
 .collab-modal-state {

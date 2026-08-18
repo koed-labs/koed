@@ -139,6 +139,12 @@ test("automated launch commands select only their intended test files", () => {
   const desktopCommand = automatedLaunchTestCommands.find(
     (command) => command.id === "desktop-electron-interactions"
   );
+  const performanceCommand = automatedLaunchTestCommands.find(
+    (command) => command.id === "approval-activity-sharing-performance"
+  );
+  const workflowPerformanceCommand = automatedLaunchTestCommands.find(
+    (command) => command.id === "shared-memory-workflow-performance"
+  );
 
   assert.deepEqual(migrationCommand?.args, ["db:migrate:acceptance"]);
   assert.deepEqual(requiredSuitesCommand?.args, ["test:required-suites"]);
@@ -170,6 +176,15 @@ test("automated launch commands select only their intended test files", () => {
     )
   );
   assert.ok(!apiCommand?.args.includes("--"));
+  assert.deepEqual(performanceCommand?.args, [
+    "approval-activity:measure-sharing"
+  ]);
+  assert.ok(
+    workflowPerformanceCommand?.args.includes(
+      "tests/shared-memory-repository.test.ts"
+    )
+  );
+  assert.ok(workflowPerformanceCommand?.args.includes("--testNamePattern"));
   assert.deepEqual(desktopCommand?.args, [
     "--filter",
     "@koed/desktop",
@@ -182,6 +197,7 @@ test("automated launch tests remove inherited deployment secrets and profiles", 
     PATH: "/usr/bin",
     DATABASE_URL: "postgres://fixture",
     API_TOKEN_PEPPER: "production-pepper",
+    ELECTRON_RUN_AS_NODE: "1",
     SESSION_SECRET: "production-session-secret",
     KOED_LAUNCH_SESSION_COOKIE: "production-session-cookie",
     KOED_LAUNCH_DEVICE_CREDENTIAL: "production-device-credential",
@@ -206,6 +222,7 @@ test("automated launch tests remove inherited deployment secrets and profiles", 
 
   assert.equal(child.PATH, "/usr/bin");
   assert.equal(child.API_TOKEN_PEPPER, "synthetic-pepper");
+  assert.equal(child.ELECTRON_RUN_AS_NODE, undefined);
   assert.equal(child.SESSION_SECRET, "synthetic-session-secret");
   assert.equal(child.DATABASE_URL, "postgres://scratch");
   assert.equal(child.NODE_ENV, "test");

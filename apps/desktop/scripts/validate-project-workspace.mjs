@@ -84,8 +84,19 @@ const setEmulatedViewport = async (window, width, height) => {
   }
   await window.webContents.debugger.sendCommand(
     "Emulation.setDeviceMetricsOverride",
-    { width, height, deviceScaleFactor: 1, mobile: false }
+    {
+      width,
+      height,
+      deviceScaleFactor: 1,
+      mobile: false
+    }
   );
+  const viewportWidth =
+    await window.webContents.executeJavaScript("window.innerWidth");
+  if (viewportWidth !== width) {
+    const zoomFactor = window.webContents.getZoomFactor();
+    window.webContents.setZoomFactor((viewportWidth * zoomFactor) / width);
+  }
   await delay(100);
 };
 
@@ -277,8 +288,9 @@ const run = async () => {
     );
     await delay(50);
 
+    await setEmulatedViewport(window, 1440, 900);
     const wide = await inspectWorkspace(window);
-    assert.equal(wide.workspaceDisplay, "grid");
+    assert.equal(wide.workspaceDisplay, "grid", JSON.stringify(wide));
     assert.equal(wide.masterDisplay, "flex");
     assert.notEqual(wide.detailDisplay, "none");
     assert.equal(wide.titleOverflow, false);

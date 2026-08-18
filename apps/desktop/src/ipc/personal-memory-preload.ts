@@ -5,6 +5,7 @@ import {
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
   personalDesktopSessionProjectInputSchema,
+  personalDesktopSessionTitleInputSchema,
   type PersonalDesktopApi,
   type PersonalDesktopRequest,
   type PersonalDesktopResult
@@ -90,6 +91,22 @@ export const createPersonalMemoryPreloadApi = (
       );
       if (result.operation !== "personal.sessions.assign_project") {
         throw new Error("Invalid Personal Memory assignment result.");
+      }
+      return result.data;
+    },
+    updateSessionTitle: async (
+      value: Parameters<PersonalDesktopApi["updateSessionTitle"]>[0]
+    ) => {
+      const input = personalDesktopSessionTitleInputSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.update_title",
+          input
+        })
+      );
+      if (result.operation !== "personal.sessions.update_title") {
+        throw new Error("Invalid Personal Memory title result.");
       }
       return result.data;
     },

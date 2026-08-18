@@ -110,5 +110,11 @@ describe("routePath", () => {
     ).toBe(
       "/personal/memory/projects/Project%20with%20spaces/session/session%2Fone"
     );
+    expect(
+      routePath({
+        kind: "personal-memory-shares",
+        shareKey: "pending:share/one"
+      })
+    ).toBe("/personal/memory/shares/pending%3Ashare%2Fone");
   });
 });

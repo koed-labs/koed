@@ -5,6 +5,7 @@ import {
   CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
   CAPTURED_SESSION_SYNC_MAX_CONTRIBUTORS_PER_EVENT,
   capturedSessionSyncUploadPackageManifestSchema,
+  classifyApprovalActivity,
   crossIdentitySyncDigest,
   crossIdentitySyncDeterministicUuid,
   type CapturedSessionSyncChangeV1,
@@ -237,6 +238,10 @@ export interface CrossIdentitySyncOperationalStatus {
 }
 
 export interface CrossIdentitySyncRepository {
+  prepareCapturedSessionSyncCandidateRevision(
+    actor: ActorContext,
+    sessionId: string
+  ): Promise<number | null>;
   getCapturedSessionSyncSource(
     actor: ActorContext,
     sessionId: string
@@ -1145,6 +1150,48 @@ export const createCrossIdentitySyncRepository = (
   };
 
   return {
+    async prepareCapturedSessionSyncCandidateRevision(actor, sessionId) {
+      const result = await pool.query<{ source_revision: string | null }>(
+        `with owned_session as (
+           select id
+             from sessions
+            where id=$1 and owner_user_id=$2 and visibility='personal'
+              and invalidated_at is null and personal_deleted_at is null
+         ), inserted as (
+           insert into sync_semantic_changes (
+             session_id,memory_event_id,origin_event_id,operation,revision_hash
+           )
+           select event.session_id,event.id,event.id,
+                  case
+                    when event.invalidated_at is not null
+                      or event.personal_deleted_at is not null
+                    then 'delete'::sync_change_operation
+                    else 'upsert'::sync_change_operation
+                  end,
+                  encode(digest(event.id::text || ':initial','sha256'),'hex')
+             from memory_events event
+             join owned_session session on session.id=event.session_id
+            where event.event_type='captured'
+              and not exists (
+                select 1 from sync_semantic_changes existing
+                 where existing.session_id=event.session_id
+                   and existing.origin_event_id=event.id
+              )
+           on conflict do nothing
+           returning cursor
+         )
+         select case when exists (select 1 from owned_session)
+                then coalesce((
+                  select max(change.cursor)
+                    from sync_semantic_changes change
+                   where change.session_id=$1
+                ),0)::text
+                else null end as source_revision`,
+        [sessionId, actor.userId]
+      );
+      const sourceRevision = result.rows[0]?.source_revision ?? null;
+      return sourceRevision === null ? null : Number(sourceRevision);
+    },
     async getCapturedSessionSyncSource(actor, sessionId) {
       const result = await pool.query<Row>(
         "select * from sessions where id=$1 and owner_user_id=$2 and visibility='personal' and invalidated_at is null and personal_deleted_at is null limit 1",
@@ -2176,6 +2223,17 @@ export const createCrossIdentitySyncRepository = (
               : capturedSessionSyncContentFromUnknown(hydratedRawJson);
           const actorValue =
             hydratedMetadata.actor ?? contributor.source_event_type;
+          if (
+            classifyApprovalActivity({
+              metadata: hydratedMetadata,
+              actor: actorValue,
+              content
+            })
+          ) {
+            throw new SyncStateConflictError(
+              "Approval Activity is excluded from semantic synchronization"
+            );
+          }
           const kindValue =
             contributor.source_event_type ?? contributor.source_record_type;
           let rawText: string | null;
@@ -3382,6 +3440,17 @@ export const createCrossIdentitySyncRepository = (
           }
           const contributorIds: string[] = [];
           for (const contributor of change.event.contributors) {
+            if (
+              classifyApprovalActivity({
+                metadata: contributor.metadata,
+                actor: contributor.actor,
+                content: contributor.content
+              })
+            ) {
+              throw new SyncStateConflictError(
+                "Approval Activity is excluded from semantic synchronization"
+              );
+            }
             const encryptedColumns = [
               "raw_json",
               ...(hasEncryptableText(contributor.rawText) ? ["raw_text"] : []),
@@ -3462,9 +3531,9 @@ export const createCrossIdentitySyncRepository = (
                   encryptedSourceTable: "conversation_items",
                   encryptedSourceColumn: "raw_json"
                 }),
-                contributor.rawText === null
-                  ? null
-                  : ENCRYPTED_CONVERSATION_ITEM_TEXT,
+                hasEncryptableText(contributor.rawText)
+                  ? ENCRYPTED_CONVERSATION_ITEM_TEXT
+                  : contributor.rawText,
                 contributor.revisionHash,
                 `sync:${relationship.id}:item:${contributor.originItemId}:${contributor.revisionHash}`,
                 `sync:${relationship.id}:canonical-item:${contributor.originItemId}`,

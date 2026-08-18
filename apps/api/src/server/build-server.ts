@@ -45,7 +45,11 @@ import {
   type CollaborationActionGrantControl
 } from "../local-edge/collaboration-action-grant-control.js";
 import { createCollaborationActionGrantLifecycle } from "../local-edge/collaboration-action-grant-lifecycle.js";
-import { createPostgresCollaborationSharedMemoryAuthorityStore } from "../local-edge/collaboration-shared-memory-authority-store.js";
+import { createLocalSharedMemoryCandidatePreparation } from "../local-edge/shared-memory-candidate-preparation.js";
+import {
+  createPostgresCollaborationSharedMemoryAuthorityStore,
+  type PostgresCollaborationSharedMemoryAuthorityStore
+} from "../local-edge/collaboration-shared-memory-authority-store.js";
 import {
   createCollaborationSharedMemoryControl,
   type CollaborationSharedMemoryControl
@@ -72,6 +76,7 @@ import {
 } from "../memory/index.js";
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
+  crossIdentitySyncDeterministicUuid,
   createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
   createTeamMemoryEnvelopeEncryptionProviderFromEnvironment,
   inspectDeviceIdentityAtKoedHome,
@@ -108,6 +113,7 @@ import {
 } from "../collaboration/index.js";
 import { registerHighRiskRoutes } from "../high-risk/index.js";
 import { registerSharedMemoryRoutes } from "../shared-memory/index.js";
+import { prepareSourceSyncRelationship } from "../cross-identity-sync/source-relationship-service.js";
 import { createTeamConversationSourceService } from "../team-conversation-source/index.js";
 import { registerRetentionRoutes } from "../retention/index.js";
 import {
@@ -170,6 +176,8 @@ export interface BuildServerOptions {
   teamEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   collaborationSharedMemoryControl?: CollaborationSharedMemoryControl;
+  /** Test-only durable authority-store injection. */
+  collaborationSharedMemoryAuthorityStore?: PostgresCollaborationSharedMemoryAuthorityStore;
   collaborationActionGrantControl?: CollaborationActionGrantControl;
   /** Test-only injection. Production obtains PDS signer only from secret config. */
   pdsAuthoritySigner?: PdsAuthoritySigner | null;
@@ -433,6 +441,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   let localEdgeSecureFetch: ReturnType<
     typeof createSecureUpstreamFetch
   > | null = null;
+  let pendingShareSourceWorkerTimer: NodeJS.Timeout | null = null;
   const relayCleanup = (
     repository as
       | (MemorySourceRepository & {
@@ -450,6 +459,89 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     : null;
   relayCleanupTimer?.unref();
   if (relayCleanup) void relayCleanup().catch(() => undefined);
+  const pendingShareWorker = config.teamCollaborationEnabled
+    ? repository?.processPendingShares
+    : undefined;
+  const ensurePendingShareCompanion = collaborationRepository
+    ? async (input: {
+        actor: { userId: string };
+        grant: {
+          id: string;
+          logicalMemoryId: string;
+          teamId: string;
+          teamWorkspaceId: string;
+        };
+      }): Promise<boolean> => {
+        try {
+          const thread = await collaborationRepository.createThread(
+            input.actor,
+            {
+              kind: "shared_session_discussion",
+              idempotencyKey: crossIdentitySyncDeterministicUuid({
+                kind: "pending_share_companion",
+                shareGrantId: input.grant.id
+              }),
+              teamId: input.grant.teamId,
+              teamWorkspaceId: input.grant.teamWorkspaceId,
+              sharedLogicalMemoryId: input.grant.logicalMemoryId,
+              shareGrantId: input.grant.id,
+              pendingShareActivation: true
+            }
+          );
+          const matchesGrant = Boolean(
+            thread &&
+            thread.kind === "shared_session_discussion" &&
+            thread.teamId === input.grant.teamId &&
+            thread.teamWorkspaceId === input.grant.teamWorkspaceId &&
+            thread.sharedLogicalMemoryId === input.grant.logicalMemoryId &&
+            thread.shareGrantId === input.grant.id
+          );
+          if (!matchesGrant) {
+            app.log.warn(
+              {
+                event: { name: "pending_share.companion.unavailable" },
+                shareGrantId: input.grant.id
+              },
+              "Pending Share companion discussion is unavailable"
+            );
+          }
+          return matchesGrant;
+        } catch (error) {
+          app.log.warn(
+            {
+              err: error,
+              event: { name: "pending_share.companion.failed" },
+              shareGrantId: input.grant.id
+            },
+            "Pending Share companion discussion could not be created"
+          );
+          return false;
+        }
+      }
+    : undefined;
+  let pendingShareWorkerRunning = false;
+  const runPendingShareWorker = () => {
+    if (!pendingShareWorker || pendingShareWorkerRunning) return;
+    pendingShareWorkerRunning = true;
+    void pendingShareWorker({
+      limit: 10,
+      ensureCompanion: ensurePendingShareCompanion
+    })
+      .catch((error: unknown) => {
+        app.log.error(
+          { err: error, event: { name: "pending_share.worker.failed" } },
+          "Pending Share worker failed"
+        );
+      })
+      .finally(() => {
+        pendingShareWorkerRunning = false;
+      });
+  };
+  const pendingShareWorkerTimer = pendingShareWorker
+    ? setInterval(runPendingShareWorker, 5_000)
+    : null;
+  pendingShareWorkerTimer?.unref();
+  runPendingShareWorker();
   const hashSecret = createHashSecret(config.apiTokenPepper);
   app.addHook("onClose", async () => {
     graphStreamService?.close();
@@ -457,6 +549,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     await collaborationRealtimeBroker?.close();
     await teamConversationSourceService?.close();
     if (relayCleanupTimer) clearInterval(relayCleanupTimer);
+    if (pendingShareWorkerTimer) clearInterval(pendingShareWorkerTimer);
+    if (pendingShareSourceWorkerTimer) {
+      clearInterval(pendingShareSourceWorkerTimer);
+    }
     await Promise.all([
       embeddingQueue?.close(),
       compactionQueue?.close(),
@@ -614,11 +710,62 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         backendId
       ));
   const sharedMemoryAuthorityRepository =
-    pool && envelopeEncryptionProvider
+    options.collaborationSharedMemoryAuthorityStore ??
+    (pool && envelopeEncryptionProvider
       ? createPostgresCollaborationSharedMemoryAuthorityStore(pool, {
           envelopeEncryptionProvider
         })
+      : null);
+  const resolveVerifiedDeploymentId = (): string | null => {
+    const identity = (
+      options.inspectDeploymentIdentity ??
+      (() =>
+        inspectDeviceIdentityAtKoedHome({
+          koedHome: config.koedHome,
+          environment: process.env
+        }))
+    )();
+    return identity.health === "healthy" && identity.deploymentId
+      ? identity.deploymentId
       : null;
+  };
+  const preparePendingShareSource = async (input: {
+    backendId: string;
+    localOwnerUserId: string;
+    sessionId: string;
+    mutationId: string;
+  }): Promise<void> => {
+    if (!repository) return;
+    const deploymentId = resolveVerifiedDeploymentId();
+    if (!deploymentId) {
+      throw new Error("Verified deployment identity unavailable");
+    }
+    await prepareSourceSyncRelationship(
+      {
+        deploymentProfile: config.deploymentProfile,
+        resolveVerifiedLocalDeploymentId: () => deploymentId,
+        upstreamBackendsPath: localEdgeUpstreamBackendsPath,
+        fetch: localEdgeFetch,
+        resolveUpstreamAuthorization: localEdgeResolveUpstreamAuthorization,
+        requireRepository: () => repository
+      },
+      {
+        localUserId: input.localOwnerUserId,
+        sessionId: input.sessionId,
+        upstreamBackendId: input.backendId,
+        idempotencyKey: input.mutationId,
+        consentedAt: new Date().toISOString()
+      }
+    );
+  };
+  const localSharedMemoryCandidatePreparation = repository
+    ? createLocalSharedMemoryCandidatePreparation({
+        repository,
+        resolveDeploymentId: resolveVerifiedDeploymentId,
+        requestLcmSummaryWork: () =>
+          requestKoedLocalWork(config.koedHome, "lcm-summary")
+      })
+    : null;
   const collaborationActionGrantLifecycle =
     createCollaborationActionGrantLifecycle({ koedHome: config.koedHome });
   const collaborationSharedMemoryControl =
@@ -631,43 +778,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           resolveUpstreamAuthorization: localEdgeResolveUpstreamAuthorization,
           actionGrantLifecycle: collaborationActionGrantLifecycle,
           authorityStore: sharedMemoryAuthorityRepository,
-          prepareLocalLcmRepresentation: async (input) => {
-            if (!repository) return "pending";
-            let exhausted = false;
-            for (let attempt = 0; attempt < 1_000; attempt += 1) {
-              const compaction = await repository.createLcmNodes(
-                { userId: input.localOwnerUserId },
-                {
-                  visibility: "personal",
-                  sessionId: input.localSessionId,
-                  force: true,
-                  requestedRepresentation: input.representation
-                }
-              );
-              if (
-                compaction.leafNodeIds.length === 0 &&
-                compaction.rollupNodeId === null
-              ) {
-                exhausted = true;
-                break;
-              }
-            }
-            if (!exhausted) {
-              throw new Error(
-                "Share-bound LCM compaction exceeded its bounded work limit"
-              );
-            }
-            const state = await repository.getSharedMemoryLcmSyncState({
-              relationshipId: input.syncRelationshipId,
-              ownerUserId: input.localOwnerUserId,
-              sessionId: input.localSessionId,
-              representation: input.representation
-            });
-            if (state === "pending") {
-              await requestKoedLocalWork(config.koedHome, "lcm-summary");
-            }
-            return state;
-          },
+          preparePendingShareSource,
+          loadLocalCandidatePreview:
+            localSharedMemoryCandidatePreparation?.loadCandidatePreview,
+          prepareLocalLcmRepresentation:
+            localSharedMemoryCandidatePreparation?.prepareLcmRepresentation,
           ensureEnrollmentBinding: (input) =>
             sharedMemoryAuthorityRepository.bindEnrollment({
               identity: input,
@@ -675,6 +790,57 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             })
         })
       : undefined);
+  if (config.teamCollaborationEnabled && sharedMemoryAuthorityRepository) {
+    let sourceWorkerRunning = false;
+    const drainPendingShareSourceWork = () => {
+      if (sourceWorkerRunning) return;
+      sourceWorkerRunning = true;
+      void (async () => {
+        const work =
+          await sharedMemoryAuthorityRepository.claimPendingShareSourceWork({
+            limit: 10
+          });
+        for (const item of work) {
+          try {
+            await preparePendingShareSource({
+              backendId: item.backendId,
+              localOwnerUserId: item.localOwnerUserId,
+              sessionId: item.localSessionId,
+              mutationId: item.mutationId
+            });
+            await sharedMemoryAuthorityRepository.finishPendingShareSourceWork({
+              workId: item.workId,
+              outcome: "completed"
+            });
+          } catch {
+            await sharedMemoryAuthorityRepository.finishPendingShareSourceWork({
+              workId: item.workId,
+              outcome: "retry",
+              redactedFailureCode: "source_preparation_failed"
+            });
+          }
+        }
+      })()
+        .catch((error: unknown) => {
+          app.log.error(
+            {
+              err: error,
+              event: { name: "pending_share.source_worker.failed" }
+            },
+            "Pending Share source worker failed"
+          );
+        })
+        .finally(() => {
+          sourceWorkerRunning = false;
+        });
+    };
+    pendingShareSourceWorkerTimer = setInterval(
+      drainPendingShareSourceWork,
+      5_000
+    );
+    pendingShareSourceWorkerTimer.unref();
+    drainPendingShareSourceWork();
+  }
   const collaborationActionGrantControl =
     options.collaborationActionGrantControl ??
     createCollaborationActionGrantControl({

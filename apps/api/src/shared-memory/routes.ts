@@ -11,10 +11,13 @@ import type {
   TeamConversationSourceGrantRecord,
   TeamConversationSourceRepository,
   DeviceCredentialAuthContext,
-  HighRiskActionRepository
+  HighRiskActionRepository,
+  PendingShareRecord
 } from "@koed/db";
 import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
 import {
+  sharedMemoryCandidatePreviewActionGrantBinding,
+  sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryConsentActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryRepresentationBundleActionGrantBinding,
@@ -38,13 +41,19 @@ import {
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { ApiRouteContext } from "../server/context.js";
-import { changeRepresentationBundle, createShareBundle } from "./bundles.js";
+import { createShareBundle } from "./bundles.js";
 import {
   createShareGrantSchema,
+  createPendingShareSchema,
+  createSharedMemoryCandidatePreviewSchema,
   createSharedMemoryShareBundleSchema,
   changeSharedMemoryRepresentationBundleSchema,
   createSharedMemoryPreviewSchema,
   createSourceOwnerConsentSchema,
+  controlPendingShareSchema,
+  listOwnedSharesQuerySchema,
+  ownedShareParamsSchema,
+  renameOwnedShareSchema,
   listWorkspaceSharedMemoryQuerySchema,
   materializeGrantRepresentationSchema,
   putSharedMemoryPolicySchema,
@@ -499,6 +508,12 @@ const grantDto = (grant: SharedMemoryGrantRecord) => ({
   companionScope: grant.companionScope
 });
 
+const pendingShareDto = (pendingShare: PendingShareRecord) => ({
+  ...pendingShare,
+  workspaceId: pendingShare.teamWorkspaceId,
+  teamWorkspaceId: undefined
+});
+
 const transcriptAccessDto = (grant: TeamConversationSourceGrantRecord) => ({
   id: grant.id,
   shareGrantId: grant.shareGrantId,
@@ -558,10 +573,30 @@ type OwnerGrantEntry = Awaited<
 
 const ownerGrantDto = (grant: OwnerGrantEntry) => grantDto(grant);
 
+type OwnedShareEntry = NonNullable<
+  Awaited<ReturnType<SharedMemoryRepository["getOwnerShare"]>>
+>;
+
+const ownedShareDto = (entry: OwnedShareEntry) =>
+  entry.kind === "grant"
+    ? {
+        kind: "grant" as const,
+        grant: ownerGrantDto(entry.grant),
+        sourceAccess: entry.sourceAccess,
+        summary: entry.summary
+      }
+    : {
+        kind: "pending" as const,
+        pendingShare: pendingShareDto(entry.pendingShare),
+        sourceAccess: entry.sourceAccess,
+        summary: entry.summary
+      };
+
 const workspaceIndexEntryDto = (entry: WorkspaceIndexEntry) => ({
   id: entry.shareGrantId,
   logicalMemoryId: entry.logicalMemoryId,
   ownerUserId: entry.ownerUserId,
+  title: entry.title,
   activeRepresentation: entry.activeRepresentation,
   representationState: entry.representationState,
   representationSourceRevision: entry.representationSourceRevision,
@@ -703,6 +738,49 @@ export const registerSharedMemoryRoutes = (
   );
 
   app.post(
+    "/v1/shared-memory/candidate-previews",
+    {
+      preHandler: context.writeRateLimit,
+      bodyLimit: SMALL_BODY_LIMIT_BYTES
+    },
+    async (request) => {
+      rejectApiToken(request);
+      const input = createSharedMemoryCandidatePreviewSchema.parse(
+        request.body
+      );
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      const binding = sharedMemoryCandidatePreviewActionGrantBinding({
+        referenceId: authenticated.authority.referenceId,
+        ...input
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => {
+            const admission =
+              await repository.createSharedMemoryCandidatePreview(
+                { userId: authenticated.actor.id },
+                { ...input, authority: authenticated.authority }
+              );
+            if (!admission) return null;
+            return {
+              statusCode: 200,
+              body: { admission }
+            };
+          }
+        )
+      );
+      return result.body;
+    }
+  );
+
+  app.post(
     "/v1/shared-memory/previews",
     {
       preHandler: context.writeRateLimit,
@@ -832,6 +910,71 @@ export const registerSharedMemoryRoutes = (
   );
 
   app.post(
+    "/v1/shared-memory/pending-shares",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      rejectApiToken(request);
+      const input = createPendingShareSchema.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      const binding = sharedMemoryPendingShareActionGrantBinding({
+        referenceId: authenticated.authority.referenceId,
+        mutationId: input.mutationId,
+        logicalGrantId: input.logicalGrantId,
+        consentId: input.consentId,
+        logicalMemoryId: input.logicalMemoryId,
+        teamId: input.teamId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        previewId: input.preview.previewId,
+        previewRevision: input.previewRevision,
+        previewHash: input.preview.previewHash,
+        mode: input.mode,
+        allowedRepresentations: input.allowedRepresentations,
+        selectedRepresentation: input.selectedRepresentation,
+        expiresAt: input.expiresAt,
+        title: input.title
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => ({
+            statusCode: 202,
+            body: {
+              pendingShare: pendingShareDto(
+                await repository.createPendingShare(
+                  { userId: authenticated.actor.id },
+                  {
+                    mutationId: input.mutationId,
+                    logicalGrantId: input.logicalGrantId,
+                    consentId: input.consentId,
+                    logicalMemoryId: input.logicalMemoryId,
+                    teamId: input.teamId,
+                    teamWorkspaceId: input.teamWorkspaceId,
+                    preview: input.preview,
+                    previewRevision: input.previewRevision,
+                    title: input.title,
+                    mode: input.mode,
+                    allowedRepresentations: input.allowedRepresentations,
+                    selectedRepresentation: input.selectedRepresentation,
+                    expiresAt: input.expiresAt,
+                    authority: authenticated.authority
+                  }
+                )
+              )
+            }
+          })
+        )
+      );
+      return reply.status(result.statusCode).send(result.body);
+    }
+  );
+
+  app.post(
     "/v1/shared-memory/share-bundles",
     { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
     async (request, reply) => {
@@ -856,7 +999,8 @@ export const registerSharedMemoryRoutes = (
         mode: input.mode,
         allowedRepresentations: input.allowedRepresentations,
         selectedRepresentation: input.selectedRepresentation,
-        expiresAt: input.expiresAt
+        expiresAt: input.expiresAt,
+        title: input.title
       });
       const result = await executeRepositoryOperation(() =>
         runHighRiskSharedMemoryWrite(
@@ -881,6 +1025,7 @@ export const registerSharedMemoryRoutes = (
                   mutationId: input.mutationId,
                   logicalGrantId: input.logicalGrantId,
                   consentId: input.consentId,
+                  displayTitle: input.title,
                   authority: authenticated.authority
                 },
                 expected: {
@@ -999,45 +1144,30 @@ export const registerSharedMemoryRoutes = (
           authenticated,
           binding,
           async (repository) => {
-            const bundle = await changeRepresentationBundle(
-              repository,
-              { userId: authenticated.actor.id },
-              {
-                consent: {
-                  consentId: input.consentId,
-                  preview: input.preview,
-                  mode: input.mode,
-                  allowedRepresentations: input.allowedRepresentations,
-                  selectedRepresentation: input.representation,
-                  expiresAt: input.expiresAt,
-                  authority: authenticated.authority
-                },
-                representation: {
+            const pendingShare =
+              await repository.createPendingRepresentationChange(
+                { userId: authenticated.actor.id },
+                {
                   mutationId: input.mutationId,
-                  shareGrantId: params.shareGrantId,
-                  consentId: input.consentId,
-                  representation: input.representation,
-                  expectedGrantVersion: input.expectedGrantVersion,
-                  authority: authenticated.authority
-                },
-                expected: {
                   consentId: input.consentId,
                   logicalMemoryId: input.logicalMemoryId,
                   teamId: input.teamId,
                   teamWorkspaceId: input.teamWorkspaceId,
-                  previewId: input.preview.previewId,
+                  shareGrantId: params.shareGrantId,
+                  expectedGrantVersion: input.expectedGrantVersion,
+                  preview: input.preview,
                   previewRevision: input.previewRevision,
-                  previewHash: input.preview.previewHash,
-                  representation: input.representation
+                  mode: input.mode,
+                  allowedRepresentations: input.allowedRepresentations,
+                  representation: input.representation,
+                  expiresAt: input.expiresAt,
+                  authority: authenticated.authority
                 }
-              }
-            );
-            if (!bundle) return null;
+              );
             return {
-              statusCode: 200,
+              statusCode: 202,
               body: {
-                consent: consentDto(bundle.consent),
-                grant: grantDto(bundle.grant)
+                pendingShare: pendingShareDto(pendingShare)
               }
             };
           }
@@ -1282,6 +1412,95 @@ export const registerSharedMemoryRoutes = (
         )
       );
       return result.body;
+    }
+  );
+
+  app.get(
+    "/v1/shared-memory/owned-shares",
+    { preHandler: context.readRateLimit },
+    async (request) => {
+      const actor = await authenticateSourceOwner(request, context);
+      const query = listOwnedSharesQuerySchema.parse(request.query);
+      const page = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .listOwnerShares({ userId: actor.id }, query)
+      );
+      return {
+        shares: page.entries.map(ownedShareDto),
+        pagination: {
+          limit: page.limit,
+          hasMore: page.hasMore,
+          next: page.next,
+          snapshotAt: page.snapshotAt
+        }
+      };
+    }
+  );
+
+  app.get(
+    "/v1/shared-memory/owned-shares/:kind/:id",
+    { preHandler: context.readRateLimit },
+    async (request, reply) => {
+      const actor = await authenticateSourceOwner(request, context);
+      const params = ownedShareParamsSchema.parse(request.params);
+      const repository = context.requireSharedMemoryRepository();
+      const share = await executeRepositoryOperation(() =>
+        repository.getOwnerShare({ userId: actor.id }, params)
+      );
+      if (!share) return reply.status(404).send({ error: "not_found" });
+      const preview = await executeRepositoryOperation(() =>
+        repository.readOwnerSharePreview({ userId: actor.id }, params)
+      );
+      return {
+        share: ownedShareDto(share),
+        preview: preview ? persistedPreviewDto(preview) : null
+      };
+    }
+  );
+
+  app.patch(
+    "/v1/shared-memory/owned-shares/:kind/:id/title",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      rejectApiToken(request);
+      const actor = await authenticateSourceOwner(request, context);
+      const params = ownedShareParamsSchema.parse(request.params);
+      const input = renameOwnedShareSchema.parse(request.body);
+      const share = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .renameOwnerShare({ userId: actor.id }, { ...params, ...input })
+      );
+      if (!share) return reply.status(404).send({ error: "not_found" });
+      return { share: ownedShareDto(share) };
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/pending-shares/:pendingShareId/control",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const actor = await authenticateSourceOwner(request, context);
+      const params = shareGrantParamsSchema
+        .transform(({ shareGrantId }) => ({ pendingShareId: shareGrantId }))
+        .parse({
+          shareGrantId: (request.params as { pendingShareId?: unknown })
+            .pendingShareId
+        });
+      const input = controlPendingShareSchema.parse(request.body);
+      const pendingShare = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .controlPendingShare({ userId: actor.id }, { ...params, ...input })
+      );
+      return {
+        pendingShare: {
+          ...pendingShare,
+          workspaceId: pendingShare.teamWorkspaceId,
+          teamWorkspaceId: undefined
+        }
+      };
     }
   );
 

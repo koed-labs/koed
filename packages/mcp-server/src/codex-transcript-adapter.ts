@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { approvalActivityMetadata } from "@koed/shared";
 
 export const codexTranscriptAdapterVersion = "codex-transcript-v1";
 
@@ -114,27 +115,32 @@ const observationMetadata = (input: {
   observation: CodexTranscriptObservation;
   parsed: CodexTranscriptParsedItem;
   assignedTurnId?: string;
-}): Record<string, unknown> => ({
-  ...(input.parsed.item?.metadata ?? {}),
-  ...(input.observation.transcriptByteOffset === undefined
-    ? {}
-    : { transcriptByteOffset: input.observation.transcriptByteOffset }),
-  transcriptSourceLineNumber: input.observation.sourceLineNumber,
-  transcriptItemDiscriminator: input.parsed.itemDiscriminator,
-  sourceEventTimeAccuracy: input.observation.eventTimeAccuracy,
-  ...(input.assignedTurnId
-    ? { transcriptAssignedTurnId: input.assignedTurnId }
-    : {}),
-  threadKind: input.adapter.threadKind,
-  parentThreadId: input.adapter.parentThreadId,
-  ...(input.adapter.approvalReview ? { approvalReview: true } : {}),
-  ...(input.adapter.sourceTransport === "historical_import"
-    ? { observedViaHistoricalImport: true }
-    : { observedViaTranscript: true }),
-  ...(input.adapter.sourceFingerprint
-    ? { sourceFingerprint: input.adapter.sourceFingerprint }
-    : {})
-});
+}): Record<string, unknown> =>
+  approvalActivityMetadata({
+    actor: input.parsed.item?.actor,
+    content: input.parsed.item?.content,
+    metadata: {
+      ...(input.parsed.item?.metadata ?? {}),
+      ...(input.observation.transcriptByteOffset === undefined
+        ? {}
+        : { transcriptByteOffset: input.observation.transcriptByteOffset }),
+      transcriptSourceLineNumber: input.observation.sourceLineNumber,
+      transcriptItemDiscriminator: input.parsed.itemDiscriminator,
+      sourceEventTimeAccuracy: input.observation.eventTimeAccuracy,
+      ...(input.assignedTurnId
+        ? { transcriptAssignedTurnId: input.assignedTurnId }
+        : {}),
+      threadKind: input.adapter.threadKind,
+      parentThreadId: input.adapter.parentThreadId,
+      ...(input.adapter.approvalReview ? { approvalReview: true } : {}),
+      ...(input.adapter.sourceTransport === "historical_import"
+        ? { observedViaHistoricalImport: true }
+        : { observedViaTranscript: true }),
+      ...(input.adapter.sourceFingerprint
+        ? { sourceFingerprint: input.adapter.sourceFingerprint }
+        : {})
+    }
+  });
 
 const rawItemForObservation = (input: {
   adapter: CodexTranscriptAdapterInput;

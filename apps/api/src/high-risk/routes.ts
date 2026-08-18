@@ -43,6 +43,8 @@ type HighRiskRepository = Pick<
   | "getTeamWorkspaceLifecycleReview"
   | "getTeamWorkspaceAccessUpdateReview"
   | "getSharedMemoryPreviewAdmission"
+  | "getSharedMemoryCandidatePreviewAdmission"
+  | "getSharedMemoryPendingShareReview"
   | "getSharedMemoryShareReview"
   | "getSharedMemoryRevokeReview"
   | "getSharedMemoryRepresentationChangeReview"

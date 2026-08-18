@@ -30,7 +30,9 @@ import {
   createDbPool,
   createMemorySourceRepository,
   createPersonalDeviceSyncRepository,
+  createSharedMemoryRepository,
   runDbMigrations,
+  SHARED_MEMORY_AUTHORITY,
   SyncStateConflictError,
   type ConversationItemInput,
   type MemorySourceRepository
@@ -10124,6 +10126,81 @@ describeDb("memory repository visibility", () => {
         { shareGrantId: shareGrant.id }
       )
     ).resolves.toBeNull();
+
+    await pool.query(
+      `update team_workspace_access_grants
+          set can_share_owned_memory=true
+        where team_workspace_id=$1 and user_id=$2`,
+      [workspace!.id, owner.id]
+    );
+    const reactivated = await repo.putTeamConversationSourceGrant(
+      { userId: owner.id },
+      {
+        mutationId: randomUUID(),
+        shareGrantId: shareGrant.id,
+        teamId: team.id,
+        expectedVersion: revoked.version,
+        mode: "continuous",
+        creatorAuthority: "repository_test"
+      }
+    );
+    expect(reactivated).toMatchObject({ lifecycle: "active", version: 4 });
+    const ownerSession = await pool.query<{ id: string }>(
+      `insert into user_sessions (user_id,session_hash,expires_at)
+       values ($1,$2,now()+interval '1 hour') returning id`,
+      [owner.id, randomBytes(32).toString("hex")]
+    );
+    const sharedMemoryProvider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 73).toString("base64")
+    );
+    const sharedMemory = createSharedMemoryRepository(pool, {
+      resolveTeamEncryptionProvider: () => sharedMemoryProvider,
+      resolvePersonalEncryptionProvider: () => sharedMemoryProvider,
+      resolveOwnerPrivateReplicaEncryptionProvider: () => sharedMemoryProvider
+    });
+    const parentGrant = await pool.query<{ grant_version: number }>(
+      `select grant_version from team_session_share_grants where id=$1`,
+      [shareGrant.id]
+    );
+    const parentMutationId = randomUUID();
+    await expect(
+      sharedMemory.revokeShareGrant(
+        { userId: owner.id },
+        {
+          mutationId: parentMutationId,
+          shareGrantId: shareGrant.id,
+          expectedGrantVersion: parentGrant.rows[0]!.grant_version,
+          reasonCode: "owner_revoked_parent",
+          authority: {
+            action: SHARED_MEMORY_AUTHORITY,
+            source: "browser_session",
+            referenceId: ownerSession.rows[0]!.id
+          }
+        }
+      )
+    ).resolves.toMatchObject({ lifecycle: "revoked" });
+    await expect(
+      pool.query(
+        `select lifecycle,version,revocation_reason
+           from team_conversation_source_grants
+          where share_grant_id=$1`,
+        [shareGrant.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          lifecycle: "revoked",
+          version: 5,
+          revocation_reason: "parent_share_revoked"
+        }
+      ]
+    });
+    await expect(
+      repo.getTeamConversationSourceAccess(
+        { userId: member.id },
+        { shareGrantId: shareGrant.id }
+      )
+    ).resolves.toBeNull();
   });
 
   it("retains Team session share grants through personal deletion and member exit", async () => {
@@ -17468,6 +17545,158 @@ describeDb("memory repository visibility", () => {
       }
     ]);
     expect(memoryEvents.rows[0]?.count).toBe("1");
+  });
+
+  it("pages owner-only Approval Activity with Memory without projecting it semantically", async () => {
+    const alice = await repo.createUser({
+      email: `alice-approval-activity-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-approval-activity-${randomUUID()}@example.com`
+    });
+    const projectId = randomUUID();
+    const parentThreadId = `approval-parent-${randomUUID()}`;
+    const parent = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        projectId,
+        externalSessionId: parentThreadId,
+        sourceRuntime: "codex-cli",
+        captureMethod: "transcript",
+        idempotencyKey: `approval-parent-${randomUUID()}`
+      }
+    );
+    const helper = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        projectId,
+        externalSessionId: `approval-helper-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "transcript",
+        idempotencyKey: `approval-helper-${randomUUID()}`
+      }
+    );
+    const common = {
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-transcript-v1",
+      sourceTransport: "transcript" as const,
+      sourceRecordType: "event_msg",
+      projectionStatus: "pending" as const
+    };
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            ...common,
+            sessionId: parent.id,
+            externalSessionId: parentThreadId,
+            externalThreadId: parentThreadId,
+            sourceEventType: "user_message",
+            sourceSequence: 1,
+            eventTime: "2026-08-01T12:00:00.000Z",
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "user_message", message: "Remember this." }
+            },
+            rawText: "Remember this.",
+            sourceHash: `approval-normal-${randomUUID()}`,
+            idempotencyKey: `approval-normal-${randomUUID()}`,
+            metadata: { transcriptType: "user_message" }
+          },
+          {
+            ...common,
+            sessionId: helper.id,
+            externalSessionId: helper.externalSessionId ?? undefined,
+            externalThreadId: helper.externalSessionId ?? undefined,
+            sourceEventType: "user_message",
+            sourceSequence: 2,
+            eventTime: "2026-08-01T12:01:00.000Z",
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "user_message", message: "synthetic envelope" }
+            },
+            rawText: "synthetic envelope",
+            sourceHash: `approval-envelope-${randomUUID()}`,
+            idempotencyKey: `approval-envelope-${randomUUID()}`,
+            metadata: {
+              approvalReview: true,
+              parentThreadId,
+              approvalReviewTranscriptDisplay: {
+                kind: "approval_review",
+                version: 1,
+                truncated: false,
+                segments: [
+                  {
+                    kind: "message",
+                    sequence: 2,
+                    actor: "user",
+                    content: "Bounded activity"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    expect(projection).toMatchObject({
+      messagesCreated: 1,
+      memoryEventsCreated: 1
+    });
+    const first = await repo.listLcmGraphEvents(
+      { userId: alice.id },
+      { projectId, threadId: parentThreadId, limit: 1, includeContent: true }
+    );
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({
+      eventType: "approval_activity",
+      content: "Approval activity",
+      metadata: {
+        sourceTable: "conversation_items",
+        approvalActivity: {
+          kind: "approval_review_envelope",
+          exclusionReason: "approval_activity:review_envelope",
+          display: { kind: "approval_review", label: "Approval activity" }
+        }
+      }
+    });
+    const second = await repo.listLcmGraphEvents(
+      { userId: alice.id },
+      {
+        projectId,
+        threadId: parentThreadId,
+        limit: 1,
+        includeContent: true,
+        cursorTimestamp: first[0]!.timestamp,
+        cursorSourceSequence: first[0]!.sourceSequence ?? undefined,
+        cursorId: first[0]!.id
+      }
+    );
+    expect(second.map((event) => event.content)).toEqual(["Remember this."]);
+    expect(new Set([...first, ...second].map((event) => event.id)).size).toBe(
+      2
+    );
+    await expect(
+      repo.listLcmGraphEvents(
+        { userId: bob.id },
+        { projectId, threadId: parentThreadId, limit: 10 }
+      )
+    ).resolves.toEqual([]);
+    const semanticRows = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+         from memory_events me
+         join memory_event_sources mes on mes.memory_event_id = me.id
+         join conversation_items ci on ci.id = mes.conversation_item_id
+        where ci.session_id = $1`,
+      [helper.id]
+    );
+    expect(semanticRows.rows[0]?.count).toBe("0");
   });
 
   it("does not assign canonical content identity to transcript lifecycle rows", async () => {

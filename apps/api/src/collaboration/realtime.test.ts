@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   createCollaborationRealtimeService,
+  materializePendingShareLifecycleEvent,
   materializePersonalMemoryChangedEvent,
   type CollaborationRealtimeServiceOptions
 } from "./realtime.js";
@@ -47,6 +48,7 @@ const realtimeFamilyCases = [
     "message_created"
   ],
   ["personal_memory_changed", "control", null],
+  ["pending_share_lifecycle", "control", null],
   ["managed_conversation_changed", "control", null],
   ["access_revoked", "access_revoked", null]
 ] as const satisfies ReadonlyArray<
@@ -898,6 +900,7 @@ const sharedReadResult = (
       teamId: fixture.ids.teamA,
       teamWorkspaceId: fixture.ids.workspace,
       consentId: randomUUID(),
+      displayTitle: "Shared Memory",
       sourceOwnerPolicyId: randomUUID(),
       sourceOwnerPolicyVersion: 1,
       teamPolicyId: randomUUID(),
@@ -1442,6 +1445,50 @@ describe("collaboration realtime protocol", () => {
     }
   });
 
+  it("waits for the companion event without forcing a snapshot reconnect", async () => {
+    const fixture = createRepositoryFixture();
+    fixture.events.splice(
+      0,
+      fixture.events.length,
+      event({
+        cursor: 1,
+        scope: "team",
+        teamId: fixture.ids.teamA,
+        teamWorkspaceId: fixture.ids.workspace,
+        shareGrantId: fixture.ids.shareGrant,
+        logicalMemoryId: fixture.ids.logicalMemory,
+        messageId: null,
+        family: "memory_event_available",
+        resourceType: "team_memory_representation",
+        resourceId: randomUUID()
+      })
+    );
+    fixture.repository.listThreads = vi.fn(async () => []);
+    const app = await buildTestServer(fixture, {
+      heartbeatMs: 20,
+      sharedMemoryRepository: {
+        readGrantRepresentation: vi.fn(async () => sharedReadResult(fixture))
+      }
+    });
+    const snapshot = await createTeamSnapshot(
+      app,
+      fixture.ids.alice,
+      fixture.ids.teamA
+    );
+    const stream = await openTeamStream(app, {
+      userId: fixture.ids.alice,
+      teamId: fixture.ids.teamA,
+      cursor: snapshot.cursor
+    });
+    try {
+      const body = await stream.readUntil("heartbeat");
+      expect(body).not.toContain("event: collaboration_event\n");
+      expect(body).not.toContain("event: requires_snapshot\n");
+    } finally {
+      stream.close();
+    }
+  });
+
   it("materializes an authorized Shared Session when its representation becomes available", async () => {
     const fixture = createRepositoryFixture();
     fixture.events.splice(
@@ -1688,6 +1735,87 @@ describe("collaboration realtime protocol", () => {
         repository
       )
     ).resolves.toEqual({ action: "requires_snapshot" });
+  });
+
+  it("materializes owner-only Pending Share lifecycle status without Team authority", async () => {
+    const ownerId = randomUUID();
+    const pendingShareId = randomUUID();
+    const eventRecord = event({
+      cursor: 1,
+      scope: "personal",
+      teamId: null,
+      teamWorkspaceId: null,
+      threadId: null,
+      messageId: null,
+      shareGrantId: null,
+      logicalMemoryId: null,
+      actorPrincipalId: ownerId,
+      resourceType: "pending_share_operations",
+      resourceId: pendingShareId,
+      family: "pending_share_lifecycle"
+    });
+    eventRecord.personalOwnerUserId = ownerId;
+    eventRecord.threadId = null;
+    const repository = {
+      getOwnerShare: vi.fn(async () => ({
+        kind: "pending" as const,
+        pendingShare: {
+          id: pendingShareId,
+          mutationId: randomUUID(),
+          logicalGrantId: randomUUID(),
+          consentId: randomUUID(),
+          logicalMemoryId: randomUUID(),
+          teamId: randomUUID(),
+          teamWorkspaceId: randomUUID(),
+          representation: "memory_events" as const,
+          allowedRepresentations: ["memory_events" as const],
+          mode: "continuous" as const,
+          sourceRevision: 4,
+          state: "needs_attention" as const,
+          stage: "processing" as const,
+          workspaceAccessState: "none" as const,
+          sourceUpdateState: "failed" as const,
+          operationVersion: 3,
+          attemptCount: 2,
+          redactedFailureCode: "source_preparation_stalled",
+          lastProgressAt: iso,
+          createdAt: iso,
+          updatedAt: iso,
+          activatedAt: null,
+          revokedAt: null,
+          grantId: null
+        },
+        sourceAccess: null,
+        summary: {
+          sourceSessionId: randomUUID(),
+          companionThreadId: null,
+          sourceTitle: "Owner conversation",
+          teamName: "Team",
+          workspaceName: "Workspace",
+          mode: "continuous" as const,
+          authorizedPreview: null,
+          lastReadyRevision: null,
+          lastSuccessfulUpdateAt: null
+        }
+      }))
+    };
+
+    await expect(
+      materializePendingShareLifecycleEvent(
+        { userId: ownerId },
+        eventRecord,
+        repository
+      )
+    ).resolves.toMatchObject({
+      action: "deliver",
+      update: {
+        type: "owned_share_status_changed",
+        pendingShareId,
+        sourceTitle: "Owner conversation",
+        state: "needs_attention",
+        redactedFailureCode: "source_preparation_stalled"
+      }
+    });
   });
 
   it.each(realtimeFamilyCases)(

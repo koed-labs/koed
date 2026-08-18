@@ -1,5 +1,5 @@
 {
-  "id": "5a5b0ca8-04f5-40e8-b1ef-923737f4615a",
+  "id": "818179a8-ee42-4278-95b4-e1602e473581",
   "prevId": "524f75d3-fe91-4d18-939d-d0058b248e42",
   "version": "7",
   "dialect": "postgresql",
@@ -1473,6 +1473,161 @@
       },
       "isRLSEnabled": false
     },
+    "public.collaboration_pending_share_source_work": {
+      "name": "collaboration_pending_share_source_work",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "enrollment_id": {
+          "name": "enrollment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pending_share_id": {
+          "name": "pending_share_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mutation_id": {
+          "name": "mutation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "local_session_id": {
+          "name": "local_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "available_at": {
+          "name": "available_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "locked_at": {
+          "name": "locked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "redacted_failure_code": {
+          "name": "redacted_failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "csm_pending_source_work_claim_idx": {
+          "name": "csm_pending_source_work_claim_idx",
+          "columns": [
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "available_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "collaboration_pending_share_source_work_enrollment_id_collaboration_shared_memory_enrollments_id_fk": {
+          "name": "collaboration_pending_share_source_work_enrollment_id_collaboration_shared_memory_enrollments_id_fk",
+          "tableFrom": "collaboration_pending_share_source_work",
+          "tableTo": "collaboration_shared_memory_enrollments",
+          "columnsFrom": ["enrollment_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "collaboration_pending_share_source_work_local_session_id_sessions_id_fk": {
+          "name": "collaboration_pending_share_source_work_local_session_id_sessions_id_fk",
+          "tableFrom": "collaboration_pending_share_source_work",
+          "tableTo": "sessions",
+          "columnsFrom": ["local_session_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "csm_pending_source_work_mutation_unique": {
+          "name": "csm_pending_source_work_mutation_unique",
+          "nullsNotDistinct": false,
+          "columns": ["enrollment_id", "mutation_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "csm_pending_source_work_state_check": {
+          "name": "csm_pending_source_work_state_check",
+          "value": "\"collaboration_pending_share_source_work\".\"state\" in ('pending','processing','completed','failed')\n        and \"collaboration_pending_share_source_work\".\"attempt_count\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.collaboration_receipt_states": {
       "name": "collaboration_receipt_states",
       "schema": "",
@@ -2506,7 +2661,7 @@
           "name": "sync_relationship_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "preview_id": {
           "name": "preview_id",
@@ -2586,6 +2741,13 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now() + interval '10 minutes'"
         },
         "created_at": {
           "name": "created_at",
@@ -20285,6 +20447,650 @@
       },
       "isRLSEnabled": false
     },
+    "public.pending_share_operations": {
+      "name": "pending_share_operations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "mutation_id": {
+          "name": "mutation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_hash": {
+          "name": "request_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "logical_grant_id": {
+          "name": "logical_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "consent_id": {
+          "name": "consent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authority_source": {
+          "name": "authority_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authority_reference_id": {
+          "name": "authority_reference_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "preview_id": {
+          "name": "preview_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "preview_hash": {
+          "name": "preview_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "preview_revision": {
+          "name": "preview_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_title": {
+          "name": "display_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "logical_memory_id": {
+          "name": "logical_memory_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "team_workspace_id": {
+          "name": "team_workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "representation": {
+          "name": "representation",
+          "type": "shared_memory_representation",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "allowed_representations": {
+          "name": "allowed_representations",
+          "type": "shared_memory_representation[]",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mode": {
+          "name": "mode",
+          "type": "shared_memory_consent_mode",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_revision": {
+          "name": "source_revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_hash": {
+          "name": "source_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'preparing'"
+        },
+        "stage": {
+          "name": "stage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'accepted'"
+        },
+        "workspace_access_state": {
+          "name": "workspace_access_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'none'"
+        },
+        "source_update_state": {
+          "name": "source_update_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'preparing'"
+        },
+        "operation_version": {
+          "name": "operation_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_control_mutation_id": {
+          "name": "last_control_mutation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_control_action": {
+          "name": "last_control_action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "redacted_failure_code": {
+          "name": "redacted_failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_progress_at": {
+          "name": "last_progress_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "share_expires_at": {
+          "name": "share_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "activated_at": {
+          "name": "activated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_mutation_id": {
+          "name": "replacement_mutation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_request_hash": {
+          "name": "replacement_request_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_consent_id": {
+          "name": "replacement_consent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_authority_source": {
+          "name": "replacement_authority_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_authority_reference_id": {
+          "name": "replacement_authority_reference_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_preview_id": {
+          "name": "replacement_preview_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_preview_hash": {
+          "name": "replacement_preview_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_preview_revision": {
+          "name": "replacement_preview_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_representation": {
+          "name": "replacement_representation",
+          "type": "shared_memory_representation",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_allowed_representations": {
+          "name": "replacement_allowed_representations",
+          "type": "shared_memory_representation[]",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_mode": {
+          "name": "replacement_mode",
+          "type": "shared_memory_consent_mode",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_source_revision": {
+          "name": "replacement_source_revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_source_hash": {
+          "name": "replacement_source_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_expires_at": {
+          "name": "replacement_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "replacement_expected_grant_version": {
+          "name": "replacement_expected_grant_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "pending_share_operations_owner_activity_idx": {
+          "name": "pending_share_operations_owner_activity_idx",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "pending_share_operations_work_idx": {
+          "name": "pending_share_operations_work_idx",
+          "columns": [
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pending_share_operations_owner_user_id_users_id_fk": {
+          "name": "pending_share_operations_owner_user_id_users_id_fk",
+          "tableFrom": "pending_share_operations",
+          "tableTo": "users",
+          "columnsFrom": ["owner_user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pending_share_operations_team_id_teams_id_fk": {
+          "name": "pending_share_operations_team_id_teams_id_fk",
+          "tableFrom": "pending_share_operations",
+          "tableTo": "teams",
+          "columnsFrom": ["team_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "pending_share_operations_grant_id_team_session_share_grants_id_fk": {
+          "name": "pending_share_operations_grant_id_team_session_share_grants_id_fk",
+          "tableFrom": "pending_share_operations",
+          "tableTo": "team_session_share_grants",
+          "columnsFrom": ["grant_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "pending_share_operations_workspace_team_fk": {
+          "name": "pending_share_operations_workspace_team_fk",
+          "tableFrom": "pending_share_operations",
+          "tableTo": "team_workspaces",
+          "columnsFrom": ["team_workspace_id", "team_id"],
+          "columnsTo": ["id", "team_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "pending_share_operations_replacement_preview_fk": {
+          "name": "pending_share_operations_replacement_preview_fk",
+          "tableFrom": "pending_share_operations",
+          "tableTo": "shared_memory_candidate_previews",
+          "columnsFrom": [
+            "replacement_preview_id",
+            "replacement_preview_hash",
+            "replacement_preview_revision",
+            "logical_memory_id",
+            "team_id",
+            "team_workspace_id",
+            "replacement_source_revision"
+          ],
+          "columnsTo": [
+            "id",
+            "preview_hash",
+            "preview_revision",
+            "logical_memory_id",
+            "team_id",
+            "team_workspace_id",
+            "source_revision"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "pending_share_operations_preview_fk": {
+          "name": "pending_share_operations_preview_fk",
+          "tableFrom": "pending_share_operations",
+          "tableTo": "shared_memory_candidate_previews",
+          "columnsFrom": [
+            "preview_id",
+            "preview_hash",
+            "preview_revision",
+            "logical_memory_id",
+            "team_id",
+            "team_workspace_id",
+            "source_revision"
+          ],
+          "columnsTo": [
+            "id",
+            "preview_hash",
+            "preview_revision",
+            "logical_memory_id",
+            "team_id",
+            "team_workspace_id",
+            "source_revision"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pending_share_operations_mutation_unique": {
+          "name": "pending_share_operations_mutation_unique",
+          "nullsNotDistinct": false,
+          "columns": ["mutation_id"]
+        },
+        "pending_share_operations_consent_unique": {
+          "name": "pending_share_operations_consent_unique",
+          "nullsNotDistinct": false,
+          "columns": ["consent_id"]
+        },
+        "pending_share_operations_logical_grant_unique": {
+          "name": "pending_share_operations_logical_grant_unique",
+          "nullsNotDistinct": false,
+          "columns": ["logical_grant_id"]
+        },
+        "pending_share_operations_control_mutation_unique": {
+          "name": "pending_share_operations_control_mutation_unique",
+          "nullsNotDistinct": false,
+          "columns": ["last_control_mutation_id"]
+        },
+        "pending_share_operations_replacement_mutation_unique": {
+          "name": "pending_share_operations_replacement_mutation_unique",
+          "nullsNotDistinct": false,
+          "columns": ["replacement_mutation_id"]
+        },
+        "pending_share_operations_replacement_consent_unique": {
+          "name": "pending_share_operations_replacement_consent_unique",
+          "nullsNotDistinct": false,
+          "columns": ["replacement_consent_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pending_share_operations_state_check": {
+          "name": "pending_share_operations_state_check",
+          "value": "\"pending_share_operations\".\"state\" in ('preparing','needs_attention','failed','activated','revoked')\n        and \"pending_share_operations\".\"stage\" in ('accepted','syncing','uploading','processing','activating','complete')\n        and \"pending_share_operations\".\"workspace_access_state\" in ('none','active','revoked')\n        and \"pending_share_operations\".\"source_update_state\" in ('preparing','active','paused','failed','stopped')"
+        },
+        "pending_share_operations_values_check": {
+          "name": "pending_share_operations_values_check",
+          "value": "\"pending_share_operations\".\"preview_revision\" > 0 and \"pending_share_operations\".\"source_revision\" >= 0\n        and \"pending_share_operations\".\"operation_version\" > 0 and \"pending_share_operations\".\"attempt_count\" >= 0\n        and \"pending_share_operations\".\"authority_source\" in ('browser_session','device_action_grant')\n        and ((\"pending_share_operations\".\"last_control_mutation_id\" is null and \"pending_share_operations\".\"last_control_action\" is null)\n          or (\"pending_share_operations\".\"last_control_mutation_id\" is not null and\n              \"pending_share_operations\".\"last_control_action\" in ('retry','pause','resume','revoke')))\n        and length(\"pending_share_operations\".\"request_hash\") = 64 and length(\"pending_share_operations\".\"preview_hash\") = 64\n        and length(\"pending_share_operations\".\"source_hash\") = 64"
+        },
+        "pending_share_operations_replacement_values_check": {
+          "name": "pending_share_operations_replacement_values_check",
+          "value": "(\"pending_share_operations\".\"replacement_mutation_id\" is null and\n             \"pending_share_operations\".\"replacement_request_hash\" is null and\n             \"pending_share_operations\".\"replacement_consent_id\" is null and\n             \"pending_share_operations\".\"replacement_authority_source\" is null and\n             \"pending_share_operations\".\"replacement_authority_reference_id\" is null and\n             \"pending_share_operations\".\"replacement_preview_id\" is null and\n             \"pending_share_operations\".\"replacement_preview_hash\" is null and\n             \"pending_share_operations\".\"replacement_preview_revision\" is null and\n             \"pending_share_operations\".\"replacement_representation\" is null and\n             \"pending_share_operations\".\"replacement_allowed_representations\" is null and\n             \"pending_share_operations\".\"replacement_mode\" is null and\n             \"pending_share_operations\".\"replacement_source_revision\" is null and\n             \"pending_share_operations\".\"replacement_source_hash\" is null and\n             \"pending_share_operations\".\"replacement_expected_grant_version\" is null)\n        or (\"pending_share_operations\".\"replacement_mutation_id\" is not null and\n             length(\"pending_share_operations\".\"replacement_request_hash\") = 64 and\n             \"pending_share_operations\".\"replacement_consent_id\" is not null and\n             \"pending_share_operations\".\"replacement_authority_source\" in ('browser_session','device_action_grant') and\n             \"pending_share_operations\".\"replacement_authority_reference_id\" is not null and\n             \"pending_share_operations\".\"replacement_preview_id\" is not null and\n             length(\"pending_share_operations\".\"replacement_preview_hash\") = 64 and\n             \"pending_share_operations\".\"replacement_preview_revision\" > 0 and\n             \"pending_share_operations\".\"replacement_representation\" is not null and\n             cardinality(\"pending_share_operations\".\"replacement_allowed_representations\") > 0 and\n             \"pending_share_operations\".\"replacement_mode\" is not null and\n             \"pending_share_operations\".\"replacement_source_revision\" >= 0 and\n             length(\"pending_share_operations\".\"replacement_source_hash\") = 64 and\n             \"pending_share_operations\".\"replacement_expected_grant_version\" > 0)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.pending_share_outbox": {
+      "name": "pending_share_outbox",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "pending_share_id": {
+          "name": "pending_share_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "available_at": {
+          "name": "available_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "locked_at": {
+          "name": "locked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pending_share_outbox_work_idx": {
+          "name": "pending_share_outbox_work_idx",
+          "columns": [
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "available_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pending_share_outbox_pending_share_id_pending_share_operations_id_fk": {
+          "name": "pending_share_outbox_pending_share_id_pending_share_operations_id_fk",
+          "tableFrom": "pending_share_outbox",
+          "tableTo": "pending_share_operations",
+          "columnsFrom": ["pending_share_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pending_share_outbox_operation_unique": {
+          "name": "pending_share_outbox_operation_unique",
+          "nullsNotDistinct": false,
+          "columns": ["pending_share_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pending_share_outbox_state_check": {
+          "name": "pending_share_outbox_state_check",
+          "value": "\"pending_share_outbox\".\"state\" in ('pending','processing','completed','failed') and \"pending_share_outbox\".\"attempt_count\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.personal_device_enrollment_challenges": {
       "name": "personal_device_enrollment_challenges",
       "schema": "",
@@ -24084,6 +24890,306 @@
       },
       "isRLSEnabled": false
     },
+    "public.shared_memory_candidate_previews": {
+      "name": "shared_memory_candidate_previews",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "preview_hash": {
+          "name": "preview_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "preview_revision": {
+          "name": "preview_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "authority_source": {
+          "name": "authority_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authority_reference_id": {
+          "name": "authority_reference_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "logical_memory_id": {
+          "name": "logical_memory_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "team_workspace_id": {
+          "name": "team_workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "representation": {
+          "name": "representation",
+          "type": "shared_memory_representation",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "allowed_representations": {
+          "name": "allowed_representations",
+          "type": "shared_memory_representation[]",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mode": {
+          "name": "mode",
+          "type": "shared_memory_consent_mode",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_revision": {
+          "name": "source_revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_hash": {
+          "name": "source_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "redacted_content_hash": {
+          "name": "redacted_content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item_count": {
+          "name": "item_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "excluded_item_count": {
+          "name": "excluded_item_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "candidate_manifest": {
+          "name": "candidate_manifest",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_manifest_hash": {
+          "name": "candidate_manifest_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "byte_count": {
+          "name": "byte_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "representation_policy_revision": {
+          "name": "representation_policy_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "representation_policy_hash": {
+          "name": "representation_policy_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_policy_version": {
+          "name": "content_policy_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_policy_hash": {
+          "name": "content_policy_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "classifier_version": {
+          "name": "classifier_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "classifier_hash": {
+          "name": "classifier_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "share_expires_at": {
+          "name": "share_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "invalidated_at": {
+          "name": "invalidated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "invalidation_reason": {
+          "name": "invalidation_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "shared_memory_candidate_previews_device_authority_unique": {
+          "name": "shared_memory_candidate_previews_device_authority_unique",
+          "columns": [
+            {
+              "expression": "authority_reference_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"shared_memory_candidate_previews\".\"authority_source\" = 'device_action_grant'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "shared_memory_candidate_previews_owner_idx": {
+          "name": "shared_memory_candidate_previews_owner_idx",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "shared_memory_candidate_previews_owner_user_id_users_id_fk": {
+          "name": "shared_memory_candidate_previews_owner_user_id_users_id_fk",
+          "tableFrom": "shared_memory_candidate_previews",
+          "tableTo": "users",
+          "columnsFrom": ["owner_user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "shared_memory_candidate_previews_team_id_teams_id_fk": {
+          "name": "shared_memory_candidate_previews_team_id_teams_id_fk",
+          "tableFrom": "shared_memory_candidate_previews",
+          "tableTo": "teams",
+          "columnsFrom": ["team_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "shared_memory_candidate_previews_workspace_team_fk": {
+          "name": "shared_memory_candidate_previews_workspace_team_fk",
+          "tableFrom": "shared_memory_candidate_previews",
+          "tableTo": "team_workspaces",
+          "columnsFrom": ["team_workspace_id", "team_id"],
+          "columnsTo": ["id", "team_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "shared_memory_candidate_previews_hash_unique": {
+          "name": "shared_memory_candidate_previews_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": ["preview_hash"]
+        },
+        "shared_memory_candidate_previews_binding_unique": {
+          "name": "shared_memory_candidate_previews_binding_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "preview_hash",
+            "preview_revision",
+            "logical_memory_id",
+            "team_id",
+            "team_workspace_id",
+            "source_revision"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "shared_memory_candidate_previews_values_check": {
+          "name": "shared_memory_candidate_previews_values_check",
+          "value": "\"shared_memory_candidate_previews\".\"preview_revision\" = 1\n        and \"shared_memory_candidate_previews\".\"authority_source\" in ('browser_session','device_action_grant')\n        and \"shared_memory_candidate_previews\".\"source_revision\" >= 0\n        and \"shared_memory_candidate_previews\".\"item_count\" between 1 and 100\n        and \"shared_memory_candidate_previews\".\"excluded_item_count\" >= 0\n        and jsonb_typeof(\"shared_memory_candidate_previews\".\"candidate_manifest\") = 'array'\n        and jsonb_array_length(\"shared_memory_candidate_previews\".\"candidate_manifest\") = \"shared_memory_candidate_previews\".\"item_count\"\n        and \"shared_memory_candidate_previews\".\"byte_count\" between 1 and 262144\n        and \"shared_memory_candidate_previews\".\"representation_policy_revision\" > 0\n        and \"shared_memory_candidate_previews\".\"content_policy_version\" > 0\n        and \"shared_memory_candidate_previews\".\"classifier_version\" > 0\n        and \"shared_memory_candidate_previews\".\"expires_at\" > \"shared_memory_candidate_previews\".\"created_at\""
+        },
+        "shared_memory_candidate_previews_hashes_check": {
+          "name": "shared_memory_candidate_previews_hashes_check",
+          "value": "length(\"shared_memory_candidate_previews\".\"preview_hash\") = 64\n        and length(\"shared_memory_candidate_previews\".\"candidate_manifest_hash\") = 64\n        and length(\"shared_memory_candidate_previews\".\"source_hash\") = 64\n        and length(\"shared_memory_candidate_previews\".\"redacted_content_hash\") = 64\n        and length(\"shared_memory_candidate_previews\".\"representation_policy_hash\") = 64\n        and length(\"shared_memory_candidate_previews\".\"content_policy_hash\") = 64\n        and length(\"shared_memory_candidate_previews\".\"classifier_hash\") = 64"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.shared_source_artifacts": {
       "name": "shared_source_artifacts",
       "schema": "",
@@ -25186,7 +26292,7 @@
         },
         "source_owner_consents_lifecycle_check": {
           "name": "source_owner_consents_lifecycle_check",
-          "value": "(\n        \"source_owner_representation_consents\".\"state\" = 'pending'\n        and \"source_owner_representation_consents\".\"activated_at\" is null\n        and \"source_owner_representation_consents\".\"paused_at\" is null\n        and \"source_owner_representation_consents\".\"revoked_at\" is null\n      ) or (\n        \"source_owner_representation_consents\".\"state\" = 'active'\n        and \"source_owner_representation_consents\".\"activated_at\" is not null\n        and \"source_owner_representation_consents\".\"paused_at\" is null\n        and \"source_owner_representation_consents\".\"revoked_at\" is null\n      ) or (\n        \"source_owner_representation_consents\".\"state\" = 'paused'\n        and \"source_owner_representation_consents\".\"activated_at\" is not null\n        and \"source_owner_representation_consents\".\"paused_at\" is not null\n        and \"source_owner_representation_consents\".\"revoked_at\" is null\n      ) or (\n        \"source_owner_representation_consents\".\"state\" = 'revoked'\n        and \"source_owner_representation_consents\".\"activated_at\" is not null\n        and \"source_owner_representation_consents\".\"revoked_at\" is not null\n      ) or (\n        \"source_owner_representation_consents\".\"state\" = 'expired'\n        and \"source_owner_representation_consents\".\"revoked_at\" is null\n        and \"source_owner_representation_consents\".\"expires_at\" is not null\n      )"
+          "value": "(\n        \"source_owner_representation_consents\".\"state\" = 'pending'\n        and \"source_owner_representation_consents\".\"activated_at\" is null\n        and \"source_owner_representation_consents\".\"paused_at\" is null\n        and \"source_owner_representation_consents\".\"revoked_at\" is null\n      ) or (\n        \"source_owner_representation_consents\".\"state\" = 'active'\n        and \"source_owner_representation_consents\".\"activated_at\" is not null\n        and \"source_owner_representation_consents\".\"paused_at\" is null\n        and \"source_owner_representation_consents\".\"revoked_at\" is null\n      ) or (\n        \"source_owner_representation_consents\".\"state\" = 'paused'\n        and \"source_owner_representation_consents\".\"activated_at\" is not null\n        and \"source_owner_representation_consents\".\"paused_at\" is not null\n        and \"source_owner_representation_consents\".\"revoked_at\" is null\n      ) or (\n        \"source_owner_representation_consents\".\"state\" = 'revoked'\n        and \"source_owner_representation_consents\".\"revoked_at\" is not null\n      ) or (\n        \"source_owner_representation_consents\".\"state\" = 'expired'\n        and \"source_owner_representation_consents\".\"revoked_at\" is null\n        and \"source_owner_representation_consents\".\"expires_at\" is not null\n      )"
         }
       },
       "isRLSEnabled": false
@@ -29024,6 +30130,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "display_title": {
+          "name": "display_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "team_id": {
           "name": "team_id",
           "type": "uuid",
@@ -32090,6 +33202,7 @@
         "lcm_rollup_available",
         "shared_session_discussion_activity",
         "personal_memory_changed",
+        "pending_share_lifecycle",
         "managed_conversation_changed",
         "access_revoked"
       ]
@@ -32464,7 +33577,7 @@
     "public.source_runtime": {
       "name": "source_runtime",
       "schema": "public",
-      "values": ["codex", "codex-cli", "claude-code", "pi"]
+      "values": ["codex", "codex-cli", "claude-code"]
     },
     "public.sync_change_operation": {
       "name": "sync_change_operation",

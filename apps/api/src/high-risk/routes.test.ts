@@ -251,6 +251,13 @@ const buildServer = async (overrides?: {
       currentAccess: "write",
       currentAccessVersion: 1
     })),
+    getSharedMemoryCandidatePreviewAdmission: vi.fn(async (_actor, input) => ({
+      effectivePolicyIntersection: input.allowedRepresentations,
+      teamPolicyVersion: 1,
+      teamPolicyHash: "a".repeat(64),
+      workspacePolicyVersion: 1,
+      workspacePolicyHash: "a".repeat(64)
+    })),
     getSharedMemoryPreviewAdmission: vi.fn(async (_actor, input) => ({
       source: {
         logicalMemoryId: input.logicalMemoryId,
@@ -284,6 +291,25 @@ const buildServer = async (overrides?: {
       effectivePolicyIntersection: input.allowedRepresentations,
       sourceOwnerPolicyWillActivate: false,
       sourceOwnerPolicyWillReplace: false
+    })),
+    getSharedMemoryPendingShareReview: vi.fn(async (_actor, input) => ({
+      source: {
+        logicalMemoryId: input.logicalMemoryId,
+        title: "Captured Session",
+        ownerPrincipalId: ids.alice
+      },
+      team: { id: input.teamId, name: "Koed Team" },
+      workspace: { id: input.teamWorkspaceId, name: "Product" },
+      preview: {
+        previewId: input.preview.previewId,
+        previewHash: input.preview.previewHash,
+        previewRevision: input.previewRevision,
+        representation: input.selectedRepresentation,
+        sourceRevision: 1
+      },
+      effectivePolicyIntersection: input.allowedRepresentations,
+      sourceOwnerPolicyWillActivate: true as const,
+      sourceOwnerPolicyWillReplace: false as const
     })),
     getSharedMemoryRevokeReview: vi.fn(async (_actor, input) => ({
       source: {

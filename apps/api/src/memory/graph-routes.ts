@@ -295,11 +295,13 @@ export const registerGraphRoutes = (
         params.sessionId,
         input
       );
-      return session
-        ? { session }
-        : reply
-            .status(404)
-            .send({ error: "Captured session not found or not visible" });
+      if (!session) {
+        return reply
+          .status(404)
+          .send({ error: "Captured session not found or not visible" });
+      }
+      await cacheProvider.deleteByPrefix("koed:graph:");
+      return { session };
     }
   );
 

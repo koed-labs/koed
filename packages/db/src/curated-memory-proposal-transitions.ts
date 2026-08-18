@@ -1,6 +1,10 @@
 import type pg from "pg";
 import { randomUUID } from "node:crypto";
 import type { EnvelopeEncryptionProvider } from "@koed/shared";
+import {
+  approvalConversationItemSql,
+  semanticMemoryEventEligibleSql
+} from "./approval-activity-sql.js";
 import type { CuratedMemoryRepository } from "./curated-memory-repository.js";
 import {
   activeCuratedMemoryEvidencePredicate,
@@ -470,12 +474,13 @@ export const createCuratedMemoryProposalTransitionMethods = ({
         }>(
           `
             select id, source_hash
-            from conversation_items
-            where owner_user_id = $1
-              and visibility = 'personal'
-              and personal_deleted_at is null
-              and memory_excluded_at is null
-              and id = any($2::uuid[])
+            from conversation_items ci
+            where ci.owner_user_id = $1
+              and ci.visibility = 'personal'
+              and ci.personal_deleted_at is null
+              and ci.memory_excluded_at is null
+              and not ${approvalConversationItemSql("ci")}
+              and ci.id = any($2::uuid[])
           `,
           [actor.userId, proposal.evidence_conversation_item_ids]
         );
@@ -486,12 +491,13 @@ export const createCuratedMemoryProposalTransitionMethods = ({
         }>(
           `
             select id, source_hash, updated_at
-            from memory_events
-            where owner_user_id = $1
-              and visibility = 'personal'
-              and invalidated_at is null
-              and personal_deleted_at is null
-              and id = any($2::uuid[])
+            from memory_events me
+            where me.owner_user_id = $1
+              and me.visibility = 'personal'
+              and me.invalidated_at is null
+              and me.personal_deleted_at is null
+              and ${semanticMemoryEventEligibleSql("me")}
+              and me.id = any($2::uuid[])
           `,
           [actor.userId, proposal.evidence_memory_event_ids]
         );

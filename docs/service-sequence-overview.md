@@ -1409,6 +1409,55 @@ sequenceDiagram
   MCP-->>Client: MCP tool result
 ```
 
+## Pending Share activation sequence
+
+1. Desktop reserves the captured session's semantic sync cursor and requests a
+   bounded local candidate at that revision; no sync relationship or upload
+   exists.
+2. The Team Backend validates destination and policy and persists an expiring,
+   immutable candidate binding. The binding covers the ordered source manifest,
+   per-source revision hashes, representation, semantic source revision, item
+   and byte counts, exclusion count, and candidate hash. An oversized candidate
+   fails before consent rather than exposing a truncated authorized set.
+3. One reviewed operation persists Pending Share, audit, and outbox with
+   Workspace access `none`.
+4. The local authority persists source-preparation work before Desktop reports
+   acceptance. A restart-safe local worker starts or resumes synchronization
+   only after acceptance.
+5. The Team worker resumes durable work, waits for the exact source revision,
+   excludes Approval Activity from semantic content, reproduces the complete
+   reviewed manifest, and creates the authoritative encrypted preview. A
+   changed identity, order, revision hash, count, or hash requires owner review.
+6. Consent and an `unavailable` Share Grant are created idempotently.
+7. The Team worker stages the exact representation in a non-readable state and
+   creates or resolves the deterministic Shared Session companion while both
+   the Share Grant and representation remain unavailable. One final transaction
+   attaches the companion, publishes the representation, activates the Share
+   Grant and Pending Share, and emits the lifecycle events. Recovery selects
+   quarantined pre-publication operations and never relies on owner listing to
+   repair authority. The activation transaction appends an owner-only Pending
+   Share lifecycle event before Desktop announces completion.
+8. A deterministic activation failure stops automatic delivery and waits for
+   an explicit retry, which reuses the original identities. If the source moved
+   beyond the reviewed revision, Desktop requires a fresh preview and consent
+   instead. Pause preserves the last authorized representation. Revocation
+   remains separate.
+
+A detail-level replacement reuses this durable lifecycle while keeping the
+current Share Grant active. The worker creates the replacement authoritative
+preview and consent, then changes the grant and materialized representation in
+one transaction. A crash after that transaction reconciles through the stable
+replacement mutation; it does not create a second grant or an access gap.
+
+Approval Activity flows only to the owner activity timeline or separately
+authorized byte-exact Conversation Source Access. Projection, embeddings, LCM,
+Recall, semantic sync, and semantic Shared Memory each enforce the exclusion.
+Correction uses the same complete classification predicate as ingestion and
+uses semantic-change cursors for snapshot boundaries. Contaminated continuous
+representations and their semantic rows become unavailable in the correction
+transaction; durable Pending Share work is then queued to rebuild clean data.
+Conversation Source artifacts and access grants are outside this correction.
+
 ## Implementation Anchors
 
 - Capture Hook: `packages/mcp-server/src/capture-hook.ts`
