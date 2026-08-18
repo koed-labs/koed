@@ -33,6 +33,7 @@ const idempotencyKeySchema = z
 const startSchema = z
   .object({
     projectId: z.string().trim().min(1).max(2_048),
+    provider: z.enum(["codex", "claude"]).default("codex"),
     idempotencyKey: idempotencyKeySchema
   })
   .strict();
@@ -196,7 +197,7 @@ const publicExecution = (
   execution: {
     id: string;
     projectId: string;
-    provider: "codex";
+    provider: string;
     state: string;
     stateVersion: number;
     executionGeneration: number;
@@ -1045,6 +1046,7 @@ export const registerManagedConversationRoutes = (
         { userId: user.id },
         {
           projectId: input.projectId,
+          provider: input.provider,
           runnerDeploymentId: runner.deploymentId,
           runnerDeviceId: runner.deviceId,
           idempotencyKey: input.idempotencyKey,

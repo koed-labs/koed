@@ -5,7 +5,7 @@ import { submitLcmSummarySchema } from "./lcm-schemas.js";
 const validSubmission = () => ({
   summaryText: "Use scoped device credentials.",
   summaryModel: "codex:test",
-  summaryPromptVersion: "lcm-codex-summary-json-v3",
+  summaryPromptVersion: "lcm-ai-client-summary-json-v4",
   summaryTokenEstimate: 8,
   summaryStructuredJson: {
     schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,

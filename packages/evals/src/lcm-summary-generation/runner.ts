@@ -3,8 +3,8 @@ import { parseStructuredLcmSummary } from "@koed/core";
 import {
   buildLcmSummaryPrompt,
   resolveLcmSummaryWorkerConfig,
-  runCodexAppServerLcmSummary,
-  type CodexLcmSummaryRunner,
+  runLcmSummary,
+  type LcmSummaryRunner,
   type LcmSummaryWorkerConfig
 } from "@koed/mcp-server";
 import { runWithAttempts } from "./attempts.js";
@@ -25,7 +25,7 @@ import {
 
 export interface LcmSummaryBenchmarkRunOptions {
   config?: LcmSummaryWorkerConfig;
-  runner?: CodexLcmSummaryRunner;
+  runner?: LcmSummaryRunner;
   runs?: number;
   caseIds?: string[];
   threshold?: number;
@@ -71,10 +71,10 @@ export const runLcmSummaryBenchmarkCase = async (
   runIndex: number,
   options: {
     config: LcmSummaryWorkerConfig;
-    runner?: CodexLcmSummaryRunner;
+    runner?: LcmSummaryRunner;
   }
 ): Promise<LcmSummaryBenchmarkRunInput> => {
-  const runner = options.runner ?? runCodexAppServerLcmSummary;
+  const runner = options.runner ?? runLcmSummary;
   const prompt = buildLcmSummaryPrompt(benchmarkCase.node);
   const started = performance.now();
   let lastText = "";

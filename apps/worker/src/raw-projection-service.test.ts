@@ -83,6 +83,10 @@ const withProjectionDefaults = (repository: Record<string, unknown>) =>
     listHistoricalImportSourcesNeedingLcmFinalization: vi
       .fn()
       .mockResolvedValue([]),
+    reconcileHistoricalImportCompletion: vi.fn().mockResolvedValue({
+      sourcesCompleted: 0,
+      runsCompleted: 0
+    }),
     listSourcesNeedingEmbeddings: vi.fn().mockResolvedValue([]),
     ...repository
   }) as unknown as MemorySourceRepository;
@@ -377,6 +381,10 @@ const createHistoricalRepository = () => ({
   ),
   listSemanticMemoryRebuildActors: vi.fn().mockResolvedValue([]),
   listPendingLcmDispatchScopes: vi.fn().mockResolvedValue([]),
+  reconcileHistoricalImportCompletion: vi.fn().mockResolvedValue({
+    sourcesCompleted: 0,
+    runsCompleted: 0
+  }),
   listSourcesNeedingEmbeddings: vi.fn().mockResolvedValue([]),
   processDueSemanticMemoryRebuilds: vi.fn(),
   projectPendingConversationItems: vi.fn((_actor, input) =>

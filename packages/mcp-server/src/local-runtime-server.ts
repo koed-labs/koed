@@ -12,6 +12,7 @@ import path from "node:path";
 import { watchKoedLocalWork } from "@koed/shared";
 import { z } from "zod";
 import { startCodexTranscriptWatcher } from "./codex-transcript-watcher.js";
+import { startClaudeTranscriptWatcher } from "./claude-transcript-watcher.js";
 import { startCuratedMemoryReviewService } from "./curated-memory-review-service.js";
 import { resolveCuratedMemoryReviewConfig } from "./curated-memory-review-worker.js";
 import {
@@ -251,59 +252,109 @@ export type LocalAiRuntimeServiceFactory = (options: {
   koedHome: string;
 }) => Promise<LocalAiRuntimeServices>;
 
-export const startDefaultLocalAiRuntimeServices: LocalAiRuntimeServiceFactory =
-  async ({ apiClient, environment, koedHome }) => {
-    const lcmSummaryService = startLcmSummaryService(apiClient, {
-      serviceConfig: resolveLcmSummaryServiceConfig(environment),
-      workerConfig: resolveLcmSummaryWorkerConfig(environment)
-    });
-    let lcmWorkWatcher: Awaited<ReturnType<typeof watchKoedLocalWork>> | null =
-      null;
-    let curatedMemoryReviewService: ReturnType<
-      typeof startCuratedMemoryReviewService
-    > | null = null;
-    let transcriptWatcher: ReturnType<
-      typeof startCodexTranscriptWatcher
-    > | null = null;
-    try {
-      lcmWorkWatcher = lcmSummaryService
-        ? await watchKoedLocalWork(
-            koedHome,
-            "lcm-summary",
-            () => lcmSummaryService.nudge("share_bound_summary_requested"),
-            (error) =>
-              logger.warn({ err: error }, "local LCM work signal failed")
-          )
-        : null;
-      curatedMemoryReviewService = startCuratedMemoryReviewService(apiClient, {
-        workerConfig: resolveCuratedMemoryReviewConfig(environment)
-      });
-      transcriptWatcher =
-        environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() ===
-        "false"
-          ? null
-          : startCodexTranscriptWatcher(apiClient);
-      const executor = new MemoryToolExecutor(apiClient, environment, {
-        lcmSummaryService,
-        curatedMemoryReviewService
-      });
-      return {
-        executor,
-        async close() {
-          lcmWorkWatcher?.stop();
-          lcmSummaryService?.stop();
-          curatedMemoryReviewService?.stop();
-          await transcriptWatcher?.stop();
-        }
-      };
-    } catch (error) {
-      lcmWorkWatcher?.stop();
-      lcmSummaryService?.stop();
-      curatedMemoryReviewService?.stop();
-      await transcriptWatcher?.stop();
-      throw error;
+export interface LocalAiRuntimeServiceDependencies {
+  startLcmSummaryService: typeof startLcmSummaryService;
+  watchKoedLocalWork: typeof watchKoedLocalWork;
+  startCuratedMemoryReviewService: typeof startCuratedMemoryReviewService;
+  startCodexTranscriptWatcher: typeof startCodexTranscriptWatcher;
+  startClaudeTranscriptWatcher: typeof startClaudeTranscriptWatcher;
+  createExecutor(
+    apiClient: MemoryApiClient,
+    environment: NodeJS.ProcessEnv,
+    services: {
+      lcmSummaryService: ReturnType<typeof startLcmSummaryService>;
+      curatedMemoryReviewService: ReturnType<
+        typeof startCuratedMemoryReviewService
+      >;
     }
-  };
+  ): LocalAiRuntimeToolExecutor;
+}
+
+const defaultServiceDependencies: LocalAiRuntimeServiceDependencies = {
+  startLcmSummaryService,
+  watchKoedLocalWork,
+  startCuratedMemoryReviewService,
+  startCodexTranscriptWatcher,
+  startClaudeTranscriptWatcher,
+  createExecutor: (apiClient, environment, services) =>
+    new MemoryToolExecutor(apiClient, environment, services)
+};
+
+export const startDefaultLocalAiRuntimeServices = async (
+  {
+    apiClient,
+    environment,
+    koedHome
+  }: Parameters<LocalAiRuntimeServiceFactory>[0],
+  dependencies: LocalAiRuntimeServiceDependencies = defaultServiceDependencies
+): Promise<LocalAiRuntimeServices> => {
+  const lcmSummaryService = dependencies.startLcmSummaryService(apiClient, {
+    serviceConfig: resolveLcmSummaryServiceConfig(environment),
+    workerConfig: resolveLcmSummaryWorkerConfig(environment)
+  });
+  let lcmWorkWatcher: Awaited<ReturnType<typeof watchKoedLocalWork>> | null =
+    null;
+  let curatedMemoryReviewService: ReturnType<
+    typeof startCuratedMemoryReviewService
+  > | null = null;
+  let codexTranscriptWatcher: ReturnType<
+    typeof startCodexTranscriptWatcher
+  > | null = null;
+  let claudeTranscriptWatcher: ReturnType<
+    typeof startClaudeTranscriptWatcher
+  > | null = null;
+  try {
+    lcmWorkWatcher = lcmSummaryService
+      ? await dependencies.watchKoedLocalWork(
+          koedHome,
+          "lcm-summary",
+          () => lcmSummaryService.nudge("share_bound_summary_requested"),
+          (error) => logger.warn({ err: error }, "local LCM work signal failed")
+        )
+      : null;
+    curatedMemoryReviewService = dependencies.startCuratedMemoryReviewService(
+      apiClient,
+      {
+        workerConfig: resolveCuratedMemoryReviewConfig(environment)
+      }
+    );
+    codexTranscriptWatcher =
+      environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() ===
+      "false"
+        ? null
+        : dependencies.startCodexTranscriptWatcher(apiClient);
+    claudeTranscriptWatcher =
+      environment.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() ===
+      "false"
+        ? null
+        : dependencies.startClaudeTranscriptWatcher(apiClient, environment);
+    const executor = dependencies.createExecutor(apiClient, environment, {
+      lcmSummaryService,
+      curatedMemoryReviewService
+    });
+    return {
+      executor,
+      async close() {
+        lcmWorkWatcher?.stop();
+        lcmSummaryService?.stop();
+        curatedMemoryReviewService?.stop();
+        await Promise.all([
+          codexTranscriptWatcher?.stop(),
+          claudeTranscriptWatcher?.stop()
+        ]);
+      }
+    };
+  } catch (error) {
+    lcmWorkWatcher?.stop();
+    lcmSummaryService?.stop();
+    curatedMemoryReviewService?.stop();
+    await Promise.all([
+      codexTranscriptWatcher?.stop(),
+      claudeTranscriptWatcher?.stop()
+    ]);
+    throw error;
+  }
+};
 
 export const startLocalAiRuntime = async ({
   environment = process.env,

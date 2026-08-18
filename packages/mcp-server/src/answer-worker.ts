@@ -9,6 +9,12 @@ import {
   EMBEDDING_RETRIEVAL_QUERY_TRANSFORM,
   resolveSupportedEmbeddingModelConfig
 } from "@koed/shared";
+import {
+  createSdkMcpServer,
+  query as queryClaude,
+  tool as claudeTool,
+  type SDKMessage
+} from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import {
   CodexAppServerThreadSession,
@@ -22,6 +28,18 @@ import {
   type CodexThreadTokenUsage
 } from "./codex-app-server-runner.js";
 import {
+  aiClientExecutionIdentity,
+  claudeAgentSdkEffort,
+  claudeAgentSdkEnvironment,
+  claudeAgentSdkTokenUsage,
+  resolveClaudeCodeExecutable,
+  type AiClientProvider
+} from "./ai-client-runner.js";
+import {
+  environmentForLocalAiClientInstance,
+  resolveLocalAiClientInstance
+} from "./ai-client-instance-registry.js";
+import {
   loadPrompt,
   renderLoadedPrompt,
   type LoadedPrompt
@@ -29,20 +47,21 @@ import {
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 120_000;
-export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-codex-worker-v4";
+export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-worker-v4";
 export const MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION = "memory-answer-v1";
 const MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE = "koed_memory";
 
-const koedMemoryAnswerAppServerBaseInstructions = loadPrompt(
-  "app-server-memory-answer-base"
+const koedMemoryAnswerBaseInstructions = loadPrompt(
+  "ai-client-memory-answer-base"
 ).body;
 
-const koedMemoryAnswerAppServerDeveloperInstructions = loadPrompt(
-  "app-server-memory-answer-developer"
+const koedMemoryAnswerDeveloperInstructions = loadPrompt(
+  "ai-client-memory-answer-developer"
 ).body;
 
 export interface MemoryAnswerWorkerConfig {
-  provider: string;
+  provider: AiClientProvider;
+  aiClientInstanceId: string;
   model: string;
   reasoningEffort: string;
   timeoutMs: number;
@@ -53,13 +72,15 @@ export interface MemoryAnswerWorkerConfig {
   maxEvidenceItems: number;
   maxEvidenceTokens: number;
   maxPromptTokens: number;
-  appServerBinary: string;
+  executablePath: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
 }
 
 export interface MemoryAnswerWorkerStatus {
   provider: string;
+  aiClientInstanceId?: string;
+  transport?: "app_server" | "agent_sdk";
   promptVersion: string;
   jobId: string;
   model: string | null;
@@ -82,6 +103,9 @@ export interface MemoryAnswerWorkerStatus {
 }
 
 export interface MemoryAnswerAppServerExecution {
+  provider?: AiClientProvider;
+  aiClientInstanceId?: string;
+  transport?: "app_server" | "agent_sdk";
   answerJobId?: string;
   attemptIndex?: number;
   status?: "succeeded" | "failed";
@@ -434,19 +458,43 @@ export const resolveMemoryAnswerWorkerConfig = (
   overrides: Partial<
     Pick<
       MemoryAnswerWorkerConfig,
-      "provider" | "model" | "reasoningEffort" | "timeoutMs" | "maxAttempts"
+      | "provider"
+      | "aiClientInstanceId"
+      | "model"
+      | "reasoningEffort"
+      | "timeoutMs"
+      | "maxAttempts"
     >
   > = {}
 ): MemoryAnswerWorkerConfig => {
+  const provider =
+    overrides.provider ??
+    resolveEnvValue(env, "MEMORY_ANSWER_PROVIDER")?.toLowerCase() ??
+    CODEX_ANSWER_PROVIDER;
+  if (provider !== "codex" && provider !== "claude") {
+    throw new Error(`Unsupported Memory Answer provider: ${provider}`);
+  }
+  const aiClientInstanceId =
+    overrides.aiClientInstanceId ??
+    resolveEnvValue(env, "MEMORY_ANSWER_AI_CLIENT_INSTANCE") ??
+    `${provider}.default`;
+  const instance = resolveLocalAiClientInstance({
+    instanceId: aiClientInstanceId,
+    driverId: provider,
+    env
+  });
+  const instanceEnv = environmentForLocalAiClientInstance({
+    instance,
+    driverId: provider,
+    env
+  });
   return {
-    provider:
-      overrides.provider ??
-      resolveEnvValue(env, "MEMORY_ANSWER_PROVIDER")?.toLowerCase() ??
-      CODEX_ANSWER_PROVIDER,
+    provider,
+    aiClientInstanceId,
     model:
       overrides.model ??
       resolveEnvValue(env, "MEMORY_ANSWER_MODEL") ??
-      "gpt-5.6-luna",
+      (provider === "claude" ? "haiku" : "gpt-5.6-luna"),
     reasoningEffort:
       overrides.reasoningEffort ??
       resolveEnvValue(env, "MEMORY_ANSWER_REASONING_EFFORT") ??
@@ -491,11 +539,15 @@ export const resolveMemoryAnswerWorkerConfig = (
       24_000,
       { min: 512, max: 200_000 }
     ),
-    appServerBinary: resolveCodexAppServerBinary(env, [
-      "MEMORY_ANSWER_CODEX_BINARY"
-    ]),
+    executablePath:
+      instance?.executablePath ??
+      (provider === "claude"
+        ? resolveClaudeCodeExecutable(instanceEnv)
+        : resolveCodexAppServerBinary(instanceEnv, [
+            "MEMORY_ANSWER_CODEX_BINARY"
+          ])),
     cwd: process.cwd(),
-    env
+    env: instanceEnv
   };
 };
 
@@ -2302,6 +2354,10 @@ const runCodexWithRetries = async (
   run: MemoryAnswerAttemptRun;
   validated: ValidatedMemoryAnswerRun;
 }> => {
+  const executionIdentity = aiClientExecutionIdentity(
+    config.provider,
+    config.aiClientInstanceId
+  );
   let lastErrorMessage: string | undefined;
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
     if (attempt > 1 && !canStartAttempt()) {
@@ -2316,6 +2372,7 @@ const runCodexWithRetries = async (
       }
       const validated = validate(run);
       attempts.push({
+        ...executionIdentity,
         answerJobId,
         attemptIndex: attempt,
         status: "succeeded",
@@ -2332,6 +2389,7 @@ const runCodexWithRetries = async (
       lastErrorMessage = errorMessage(error);
       if (run) {
         attempts.push({
+          ...executionIdentity,
           answerJobId,
           attemptIndex: attempt,
           status: "failed",
@@ -2346,6 +2404,7 @@ const runCodexWithRetries = async (
         });
       } else if (error instanceof CodexAppServerTurnError) {
         attempts.push({
+          ...executionIdentity,
           answerJobId,
           attemptIndex: attempt,
           status: "failed",
@@ -2370,6 +2429,7 @@ const runCodexWithRetries = async (
               ).codexAppServerProcessMetrics
             : undefined;
         attempts.push({
+          ...executionIdentity,
           answerJobId,
           attemptIndex: attempt,
           status: "failed",
@@ -2668,6 +2728,215 @@ const memoryAnswerTrace = (options: {
     }
   };
   return boundMemoryAnswerTrace(trace);
+};
+
+const claudeMemoryToolResult = (
+  response: CodexAppServerDynamicToolResponse
+) => ({
+  content: [{ type: "text" as const, text: response.text }],
+  isError: !response.success
+});
+
+const runClaudeMemoryAnswer = async (
+  prompt: string,
+  config: MemoryAnswerWorkerConfig,
+  timeoutMs: number,
+  handler: (
+    call: CodexAppServerDynamicToolCall
+  ) => Promise<CodexAppServerDynamicToolResponse>,
+  callerSignal?: AbortSignal
+): Promise<CodexAnswerResult> => {
+  const invoke = (toolName: string, args: Record<string, unknown>) =>
+    handler({
+      threadId: "claude-sdk",
+      turnId: "claude-sdk",
+      callId: randomUUID(),
+      namespace: MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE,
+      tool: toolName,
+      arguments: args
+    }).then(claudeMemoryToolResult);
+  const server = createSdkMcpServer({
+    name: MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE,
+    version: "1.0.0",
+    alwaysLoad: true,
+    tools: [
+      claudeTool(
+        "scan",
+        dynamicToolSpecs()[0]!.description,
+        {
+          query: z.string().optional(),
+          search_domain: z.enum(["project", "session", "global"]).optional(),
+          project_id: z.string().optional(),
+          session_id: z.string().optional()
+        },
+        (args) => invoke("scan", args),
+        { alwaysLoad: true }
+      ),
+      claudeTool(
+        "search",
+        dynamicToolSpecs()[1]!.description,
+        {
+          query: z.string().optional(),
+          stage: z.enum([
+            "rollup_search",
+            "leaf_search",
+            "scoped_leaf_search",
+            "fresh_pending_search",
+            "raw_fallback_search",
+            "lexical_search"
+          ]),
+          search_domain: z.enum(["project", "session", "global"]).optional(),
+          project_id: z.string().optional(),
+          session_id: z.string().optional(),
+          parent_node_ids: z.array(z.string()).optional(),
+          limit: z.number().int().min(1).max(50).optional()
+        },
+        (args) => invoke("search", args),
+        { alwaysLoad: true }
+      ),
+      claudeTool(
+        "expand",
+        dynamicToolSpecs()[2]!.description,
+        {
+          nodeId: z.string(),
+          search_domain: z.enum(["project", "session", "global"]).optional(),
+          project_id: z.string().optional(),
+          session_id: z.string().optional()
+        },
+        (args) => invoke("expand", args),
+        { alwaysLoad: true }
+      )
+    ]
+  });
+  const abortController = new AbortController();
+  let timedOut = false;
+  let stream: ReturnType<typeof queryClaude> | undefined;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    abortController.abort();
+  }, timeoutMs);
+  const cancel = () => {
+    clearTimeout(timer);
+    abortController.abort();
+    try {
+      stream?.close();
+    } catch {
+      // The aborted controller remains the cancellation source of truth.
+    }
+  };
+  callerSignal?.addEventListener("abort", cancel, { once: true });
+  let resultMessage: Extract<SDKMessage, { type: "result" }> | undefined;
+  let threadId: string | undefined;
+  try {
+    if (callerSignal?.aborted) cancel();
+    const effort = claudeAgentSdkEffort(config.reasoningEffort);
+    stream = queryClaude({
+      prompt,
+      options: {
+        abortController,
+        cwd: config.cwd,
+        env: claudeAgentSdkEnvironment(config.env, "koed-memory-answer-worker"),
+        pathToClaudeCodeExecutable: config.executablePath,
+        model: config.model,
+        ...(effort ? { effort } : {}),
+        thinking: { type: "disabled" },
+        systemPrompt: [
+          koedMemoryAnswerBaseInstructions,
+          koedMemoryAnswerDeveloperInstructions
+        ],
+        outputFormat: {
+          type: "json_schema",
+          schema: {
+            type: "object",
+            properties: {
+              schema_version: {
+                type: "string",
+                const: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION
+              },
+              memory_status: {
+                type: "string",
+                enum: ["found", "not_found", "insufficient", "pending_summary"]
+              },
+              relevant_memory_found: { type: "boolean" },
+              answer_markdown: { type: "string" },
+              relevance_explanation: { type: "string" },
+              evidence: { type: "array", items: { type: "object" } },
+              missing: { type: "array", items: { type: "string" } },
+              missing_evidence: {
+                type: "array",
+                items: { type: "string" }
+              }
+            },
+            required: [
+              "schema_version",
+              "memory_status",
+              "relevant_memory_found",
+              "answer_markdown",
+              "relevance_explanation",
+              "evidence",
+              "missing",
+              "missing_evidence"
+            ],
+            additionalProperties: false
+          }
+        },
+        mcpServers: { [MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE]: server },
+        allowedTools: [
+          `mcp__${MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE}__scan`,
+          `mcp__${MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE}__search`,
+          `mcp__${MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE}__expand`
+        ],
+        tools: [],
+        permissionMode: "dontAsk",
+        strictMcpConfig: true,
+        settingSources: [],
+        persistSession: false,
+        maxTurns: Math.max(2, config.maxSearches + config.maxExpansions + 1)
+      }
+    });
+    if (callerSignal?.aborted) stream.close();
+    for await (const message of stream) {
+      if ("session_id" in message && typeof message.session_id === "string") {
+        threadId = message.session_id;
+      }
+      if (message.type === "result") {
+        resultMessage = message;
+      }
+    }
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(`Claude Agent SDK timed out after ${timeoutMs}ms`, {
+        cause: error
+      });
+    }
+    if (callerSignal?.aborted) {
+      throw new Error("Memory answer request was cancelled", { cause: error });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", cancel);
+  }
+  if (timedOut) {
+    throw new Error(`Claude Agent SDK timed out after ${timeoutMs}ms`);
+  }
+  if (callerSignal?.aborted) {
+    throw new Error("Memory answer request was cancelled");
+  }
+  if (!resultMessage || resultMessage.subtype !== "success") {
+    throw new Error("Claude Agent SDK memory answer failed");
+  }
+  const text =
+    resultMessage.structured_output === undefined
+      ? resultMessage.result
+      : JSON.stringify(resultMessage.structured_output);
+  return {
+    text,
+    model: Object.keys(resultMessage.modelUsage ?? {})[0] ?? config.model,
+    tokenUsage: claudeAgentSdkTokenUsage(resultMessage),
+    primaryThreadId: threadId,
+    threadId
+  };
 };
 
 const primaryThreadIdFromExecutions = (
@@ -3319,17 +3588,33 @@ const runDynamicToolMemoryAnswer = async (
     }
     state.ledger.workerAttempts += 1;
     state.ledger.promptTokenEstimateConsumed += promptTokens.tokens;
+    const dynamicToolHandler = createMemoryAnswerDynamicToolHandler(
+      state,
+      options
+    );
+    if (options.config.provider === "claude") {
+      return {
+        result: await runClaudeMemoryAnswer(
+          prompt,
+          options.config,
+          remaining,
+          dynamicToolHandler,
+          options.signal
+        ),
+        state
+      };
+    }
     const session = new CodexAppServerThreadSession({
-      appServerBinary: options.config.appServerBinary,
+      appServerBinary: options.config.executablePath,
       model: options.config.model,
       reasoningEffort: options.config.reasoningEffort,
       cwd: options.config.cwd,
       env: options.config.env,
       clientName: "koed-memory-answer-worker",
-      baseInstructions: koedMemoryAnswerAppServerBaseInstructions,
-      developerInstructions: koedMemoryAnswerAppServerDeveloperInstructions,
+      baseInstructions: koedMemoryAnswerBaseInstructions,
+      developerInstructions: koedMemoryAnswerDeveloperInstructions,
       dynamicTools: dynamicToolSpecs(),
-      dynamicToolHandler: createMemoryAnswerDynamicToolHandler(state, options),
+      dynamicToolHandler,
       captureProcessMetrics: options.captureProcessMetrics
     });
     const abort = () => session.close();
@@ -3569,29 +3854,17 @@ export const answerWithMemoryWorker = async (
     { model: config.model }
   );
 
-  if (config.provider !== CODEX_ANSWER_PROVIDER) {
-    return compactMemoryAnswerPayload(
-      {
-        ...payload,
-        localMemoryWorker: {
-          provider: config.provider,
-          promptVersion,
-          jobId,
-          model: null,
-          usedFallback: true,
-          skippedReason: "disabled"
-        }
-      },
-      responseDetail
-    );
-  }
-
   if (!options.client) {
     return compactMemoryAnswerPayload(
       {
         ...payload,
         localMemoryWorker: {
           provider: config.provider,
+          aiClientInstanceId: config.aiClientInstanceId,
+          transport: aiClientExecutionIdentity(
+            config.provider,
+            config.aiClientInstanceId
+          ).transport,
           promptVersion,
           jobId,
           model: null,
@@ -3726,6 +3999,11 @@ export const answerWithMemoryWorker = async (
         },
         localMemoryWorker: {
           provider: config.provider,
+          aiClientInstanceId: config.aiClientInstanceId,
+          transport: aiClientExecutionIdentity(
+            config.provider,
+            config.aiClientInstanceId
+          ).transport,
           promptVersion,
           jobId,
           model: answer.model,
@@ -3841,6 +4119,11 @@ export const answerWithMemoryWorker = async (
         },
         localMemoryWorker: {
           provider: config.provider,
+          aiClientInstanceId: config.aiClientInstanceId,
+          transport: aiClientExecutionIdentity(
+            config.provider,
+            config.aiClientInstanceId
+          ).transport,
           promptVersion,
           jobId,
           model: null,
@@ -3855,7 +4138,7 @@ export const answerWithMemoryWorker = async (
           appServerExecutions,
           errorMessage: workerErrorMessage,
           usedFallback: true,
-          skippedReason: "codex_failed"
+          skippedReason: `${config.provider}_failed`
         }
       },
       responseDetail

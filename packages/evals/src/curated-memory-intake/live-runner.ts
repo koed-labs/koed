@@ -474,7 +474,7 @@ const runWorkflowCase = async (
         reviewBundle,
         resolveCuratedMemoryReviewConfig(process.env, {
           model: options.model,
-          appServerBinary: options.codexBinary,
+          executablePath: options.codexBinary,
           cwd: repositoryRoot,
           timeoutMs: 180_000
         })

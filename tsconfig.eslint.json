@@ -14,6 +14,9 @@
       "@koed/mcp-server/codex-transcript-parser": [
         "packages/mcp-server/src/codex-transcript-parser.ts"
       ],
+      "@koed/mcp-server/claude-transcript-parser": [
+        "packages/mcp-server/src/claude-transcript-parser.ts"
+      ],
       "@koed/shared": ["packages/shared/src/index.ts"],
       "@koed/shared/collaboration": [
         "packages/shared/src/collaboration-contract.ts"

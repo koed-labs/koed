@@ -185,6 +185,7 @@ const buildFixture = async (options?: {
         sources: [
           {
             sourceGenerationId: "55555555-5555-4555-8555-555555555555",
+            sourceComponentId: "main",
             redactedSourceLabel: "Captured conversation",
             sourceRuntime: "codex",
             sourceCreatedAt: "2026-01-01T00:00:00.000Z",
@@ -544,6 +545,11 @@ describe("Personal source restore controls", () => {
         priorGenerationClosure: null
       },
       source: {
+        sourceComponentSchemaVersion: 1,
+        sourceComponentId: "agent.researcher",
+        sourceComponentRole: "auxiliary",
+        parentSourceComponentId: "main",
+        contentFraming: "jsonl",
         sourceKind: "codex",
         logicalSessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         externalSessionId: "session-restore",
@@ -611,6 +617,7 @@ describe("Personal source restore controls", () => {
     });
     const body = {
       sourceGenerationId,
+      sourceComponentId: "agent.researcher",
       targetDeploymentId,
       firstSegmentIndex: 0,
       recipientKey
@@ -645,9 +652,10 @@ describe("Personal source restore controls", () => {
 
     const first = await fixture.app.inject({
       method: "POST",
-      url: `/v1/personal-source-replication/restores/${restoreJobId}/complete-approval`
+      url: `/v1/personal-source-replication/restores/${restoreJobId}/complete-approval`,
+      payload: { sourceComponentId: "agent.researcher" }
     });
-    expect(first.statusCode).toBe(500);
+    expect(first.statusCode, first.body).toBe(500);
     expect(
       readCollaborationActionGrantCustodyCommitmentHash(fixture.koedHome, {
         referenceId: actionGrantId,
@@ -661,9 +669,10 @@ describe("Personal source restore controls", () => {
 
     const retried = await fixture.app.inject({
       method: "POST",
-      url: `/v1/personal-source-replication/restores/${restoreJobId}/complete-approval`
+      url: `/v1/personal-source-replication/restores/${restoreJobId}/complete-approval`,
+      payload: { sourceComponentId: "agent.researcher" }
     });
-    expect(retried.statusCode).toBe(200);
+    expect(retried.statusCode, retried.body).toBe(200);
     expect(JSON.parse(retried.body)).toMatchObject({
       approvalState: "consumed",
       restore: { id: restoreJobId, state: "ready" }

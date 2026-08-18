@@ -21,6 +21,7 @@ import type {
   ConversationItemInput,
   ConversationItemRecord,
   EffectiveCapturePolicy,
+  SourceRuntime,
   Visibility
 } from "./types.js";
 
@@ -147,7 +148,9 @@ const SAFE_CONVERSATION_METADATA_KEYS = new Set([
   "transportChunkGroupId",
   "sourceItemHash",
   "sourceChunkIndex",
-  "sourceChunkCount"
+  "sourceChunkCount",
+  "sourceRuntime",
+  "sourceComponentId"
 ]);
 
 export const safeConversationMetadataForEncryptedStorage = (
@@ -481,6 +484,24 @@ const stringField = (
 ): string | null => {
   const field = value?.[key];
   return typeof field === "string" && field.trim() ? field : null;
+};
+
+const conversationSourceRuntime = (
+  sourceKind: string,
+  metadata?: Record<string, unknown> | null
+): SourceRuntime => {
+  const explicit = stringField(metadata, "sourceRuntime");
+  if (
+    explicit === "codex" ||
+    explicit === "codex-cli" ||
+    explicit === "claude-code"
+  ) {
+    return explicit;
+  }
+  if (sourceKind === "codex-cli" || sourceKind === "claude-code") {
+    return sourceKind;
+  }
+  return "codex";
 };
 
 const transcriptEventTime = (rawJson: unknown): string | undefined => {
@@ -1260,7 +1281,7 @@ const ensureConversationItemTurn = async (
       input.ownerUserId,
       input.visibility,
       item.externalTurnId,
-      item.sourceKind === "codex-cli" ? "codex-cli" : "codex",
+      conversationSourceRuntime(item.sourceKind, item.metadata),
       captureMethodForConversationItem(item),
       `turn:${item.sessionId}:${item.externalTurnId}`,
       `turn:${item.sessionId}:${item.externalTurnId}`,

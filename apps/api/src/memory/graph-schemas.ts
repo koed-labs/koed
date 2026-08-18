@@ -2,7 +2,11 @@ import { z } from "zod";
 import { queryBooleanSchema, visibilitySchema } from "./common-schemas.js";
 import { searchDomainSchema } from "./retrieval-schemas.js";
 
-export const sourceAiClientSchema = z.enum(["codex", "codex-cli"]);
+export const sourceAiClientSchema = z.enum([
+  "codex",
+  "codex-cli",
+  "claude-code"
+]);
 
 export const graphThreadIndexResponseSchema = z.object({
   projects: z.array(

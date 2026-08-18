@@ -259,7 +259,8 @@ describe("managed Conversation routes", () => {
     expect(upstreamCalls[0]?.body).toEqual({
       projectId,
       idempotencyKey: "phase7-start-binding",
-      deferUntilRuntimeBinding: true
+      deferUntilRuntimeBinding: true,
+      provider: "codex"
     });
     expect(JSON.stringify(upstreamCalls[0]?.body)).not.toContain(projectPath);
     expect(upsert).toHaveBeenCalledWith(

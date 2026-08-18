@@ -1,7 +1,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import type {
+  Options,
+  Query,
+  SDKMessage
+} from "@anthropic-ai/claude-agent-sdk";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const sdk = vi.hoisted(() => ({ query: vi.fn() }));
+
+vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>()),
+  query: sdk.query
+}));
 import {
   MEMORY_RETRIEVAL_EXACT_HINT_MAX_COUNT,
   MEMORY_RETRIEVAL_HINT_MAX_COUNT,
@@ -27,6 +39,10 @@ import {
 import { memoryAnswerRetrievalHintsSchema } from "../src/memory-answer-request.js";
 import { toolAnswerResponse } from "../src/memory-question-answer-persistence.js";
 import { loadPrompt } from "../src/prompt-loader.js";
+
+afterEach(() => {
+  sdk.query.mockReset();
+});
 
 const answerObject = (
   answer_markdown: string,
@@ -289,6 +305,132 @@ lineReader.on("line", (line) => {
 };
 
 describe("memory answer worker", () => {
+  it("reports the configured Claude instance and Agent SDK transport", async () => {
+    const config = {
+      ...resolveMemoryAnswerWorkerConfig({
+        MEMORY_ANSWER_CODEX_BINARY: process.execPath
+      }),
+      provider: "claude" as const,
+      aiClientInstanceId: "claude.work",
+      executablePath: process.execPath
+    };
+    const response = await answerWithMemoryWorker(payload, { config });
+
+    expect(response.localMemoryWorker).toMatchObject({
+      provider: "claude",
+      aiClientInstanceId: "claude.work",
+      transport: "agent_sdk",
+      skippedReason: "missing_retrieval_client"
+    });
+  });
+
+  it("aborts and closes the active Claude query when the caller cancels", async () => {
+    const caller = new AbortController();
+    const removeEventListener = vi.spyOn(caller.signal, "removeEventListener");
+    const close = vi.fn();
+    let sdkSignal: AbortSignal | undefined;
+    sdk.query.mockImplementation(({ options }: { options?: Options }) => {
+      sdkSignal = options?.abortController?.signal;
+      async function* hang(): AsyncGenerator<SDKMessage, void> {
+        await new Promise<void>((_resolve, reject) => {
+          if (sdkSignal?.aborted) {
+            reject(new Error("aborted before iteration"));
+            return;
+          }
+          sdkSignal?.addEventListener(
+            "abort",
+            () => reject(new Error("aborted by test")),
+            { once: true }
+          );
+        });
+        yield undefined as never;
+      }
+      const stream = hang() as Query;
+      stream.close = close;
+      return stream;
+    });
+    const responsePromise = answerWithMemoryWorker(payload, {
+      client: {
+        async search() {
+          throw new Error("search must not run after cancellation");
+        },
+        async expand() {
+          throw new Error("expand must not run after cancellation");
+        }
+      },
+      signal: caller.signal,
+      config: {
+        ...resolveMemoryAnswerWorkerConfig({}),
+        provider: "claude",
+        aiClientInstanceId: "claude.work",
+        executablePath: process.execPath,
+        timeoutMs: 5_000,
+        maxAttempts: 2
+      }
+    });
+    await vi.waitFor(() => expect(sdkSignal).toBeDefined());
+
+    caller.abort();
+
+    const response = await responsePromise;
+    expect(sdkSignal?.aborted).toBe(true);
+    expect(close).toHaveBeenCalledOnce();
+    expect(sdk.query).toHaveBeenCalledOnce();
+    expect(removeEventListener).toHaveBeenCalledWith(
+      "abort",
+      expect.any(Function)
+    );
+    expect(response.localMemoryWorker.errorMessage).toContain("cancelled");
+    expect(response.localMemoryWorker.errorMessage).not.toContain("timed out");
+  });
+
+  it("preserves Claude timeout errors independently of caller cancellation", async () => {
+    let sdkSignal: AbortSignal | undefined;
+    sdk.query.mockImplementation(({ options }: { options?: Options }) => {
+      sdkSignal = options?.abortController?.signal;
+      async function* hang(): AsyncGenerator<SDKMessage, void> {
+        await new Promise<void>((_resolve, reject) => {
+          sdkSignal?.addEventListener(
+            "abort",
+            () => reject(new Error("timed out by test")),
+            { once: true }
+          );
+        });
+        yield undefined as never;
+      }
+      return hang() as Query;
+    });
+
+    const response = await answerWithMemoryWorker(payload, {
+      client: {
+        async search() {
+          throw new Error("search must not run after timeout");
+        },
+        async expand() {
+          throw new Error("expand must not run after timeout");
+        }
+      },
+      config: {
+        ...resolveMemoryAnswerWorkerConfig({}),
+        provider: "claude",
+        aiClientInstanceId: "claude.work",
+        executablePath: process.execPath,
+        timeoutMs: 100,
+        maxAttempts: 1
+      }
+    });
+
+    expect(sdkSignal?.aborted).toBe(true);
+    const errorMessage = response.localMemoryWorker.errorMessage ?? "";
+    const timeout = errorMessage.match(
+      /Claude Agent SDK timed out after (\d+)ms/
+    );
+    expect(timeout).not.toBeNull();
+    expect(Number(timeout?.[1])).toBeGreaterThan(0);
+    expect(Number(timeout?.[1])).toBeLessThanOrEqual(100);
+    expect(errorMessage).not.toContain("cancelled");
+  });
+
   it("compacts answer payloads by default without losing worker status", () => {
     const compact = compactMemoryAnswerPayload({
       ...payload,

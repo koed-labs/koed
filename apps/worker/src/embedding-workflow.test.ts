@@ -36,6 +36,7 @@ const workerEnv: WorkerEnvConfig = {
   collaborationReplayPruneBatchLimit: 1000,
   managedConversationAppServerBinary: "codex",
   managedConversationModel: "gpt-test",
+  managedConversationClaudeModel: "claude-haiku-4-5-20251001",
   managedConversationReasoningEffort: "low",
   koedHome: "/tmp/koed-test",
   historicalImport: {

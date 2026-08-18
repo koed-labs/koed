@@ -27,6 +27,7 @@ export interface KoedServerStatus {
   mcpServer: KoedServerComponentStatus;
   captureHook: KoedServerComponentStatus;
   codexTranscriptWatcher: KoedServerComponentStatus;
+  claudeTranscriptWatcher: KoedServerComponentStatus;
   codex: KoedServerComponentStatus & { configured: boolean };
   lcmSummaryService: KoedServerComponentStatus;
   deviceIdentity: KoedServerComponentStatus & {
@@ -70,6 +71,7 @@ export interface KoedServerRuntimeState {
   dependencyMode?: "bundled-local" | "external";
   automaticPorts?: boolean;
   codexTranscriptWatcherEnabled?: boolean;
+  claudeTranscriptWatcherEnabled?: boolean;
   repoRoot: string;
   apiUrl: string;
   services: string[];

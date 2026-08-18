@@ -483,6 +483,7 @@ export const createManagedConversationTransferRepository = (
           execution_generation: number;
           state_version: number;
           state: string;
+          provider: string;
           runner_id: string | null;
           runner_deployment_id: string;
           runner_device_id: string;
@@ -741,12 +742,13 @@ export const createManagedConversationTransferRepository = (
         }
         const execution = await client.query<{
           state: string;
+          provider: string;
           execution_generation: number;
           runner_id: string | null;
           provider_thread_id: string | null;
           provider_cli_version: string | null;
         }>(
-          `select state, execution_generation, runner_id, provider_thread_id,
+          `select state, provider, execution_generation, runner_id, provider_thread_id,
                   provider_cli_version
              from managed_conversation_executions
             where id = $2 and owner_user_id = $1
@@ -873,7 +875,7 @@ export const createManagedConversationTransferRepository = (
           sourceClosureHash: input.sourceClosureHash,
           sourceEndByteCursor: input.sourceEndByteCursor,
           sourceEndItemCursor: input.sourceEndItemCursor,
-          provider: "codex",
+          provider: execution.rows[0].provider,
           providerThreadId: execution.rows[0].provider_thread_id,
           providerArtifactRelativePath: input.providerArtifactRelativePath,
           providerCliVersion: execution.rows[0].provider_cli_version,

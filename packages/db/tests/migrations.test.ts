@@ -106,3 +106,52 @@ describe("collaboration receipt migration", () => {
     );
   });
 });
+
+describe("Claude AI Client migration", () => {
+  it("seeds explicit semantic and raw-only Claude projection policies", async () => {
+    const migrationSql = await readDrizzleFile("0030_blue_maddog.sql");
+
+    for (const transcriptType of [
+      "user_message",
+      "agent_message",
+      "subagent_message",
+      "tool_call",
+      "tool_result"
+    ]) {
+      expect(migrationSql).toContain(
+        `'claude-code', 'claude-code-transcript-v1', '${transcriptType}'`
+      );
+    }
+    for (const transcriptType of [
+      "agent_reasoning",
+      "system_message",
+      "unknown"
+    ]) {
+      expect(migrationSql).toContain(
+        `'claude-code', 'claude-code-transcript-v1', '${transcriptType}'`
+      );
+    }
+    expect(migrationSql).toContain(
+      "Full Claude reasoning is retained as raw provenance only."
+    );
+    expect(migrationSql).toContain("ON CONFLICT DO NOTHING;");
+  });
+
+  it("fails clearly before upgrading source rows without signed source-set closure", async () => {
+    const migrationSql = await readDrizzleFile("0030_blue_maddog.sql");
+    const resetGuard = migrationSql.indexOf(
+      "Koed alpha data reset required before enabling multi-component Conversation Sources"
+    );
+    const sourceSetColumns = migrationSql.indexOf(
+      'ADD COLUMN "source_set_closure_hash"'
+    );
+
+    expect(resetGuard).toBeGreaterThan(-1);
+    expect(sourceSetColumns).toBeGreaterThan(resetGuard);
+    expect(migrationSql).toContain(`WHERE "lifecycle" = 'finalized'`);
+    expect(migrationSql).toContain('FROM "team_conversation_source_grants"');
+    expect(migrationSql).toContain(
+      "existing finalized sources and Team source grants cannot be upgraded without a signed source-set closure"
+    );
+  });
+});

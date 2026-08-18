@@ -16,12 +16,20 @@ import {
 } from "@koed/core";
 import {
   CodexAppServerTurnError,
-  koedAppServerWorkerDeveloperInstructions,
-  runCodexAppServerJsonTask,
   resolveCodexAppServerBinary,
   type CodexAppServerRawEvent,
   type CodexThreadTokenUsage
 } from "./codex-app-server-runner.js";
+import {
+  aiClientExecutionIdentity,
+  resolveClaudeCodeExecutable,
+  runAiClientJsonTask,
+  type AiClientProvider
+} from "./ai-client-runner.js";
+import {
+  environmentForLocalAiClientInstance,
+  resolveLocalAiClientInstance
+} from "./ai-client-instance-registry.js";
 import type { MemoryApiClient } from "./index.js";
 import {
   persistRawConversationItems,
@@ -45,7 +53,8 @@ export {
 } from "@koed/core";
 
 export interface LcmSummaryWorkerConfig {
-  provider: string;
+  provider: AiClientProvider;
+  aiClientInstanceId: string;
   model: string;
   reasoningEffort: string;
   timeoutMs: number;
@@ -53,7 +62,7 @@ export interface LcmSummaryWorkerConfig {
   retryDelayMs: number;
   concurrency: number;
   maxPromptTokens: number;
-  appServerBinary: string;
+  executablePath: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
 }
@@ -119,7 +128,7 @@ interface BuiltLcmSummaryPrompt {
   exactSourcePayloads: string[];
 }
 
-export type CodexLcmSummaryRunner = (
+export type LcmSummaryRunner = (
   prompt: string,
   config: LcmSummaryWorkerConfig,
   timeoutMs: number
@@ -151,6 +160,7 @@ export const resolveLcmSummaryWorkerConfig = (
     Pick<
       LcmSummaryWorkerConfig,
       | "provider"
+      | "aiClientInstanceId"
       | "model"
       | "reasoningEffort"
       | "timeoutMs"
@@ -158,20 +168,39 @@ export const resolveLcmSummaryWorkerConfig = (
       | "retryDelayMs"
       | "concurrency"
       | "maxPromptTokens"
-      | "appServerBinary"
+      | "executablePath"
       | "cwd"
     >
   > = {}
 ): LcmSummaryWorkerConfig => {
+  const provider =
+    overrides.provider ??
+    resolveEnvValue(env, "MEMORY_LCM_SUMMARY_PROVIDER")?.toLowerCase() ??
+    CODEX_SUMMARY_PROVIDER;
+  if (provider !== "codex" && provider !== "claude") {
+    throw new Error(`Unsupported LCM summary provider: ${provider}`);
+  }
+  const aiClientInstanceId =
+    overrides.aiClientInstanceId ??
+    resolveEnvValue(env, "MEMORY_LCM_SUMMARY_AI_CLIENT_INSTANCE") ??
+    `${provider}.default`;
+  const instance = resolveLocalAiClientInstance({
+    instanceId: aiClientInstanceId,
+    driverId: provider,
+    env
+  });
+  const instanceEnv = environmentForLocalAiClientInstance({
+    instance,
+    driverId: provider,
+    env
+  });
   return {
-    provider:
-      overrides.provider ??
-      resolveEnvValue(env, "MEMORY_LCM_SUMMARY_PROVIDER")?.toLowerCase() ??
-      CODEX_SUMMARY_PROVIDER,
+    provider,
+    aiClientInstanceId,
     model:
       overrides.model ??
       resolveEnvValue(env, "MEMORY_LCM_SUMMARY_MODEL") ??
-      "gpt-5.6-luna",
+      (provider === "claude" ? "haiku" : "gpt-5.6-luna"),
     reasoningEffort:
       overrides.reasoningEffort ??
       resolveEnvValue(env, "MEMORY_LCM_SUMMARY_REASONING_EFFORT") ??
@@ -207,11 +236,16 @@ export const resolveLcmSummaryWorkerConfig = (
           DEFAULT_MAX_PROMPT_TOKENS
         )
     ),
-    appServerBinary:
-      overrides.appServerBinary ??
-      resolveCodexAppServerBinary(env, ["MEMORY_LCM_CODEX_BINARY"]),
+    executablePath:
+      overrides.executablePath ??
+      instance?.executablePath ??
+      (provider === "claude"
+        ? resolveClaudeCodeExecutable(instanceEnv)
+        : resolveCodexAppServerBinary(instanceEnv, [
+            "MEMORY_LCM_CODEX_BINARY"
+          ])),
     cwd: overrides.cwd ?? process.cwd(),
-    env
+    env: instanceEnv
   };
 };
 
@@ -633,24 +667,25 @@ const buildSummaryPrompts = (
   }));
 };
 
-export const runCodexAppServerLcmSummary: CodexLcmSummaryRunner = (
+export const runLcmSummary: LcmSummaryRunner = (
   prompt,
   config,
   timeoutMs
 ): Promise<LcmSummaryPromptResult> =>
-  runCodexAppServerJsonTask(
+  runAiClientJsonTask(
     prompt,
     {
-      appServerBinary: config.appServerBinary,
+      provider: config.provider,
+      aiClientInstanceId: config.aiClientInstanceId,
+      executablePath: config.executablePath,
       model: config.model,
       reasoningEffort: config.reasoningEffort,
       cwd: config.cwd,
       env: config.env,
       clientName: "koed-lcm-summary-worker",
-      baseInstructions: loadPrompt("app-server-lcm-summary-base", {
+      systemPrompt: loadPrompt("ai-client-lcm-summary-base", {
         env: config.env
-      }).body,
-      developerInstructions: koedAppServerWorkerDeveloperInstructions
+      }).body
     },
     timeoutMs
   );
@@ -660,7 +695,7 @@ const runPromptWithRetries = async (
   promptVersion: string,
   sourcePayloads: string[],
   config: LcmSummaryWorkerConfig,
-  runner: CodexLcmSummaryRunner,
+  runner: LcmSummaryRunner,
   promptResults?: VersionedLcmSummaryPromptResult[],
   onRepairCall?: (prompt: string) => void
 ): Promise<VersionedLcmSummaryPromptResult> => {
@@ -802,12 +837,14 @@ const persistLcmAppServerEvents = async (
   client: MemoryApiClient,
   node: LcmSummaryNode,
   result: VersionedLcmSummaryPromptResult,
-  callIndex: number
+  callIndex: number,
+  config: LcmSummaryWorkerConfig
 ): Promise<void> => {
   const events = result.rawEvents ?? [];
-  if (events.length === 0) {
-    return;
-  }
+  const identity = aiClientExecutionIdentity(
+    config.provider,
+    config.aiClientInstanceId
+  );
   const items = events.map((event, index) => {
     const sourceHash = hash({
       workflow: "lcm_summary",
@@ -821,9 +858,9 @@ const persistLcmAppServerEvents = async (
       result: event.result
     });
     return {
-      sourceKind: "codex",
-      sourceAdapterVersion: "codex-app-server-v1",
-      sourceTransport: "app_server",
+      sourceKind: identity.sourceKind,
+      sourceAdapterVersion: identity.sourceAdapterVersion,
+      sourceTransport: identity.transport,
       externalSessionId: result.threadId,
       externalThreadId: result.threadId,
       externalTurnId: result.turnId,
@@ -836,7 +873,7 @@ const persistLcmAppServerEvents = async (
       sourceHash,
       idempotencyKey: sourceHash,
       projectionStatus: "raw_only",
-      projectionVersion: "codex-app-server-v1",
+      projectionVersion: identity.sourceAdapterVersion,
       metadata: {
         workflow: "lcm_summary",
         nodeId: node.id,
@@ -846,15 +883,21 @@ const persistLcmAppServerEvents = async (
         attemptIndex: result.attemptIndex,
         executionStatus: result.status ?? "succeeded",
         errorMessage: result.errorMessage,
-        promptVersion: result.promptVersion
+        promptVersion: result.promptVersion,
+        provider: identity.provider,
+        aiClientInstanceId: identity.aiClientInstanceId,
+        transport: identity.transport
       }
     };
   });
-  const persisted = await persistRawConversationItems(
-    client,
-    items,
-    `LCM summary ${node.id}`
-  );
+  const persisted =
+    items.length > 0
+      ? await persistRawConversationItems(
+          client,
+          items,
+          `LCM summary ${node.id}`
+        )
+      : [];
   const tokenConversationItem = persisted.find((item) => {
     const record = asRecord(item);
     return record.sourceEventType === "thread/tokenUsage/updated";
@@ -870,13 +913,13 @@ const persistLcmAppServerEvents = async (
       workflowId: node.id,
       lcmNodeId: node.id,
       conversationItemId: tokenConversationItemId,
-      sourceRuntime: "codex",
-      sourceKind: "codex",
-      sourceAdapterVersion: "codex-app-server-v1",
-      usageSource: "app_server",
+      sourceRuntime: identity.sourceRuntime,
+      sourceKind: identity.sourceKind,
+      sourceAdapterVersion: identity.sourceAdapterVersion,
+      usageSource: identity.usageSource,
       usageAccuracy: "provider_reported",
       usageKind: "turn_delta",
-      connectorClient: "codex",
+      connectorClient: identity.connectorClient,
       model: result.model,
       modelContextWindow: result.tokenUsage?.modelContextWindow ?? null,
       inputTokens: lastUsage.inputTokens ?? null,
@@ -894,25 +937,30 @@ const persistLcmAppServerEvents = async (
         attemptIndex: result.attemptIndex,
         executionStatus: result.status ?? "succeeded",
         errorMessage: result.errorMessage,
-        promptVersion: result.promptVersion
+        promptVersion: result.promptVersion,
+        provider: identity.provider,
+        aiClientInstanceId: identity.aiClientInstanceId,
+        transport: identity.transport
       },
       idempotencyKey: tokenConversationItemId
         ? `token:${tokenConversationItemId}:last`
         : `lcm-summary:${node.id}:${callIndex}:token:last`
     });
   }
-  await projectRawConversationItems(
-    client,
-    persisted,
-    `LCM summary ${node.id}`
-  );
+  if (persisted.length > 0) {
+    await projectRawConversationItems(
+      client,
+      persisted,
+      `LCM summary ${node.id}`
+    );
+  }
 };
 
 const reduceShardSummaries = async (
   node: LcmSummaryNode,
   shardSummaries: VersionedLcmSummaryPromptResult[],
   config: LcmSummaryWorkerConfig,
-  runner: CodexLcmSummaryRunner,
+  runner: LcmSummaryRunner,
   promptResults: VersionedLcmSummaryPromptResult[],
   stats: {
     promptTokenSum: number;
@@ -984,18 +1032,8 @@ const summarizeNode = async (
   client: MemoryApiClient,
   node: LcmSummaryNode,
   config: LcmSummaryWorkerConfig,
-  runner: CodexLcmSummaryRunner
+  runner: LcmSummaryRunner
 ): Promise<LcmSummaryResult> => {
-  if (config.provider !== CODEX_SUMMARY_PROVIDER) {
-    return {
-      nodeId: node.id,
-      kind: node.kind,
-      depth: node.depth,
-      submitted: false,
-      error: `LCM summary provider is ${config.provider}`
-    };
-  }
-
   const stats = {
     promptTokenSum: 0,
     maxPromptTokens: 0,
@@ -1044,7 +1082,13 @@ const summarizeNode = async (
     });
     for (const [index, promptResult] of promptResults.entries()) {
       try {
-        await persistLcmAppServerEvents(client, node, promptResult, index);
+        await persistLcmAppServerEvents(
+          client,
+          node,
+          promptResult,
+          index,
+          config
+        );
       } catch (error) {
         console.warn(
           `[lcm-summary-worker] Failed to persist app-server telemetry for node ${node.id} shard ${index}; preserving generated summary.`,
@@ -1111,11 +1155,11 @@ export const summarizePendingLcmNodes = async (
   options: {
     limit?: number;
     config?: LcmSummaryWorkerConfig;
-    runner?: CodexLcmSummaryRunner;
+    runner?: LcmSummaryRunner;
   } = {}
 ) => {
   const config = options.config ?? resolveLcmSummaryWorkerConfig();
-  const runner = options.runner ?? runCodexAppServerLcmSummary;
+  const runner = options.runner ?? runLcmSummary;
   const requestedLimit = options.limit ?? 10;
   for (const promptId of lcmSummaryPromptIds) {
     loadPrompt(promptId, { env: config.env });
@@ -1141,7 +1185,7 @@ export const summarizePendingLcmNodes = async (
         retryDelayMs: config.retryDelayMs,
         concurrency: config.concurrency,
         maxPromptTokens: config.maxPromptTokens,
-        appServerBinary: config.appServerBinary
+        executablePath: config.executablePath
       },
       results: []
     };
@@ -1187,7 +1231,7 @@ export const summarizePendingLcmNodes = async (
         retryDelayMs: config.retryDelayMs,
         concurrency: config.concurrency,
         maxPromptTokens: config.maxPromptTokens,
-        appServerBinary: config.appServerBinary
+        executablePath: config.executablePath
       },
       results
     };

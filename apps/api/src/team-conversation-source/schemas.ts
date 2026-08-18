@@ -9,6 +9,11 @@ export const teamConversationSourceSegmentParamsSchema =
 
 export const teamConversationSourceManifestQuerySchema = z
   .object({
+    sourceComponentId: z
+      .string()
+      .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/)
+      .max(96)
+      .optional(),
     afterSegmentIndex: z.coerce.number().int().min(-1).default(-1),
     limit: z.coerce.number().int().min(1).max(100).default(100)
   })
@@ -22,6 +27,6 @@ export const teamConversationSourceStreamQuerySchema = z
 
 export const teamConversationSourceForkSnapshotBodySchema = z
   .object({
-    throughSegmentIndex: z.number().int().min(0)
+    expectedSourceGenerationId: z.uuid()
   })
   .strict();

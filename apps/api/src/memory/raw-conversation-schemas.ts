@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
   combineStorageSanitizationCounts,
+  canonicalConversationItemKey,
+  resolveAiClientSourceAdapter,
   codexCanonicalConversationItemKey,
   metadataWithStorageSanitization,
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES,
@@ -217,12 +219,14 @@ const conversationItemSchema = z
     visibility: rawVisibilitySchema.optional(),
     sessionId: z.string().uuid().optional(),
     turnId: z.string().uuid().optional(),
-    sourceKind: z.enum(["codex", "codex-cli"]),
+    sourceKind: z.enum(["codex", "codex-cli", "claude-code"]),
     sourceAdapterVersion: z.enum([
       "codex-transcript-v1",
       "codex-hook-signal-v1",
       "codex-app-server-conversation-v1",
-      "codex-app-server-v1"
+      "codex-app-server-v1",
+      "claude-code-transcript-v1",
+      "claude-code-hook-signal-v1"
     ]),
     sourceTransport: z.enum([
       "transcript",
@@ -284,6 +288,26 @@ const conversationItemSchema = z
     metadata: conversationMetadataSchema
   })
   .superRefine((item, context) => {
+    if (
+      item.sourceTransport === "transcript" &&
+      !resolveAiClientSourceAdapter({
+        sourceKind: item.sourceKind === "codex-cli" ? "codex" : item.sourceKind,
+        sourceRuntime:
+          item.sourceKind === "codex-cli" ? "codex-cli" : item.sourceKind,
+        artifactFormat:
+          item.sourceKind === "claude-code"
+            ? "claude_session_jsonl"
+            : "codex_rollout_jsonl",
+        artifactFormatVersion: 1,
+        sourceAdapterVersion: item.sourceAdapterVersion
+      })
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Source adapter and source kind classifications disagree",
+        path: ["sourceAdapterVersion"]
+      });
+    }
     if (item.observationOnly && item.canonicalItemKey) {
       context.addIssue({
         code: "custom",
@@ -363,7 +387,9 @@ const conversationItemSchema = z
       "codex-transcript-v1": ["transcript"],
       "codex-hook-signal-v1": ["hook_signal"],
       "codex-app-server-conversation-v1": ["app_server"],
-      "codex-app-server-v1": ["app_server"]
+      "codex-app-server-v1": ["app_server"],
+      "claude-code-transcript-v1": ["transcript"],
+      "claude-code-hook-signal-v1": ["hook_signal"]
     }[item.sourceAdapterVersion];
     if (!allowedTransports.includes(item.sourceTransport)) {
       context.addIssue({
@@ -376,7 +402,8 @@ const conversationItemSchema = z
       item.sourceAdapterVersion === "codex-app-server-v1" ||
       item.sourceAdapterVersion === "codex-app-server-conversation-v1"
         ? "app_server_notification"
-        : item.sourceAdapterVersion === "codex-hook-signal-v1"
+        : item.sourceAdapterVersion === "codex-hook-signal-v1" ||
+            item.sourceAdapterVersion === "claude-code-hook-signal-v1"
           ? "hook_signal"
           : undefined;
     if (expectedRecordType && item.sourceRecordType !== expectedRecordType) {
@@ -386,13 +413,20 @@ const conversationItemSchema = z
         path: ["sourceRecordType"]
       });
     }
-    if (item.sourceAdapterVersion === "codex-hook-signal-v1") {
+    if (
+      item.sourceAdapterVersion === "codex-hook-signal-v1" ||
+      item.sourceAdapterVersion === "claude-code-hook-signal-v1"
+    ) {
       const expectedStableItemId = item.externalTurnId
         ? `turn:${item.externalTurnId}:completed`
         : null;
       const expectedCanonicalItemKey =
         item.externalThreadId && item.externalTurnId && expectedStableItemId
-          ? codexCanonicalConversationItemKey({
+          ? canonicalConversationItemKey({
+              provider:
+                item.sourceAdapterVersion === "claude-code-hook-signal-v1"
+                  ? "claude-code"
+                  : "codex",
               externalThreadId: item.externalThreadId,
               externalTurnId: item.externalTurnId,
               stableItemId: expectedStableItemId,
@@ -641,7 +675,7 @@ export const tokenUsageSchema = z.object({
   toolEventId: z.string().uuid().optional(),
   memoryEventId: z.string().uuid().optional(),
   sourceReferences: z.array(tokenUsageSourceReferenceSchema).max(20).optional(),
-  sourceRuntime: z.enum(["codex", "codex-cli"]).optional(),
+  sourceRuntime: z.enum(["codex", "codex-cli", "claude-code"]).optional(),
   sourceKind: z.string().min(1).optional(),
   sourceAdapterVersion: z.string().min(1).optional(),
   usageSource: z

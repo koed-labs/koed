@@ -70,7 +70,7 @@ If you are making code changes, keep using the contributor guidance below.
 
 ## Current Product Boundaries
 
-- Codex is currently the only supported AI Client, but generic Koed naming is preferred for package names, binaries, env vars, and token names unless describing actual source provenance.
+- Codex and Claude Code are supported AI Clients. Use generic Koed naming for package names, binaries, env vars, and token names unless describing provider-specific discovery, capture, execution, or source provenance.
 - The TypeScript capture hook is the supported Capture Hook. The Python hook has been removed.
 - The MCP Server is the recall/tool integration. The Capture Hook is the only supported automatic capture path in this build.
 - `memory_answer` remains the supported recall tool name, but it must not imply backend answer synthesis.

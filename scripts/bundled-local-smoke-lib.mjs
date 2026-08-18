@@ -144,7 +144,9 @@ export const buildBundledLocalSmokeEnvironment = async ({
     api: await deps.getFreePort(),
     postgres: await deps.getFreePort(),
     redis: await deps.getFreePort(),
-    embedding: await deps.getFreePort()
+    embedding: await deps.getFreePort(),
+    llamaEmbedding: await deps.getFreePort(),
+    llamaReranker: await deps.getFreePort()
   };
   const queueBackend =
     baseEnv.WORK_QUEUE_BACKEND === "bullmq" ? "bullmq" : "local";
@@ -170,6 +172,8 @@ export const buildBundledLocalSmokeEnvironment = async ({
     KOED_POSTGRES_LOG_PATH: path.join(home, "logs", "postgres.log"),
     REDIS_HOST_PORT: String(ports.redis),
     EMBEDDING_SERVICE_HOST_PORT: String(ports.embedding),
+    EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: String(ports.llamaEmbedding),
+    EMBEDDING_LLAMA_RERANKER_SERVER_PORT: String(ports.llamaReranker),
     MEMORY_API_URL: `http://localhost:${ports.api}`,
     EMBEDDING_SERVICE_URL: `http://localhost:${ports.embedding}`
   };
@@ -618,6 +622,8 @@ const refreshContextEnvFromEnvPath = async ({ deps, context }) => {
     KOED_POSTGRES_LOG_PATH: path.join(context.koedHome, "logs", "postgres.log"),
     REDIS_HOST_PORT: String(context.ports.redis),
     EMBEDDING_SERVICE_HOST_PORT: String(context.ports.embedding),
+    EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: String(context.ports.llamaEmbedding),
+    EMBEDDING_LLAMA_RERANKER_SERVER_PORT: String(context.ports.llamaReranker),
     MEMORY_API_URL: `http://localhost:${context.ports.api}`,
     EMBEDDING_SERVICE_URL: `http://localhost:${context.ports.embedding}`
   });

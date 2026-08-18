@@ -54,6 +54,10 @@ const signedSegment = (input: {
     artifactFormat: string;
     sourceAdapterVersion: string;
     sourceCreatedAt: string;
+    sourceComponentId: string;
+    sourceComponentRole: "primary" | "auxiliary";
+    parentSourceComponentId: string | null;
+    contentFraming: "jsonl" | "immutable_blob";
   };
   keys: ConversationSourceOriginKeyPair;
   segmentIndex: number;
@@ -67,6 +71,11 @@ const signedSegment = (input: {
   const signed = signConversationSourceReplicationManifest(
     {
       protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+      sourceComponentSchemaVersion: 1,
+      sourceComponentId: input.artifact.sourceComponentId,
+      sourceComponentRole: input.artifact.sourceComponentRole,
+      parentSourceComponentId: input.artifact.parentSourceComponentId,
+      contentFraming: input.artifact.contentFraming,
       logicalSourceId: input.artifact.logicalSourceId,
       sourceGenerationId: input.artifact.sourceGenerationId,
       originKeyId: input.artifact.originKeyId,
@@ -361,6 +370,11 @@ describeDb("journal-backed historical import repository", () => {
         signedClosure: signConversationSourceClosureManifest(
           {
             protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+            sourceComponentSchemaVersion: 1,
+            sourceComponentId: fixture.artifact.sourceComponentId,
+            sourceComponentRole: fixture.artifact.sourceComponentRole,
+            parentSourceComponentId: fixture.artifact.parentSourceComponentId,
+            contentFraming: fixture.artifact.contentFraming,
             logicalSourceId: fixture.artifact.logicalSourceId,
             sourceGenerationId: fixture.artifact.sourceGenerationId,
             originKeyId: fixture.artifact.originKeyId,
@@ -442,6 +456,12 @@ describeDb("journal-backed historical import repository", () => {
           signedClosure: signConversationSourceClosureManifest(
             {
               protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+              sourceComponentSchemaVersion: 1,
+              sourceComponentId: successor.artifact.sourceComponentId,
+              sourceComponentRole: successor.artifact.sourceComponentRole,
+              parentSourceComponentId:
+                successor.artifact.parentSourceComponentId,
+              contentFraming: successor.artifact.contentFraming,
               logicalSourceId: successor.artifact.logicalSourceId,
               sourceGenerationId: successor.artifact.sourceGenerationId,
               originKeyId: successor.artifact.originKeyId,
@@ -522,6 +542,42 @@ describeDb("journal-backed historical import repository", () => {
         { session, artifact }
       );
     expect(registered.artifact.sessionId).toBe(registered.session.id);
+    expect(registered.artifact).toMatchObject({
+      sourceComponentId: "main",
+      sourceComponentRole: "primary",
+      parentSourceComponentId: null,
+      contentFraming: "jsonl"
+    });
+
+    const auxiliaryKeys = generateConversationSourceReplicationOriginKeyPair();
+    const auxiliary = await repo.ensureConversationSourceArtifact(
+      { userId: owner.id },
+      {
+        ...artifact,
+        sessionId: registered.session.id,
+        sourceComponentId: "attachment.notes",
+        sourceComponentRole: "auxiliary",
+        parentSourceComponentId: "main",
+        contentFraming: "immutable_blob",
+        artifactFormat: "claude_attachment_blob",
+        originKeyId: auxiliaryKeys.originKeyId,
+        originPublicKey: auxiliaryKeys.publicKeyBase64url,
+        storagePrefix: `${artifact.storagePrefix}-attachment`
+      }
+    );
+    expect(auxiliary.sourceGenerationId).toBe(
+      registered.artifact.sourceGenerationId
+    );
+    await expect(
+      repo.getConversationSourceArtifactByIdentity(
+        { userId: owner.id },
+        {
+          logicalSourceId: registered.artifact.logicalSourceId,
+          sourceGenerationId: registered.artifact.sourceGenerationId,
+          sourceComponentId: "attachment.notes"
+        }
+      )
+    ).resolves.toMatchObject({ id: auxiliary.id });
 
     const invalidExternalSessionId = `invalid-${randomUUID()}`;
     await expect(
@@ -597,11 +653,55 @@ describeDb("journal-backed historical import repository", () => {
     expect(
       await repo.getHistoricalImportSourceByIdentity(
         { userId: owner.id },
-        {
-          aiClient: "codex",
-          sourceKind: "codex",
-          sourceSessionId: fixture.externalSessionId
-        }
+        { artifactId: fixture.artifactId }
+      )
+    ).toMatchObject({ id: source!.id });
+
+    const auxiliaryKeys = generateConversationSourceReplicationOriginKeyPair();
+    const {
+      id: persistedArtifactId,
+      sourceModifiedAt,
+      priorGenerationClosure,
+      ...artifactWithoutId
+    } = fixture.artifact;
+    expect(persistedArtifactId).toBe(fixture.artifactId);
+    const auxiliaryArtifact = await repo.ensureConversationSourceArtifact(
+      { userId: owner.id },
+      {
+        ...artifactWithoutId,
+        sourceModifiedAt: sourceModifiedAt ?? undefined,
+        priorGenerationClosure: priorGenerationClosure ?? undefined,
+        sourceComponentId: "subagent.researcher",
+        sourceComponentRole: "auxiliary",
+        parentSourceComponentId: "main",
+        contentFraming: "jsonl",
+        sourceFingerprint: digest(
+          `artifact:${fixture.externalSessionId}:subagent.researcher`
+        ),
+        originKeyId: auxiliaryKeys.originKeyId,
+        originPublicKey: auxiliaryKeys.publicKeyBase64url,
+        storagePrefix: `${fixture.artifact.storagePrefix}-subagent-researcher`,
+        redactedSourceLabel: "agent-researcher.jsonl"
+      }
+    );
+    const auxiliarySource = await repo.createHistoricalImportSource(
+      { userId: owner.id },
+      {
+        runId: run.id,
+        artifactId: auxiliaryArtifact.id,
+        aiClient: "codex"
+      }
+    );
+    expect(
+      await repo.getHistoricalImportSourceByIdentity(
+        { userId: owner.id },
+        { artifactId: auxiliaryArtifact.id }
+      )
+    ).toMatchObject({ id: auxiliarySource!.id });
+    expect(
+      await repo.getHistoricalImportSourceByIdentity(
+        { userId: owner.id },
+        { artifactId: fixture.artifactId }
       )
     ).toMatchObject({ id: source!.id });
     expect(
@@ -846,6 +946,11 @@ describeDb("journal-backed historical import repository", () => {
         signedClosure: signConversationSourceClosureManifest(
           {
             protocol: CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+            sourceComponentSchemaVersion: 1,
+            sourceComponentId: fixture.artifact.sourceComponentId,
+            sourceComponentRole: fixture.artifact.sourceComponentRole,
+            parentSourceComponentId: fixture.artifact.parentSourceComponentId,
+            contentFraming: fixture.artifact.contentFraming,
             logicalSourceId: fixture.artifact.logicalSourceId,
             sourceGenerationId: fixture.artifact.sourceGenerationId,
             originKeyId: fixture.artifact.originKeyId,
@@ -1509,6 +1614,83 @@ describeDb("journal-backed historical import repository", () => {
     });
   });
 
+  it("completes ready historical sources and runs during worker reconciliation", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const owner = await repo.createUser({
+      email: `historical-completion-${randomUUID()}@example.com`
+    });
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+    const run = await repo.createHistoricalImportRun({ userId: owner.id });
+    const source = await repo.createHistoricalImportSource(
+      { userId: owner.id },
+      {
+        runId: run.id,
+        artifactId: fixture.artifactId,
+        aiClient: "codex"
+      }
+    );
+    for (const [expectedState, state] of [
+      ["discovered", "eligible"],
+      ["eligible", "queued"]
+    ] as const) {
+      await repo.transitionHistoricalImportRun(
+        { userId: owner.id },
+        { runId: run.id, expectedState, state }
+      );
+      await repo.transitionHistoricalImportSource(
+        { userId: owner.id },
+        { sourceId: source!.id, expectedState, state }
+      );
+    }
+    await repo.transitionHistoricalImportRun(
+      { userId: owner.id },
+      { runId: run.id, expectedState: "queued", state: "importing" }
+    );
+    const rawOnly = {
+      ...sourceItem({ externalSessionId: fixture.externalSessionId }),
+      sourceEventType: "provider_internal_record",
+      rawJson: { type: "provider_internal_record", retained: true },
+      rawText: "",
+      metadata: {
+        transcriptByteOffset: 64,
+        transcriptItemDiscriminator: "primary:provider_internal_record",
+        transcriptType: "provider_internal_record",
+        sourceEventTimeAccuracy: "source"
+      }
+    };
+    await repo.ingestHistoricalImportBatch(
+      { userId: owner.id },
+      {
+        sourceId: source!.id,
+        expectedSourceOffset: 0,
+        sourceOffset: fixture.frontier,
+        sourceLine: 2,
+        segmentIndex: fixture.segmentIndex,
+        lastVerifiedDigest: fixture.segmentDigest,
+        items: [rawOnly]
+      }
+    );
+    await repo.projectPendingConversationItems(
+      { userId: owner.id },
+      { limit: 10 }
+    );
+
+    await expect(repo.reconcileHistoricalImportCompletion()).resolves.toEqual({
+      sourcesCompleted: 1,
+      runsCompleted: 1
+    });
+    await expect(
+      repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
+    ).resolves.toMatchObject({ state: "completed", lcmComplete: true });
+    await expect(
+      repo.getHistoricalImportRun({ userId: owner.id }, run.id)
+    ).resolves.toMatchObject({ state: "completed", completedSourceCount: 1 });
+    await expect(repo.reconcileHistoricalImportCompletion()).resolves.toEqual({
+      sourcesCompleted: 0,
+      runsCompleted: 0
+    });
+  });
+
   it("replays an acknowledged batch without duplicate rows", async () => {
     const repo = createMemorySourceRepository(pool);
     const owner = await repo.createUser({
@@ -1544,6 +1726,10 @@ describeDb("journal-backed historical import repository", () => {
       sourceLine: 2,
       segmentIndex: fixture.segmentIndex,
       lastVerifiedDigest: fixture.segmentDigest,
+      parserState: {
+        currentTurnId: "turn-before-resume",
+        rawTranscript: "must-not-be-presented"
+      },
       items: [
         sourceItem({
           externalSessionId: fixture.externalSessionId,
@@ -1561,6 +1747,18 @@ describeDb("journal-backed historical import repository", () => {
     );
     expect(first.replayed).toBe(false);
     expect(replay).toMatchObject({ replayed: true, items: [] });
+    const resumedSource = await repo.getHistoricalImportSourceByIdentity(
+      { userId: owner.id },
+      { artifactId: fixture.artifactId }
+    );
+    expect(resumedSource).toMatchObject({
+      historicalCursorOffset: fixture.frontier,
+      historicalCursorLine: 2,
+      historicalCursorCurrentTurnId: "turn-before-resume"
+    });
+    expect(JSON.stringify(resumedSource)).not.toContain(
+      "must-not-be-presented"
+    );
     const stored = await pool.query<{ count: string }>(
       `select count(*)::text as count
          from conversation_items

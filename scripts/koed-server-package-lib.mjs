@@ -5,9 +5,11 @@ import {
   readdirSync,
   readlinkSync,
   readFileSync,
+  rmSync,
   writeFileSync
 } from "node:fs";
-import { relative, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
+import { assertNoClaudeAgentSdkPlatformRuntimes } from "./provider-runtime-package-policy.mjs";
 
 export const standalonePackageSchemaVersion = 1;
 export const standalonePackageId = "koed-server";
@@ -26,6 +28,10 @@ export const requiredRuntimeFiles = [
 ];
 
 export const excludedPackagePatterns = [
+  /(^|\/)pnpm-lock\.yaml$/,
+  /(^|\/)node_modules\/\.pnpm\/lock\.yaml$/,
+  /(^|\/)node_modules\/\.pnpm\/@koed\+[^/]*@file\+[^/]*(?:\/|$)/,
+  /(^|\/)\.claude(?:\/|$)/,
   /^koed-runtime\/explorer-dist(?:\/|$)/,
   /^koed-server\/dist\/explorer-static-(?:proxy|server)(?:\.|$)/,
   /^koed-runtime\/postgres(?:\/|$)/,
@@ -39,6 +45,107 @@ export const excludedPackagePatterns = [
   /^koed-runtime\/embedding-service\/requirements\.txt$/,
   /^koed-runtime\/embedding-service\/pyproject\.toml$/
 ];
+
+export const pruneStandalonePackageMetadata = (root, directory = root) => {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory() && entry.name === ".claude") {
+      rmSync(path, { recursive: true, force: false });
+      continue;
+    }
+    if (entry.isDirectory()) {
+      pruneStandalonePackageMetadata(root, path);
+      continue;
+    }
+    if (
+      entry.isFile() &&
+      (entry.name === "pnpm-lock.yaml" ||
+        (entry.name === "lock.yaml" && directory.endsWith("/.pnpm")))
+    ) {
+      rmSync(path, { force: false });
+    }
+  }
+};
+
+export const prunePnpmWorkspaceVirtualStorePaths = (root, directory = root) => {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = resolve(directory, entry.name);
+    if (
+      entry.isDirectory() &&
+      directory.endsWith("/.pnpm") &&
+      /^@koed\+[^/]*@file\+/.test(entry.name)
+    ) {
+      rmSync(path, { recursive: true, force: false });
+      continue;
+    }
+    if (entry.isDirectory()) {
+      prunePnpmWorkspaceVirtualStorePaths(root, path);
+    }
+  }
+};
+
+const dependencySections = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies"
+];
+
+export const normalizeDeployedWorkspaceDependencies = (manifestPath) => {
+  const manifest = readJson(manifestPath);
+  let changed = false;
+  for (const section of dependencySections) {
+    const dependencies = manifest[section];
+    if (!dependencies || typeof dependencies !== "object") continue;
+    for (const [name, version] of Object.entries(dependencies)) {
+      if (!name.startsWith("@koed/") || !String(version).includes("@file:")) {
+        continue;
+      }
+      const dependencyManifest = readJson(
+        resolve(dirname(manifestPath), "node_modules", name, "package.json")
+      );
+      if (
+        dependencyManifest.name !== name ||
+        typeof dependencyManifest.version !== "string" ||
+        dependencyManifest.version.length === 0
+      ) {
+        throw new Error(
+          `Deployed workspace dependency metadata is invalid for ${name} in ${manifestPath}.`
+        );
+      }
+      dependencies[name] = dependencyManifest.version;
+      changed = true;
+    }
+  }
+  if (changed) {
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  }
+  return changed;
+};
+
+const deployedManifestPaths = [
+  "koed-server/package.json",
+  "koed-runtime/api/package.json",
+  "koed-runtime/worker/package.json",
+  "koed-runtime/embedding-service/package.json",
+  "koed-runtime/mcp-server/package.json"
+];
+
+const deployedManifestFileDependencyErrors = (root) =>
+  deployedManifestPaths.flatMap((relativePath) => {
+    const path = resolve(root, relativePath);
+    if (!existsSync(path)) return [];
+    const manifest = readJson(path);
+    return dependencySections.flatMap((section) =>
+      Object.entries(manifest[section] ?? {}).flatMap(([name, version]) =>
+        String(version).includes("file:")
+          ? [
+              `Deployed package dependency uses a file reference: ${relativePath} ${section}.${name}`
+            ]
+          : []
+      )
+    );
+  });
 
 const pnpmWorkspaceSelfSymlinkPattern =
   /^(?<root>koed-server|koed-runtime\/api|koed-runtime\/worker|koed-runtime\/embedding-service|koed-runtime\/mcp-server)\/node_modules\/\.pnpm\/node_modules\/@koed\/(?<name>[^/]+)$/;
@@ -428,6 +535,12 @@ export const validatePackageRoot = (packageRoot) => {
     manifest?.sha256 && actualSha256 && manifest.sha256 !== actualSha256
       ? ["Package manifest sha256 does not match package files."]
       : [];
+  const providerRuntimeErrors = [];
+  try {
+    assertNoClaudeAgentSdkPlatformRuntimes(root);
+  } catch (error) {
+    providerRuntimeErrors.push(error.message);
+  }
   const errors = [
     ...manifestErrors,
     ...missing.map((file) => `Missing required package file: ${file}`),
@@ -435,6 +548,8 @@ export const validatePackageRoot = (packageRoot) => {
       (file) => `Missing required package file: ${file}`
     ),
     ...excluded.map((file) => `Excluded file is present: ${file}`),
+    ...providerRuntimeErrors,
+    ...deployedManifestFileDependencyErrors(root),
     ...manifestFileErrors,
     ...shaErrors
   ];

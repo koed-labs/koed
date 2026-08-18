@@ -8,6 +8,20 @@ import {
 } from "./answer-worker.js";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 export {
+  aiClientInstanceRegistryPath,
+  environmentForLocalAiClientInstance,
+  loadLocalAiClientInstanceRegistry,
+  resolveLocalAiClientInstance
+} from "./ai-client-instance-registry.js";
+export type { LocalAiClientInstanceConfiguration } from "./ai-client-instance-registry.js";
+export {
+  aiClientTaskDriverFor,
+  checkClaudeCodeAvailability,
+  listClaudeAgentSdkModels,
+  resolveClaudeSdkExecutablePath,
+  runClaudeAgentSdkTask
+} from "./ai-client-runner.js";
+export {
   checkCodexAppServerAvailability,
   destroyManagedCodexHome,
   prepareManagedCodexHome,
@@ -39,6 +53,41 @@ export type {
   CodexManagedConversationSealedSource,
   CodexManagedConversationStartResult
 } from "./codex-managed-conversation.js";
+export {
+  CLAUDE_MANAGED_CONVERSATION_PROVIDER,
+  ClaudeManagedConversationCancelledError,
+  ClaudeManagedConversationSession,
+  createManagedClaudeSessionStore,
+  destroyManagedClaudeHome,
+  forkClaudeTranscript,
+  prepareManagedClaudeHome,
+  releaseManagedClaudeHomeLease,
+  retainManagedClaudeHome,
+  reuseManagedClaudeHome,
+  resolveClaudeManagedConversationSource
+} from "./claude-managed-conversation.js";
+export {
+  discoverClaudeHistoricalTranscriptSignals,
+  processClaudeTranscriptSignal,
+  registerClaudeHistoricalTranscriptSources,
+  startClaudeTranscriptWatcher
+} from "./claude-transcript-watcher.js";
+export {
+  importClaudeHistoricalSource,
+  importSelectedClaudeHistory
+} from "./claude-historical-import.js";
+export type {
+  ClaudeTranscriptWatcherHandle,
+  ClaudeWatcherState
+} from "./claude-transcript-watcher.js";
+export type {
+  ClaudeManagedConversationConfig,
+  ClaudeManagedConversationIdentity,
+  ClaudeManagedConversationLocalSource,
+  ClaudeManagedConversationResult,
+  ClaudeManagedConversationStartResult,
+  ForkedClaudeTranscript
+} from "./claude-managed-conversation.js";
 import { resolveLcmSummaryServiceConfig } from "./lcm-summary-service.js";
 import {
   lcmSummaryLockState,
@@ -52,7 +101,7 @@ export {
   curatedMemoryReviewDecisionSchema,
   resolveCuratedMemoryReviewConfig,
   reviewCuratedMemoryProposal,
-  runCodexCuratedMemoryReview
+  runCuratedMemoryReview
 } from "./curated-memory-review-worker.js";
 export type {
   CuratedMemoryReviewBundle,
@@ -64,11 +113,11 @@ export {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   buildLcmSummaryPrompt,
   parseStructuredLcmSummary,
-  runCodexAppServerLcmSummary,
+  runLcmSummary,
   resolveLcmSummaryWorkerConfig
 } from "./lcm-summary-worker.js";
 export type {
-  CodexLcmSummaryRunner,
+  LcmSummaryRunner,
   LcmSummaryNode,
   LcmSummaryPromptResult,
   LcmSummaryWorkerConfig,
@@ -102,13 +151,16 @@ export interface McpServerConfig {
 
 export type LocalMemoryAgentFlowKey =
   | "mcp_memory_answer"
+  | "manual_memory_answer"
   | "lcm_summary"
-  | "curated_memory_review";
+  | "curated_memory_review"
+  | "session_title";
 
 export interface LocalMemoryAgentSettingRecord {
   ownerUserId: string;
   flowKey: LocalMemoryAgentFlowKey;
-  provider: "codex";
+  provider: string;
+  aiClientInstanceId: string;
   model: string;
   reasoningEffort: string;
   timeoutMs: number;
@@ -127,7 +179,8 @@ export const workerOverridesFromLocalMemorySetting = (
   setting: LocalMemoryAgentSettingRecord | undefined
 ):
   | {
-      provider: "codex";
+      provider: "codex" | "claude";
+      aiClientInstanceId: string;
       model: string;
       reasoningEffort: string;
       timeoutMs: number;
@@ -135,13 +188,20 @@ export const workerOverridesFromLocalMemorySetting = (
     }
   | undefined =>
   setting
-    ? {
-        provider: setting.provider,
-        model: setting.model,
-        reasoningEffort: setting.reasoningEffort,
-        timeoutMs: setting.timeoutMs,
-        maxAttempts: setting.maxAttempts
-      }
+    ? setting.provider === "codex" || setting.provider === "claude"
+      ? {
+          provider: setting.provider,
+          aiClientInstanceId: setting.aiClientInstanceId,
+          model: setting.model,
+          reasoningEffort: setting.reasoningEffort,
+          timeoutMs: setting.timeoutMs,
+          maxAttempts: setting.maxAttempts
+        }
+      : (() => {
+          throw new Error(
+            `AI Client driver "${setting.provider}" is not available in this Koed build.`
+          );
+        })()
     : undefined;
 
 export interface AccessCheckResult {
@@ -184,7 +244,7 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     maxAttempts: number;
     maxSearches: number;
     maxExpansions: number;
-    appServerBinary: string;
+    executablePath: string;
     defaultResponseDetail: "answer_only";
   };
   localLcmSummaryWorker: {
@@ -196,7 +256,7 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     retryDelayMs: number;
     concurrency: number;
     maxPromptTokens: number;
-    appServerBinary: string;
+    executablePath: string;
   };
   localLcmSummaryService: {
     initialDelayMs: number;
@@ -221,7 +281,7 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     timeoutMs: number;
     maxAttempts: number;
     maxPromptTokens: number;
-    appServerBinary: string;
+    executablePath: string;
   };
   localCuratedMemoryReviewDiagnostics: {
     running: boolean;
@@ -388,12 +448,14 @@ export class MemoryApiClient {
   }
 
   async lookupConversationSourceArtifact(input: {
-    sourceKind: "codex";
+    sourceKind: "codex" | "claude-code";
     externalSessionId: string;
+    sourceComponentId?: string;
   }): Promise<Record<string, unknown>> {
     const params = new URLSearchParams({
       source_kind: input.sourceKind,
-      external_session_id: input.externalSessionId
+      external_session_id: input.externalSessionId,
+      source_component_id: input.sourceComponentId ?? "main"
     });
     return this.request(
       "GET",
@@ -401,12 +463,35 @@ export class MemoryApiClient {
     );
   }
 
+  async finalizeConversationSourceSet(
+    sourceGenerationId: string
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/conversation-source-artifacts/generations/${encodeURIComponent(sourceGenerationId)}/finalize-source-set`,
+      {}
+    );
+  }
+
   async getConversationSourceArtifactByGeneration(
+    sourceGenerationId: string,
+    sourceComponentId = "main"
+  ): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams({
+      source_component_id: sourceComponentId
+    });
+    return this.request(
+      "GET",
+      `/v1/conversation-source-artifacts/generations/${encodeURIComponent(sourceGenerationId)}?${params.toString()}`
+    );
+  }
+
+  async listConversationSourceGenerationComponents(
     sourceGenerationId: string
   ): Promise<Record<string, unknown>> {
     return this.request(
       "GET",
-      `/v1/conversation-source-artifacts/generations/${encodeURIComponent(sourceGenerationId)}`
+      `/v1/conversation-source-artifacts/generations/${encodeURIComponent(sourceGenerationId)}/components`
     );
   }
 
@@ -497,12 +582,10 @@ export class MemoryApiClient {
     return this.request("POST", "/v1/historical-imports", {});
   }
 
-  async lookupHistoricalImportSource(input: {
-    aiClient: "codex";
-    sourceKind: "codex";
-    sourceSessionId: string;
-  }): Promise<Record<string, unknown>> {
-    const params = new URLSearchParams(input);
+  async lookupHistoricalImportSource(
+    artifactId: string
+  ): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams({ artifactId });
     return this.request(
       "GET",
       `/v1/historical-import-sources/lookup?${params.toString()}`
@@ -513,6 +596,39 @@ export class MemoryApiClient {
     input: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     return this.request("POST", "/v1/historical-import-sources", input);
+  }
+
+  async transitionHistoricalImportRun(
+    runId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "PATCH",
+      `/v1/historical-imports/${encodeURIComponent(runId)}`,
+      input
+    );
+  }
+
+  async transitionHistoricalImportSource(
+    sourceId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "PATCH",
+      `/v1/historical-import-sources/${encodeURIComponent(sourceId)}`,
+      input
+    );
+  }
+
+  async ingestHistoricalImportBatch(
+    sourceId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/historical-import-sources/${encodeURIComponent(sourceId)}/batches`,
+      input
+    );
   }
 
   async effectiveCapturePolicy(input: {
@@ -636,10 +752,33 @@ export class MemoryApiClient {
     return this.request("GET", "/v1/memory/local-agent-settings");
   }
 
+  async upsertAiClientInstance(
+    instanceId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "PUT",
+      `/v1/memory/ai-client-instances/${encodeURIComponent(instanceId)}`,
+      input
+    );
+  }
+
+  async recordAiClientCapabilitySnapshot(
+    instanceId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/memory/ai-client-instances/${encodeURIComponent(instanceId)}/capability-snapshots`,
+      input
+    );
+  }
+
   async upsertLocalMemoryAgentSetting(
     flowKey: LocalMemoryAgentFlowKey,
     input: {
-      provider: "codex";
+      provider: "codex" | "claude";
+      aiClientInstanceId?: string;
       model: string;
       reasoningEffort: string;
       timeoutMs: number;
@@ -651,6 +790,8 @@ export class MemoryApiClient {
       `/v1/memory/local-agent-settings/${encodeURIComponent(flowKey)}`,
       {
         provider: input.provider,
+        ai_client_instance_id:
+          input.aiClientInstanceId ?? `${input.provider}.default`,
         model: input.model,
         reasoning_effort: input.reasoningEffort,
         timeout_ms: input.timeoutMs,
@@ -967,7 +1108,7 @@ export const memoryAccessCheck = async (
       maxAttempts: answerWorker.maxAttempts,
       maxSearches: answerWorker.maxSearches,
       maxExpansions: answerWorker.maxExpansions,
-      appServerBinary: answerWorker.appServerBinary,
+      executablePath: answerWorker.executablePath,
       defaultResponseDetail: "answer_only"
     },
     localLcmSummaryWorker: {
@@ -979,7 +1120,7 @@ export const memoryAccessCheck = async (
       retryDelayMs: lcmSummaryWorker.retryDelayMs,
       concurrency: lcmSummaryWorker.concurrency,
       maxPromptTokens: lcmSummaryWorker.maxPromptTokens,
-      appServerBinary: lcmSummaryWorker.appServerBinary
+      executablePath: lcmSummaryWorker.executablePath
     },
     localLcmSummaryService: lcmSummaryService,
     localLcmSummaryDiagnostics: {
@@ -997,7 +1138,7 @@ export const memoryAccessCheck = async (
       timeoutMs: curatedMemoryReviewWorker.timeoutMs,
       maxAttempts: curatedMemoryReviewWorker.maxAttempts,
       maxPromptTokens: curatedMemoryReviewWorker.maxPromptTokens,
-      appServerBinary: curatedMemoryReviewWorker.appServerBinary
+      executablePath: curatedMemoryReviewWorker.executablePath
     },
     localCuratedMemoryReviewDiagnostics: {
       running: curatedMemorySnapshot?.running === true,
@@ -1017,14 +1158,14 @@ export const memoryAccessCheck = async (
     },
     notes: includeNotes
       ? [
-          "Store normal Codex/Codex CLI conversation context as personal memory through Codex hooks/transcript ingestion. The backend does not decide that a fact is important and create a separate extracted memory.",
+          "Store normal AI Client conversation context as Personal Memory through provider transcript ingestion and content-free capture signals. The backend does not decide that a fact is important and create a separate extracted memory.",
           "MCP alone does not automatically observe the whole conversation; the main-agent MCP surface is for retrieval and local summarisation.",
-          "Use memory_answer as the normal retrieval entry point. It defaults to response_detail=answer_only and search_domain=project for the current Codex workspace/cwd; use response_detail=with_citations for source metadata, response_detail=with_evidence only for debugging/UI inspection, search_domain=session with a backend session_id for one conversation, or search_domain=global only for deliberate cross-project memory checks.",
+          "Use memory_answer as the normal retrieval entry point. It defaults to response_detail=answer_only and search_domain=project for the current AI Client Project/cwd; use response_detail=with_citations for source metadata, response_detail=with_evidence only for debugging/UI inspection, search_domain=session with a backend session_id for one conversation, or search_domain=global only for deliberate cross-project memory checks.",
           "MCP recall is personal by default. When the current Project is linked to an enrolled Team Backend, project-scoped memory_answer can route Team Workspace recall through the local edge.",
           "Low-level memory_search/memory_expand tools are hidden by default so the main agent delegates retrieval work to the local memory-answer worker.",
-          "Backend LLM provider configuration is unsupported in this build. The backend retrieves cited evidence with local semantic embeddings; the local MCP memory-answer worker can plan follow-up searches/expansions and synthesize the final answer through the user's Codex CLI subscription.",
-          "Local memory processing: backend workers create pending title and LCM summary work, while the MCP background service runs Codex on the user's machine and submits results back for storage and embedding.",
-          "Curated Memory proposals are reviewed asynchronously by a separate local Codex worker using complete source evidence; the proposing agent is not blocked and cannot directly write a canonical assertion.",
+          "Backend LLM provider configuration is unsupported in this build. The backend retrieves cited evidence with local semantic embeddings; the local MCP memory-answer worker can plan follow-up searches/expansions and synthesize the final answer through the explicitly assigned local AI Client instance.",
+          "Local memory processing: backend workers create pending title and LCM summary work, while the MCP background service runs the explicitly assigned local AI Client instance and submits results back for storage and embedding.",
+          "Curated Memory proposals are reviewed asynchronously by a separate local AI Client worker using complete source evidence; the proposing agent is not blocked and cannot directly write a canonical assertion.",
           "When answering from memory, cite each source."
         ]
       : []

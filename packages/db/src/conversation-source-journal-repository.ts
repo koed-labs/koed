@@ -2,19 +2,24 @@ import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import {
   calculateConversationSourceClosureDigest,
+  calculateConversationSourceSetClosureDigest,
+  assertSupportedAiClientSourceAdapter,
   CONVERSATION_SOURCE_DOWNLOAD_AUTHORIZATION_TTL_MS,
   calculateConversationSourceReplicationContentDigest,
   calculateConversationSourceReplicationManifestDigest,
   calculateConversationSourceRootDigest,
   parseSignedConversationSourceClosureManifest,
+  parseSignedConversationSourceSetClosureManifest,
   parseConversationSourceReplicationManifest,
   verifyConversationSourceClosureManifestSignature,
+  verifyConversationSourceSetClosureManifestSignature,
   verifyConversationSourceReplicationManifestForAcceptance,
   decryptEnvelopeToUtf8,
   type ConversationSourceOriginKeyRegistration,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
-  type SignedConversationSourceClosureManifest
+  type SignedConversationSourceClosureManifest,
+  type SignedConversationSourceSetClosureManifest
 } from "@koed/shared";
 import type pg from "pg";
 import { createCapturedSessionRepository } from "./captured-session-repository.js";
@@ -23,6 +28,8 @@ import type {
   CapturedSessionRecord,
   ConversationSourceArtifactLifecycle,
   ConversationSourceArtifactRecord,
+  ConversationSourceComponentRole,
+  ConversationSourceContentFraming,
   ConversationSourceConsumerCursorRecord,
   ConversationSourceConsumerKind,
   ConversationSourceDownloadAuthorizationRecord,
@@ -45,6 +52,10 @@ export interface EnsureConversationSourceArtifactInput {
   sessionId: string;
   logicalSourceId: string;
   sourceGenerationId: string;
+  sourceComponentId?: string;
+  sourceComponentRole?: ConversationSourceComponentRole;
+  parentSourceComponentId?: string | null;
+  contentFraming?: ConversationSourceContentFraming;
   replicaRole: ConversationSourceReplicaRole;
   sourceKind: string;
   sourceRuntime: SourceRuntime;
@@ -120,6 +131,11 @@ export interface FinalizeConversationSourceArtifactInput {
   signedClosure: SignedConversationSourceClosureManifest;
 }
 
+export interface FinalizeConversationSourceSetInput {
+  sourceGenerationId: string;
+  signedClosure: SignedConversationSourceSetClosureManifest;
+}
+
 export type RegisterConversationSourceReplicaGenerationInput =
   EnsureConversationSourceArtifactInput & {
     replicaRole: Exclude<ConversationSourceReplicaRole, "origin_local">;
@@ -135,6 +151,10 @@ type ArtifactRow = {
   session_id: string;
   logical_source_id: string;
   source_generation_id: string;
+  source_component_id: string;
+  source_component_role: ConversationSourceComponentRole;
+  parent_source_component_id: string | null;
+  content_framing: ConversationSourceContentFraming;
   replica_role: ConversationSourceReplicaRole;
   source_kind: string;
   source_runtime: SourceRuntime;
@@ -159,6 +179,10 @@ type ArtifactRow = {
   closure_hash: string | null;
   closure_manifest: Record<string, unknown> | null;
   closure_signature: string | null;
+  source_set_closure_hash: string | null;
+  source_set_closure_manifest: Record<string, unknown> | null;
+  source_set_closure_signature: string | null;
+  source_set_finalized_at: Date | null;
   origin_deployment_id: string;
   origin_device_id: string;
   origin_key_id: string;
@@ -378,6 +402,10 @@ const mapArtifact = (row: ArtifactRow): ConversationSourceArtifactRecord => ({
   sessionId: row.session_id,
   logicalSourceId: row.logical_source_id,
   sourceGenerationId: row.source_generation_id,
+  sourceComponentId: row.source_component_id,
+  sourceComponentRole: row.source_component_role,
+  parentSourceComponentId: row.parent_source_component_id,
+  contentFraming: row.content_framing,
   replicaRole: row.replica_role,
   sourceKind: row.source_kind,
   sourceRuntime: row.source_runtime,
@@ -402,6 +430,10 @@ const mapArtifact = (row: ArtifactRow): ConversationSourceArtifactRecord => ({
   closureHash: row.closure_hash,
   closureManifest: row.closure_manifest,
   closureSignature: row.closure_signature,
+  sourceSetClosureHash: row.source_set_closure_hash,
+  sourceSetClosureManifest: row.source_set_closure_manifest,
+  sourceSetClosureSignature: row.source_set_closure_signature,
+  sourceSetFinalizedAt: row.source_set_finalized_at?.toISOString() ?? null,
   originDeploymentId: row.origin_deployment_id,
   originDeviceId: row.origin_device_id,
   originKeyId: row.origin_key_id,
@@ -571,6 +603,11 @@ const assertSignedSegmentBinding = (
     manifest.endItemCursor !== input.sourceEndLine ||
     manifest.plaintextDigest !== input.plaintextDigest ||
     manifest.previousContentDigest !== input.previousContentDigest ||
+    manifest.sourceComponentSchemaVersion !== 1 ||
+    manifest.sourceComponentId !== artifact.source_component_id ||
+    manifest.sourceComponentRole !== artifact.source_component_role ||
+    manifest.parentSourceComponentId !== artifact.parent_source_component_id ||
+    manifest.contentFraming !== artifact.content_framing ||
     manifest.sourceFormat !== artifact.artifact_format ||
     manifest.adapterVersion !== artifact.source_adapter_version ||
     input.plaintextSize !== input.sourceEndOffset - input.sourceStartOffset ||
@@ -648,13 +685,17 @@ const RESTORE_JOB_COLUMNS = `
 
 const ARTIFACT_COLUMNS = `
   id, owner_user_id, session_id, logical_source_id, source_generation_id,
+  source_component_id, source_component_role, parent_source_component_id,
+  content_framing,
   replica_role, source_kind, source_runtime, external_session_id, source_fingerprint,
   artifact_format, artifact_format_version, source_adapter_version, lifecycle,
   journal_start_offset, journal_start_line, live_start_offset, live_start_line,
   provider_cursor_offset, provider_cursor_line,
   current_source_length, current_journal_sequence, source_created_at,
   source_modified_at, storage_provider, storage_prefix, closure_hash,
-  closure_manifest, closure_signature,
+  closure_manifest, closure_signature, source_set_closure_hash,
+  source_set_closure_manifest, source_set_closure_signature,
+  source_set_finalized_at,
   origin_deployment_id, origin_device_id, origin_key_id, origin_public_key,
   origin_key_status, prior_generation_closure, redacted_source_label,
   created_at, updated_at, finalized_at
@@ -663,6 +704,8 @@ const ARTIFACT_COLUMNS = `
 const ARTIFACT_SELECT_COLUMNS = `
   artifact.id, artifact.owner_user_id, artifact.session_id,
   artifact.logical_source_id, artifact.source_generation_id,
+  artifact.source_component_id, artifact.source_component_role,
+  artifact.parent_source_component_id, artifact.content_framing,
   artifact.replica_role, artifact.source_kind, artifact.external_session_id,
   artifact.source_runtime,
   artifact.source_fingerprint, artifact.artifact_format,
@@ -675,6 +718,8 @@ const ARTIFACT_SELECT_COLUMNS = `
   artifact.source_created_at, artifact.source_modified_at,
   artifact.storage_provider, artifact.storage_prefix, artifact.closure_hash,
   artifact.closure_manifest, artifact.closure_signature,
+  artifact.source_set_closure_hash, artifact.source_set_closure_manifest,
+  artifact.source_set_closure_signature, artifact.source_set_finalized_at,
   artifact.origin_deployment_id, artifact.origin_device_id,
   artifact.origin_key_id, artifact.origin_public_key,
   artifact.origin_key_status, artifact.prior_generation_closure,
@@ -762,6 +807,28 @@ const ensureConversationSourceArtifactWithClient = async (
   actor: ActorContext,
   input: EnsureConversationSourceArtifactInput
 ): Promise<ConversationSourceArtifactRecord> => {
+  const sourceComponentId = input.sourceComponentId ?? "main";
+  const sourceComponentRole = input.sourceComponentRole ?? "primary";
+  const parentSourceComponentId = input.parentSourceComponentId ?? null;
+  const contentFraming = input.contentFraming ?? "jsonl";
+  if (
+    !/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/.test(sourceComponentId) ||
+    (sourceComponentRole === "primary" && parentSourceComponentId !== null) ||
+    (sourceComponentRole === "auxiliary" &&
+      (!parentSourceComponentId ||
+        parentSourceComponentId === sourceComponentId))
+  ) {
+    throw statusError("Conversation source component identity is invalid", 400);
+  }
+  if ((input.contentFraming ?? "jsonl") === "jsonl") {
+    assertSupportedAiClientSourceAdapter({
+      sourceKind: input.sourceKind,
+      sourceRuntime: input.sourceRuntime,
+      artifactFormat: input.artifactFormat,
+      artifactFormatVersion: input.artifactFormatVersion,
+      sourceAdapterVersion: input.sourceAdapterVersion
+    });
+  }
   if (input.priorGenerationClosure) {
     assertStrictJsonRecord(
       input.priorGenerationClosure,
@@ -789,12 +856,58 @@ const ensureConversationSourceArtifactWithClient = async (
   if (session.rows[0]?.exists !== true) {
     throw statusError("Captured Session not found for source artifact", 404);
   }
+  await client.query(
+    `select pg_advisory_xact_lock(
+       hashtextextended($1 || ':' || $2::text, 0)
+     )`,
+    [actor.userId, input.sourceGenerationId]
+  );
+  const sourceSetState = await client.query<{
+    component_exists: boolean;
+    source_set_finalized: boolean;
+  }>(
+    `select
+       exists (
+         select 1 from conversation_source_artifacts
+          where owner_user_id = $1
+            and logical_source_id = $2
+            and source_generation_id = $3
+            and source_component_id = $4
+            and lifecycle <> 'deleted'
+       ) as component_exists,
+       exists (
+         select 1 from conversation_source_artifacts
+          where owner_user_id = $1
+            and logical_source_id = $2
+            and source_generation_id = $3
+            and source_component_id = 'main'
+            and source_set_closure_hash is not null
+       ) as source_set_finalized`,
+    [
+      actor.userId,
+      input.logicalSourceId,
+      input.sourceGenerationId,
+      sourceComponentId
+    ]
+  );
+  if (
+    sourceSetState.rows[0]?.source_set_finalized &&
+    !sourceSetState.rows[0].component_exists
+  ) {
+    throw statusError(
+      "Conversation source-set membership is finalized",
+      409,
+      "conversation_source_set_membership_finalized"
+    );
+  }
   let result: pg.QueryResult<ArtifactRow>;
   try {
     result = await client.query<ArtifactRow>(
       `
         insert into conversation_source_artifacts (
           owner_user_id, session_id, logical_source_id, source_generation_id,
+          source_component_id, source_component_role,
+          parent_source_component_id, content_framing,
           replica_role, source_kind, external_session_id, source_fingerprint,
           artifact_format, artifact_format_version, source_adapter_version,
           journal_start_offset,
@@ -806,7 +919,8 @@ const ensureConversationSourceArtifactWithClient = async (
           source_runtime
         )
         select
-          $1, s.id, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+          $1, s.id, $3, $4, $28, $29, $30, $31,
+          $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
           $15, $12, $13, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25,
           $26, $27
         from sessions s
@@ -815,7 +929,7 @@ const ensureConversationSourceArtifactWithClient = async (
           and s.visibility = 'personal'
           and s.invalidated_at is null
           and s.personal_deleted_at is null
-        on conflict (owner_user_id, logical_source_id, source_generation_id)
+        on conflict (owner_user_id, logical_source_id, source_generation_id, source_component_id)
         do update set
           current_source_length = greatest(
             conversation_source_artifacts.current_source_length,
@@ -829,6 +943,12 @@ const ensureConversationSourceArtifactWithClient = async (
           updated_at = now()
         where conversation_source_artifacts.session_id = excluded.session_id
           and conversation_source_artifacts.replica_role = excluded.replica_role
+          and conversation_source_artifacts.source_component_role =
+            excluded.source_component_role
+          and conversation_source_artifacts.parent_source_component_id
+            is not distinct from excluded.parent_source_component_id
+          and conversation_source_artifacts.content_framing =
+            excluded.content_framing
           and conversation_source_artifacts.source_kind = excluded.source_kind
           and conversation_source_artifacts.source_runtime =
             excluded.source_runtime
@@ -896,7 +1016,11 @@ const ensureConversationSourceArtifactWithClient = async (
         input.originPublicKey,
         input.priorGenerationClosure ?? null,
         input.redactedSourceLabel,
-        input.sourceRuntime
+        input.sourceRuntime,
+        sourceComponentId,
+        sourceComponentRole,
+        parentSourceComponentId,
+        contentFraming
       ]
     );
   } catch (error) {
@@ -920,8 +1044,14 @@ const ensureConversationSourceArtifactWithClient = async (
         where owner_user_id = $1
           and logical_source_id = $2
           and source_generation_id = $3
+          and source_component_id = $4
         limit 1`,
-      [actor.userId, input.logicalSourceId, input.sourceGenerationId]
+      [
+        actor.userId,
+        input.logicalSourceId,
+        input.sourceGenerationId,
+        sourceComponentId
+      ]
     );
     const keyStatus = pinned.rows[0]?.origin_key_status;
     if (keyStatus === "lost" || keyStatus === "revoked") {
@@ -1007,16 +1137,26 @@ export interface ConversationSourceJournalRepository {
     input: {
       logicalSourceId: string;
       sourceGenerationId: string;
+      sourceComponentId?: string;
     }
   ): Promise<ConversationSourceArtifactRecord | null>;
   getConversationSourceArtifactByProviderIdentity(
     actor: ActorContext,
-    input: { sourceKind: string; externalSessionId: string }
+    input: {
+      sourceKind: string;
+      externalSessionId: string;
+      sourceComponentId?: string;
+    }
   ): Promise<ConversationSourceArtifactRecord | null>;
   getConversationSourceArtifactByGeneration(
     actor: ActorContext,
-    sourceGenerationId: string
+    sourceGenerationId: string,
+    sourceComponentId?: string
   ): Promise<ConversationSourceArtifactRecord | null>;
+  listConversationSourceArtifactsByGeneration(
+    actor: ActorContext,
+    sourceGenerationId: string
+  ): Promise<ConversationSourceArtifactRecord[]>;
   appendConversationSourceSegment(
     actor: ActorContext,
     input: AppendConversationSourceSegmentInput
@@ -1029,6 +1169,13 @@ export interface ConversationSourceJournalRepository {
     actor: ActorContext,
     input: FinalizeConversationSourceArtifactInput
   ): Promise<{ artifact: ConversationSourceArtifactRecord; replayed: boolean }>;
+  finalizeConversationSourceSet(
+    actor: ActorContext,
+    input: FinalizeConversationSourceSetInput
+  ): Promise<{
+    artifacts: ConversationSourceArtifactRecord[];
+    replayed: boolean;
+  }>;
   acceptConversationSourceReplicaSegment(
     actor: ActorContext,
     input: AcceptConversationSourceReplicaSegmentInput
@@ -1272,7 +1419,22 @@ export const createConversationSourceJournalRepository = (
   options: { envelopeEncryptionProvider?: EnvelopeEncryptionProvider } = {}
 ): ConversationSourceJournalRepository => ({
   async ensureConversationSourceArtifact(actor, input) {
-    return ensureConversationSourceArtifactWithClient(pool, actor, input);
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const artifact = await ensureConversationSourceArtifactWithClient(
+        client,
+        actor,
+        input
+      );
+      await client.query("commit");
+      return artifact;
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   },
 
   async ensureConversationSourceArtifactForCapturedSession(actor, input) {
@@ -1301,7 +1463,22 @@ export const createConversationSourceJournalRepository = (
   },
 
   async registerConversationSourceReplicaGeneration(actor, input) {
-    return ensureConversationSourceArtifactWithClient(pool, actor, input);
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const artifact = await ensureConversationSourceArtifactWithClient(
+        client,
+        actor,
+        input
+      );
+      await client.query("commit");
+      return artifact;
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   },
 
   async createConversationSourceSuccessorGeneration(actor, input) {
@@ -1339,10 +1516,16 @@ export const createConversationSourceJournalRepository = (
            from conversation_source_artifacts
           where owner_user_id = $1
             and logical_source_id = $2
+            and source_component_id = $4
             and prior_generation_closure = $3::jsonb
             and lifecycle <> 'deleted'
           limit 1`,
-        [actor.userId, parent.logical_source_id, priorGenerationClosure]
+        [
+          actor.userId,
+          parent.logical_source_id,
+          priorGenerationClosure,
+          parent.source_component_id
+        ]
       );
       if (existing.rows[0]) {
         const replay = existing.rows[0];
@@ -1369,6 +1552,10 @@ export const createConversationSourceJournalRepository = (
           sessionId: parent.session_id,
           logicalSourceId: parent.logical_source_id,
           sourceGenerationId: input.sourceGenerationId,
+          sourceComponentId: parent.source_component_id,
+          sourceComponentRole: parent.source_component_role,
+          parentSourceComponentId: parent.parent_source_component_id,
+          contentFraming: parent.content_framing,
           replicaRole: "origin_local",
           sourceKind: parent.source_kind,
           sourceRuntime: parent.source_runtime,
@@ -1422,9 +1609,15 @@ export const createConversationSourceJournalRepository = (
         where owner_user_id = $1
           and logical_source_id = $2
           and source_generation_id = $3
+          and source_component_id = $4
           and lifecycle <> 'deleted'
         limit 1`,
-      [actor.userId, input.logicalSourceId, input.sourceGenerationId]
+      [
+        actor.userId,
+        input.logicalSourceId,
+        input.sourceGenerationId,
+        input.sourceComponentId ?? "main"
+      ]
     );
     return result.rows[0] ? mapArtifact(result.rows[0]) : null;
   },
@@ -1436,27 +1629,51 @@ export const createConversationSourceJournalRepository = (
         where owner_user_id = $1
           and source_kind = $2
           and external_session_id = $3
+          and source_component_id = $4
           and replica_role = 'origin_local'
           and lifecycle <> 'deleted'
         order by source_created_at desc, id desc
         limit 1`,
-      [actor.userId, input.sourceKind, input.externalSessionId]
+      [
+        actor.userId,
+        input.sourceKind,
+        input.externalSessionId,
+        input.sourceComponentId ?? "main"
+      ]
     );
     return result.rows[0] ? mapArtifact(result.rows[0]) : null;
   },
 
-  async getConversationSourceArtifactByGeneration(actor, sourceGenerationId) {
+  async getConversationSourceArtifactByGeneration(
+    actor,
+    sourceGenerationId,
+    sourceComponentId = "main"
+  ) {
+    const result = await pool.query<ArtifactRow>(
+      `select ${ARTIFACT_COLUMNS}
+         from conversation_source_artifacts
+        where owner_user_id = $1
+          and source_generation_id = $2
+          and source_component_id = $3
+          and lifecycle <> 'deleted'
+        order by updated_at desc, id
+        limit 1`,
+      [actor.userId, sourceGenerationId, sourceComponentId]
+    );
+    return result.rows[0] ? mapArtifact(result.rows[0]) : null;
+  },
+
+  async listConversationSourceArtifactsByGeneration(actor, sourceGenerationId) {
     const result = await pool.query<ArtifactRow>(
       `select ${ARTIFACT_COLUMNS}
          from conversation_source_artifacts
         where owner_user_id = $1
           and source_generation_id = $2
           and lifecycle <> 'deleted'
-        order by updated_at desc, id
-        limit 1`,
+        order by source_component_id`,
       [actor.userId, sourceGenerationId]
     );
-    return result.rows[0] ? mapArtifact(result.rows[0]) : null;
+    return result.rows.map(mapArtifact);
   },
 
   async appendConversationSourceSegment(actor, input) {
@@ -1693,6 +1910,14 @@ export const createConversationSourceJournalRepository = (
         signedClosure.manifest.sourceGenerationId !==
           artifact.source_generation_id ||
         signedClosure.manifest.originKeyId !== artifact.origin_key_id ||
+        signedClosure.manifest.sourceComponentSchemaVersion !== 1 ||
+        signedClosure.manifest.sourceComponentId !==
+          artifact.source_component_id ||
+        signedClosure.manifest.sourceComponentRole !==
+          artifact.source_component_role ||
+        signedClosure.manifest.parentSourceComponentId !==
+          artifact.parent_source_component_id ||
+        signedClosure.manifest.contentFraming !== artifact.content_framing ||
         signedClosure.manifest.sourceCreatedAt !==
           artifact.source_created_at.toISOString() ||
         !isDeepStrictEqual(
@@ -1867,6 +2092,136 @@ export const createConversationSourceJournalRepository = (
       if (!committed) {
         await client.query("rollback").catch(() => undefined);
       }
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  async finalizeConversationSourceSet(actor, input) {
+    const signedClosure = parseSignedConversationSourceSetClosureManifest(
+      input.signedClosure
+    );
+    if (
+      signedClosure.manifest.sourceGenerationId !== input.sourceGenerationId
+    ) {
+      throw statusError("Conversation source-set generation is invalid", 409);
+    }
+    const closureHash =
+      calculateConversationSourceSetClosureDigest(signedClosure);
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `select pg_advisory_xact_lock(
+           hashtextextended($1 || ':' || $2::text, 0)
+         )`,
+        [actor.userId, input.sourceGenerationId]
+      );
+      const result = await client.query<ArtifactRow>(
+        `select ${ARTIFACT_COLUMNS}
+           from conversation_source_artifacts
+          where owner_user_id = $1
+            and source_generation_id = $2
+            and lifecycle <> 'deleted'
+          order by source_component_id
+          for update`,
+        [actor.userId, input.sourceGenerationId]
+      );
+      const artifacts = result.rows;
+      const main = artifacts.find(
+        (artifact) =>
+          artifact.source_component_id === "main" &&
+          artifact.source_component_role === "primary"
+      );
+      if (
+        !main ||
+        artifacts.some((artifact) => artifact.lifecycle !== "finalized")
+      ) {
+        throw statusError(
+          "Conversation source-set components are not finalized",
+          409,
+          "conversation_source_set_not_finalized"
+        );
+      }
+      if (
+        signedClosure.manifest.logicalSourceId !== main.logical_source_id ||
+        signedClosure.manifest.originKeyId !== main.origin_key_id ||
+        signedClosure.manifest.components.length !== artifacts.length ||
+        signedClosure.manifest.components.some((member, index) => {
+          const artifact = artifacts[index];
+          return (
+            !artifact ||
+            member.sourceComponentId !== artifact.source_component_id ||
+            member.sourceComponentRole !== artifact.source_component_role ||
+            member.parentSourceComponentId !==
+              artifact.parent_source_component_id ||
+            member.contentFraming !== artifact.content_framing ||
+            member.artifactClosureDigest !== artifact.closure_hash
+          );
+        })
+      ) {
+        throw statusError(
+          "Conversation source-set membership is invalid",
+          409,
+          "conversation_source_set_membership_conflict"
+        );
+      }
+      if (
+        main.origin_key_status !== "active" ||
+        !verifyConversationSourceSetClosureManifestSignature(
+          signedClosure,
+          main.origin_public_key
+        )
+      ) {
+        throw statusError(
+          "Conversation source-set closure signature is invalid",
+          409,
+          "conversation_source_set_signature_invalid"
+        );
+      }
+      if (main.source_set_closure_hash !== null) {
+        if (
+          main.source_set_closure_hash !== closureHash ||
+          !isDeepStrictEqual(
+            main.source_set_closure_manifest,
+            signedClosure.manifest
+          ) ||
+          main.source_set_closure_signature !== signedClosure.signature
+        ) {
+          throw statusError("Conversation source-set closure conflicts", 409);
+        }
+        await client.query("commit");
+        return { artifacts: artifacts.map(mapArtifact), replayed: true };
+      }
+      await client.query(
+        `update conversation_source_artifacts
+            set source_set_closure_hash = $3,
+                source_set_closure_manifest = $4::jsonb,
+                source_set_closure_signature = $5,
+                source_set_finalized_at = $6,
+                updated_at = now()
+          where id = $2 and owner_user_id = $1`,
+        [
+          actor.userId,
+          main.id,
+          closureHash,
+          signedClosure.manifest,
+          signedClosure.signature,
+          signedClosure.manifest.closedAt
+        ]
+      );
+      const refreshed = await client.query<ArtifactRow>(
+        `select ${ARTIFACT_COLUMNS}
+           from conversation_source_artifacts
+          where owner_user_id = $1 and source_generation_id = $2
+          order by source_component_id`,
+        [actor.userId, input.sourceGenerationId]
+      );
+      await client.query("commit");
+      return { artifacts: refreshed.rows.map(mapArtifact), replayed: false };
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
       throw error;
     } finally {
       client.release();
@@ -2925,6 +3280,33 @@ export const createConversationSourceJournalRepository = (
                              outbox.target_upstream_id
                        and registration_outbox.operation_kind = 'registration'
                        and registration_outbox.state <> 'succeeded'
+                  )
+                  and (
+                    artifact.source_set_closure_hash is null
+                    or not exists (
+                      select 1
+                        from conversation_source_artifacts sibling_artifact
+                       where sibling_artifact.owner_user_id =
+                               outbox.owner_user_id
+                         and sibling_artifact.source_generation_id =
+                               artifact.source_generation_id
+                         and sibling_artifact.id <> artifact.id
+                         and not exists (
+                           select 1
+                             from conversation_source_replication_outbox sibling_closure
+                            where sibling_closure.owner_user_id =
+                                    outbox.owner_user_id
+                              and sibling_closure.artifact_id =
+                                    sibling_artifact.id
+                              and sibling_closure.target_upstream_id =
+                                    outbox.target_upstream_id
+                              and sibling_closure.mode = outbox.mode
+                              and sibling_closure.authorization_basis =
+                                    outbox.authorization_basis
+                              and sibling_closure.operation_kind = 'closure'
+                              and sibling_closure.state = 'succeeded'
+                         )
+                    )
                   )
                 )
               )

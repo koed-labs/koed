@@ -20,6 +20,10 @@ or Team authority.
 ## Decision
 
 Koed supports MCP `2026-07-28` through the pinned v2 TypeScript SDK packages.
+The stdio adapter also accepts the SDK's current initialize-based protocol path
+for supported AI Clients that have not adopted discovery yet. Both paths expose
+the same tools and delegate durable work to the same Local AI Runtime; protocol
+negotiation does not restore process-local workers or backend synthesis.
 The retired MCP initialization protocol has no compatibility path.
 
 Codex launches a short-lived stdio MCP adapter. The adapter owns only protocol

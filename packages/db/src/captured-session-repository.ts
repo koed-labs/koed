@@ -704,7 +704,9 @@ export const createCapturedSessionRepository = (
           input.sourceAdapterVersion ??
             (input.sourceRuntime === "codex-cli"
               ? "codex-cli-hook-v1"
-              : "codex-app-server-v1"),
+              : input.sourceRuntime === "claude-code"
+                ? "claude-code-transcript-v1"
+                : "codex-app-server-v1"),
           input.externalSessionId ?? null,
           forkedFromExternalThreadId,
           typeof metadata.parentThreadId === "string"

@@ -66,7 +66,8 @@ const current0020Index = 20;
 const expectedPre0020Tag = "0019_tidy_rhino";
 const expectedCurrent0020Tag = "0020_zippy_apocalypse";
 const expectedLocalRuntimeCutoverTag = "0026_amused_zeigeist";
-const expectedLatestMigrationTag = "0031_thin_celestials";
+const expectedLatestMigrationTag = "0031_previous_revanche";
+const preMultiComponentSourceIndex = 29;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -1025,6 +1026,16 @@ const scenarioDatabaseName = (scenario) => {
   return `${targetDatabase.slice(0, 42)}_${suffix.slice(0, 10)}_${digest}`;
 };
 
+const errorMessages = (error) => {
+  const messages = [];
+  let current = error;
+  while (current && typeof current === "object") {
+    if (typeof current.message === "string") messages.push(current.message);
+    current = current.cause;
+  }
+  return messages.join("\n");
+};
+
 const admin = new Client({
   connectionString: withDatabase(databaseUrl, adminDatabase)
 });
@@ -1114,6 +1125,16 @@ try {
     preLocalRuntimeCutoverFolder,
     journal.entries.slice(0, preLocalRuntimeCutoverIndex + 1)
   );
+  const preMultiComponentSourceFolder = await createMigrationSlice(
+    journal,
+    preMultiComponentSourceIndex,
+    { folderPrefix: "koed-pre-multi-component-source-" }
+  );
+  temporaryFolders.add(preMultiComponentSourceFolder);
+  const preMultiComponentSourceRecords = await migrationRecords(
+    preMultiComponentSourceFolder,
+    journal.entries.slice(0, preMultiComponentSourceIndex + 1)
+  );
 
   await runScenario("clean-full-migration", async () => {
     const target = await createDisposableDatabase("clean_full");
@@ -1123,6 +1144,77 @@ try {
       await assertCurrentSchema(pool);
     });
   });
+
+  await runScenario(
+    "multi-component-source-alpha-reset-diagnostic",
+    async () => {
+      const target = await createDisposableDatabase("source_reset");
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, {
+          migrationsFolder: preMultiComponentSourceFolder
+        });
+        await assertMigrationLedger(pool, preMultiComponentSourceRecords);
+        const ownerUserId = randomUUID();
+        const sessionId = randomUUID();
+        await pool.query("insert into users (id, email) values ($1, $2)", [
+          ownerUserId,
+          `source-reset-${ownerUserId}@example.test`
+        ]);
+        await pool.query(
+          `insert into sessions
+           (id, owner_user_id, source_runtime, capture_method)
+         values ($1, $2, 'codex', 'transcript')`,
+          [sessionId, ownerUserId]
+        );
+        await pool.query(
+          `insert into conversation_source_artifacts
+           (owner_user_id, session_id, logical_source_id,
+            source_generation_id, replica_role, source_kind, source_runtime,
+            external_session_id, source_fingerprint, artifact_format,
+            artifact_format_version, source_adapter_version, lifecycle,
+            source_created_at, storage_provider, storage_prefix, closure_hash,
+            closure_manifest, closure_signature, origin_deployment_id,
+            origin_device_id, origin_key_id, origin_public_key,
+            redacted_source_label, finalized_at)
+         values
+           ($1, $2, $3, $4, 'origin_local', 'codex', 'codex', $5,
+            $6, 'jsonl', 1, 'codex-transcript-v1', 'finalized', now(),
+            'filesystem', $7, $8, $9::jsonb, $10, 'migration-test',
+            'migration-device', 'migration-key', $11,
+            'Finalized alpha source', now())`,
+          [
+            ownerUserId,
+            sessionId,
+            randomUUID(),
+            randomUUID(),
+            `source-reset-${randomUUID()}`,
+            "a".repeat(64),
+            `source-reset/${sessionId}`,
+            "b".repeat(64),
+            JSON.stringify({ version: 1 }),
+            "c".repeat(86),
+            "d".repeat(43)
+          ]
+        );
+        const migrationError = await runDbMigrations(pool).then(
+          () => null,
+          (error) => error
+        );
+        if (!migrationError) {
+          throw new Error("Finalized alpha source unexpectedly upgraded");
+        }
+        const messages = errorMessages(migrationError);
+        if (
+          !messages.includes(
+            "Koed alpha data reset required before enabling multi-component Conversation Sources"
+          )
+        ) {
+          throw new Error(`Missing reset-required diagnostic: ${messages}`);
+        }
+        await assertMigrationLedger(pool, preMultiComponentSourceRecords);
+      });
+    }
+  );
 
   await runScenario("local-runtime-alpha-question-cutover", async () => {
     const target = await createDisposableDatabase("local_runtime_cutover");

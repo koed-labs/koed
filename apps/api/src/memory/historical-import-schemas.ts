@@ -55,11 +55,7 @@ export const historicalImportSourceParamsSchema = z
   .strict();
 
 export const historicalImportSourceLookupSchema = z
-  .object({
-    aiClient: z.literal("codex"),
-    sourceKind: z.literal("codex"),
-    sourceSessionId: boundedText
-  })
+  .object({ artifactId: z.string().uuid() })
   .strict();
 
 const detectedProjectSchema = z
@@ -79,7 +75,7 @@ export const createHistoricalImportSourceSchema = z
   .object({
     runId: z.string().uuid(),
     artifactId: z.string().uuid(),
-    aiClient: z.literal("codex"),
+    aiClient: z.enum(["codex", "claude"]),
     sourceEventFrom: z.string().datetime({ offset: true }).optional(),
     sourceEventTo: z.string().datetime({ offset: true }).optional(),
     discoveredRecordCount: boundedCounter.optional(),
@@ -174,7 +170,9 @@ const historicalConversationItemSchema = z
       .optional(),
     observationComponent: boundedText.optional(),
     projectionStatus: z.enum(["pending", "raw_only"]).optional(),
-    projectionVersion: z.literal("codex-transcript-v1").optional(),
+    projectionVersion: z
+      .enum(["codex-transcript-v1", "claude-code-transcript-v1"])
+      .optional(),
     metadata: historicalItemMetadataSchema
   })
   .strict()

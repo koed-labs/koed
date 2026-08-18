@@ -242,7 +242,12 @@ const fixture = (
         actor: "user",
         type: "message",
         content: "h".repeat(300_000),
-        metadata: { contentType: "text/plain", sourceRole: "user" }
+        metadata: {
+          contentType: "text/plain",
+          sourceRole: "user",
+          sourceComponentId: "main",
+          sourceComponentRole: "primary"
+        }
       },
       {
         sourceNativeItemId: "item-1",
@@ -252,7 +257,13 @@ const fixture = (
         actor: "assistant",
         type: "message",
         content: "w".repeat(300_000),
-        metadata: { contentType: "text/plain", sourceRole: "assistant" }
+        metadata: {
+          contentType: "text/plain",
+          sourceRole: "assistant",
+          sourceComponentId: "subagent.researcher",
+          sourceComponentRole: "auxiliary",
+          parentSourceComponentId: "main"
+        }
       }
     ],
     sourceFingerprintKey: sourceKey,
@@ -301,6 +312,37 @@ const withDigest = (pkg: PdsSessionPackage): PdsSessionPackage => ({
 });
 
 describe("PDS origin-signed session package", () => {
+  it("round-trips Claude source-set component metadata", () => {
+    const { input, verify } = fixture();
+    const pkg = createPdsSessionPackage(input);
+    const manifest = verifyAndDecryptPdsSessionPackage(
+      canonicalizePdsJson(pkg),
+      verify
+    );
+    const items = manifest.rawClosure.records.map(
+      (record) =>
+        JSON.parse(
+          Buffer.from(record.payload, "base64url").toString("utf8")
+        ) as { metadata: Record<string, string> }
+    );
+
+    expect(items.map((item) => item.metadata)).toEqual([
+      {
+        contentType: "text/plain",
+        sourceRole: "user",
+        sourceComponentId: "main",
+        sourceComponentRole: "primary"
+      },
+      {
+        contentType: "text/plain",
+        sourceRole: "assistant",
+        sourceComponentId: "subagent.researcher",
+        sourceComponentRole: "auxiliary",
+        parentSourceComponentId: "main"
+      }
+    ]);
+  });
+
   it("uses one authenticated encrypted transport for source and artifact plaintext", () => {
     const { input, verify, manifest } = fixture();
     const plaintext = canonicalizePdsJson({

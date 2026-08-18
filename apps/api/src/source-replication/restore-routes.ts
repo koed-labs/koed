@@ -24,7 +24,8 @@ import type { ApiRouteContext } from "../server/context.js";
 import { resolveSyncRecipientContext } from "../sync/recipient-context.js";
 import {
   sourceDiscoveryResultItemSchema,
-  sourceDiscoverySchema
+  sourceDiscoverySchema,
+  sourceDownloadAuthorizationSchema
 } from "./schemas.js";
 
 const localProfiles = new Set(["developer", "local_personal"]);
@@ -35,10 +36,17 @@ const startRestoreSchema = z
   .object({
     upstreamBackendId: z.string().trim().min(1).max(160),
     sourceGenerationId: z.uuid(),
+    sourceComponentId:
+      sourceDownloadAuthorizationSchema.shape.sourceComponentId,
     firstSegmentIndex: z.number().int().safe().nonnegative().default(0)
   })
   .strict();
 const restoreParamsSchema = z.object({ restoreJobId: z.uuid() }).strict();
+const completeRestoreApprovalSchema = z
+  .object({
+    sourceComponentId: sourceDownloadAuthorizationSchema.shape.sourceComponentId
+  })
+  .strict();
 const discoveryControlSchema = sourceDiscoverySchema
   .extend({
     upstreamBackendId: z.string().trim().min(1).max(160),
@@ -435,6 +443,7 @@ export const registerConversationSourceRestoreRoutes = (
       }
       const body = {
         sourceGenerationId: job.sourceGenerationId,
+        sourceComponentId: input.sourceComponentId,
         targetDeploymentId: job.targetDeploymentId,
         firstSegmentIndex: job.nextSegmentIndex,
         recipientKey: {
@@ -504,6 +513,7 @@ export const registerConversationSourceRestoreRoutes = (
       }
       const user = await context.auth.authenticate(request);
       const { restoreJobId } = restoreParamsSchema.parse(request.params);
+      const input = completeRestoreApprovalSchema.parse(request.body);
       const repository = context.requireRepository();
       const job = await repository.getConversationSourceRestoreJob(
         { userId: user.id },
@@ -579,6 +589,7 @@ export const registerConversationSourceRestoreRoutes = (
       }
       const body = {
         sourceGenerationId: job.sourceGenerationId,
+        sourceComponentId: input.sourceComponentId,
         targetDeploymentId: job.targetDeploymentId,
         firstSegmentIndex: job.nextSegmentIndex,
         recipientKey: {
@@ -674,9 +685,13 @@ export const registerConversationSourceRestoreRoutes = (
             );
       if (
         registration.sourceGenerationId !== job.sourceGenerationId ||
+        source.sourceComponentId !== input.sourceComponentId ||
         source.logicalSessionId.length === 0 ||
         (sourceClosure !== null &&
-          sourceClosure.manifest.sourceGenerationId !== job.sourceGenerationId)
+          (sourceClosure.manifest.sourceGenerationId !==
+            job.sourceGenerationId ||
+            sourceClosure.manifest.sourceComponentId !==
+              input.sourceComponentId))
       ) {
         throw statusError("Source restore metadata binding is invalid", 409);
       }

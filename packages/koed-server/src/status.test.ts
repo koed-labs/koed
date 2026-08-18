@@ -831,6 +831,7 @@ describe("status and doctor JSON contracts", () => {
     expect(status.runtimeMode).toBe("local-personal");
     expect(status.dependencyMode).toBe("bundled-local");
     expect(status.codexTranscriptWatcher.state).toBe("healthy");
+    expect(status.claudeTranscriptWatcher.state).toBe("healthy");
     expect(status.codex.state).toBe("healthy");
     expect(status.mcpServer.state).toBe("healthy");
     expect(status.redis.message).toContain("local queue");

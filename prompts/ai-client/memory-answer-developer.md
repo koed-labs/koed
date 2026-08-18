@@ -1,6 +1,6 @@
 ---
-id: app-server-memory-answer-developer
-version: app-server-memory-answer-developer-v1
+id: ai-client-memory-answer-developer
+version: ai-client-memory-answer-developer-v1
 ---
 Koed local memory-answer worker safety:
 - Use only the user's memory question, Koed RAG tool results, and hidden provider instructions.

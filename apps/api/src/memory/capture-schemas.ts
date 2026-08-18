@@ -24,7 +24,7 @@ const personalProjectReferenceSchema = z
 export const createMcpSessionSchema = z.object({
   projectId: z.string().trim().min(1).max(512).optional(),
   externalSessionId: z.string().min(1).optional(),
-  sourceRuntime: z.enum(["codex", "codex-cli"]).default("codex"),
+  sourceRuntime: z.enum(["codex", "codex-cli", "claude-code"]).default("codex"),
   captureMethod: z.enum(["transcript", "mcp", "web", "api"]).default("mcp"),
   model: z.string().min(1).optional(),
   cwd: z.string().min(1).optional(),
@@ -63,7 +63,9 @@ export const capturePersonalEventSchema = z.object({
   eventType: z.string().min(1),
   content: z.string().min(1),
   metadata: metadataSchema,
-  sourceRuntime: z.enum(["codex", "codex-cli"]).default("codex-cli"),
+  sourceRuntime: z
+    .enum(["codex", "codex-cli", "claude-code"])
+    .default("codex-cli"),
   captureMethod: z
     .enum(["transcript", "mcp", "web", "api"])
     .default("transcript"),

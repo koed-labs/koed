@@ -373,7 +373,10 @@ const koedServerConfigEnvironment = (
     repoEnv.KOED_EXTERNAL_EMBEDDING_SERVICE_URL,
   MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED:
     environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED ??
-    repoEnv.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED
+    repoEnv.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED,
+  MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED:
+    environment.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED ??
+    repoEnv.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED
 });
 
 const bundledLocalDatabaseUrl = (
@@ -1247,6 +1250,7 @@ export const startKoedServer = async ({
       dependencyMode: config.dependencyMode,
       automaticPorts: desktopManagedLocal,
       codexTranscriptWatcherEnabled: config.codexTranscriptWatcherEnabled,
+      claudeTranscriptWatcherEnabled: config.claudeTranscriptWatcherEnabled,
       services: [...runtimeServices, "api"],
       processes: {
         ...(nativeEmbeddingProcess
@@ -1328,6 +1332,9 @@ export const startKoedServer = async ({
           MEMORY_API_TOKEN: finalApiToken,
           MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: String(
             config.codexTranscriptWatcherEnabled
+          ),
+          MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: String(
+            config.claudeTranscriptWatcherEnabled
           )
         },
         spawn,

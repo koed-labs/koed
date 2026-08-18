@@ -52,6 +52,7 @@ export interface WorkerEnvConfig {
   managedConversationApiToken?: string;
   managedConversationAppServerBinary: string;
   managedConversationModel: string;
+  managedConversationClaudeModel: string;
   managedConversationReasoningEffort: string;
   koedHome: string;
   historicalImport: HistoricalImportBatchConfig;
@@ -254,6 +255,9 @@ export const resolveWorkerEnv = (
       optionalEnv(environment.MEMORY_CODEX_APP_SERVER_BINARY) ?? "codex",
     managedConversationModel:
       optionalEnv(environment.KOED_MANAGED_CONVERSATION_MODEL) ?? "gpt-5.4",
+    managedConversationClaudeModel:
+      optionalEnv(environment.KOED_MANAGED_CONVERSATION_CLAUDE_MODEL) ??
+      "claude-haiku-4-5-20251001",
     managedConversationReasoningEffort:
       optionalEnv(environment.KOED_MANAGED_CONVERSATION_REASONING_EFFORT) ??
       "high",

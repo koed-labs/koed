@@ -441,6 +441,24 @@ const stringField = (
   return typeof field === "string" && field.trim() ? field : null;
 };
 
+const conversationSourceRuntime = (
+  sourceKind: string,
+  metadata?: Record<string, unknown> | null
+): SourceRuntime => {
+  const explicit = metadata ? stringField(metadata, "sourceRuntime") : null;
+  if (
+    explicit === "codex" ||
+    explicit === "codex-cli" ||
+    explicit === "claude-code"
+  ) {
+    return explicit;
+  }
+  if (sourceKind === "codex-cli" || sourceKind === "claude-code") {
+    return sourceKind;
+  }
+  return "codex";
+};
+
 const stringFromNestedField = (
   value: unknown,
   path: string[]
@@ -1321,6 +1339,8 @@ const conversationItemTurnCompleteSealReason = (row: {
         stringField(row.metadata ?? {}, "semanticControl") ===
           "turn_completed")) ||
     (row.source_adapter_version === "codex-hook-signal-v1" &&
+      row.source_event_type === "turn_completed") ||
+    (row.source_adapter_version === "claude-code-hook-signal-v1" &&
       row.source_event_type === "turn_completed") ||
     (row.source_transport === "pds_relay" &&
       row.source_event_type === "pds_session_closed")
@@ -3397,8 +3417,10 @@ const rebuiltSemanticMemoryEventsFromSources = async (
           projectionPolicyRevision: first.projectionPolicyRevision
         },
         visibility: first.row.visibility,
-        sourceRuntime:
-          first.row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+        sourceRuntime: conversationSourceRuntime(
+          first.row.source_kind,
+          first.row.metadata
+        ),
         captureMethod: captureMethodForConversationItem({
           sourceTransport: first.row.source_transport
         }),
@@ -4910,8 +4932,10 @@ export const createMemorySourceRepository = (
                   projectionPolicyRevision: first.projectionPolicyRevision
                 },
                 visibility: first.row.visibility,
-                sourceRuntime:
-                  first.row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                sourceRuntime: conversationSourceRuntime(
+                  first.row.source_kind,
+                  first.row.metadata
+                ),
                 captureMethod: captureMethodForConversationItem({
                   sourceTransport: first.row.source_transport
                 }),
@@ -5176,8 +5200,7 @@ export const createMemorySourceRepository = (
             const projectionTranscriptItemId =
               projectionTranscriptItemIdFor(row);
             const requiresTranscriptSourceTime =
-              row.source_transport === "transcript" &&
-              row.source_kind === "codex";
+              row.source_transport === "transcript";
             if (
               requiresTranscriptSourceTime &&
               (projectionPolicy.createMessage ||
@@ -5226,8 +5249,10 @@ export const createMemorySourceRepository = (
                     sessionId: row.session_id ?? undefined,
                     turnId: row.turn_id ?? undefined,
                     conversationItemId: sourceIds[0],
-                    sourceRuntime:
-                      row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                    sourceRuntime: conversationSourceRuntime(
+                      row.source_kind,
+                      row.metadata
+                    ),
                     sourceKind: row.source_kind,
                     sourceAdapterVersion: row.source_adapter_version,
                     usageSource:
@@ -5281,8 +5306,10 @@ export const createMemorySourceRepository = (
                   sessionId: row.session_id ?? undefined,
                   turnId: row.turn_id ?? undefined,
                   conversationItemId: sourceIds[0],
-                  sourceRuntime:
-                    row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                  sourceRuntime: conversationSourceRuntime(
+                    row.source_kind,
+                    row.metadata
+                  ),
                   sourceKind: row.source_kind,
                   sourceAdapterVersion: row.source_adapter_version,
                   usageSource: "transcript",
@@ -5455,7 +5482,7 @@ export const createMemorySourceRepository = (
                   messageRole,
                   messageContentForStorage,
                   messageContentJsonForStorage,
-                  row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                  conversationSourceRuntime(row.source_kind, row.metadata),
                   captureMethodForConversationItem({
                     sourceTransport: row.source_transport
                   }),
@@ -5691,7 +5718,7 @@ export const createMemorySourceRepository = (
                   jsonbParam(toolInputForStorage),
                   jsonbParam(toolResponseForStorage),
                   stringField(metadata, "status") ?? null,
-                  row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                  conversationSourceRuntime(row.source_kind, row.metadata),
                   captureMethodForConversationItem({
                     sourceTransport: row.source_transport
                   }),

@@ -11,6 +11,7 @@ import {
 import {
   ManagedConversationSourceReplicaPendingError,
   createManagedConversationService,
+  managedClaudeRuntimeHome,
   managedConversationFailureCode,
   managedConversationOriginSourceGeneration,
   reconcileBlockedManagedConversationSource,
@@ -18,6 +19,29 @@ import {
   shouldRequestManagedConversationSourceRestore,
   shouldRecoverForkPreparationFailure
 } from "./managed-conversation-service.js";
+
+describe("Managed Claude runtime home isolation", () => {
+  it("uses the persisted transcript home for resume and an exact override for fork", () => {
+    const persistedHome = "/managed/claude/persisted";
+    const forkHome = "/managed/claude/fork";
+    const binding = {
+      managedHome: persistedHome,
+      transcriptPath: `${persistedHome}/projects/project/session.jsonl`
+    };
+
+    expect(managedClaudeRuntimeHome(binding)).toBe(persistedHome);
+    expect(managedClaudeRuntimeHome(binding, forkHome)).toBe(forkHome);
+  });
+
+  it("requires a bound managed store when there is no exact override", () => {
+    expect(
+      managedClaudeRuntimeHome({
+        managedHome: null,
+        transcriptPath: null
+      })
+    ).toBeUndefined();
+  });
+});
 
 describe("Managed Conversation service lifecycle", () => {
   it("waits for startup recovery before completing shutdown", async () => {
@@ -37,6 +61,7 @@ describe("Managed Conversation service lifecycle", () => {
       localOwnerUserId: randomUUID(),
       appServerBinary: "codex",
       model: "test-model",
+      claudeModel: "claude-haiku-4-5-20251001",
       reasoningEffort: "low",
       deviceId: randomUUID(),
       deploymentId: randomUUID(),
@@ -83,7 +108,7 @@ describe("Managed Conversation source identity", () => {
           sessionId,
           sourceGenerationId
         },
-        { sessionId, providerThreadId }
+        { sessionId, providerThreadId, sourceKind: "codex" }
       )
     ).toBe(sourceGenerationId);
   });
@@ -105,7 +130,7 @@ describe("Managed Conversation source identity", () => {
           sourceGenerationId,
           ...mismatch
         },
-        { sessionId, providerThreadId }
+        { sessionId, providerThreadId, sourceKind: "codex" }
       )
     ).toThrowError(
       expect.objectContaining({

@@ -19,6 +19,10 @@
     "./codex-transcript-parser": {
       "types": "./dist/codex-transcript-parser.d.ts",
       "import": "./dist/codex-transcript-parser.js"
+    },
+    "./claude-transcript-parser": {
+      "types": "./dist/claude-transcript-parser.d.ts",
+      "import": "./dist/claude-transcript-parser.js"
     }
   },
   "files": [
@@ -35,6 +39,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.226",
     "@koed/core": "workspace:*",
     "@koed/shared": "workspace:*",
     "@modelcontextprotocol/core": "2.0.0",
