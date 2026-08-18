@@ -138,6 +138,53 @@ describe("PreferencesView", () => {
     expect(container.textContent).not.toContain("sk-");
   });
 
+  it("confirms Claude Code user-settings changes before setup", async () => {
+    const component = { state: "healthy" as const };
+    const status = {
+      ok: true,
+      state: "healthy",
+      serverPackage: component,
+      api: { ...component, url: "http://127.0.0.1:3300" },
+      database: component,
+      workerQueues: component,
+      embeddingService: component,
+      mcpServer: component,
+      captureHook: component,
+      codex: { ...component, configured: true },
+      claudeCode: { state: "not_configured", configured: false },
+      pi: { ...component, configured: true },
+      lcmSummaryService: component
+    } as KoedServerStatus;
+    const invoke = vi
+      .fn<DesktopApi["invoke"]>()
+      .mockResolvedValueOnce(status)
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({
+        ...status,
+        claudeCode: { ...component, configured: true }
+      });
+    window.koedDesktop = { invoke } as DesktopApi;
+    const statusStore = new DesktopStatusStore();
+    await statusStore.refresh();
+    await renderPreferences({ initialSection: "advanced", statusStore });
+
+    await clickButton(container, "Set up Claude Code integration");
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog?.textContent).toContain(
+      "add its MCP Server and Supported Capture Hook"
+    );
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    await clickButton(dialog!, "Set up Claude Code");
+    await vi.waitFor(() =>
+      expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+        "status",
+        "setup_claude",
+        "status"
+      ])
+    );
+  });
+
   it("confirms the global profile change before setting up Pi", async () => {
     const component = { state: "healthy" as const };
     const status = {

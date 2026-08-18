@@ -84,7 +84,7 @@ describe("Koed server desktop manager", () => {
     expect(timeout).toBe(120_000);
   });
 
-  it("routes Pi setup and repair through the idempotent Koed Server setup command", async () => {
+  it("routes optional AI Client setup and repair through idempotent Koed Server commands", async () => {
     const invocations: string[][] = [];
     const manager = createKoedServerManager({
       repoRoot: "/repo",
@@ -108,10 +108,14 @@ describe("Koed server desktop manager", () => {
 
     await manager.handlers.setup_pi!();
     await manager.handlers.repair_pi!();
+    await manager.handlers.setup_claude!();
+    await manager.handlers.repair_claude!();
 
     expect(invocations).toEqual([
       ["setup", "pi", "--json"],
-      ["setup", "pi", "--json"]
+      ["setup", "pi", "--json"],
+      ["setup", "claude", "--json"],
+      ["setup", "claude", "--json"]
     ]);
   });
 

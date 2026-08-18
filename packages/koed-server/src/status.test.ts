@@ -1,6 +1,8 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
   type PathLike
@@ -13,6 +15,7 @@ import {
   collectKoedServerDoctor,
   collectKoedServerStatus,
   healthy,
+  inspectClaudeCode,
   inspectPi,
   needsAttention,
   notConfigured,
@@ -121,6 +124,85 @@ describe("Pi integration status", () => {
       configured: false
     });
     expect(status.action).toContain("Install Pi");
+  });
+});
+
+describe("Claude Code integration status", () => {
+  it("reports configured MCP, hooks, and authentication", () => {
+    const root = tempDir();
+    const settingsPath = resolve(root, ".claude/settings.json");
+    const captureHook = resolve(
+      root,
+      "packages/mcp-server/dist/capture-hook.js"
+    );
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    mkdirSync(resolve(root, ".claude"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(captureHook, "");
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: Object.fromEntries(
+          [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "Stop",
+            "StopFailure",
+            "SubagentStart",
+            "SubagentStop",
+            "SessionEnd"
+          ].map((eventName) => [
+            eventName,
+            [{ hooks: [{ command: `node ${captureHook}` }] }]
+          ])
+        )
+      })
+    );
+    const settingsContent = readFileSync(settingsPath, "utf8");
+    const environment = {
+      HOME: root,
+      KOED_HOME: resolve(root, "koed"),
+      KOED_REPO_ROOT: root,
+      CLAUDE_SETTINGS_PATH: settingsPath
+    };
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        existsSync,
+        readFileSync: () => settingsContent,
+        spawnSync: (_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("2.1.227 (Claude Code)\n")
+            : spawnResult("")
+      } as never
+    );
+
+    expect(status).toMatchObject({ state: "healthy", configured: true });
+    expect(status.details).toMatchObject({
+      version: "2.1.227 (Claude Code)",
+      settingsPath
+    });
+  });
+
+  it("keeps missing Claude Code optional but actionable", () => {
+    const root = tempDir();
+    const environment = { HOME: root, KOED_HOME: root, KOED_REPO_ROOT: root };
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      { spawnSync: () => spawnResult("", 1) } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false
+    });
+    expect(status.action).toContain("Install Claude Code");
   });
 });
 

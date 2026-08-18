@@ -29,6 +29,7 @@ export interface KoedServerStatus {
   codexTranscriptWatcher: KoedServerComponentStatus;
   claudeTranscriptWatcher: KoedServerComponentStatus;
   codex: KoedServerComponentStatus & { configured: boolean };
+  claudeCode: KoedServerComponentStatus & { configured: boolean };
   pi: KoedServerComponentStatus & { configured: boolean };
   lcmSummaryService: KoedServerComponentStatus;
   deviceIdentity: KoedServerComponentStatus & {

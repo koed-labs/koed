@@ -28,7 +28,14 @@ state stay local and are not stored by the Koed backend.
 
 ## Configure Claude Code
 
-From the Koed checkout after building the MCP Server, run:
+In Koed Desktop, open **Preferences → Advanced Diagnostics** and choose **Set
+up Claude Code integration**. Desktop verifies the independently installed
+Claude Code executable and sign-in, then configures the Koed-owned MCP and Hook
+entries after explicit confirmation. The same screen reports integration health
+and provides an idempotent repair action.
+
+From a contributor checkout after building the MCP Server, the equivalent Local
+Operator Script is:
 
 ```bash
 pnpm claude:configure
@@ -181,10 +188,10 @@ Installing one integration neither configures nor disables the other.
 
 ## Current setup boundaries
 
-- Claude setup is a Local Operator Script and is not yet a Koed Desktop guided
-  setup or repair stage.
-- The Claude setup command configures MCP and hooks but does not run an automated
-  end-to-end capture fixture. Verify a fresh live session explicitly.
+- Claude Code remains optional. Its setup or authentication state does not block
+  Codex, Pi, or core Koed runtime health.
+- Desktop setup configures MCP and hooks but does not run an automated end-to-end
+  capture fixture. Verify a fresh live session explicitly.
 - Existing synthesis defaults remain Codex-oriented. A Claude-only installation
   must select `claude` and an exposed Claude model for each flow it wants Claude
   Code to run.

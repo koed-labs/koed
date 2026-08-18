@@ -13,6 +13,7 @@ import { loadRepoEnv } from "./env-file.js";
 import { capSupervisorLog } from "./supervisor-log.js";
 import { repairCodexIntegration, setupCodex } from "./setup.js";
 import { setupPi } from "./pi-setup.js";
+import { setupClaude } from "./claude-setup.js";
 import { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
 import { restartKoedServer } from "./restart.js";
 import { startKoedServer } from "./start.js";
@@ -99,6 +100,7 @@ Commands:
   personal-sync local-replica remove --json
   personal-sync conflict resolve --json
   setup codex --json     Configure the supported Codex integration
+  setup claude --json    Configure the supported Claude Code integration
   setup pi --json        Configure the supported Pi integration
   repair codex --json    Rewrite Codex integration for the active local API
   models status --json   Print bundled local model install state
@@ -154,6 +156,7 @@ export interface KoedServerCliDependencies {
   stop?: typeof stopKoedServer;
   restart?: typeof restartKoedServer;
   setupCodex?: typeof setupCodex;
+  setupClaude?: typeof setupClaude;
   setupPi?: typeof setupPi;
   repairCodex?: typeof repairCodexIntegration;
   collectModelStatus?: typeof collectLocalModelStatus;
@@ -418,6 +421,7 @@ export const runKoedServerCli = async (
     stop = stopKoedServer,
     restart = restartKoedServer,
     setupCodex: setup = setupCodex,
+    setupClaude: setupClaudeIntegration = setupClaude,
     setupPi: setupPiIntegration = setupPi,
     repairCodex = repairCodexIntegration,
     collectModelStatus = collectLocalModelStatus,
@@ -588,6 +592,20 @@ export const runKoedServerCli = async (
           result.ok
             ? "Pi setup completed.\n"
             : `${result.error ?? "Pi setup failed."}\n`
+        );
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "setup" && subcommand === "claude") {
+      const result = setupClaudeIntegration();
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(
+          result.ok
+            ? "Claude Code setup completed. Restart Claude Code before verifying capture and recall.\n"
+            : `${result.error ?? "Claude Code setup failed."}\n`
         );
       }
       return result.ok ? 0 : 1;

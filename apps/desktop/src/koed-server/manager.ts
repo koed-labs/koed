@@ -223,6 +223,10 @@ const diagnosticStatus = ({
     mcpServer: component("Run setup"),
     captureHook: component("Run setup"),
     codex: { ...component("Run setup"), configured: false },
+    claudeCode: {
+      ...component("Set up Claude Code integration"),
+      configured: false
+    },
     pi: { ...component("Set up Pi integration"), configured: false },
     lcmSummaryService: component(),
     personalDeviceSync: personalDeviceSyncComponent(process.env),
@@ -2869,6 +2873,19 @@ export const createKoedServerManager = ({
     return result;
   };
 
+  const runOptionalAiClientSetup = async (
+    client: "Claude Code" | "Pi",
+    args: ["setup", "claude" | "pi"]
+  ) => {
+    const result = await runJson(args, 120_000);
+    if (!resultOk(result)) {
+      throw new Error(
+        resultMessage(result, `${client} integration could not be configured.`)
+      );
+    }
+    return result;
+  };
+
   return {
     personalMemory,
     managedConversation,
@@ -2880,8 +2897,12 @@ export const createKoedServerManager = ({
       stop,
       setup_codex: () => runJson(["setup", "codex"], 120_000),
       repair_codex: () => runJson(["repair", "codex"], 120_000),
-      setup_pi: () => runJson(["setup", "pi"], 120_000),
-      repair_pi: () => runJson(["setup", "pi"], 120_000),
+      setup_pi: () => runOptionalAiClientSetup("Pi", ["setup", "pi"]),
+      repair_pi: () => runOptionalAiClientSetup("Pi", ["setup", "pi"]),
+      setup_claude: () =>
+        runOptionalAiClientSetup("Claude Code", ["setup", "claude"]),
+      repair_claude: () =>
+        runOptionalAiClientSetup("Claude Code", ["setup", "claude"]),
       runtime_status: () => runRuntimeStatusJson(),
       runtime_install: (args) => runRuntimeInstallJson(args),
       models_status: () => runModelJson(),

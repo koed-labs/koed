@@ -100,19 +100,22 @@ describe("DesktopStatusStore", () => {
     });
   });
 
-  it("refreshes Pi profile status after setup", async () => {
-    const invoke = vi
-      .fn<DesktopApi["invoke"]>()
-      .mockResolvedValueOnce({ ok: true })
-      .mockResolvedValueOnce(status());
-    window.koedDesktop = { invoke } as DesktopApi;
-    const store = new DesktopStatusStore();
+  it.each(["setup_pi", "setup_claude"] as const)(
+    "refreshes optional AI Client status after %s",
+    async (command) => {
+      const invoke = vi
+        .fn<DesktopApi["invoke"]>()
+        .mockResolvedValueOnce({ ok: true })
+        .mockResolvedValueOnce(status());
+      window.koedDesktop = { invoke } as DesktopApi;
+      const store = new DesktopStatusStore();
 
-    await store.run("setup_pi");
+      await store.run(command);
 
-    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
-      "setup_pi",
-      "status"
-    ]);
-  });
+      expect(invoke.mock.calls.map(([name]) => name)).toEqual([
+        command,
+        "status"
+      ]);
+    }
+  );
 });

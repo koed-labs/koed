@@ -37,6 +37,7 @@ export interface KoedServerStatus {
   mcpServer: ComponentStatus;
   captureHook: ComponentStatus;
   codex: ComponentStatus & { configured: boolean };
+  claudeCode?: ComponentStatus & { configured: boolean };
   pi?: ComponentStatus & { configured: boolean };
   lcmSummaryService: ComponentStatus;
   personalDeviceSync?: ComponentStatus;

@@ -20,6 +20,14 @@ import { isProcessRunning } from "./process-liveness.js";
 import { inspectDeviceIdentityStatus } from "./device-identity.js";
 import { collectUpstreamRegistryStatus } from "./upstream-registry.js";
 import { isSupportedPiVersion, MINIMUM_PI_VERSION } from "./pi-setup.js";
+import {
+  CLAUDE_HOOK_EVENTS,
+  claudeProcessEnvironment,
+  hasClaudeKoedHook,
+  isSupportedClaudeCodeVersion,
+  MINIMUM_CLAUDE_CODE_VERSION,
+  resolveClaudeSettingsPath
+} from "./claude-setup.js";
 import type {
   KoedServerComponentState,
   KoedServerComponentStatus,
@@ -202,6 +210,129 @@ export const inspectPi = (
       executable,
       version: versionText,
       packagePath
+    }),
+    configured: true
+  };
+};
+
+export const inspectClaudeCode = (
+  environment: NodeJS.ProcessEnv,
+  paths: KoedServerPaths,
+  deps: Required<KoedServerStatusDependencies>
+): KoedServerStatus["claudeCode"] => {
+  const executable =
+    environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
+  const settingsPath = resolveClaudeSettingsPath(environment);
+  const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
+  const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  const childEnvironment = claudeProcessEnvironment(environment);
+  const version = deps.spawnSync(executable, ["--version"], {
+    encoding: "utf8",
+    env: childEnvironment,
+    timeout: 5_000
+  });
+  const versionText = version.stdout?.trim() ?? "";
+  if (version.error || version.status !== 0) {
+    return {
+      ...notConfigured(
+        "Claude Code is not installed or could not be started.",
+        `Install Claude Code ${MINIMUM_CLAUDE_CODE_VERSION} or newer, then set up its integration.`
+      ),
+      configured: false
+    };
+  }
+  if (!isSupportedClaudeCodeVersion(versionText)) {
+    return {
+      ...needsAttention(
+        `Claude Code ${versionText || "version"} is unsupported.`,
+        `Install Claude Code ${MINIMUM_CLAUDE_CODE_VERSION} or newer, then repair its integration.`,
+        { executable, version: versionText, settingsPath }
+      ),
+      configured: false
+    };
+  }
+  if (
+    !deps.existsSync(runtime.mcpCli) ||
+    !deps.existsSync(runtime.captureHook)
+  ) {
+    return {
+      ...needsAttention(
+        "Koed's Claude Code integration artifacts are missing.",
+        "Repair Koed, then repair the Claude Code integration.",
+        { executable, version: versionText, settingsPath }
+      ),
+      configured: false
+    };
+  }
+  if (!deps.existsSync(settingsPath)) {
+    return {
+      ...notConfigured(
+        "Koed is not configured in Claude Code.",
+        "Set up Claude Code integration from Koed Desktop.",
+        { executable, version: versionText, settingsPath }
+      ),
+      configured: false
+    };
+  }
+  let settings: { hooks?: Record<string, unknown> };
+  try {
+    settings = JSON.parse(
+      String(deps.readFileSync(settingsPath, "utf8"))
+    ) as typeof settings;
+  } catch {
+    return {
+      ...needsAttention(
+        "Claude Code settings are malformed or unreadable.",
+        "Fix the settings file, then repair the Claude Code integration.",
+        { executable, version: versionText, settingsPath }
+      ),
+      configured: false
+    };
+  }
+  const missingHooks = CLAUDE_HOOK_EVENTS.filter(
+    (eventName) =>
+      !hasClaudeKoedHook(settings.hooks?.[eventName], runtime.captureHook)
+  );
+  const mcp = deps.spawnSync(executable, ["mcp", "get", mcpName], {
+    encoding: "utf8",
+    env: childEnvironment,
+    timeout: 10_000
+  });
+  if (mcp.error || mcp.status !== 0 || missingHooks.length > 0) {
+    return {
+      ...notConfigured(
+        "Claude Code's Koed MCP or Capture Hook configuration is incomplete.",
+        "Set up Claude Code integration from Koed Desktop.",
+        {
+          executable,
+          version: versionText,
+          settingsPath,
+          missingHooks
+        }
+      ),
+      configured: false
+    };
+  }
+  const auth = deps.spawnSync(executable, ["auth", "status", "--json"], {
+    encoding: "utf8",
+    env: childEnvironment,
+    timeout: 10_000
+  });
+  if (auth.error || auth.status !== 0) {
+    return {
+      ...needsAttention(
+        "Claude Code is configured for Koed but is not signed in.",
+        "Run `claude auth login`, then refresh status.",
+        { executable, version: versionText, settingsPath }
+      ),
+      configured: false
+    };
+  }
+  return {
+    ...healthy("Claude Code is configured for Koed capture and recall.", {
+      executable,
+      version: versionText,
+      settingsPath
     }),
     configured: true
   };
@@ -922,6 +1053,7 @@ export const collectKoedServerStatus = async (
     serverConfig.dependencyMode === "bundled-local";
   const apiToken = inspectApiToken(paths, runtimeEnvironment, repoEnv);
   const codex = inspectCodex(runtimeEnvironment, paths, deps);
+  const claudeCode = inspectClaudeCode(runtimeEnvironment, paths, deps);
   const pi = inspectPi(runtimeEnvironment, paths, deps);
   const captureHook = inspectCaptureHook(runtimeEnvironment, paths, deps);
   const codexTranscriptWatcher = inspectCodexTranscriptWatcher(
@@ -1036,6 +1168,7 @@ export const collectKoedServerStatus = async (
     codexTranscriptWatcher,
     claudeTranscriptWatcher,
     codex,
+    claudeCode,
     pi,
     lcmSummaryService,
     deviceIdentity,
@@ -1084,6 +1217,7 @@ export const collectKoedServerDoctor = async (
       status.claudeTranscriptWatcher
     ],
     ["codex", "Codex configuration", status.codex],
+    ["claudeCode", "Claude Code configuration", status.claudeCode],
     ["pi", "Pi configuration", status.pi],
     ["lcmSummaryService", "LCM Summary Service", status.lcmSummaryService],
     ["deviceIdentity", "Device identity", status.deviceIdentity],
@@ -1101,6 +1235,7 @@ export const collectKoedServerDoctor = async (
       check.id !== "deviceIdentity" &&
       check.id !== "codexTranscriptWatcher" &&
       check.id !== "claudeTranscriptWatcher" &&
+      check.id !== "claudeCode" &&
       check.id !== "pi"
   );
   const failed = blockingChecks.filter(

@@ -122,8 +122,9 @@ AI Runtime.
 8. `koed-server status --json` and `koed-server doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker process state, local API Token configuration, MCP Server doctor
-   output, Supported Capture Hook config, Codex config, LCM Summary Service
-   availability, and last verification metadata. Status compares the active
+   output, Supported Capture Hook config, per-client Codex, Claude Code, and Pi
+   config, LCM Summary Service availability, and last verification metadata.
+   Status compares the active
    local API URL/token against the Koed-managed Codex MCP block and separately
    verifies the credential-free Capture Hook command path. MCP configuration
    contains `KOED_HOME` rather than API credentials. Stale ports,
@@ -132,7 +133,10 @@ AI Runtime.
    current migrations, pgvector, local or BullMQ queue backend availability,
    and Embedding Service model/dimension compatibility. Historical-import
    backlog and aggregate Transcript Watcher process/status data are diagnostic
-   only, never readiness gates.
+   only, never readiness gates. Claude Code and Pi integration checks are also
+   optional diagnostics: selecting one for capture, Recall, or local Synthesis
+   requires that client to be healthy, but their absence does not make the core
+   Koed runtime or another AI Client unhealthy.
 9. `koed-server setup codex --json` wraps the existing guided bootstrap path so
    Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
    local credential, verification, and doctor setup can be invoked through
@@ -147,9 +151,15 @@ AI Runtime.
    both mint the token through the active runtime repository with the same
    database and token pepper used by the API; Electron main only retains and
    rereads that supervisor-owned credential.
+   `koed-server setup claude --json` independently verifies Claude Code version
+   and sign-in, then preserves unrelated user settings while installing Koed's
+   MCP and Supported Capture Hook entries. `koed-server setup pi --json`
+   independently registers Koed's stable local package in the active Pi
+   profile. Both commands are idempotent and receive no provider credential.
 10. Koed Desktop can start/connect to the same headless command surface, run
     the first-launch Codex bootstrap and health-check sequence, poll status,
-    offer one-click Codex integration repair for stale local config, and
+    offer one-click Codex repair plus explicitly confirmed, optional Claude Code
+    and Pi setup/repair for stale local config, and
     provision the embedding model through `koed-server models status/install
 --json` in bundled-local mode without requiring the Operator to invoke
     repo-local scripts directly. Its Project and Captured Session navigation is

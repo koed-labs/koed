@@ -454,8 +454,8 @@ function AdvancedSection({
 }: Pick<PreferencesViewProps, "statusStore">) {
   const snapshot = useDesktopStatus(statusStore);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [pendingPiCommand, setPendingPiCommand] = useState<
-    "setup_pi" | "repair_pi" | null
+  const [pendingIntegrationCommand, setPendingIntegrationCommand] = useState<
+    "setup_pi" | "repair_pi" | "setup_claude" | "repair_claude" | null
   >(null);
   const status = snapshot.status;
 
@@ -469,6 +469,8 @@ function AdvancedSection({
       | "repair_codex"
       | "setup_pi"
       | "repair_pi"
+      | "setup_claude"
+      | "repair_claude"
       | "open_logs"
       | "status"
   ) => {
@@ -492,6 +494,7 @@ function AdvancedSection({
           ["MCP Server", status.mcpServer],
           ["Capture Hook", status.captureHook],
           ["Codex", status.codex],
+          ["Claude Code", status.claudeCode],
           ["Pi", status.pi],
           ["LCM Summary Service", status.lcmSummaryService],
           ["Personal Device Sync", status.personalDeviceSync]
@@ -540,6 +543,22 @@ function AdvancedSection({
         </Button>
         <Button
           disabled={snapshot.busyCommand !== null}
+          onClick={() =>
+            setPendingIntegrationCommand(
+              status?.claudeCode?.state === "not_configured" ||
+                !status?.claudeCode
+                ? "setup_claude"
+                : "repair_claude"
+            )
+          }
+          variant="outline"
+        >
+          {status?.claudeCode?.state === "not_configured" || !status?.claudeCode
+            ? "Set up Claude Code integration"
+            : "Repair Claude Code integration"}
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
           onClick={() => void run("doctor")}
           variant="outline"
         >
@@ -555,7 +574,7 @@ function AdvancedSection({
         <Button
           disabled={snapshot.busyCommand !== null}
           onClick={() =>
-            setPendingPiCommand(
+            setPendingIntegrationCommand(
               status?.pi?.state === "not_configured" || !status?.pi
                 ? "setup_pi"
                 : "repair_pi"
@@ -577,21 +596,26 @@ function AdvancedSection({
       </div>
       <Dialog
         onOpenChange={(open) => {
-          if (!open) setPendingPiCommand(null);
+          if (!open) setPendingIntegrationCommand(null);
         }}
-        open={pendingPiCommand !== null}
+        open={pendingIntegrationCommand !== null}
       >
         <DialogPopup>
           <DialogHeader>
             <DialogTitle>
-              {pendingPiCommand === "repair_pi"
+              {pendingIntegrationCommand === "repair_pi"
                 ? "Repair the Pi integration?"
-                : "Set up the Pi integration?"}
+                : pendingIntegrationCommand === "setup_pi"
+                  ? "Set up the Pi integration?"
+                  : pendingIntegrationCommand === "repair_claude"
+                    ? "Repair the Claude Code integration?"
+                    : "Set up the Claude Code integration?"}
             </DialogTitle>
             <DialogDescription>
-              Koed will register its local package in your active global Pi
-              profile. It preserves unrelated Pi settings and packages, and does
-              not receive your Pi or provider credentials.
+              {pendingIntegrationCommand === "setup_pi" ||
+              pendingIntegrationCommand === "repair_pi"
+                ? "Koed will register its local package in your active global Pi profile. It preserves unrelated Pi settings and packages, and does not receive your Pi or provider credentials."
+                : "Koed will add its MCP Server and Supported Capture Hook to your Claude Code user settings. It preserves unrelated settings and hooks, and does not receive your Claude or provider credentials."}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -600,12 +624,18 @@ function AdvancedSection({
             </DialogClose>
             <Button
               onClick={() => {
-                const command = pendingPiCommand;
-                setPendingPiCommand(null);
+                const command = pendingIntegrationCommand;
+                setPendingIntegrationCommand(null);
                 if (command) void run(command);
               }}
             >
-              {pendingPiCommand === "repair_pi" ? "Repair Pi" : "Set up Pi"}
+              {pendingIntegrationCommand === "repair_pi"
+                ? "Repair Pi"
+                : pendingIntegrationCommand === "setup_pi"
+                  ? "Set up Pi"
+                  : pendingIntegrationCommand === "repair_claude"
+                    ? "Repair Claude Code"
+                    : "Set up Claude Code"}
             </Button>
           </DialogFooter>
         </DialogPopup>

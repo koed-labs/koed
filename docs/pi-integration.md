@@ -19,7 +19,7 @@ After Koed runtime starts:
 node packages/koed-server/dist/cli.js setup pi --json
 ```
 
-In Koed Desktop, open **Preferences → Advanced** and choose **Set up Pi
+In Koed Desktop, open **Preferences → Advanced Diagnostics** and choose **Set up Pi
 integration**. The same screen reports active-profile health and offers an
 idempotent repair action. Pi remains optional; leaving it unconfigured does not
 block Codex or Claude Code setup or Koed's local runtime health.
