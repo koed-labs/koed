@@ -43,6 +43,10 @@ export default defineConfig({
         replacement: `${root}packages/mcp-server/src/index.ts`
       },
       {
+        find: "@koed/worker/embedding-workflow",
+        replacement: `${root}apps/worker/src/embedding-workflow.ts`
+      },
+      {
         find: "@koed/shared",
         replacement: `${root}packages/shared/src/index.ts`
       }

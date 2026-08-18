@@ -38,6 +38,9 @@
       ],
       "@koed/shared/secure-upstream-fetch": [
         "packages/shared/src/secure-upstream-fetch.ts"
+      ],
+      "@koed/worker/embedding-workflow": [
+        "apps/worker/src/embedding-workflow.ts"
       ]
     },
     "resolveJsonModule": true,
