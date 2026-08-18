@@ -139,7 +139,7 @@ test("claude configure preserves an unrelated user-scoped MCP name collision", a
       'import { appendFileSync } from "node:fs";',
       `appendFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");`,
       'if (process.argv[2] === "auth") process.exit(0);',
-      'if (process.argv[2] === "mcp" && process.argv[3] === "get") { console.log("koed:\\n  Type: stdio\\n  Command: node\\n  Args: /tmp/unrelated.js\\n  Environment:\\n    KOED_HOME=/tmp/unrelated"); process.exit(0); }'
+      'if (process.argv[2] === "mcp" && process.argv[3] === "get") { console.log("koed:\\n  Type: stdio\\n  Command: node\\n  Args: /other/mcp-server/dist/cli.js\\n  Environment:\\n    KOED_HOME=/other"); process.exit(0); }'
     ].join("\n")
   );
   chmodSync(executable, 0o700);

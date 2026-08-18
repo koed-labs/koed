@@ -354,7 +354,7 @@ export const inspectClaudeCode = (
   if (
     !mcp.error &&
     mcp.status === 0 &&
-    !claudeMcpEntryIsKoedOwned(mcp.stdout ?? "")
+    !claudeMcpEntryIsKoedOwned(mcp.stdout ?? "", runtime.mcpCli, paths.koedHome)
   ) {
     return {
       ...needsAttention(

@@ -136,10 +136,28 @@ export const claudeProcessEnvironment = (
   );
 };
 
-export const claudeMcpEntryIsKoedOwned = (output: string): boolean =>
-  /^\s*Args:\s+.*(?:[/\\])mcp-server(?:[/\\])dist(?:[/\\])cli\.js["']?\s*$/m.test(
-    output
-  ) && /^\s*KOED_HOME=\S.*$/m.test(output);
+const unquote = (value: string): string => {
+  const trimmed = value.trim();
+  return trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+    ? trimmed.slice(1, -1)
+    : trimmed;
+};
+
+export const claudeMcpEntryIsKoedOwned = (
+  output: string,
+  expectedMcpCli: string,
+  expectedKoedHome: string
+): boolean => {
+  const args = output.match(/^\s*Args:\s+(.+)$/m)?.[1];
+  const koedHome = output.match(/^\s*KOED_HOME=(.+)$/m)?.[1];
+  if (!args || !koedHome) return false;
+  return (
+    resolve(unquote(args)) === resolve(expectedMcpCli) &&
+    resolve(unquote(koedHome)) === resolve(expectedKoedHome)
+  );
+};
 
 export const setupClaude = (
   environment: NodeJS.ProcessEnv = process.env,
@@ -230,7 +248,11 @@ export const setupClaude = (
     });
     if (
       existingMcp.status === 0 &&
-      !claudeMcpEntryIsKoedOwned(existingMcp.stdout ?? "")
+      !claudeMcpEntryIsKoedOwned(
+        existingMcp.stdout ?? "",
+        runtime.mcpCli,
+        paths.koedHome
+      )
     ) {
       return failure(
         `Claude Code already has an unrelated user-scoped MCP server named ${mcpName}.`,

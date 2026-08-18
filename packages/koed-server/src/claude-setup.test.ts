@@ -8,7 +8,11 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CLAUDE_HOOK_EVENTS, setupClaude } from "./claude-setup.js";
+import {
+  CLAUDE_HOOK_EVENTS,
+  claudeMcpEntryIsKoedOwned,
+  setupClaude
+} from "./claude-setup.js";
 
 const temporaryDirectories: string[] = [];
 const spawnResult = (stdout = "", status = 0) =>
@@ -21,6 +25,26 @@ afterEach(() => {
 });
 
 describe("Claude Code setup", () => {
+  it("proves MCP ownership with exact runtime and Koed home paths", () => {
+    const output =
+      "koed:\n  Args: /expected/mcp-server/dist/cli.js\n  Environment:\n    KOED_HOME=/expected/koed\n";
+
+    expect(
+      claudeMcpEntryIsKoedOwned(
+        output,
+        "/expected/mcp-server/dist/cli.js",
+        "/expected/koed"
+      )
+    ).toBe(true);
+    expect(
+      claudeMcpEntryIsKoedOwned(
+        output,
+        "/other/mcp-server/dist/cli.js",
+        "/other/koed"
+      )
+    ).toBe(false);
+  });
+
   it("preserves unrelated settings and configures credential-free MCP and hooks", () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-claude-setup-"));
     temporaryDirectories.push(root);
@@ -136,7 +160,7 @@ describe("Claude Code setup", () => {
         }
         if (args[0] === "mcp" && args[1] === "get") {
           return spawnResult(
-            "koed:\n  Type: stdio\n  Command: node\n  Args: /tmp/unrelated.js\n  Environment:\n    KOED_HOME=/tmp/unrelated\n"
+            "koed:\n  Type: stdio\n  Command: node\n  Args: /other/mcp-server/dist/cli.js\n  Environment:\n    KOED_HOME=/other\n"
           );
         }
         return spawnResult();

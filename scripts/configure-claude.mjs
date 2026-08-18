@@ -78,10 +78,24 @@ const runClaude = (args) =>
     env: childEnvironment,
     timeout: 30_000
   });
-const mcpEntryIsKoedOwned = (output) =>
-  /^\s*Args:\s+.*(?:[/\\])mcp-server(?:[/\\])dist(?:[/\\])cli\.js["']?\s*$/m.test(
-    output
-  ) && /^\s*KOED_HOME=\S.*$/m.test(output);
+const unquote = (value) => {
+  const trimmed = value.trim();
+  return trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+    ? trimmed.slice(1, -1)
+    : trimmed;
+};
+const mcpEntryIsKoedOwned = (output) => {
+  const args = output.match(/^\s*Args:\s+(.+)$/m)?.[1];
+  const configuredKoedHome = output.match(/^\s*KOED_HOME=(.+)$/m)?.[1];
+  return Boolean(
+    args &&
+    configuredKoedHome &&
+    resolve(unquote(args)) === mcpCliPath &&
+    resolve(unquote(configuredKoedHome)) === koedHome
+  );
+};
 
 const auth = runClaude(["auth", "status", "--json"]);
 if (mode !== "remove" && auth.status !== 0) {
