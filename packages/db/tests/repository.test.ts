@@ -16608,7 +16608,9 @@ describeDb("memory repository visibility", () => {
       eventTime: "2026-08-12T01:00:00.000Z",
       rawJson,
       rawText: "Prior task instructions visible to the AI Client.",
-      sourceHash: `sha256:${createHash("sha256").update(JSON.stringify(rawJson)).digest("hex")}`,
+      sourceHash: `sha256:${createHash("sha256")
+        .update(JSON.stringify({ externalThreadId, stableItemId, rawJson }))
+        .digest("hex")}`,
       idempotencyKey: `normalized-import:${createHash("sha256").update(stableItemId).digest("hex")}`,
       metadata: {
         transcriptType: "user_message",
