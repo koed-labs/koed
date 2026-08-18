@@ -1039,7 +1039,7 @@ const reduceShardSummaries = async (
 export const executeLcmSummaryNode = async (
   node: LcmSummaryNode,
   config: LcmSummaryWorkerConfig,
-  runner: CodexLcmSummaryRunner,
+  runner: LcmSummaryRunner,
   stats: {
     promptTokenSum: number;
     maxPromptTokens: number;

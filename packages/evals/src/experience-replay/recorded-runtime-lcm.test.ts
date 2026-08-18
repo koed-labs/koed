@@ -23,7 +23,7 @@ const config = resolveExperienceReplayConfig({
   },
   lcm_summary: {
     model: { id: "gpt-5.6-luna", reasoning_effort: "low" },
-    prompt_version: "lcm-codex-summary-json-v4",
+    prompt_version: "lcm-ai-client-summary-json-v4",
     output_schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
   },
   session_title: {
@@ -142,7 +142,7 @@ describe("recorded LCM preparation", () => {
     ).resolves.toMatchObject({
       nodeIds: ["node-1"],
       model: "gpt-5.6-luna",
-      promptVersion: "lcm-codex-summary-json-v4",
+      promptVersion: "lcm-ai-client-summary-json-v4",
       inputTokens: 120,
       outputTokens: 20
     });
@@ -150,7 +150,7 @@ describe("recorded LCM preparation", () => {
       expect.objectContaining({
         nodeId: "node-1",
         summaryText: "A grounded summary.",
-        summaryPromptVersion: "lcm-codex-summary-json-v4",
+        summaryPromptVersion: "lcm-ai-client-summary-json-v4",
         summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
       })
     );

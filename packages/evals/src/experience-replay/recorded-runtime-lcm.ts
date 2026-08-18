@@ -117,7 +117,7 @@ export const createRecordedLcmJobRunner = ({
       reasoningEffort: config.lcm_summary.model.reasoning_effort,
       timeoutMs: config.timeouts.preparation_seconds * 1_000,
       maxPromptTokens: config.admission.max_input_tokens_per_call,
-      appServerBinary: environment.MEMORY_CODEX_APP_SERVER_BINARY
+      executablePath: environment.MEMORY_CODEX_APP_SERVER_BINARY
     }
   );
 
