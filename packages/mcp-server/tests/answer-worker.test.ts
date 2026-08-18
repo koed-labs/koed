@@ -474,6 +474,7 @@ describe("memory answer worker", () => {
           model: "gpt-5.4-mini",
           usedFallback: false,
           searchCount: 4,
+          displayMessage: "The worker could not verify this answer.",
           errorMessage: "SECRET WORKER ERROR",
           appServerEvents: []
         }
@@ -487,6 +488,9 @@ describe("memory answer worker", () => {
     expect(response.citations).toEqual([{ sourceId: "selected" }]);
     expect(response.evidenceBundle).toBeUndefined();
     expect(response.localMemoryWorker.searchCount).toBeUndefined();
+    expect(response.localMemoryWorker.displayMessage).toBe(
+      "The worker could not verify this answer."
+    );
     expect(JSON.stringify(response)).not.toMatch(
       /SECRET INTERNAL QUERY|SECRET CALLER HINT|SECRET ERROR|SECRET WORKER ERROR/
     );
@@ -2018,7 +2022,7 @@ describe("memory answer worker", () => {
         "without resolvable supporting evidence"
       );
       expect(response.markdown).toBe(
-        "Memory retrieval was incomplete, so there is not enough evidence to answer reliably."
+        "The Codex worker reached the Memory Answer resource limit before it could produce a reliable answer. Try a narrower question."
       );
       expect(response.localMemoryWorker.memoryStatus).toBe("insufficient");
       expect(response.structuredAnswer).toMatchObject({

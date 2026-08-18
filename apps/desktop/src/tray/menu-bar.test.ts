@@ -170,10 +170,11 @@ describe("Desktop menu-bar status", () => {
       setToolTip: vi.fn()
     };
     const openDesktop = vi.fn();
+    const getStatus = vi.fn(async () => healthyStatus());
     const menuBar = createDesktopMenuBar({
       tray,
       buildMenu: (template) => template,
-      getStatus: async () => healthyStatus(),
+      getStatus,
       openDesktop,
       quit: vi.fn(),
       pollIntervalMs: 60_000
@@ -192,6 +193,8 @@ describe("Desktop menu-bar status", () => {
       label: "6 of 6 services running",
       enabled: false
     });
+    await Promise.resolve();
+    expect(getStatus).toHaveBeenCalledOnce();
 
     menuBar.dispose();
     expect(tray.destroy).toHaveBeenCalledOnce();

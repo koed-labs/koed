@@ -173,6 +173,8 @@ describe("MemoryToolExecutor", () => {
           model: null,
           provider: "codex",
           promptVersion: "test",
+          displayMessage:
+            "The Codex worker could not verify enough supporting Personal Memory evidence.",
           skippedReason: "disabled",
           usedFallback: true
         }
@@ -205,7 +207,9 @@ describe("MemoryToolExecutor", () => {
     expect(completePendingDesktopAsk).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
-        status: "error"
+        status: "error",
+        error_message:
+          "The Codex worker could not verify enough supporting Personal Memory evidence."
       })
     );
   });

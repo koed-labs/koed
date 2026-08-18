@@ -533,7 +533,11 @@ const createCollaborationFixture = () => {
 
 const buildTestServer = async (
   fixture: ReturnType<typeof createCollaborationFixture>,
-  admission?: CollaborationAdmissionController
+  admission?: CollaborationAdmissionController,
+  projectPersonalNote: (input: {
+    ownerUserId: string;
+    message: CollaborationMessageRecord;
+  }) => Promise<void> = async () => undefined
 ) => {
   const app = Fastify({ logger: false });
   await app.register(cookie);
@@ -570,6 +574,7 @@ const buildTestServer = async (
   };
   registerCollaborationRoutes(app, {
     requireCollaborationRepository: () => fixture.repository,
+    projectPersonalNote,
     authenticateSessionOrDeviceCredential: async (
       request,
       operationFamily,
@@ -635,6 +640,62 @@ const deviceHeaders = (
 });
 
 describe("collaboration HTTP routes", () => {
+  it("projects Notes-to-self messages into Personal Memory only", async () => {
+    const fixture = createCollaborationFixture();
+    const projected: Array<{
+      ownerUserId: string;
+      message: CollaborationMessageRecord;
+    }> = [];
+    const app = await buildTestServer(fixture, undefined, async (input) => {
+      projected.push(input);
+    });
+    const noteThreadResponse = await app.inject({
+      method: "POST",
+      url: "/v1/collaboration/personal/notes-to-self",
+      headers: sessionHeaders(fixture.ids.alice, {
+        "idempotency-key": "notes-thread"
+      }),
+      payload: {}
+    });
+    const noteThread = jsonBody<{ thread: CollaborationThreadRecord }>(
+      noteThreadResponse
+    ).thread;
+
+    const noteResponse = await app.inject({
+      method: "POST",
+      url: `/v1/collaboration/personal/threads/${noteThread.id}/messages`,
+      headers: sessionHeaders(fixture.ids.alice, {
+        "idempotency-key": "note-message"
+      }),
+      payload: { bodyText: "The launch date is September 14." }
+    });
+    expect(noteResponse.statusCode).toBe(201);
+    expect(projected).toEqual([
+      expect.objectContaining({
+        ownerUserId: fixture.ids.alice,
+        message: expect.objectContaining({
+          bodyText: "The launch date is September 14.",
+          threadId: noteThread.id
+        })
+      })
+    ]);
+
+    const channelResponse = await app.inject({
+      method: "POST",
+      url: `/v1/collaboration/personal/threads/${fixture.personalThread.id}/messages`,
+      headers: sessionHeaders(fixture.ids.alice, {
+        "idempotency-key": "personal-channel-message"
+      }),
+      payload: {
+        bodyText: "This Personal channel message stays collaboration-only."
+      }
+    });
+    expect(channelResponse.statusCode).toBe(201);
+    expect(projected).toHaveLength(1);
+
+    await app.close();
+  });
+
   it("requires a session and fails closed for API Tokens", async () => {
     const fixture = createCollaborationFixture();
     const app = await buildTestServer(fixture);

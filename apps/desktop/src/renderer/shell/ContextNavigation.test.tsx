@@ -28,30 +28,14 @@ describe("context navigation", () => {
     container.remove();
   });
 
-  it("labels Personal trust and keeps unsupported Memory actions honest", async () => {
+  it("labels Personal trust and keeps its navigation focused on Memory and Recents", async () => {
     await act(async () =>
       root.render(
         <PersonalContextNavigation
-          channels={[
-            {
-              id: "active",
-              label: "scratch",
-              selected: false,
-              unreadCount: 2
-            },
-            {
-              archived: true,
-              id: "archived",
-              label: "old",
-              selected: false
-            }
-          ]}
           notesSelected={false}
-          onCreateChannel={vi.fn()}
           onOpenNotes={vi.fn()}
           onOpenProjects={vi.fn()}
           onOpenShares={vi.fn()}
-          onSelectChannel={vi.fn()}
           projectsSelected
           sharesSelected={false}
         />
@@ -62,8 +46,16 @@ describe("context navigation", () => {
     expect(container.textContent).not.toContain("Ask Memory");
     expect(container.textContent).toContain("Shares");
     expect(container.textContent).not.toContain("Unavailable");
-    expect(container.textContent).toContain("Channels");
-    expect(container.textContent).toContain("Archived");
+    expect(container.textContent).toContain("Recents");
+    expect(container.textContent).not.toContain("Channels");
+    expect(container.textContent).not.toContain("Archived");
+    expect(container.querySelector('[aria-label="New Ask thread"]')).toBeNull();
+    const memoryItems = [
+      ...container.querySelectorAll(
+        ".desktop-sidebar-section:first-of-type .desktop-sidebar-nav-label"
+      )
+    ].map((item) => item.textContent);
+    expect(memoryItems).toEqual(["Ask", "Projects", "Notes", "Shares"]);
     expect(
       container.querySelector('[aria-current="page"]')?.textContent
     ).toContain("Projects");
@@ -74,13 +66,10 @@ describe("context navigation", () => {
     await act(async () =>
       root.render(
         <PersonalContextNavigation
-          channels={[]}
           notesSelected={false}
-          onCreateChannel={vi.fn()}
           onOpenNotes={vi.fn()}
           onOpenProjects={vi.fn()}
           onOpenShares={onOpenShares}
-          onSelectChannel={vi.fn()}
           projectsSelected={false}
           sharesSelected
           sharesUnavailable
@@ -99,7 +88,6 @@ describe("context navigation", () => {
   });
 
   it("shows Ask Recents in the primary Personal navigation", async () => {
-    const onNewAsk = vi.fn();
     const onSelectAskThread = vi.fn();
     const askThreadId = "22222222-2222-4222-8222-222222222222";
     await act(async () =>
@@ -112,17 +100,27 @@ describe("context navigation", () => {
               latestStatus: "answered",
               turnCount: 1,
               updatedAt: "2026-08-17T12:00:00.000Z"
+            },
+            {
+              askThreadId: "33333333-3333-4333-8333-333333333333",
+              firstQuestion: "What is still running?",
+              latestStatus: "pending",
+              turnCount: 1,
+              updatedAt: "2026-08-17T12:01:00.000Z"
+            },
+            {
+              askThreadId: "44444444-4444-4444-8444-444444444444",
+              firstQuestion: "What failed?",
+              latestStatus: "error",
+              turnCount: 1,
+              updatedAt: "2026-08-17T12:02:00.000Z"
             }
           ]}
-          channels={[]}
           notesSelected={false}
-          onCreateChannel={vi.fn()}
-          onNewAsk={onNewAsk}
           onOpenNotes={vi.fn()}
           onOpenProjects={vi.fn()}
           onOpenShares={vi.fn()}
           onSelectAskThread={onSelectAskThread}
-          onSelectChannel={vi.fn()}
           projectsSelected={false}
           selectedAskThreadId={askThreadId}
           sharesSelected={false}
@@ -138,8 +136,19 @@ describe("context navigation", () => {
     await click(recent ?? null);
     expect(onSelectAskThread).toHaveBeenCalledWith(askThreadId);
 
-    await click(container.querySelector('[aria-label="New Ask thread"]'));
-    expect(onNewAsk).toHaveBeenCalledOnce();
+    expect(container.querySelector('[aria-label="New Ask thread"]')).toBeNull();
+    const pending = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("What is still running?")
+    );
+    const failed = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("What failed?")
+    );
+    expect(pending?.querySelector('[data-status="pending"]')).not.toBeNull();
+    expect(pending?.querySelector(".lucide-loader-circle")).not.toBeNull();
+    expect(pending?.querySelector("small")).toBeNull();
+    expect(failed?.querySelector('[data-status="error"]')).not.toBeNull();
+    expect(failed?.querySelector(".lucide-circle-alert")).not.toBeNull();
+    expect(failed?.querySelector("small")).toBeNull();
   });
 
   it("renders Team, Workspace, channel, DM, People, and Shared Memory hierarchy", async () => {

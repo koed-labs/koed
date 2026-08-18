@@ -99,6 +99,7 @@ export interface MemoryAnswerWorkerStatus {
   appServerExecutions?: MemoryAnswerAppServerExecution[];
   usedFallback: boolean;
   skippedReason?: string;
+  displayMessage?: string;
   errorMessage?: string;
 }
 
@@ -204,6 +205,47 @@ export interface MemoryAnswerPayload {
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+const workerFailureDisplayMessage = (
+  provider: string,
+  workerErrorMessage: string,
+  retrievalIncomplete: boolean,
+  exhaustedBudgets: readonly string[]
+): string => {
+  const worker = provider === "codex" ? "The Codex worker" : "The AI Client";
+  if (exhaustedBudgets.length > 0) {
+    return `${worker} reached the Memory Answer resource limit before it could produce a reliable answer. Try a narrower question.`;
+  }
+  if (retrievalIncomplete) {
+    return `${worker} could not complete the Personal Memory search needed to answer reliably. Try again.`;
+  }
+  if (/cancelled/i.test(workerErrorMessage)) {
+    return "This Memory Answer was cancelled before it completed.";
+  }
+  if (/timed out|wall-time/i.test(workerErrorMessage)) {
+    return `${worker} did not finish this Memory Answer in time. Try again.`;
+  }
+  if (/empty output/i.test(workerErrorMessage)) {
+    return `${worker} completed without returning an answer. Try again.`;
+  }
+  if (
+    /resolvable supporting evidence|unsupported evidence|found without/i.test(
+      workerErrorMessage
+    )
+  ) {
+    return `${worker} could not verify its answer against enough supporting Personal Memory evidence.`;
+  }
+  if (/without using Koed RAG tools/i.test(workerErrorMessage)) {
+    return `${worker} could not complete the Personal Memory search needed to answer reliably. Try again.`;
+  }
+  if (/insufficient after complete retrieval/i.test(workerErrorMessage)) {
+    return `${worker} searched Personal Memory but could not determine a reliable answer from the available evidence.`;
+  }
+  if (/json|schema|validation|structured answer/i.test(workerErrorMessage)) {
+    return `${worker} returned an answer that Koed could not safely verify. Try again.`;
+  }
+  return `${worker} could not complete a reliable Memory Answer. Try again.`;
+};
 
 const CITATION_METADATA_KEYS = [
   "citations",
@@ -349,7 +391,8 @@ export const compactMemoryAnswerPayload = (
       model: payload.localMemoryWorker.model,
       memoryStatus: payload.localMemoryWorker.memoryStatus,
       usedFallback: payload.localMemoryWorker.usedFallback,
-      skippedReason: payload.localMemoryWorker.skippedReason
+      skippedReason: payload.localMemoryWorker.skippedReason,
+      displayMessage: payload.localMemoryWorker.displayMessage
     };
     return {
       markdown: payload.markdown,
@@ -4046,14 +4089,19 @@ export const answerWithMemoryWorker = async (
     const exhaustedBudgets = failureState?.ledger.budgetExhaustions ?? [];
     const retrievalIncomplete =
       (failureState?.errors.length ?? 0) > 0 || exhaustedBudgets.length > 0;
+    const displayMessage = workerFailureDisplayMessage(
+      config.provider,
+      workerErrorMessage,
+      retrievalIncomplete,
+      exhaustedBudgets
+    );
     const incompleteAnswer: StructuredMemoryAnswer | undefined =
       retrievalIncomplete
         ? {
             schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
             memory_status: "insufficient",
             relevant_memory_found: false,
-            answer_markdown:
-              "Memory retrieval was incomplete, so there is not enough evidence to answer reliably.",
+            answer_markdown: displayMessage,
             relevance_explanation:
               exhaustedBudgets.length > 0
                 ? `Memory Answer exhausted bounded resources (${exhaustedBudgets.slice(0, 8).join(", ")}) before the available memory could be judged completely.`
@@ -4072,9 +4120,7 @@ export const answerWithMemoryWorker = async (
     return compactMemoryAnswerPayload(
       {
         ...payload,
-        markdown:
-          incompleteAnswer?.answer_markdown ??
-          "Memory answer worker failed before judging retrieved evidence.",
+        markdown: displayMessage,
         ...(incompleteAnswer ? { structuredAnswer: incompleteAnswer } : {}),
         evidenceBundle: {
           ...payload.evidenceBundle,
@@ -4149,6 +4195,7 @@ export const answerWithMemoryWorker = async (
           evidenceTokenEstimate: failureState?.ledger.evidenceTokenEstimate,
           memoryStatus: incompleteAnswer?.memory_status,
           appServerExecutions,
+          displayMessage,
           errorMessage: workerErrorMessage,
           usedFallback: true,
           skippedReason: `${config.provider}_failed`

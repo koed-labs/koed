@@ -221,6 +221,7 @@ export const createDesktopMenuBar = <TMenu>({
   let snapshot = checkingMenuBarStatusSnapshot();
   let disposed = false;
   let refreshPromise: Promise<void> | null = null;
+  let popupStatusMenu: TMenu | null = null;
 
   const setSnapshot = (next: MenuBarStatusSnapshot): void => {
     if (disposed) return;
@@ -266,8 +267,8 @@ export const createDesktopMenuBar = <TMenu>({
     tray.setContextMenu?.(buildStatusMenu());
   }
   const showStatusMenu = (): void => {
-    tray.popUpContextMenu?.(buildStatusMenu());
-    refreshStatus();
+    popupStatusMenu = buildStatusMenu();
+    tray.popUpContextMenu?.(popupStatusMenu);
   };
 
   tray.setToolTip(snapshot.tooltip);
@@ -284,6 +285,7 @@ export const createDesktopMenuBar = <TMenu>({
       if (disposed) return;
       disposed = true;
       clearInterval(pollTimer);
+      popupStatusMenu = null;
       tray.destroy();
     }
   };

@@ -188,7 +188,8 @@
 }
 
 .desktop-sidebar-recents-section {
-  margin-block-start: auto;
+  flex: 1 1 auto;
+  min-block-size: 0;
   border-block-start: 1px solid var(--sidebar-border);
 }
 
@@ -325,6 +326,14 @@
   block-size: 15px;
 }
 
+.desktop-sidebar-nav-icon[data-status="error"] {
+  color: var(--destructive);
+}
+
+.desktop-sidebar-nav-icon[data-status="pending"] > svg {
+  animation: desktop-spin 800ms linear infinite;
+}
+
 .desktop-sidebar-nav-label {
   min-inline-size: 0;
   overflow: hidden;
@@ -332,10 +341,10 @@
   white-space: nowrap;
 }
 
-.desktop-sidebar-ask-recent small {
-  color: var(--muted-foreground);
-  font-size: 10px;
-  text-transform: capitalize;
+@media (prefers-reduced-motion: reduce) {
+  .desktop-sidebar-nav-icon[data-status="pending"] > svg {
+    animation: none;
+  }
 }
 
 .desktop-sidebar-load-more {

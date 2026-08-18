@@ -744,6 +744,7 @@ const createPersonalRepository = (): CommandRepository => {
       ownedThread(actor, input.threadId)
         ? personalMessageRecord(4, {
             id: input.idempotencyKey,
+            threadId: input.threadId,
             bodyText: input.bodyText
           })
         : null,
@@ -889,6 +890,10 @@ interface HarnessOptions {
   upstreamAuthorization?: string | null;
   response?: (call: FetchCall) => Promise<Response> | Response;
   personalRepository?: CommandRepository;
+  projectPersonalNote?: (input: {
+    ownerUserId: string;
+    message: CollaborationMessageRecord;
+  }) => Promise<void>;
   desktopOwnerUserId?: string;
   activeUser?: { id: string; email: string; displayName: string | null } | null;
   actionGrantControl?: CollaborationActionGrantControl;
@@ -997,6 +1002,7 @@ const createHarness = (options: HarnessOptions = {}) => {
       repositoryRequests += 1;
       return personalRepository;
     },
+    projectPersonalNote: options.projectPersonalNote,
     resolveActiveLocalUser: async (userId) => {
       const activeUser =
         options.activeUser === undefined
@@ -2268,6 +2274,54 @@ describe("local-edge collaboration command route", () => {
       }
     });
     expect(harness.calls).toHaveLength(0);
+  });
+
+  it("projects a local Desktop Note into Personal Memory", async () => {
+    const projected: Array<{
+      ownerUserId: string;
+      message: CollaborationMessageRecord;
+    }> = [];
+    const harness = createHarness({
+      backend: null,
+      upstreamAuthorization: null,
+      projectPersonalNote: async (input) => {
+        projected.push(input);
+      }
+    });
+    const clientMessageId = randomUUID();
+    const response = await injectPersonalCommand(harness.app, {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: randomUUID(),
+      command: "collaboration.send_message",
+      input: {
+        thread: { scope: "personal", threadId: ids.notesThread },
+        clientMessageId,
+        body: "The launch date is September 14."
+      }
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(parseResult(response.body)).toMatchObject({
+      ok: true,
+      data: {
+        message: {
+          id: clientMessageId,
+          body: "The launch date is September 14."
+        }
+      }
+    });
+    expect(projected).toEqual([
+      expect.objectContaining({
+        ownerUserId: ids.actor,
+        message: expect.objectContaining({
+          id: clientMessageId,
+          threadId: ids.notesThread,
+          bodyText: "The launch date is September 14."
+        })
+      })
+    ]);
+    expect(harness.calls).toHaveLength(0);
+    await harness.app.close();
   });
 
   it("uses the remote Personal authority without creating a divergent local channel", async () => {

@@ -115,6 +115,14 @@ budgets, failures, timings, and model metadata. The trace is deterministically
 truncated to at most 32,768 UTF-8 bytes. Ordinary logs and diagnostics retain
 only redacted identifiers, counts, durations, statuses, and error classes.
 
+When the AI Client worker cannot produce a reliable Memory Answer, it returns
+a display-safe explanation for the applicable failure class, such as an
+exhausted budget, incomplete retrieval, unverifiable evidence, timeout, or
+invalid output. Desktop Ask persists and renders that explanation instead of
+the internal provider failure code. Raw worker and process diagnostics remain
+inside the bounded internal trace and do not cross the public response-detail
+boundary.
+
 The same controller and worker flow serves Personal and Team recall. Team
 Membership, Workspace Access, Share Grants, active representation, lifecycle,
 retention, and source-capture policy are enforced before candidate admission,

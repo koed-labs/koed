@@ -901,31 +901,8 @@ export function App({
         askRecentsError={askRecentsError}
         askRecentsNextCursor={askRecentsNextCursor}
         askSelected={route.kind === "personal-memory-ask"}
-        channels={
-          snapshot?.navigation.personal.channels.map((thread) => ({
-            archived: thread.lifecycle === "archived",
-            id: thread.id,
-            label: thread.name ?? "Channel",
-            selected:
-              route.kind === "personal-chat" && route.threadId === thread.id,
-            unreadCount: thread.unreadCount
-          })) ?? []
-        }
         notesSelected={route.kind === "personal-memory-notes"}
-        onCreateChannel={() =>
-          collaboration.setModal({ kind: "personal_channel" })
-        }
         onLoadOlderAskThreads={() => void loadOlderAskRecents()}
-        onNewAsk={() =>
-          navigate({
-            authority: {
-              backendId: null,
-              principalId:
-                snapshot?.navigation.personalOwner.id ?? "local-personal"
-            },
-            route: { kind: "personal-memory-ask" }
-          })
-        }
         onOpenAsk={() =>
           navigate({
             authority: {
@@ -956,9 +933,6 @@ export function App({
             },
             route: { kind: "personal-memory-shares" }
           })
-        }
-        onSelectChannel={(threadId) =>
-          choose({ kind: "personal_channel", threadId })
         }
         onSelectAskThread={(askThreadId) =>
           navigate({

@@ -47,6 +47,13 @@ Creating a Note sends one durable Notes-to-self message. Notes are immutable in
 this release. Desktop does not provide edit or delete actions. A failed durable
 send remains available through the existing Inbox recovery workflow.
 
+After the durable message is accepted, the Personal API projects it as one
+idempotent Personal Memory Event and schedules its embedding. The event keeps
+the Note's creation time and Notes-to-self message identity, is excluded from
+LCM summarization, and is available to the global Ask workflow after embedding
+completes. Personal-channel and Team collaboration messages do not use this
+Projection path.
+
 The full-width layout keeps the Note list beside the detail pane. The narrow
 layout uses a list, drill-in detail, and Back action.
 

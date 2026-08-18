@@ -44,6 +44,7 @@ import {
   createCollaborationActionGrantControl,
   type CollaborationActionGrantControl
 } from "../local-edge/collaboration-action-grant-control.js";
+import { projectPersonalNoteToMemory } from "../collaboration/personal-note-memory.js";
 import { createCollaborationActionGrantLifecycle } from "../local-edge/collaboration-action-grant-lifecycle.js";
 import { createLocalSharedMemoryCandidatePreparation } from "../local-edge/shared-memory-candidate-preparation.js";
 import {
@@ -859,6 +860,17 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     rateLimit: rateLimitHandlers,
     collaboration: {
       admission: collaborationAdmission,
+      projectPersonalNote: async (
+        input: Parameters<typeof projectPersonalNoteToMemory>[1]
+      ) => {
+        await projectPersonalNoteToMemory(
+          {
+            repository: requireRepository(),
+            enqueueEmbedding
+          },
+          input
+        );
+      },
       actionGrantLifecycle: collaborationActionGrantLifecycle,
       actionGrantControl: collaborationActionGrantControl,
       sharedMemoryControl: collaborationSharedMemoryControl,
@@ -1113,6 +1125,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerTeamRoutes(app, routeContext);
   registerCollaborationRoutes(app, {
     requireCollaborationRepository,
+    projectPersonalNote: routeContext.collaboration.projectPersonalNote,
     authenticateSessionOrDeviceCredential:
       authHelpers.authenticateSessionOrDeviceCredential,
     readRateLimit: rateLimitHandlers.memoryRead,

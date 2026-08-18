@@ -3,7 +3,7 @@ import type {
   PersonalDesktopAskTurn
 } from "@koed/shared/personal-desktop";
 import { SecureMarkdown, type MarkdownPlatformAdapters } from "@koed/memory-ui";
-import { ArrowUp, LoaderCircle, Plus, Sparkles } from "lucide-react";
+import { ArrowUp, LoaderCircle, Plus } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import "./personal-memory.css";
 
@@ -21,6 +21,13 @@ const optimisticTurn = (query: string): PersonalDesktopAskTurn => {
     updatedAt: now,
     answeredAt: null
   };
+};
+
+const askTurnErrorMessage = (message: string | null): string => {
+  if (message === "codex_failed") {
+    return "This Ask failed before the Codex worker recorded a detailed reason. Try again.";
+  }
+  return message ?? "Memory Answer failed.";
 };
 
 export function PersonalAskView({
@@ -55,7 +62,11 @@ export function PersonalAskView({
         if (selectedThreadId) {
           void api
             .loadAskThread?.({ askThreadId: selectedThreadId })
-            .then((loaded) => loaded && setTurns(loaded));
+            .then((loaded) => {
+              if (!loaded) return;
+              setTurns(loaded);
+              setError(null);
+            });
         }
       }),
     [api, selectedThreadId]
@@ -71,7 +82,10 @@ export function PersonalAskView({
     void api
       .loadAskThread?.({ askThreadId: selectedThreadId })
       .then((loaded) => {
-        if (active && loaded) setTurns(loaded);
+        if (active && loaded) {
+          setTurns(loaded);
+          setError(null);
+        }
       })
       .catch(() => {
         if (active) setError("This Ask thread could not be opened.");
@@ -142,9 +156,6 @@ export function PersonalAskView({
         value={query}
       />
       <div className="personal-ask-composer-footer">
-        <span>
-          <Sparkles aria-hidden="true" /> Personal Memory
-        </span>
         <button
           aria-label="Submit question"
           disabled={busy || !query.trim()}
@@ -162,7 +173,10 @@ export function PersonalAskView({
 
   return (
     <div className="personal-ask-layout">
-      <section className="personal-ask-main">
+      <section
+        className="personal-ask-main"
+        data-view={turns.length === 0 ? "welcome" : "conversation"}
+      >
         {turns.length === 0 ? (
           <div className="personal-ask-welcome">
             <h1
@@ -176,34 +190,34 @@ export function PersonalAskView({
           </div>
         ) : (
           <div className="personal-ask-conversation">
-            <div className="personal-ask-conversation-heading">
-              <h1
-                className="personal-route-heading"
-                ref={headingRef}
-                tabIndex={-1}
+            <header
+              aria-label="Conversation actions"
+              className="personal-ask-conversation-heading"
+            >
+              <button
+                className="personal-new-conversation"
+                onClick={onNew}
+                type="button"
               >
-                Ask
-              </h1>
-              <button onClick={onNew} type="button">
                 <Plus aria-hidden="true" /> New
               </button>
-            </div>
+            </header>
             <div aria-live="polite" className="personal-ask-turns">
               {turns.map((turn) => (
                 <article className="personal-ask-turn" key={turn.id}>
                   <p className="personal-ask-question">{turn.query}</p>
                   {turn.status === "pending" ? (
                     <p className="personal-ask-pending">
-                      <LoaderCircle aria-hidden="true" /> Searching Personal
-                      Memory…
+                      <LoaderCircle aria-hidden="true" /> Searching...
                     </p>
                   ) : turn.status === "error" ? (
                     <p className="personal-ask-error">
-                      {turn.errorMessage ?? "Memory Answer failed."}
+                      {askTurnErrorMessage(turn.errorMessage)}
                     </p>
                   ) : turn.answerMarkdown ? (
                     <SecureMarkdown
                       adapters={markdownAdapters}
+                      className="personal-ask-answer"
                       source={turn.answerMarkdown}
                     />
                   ) : null}

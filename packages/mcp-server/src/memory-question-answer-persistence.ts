@@ -67,6 +67,7 @@ export const answerMarkdownFromAnswer = (answer: MemoryAnswerWorkerResponse) =>
   answer.markdown?.trim() || "No matching memory evidence found.";
 
 export const errorMessageFromAnswer = (answer: MemoryAnswerWorkerResponse) =>
+  answer.localMemoryWorker.displayMessage ??
   answer.localMemoryWorker.errorMessage ??
   answer.localMemoryWorker.skippedReason ??
   "Memory answer worker failed.";

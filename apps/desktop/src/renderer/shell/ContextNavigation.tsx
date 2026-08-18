@@ -1,11 +1,12 @@
 import {
-  Archive,
   BookOpen,
   ChevronDown,
   ChevronRight,
+  CircleAlert,
   Folder,
   Hash,
   Library,
+  LoaderCircle,
   LockKeyhole,
   MessageCircle,
   MessagesSquare,
@@ -148,6 +149,14 @@ function AskRecentItem({
   selected: boolean;
   thread: PersonalDesktopAskThread;
 }) {
+  const icon =
+    thread.latestStatus === "error" ? (
+      <CircleAlert aria-hidden="true" />
+    ) : thread.latestStatus === "pending" ? (
+      <LoaderCircle aria-hidden="true" />
+    ) : (
+      <Sparkles aria-hidden="true" />
+    );
   return (
     <button
       aria-current={selected ? "page" : undefined}
@@ -156,13 +165,13 @@ function AskRecentItem({
       onClick={() => onSelect(thread.askThreadId)}
       type="button"
     >
-      <span className="desktop-sidebar-nav-icon">
-        <Sparkles aria-hidden="true" />
+      <span
+        className="desktop-sidebar-nav-icon"
+        data-status={thread.latestStatus}
+      >
+        {icon}
       </span>
       <span className="desktop-sidebar-nav-label">{thread.firstQuestion}</span>
-      {thread.latestStatus !== "answered" ? (
-        <small>{thread.latestStatus}</small>
-      ) : null}
     </button>
   );
 }
@@ -187,16 +196,12 @@ export function PersonalContextNavigation({
   askRecentsError,
   askRecentsNextCursor = null,
   askSelected = false,
-  channels,
   notesSelected,
-  onCreateChannel,
   onLoadOlderAskThreads,
-  onNewAsk,
   onOpenAsk = () => undefined,
   onOpenNotes,
   onOpenProjects,
   onOpenShares,
-  onSelectChannel,
   onSelectAskThread,
   projectsSelected,
   selectedAskThreadId,
@@ -207,24 +212,18 @@ export function PersonalContextNavigation({
   askRecentsError?: string | null;
   askRecentsNextCursor?: string | null;
   askSelected?: boolean;
-  channels: readonly ContextNavItem[];
   notesSelected: boolean;
-  onCreateChannel: () => void;
   onLoadOlderAskThreads?: () => void;
-  onNewAsk?: () => void;
   onOpenAsk?: () => void;
   onOpenNotes: () => void;
   onOpenProjects: () => void;
   onOpenShares: () => void;
-  onSelectChannel: (threadId: string) => void;
   onSelectAskThread?: (askThreadId: string) => void;
   projectsSelected: boolean;
   selectedAskThreadId?: string;
   sharesSelected: boolean;
   sharesUnavailable?: boolean;
 }) {
-  const activeChannels = channels.filter((item) => !item.archived);
-  const archivedChannels = channels.filter((item) => item.archived);
   return (
     <div className="desktop-context-content desktop-personal-context-content">
       <SidebarHeader eyebrow="Private to you" title="Personal" />
@@ -244,6 +243,15 @@ export function PersonalContextNavigation({
           onSelect={onOpenProjects}
         />
         <NavItem
+          icon={<NotebookPen aria-hidden="true" />}
+          item={{
+            id: "notes",
+            label: "Notes",
+            selected: notesSelected
+          }}
+          onSelect={onOpenNotes}
+        />
+        <NavItem
           icon={<Library aria-hidden="true" />}
           item={{
             id: "shares",
@@ -253,83 +261,31 @@ export function PersonalContextNavigation({
           }}
           onSelect={onOpenShares}
         />
-        <NavItem
-          icon={<NotebookPen aria-hidden="true" />}
-          item={{
-            id: "notes",
-            label: "Notes",
-            selected: notesSelected
-          }}
-          onSelect={onOpenNotes}
-        />
       </Section>
-      <Section
-        title="Channels"
-        action={
-          <IconButton label="Create Personal channel" onClick={onCreateChannel}>
-            <Plus aria-hidden="true" />
-          </IconButton>
-        }
-      >
-        {activeChannels.map((item) => (
-          <NavItem
-            icon={<Hash aria-hidden="true" />}
-            item={item}
-            key={item.id}
-            onSelect={onSelectChannel}
+      <Section className="desktop-sidebar-recents-section" title="Recents">
+        {askRecents.map((thread) => (
+          <AskRecentItem
+            key={thread.askThreadId}
+            onSelect={onSelectAskThread ?? (() => undefined)}
+            selected={thread.askThreadId === selectedAskThreadId}
+            thread={thread}
           />
         ))}
+        {askRecentsNextCursor && onLoadOlderAskThreads ? (
+          <button
+            className="desktop-sidebar-load-more"
+            onClick={onLoadOlderAskThreads}
+            type="button"
+          >
+            Load older
+          </button>
+        ) : null}
+        {askRecentsError ? (
+          <p className="desktop-sidebar-section-state" role="status">
+            {askRecentsError}
+          </p>
+        ) : null}
       </Section>
-      {archivedChannels.length ? (
-        <details className="desktop-sidebar-archived">
-          <summary>
-            <Archive aria-hidden="true" />
-            Archived
-          </summary>
-          {archivedChannels.map((item) => (
-            <NavItem
-              icon={<Hash aria-hidden="true" />}
-              item={item}
-              key={item.id}
-              onSelect={onSelectChannel}
-            />
-          ))}
-        </details>
-      ) : null}
-      {askRecents.length || askRecentsError || onSelectAskThread ? (
-        <Section
-          className="desktop-sidebar-recents-section"
-          title="Recents"
-          action={
-            <IconButton label="New Ask thread" onClick={onNewAsk ?? onOpenAsk}>
-              <Plus aria-hidden="true" />
-            </IconButton>
-          }
-        >
-          {askRecents.map((thread) => (
-            <AskRecentItem
-              key={thread.askThreadId}
-              onSelect={onSelectAskThread ?? (() => undefined)}
-              selected={thread.askThreadId === selectedAskThreadId}
-              thread={thread}
-            />
-          ))}
-          {askRecentsNextCursor && onLoadOlderAskThreads ? (
-            <button
-              className="desktop-sidebar-load-more"
-              onClick={onLoadOlderAskThreads}
-              type="button"
-            >
-              Load older
-            </button>
-          ) : null}
-          {askRecentsError ? (
-            <p className="desktop-sidebar-section-state" role="status">
-              {askRecentsError}
-            </p>
-          ) : null}
-        </Section>
-      ) : null}
     </div>
   );
 }

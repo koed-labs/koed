@@ -87,12 +87,21 @@ describe("Personal Ask", () => {
       );
     });
     expect(container.textContent).toContain("What would you like to do?");
+    expect(
+      container.querySelector(".personal-ask-main")?.getAttribute("data-view")
+    ).toBe("welcome");
     expect(container.textContent).not.toContain("Earlier question");
     expect(container.textContent).not.toContain("Catch me up");
     expect(container.textContent).not.toContain(
       "Koed searches only Personal Memory available to you."
     );
     expect(container.querySelector(".personal-ask-recents")).toBeNull();
+    expect(
+      container.querySelector(".personal-ask-composer-footer span")
+    ).toBeNull();
+    expect(
+      container.querySelector(".personal-ask-composer-footer .lucide-sparkles")
+    ).toBeNull();
 
     const submitButton = container.querySelector(
       'button[aria-label="Submit question"]'
@@ -107,7 +116,8 @@ describe("Personal Ask", () => {
     await click(
       container.querySelector('button[aria-label="Submit question"]')
     );
-    expect(container.textContent).toContain("Searching Personal Memory");
+    expect(container.textContent).toContain("Searching...");
+    expect(container.textContent).not.toContain("Searching Personal Memory");
     expect(
       container
         .querySelector('button[aria-label="Submit question"]')
@@ -130,9 +140,90 @@ describe("Personal Ask", () => {
       await Promise.resolve();
     });
     expect(container.textContent).toContain("You chose the Ask welcome page.");
+    expect(container.querySelector(".personal-ask-answer")).not.toBeNull();
+    expect(
+      container.querySelector(".personal-ask-main")?.getAttribute("data-view")
+    ).toBe("conversation");
+    expect(
+      container
+        .querySelector(".personal-ask-conversation-heading")
+        ?.getAttribute("aria-label")
+    ).toBe("Conversation actions");
+    expect(
+      container.querySelector(".personal-ask-conversation-title")
+    ).toBeNull();
     expect(onSelectThread).toHaveBeenCalledWith(
       "33333333-3333-4333-8333-333333333333"
     );
+    expect(
+      [...container.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "New"
+      )?.classList
+    ).toContain("personal-new-conversation");
+  });
+
+  it("clears a stale thread-load error and presents AI Client failures clearly", async () => {
+    const loadAskThread = vi.fn(
+      async ({ askThreadId }: { askThreadId: string }) => {
+        if (askThreadId === "22222222-2222-4222-8222-222222222222") {
+          throw new Error("invalid response");
+        }
+        return [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            askThreadId,
+            askTurnIndex: 0,
+            query: "What was the last branch?",
+            answerMarkdown: null,
+            errorMessage:
+              "The Codex worker could not verify its answer against enough supporting Personal Memory evidence.",
+            status: "error" as const,
+            createdAt: "2026-08-17T12:00:00.000Z",
+            updatedAt: "2026-08-17T12:00:01.000Z",
+            answeredAt: "2026-08-17T12:00:01.000Z"
+          }
+        ];
+      }
+    );
+    const api: PersonalDesktopApi = {
+      assignSessionProject: vi.fn(async () => ({ projectId: null })),
+      listProjects: vi.fn(async () => []),
+      loadEventPage: vi.fn(async () => []),
+      updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
+      subscribe: vi.fn(() => () => undefined),
+      loadAskThread
+    };
+    const render = async (selectedThreadId: string) => {
+      await act(async () => {
+        root.render(
+          <PersonalAskView
+            api={api}
+            markdownAdapters={adapters}
+            onNew={vi.fn()}
+            onSelectThread={vi.fn()}
+            selectedThreadId={selectedThreadId}
+          />
+        );
+      });
+    };
+
+    await render("22222222-2222-4222-8222-222222222222");
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(
+        "This Ask thread could not be opened."
+      )
+    );
+
+    await render("33333333-3333-4333-8333-333333333333");
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(
+        "The Codex worker could not verify its answer against enough supporting Personal Memory evidence."
+      )
+    );
+    expect(container.textContent).not.toContain(
+      "This Ask thread could not be opened."
+    );
+    expect(container.textContent).not.toContain("codex_failed");
   });
 });
 

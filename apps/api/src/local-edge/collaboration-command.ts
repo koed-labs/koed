@@ -165,6 +165,10 @@ interface CollaborationCommandRouteOptions {
   requireCollaborationRepository: () => CollaborationRepository &
     Pick<CapturedSessionRepository, "listCapturedSessionSummaries"> &
     SourceSyncRelationshipRepository;
+  projectPersonalNote?(input: {
+    ownerUserId: string;
+    message: CollaborationMessageRecord;
+  }): Promise<void>;
   resolveActiveLocalUser: (userId: string) => Promise<ActiveLocalUser | null>;
   actionGrantControl?: CollaborationActionGrantControl;
   actionGrantLifecycle?: Pick<CollaborationActionGrantLifecycle, "resolve">;
@@ -2669,6 +2673,7 @@ const dispatchPersonalCommand = async (input: {
   command: PersonalCommand;
   repository: CollaborationRepository &
     Pick<CapturedSessionRepository, "listCapturedSessionSummaries">;
+  projectPersonalNote?: CollaborationCommandRouteOptions["projectPersonalNote"];
   credential: DesktopLocalCredentialAuthorization;
   user: ActiveLocalUser;
 }): Promise<CollaborationCommandResult> => {
@@ -2800,6 +2805,12 @@ const dispatchPersonalCommand = async (input: {
           }
         );
         if (!message) return unavailable();
+        if (existing.kind === "notes_to_self") {
+          await input.projectPersonalNote?.({
+            ownerUserId: user.id,
+            message
+          });
+        }
         const mapped = personalMessageFromRecord(message, user, existing.id);
         return mapped?.body === command.input.body
           ? (personalSuccessResult(command, { message: mapped }) ??
@@ -3479,6 +3490,7 @@ export const registerCollaborationCommandRoute = (
         return dispatchPersonalCommand({
           command,
           repository: options.requireCollaborationRepository(),
+          projectPersonalNote: options.projectPersonalNote,
           credential,
           user
         });

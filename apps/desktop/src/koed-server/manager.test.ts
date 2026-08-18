@@ -114,6 +114,87 @@ describe("Koed server desktop manager", () => {
     );
   });
 
+  it("maps stored Ask questions to the strict Desktop thread contract", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "personal_token" })
+    );
+    const workerMessage =
+      "The Codex worker could not verify enough supporting Personal Memory evidence.";
+    const turn = {
+      id: "11111111-1111-4111-8111-111111111111",
+      askThreadId: "22222222-2222-4222-8222-222222222222",
+      askTurnIndex: 0,
+      query: "What did I decide?",
+      answerMarkdown: null,
+      errorMessage: workerMessage,
+      status: "error",
+      createdAt: "2026-08-17T12:00:00.000Z",
+      updatedAt: "2026-08-17T12:00:01.000Z",
+      answeredAt: "2026-08-17T12:00:01.000Z"
+    };
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify(
+            args.includes("status")
+              ? {
+                  ok: true,
+                  api: { state: "healthy", url: "http://127.0.0.1:4170" }
+                }
+              : { ok: true }
+          ),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch: vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              questions: [
+                {
+                  ...turn,
+                  errorMessage: "codex_failed",
+                  ownerUserId: "33333333-3333-4333-8333-333333333333",
+                  evidence: [],
+                  localMemoryWorker: { skippedReason: null },
+                  response: { markdown: workerMessage }
+                }
+              ]
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+      )
+    });
+
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.ask.thread.load",
+        input: { askThreadId: turn.askThreadId }
+      })
+    ).resolves.toEqual({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.ask.thread.load",
+      ok: true,
+      data: { turns: [turn] }
+    });
+  });
+
   it("allows a cold-start status inspection to use the two-minute budget", async () => {
     let timeout: number | undefined;
     const manager = createKoedServerManager({

@@ -343,6 +343,14 @@ const objectValue = (value: unknown): Record<string, unknown> | null =>
     ? (value as Record<string, unknown>)
     : null;
 
+const desktopAskErrorMessage = (question: Record<string, unknown>): unknown => {
+  if (question.errorMessage !== "codex_failed") return question.errorMessage;
+  const response = objectValue(question.response);
+  return typeof response?.markdown === "string" && response.markdown.trim()
+    ? response.markdown
+    : "This Ask failed before the Codex worker recorded a detailed reason. Try again.";
+};
+
 const exactDesktopArgs = (
   value: Record<string, unknown> | undefined,
   allowedKeys: string[]
@@ -2550,8 +2558,25 @@ export const createKoedServerManager = ({
       }),
       16 * 1_024 * 1_024
     );
+    const questions = Array.isArray(payload.questions)
+      ? payload.questions.map((value) => {
+          const question = objectValue(value) ?? {};
+          return {
+            id: question.id,
+            askThreadId: question.askThreadId,
+            askTurnIndex: question.askTurnIndex,
+            query: question.query,
+            answerMarkdown: question.answerMarkdown,
+            errorMessage: desktopAskErrorMessage(question),
+            status: question.status,
+            createdAt: question.createdAt,
+            updatedAt: question.updatedAt,
+            answeredAt: question.answeredAt
+          };
+        })
+      : payload.questions;
     return personalDesktopAskThreadDataSchema.parse({
-      turns: payload.questions
+      turns: questions
     });
   };
 

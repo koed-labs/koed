@@ -1,4 +1,7 @@
-import type { CollaborationRepository } from "@koed/db";
+import type {
+  CollaborationMessageRecord,
+  CollaborationRepository
+} from "@koed/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { ApiRouteContext } from "../server/context.js";
@@ -38,6 +41,10 @@ const badRequest = (message: string) =>
 
 export interface CollaborationRouteContext {
   requireCollaborationRepository(): CollaborationRepository;
+  projectPersonalNote(input: {
+    ownerUserId: string;
+    message: CollaborationMessageRecord;
+  }): Promise<void>;
   authenticateSessionOrDeviceCredential: ApiRouteContext["auth"]["authenticateSessionOrDeviceCredential"];
   readRateLimit: ApiRouteContext["rateLimit"]["memoryRead"];
   writeRateLimit: ApiRouteContext["rateLimit"]["memoryWrite"];
@@ -743,9 +750,11 @@ export const registerCollaborationRoutes = (
         const params = parseScopedParams(request.params);
         const input = createCollaborationMessageSchema.parse(request.body);
         const repository = context.requireCollaborationRepository();
-        if (scope === "personal") {
-          await requirePersonalThread(repository, user.id, params.threadId);
-        } else {
+        const personalThread =
+          scope === "personal"
+            ? await requirePersonalThread(repository, user.id, params.threadId)
+            : null;
+        if (scope !== "personal") {
           await requireTeamThread(
             repository,
             user.id,
@@ -769,6 +778,12 @@ export const registerCollaborationRoutes = (
           }
         );
         if (!message) throw forbidden();
+        if (personalThread?.kind === "notes_to_self") {
+          await context.projectPersonalNote({
+            ownerUserId: user.id,
+            message
+          });
+        }
         return reply.status(201).send({ message });
       }
     );
