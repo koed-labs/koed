@@ -112,34 +112,39 @@ foreground response did not wait for activation.
 This synthetic result is reproducible local evidence. It is not a replacement
 for a measurement of the original 3.84 MB package.
 
-## Review finding regression crosswalk
+## Durable implementation invariants
 
-The current PR has 11 unresolved, non-outdated Codex threads. The Orys report
-contains 14 findings. The following crosswalk audits every finding against a
-named regression boundary; one test can intentionally cover multiple duplicate
-reports of the same defect.
-
-| Finding                                                                                                                               | Regression evidence                                                                                                                                                                                                                                              |
-| ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Orys 1; Codex “Keep the reviewed candidate identical to materialized content”                                                         | `fails closed instead of truncating a candidate above the consent boundary`, `prepares the largest accepted candidate within the bounded work budget`, and `fails a Pending Share closed when its reviewed candidate manifest cannot be reproduced`              |
-| Codex “Restrict curated candidates to the selected session”                                                                           | `maps current curated assertions with eligible evidence`, `rejects cross-session leaf and rollup provenance without creating a fallback`, and `materializes exact-session Curated assertions through three distinct keys and purges them on source invalidation` |
-| Orys 2; Codex “Honor the Team collaboration feature gate for pending workers”                                                         | `keeps both Pending Share worker families idle behind the Team feature gate`                                                                                                                                                                                     |
-| Orys 3                                                                                                                                | `activates, controls, replaces, and revokes a browser-authorized Pending Share durably`, including active replacement-consent pause/resume and mode-transition denial                                                                                            |
-| Orys 4; Codex “Accept the separately authorized replacement preview”                                                                  | The browser-authorized Pending Share regression creates the preview and command with distinct authority references, then proves replacement, replay denial, and revocation                                                                                       |
-| Orys 5                                                                                                                                | Desktop `opens owner-wide Shares from the active Personal Memory route` and `keeps Shares detail focus stable while a continuous Pending Share pauses`; source and packaged interaction validators exercise the same controller                                  |
-| Orys 6; Codex “Compare snapshot boundaries using semantic change cursors”; Codex “Invalidate contaminated continuous representations” | `inventories and idempotently corrects legacy Approval Activity derivatives` and `quarantines a paused continuous representation immediately and queues one clean rebuild`                                                                                       |
-| Orys 7                                                                                                                                | `keeps every trusted classifier marker in semantic Memory Event reads` and `uses the same trusted markers for linked Conversation Items` assert the canonical helper/tool-event predicate                                                                        |
-| Orys 8                                                                                                                                | `lists 100 owned shares with one remote read and bounded authority-store batches`                                                                                                                                                                                |
-| Orys 9                                                                                                                                | Maximum-accepted and rejected-overflow candidate tests plus the exact-session Curated representation test assert bounded batch loading before decryption                                                                                                         |
-| Orys 10; Codex “Keep the grant unavailable until its companion exists”                                                                | `creates and repairs the companion before exposing an async share` and the manifest-mismatch regression assert empty Workspace list/read boundaries before publication                                                                                           |
-| Orys 11; Codex “Publish every operation-version change to the owner”                                                                  | `surfaces a stalled Pending Share and resumes it idempotently after worker restart` plus lifecycle-event assertions in the browser-authorized flow prove silent retries preserve the control version and observable transitions publish distinct versions        |
-| Orys 12; Codex “Make remediation idempotent for pre-excluded items”                                                                   | The Approval Activity correction regression reruns correction and requires `unchanged` with zero correction counts                                                                                                                                               |
-| Orys 13; Codex “Page owner shares using immutable ordering”                                                                           | `pages equal-time owned shares by immutable identity despite mutable updates` and `binds owned-share cursors to immutable pagination context`                                                                                                                    |
-| Orys 14; Codex “Preserve concurrent revocations during worker retries”                                                                | Pending Share stop/retry interleavings require compare-and-swap state/version predicates and finish revoked without a contradictory lifecycle                                                                                                                    |
-
-This crosswalk accounts for all 11 Codex titles and all 14 numbered Orys
-findings. Thread resolution remains a separate GitHub write and is not implied
-by local regression coverage.
+- A materialized share must match the owner-reviewed candidate manifest. If
+  the candidate exceeds its consent boundary or cannot be reproduced, sharing
+  fails closed instead of truncating or substituting content.
+- Curated candidates may use only evidence from the selected Captured Session.
+  Cross-session leaf and rollup provenance is rejected, and source invalidation
+  removes every derived representation.
+- Pending Share workers remain idle when Team collaboration is disabled.
+- Creating, replacing, pausing, resuming, retrying, and revoking a Pending
+  Share requires current owner authority. Replacement preview authority is
+  distinct from command authority, and neither may be replayed.
+- Replacement keeps the existing Share Grant available until the new companion
+  and representation are complete. Publication then switches the grant and
+  representation atomically.
+- Worker retries use state and version comparisons. A concurrent revocation
+  wins over stale work and cannot finish with a contradictory lifecycle state.
+- Approval Activity remains outside semantic Memory. Correction inventories
+  and removes legacy derivatives, invalidates affected LCM and sync state, and
+  is idempotent for records that were already excluded.
+- Approval Activity classification uses the same canonical trusted-marker
+  predicate for Memory Event and linked Conversation Item reads.
+- Candidate construction, owner-share listing, and authority lookups use
+  bounded batches. Candidate limits are enforced before decryption.
+- A Share Grant stays unavailable to Workspace list and read operations until
+  its required companion exists and the reviewed manifest has been verified.
+- Observable Pending Share lifecycle changes publish distinct operation
+  versions to the owner. Silent retries preserve the current control version.
+- Owner-share pagination uses immutable creation ordering and binds cursors to
+  their original pagination context.
+- The Desktop Shares flow remains keyboard accessible, preserves detail focus
+  during lifecycle updates, announces status politely, confirms destructive
+  actions, and respects reduced-motion settings.
 
 ## Fixture and staged status
 
