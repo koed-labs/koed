@@ -1,6 +1,7 @@
 import type {
   CollaborationCommandResult,
   CollaborationRendererCommand,
+  AiClientCapabilityDescriptor,
   CollaborationRendererEvent,
   PersonalDesktopApi
 } from "@koed/shared";
@@ -21,6 +22,19 @@ export interface ComponentStatus {
   details?: Record<string, unknown>;
 }
 
+export interface AiClientReadiness {
+  driverId: "codex" | "claude" | "pi";
+  instanceId: string;
+  displayName: string;
+  installed: ComponentStatus;
+  version: string | null;
+  authentication: "authenticated" | "unauthenticated" | "unknown";
+  profile: ComponentStatus;
+  capabilities: AiClientCapabilityDescriptor[];
+  observedAt: string;
+  snapshotState: "profile" | "current" | "stale" | "unknown";
+}
+
 export interface KoedServerStatus {
   ok: boolean;
   state: ComponentState;
@@ -37,9 +51,12 @@ export interface KoedServerStatus {
   apiToken: ComponentStatus & { configured: boolean };
   mcpServer: ComponentStatus;
   captureHook: ComponentStatus;
+  codexTranscriptWatcher?: ComponentStatus;
+  claudeTranscriptWatcher?: ComponentStatus;
   codex: ComponentStatus & { configured: boolean };
   claudeCode?: ComponentStatus & { configured: boolean; detected?: boolean };
   pi?: ComponentStatus & { configured: boolean; detected?: boolean };
+  aiClients?: Record<string, AiClientReadiness>;
   lcmSummaryService: ComponentStatus;
   personalDeviceSync?: ComponentStatus;
   upstreamBackends: ComponentStatus & {

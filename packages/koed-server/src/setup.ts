@@ -32,8 +32,11 @@ import { isProcessRunning } from "./process-liveness.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import {
   assertAiClientRegistryWritable,
+  captureAiClientRegistry,
   migrateKoedOwnedCodexRegistrationBestEffort,
   registerExplicitAiClient,
+  removeExplicitAiClient,
+  restoreAiClientRegistry,
   resolveExecutablePath
 } from "./ai-client-registry.js";
 import { provisionLocalApiToken } from "./local-api-token.js";
@@ -42,6 +45,10 @@ import {
   readActiveRuntimeState
 } from "./runtime-state.js";
 import type { KoedServerRuntimeState } from "./types.js";
+import {
+  parseCodexOwnershipBlock,
+  stripCodexOwnershipBlock
+} from "./codex-ownership-marker.js";
 
 export interface KoedServerSetupCoreResult {
   ok: boolean;
@@ -170,10 +177,7 @@ ${markerEnd}
   const existing = existsSync(codexConfigPath)
     ? String(readFileSync(codexConfigPath, "utf8"))
     : "";
-  const withoutPrevious = existing.replace(
-    new RegExp(`\\n?${markerStart}[\\s\\S]*?${markerEnd}\\n?`, "g"),
-    "\n"
-  );
+  const withoutPrevious = stripCodexOwnershipBlock(existing);
   mkdirSync(dirname(codexConfigPath), { recursive: true, mode: 0o700 });
   writeFileSync(
     codexConfigPath,
@@ -189,6 +193,124 @@ ${markerEnd}
       `Wrote Codex MCP config: ${codexConfigPath}`
     ].join("\n")
   };
+};
+
+const codexBlockIsExpectedKoedOwned = (
+  block: string,
+  environment: NodeJS.ProcessEnv,
+  paths: ReturnType<typeof resolveKoedServerPaths>
+): boolean => {
+  const runtime = resolveKoedAppRuntime(paths, environment);
+  const nodeCommand = environment.MEMORY_NODE_COMMAND ?? "node";
+  const mcpName = environment.MEMORY_MCP_NAME ?? "koed";
+  const mcpHeader = `[mcp_servers.${mcpName}]`;
+  const requiredHooks = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "Stop",
+    "SubagentStart",
+    "SubagentStop"
+  ];
+  return (
+    block.includes(mcpHeader) &&
+    block.includes(`command = ${tomlString(nodeCommand)}`) &&
+    block.includes(`args = [${tomlString(runtime.mcpCli)}]`) &&
+    block.includes(`[mcp_servers.${mcpName}.env]`) &&
+    block.includes(`KOED_HOME = ${tomlString(paths.koedHome)}`) &&
+    requiredHooks.every(
+      (eventName) =>
+        block.includes(`[[hooks.${eventName}]]`) &&
+        block.includes(runtime.captureHook)
+    )
+  );
+};
+
+export const removeCodexIntegration = ({
+  environment = process.env,
+  readFileSync = nodeReadFileSync,
+  writeFileSync = nodeWriteFileSync,
+  mkdirSync = nodeMkdirSync,
+  existsSync = nodeExistsSync,
+  now = () => new Date()
+}: Omit<
+  KoedServerSetupOptions,
+  "spawnSync"
+> = {}): KoedServerRepairCodexResult => {
+  const paths = resolveKoedServerPaths(environment);
+  ensureKoedHome(paths);
+  const codexConfigPath = resolve(
+    environment.CODEX_CONFIG_PATH ??
+      `${environment.CODEX_HOME ?? `${homedir()}/.codex`}/config.toml`
+  );
+  const checkedAt = now().toISOString();
+  const base = {
+    koedHome: paths.koedHome,
+    apiUrl: resolveApiUrl(environment, loadRepoEnv(paths.repoRoot)),
+    checkedAt,
+    command: "remove Koed Codex integration"
+  };
+  let registrySnapshot;
+  let originalConfig: string | null = null;
+  try {
+    assertAiClientRegistryWritable(environment);
+    registrySnapshot = captureAiClientRegistry(environment);
+    if (existsSync(codexConfigPath)) {
+      originalConfig = String(readFileSync(codexConfigPath, "utf8"));
+      const parsed = parseCodexOwnershipBlock(originalConfig);
+      if (parsed.kind === "malformed") throw new Error(parsed.reason);
+      if (
+        parsed.kind === "valid" &&
+        !codexBlockIsExpectedKoedOwned(parsed.block, environment, paths)
+      ) {
+        throw new Error(
+          "Codex Koed ownership block does not contain expected MCP and Supported Capture Hook configuration."
+        );
+      }
+      const withoutKoed = stripCodexOwnershipBlock(originalConfig);
+      if (withoutKoed !== originalConfig) {
+        mkdirSync(dirname(codexConfigPath), { recursive: true, mode: 0o700 });
+        writeFileSync(codexConfigPath, withoutKoed.trimEnd() + "\n", {
+          mode: 0o600
+        });
+      }
+    }
+    removeExplicitAiClient({ environment, driverId: "codex" });
+    return {
+      ...base,
+      ok: true,
+      state: "healthy",
+      stdout: "Codex integration removed; unrelated settings were preserved.",
+      action: "Restart Codex before starting new Conversations."
+    };
+  } catch (error) {
+    const failures = [error instanceof Error ? error.message : String(error)];
+    if (originalConfig !== null) {
+      try {
+        writeFileSync(codexConfigPath, originalConfig, { mode: 0o600 });
+      } catch (restoreError) {
+        failures.push(
+          `Codex configuration rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
+    if (registrySnapshot) {
+      try {
+        restoreAiClientRegistry(environment, registrySnapshot);
+      } catch (restoreError) {
+        failures.push(
+          `AI Client registry rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
+    return {
+      ...base,
+      ok: false,
+      state: "needs_attention",
+      error: failures.join(" "),
+      action: "Fix Koed-owned Codex configuration, then retry removal."
+    };
+  }
 };
 
 export const repairCodexIntegration = ({
@@ -228,7 +350,7 @@ export const repairCodexIntegration = ({
       command: "write Codex config",
       error: "No Koed API Token is available for the Local AI Runtime.",
       action:
-        "Start Koed Desktop first so it can provision a local API Token, then run Fix Codex integration again."
+        "Start Koed Desktop first so it can provision a local API Token, then run the Codex-specific repair action again."
     };
   }
 
@@ -284,7 +406,7 @@ export const repairCodexIntegration = ({
       command: "write Codex config",
       error: message,
       action:
-        "Review the reported failure, fix the Codex integration artifacts, then run Fix Codex integration again."
+        "Review the reported failure, fix the Codex integration artifacts, then run the Codex-specific repair action again."
     };
     writeSetupVerification(paths, failed, writeFileSync);
     return failed;
@@ -707,7 +829,7 @@ export const setupCodex = async (
         state: "needs_attention" as const,
         error: error instanceof Error ? error.message : String(error),
         action:
-          "Fix Codex registration, then rerun koed-server setup codex --json."
+          "Fix the Codex-specific registration, then rerun koed-server setup codex --json."
       };
       writeSetupVerification(
         context.paths,

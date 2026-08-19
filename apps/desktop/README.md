@@ -3,7 +3,7 @@
 Koed Desktop is the Electron control surface for Koed.
 
 It wraps the same local `koed-server` command surface, shows service status,
-runs first-time AI Client setup and health checks automatically, and provides
+runs mandatory client-neutral core setup, optional AI Client onboarding, and health checks, and provides
 the local Project, Captured Session, and raw Conversation UI in one window.
 
 The main Desktop experience is Project-first. On wide windows it uses a
@@ -132,12 +132,14 @@ ports automatically. The first successful allocation is persisted under
 `KOED_HOME/config/local-ports.json` so subsequent Desktop launches keep stable
 API, Postgres, and Embedding Service ports while avoiding common
 local development or Docker port collisions. First-run setup inspects package,
-runtime, model, service, AI Client integration, and final verification state
-before making changes. Codex is configured as the primary supported client;
-when Claude Code or Pi is detected from an executable or its global profile,
-the setup page names it and configures it in the same integration stage. After
-one explicit confirmation, Desktop runs only incomplete stages in order and
-stops at the first failure. The model stage reports actual
+runtime, model, service, Koed core integration, and final verification state
+before making changes. Core setup never selects or edits an AI Client. After
+core completion, optional onboarding offers Codex, Claude Code, and Pi as
+independent multi-select choices plus **Set up later**. Detection reports
+availability only; it never auto-selects. Each selected client gets its own
+consent prompt and setup result, so cancellation or one broken client does not
+undo core setup or affect another client. Desktop runs only incomplete stages
+in order and stops at the first failure. The model stage reports actual
 downloaded and total bytes from the pinned artifact response before checksum
 verification. Retrying re-inspects local state and resumes from the first
 incomplete stage.
@@ -145,11 +147,12 @@ incomplete stage.
 Desktop verifies that the supported Codex MCP block points at the thin adapter
 with the active `KOED_HOME`, and separately checks the credential-free Capture
 Hook configuration in `~/.codex/config.toml` and `~/.koed/config.json`. The MCP
-block contains no API URL or token. If those user-owned files are stale, the AI
-Client Integration and Capture Path cards show an explicit mismatch and offer
-**Fix Codex integration**. The repair action rewrites the Koed-managed Codex
-block and hook config; restart Codex and trust updated hooks if prompted before
-expecting new captures.
+block contains no API URL or token. If those user-owned files are stale, the AI Client Integration and Capture Path cards show explicit mismatches and
+offer client-specific setup or repair actions. Codex retains a Codex-specific
+recovery card when its own integration is unhealthy; unrelated core failures
+use core recovery instead. Client setup preserves unrelated profile settings
+and removal deletes only Koed-owned blocks or packages. Restart Codex and trust
+updated hooks if prompted before expecting new captures.
 
 ## Packaged First-Run
 

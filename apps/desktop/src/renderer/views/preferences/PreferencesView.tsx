@@ -449,13 +449,93 @@ function AboutSection({
   );
 }
 
+type IntegrationMutationCommand =
+  | "setup_codex"
+  | "repair_codex"
+  | "remove_codex"
+  | "setup_pi"
+  | "repair_pi"
+  | "remove_pi"
+  | "setup_claude"
+  | "repair_claude"
+  | "remove_claude";
+
+const integrationConsentCopy: Record<
+  IntegrationMutationCommand,
+  { title: string; description: string; confirmLabel: string }
+> = {
+  setup_codex: {
+    title: "Set up the Codex integration?",
+    description:
+      "Koed will add its marked Codex integration block and Supported Capture Hook. Unrelated settings, credentials, and other clients remain untouched.",
+    confirmLabel: "Set up Codex"
+  },
+  repair_codex: {
+    title: "Repair the Codex integration?",
+    description:
+      "Koed will replace only its marked Codex integration block and Supported Capture Hook. Unrelated settings and credentials remain untouched.",
+    confirmLabel: "Repair Codex"
+  },
+  remove_codex: {
+    title: "Remove the Codex integration?",
+    description:
+      "Koed will remove only its marked Codex integration block. Unrelated settings and credentials remain untouched.",
+    confirmLabel: "Remove Codex"
+  },
+  setup_pi: {
+    title: "Set up the Pi integration?",
+    description:
+      "Koed will register its local package in your active global Pi profile, or remove only that Koed-owned package. It preserves unrelated Pi settings, packages, and provider credentials.",
+    confirmLabel: "Set up Pi"
+  },
+  repair_pi: {
+    title: "Repair the Pi integration?",
+    description:
+      "Koed will replace only its package in the active Pi profile. Unrelated packages, settings, and provider credentials remain untouched.",
+    confirmLabel: "Repair Pi"
+  },
+  remove_pi: {
+    title: "Remove the Pi integration?",
+    description:
+      "Koed will remove only its package from the active Pi profile and preserve unrelated packages, settings, and provider credentials.",
+    confirmLabel: "Remove Pi"
+  },
+  setup_claude: {
+    title: "Set up the Claude Code integration?",
+    description:
+      "Koed will add its MCP Server and Supported Capture Hook to Claude Code settings, or remove only those Koed-owned entries. It preserves unrelated settings, hooks, and provider credentials.",
+    confirmLabel: "Set up Claude Code"
+  },
+  repair_claude: {
+    title: "Repair the Claude Code integration?",
+    description:
+      "Koed will replace only its MCP Server and Supported Capture Hook entries in Claude Code. Unrelated settings, hooks, and provider credentials remain untouched.",
+    confirmLabel: "Repair Claude Code"
+  },
+  remove_claude: {
+    title: "Remove the Claude Code integration?",
+    description:
+      "Koed will remove only its owned MCP Server and Supported Capture Hook entries. Unrelated settings, hooks, and provider credentials remain untouched.",
+    confirmLabel: "Remove Claude Code"
+  }
+};
+
 function AdvancedSection({
   statusStore
 }: Pick<PreferencesViewProps, "statusStore">) {
   const snapshot = useDesktopStatus(statusStore);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingIntegrationCommand, setPendingIntegrationCommand] = useState<
-    "setup_pi" | "repair_pi" | "setup_claude" | "repair_claude" | null
+    | "setup_codex"
+    | "repair_codex"
+    | "remove_codex"
+    | "setup_pi"
+    | "repair_pi"
+    | "remove_pi"
+    | "setup_claude"
+    | "repair_claude"
+    | "remove_claude"
+    | null
   >(null);
   const status = snapshot.status;
 
@@ -481,18 +561,34 @@ function AdvancedSection({
   const run = async (
     action:
       | "doctor"
+      | "setup_codex"
+      | "check_codex"
       | "repair_codex"
+      | "remove_codex"
       | "setup_pi"
+      | "check_pi"
       | "repair_pi"
+      | "remove_pi"
       | "setup_claude"
+      | "check_claude"
       | "repair_claude"
+      | "remove_claude"
       | "open_logs"
       | "status"
   ) => {
     setActionError(null);
     try {
       if (action === "status") await statusStore.refresh();
-      else await statusStore.run(action);
+      else {
+        const mutatesProfile =
+          action.startsWith("setup_") ||
+          action.startsWith("repair_") ||
+          action.startsWith("remove_");
+        await statusStore.run(
+          action,
+          mutatesProfile ? { operatorConsented: true } : undefined
+        );
+      }
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -574,6 +670,20 @@ function AdvancedSection({
         </Button>
         <Button
           disabled={snapshot.busyCommand !== null}
+          onClick={() => void run("check_claude")}
+          variant="outline"
+        >
+          Check Claude Code integration
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
+          onClick={() => setPendingIntegrationCommand("remove_claude")}
+          variant="outline"
+        >
+          Remove Claude Code integration
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
           onClick={() => void run("doctor")}
           variant="outline"
         >
@@ -581,10 +691,32 @@ function AdvancedSection({
         </Button>
         <Button
           disabled={snapshot.busyCommand !== null}
-          onClick={() => void run("repair_codex")}
+          onClick={() =>
+            setPendingIntegrationCommand(
+              status?.codex?.state === "not_configured"
+                ? "setup_codex"
+                : "repair_codex"
+            )
+          }
           variant="outline"
         >
-          Repair Codex integration
+          {status?.codex?.state === "not_configured"
+            ? "Set up Codex integration"
+            : "Repair Codex integration"}
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
+          onClick={() => void run("check_codex")}
+          variant="outline"
+        >
+          Check Codex integration
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
+          onClick={() => setPendingIntegrationCommand("remove_codex")}
+          variant="outline"
+        >
+          Remove Codex integration
         </Button>
         <Button
           disabled={snapshot.busyCommand !== null}
@@ -603,6 +735,20 @@ function AdvancedSection({
         </Button>
         <Button
           disabled={snapshot.busyCommand !== null}
+          onClick={() => void run("check_pi")}
+          variant="outline"
+        >
+          Check Pi integration
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
+          onClick={() => setPendingIntegrationCommand("remove_pi")}
+          variant="outline"
+        >
+          Remove Pi integration
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
           onClick={() => void run("open_logs")}
           variant="outline"
         >
@@ -618,19 +764,14 @@ function AdvancedSection({
         <DialogPopup>
           <DialogHeader>
             <DialogTitle>
-              {pendingIntegrationCommand === "repair_pi"
-                ? "Repair the Pi integration?"
-                : pendingIntegrationCommand === "setup_pi"
-                  ? "Set up the Pi integration?"
-                  : pendingIntegrationCommand === "repair_claude"
-                    ? "Repair the Claude Code integration?"
-                    : "Set up the Claude Code integration?"}
+              {pendingIntegrationCommand
+                ? integrationConsentCopy[pendingIntegrationCommand].title
+                : "AI Client integration"}
             </DialogTitle>
             <DialogDescription>
-              {pendingIntegrationCommand === "setup_pi" ||
-              pendingIntegrationCommand === "repair_pi"
-                ? "Koed will register its local package in your active global Pi profile. It preserves unrelated Pi settings and packages, and does not receive your Pi or provider credentials."
-                : "Koed will add its MCP Server and Supported Capture Hook to your Claude Code user settings. It preserves unrelated settings and hooks, and does not receive your Claude or provider credentials."}
+              {pendingIntegrationCommand
+                ? integrationConsentCopy[pendingIntegrationCommand].description
+                : "Koed changes only its own AI Client integration state."}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -644,13 +785,9 @@ function AdvancedSection({
                 if (command) void run(command);
               }}
             >
-              {pendingIntegrationCommand === "repair_pi"
-                ? "Repair Pi"
-                : pendingIntegrationCommand === "setup_pi"
-                  ? "Set up Pi"
-                  : pendingIntegrationCommand === "repair_claude"
-                    ? "Repair Claude Code"
-                    : "Set up Claude Code"}
+              {pendingIntegrationCommand
+                ? integrationConsentCopy[pendingIntegrationCommand].confirmLabel
+                : "Continue"}
             </Button>
           </DialogFooter>
         </DialogPopup>

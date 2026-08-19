@@ -116,10 +116,89 @@ describe("Koed server desktop manager", () => {
 
     expect(invocations).toEqual([
       ["setup", "pi", "--json"],
-      ["setup", "pi", "--json"],
+      ["repair", "pi", "--json"],
       ["setup", "claude", "--json"],
-      ["setup", "claude", "--json"]
+      ["repair", "claude", "--json"]
     ]);
+  });
+
+  it("requires explicit healthy result from AI Client check handlers", async () => {
+    const invocations: string[][] = [];
+    let healthy = false;
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => {
+        invocations.push(args);
+        return {
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_REPO_ROOT: "/repo" }
+        };
+      },
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify(
+            healthy
+              ? { ok: true, state: "healthy" }
+              : {
+                  ok: false,
+                  state: "needs_attention",
+                  message: "stale snapshot"
+                }
+          ),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.check_codex!()).rejects.toThrow(
+      "stale snapshot"
+    );
+    healthy = true;
+    await expect(manager.handlers.check_codex!()).resolves.toMatchObject({
+      ok: true
+    });
+    expect(invocations).toEqual([
+      ["check", "codex", "--json"],
+      ["check", "codex", "--json"]
+    ]);
+  });
+
+  it("throws actionable errors when mutating AI Client commands return failure", async () => {
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify({
+            ok: false,
+            error: "registry failed",
+            action: "repair registry"
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.remove_claude!()).rejects.toThrow(
+      "registry failed"
+    );
   });
 
   it("includes detected optional AI Clients in first-run integration readiness", () => {

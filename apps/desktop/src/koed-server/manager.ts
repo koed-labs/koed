@@ -231,6 +231,29 @@ const diagnosticStatus = ({
       configured: false
     },
     pi: { ...component("Set up Pi integration"), configured: false },
+    aiClients: Object.fromEntries(
+      (
+        [
+          ["codex", "Codex"],
+          ["claude", "Claude Code"],
+          ["pi", "Pi"]
+        ] as const
+      ).map(([driverId, displayName]) => [
+        driverId,
+        {
+          driverId,
+          instanceId: `${driverId}.default`,
+          displayName,
+          installed: component(`Install ${displayName}`),
+          version: null,
+          authentication: "unknown",
+          profile: component(`Set up ${displayName} integration`),
+          capabilities: [],
+          observedAt: new Date().toISOString(),
+          snapshotState: "unknown"
+        }
+      ])
+    ),
     lcmSummaryService: component(),
     personalDeviceSync: personalDeviceSyncComponent(process.env),
     upstreamBackends: {
@@ -241,7 +264,8 @@ const diagnosticStatus = ({
       failed: 0,
       notChecked: 0
     },
-    lastVerification: { ...component("Run doctor"), checkedAt: null }
+    lastVerification: { ...component("Run doctor"), checkedAt: null },
+    details: {}
   } as DiagnosticStatus;
 };
 
@@ -1163,10 +1187,14 @@ export const createKoedServerManager = ({
           env: invocation.env,
           timeout
         },
-        (_error, stdout) => {
+        (error, stdout, stderr) => {
           try {
             resolvePromise(JSON.parse(stdout));
           } catch {
+            const detail =
+              stderr?.trim() ||
+              error?.message ||
+              "Koed operation returned invalid JSON.";
             resolvePromise(
               args[0] === "status"
                 ? diagnosticStatus({
@@ -1176,7 +1204,8 @@ export const createKoedServerManager = ({
                 : {
                     ok: false,
                     state: "needs_attention",
-                    error: "Koed operation failed."
+                    error: detail,
+                    action: `Retry ${args.join(" ")} after checking Koed logs.`
                   }
             );
           }
@@ -3000,14 +3029,27 @@ export const createKoedServerManager = ({
     return result;
   };
 
-  const runOptionalAiClientSetup = async (
-    client: "Claude Code" | "Pi",
-    args: ["setup", "claude" | "pi"]
+  const runMutatingAiClient = async (
+    client: "Codex" | "Claude Code" | "Pi",
+    args: ["setup" | "repair" | "remove", "codex" | "claude" | "pi"]
   ) => {
     const result = await runJson(args, 120_000);
     if (!resultOk(result)) {
       throw new Error(
-        resultMessage(result, `${client} integration could not be configured.`)
+        resultMessage(result, `${client} integration operation failed.`)
+      );
+    }
+    return result;
+  };
+
+  const runAiClientCheck = async (
+    client: "Codex" | "Claude Code" | "Pi",
+    args: ["check", "codex" | "claude" | "pi"]
+  ) => {
+    const result = await runJson(args, 90_000);
+    if (!resultOk(result)) {
+      throw new Error(
+        resultMessage(result, `${client} integration check failed.`)
       );
     }
     return result;
@@ -3022,15 +3064,28 @@ export const createKoedServerManager = ({
       status: statusWithEnrollmentReconciliation,
       doctor: () => runJson(["doctor"], 45_000),
       stop,
-      setup_core: () => runJson(["setup", "core"], 330_000),
-      setup_codex: () => runJson(["setup", "codex"], 120_000),
-      repair_codex: () => runJson(["repair", "codex"], 120_000),
-      setup_pi: () => runOptionalAiClientSetup("Pi", ["setup", "pi"]),
-      repair_pi: () => runOptionalAiClientSetup("Pi", ["setup", "pi"]),
+      setup_core: async () => {
+        const result = await runJson(["setup", "core"], 330_000);
+        if (!resultOk(result)) {
+          throw new Error(resultMessage(result, "Koed core setup failed."));
+        }
+        return result;
+      },
+      setup_codex: () => runMutatingAiClient("Codex", ["setup", "codex"]),
+      check_codex: () => runAiClientCheck("Codex", ["check", "codex"]),
+      repair_codex: () => runMutatingAiClient("Codex", ["repair", "codex"]),
+      remove_codex: () => runMutatingAiClient("Codex", ["remove", "codex"]),
+      setup_pi: () => runMutatingAiClient("Pi", ["setup", "pi"]),
+      check_pi: () => runAiClientCheck("Pi", ["check", "pi"]),
+      repair_pi: () => runMutatingAiClient("Pi", ["repair", "pi"]),
+      remove_pi: () => runMutatingAiClient("Pi", ["remove", "pi"]),
       setup_claude: () =>
-        runOptionalAiClientSetup("Claude Code", ["setup", "claude"]),
+        runMutatingAiClient("Claude Code", ["setup", "claude"]),
+      check_claude: () => runAiClientCheck("Claude Code", ["check", "claude"]),
       repair_claude: () =>
-        runOptionalAiClientSetup("Claude Code", ["setup", "claude"]),
+        runMutatingAiClient("Claude Code", ["repair", "claude"]),
+      remove_claude: () =>
+        runMutatingAiClient("Claude Code", ["remove", "claude"]),
       runtime_status: () => runRuntimeStatusJson(),
       runtime_install: (args) => runRuntimeInstallJson(args),
       models_status: () => runModelJson(),

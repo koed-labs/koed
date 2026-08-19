@@ -12,10 +12,19 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRepoEnv } from "./env-file.js";
 import { capSupervisorLog } from "./supervisor-log.js";
-import { repairCodexIntegration, setupCodex, setupCore } from "./setup.js";
-import { setupPi } from "./pi-setup.js";
-import { setupClaude } from "./claude-setup.js";
-import { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
+import {
+  removeCodexIntegration,
+  repairCodexIntegration,
+  setupCodex,
+  setupCore
+} from "./setup.js";
+import { removePi, setupPi } from "./pi-setup.js";
+import { removeClaude, setupClaude } from "./claude-setup.js";
+import {
+  collectKoedServerDoctor,
+  collectKoedServerStatus,
+  evaluateAiClientReadiness
+} from "./status.js";
 import { restartKoedServer } from "./restart.js";
 import { startKoedServer } from "./start.js";
 import { stopKoedServer } from "./stop.js";
@@ -105,7 +114,10 @@ Commands:
   setup codex --json     Configure the supported Codex integration
   setup claude --json    Configure the supported Claude Code integration
   setup pi --json        Configure the supported Pi integration
+  check <client> --json  Check one AI Client integration without mutation
   repair codex --json    Rewrite Codex integration for the active local API
+  repair <client> --json Repair one AI Client integration
+  remove <client> --json Remove only Koed-owned client integration state
   models status --json   Print bundled local model install state
   models install --json  Download bundled local model with SHA-256 verification
   runtime status --json  Print native bundled-local runtime install state
@@ -162,6 +174,9 @@ export interface KoedServerCliDependencies {
   setupCodex?: typeof setupCodex;
   setupClaude?: typeof setupClaude;
   setupPi?: typeof setupPi;
+  removeClaude?: typeof removeClaude;
+  removePi?: typeof removePi;
+  removeCodex?: typeof removeCodexIntegration;
   repairCodex?: typeof repairCodexIntegration;
   collectModelStatus?: typeof collectLocalModelStatus;
   installModel?: typeof installLocalModel;
@@ -451,6 +466,9 @@ export const runKoedServerCli = async (
     setupCodex: setup = setupCodex,
     setupClaude: setupClaudeIntegration = setupClaude,
     setupPi: setupPiIntegration = setupPi,
+    removeClaude: removeClaudeIntegration = removeClaude,
+    removePi: removePiIntegration = removePi,
+    removeCodex: removeCodexIntegrationFn = removeCodexIntegration,
     repairCodex = repairCodexIntegration,
     collectModelStatus = collectLocalModelStatus,
     installModel = installLocalModel,
@@ -665,6 +683,66 @@ export const runKoedServerCli = async (
             : `${result.error ?? "Codex integration repair failed."}\n`
         );
       }
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "check" && subcommand) {
+      const status = await collectStatus();
+      const components: Record<string, unknown> = {
+        codex: status.codex,
+        claude: status.claudeCode,
+        pi: status.pi
+      };
+      const readiness = components[subcommand]
+        ? status.aiClients?.[subcommand]
+        : undefined;
+      if (!components[subcommand])
+        throw new Error("check client must be codex, claude, or pi.");
+      const result = {
+        client: subcommand,
+        readiness: readiness ?? null,
+        ...evaluateAiClientReadiness(readiness)
+      };
+      if (wantsJson) printJson(stdout, result);
+      else stdout.write(`${result.message}\n`);
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "repair" && subcommand) {
+      const result =
+        subcommand === "codex"
+          ? repairCodex()
+          : subcommand === "claude"
+            ? setupClaudeIntegration()
+            : subcommand === "pi"
+              ? setupPiIntegration()
+              : null;
+      if (!result)
+        throw new Error("repair client must be codex, claude, or pi.");
+      if (wantsJson) printJson(stdout, result);
+      else
+        stdout.write(
+          `${result.ok ? "AI Client integration repaired." : (result.error ?? "AI Client integration repair failed.")}\n`
+        );
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "remove" && subcommand) {
+      const result =
+        subcommand === "codex"
+          ? removeCodexIntegrationFn()
+          : subcommand === "claude"
+            ? removeClaudeIntegration()
+            : subcommand === "pi"
+              ? removePiIntegration()
+              : null;
+      if (!result)
+        throw new Error("remove client must be codex, claude, or pi.");
+      if (wantsJson) printJson(stdout, result);
+      else
+        stdout.write(
+          `${result.ok ? "AI Client integration removed." : (result.error ?? "AI Client integration removal failed.")}\n`
+        );
       return result.ok ? 0 : 1;
     }
 

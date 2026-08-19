@@ -69,13 +69,32 @@ ${hookBlocks}
 ${markerEnd}
 `;
 
+const stripOwnedBlock = (content) => {
+  const lines = content.split(/(?<=\\n)|(?<=\\r)/);
+  const markers = lines.flatMap((line, index) => {
+    const value = line.replace(/(?:\\r\\n|\\n|\\r)$/, "");
+    if (/^[\\t ]*# >>> koed[\\t ]*$/.test(value)) return [["start", index]];
+    if (/^[\\t ]*# <<< koed[\\t ]*$/.test(value)) return [["end", index]];
+    return [];
+  });
+  if (markers.length === 0) return content;
+  const starts = markers.filter(([kind]) => kind === "start");
+  const ends = markers.filter(([kind]) => kind === "end");
+  if (starts.length !== 1 || ends.length !== 1 || starts[0][1] > ends[0][1]) {
+    throw new Error(
+      "Codex Koed ownership markers are duplicated or incomplete."
+    );
+  }
+  return lines
+    .slice(0, starts[0][1])
+    .concat(lines.slice(ends[0][1] + 1))
+    .join("");
+};
+
 const existing = existsSync(codexConfigPath)
   ? readFileSync(codexConfigPath, "utf8")
   : "";
-const withoutPrevious = existing.replace(
-  new RegExp(`\\n?${markerStart}[\\s\\S]*?${markerEnd}\\n?`, "g"),
-  "\n"
-);
+const withoutPrevious = stripOwnedBlock(existing);
 mkdirSync(dirname(codexConfigPath), { recursive: true, mode: 0o700 });
 writeFileSync(codexConfigPath, `${withoutPrevious.trimEnd()}\n\n${koedBlock}`);
 

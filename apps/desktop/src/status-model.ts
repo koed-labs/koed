@@ -120,11 +120,17 @@ export type StatusCardActionCommand =
   | "package_install"
   | "setup_core"
   | "setup_codex"
+  | "check_codex"
   | "repair_codex"
+  | "remove_codex"
   | "setup_pi"
+  | "check_pi"
   | "repair_pi"
+  | "remove_pi"
   | "setup_claude"
+  | "check_claude"
   | "repair_claude"
+  | "remove_claude"
   | "runtime_install"
   | "models_install"
   | "doctor"
@@ -312,6 +318,8 @@ export const statusCards = [
         command: "setup_codex",
         timeoutMs: 120_000
       },
+      { label: "Check Codex integration", command: "check_codex" },
+      { label: "Remove Codex integration", command: "remove_codex" },
       { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
       { label: "Copy diagnostics", command: "copy_diagnostics" }
     ]
@@ -352,6 +360,8 @@ export const statusCards = [
         command: "setup_pi",
         timeoutMs: 120_000
       },
+      { label: "Check Pi integration", command: "check_pi" },
+      { label: "Remove Pi integration", command: "remove_pi" },
       { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
       { label: "Copy diagnostics", command: "copy_diagnostics" }
     ]
@@ -375,6 +385,8 @@ export const statusCards = [
         command: "setup_claude",
         timeoutMs: 120_000
       },
+      { label: "Check Claude Code integration", command: "check_claude" },
+      { label: "Remove Claude Code integration", command: "remove_claude" },
       { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
       { label: "Copy diagnostics", command: "copy_diagnostics" }
     ]
@@ -453,6 +465,12 @@ export const recoveryActionForStatusComponent = (
     throw new Error(`Missing Desktop recovery card: ${cardId}`);
   }
   if (state === "not_configured") {
+    if (componentKey === "codex") {
+      const setupAction = card.secondaryActions.find(
+        (action) => action.command === "setup_codex"
+      );
+      if (setupAction) return setupAction;
+    }
     if (componentKey === "claudeCode") {
       const setupAction = card.secondaryActions.find(
         (action) => action.command === "setup_claude"

@@ -61,6 +61,18 @@ const senderContexts = new WeakMap<
   { controller: AbortController; context: DesktopCommandContext }
 >();
 
+const profileMutationCommands = new Set([
+  "setup_codex",
+  "repair_codex",
+  "remove_codex",
+  "setup_pi",
+  "repair_pi",
+  "remove_pi",
+  "setup_claude",
+  "repair_claude",
+  "remove_claude"
+]);
+
 const contextForSender = (sender: WebContents): DesktopCommandContext => {
   const current = senderContexts.get(sender);
   if (current) return current.context;
@@ -123,6 +135,14 @@ export const registerDesktopCommandHandlers = (
       }
       if (command === "collaboration") {
         throw new Error("Use the strict collaboration command channel.");
+      }
+      if (
+        profileMutationCommands.has(command) &&
+        args?.operatorConsented !== true
+      ) {
+        throw new Error(
+          "Operator consent is required before changing an AI Client profile."
+        );
       }
       const handler = handlers[command];
       return await handler(args, contextForSender(event.sender));

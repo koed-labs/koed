@@ -8,7 +8,12 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { repairCodexIntegration, setupCodex, setupCore } from "./setup.js";
+import {
+  removeCodexIntegration,
+  repairCodexIntegration,
+  setupCodex,
+  setupCore
+} from "./setup.js";
 
 const temps: string[] = [];
 const tempDir = () => {
@@ -93,6 +98,67 @@ afterEach(() => {
 });
 
 describe("Codex setup wrapper", () => {
+  it("removes only valid Koed-owned Codex block and preserves unrelated profile", () => {
+    const root = tempDir();
+    const runtimeRoot = resolve(root, "runtime");
+    const mcpCli = resolve(runtimeRoot, "mcp-server/dist/cli.js");
+    const captureHook = resolve(runtimeRoot, "mcp-server/dist/capture-hook.js");
+    mkdirSync(resolve(runtimeRoot, "mcp-server/dist"), { recursive: true });
+    writeFileSync(mcpCli, "");
+    writeFileSync(captureHook, "");
+    const configPath = resolve(root, "codex/config.toml");
+    mkdirSync(resolve(root, "codex"), { recursive: true });
+    const hooks = [
+      "SessionStart",
+      "UserPromptSubmit",
+      "PostToolUse",
+      "Stop",
+      "SubagentStart",
+      "SubagentStop"
+    ]
+      .map(
+        (eventName) => `[[hooks.${eventName}]]\ncommand = "node ${captureHook}"`
+      )
+      .join("\n");
+    const original = `profile = "operator"\n# >>> koed\n[mcp_servers.koed]\ncommand = "node"\nargs = ["${mcpCli}"]\n[mcp_servers.koed.env]\nKOED_HOME = "${root}"\n${hooks}\n# <<< koed\nother = true\n`;
+    writeFileSync(configPath, original);
+
+    const result = removeCodexIntegration({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_JS_RUNTIME_ROOT: runtimeRoot,
+        CODEX_CONFIG_PATH: configPath,
+        MEMORY_NODE_COMMAND: "node"
+      }
+    });
+
+    expect(result).toMatchObject({ ok: true, state: "healthy" });
+    expect(readFileSync(configPath, "utf8")).toBe(
+      'profile = "operator"\nother = true\n'
+    );
+  });
+
+  it("fails Codex removal without mutating malformed or unexpected ownership block", () => {
+    const root = tempDir();
+    const configPath = resolve(root, "codex/config.toml");
+    mkdirSync(resolve(root, "codex"), { recursive: true });
+    const original =
+      'profile = "operator"\n# >>> koed\n[mcp_servers.other]\n# <<< koed\n';
+    writeFileSync(configPath, original);
+
+    const result = removeCodexIntegration({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        CODEX_CONFIG_PATH: configPath
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+  });
+
   it("provisions core through injectable packaged runtime seam before Codex bootstrap", async () => {
     const root = tempDir();
     const order: string[] = [];

@@ -5,11 +5,17 @@ export type DesktopCommand =
   | "doctor"
   | "setup_core"
   | "setup_codex"
+  | "check_codex"
   | "repair_codex"
+  | "remove_codex"
   | "setup_pi"
+  | "check_pi"
   | "repair_pi"
+  | "remove_pi"
   | "setup_claude"
+  | "check_claude"
   | "repair_claude"
+  | "remove_claude"
   | "runtime_status"
   | "runtime_install"
   | "models_status"
@@ -28,11 +34,17 @@ const defaultTimeoutMs: Record<DesktopCommand, number> = {
   doctor: 90_000,
   setup_core: 330_000,
   setup_codex: 120_000,
+  check_codex: 90_000,
   repair_codex: 120_000,
+  remove_codex: 120_000,
   setup_pi: 120_000,
+  check_pi: 90_000,
   repair_pi: 120_000,
+  remove_pi: 120_000,
   setup_claude: 120_000,
+  check_claude: 90_000,
   repair_claude: 120_000,
+  remove_claude: 120_000,
   runtime_status: 60_000,
   runtime_install: 600_000,
   models_status: 60_000,

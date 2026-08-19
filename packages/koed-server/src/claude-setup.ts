@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  unlinkSync,
   writeFileSync
 } from "node:fs";
 import { homedir } from "node:os";
@@ -12,7 +13,10 @@ import { resolveKoedAppRuntime } from "./app-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   assertAiClientRegistryWritable,
+  captureAiClientRegistry,
   registerExplicitAiClient,
+  removeExplicitAiClient,
+  restoreAiClientRegistry,
   resolveExecutablePath
 } from "./ai-client-registry.js";
 
@@ -153,18 +157,230 @@ const unquote = (value: string): string => {
     : trimmed;
 };
 
+type ClaudeMcpEntry = {
+  command: string;
+  args: string[];
+  environment: Array<[string, string]>;
+};
+
+const parseClaudeMcpEntry = (output: string): ClaudeMcpEntry | null => {
+  const command = output.match(/^\s*Command:\s+(.+)$/m)?.[1];
+  const args = output.match(/^\s*Args:\s+(.+)$/m)?.[1];
+  if (!args) return null;
+  const environment = [
+    ...output.matchAll(/^\s*([A-Z_][A-Z0-9_]*)=(.+)$/gm)
+  ].map(([, name, value]) => [name!, unquote(value!)] as [string, string]);
+  return {
+    command: unquote(command ?? "node"),
+    args: [unquote(args)],
+    environment
+  };
+};
+
 export const claudeMcpEntryIsKoedOwned = (
   output: string,
   expectedMcpCli: string,
   expectedKoedHome: string
 ): boolean => {
-  const args = output.match(/^\s*Args:\s+(.+)$/m)?.[1];
-  const koedHome = output.match(/^\s*KOED_HOME=(.+)$/m)?.[1];
-  if (!args || !koedHome) return false;
-  return (
-    resolve(unquote(args)) === resolve(expectedMcpCli) &&
-    resolve(unquote(koedHome)) === resolve(expectedKoedHome)
+  const entry = parseClaudeMcpEntry(output);
+  const koedHome = entry?.environment.find(
+    ([name]) => name === "KOED_HOME"
+  )?.[1];
+  return Boolean(
+    entry?.args[0] &&
+    koedHome &&
+    resolve(entry.args[0]) === resolve(expectedMcpCli) &&
+    resolve(koedHome) === resolve(expectedKoedHome)
   );
+};
+
+const claudeMcpAddArgs = (mcpName: string, entry: ClaudeMcpEntry) => [
+  "mcp",
+  "add",
+  "--scope",
+  "user",
+  mcpName,
+  ...entry.environment.flatMap(([name, value]) => [
+    "--env",
+    `${name}=${value}`
+  ]),
+  "--",
+  entry.command,
+  ...entry.args
+];
+
+const claudeMcpLookupConfirmsAbsent = (
+  result: ReturnType<SpawnSyncLike>
+): boolean =>
+  result.status !== 0 &&
+  !result.error &&
+  /(?:not found|does not exist|no .*mcp|unknown .*server|not configured)/i.test(
+    `${result.stdout ?? ""}\n${result.stderr ?? ""}`
+  );
+
+export const removeClaude = (
+  environment: NodeJS.ProcessEnv = process.env,
+  spawnSync: SpawnSyncLike = nodeSpawnSync
+): KoedServerSetupClaudeResult => {
+  const paths = resolveKoedServerPaths(environment);
+  const settingsPath = resolveClaudeSettingsPath(environment);
+  const executable =
+    environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
+  const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
+  const checkedAt = new Date().toISOString();
+  const base = {
+    command: `${executable} mcp remove --scope user ${mcpName}`,
+    koedHome: paths.koedHome,
+    checkedAt,
+    settingsPath
+  };
+  let originalSettings: string | null = null;
+  let registrySnapshot;
+  let removedMcp = false;
+  try {
+    assertAiClientRegistryWritable(environment);
+    registrySnapshot = captureAiClientRegistry(environment);
+    originalSettings = existsSync(settingsPath)
+      ? readFileSync(settingsPath, "utf8")
+      : null;
+    const settings: ClaudeSettings = originalSettings
+      ? (JSON.parse(originalSettings) as ClaudeSettings)
+      : {};
+    const childEnvironment = claudeProcessEnvironment(environment);
+    const runtime = resolveKoedAppRuntime(paths, environment);
+    const existingMcp = spawnSync(executable, ["mcp", "get", mcpName], {
+      encoding: "utf8",
+      env: childEnvironment,
+      timeout: 10_000
+    });
+    if (existingMcp.error) {
+      throw new Error(`Claude MCP lookup failed: ${existingMcp.error.message}`);
+    }
+    if (
+      existingMcp.status === 0 &&
+      !claudeMcpEntryIsKoedOwned(
+        existingMcp.stdout ?? "",
+        runtime.mcpCli,
+        paths.koedHome
+      )
+    ) {
+      throw new Error(
+        `Claude Code MCP server ${mcpName} is unrelated to Koed; it was not removed.`
+      );
+    }
+    if (
+      existingMcp.status !== 0 &&
+      !claudeMcpLookupConfirmsAbsent(existingMcp)
+    ) {
+      throw new Error(
+        existingMcp.stderr?.trim() ||
+          "Claude MCP lookup failed; absence could not be confirmed."
+      );
+    }
+    if (existingMcp.status === 0) {
+      const removed = spawnSync(
+        executable,
+        ["mcp", "remove", "--scope", "user", mcpName],
+        { encoding: "utf8", env: childEnvironment, timeout: 10_000 }
+      );
+      if (removed.error || removed.status !== 0) {
+        throw new Error(
+          removed.error?.message ??
+            removed.stderr?.trim() ??
+            "Claude MCP removal failed."
+        );
+      }
+      removedMcp = true;
+    }
+    for (const eventName of CLAUDE_HOOK_EVENTS) {
+      const remaining = withoutKoedHook(
+        settings.hooks?.[eventName],
+        runtime.captureHook
+      );
+      if (remaining.length > 0) settings.hooks![eventName] = remaining;
+      else delete settings.hooks?.[eventName];
+    }
+    if (settings.hooks && Object.keys(settings.hooks).length === 0) {
+      delete settings.hooks;
+    }
+    if (existsSync(settingsPath)) {
+      writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, {
+        mode: 0o600
+      });
+      chmodSync(settingsPath, 0o600);
+    }
+    removeExplicitAiClient({ environment, driverId: "claude" });
+    return {
+      ...base,
+      ok: true,
+      state: "healthy",
+      stdout:
+        "Claude Code integration removed; unrelated settings were preserved."
+    };
+  } catch (error) {
+    const failures = [error instanceof Error ? error.message : String(error)];
+    if (originalSettings !== null) {
+      try {
+        writeFileSync(settingsPath, originalSettings, { mode: 0o600 });
+        chmodSync(settingsPath, 0o600);
+      } catch (restoreError) {
+        failures.push(
+          `Claude settings rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
+    if (removedMcp) {
+      try {
+        const runtime = resolveKoedAppRuntime(paths, environment);
+        const restored = spawnSync(
+          executable,
+          [
+            "mcp",
+            "add",
+            "--scope",
+            "user",
+            mcpName,
+            "--env",
+            `KOED_HOME=${paths.koedHome}`,
+            "--",
+            environment.MEMORY_NODE_COMMAND?.trim() || "node",
+            runtime.mcpCli
+          ],
+          {
+            encoding: "utf8",
+            env: claudeProcessEnvironment(environment),
+            timeout: 15_000
+          }
+        );
+        if (restored.error || restored.status !== 0) {
+          throw (
+            restored.error ??
+            new Error(restored.stderr?.trim() || "restore failed")
+          );
+        }
+      } catch (restoreError) {
+        failures.push(
+          `Claude MCP rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
+    if (registrySnapshot) {
+      try {
+        restoreAiClientRegistry(environment, registrySnapshot);
+      } catch (restoreError) {
+        failures.push(
+          `AI Client registry rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
+    return {
+      ...base,
+      ok: false,
+      state: "needs_attention",
+      error: failures.join(" "),
+      action: "Fix Koed-owned Claude Code settings, then retry removal."
+    };
+  }
 };
 
 export const setupClaude = (
@@ -180,6 +396,11 @@ export const setupClaude = (
   const nodeCommand = environment.MEMORY_NODE_COMMAND?.trim() || "node";
   const checkedAt = new Date().toISOString();
   const command = `${executable} mcp add --scope user ${mcpName}`;
+  let originalSettings: string | null = null;
+  let registrySnapshot;
+  let previousMcp: ClaudeMcpEntry | null = null;
+  let removedExistingMcp = false;
+  let addedMcp = false;
   const failure = (
     error: string,
     action: string,
@@ -235,8 +456,12 @@ export const setupClaude = (
       );
     }
 
-    const settings: ClaudeSettings = existsSync(settingsPath)
-      ? (JSON.parse(readFileSync(settingsPath, "utf8")) as ClaudeSettings)
+    registrySnapshot = captureAiClientRegistry(environment);
+    originalSettings = existsSync(settingsPath)
+      ? readFileSync(settingsPath, "utf8")
+      : null;
+    const settings: ClaudeSettings = originalSettings
+      ? (JSON.parse(originalSettings) as ClaudeSettings)
       : {};
     settings.hooks ??= {};
     const hookCommand = [
@@ -269,6 +494,13 @@ export const setupClaude = (
       );
     }
     if (existingMcp.status === 0) {
+      previousMcp = parseClaudeMcpEntry(existingMcp.stdout ?? "");
+      if (!previousMcp) {
+        return failure(
+          "Claude Code Koed MCP entry could not be parsed for safe replacement.",
+          "Inspect the Koed-owned Claude MCP entry, then retry setup."
+        );
+      }
       const remove = spawnSync(
         executable,
         ["mcp", "remove", "--scope", "user", mcpName],
@@ -287,6 +519,7 @@ export const setupClaude = (
           remove
         );
       }
+      removedExistingMcp = true;
     }
     const add = spawnSync(
       executable,
@@ -309,12 +542,11 @@ export const setupClaude = (
       }
     );
     if (add.error || add.status !== 0) {
-      return failure(
-        add.error?.message ?? add.stderr?.trim() ?? "Claude MCP setup failed.",
-        "Fix the reported Claude Code MCP error, then repair the integration.",
-        add
+      throw new Error(
+        add.error?.message ?? add.stderr?.trim() ?? "Claude MCP setup failed."
       );
     }
+    addedMcp = true;
 
     for (const eventName of CLAUDE_HOOK_EVENTS) {
       settings.hooks[eventName] = [
@@ -349,8 +581,82 @@ export const setupClaude = (
       ...(add.stderr?.trim() ? { stderr: add.stderr.trim() } : {})
     };
   } catch (error) {
+    const failures = [error instanceof Error ? error.message : String(error)];
+    if (addedMcp) {
+      try {
+        const removed = spawnSync(
+          executable,
+          ["mcp", "remove", "--scope", "user", mcpName],
+          {
+            encoding: "utf8",
+            env: claudeProcessEnvironment(environment),
+            timeout: 15_000
+          }
+        );
+        if (removed.error || removed.status !== 0) {
+          throw (
+            removed.error ??
+            new Error(removed.stderr?.trim() || "remove failed")
+          );
+        }
+      } catch (rollbackError) {
+        failures.push(
+          `Claude MCP rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+        );
+      }
+    }
+    if (removedExistingMcp && previousMcp) {
+      try {
+        const restored = spawnSync(
+          executable,
+          claudeMcpAddArgs(mcpName, previousMcp),
+          {
+            encoding: "utf8",
+            env: claudeProcessEnvironment(environment),
+            timeout: 15_000
+          }
+        );
+        if (restored.error || restored.status !== 0) {
+          throw (
+            restored.error ??
+            new Error(restored.stderr?.trim() || "restore failed")
+          );
+        }
+      } catch (restoreError) {
+        failures.push(
+          `Claude MCP rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
+    if (originalSettings !== null) {
+      try {
+        writeFileSync(settingsPath, originalSettings, { mode: 0o600 });
+        chmodSync(settingsPath, 0o600);
+      } catch (restoreError) {
+        failures.push(
+          `Claude settings rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    } else if (existsSync(settingsPath)) {
+      try {
+        unlinkSync(settingsPath);
+      } catch (restoreError) {
+        failures.push(
+          `Claude settings rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
+    if (registrySnapshot) {
+      try {
+        restoreAiClientRegistry(environment, registrySnapshot);
+      } catch (restoreError) {
+        failures.push(
+          `AI Client registry rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
     return failure(
-      error instanceof Error ? error.message : String(error),
+      failures.join(" "),
       "Fix Claude Code settings permissions or malformed settings, then repair the integration."
     );
   }

@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -11,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolvePiSetupExecutable, setupPi } from "./pi-setup.js";
+import { removePi, resolvePiSetupExecutable, setupPi } from "./pi-setup.js";
 
 const temporaryDirectories: string[] = [];
 const spawnResult = (stdout = "", status = 0) =>
@@ -129,6 +130,172 @@ describe("Pi setup", () => {
 
     expect(resolvePiSetupExecutable({ PATH: root }, "win32")).toBe(
       realpathSync(entry)
+    );
+  });
+
+  it("runs trusted Pi removal, verifies active profile, and preserves unrelated registry entries", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-remove-"));
+    temporaryDirectories.push(root);
+    const executable = resolve(root, "pi");
+    const target = resolve(root, "koed/integrations/pi");
+    const registry = resolve(root, "koed/config/ai-client-instances.json");
+    mkdirSync(target, { recursive: true });
+    mkdirSync(resolve(target, "extensions"), { recursive: true });
+    writeFileSync(resolve(target, "package.json"), '{"name":"koed"}\n');
+    writeFileSync(resolve(target, "extensions/koed.mjs"), "export {};\n");
+    writeFileSync(executable, "#!/bin/sh\\nexit 0\\n");
+    chmodSync(executable, 0o700);
+    mkdirSync(resolve(registry, ".."), { recursive: true });
+    writeFileSync(
+      registry,
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "pi.default",
+            driverId: "pi",
+            displayName: "Pi",
+            executablePath: executable
+          },
+          {
+            instanceId: "other.default",
+            driverId: "other",
+            displayName: "Other",
+            executablePath: executable
+          }
+        ]
+      })
+    );
+    const calls: string[][] = [];
+    const result = removePi(
+      {
+        HOME: root,
+        PATH: root,
+        KOED_HOME: resolve(root, "koed"),
+        KOED_PI_EXECUTABLE: executable,
+        KOED_AI_CLIENT_INSTANCE_REGISTRY: registry
+      },
+      ((_command: string, args: string[]) => {
+        calls.push(args);
+        return args[0] === "list"
+          ? spawnResult("other-package\n")
+          : spawnResult("removed\n");
+      }) as never
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      executablePath: realpathSync(executable)
+    });
+    expect(calls[0]).toEqual(["remove", target]);
+    expect(existsSync(target)).toBe(false);
+    const afterRegistry = JSON.parse(readFileSync(registry, "utf8")) as {
+      instances: Array<{ instanceId: string }>;
+    };
+    expect(afterRegistry.instances).toHaveLength(1);
+    expect(afterRegistry.instances[0]?.instanceId).toBe("other.default");
+  });
+
+  it("rolls back Pi package and registry when command verification fails", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-remove-fail-"));
+    temporaryDirectories.push(root);
+    const executable = resolve(root, "pi");
+    const target = resolve(root, "koed/integrations/pi");
+    const registry = resolve(root, "koed/config/ai-client-instances.json");
+    mkdirSync(target, { recursive: true });
+    writeFileSync(resolve(target, "package.json"), '{"name":"koed"}\n');
+    writeFileSync(executable, "#!/bin/sh\\nexit 0\\n");
+    chmodSync(executable, 0o700);
+    mkdirSync(resolve(registry, ".."), { recursive: true });
+    const registryContent = JSON.stringify({
+      version: 1,
+      instances: [
+        {
+          instanceId: "pi.default",
+          driverId: "pi",
+          displayName: "Pi",
+          executablePath: executable
+        }
+      ]
+    });
+    writeFileSync(registry, registryContent);
+
+    const result = removePi(
+      {
+        HOME: root,
+        PATH: root,
+        KOED_HOME: resolve(root, "koed"),
+        KOED_PI_EXECUTABLE: executable,
+        KOED_AI_CLIENT_INSTANCE_REGISTRY: registry
+      },
+      ((_command: string, args: string[]) =>
+        args[0] === "remove"
+          ? spawnResult("", 1)
+          : spawnResult("koed-package\n")) as never
+    );
+
+    expect(result.ok).toBe(false);
+    expect(readFileSync(resolve(target, "package.json"), "utf8")).toContain(
+      '"koed"'
+    );
+    expect(readFileSync(registry, "utf8")).toBe(registryContent);
+  });
+
+  it("restores package and re-registers Pi after removal verification fails", () => {
+    const root = mkdtempSync(
+      resolve(tmpdir(), "koed-pi-remove-profile-rollback-")
+    );
+    temporaryDirectories.push(root);
+    const executable = resolve(root, "pi");
+    const target = resolve(root, "koed/integrations/pi");
+    const registry = resolve(root, "koed/config/ai-client-instances.json");
+    mkdirSync(target, { recursive: true });
+    writeFileSync(resolve(target, "package.json"), '{"name":"koed"}\\n');
+    writeFileSync(executable, "#!/bin/sh\\nexit 0\\n");
+    chmodSync(executable, 0o700);
+    mkdirSync(resolve(registry, ".."), { recursive: true });
+    writeFileSync(
+      registry,
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "pi.default",
+            driverId: "pi",
+            displayName: "Pi",
+            executablePath: executable
+          }
+        ]
+      })
+    );
+    const calls: string[][] = [];
+    let listCalls = 0;
+    const result = removePi(
+      {
+        HOME: root,
+        PATH: root,
+        KOED_HOME: resolve(root, "koed"),
+        KOED_PI_EXECUTABLE: executable,
+        KOED_AI_CLIENT_INSTANCE_REGISTRY: registry
+      },
+      ((_command: string, args: string[]) => {
+        calls.push(args);
+        if (args[0] === "remove") return spawnResult("removed\\n");
+        if (args[0] === "list") {
+          listCalls += 1;
+          return listCalls === 1
+            ? spawnResult("profile check failed", 1)
+            : spawnResult(`${target}\\n`);
+        }
+        return spawnResult("installed\\n");
+      }) as never
+    );
+
+    expect(result.ok).toBe(false);
+    expect(calls).toContainEqual(["install", target]);
+    expect(calls.filter((args) => args[0] === "list")).toHaveLength(2);
+    expect(readFileSync(resolve(target, "package.json"), "utf8")).toContain(
+      '"koed"'
     );
   });
 

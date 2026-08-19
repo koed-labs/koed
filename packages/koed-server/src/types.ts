@@ -1,8 +1,40 @@
+import type { AiClientCapabilityDescriptor } from "@koed/shared";
+
 export type KoedServerComponentState =
   | "not_configured"
   | "starting"
   | "healthy"
   | "needs_attention";
+
+export interface KoedAiClientReadiness {
+  driverId: "codex" | "claude" | "pi";
+  instanceId: string;
+  displayName: string;
+  installed: KoedServerComponentStatus;
+  version: string | null;
+  authentication: "authenticated" | "unauthenticated" | "unknown";
+  profile: KoedServerComponentStatus;
+  capabilities: AiClientCapabilityDescriptor[];
+  observedAt: string;
+  snapshotState: "profile" | "current" | "stale" | "unknown";
+}
+
+export const aiClientReadinessUnknown = (
+  driverId: "codex" | "claude" | "pi",
+  displayName: string,
+  now: string
+): KoedAiClientReadiness => ({
+  driverId,
+  instanceId: `${driverId}.default`,
+  displayName,
+  installed: { state: "not_configured", message: "Installation is unknown." },
+  version: null,
+  authentication: "unknown",
+  profile: { state: "not_configured", message: "Profile setup is unknown." },
+  capabilities: [],
+  observedAt: now,
+  snapshotState: "unknown"
+});
 
 export interface KoedServerComponentStatus {
   state: KoedServerComponentState;
@@ -35,6 +67,7 @@ export interface KoedServerStatus {
     detected: boolean;
   };
   pi: KoedServerComponentStatus & { configured: boolean; detected: boolean };
+  aiClients: Record<string, KoedAiClientReadiness>;
   lcmSummaryService: KoedServerComponentStatus;
   deviceIdentity: KoedServerComponentStatus & {
     health: string;

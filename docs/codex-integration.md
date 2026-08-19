@@ -65,10 +65,13 @@ Working directory: /path/to/koed
 ```
 
 `koed-server setup codex` writes this configuration only after explicit Codex
-setup. The adapter discovers the authenticated Local AI Runtime through an
-owner-only local registration under `KOED_HOME`; API and upstream credentials
-are not copied into Codex MCP configuration. Installing or detecting Codex does
-not select it for other flows.
+setup. Desktop exposes the same protected setup, check, repair, and remove
+commands after per-action consent. `check codex --json` is read-only and
+`remove codex --json` removes only Koed's marked block and registry entry. The
+adapter discovers the authenticated Local AI Runtime through an owner-only
+local registration under `KOED_HOME`; API and upstream credentials are not
+copied into Codex MCP configuration. Installing or detecting Codex does not
+select it for other flows.
 If Codex Desktop cannot resolve `node`, set the command to an absolute Node path
 or run setup with `MEMORY_NODE_COMMAND=/path/to/node`. Shell-managed versions
 from NVM, pyenv, or similar tools may not be on the PATH when Codex runs hooks.

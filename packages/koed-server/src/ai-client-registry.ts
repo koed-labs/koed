@@ -8,11 +8,13 @@ import {
   readFileSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeFileSync
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { parseCodexOwnershipBlock } from "./codex-ownership-marker.js";
 
 export type RegisteredAiClient = "codex" | "claude" | "pi";
 
@@ -82,7 +84,7 @@ export const resolveExecutablePath = (
   throw new Error(`AI Client executable was not found: ${requested}`);
 };
 
-const registryPath = (environment: NodeJS.ProcessEnv): string =>
+export const aiClientRegistryPath = (environment: NodeJS.ProcessEnv): string =>
   resolve(
     environment.KOED_AI_CLIENT_INSTANCE_REGISTRY ??
       join(
@@ -91,6 +93,62 @@ const registryPath = (environment: NodeJS.ProcessEnv): string =>
         "ai-client-instances.json"
       )
   );
+
+const registryPath = aiClientRegistryPath;
+
+export interface AiClientRegistrySnapshot {
+  exists: boolean;
+  content: string | null;
+  mode: number | null;
+}
+
+export const captureAiClientRegistry = (
+  environment: NodeJS.ProcessEnv
+): AiClientRegistrySnapshot => {
+  const target = registryPath(environment);
+  try {
+    const stats = lstatSync(target);
+    if (stats.isSymbolicLink()) {
+      throw new Error(
+        "AI Client instance registry must not be a symbolic link."
+      );
+    }
+    return {
+      exists: true,
+      content: readFileSync(target, "utf8"),
+      mode: stats.mode & 0o777
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { exists: false, content: null, mode: null };
+    }
+    throw error;
+  }
+};
+
+export const restoreAiClientRegistry = (
+  environment: NodeJS.ProcessEnv,
+  snapshot: AiClientRegistrySnapshot
+): void => {
+  const target = registryPath(environment);
+  if (!snapshot.exists) {
+    try {
+      if (lstatSync(target).isSymbolicLink()) {
+        throw new Error(
+          "AI Client instance registry must not be a symbolic link."
+        );
+      }
+      unlinkSync(target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    return;
+  }
+  if (snapshot.content === null) throw new Error("Registry snapshot is empty.");
+  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+  writeFileSync(target, snapshot.content, { mode: snapshot.mode ?? 0o600 });
+  chmodSync(target, snapshot.mode ?? 0o600);
+};
 
 const readRegistry = (target: string): RegistryRoot => {
   try {
@@ -174,6 +232,20 @@ const writeRegistry = (target: string, root: RegistryRoot): void => {
   chmodSync(target, 0o600);
 };
 
+export const removeExplicitAiClient = (input: {
+  environment: NodeJS.ProcessEnv;
+  driverId: RegisteredAiClient;
+}): boolean => {
+  const target = registryPath(input.environment);
+  const root = readRegistry(target);
+  const instances = root.instances.filter(
+    (candidate) => candidate.instanceId !== `${input.driverId}.default`
+  );
+  if (instances.length === root.instances.length) return false;
+  writeRegistry(target, { version: 1, instances });
+  return true;
+};
+
 export const registerExplicitAiClient = (input: {
   environment: NodeJS.ProcessEnv;
   driverId: RegisteredAiClient;
@@ -254,9 +326,7 @@ export const migrateKoedOwnedCodexRegistration = (input: {
     configPath,
     "utf8"
   ) as string;
-  if (!content.includes("# >>> koed") || !content.includes("# <<< koed")) {
-    return false;
-  }
+  if (parseCodexOwnershipBlock(content).kind !== "valid") return false;
   registerExplicitAiClient({
     environment,
     driverId: "codex",

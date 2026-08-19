@@ -131,11 +131,21 @@ AI Runtime.
    `ok`, `state`, and exit status. LCM process health is separate from any
    assigned client/model readiness. MCP configuration contains `KOED_HOME`
    rather than API credentials. Stale ports, credentials, or runtime paths show
-   as explicit mismatches.
+   as explicit mismatches. Status also exposes client-neutral `aiClients` readiness
+   records keyed by registered instance, with installed/version/authentication
+   facts and shared capability descriptors for automatic capture, MCP Recall,
+   local Synthesis, and Managed Conversation. Status reads the authenticated
+   AI Client instance capability read model best-effort: current or stale
+   snapshots authoritatively gate Local Synthesis and Managed Conversation;
+   profile checks only fill unknown Capture Hook or MCP Recall descriptors.
+   Stale snapshots are non-runnable, and read-model failure reports Unknown
+   without degrading core status. Pi reports Managed Conversation unsupported.
+   These records do not select execution flows or change Managed Conversation
+   routing.
 9. `koed-server setup core --json` validates or provisions client-neutral core
-   local credential state, and core verification. `koed-server setup codex
---json` remains an explicit Codex profile compatibility path that may compose
-   core setup with Codex MCP/Capture Hook configuration. Setup applies persisted auto-allocated local ports before
+   local credential state. Final verification is recorded by `doctor --json`.
+   `koed-server setup codex --json` remains an explicit Codex profile
+   compatibility path that may compose core setup with Codex MCP/Capture Hook configuration. Setup applies persisted auto-allocated local ports before
    resolving the API URL, so Desktop-managed ports and direct CLI
    setup write the same target URL/token. `koed-server repair codex --json` is
    the narrower Desktop repair path: it rewrites the Koed-managed Codex MCP
@@ -156,7 +166,8 @@ AI Runtime.
    installed package derives custom `KOED_HOME` from its stable package path.
 10. Koed Desktop can start/connect to the same headless command surface, run
     mandatory client-neutral core setup and health checks, poll status, offer
-    explicit per-client setup/repair for stale local config, and
+    optional independently consented multi-select client setup with defer,
+    per-client check/repair/remove for stale local config, and
     provision the embedding model through `koed-server models status/install
 --json` in bundled-local mode without requiring the Operator to invoke
     repo-local scripts directly. Its Project and Captured Session navigation is

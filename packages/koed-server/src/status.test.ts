@@ -15,6 +15,7 @@ import {
   collectKoedServerDoctor,
   collectKoedServerStatus,
   healthy,
+  inspectAiClientReadiness,
   inspectClaudeCode,
   inspectPi,
   needsAttention,
@@ -72,6 +73,404 @@ afterEach(() => {
 });
 
 describe("status state aggregation", () => {
+  it("reports client-neutral capability readiness without treating core as client setup", () => {
+    const component = (
+      state: "healthy" | "needs_attention" | "not_configured"
+    ) => ({
+      state,
+      message: `${state} check`
+    });
+    const clients = inspectAiClientReadiness({
+      codex: { ...component("healthy"), configured: true },
+      claudeCode: {
+        ...component("needs_attention"),
+        configured: false,
+        detected: true
+      },
+      pi: {
+        ...component("healthy"),
+        configured: true,
+        detected: true,
+        details: { version: "0.84.2", authenticated: true }
+      },
+      codexTranscriptWatcher: component("healthy"),
+      claudeTranscriptWatcher: component("healthy"),
+      mcpServer: component("healthy"),
+      localAiRuntime: component("healthy"),
+      now: "2026-01-01T00:00:00.000Z"
+    });
+
+    expect(clients.codex.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "ready"
+        }),
+        expect.objectContaining({ id: "mcp_recall", readiness: "ready" })
+      ])
+    );
+    expect(clients.claude.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "not_ready"
+        })
+      ])
+    );
+    expect(clients.pi.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "managed_conversation_start",
+          support: "unsupported"
+        })
+      ])
+    );
+    expect(clients.claude.profile.state).toBe("needs_attention");
+    expect(clients.codex.profile.state).toBe("healthy");
+  });
+  it("isolates a broken client inspector from other clients and core status", async () => {
+    const root = tempDir();
+    const configPath = resolve(root, "config.toml");
+    writeFileSync(configPath, "# malformed");
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        CODEX_HOME: root,
+        CODEX_CONFIG_PATH: configPath,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async () => response(true, 200, { checks: [] }),
+        readFileSync: ((path: PathLike) => {
+          if (String(path) === configPath)
+            throw new Error("broken Codex config");
+          return readFileSync(path, "utf8");
+        }) as typeof readFileSync,
+        spawnSync: () => spawnResult(""),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+    expect(status.codex.state).toBe("needs_attention");
+    expect(status.aiClients.claude).toBeDefined();
+    expect(status.aiClients.pi).toBeDefined();
+    expect(status.core.state).toBeDefined();
+  });
+
+  it.each([
+    ["codex", "Codex"],
+    ["claude", "Claude Code"],
+    ["pi", "Pi"]
+  ] as const)(
+    "uses %s capability snapshot for readiness",
+    (driverId, displayName) => {
+      const descriptor = (
+        id: string,
+        support: "supported" | "unsupported" = "supported"
+      ) => ({
+        id,
+        support,
+        readiness: support === "unsupported" ? "unknown" : "ready",
+        diagnostics: []
+      });
+      const clients = inspectAiClientReadiness({
+        codex: { ...healthy(), configured: true },
+        claudeCode: { ...healthy(), configured: true, detected: true },
+        pi: { ...healthy(), configured: true, detected: true },
+        codexTranscriptWatcher: healthy(),
+        claudeTranscriptWatcher: healthy(),
+        mcpServer: healthy(),
+        localAiRuntime: needsAttention("runtime unavailable"),
+        capabilityReadModel: {
+          instances: [
+            { instanceId: `${driverId}.default`, driverId, displayName }
+          ],
+          capabilitySnapshots: [
+            {
+              instanceId: `${driverId}.default`,
+              clientVersion: "1.2.3",
+              authenticationState: "authenticated",
+              healthState: "healthy",
+              models: [{ id: "model" }],
+              capabilities: {
+                descriptors: {
+                  automatic_capture: descriptor("automatic_capture"),
+                  mcp_recall: descriptor("mcp_recall"),
+                  local_synthesis: descriptor("local_synthesis"),
+                  managed_conversation_start: descriptor(
+                    "managed_conversation_start",
+                    driverId === "pi" ? "unsupported" : "supported"
+                  )
+                }
+              },
+              observedAt: "2026-01-01T00:00:00.000Z",
+              expiresAt: "2026-01-02T00:00:00.000Z"
+            }
+          ]
+        },
+        now: "2026-01-01T00:00:00.000Z"
+      });
+      const readiness = clients[driverId];
+      expect(readiness.snapshotState).toBe("current");
+      expect(readiness.version).toBe("1.2.3");
+      expect(readiness.capabilities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "local_synthesis",
+            readiness: "ready"
+          }),
+          expect.objectContaining({
+            id: "managed_conversation_start",
+            support: driverId === "pi" ? "unsupported" : "supported",
+            readiness: driverId === "pi" ? "unknown" : "ready"
+          })
+        ])
+      );
+    }
+  );
+
+  it("overlays current profile readiness only for unknown capture and recall descriptors", () => {
+    const unknown = (id: string) => ({
+      id,
+      support: "supported" as const,
+      readiness: "unknown" as const,
+      diagnostics: []
+    });
+    const clients = inspectAiClientReadiness({
+      codex: { ...healthy(), configured: true },
+      claudeCode: { ...healthy(), configured: true, detected: true },
+      pi: { ...healthy(), configured: true, detected: true },
+      codexTranscriptWatcher: healthy(),
+      claudeTranscriptWatcher: healthy(),
+      mcpServer: healthy(),
+      localAiRuntime: healthy(),
+      capabilityReadModel: {
+        instances: [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            displayName: "Codex"
+          }
+        ],
+        capabilitySnapshots: [
+          {
+            instanceId: "codex.default",
+            clientVersion: "1.2.3",
+            authenticationState: "authenticated",
+            healthState: "healthy",
+            models: [{ id: "model" }],
+            capabilities: {
+              descriptors: {
+                automatic_capture: unknown("automatic_capture"),
+                mcp_recall: unknown("mcp_recall"),
+                local_synthesis: unknown("local_synthesis"),
+                managed_conversation_start: unknown(
+                  "managed_conversation_start"
+                )
+              }
+            },
+            observedAt: "2026-01-01T00:00:00.000Z",
+            expiresAt: "2026-01-02T00:00:00.000Z"
+          }
+        ]
+      },
+      now: "2026-01-01T00:00:00.000Z"
+    });
+
+    expect(clients.codex.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "ready"
+        }),
+        expect.objectContaining({ id: "mcp_recall", readiness: "ready" }),
+        expect.objectContaining({
+          id: "local_synthesis",
+          readiness: "unknown"
+        }),
+        expect.objectContaining({
+          id: "managed_conversation_start",
+          readiness: "unknown"
+        })
+      ])
+    );
+  });
+
+  it("keeps stale snapshots non-runnable and does not use runtime for synthesis", () => {
+    const descriptor = (id: string) => ({
+      id,
+      support: "supported" as const,
+      readiness: "ready" as const,
+      diagnostics: []
+    });
+    const clients = inspectAiClientReadiness({
+      codex: { ...healthy(), configured: true },
+      claudeCode: { ...healthy(), configured: true, detected: true },
+      pi: { ...healthy(), configured: true, detected: true },
+      codexTranscriptWatcher: healthy(),
+      claudeTranscriptWatcher: healthy(),
+      mcpServer: healthy(),
+      localAiRuntime: healthy(),
+      capabilityReadModel: {
+        instances: [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            displayName: "Codex"
+          }
+        ],
+        capabilitySnapshots: [
+          {
+            instanceId: "codex.default",
+            clientVersion: "1.2.3",
+            authenticationState: "authenticated",
+            healthState: "healthy",
+            models: [{ id: "model" }],
+            capabilities: {
+              descriptors: {
+                automatic_capture: descriptor("automatic_capture"),
+                mcp_recall: descriptor("mcp_recall"),
+                local_synthesis: descriptor("local_synthesis"),
+                managed_conversation_start: descriptor(
+                  "managed_conversation_start"
+                )
+              }
+            },
+            observedAt: "2025-12-01T00:00:00.000Z",
+            expiresAt: "2025-12-02T00:00:00.000Z"
+          }
+        ]
+      },
+      now: "2026-01-01T00:00:00.000Z"
+    });
+    expect(clients.codex.snapshotState).toBe("stale");
+    expect(clients.codex.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "stale"
+        }),
+        expect.objectContaining({ id: "mcp_recall", readiness: "stale" }),
+        expect.objectContaining({ id: "local_synthesis", readiness: "stale" }),
+        expect.objectContaining({
+          id: "managed_conversation_start",
+          readiness: "stale"
+        })
+      ])
+    );
+  });
+
+  it("isolates broken client snapshot from healthy client snapshot", () => {
+    const snapshot = (
+      driverId: "codex" | "claude",
+      healthState: "healthy" | "unavailable"
+    ) => ({
+      instanceId: `${driverId}.default`,
+      clientVersion: healthState === "healthy" ? "1.2.3" : null,
+      authenticationState:
+        healthState === "healthy"
+          ? ("authenticated" as const)
+          : ("unknown" as const),
+      healthState,
+      models: healthState === "healthy" ? [{ id: "model" }] : [],
+      capabilities: {
+        descriptors: Object.fromEntries(
+          [
+            "automatic_capture",
+            "mcp_recall",
+            "local_synthesis",
+            "managed_conversation_start"
+          ].map((id) => [
+            id,
+            {
+              id,
+              support: "supported",
+              readiness: healthState === "healthy" ? "ready" : "unavailable",
+              diagnostics: []
+            }
+          ])
+        )
+      },
+      observedAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-02T00:00:00.000Z"
+    });
+    const clients = inspectAiClientReadiness({
+      codex: { ...healthy(), configured: true },
+      claudeCode: { ...healthy(), configured: true, detected: true },
+      pi: { ...healthy(), configured: true, detected: true },
+      codexTranscriptWatcher: healthy(),
+      claudeTranscriptWatcher: healthy(),
+      mcpServer: healthy(),
+      localAiRuntime: healthy(),
+      capabilityReadModel: {
+        instances: [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            displayName: "Codex"
+          },
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code"
+          }
+        ],
+        capabilitySnapshots: [
+          snapshot("codex", "unavailable"),
+          snapshot("claude", "healthy")
+        ]
+      },
+      now: "2026-01-01T00:00:00.000Z"
+    });
+    expect(clients.codex.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "local_synthesis",
+          readiness: "unknown"
+        })
+      ])
+    );
+    expect(clients.claude.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "local_synthesis", readiness: "ready" })
+      ])
+    );
+  });
+
+  it("isolates capability API failure from core status", async () => {
+    const root = tempDir();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        MEMORY_API_TOKEN: "local-token",
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async (url) => {
+          if (String(url).endsWith("/v1/access/check"))
+            return response(true, 200, {});
+          if (String(url).endsWith("/v1/memory/ai-client-instances")) {
+            throw new Error("capability API unavailable");
+          }
+          return response(true, 200, { checks: [] });
+        },
+        spawnSync: () => spawnResult(""),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+    expect(status.core.state).toBeDefined();
+    expect(status.aiClients.codex.snapshotState).toBe("unknown");
+    expect(
+      status.aiClients.codex.capabilities.find(
+        (capability) => capability.id === "local_synthesis"
+      )
+    ).toMatchObject({ readiness: "unknown" });
+    expect(JSON.stringify(status)).not.toContain("local-token");
+  });
+
   it.each([
     [200, "healthy", "Local API Token authenticated successfully."],
     [401, "needs_attention", "Run koed-server setup core --json"],

@@ -9,6 +9,7 @@ import { resolveKoedServerConfig } from "./config.js";
 import { resolveActiveIntegrationApiToken } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
+import { parseCodexOwnershipBlock } from "./codex-ownership-marker.js";
 import { collectLocalEmbeddingRuntimeStatus } from "./local-embedding-runtime.js";
 import { collectLocalPostgresRuntimeStatus } from "./local-postgres-runtime.js";
 import {
@@ -37,13 +38,15 @@ import {
   MINIMUM_CLAUDE_CODE_VERSION,
   resolveClaudeSettingsPath
 } from "./claude-setup.js";
+import type { AiClientCapabilityDescriptor } from "@koed/shared";
 import type {
   KoedServerComponentState,
   KoedServerComponentStatus,
   KoedServerDoctorCheck,
   KoedServerDoctorResult,
   KoedServerRuntimeState,
-  KoedServerStatus
+  KoedServerStatus,
+  KoedAiClientReadiness
 } from "./types.js";
 
 type SpawnSyncLike = (
@@ -413,7 +416,7 @@ export const inspectClaudeCode = (
       ...needsAttention(
         "Claude Code is configured for Koed but is not signed in.",
         "Run `claude auth login`, then refresh status.",
-        { executable, version: versionText, settingsPath }
+        { executable, version: versionText, settingsPath, authenticated: false }
       ),
       configured: false,
       detected: true
@@ -423,7 +426,8 @@ export const inspectClaudeCode = (
     ...healthy("Claude Code is configured for Koed capture and recall.", {
       executable,
       version: versionText,
-      settingsPath
+      settingsPath,
+      authenticated: true
     }),
     configured: true,
     detected: true
@@ -692,6 +696,38 @@ const inspectApiToken = async (
   }
 };
 
+const fetchAiClientCapabilityReadModel = async (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>,
+  apiUrl: string,
+  fetcher: typeof globalThis.fetch
+): Promise<CapabilitySnapshotReadModel | null> => {
+  const token = resolveActiveIntegrationApiToken(paths, environment, repoEnv);
+  if (!token) return null;
+  try {
+    const response = await fetcher(
+      new URL("/v1/memory/ai-client-instances", apiUrl),
+      {
+        headers: { authorization: `Bearer ${token.token}` }
+      }
+    );
+    if (!response.ok) return null;
+    const body = JSON.parse(
+      await response.text()
+    ) as Partial<CapabilitySnapshotReadModel>;
+    if (
+      !Array.isArray(body.instances) ||
+      !Array.isArray(body.capabilitySnapshots)
+    ) {
+      return null;
+    }
+    return body as CapabilitySnapshotReadModel;
+  } catch {
+    return null;
+  }
+};
+
 const tomlStringValue = (content: string, key: string): string | null => {
   const match = new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"`, "m").exec(content);
   return match?.[1] ?? null;
@@ -731,21 +767,23 @@ const inspectCodex = (
     return {
       ...notConfigured(
         "Codex configuration was not found.",
-        "Run Fix Codex integration to configure the supported AI Client integration."
+        "Select Codex in Desktop AI Client setup, or run koed-server setup codex --json."
       ),
       configured: false
     };
   }
   const content = deps.readFileSync(codexConfigPath, "utf8") as string;
   const mcpName = environment.MEMORY_MCP_NAME ?? "koed";
-  const mcpBlock = tomlSection(content, `mcp_servers.${mcpName}`);
-  const mcpEnvBlock = tomlSection(content, `mcp_servers.${mcpName}.env`);
-  const configured = content.includes("# >>> koed") && Boolean(mcpBlock);
+  const ownership = parseCodexOwnershipBlock(content);
+  const ownedBlock = ownership.kind === "valid" ? ownership.block : "";
+  const mcpBlock = tomlSection(ownedBlock, `mcp_servers.${mcpName}`);
+  const mcpEnvBlock = tomlSection(ownedBlock, `mcp_servers.${mcpName}.env`);
+  const configured = ownership.kind === "valid" && Boolean(mcpBlock);
   if (!configured) {
     return {
       ...notConfigured(
         "Codex is installed but Koed is not configured in Codex.",
-        "Run Fix Codex integration."
+        "Run the Codex-specific setup action."
       ),
       configured: false
     };
@@ -761,7 +799,7 @@ const inspectCodex = (
     return {
       ...needsAttention(
         "Codex Koed integration points at a different Local AI Runtime.",
-        "Run Fix Codex integration, then restart Codex and trust updated hooks if prompted.",
+        "Run the Codex-specific repair action, then restart Codex and trust updated hooks if prompted.",
         {
           configuredKoedHome: configuredKoedHome ?? null,
           expectedKoedHome: paths.koedHome,
@@ -776,7 +814,7 @@ const inspectCodex = (
     return {
       ...needsAttention(
         "Codex Koed integration still contains retired API credentials.",
-        "Run Fix Codex integration, then restart Codex and trust updated hooks if prompted.",
+        "Run the Codex-specific repair action, then restart Codex and trust updated hooks if prompted.",
         { codexConfigPath }
       ),
       configured: true
@@ -804,7 +842,7 @@ const inspectCaptureHook = (
   if (!deps.existsSync(codexConfigPath)) {
     return notConfigured(
       "Codex configuration containing the Supported Capture Hook was not found.",
-      "Run Fix Codex integration."
+      "Run the Codex-specific setup action."
     );
   }
   const content = String(deps.readFileSync(codexConfigPath, "utf8"));
@@ -820,14 +858,16 @@ const inspectCaptureHook = (
   const missingEvents = requiredEvents.filter(
     (eventName) => !content.includes(`[[hooks.${eventName}]]`)
   );
+  const ownership = parseCodexOwnershipBlock(content);
+  const ownedBlock = ownership.kind === "valid" ? ownership.block : "";
   if (
-    !content.includes("# >>> koed") ||
-    !content.includes("capture-hook") ||
+    ownership.kind !== "valid" ||
+    !ownedBlock.includes("capture-hook") ||
     missingEvents.length > 0
   ) {
     return needsAttention(
       "Supported Capture Hook signal entries are incomplete.",
-      "Run Fix Codex integration, then restart Codex and trust updated hooks if prompted.",
+      "Run the Codex-specific repair action, then restart Codex and trust updated hooks if prompted.",
       {
         codexConfigPath,
         captureHookPath: runtime.captureHook,
@@ -1020,6 +1060,427 @@ const inspectClaudeTranscriptWatcher = (
   );
 };
 
+const readinessForState = (
+  state: KoedServerComponentStatus["state"]
+): "ready" | "not_ready" | "unknown" =>
+  state === "healthy"
+    ? "ready"
+    : state === "needs_attention"
+      ? "not_ready"
+      : "unknown";
+
+type CapabilitySnapshotReadModel = {
+  instances: Array<{
+    instanceId: string;
+    driverId: string;
+    displayName: string;
+    enabled?: boolean;
+  }>;
+  capabilitySnapshots: Array<{
+    instanceId: string;
+    clientVersion: string | null;
+    authenticationState: "authenticated" | "unauthenticated" | "unknown";
+    healthState: "healthy" | "unavailable" | "incompatible" | "error";
+    models: unknown[];
+    capabilities: {
+      descriptors?: Record<string, unknown>;
+    };
+    observedAt: string;
+    expiresAt: string;
+    stale?: boolean;
+  }>;
+};
+
+type SelectedCapabilitySnapshot = NonNullable<
+  CapabilitySnapshotReadModel["capabilitySnapshots"][number]
+> & { stale: boolean };
+
+const capabilityDescriptor = (
+  id:
+    | "automatic_capture"
+    | "mcp_recall"
+    | "local_synthesis"
+    | "managed_conversation_start",
+  support: "supported" | "unsupported",
+  readiness: "ready" | "not_ready" | "unknown",
+  message: string
+): AiClientCapabilityDescriptor => ({
+  id,
+  support,
+  readiness: support === "unsupported" ? "unknown" : readiness,
+  diagnostics: [
+    {
+      code: "profile_check",
+      message,
+      severity: readiness === "not_ready" ? "warning" : "info"
+    }
+  ],
+  ...(readiness === "ready" && support === "supported"
+    ? {
+        recoveryAction: {
+          id: "check" as const,
+          label: "Check integration",
+          available: true
+        }
+      }
+    : {})
+});
+
+const descriptorFor = (
+  snapshot: SelectedCapabilitySnapshot | null,
+  id: AiClientCapabilityDescriptor["id"]
+): AiClientCapabilityDescriptor | null => {
+  const candidate = snapshot?.capabilities.descriptors?.[id];
+  if (!candidate || typeof candidate !== "object") return null;
+  const descriptor = candidate as Partial<AiClientCapabilityDescriptor>;
+  if (
+    descriptor.id !== id ||
+    (descriptor.support !== "supported" &&
+      descriptor.support !== "unsupported") ||
+    ![
+      "ready",
+      "not_ready",
+      "unauthenticated",
+      "unavailable",
+      "stale",
+      "unknown"
+    ].includes(descriptor.readiness ?? "") ||
+    !Array.isArray(descriptor.diagnostics)
+  ) {
+    return null;
+  }
+  return descriptor as AiClientCapabilityDescriptor;
+};
+
+const snapshotFor = (
+  readModel: CapabilitySnapshotReadModel | null,
+  driverId: "codex" | "claude" | "pi",
+  now: string
+): SelectedCapabilitySnapshot | null => {
+  if (!readModel) return null;
+  const instance =
+    readModel.instances.find(
+      (candidate) =>
+        typeof candidate.instanceId === "string" &&
+        typeof candidate.driverId === "string" &&
+        candidate.driverId === driverId &&
+        candidate.instanceId === `${driverId}.default` &&
+        candidate.enabled !== false
+    ) ??
+    readModel.instances.find(
+      (candidate) =>
+        typeof candidate.instanceId === "string" &&
+        typeof candidate.driverId === "string" &&
+        candidate.driverId === driverId &&
+        candidate.enabled !== false
+    );
+  if (!instance) return null;
+  const snapshot = readModel.capabilitySnapshots
+    .filter(
+      (candidate) =>
+        candidate.instanceId === instance.instanceId &&
+        typeof candidate.observedAt === "string" &&
+        typeof candidate.expiresAt === "string" &&
+        candidate.capabilities !== null &&
+        typeof candidate.capabilities === "object" &&
+        Array.isArray(candidate.models) &&
+        Number.isFinite(Date.parse(candidate.observedAt)) &&
+        Number.isFinite(Date.parse(candidate.expiresAt)) &&
+        Date.parse(candidate.expiresAt) > Date.parse(candidate.observedAt)
+    )
+    .sort(
+      (left, right) =>
+        Date.parse(right.observedAt) - Date.parse(left.observedAt)
+    )[0];
+  if (!snapshot) return null;
+  const expiresAt = Date.parse(snapshot.expiresAt);
+  return {
+    ...snapshot,
+    stale: snapshot.stale === true || expiresAt <= Date.parse(now)
+  };
+};
+
+const staleDescriptor = (
+  descriptor: AiClientCapabilityDescriptor,
+  stale: boolean
+): AiClientCapabilityDescriptor =>
+  stale && descriptor.support === "supported"
+    ? {
+        ...descriptor,
+        readiness: "stale",
+        diagnostics: [
+          ...descriptor.diagnostics,
+          {
+            code: "capability_snapshot_stale",
+            message:
+              "Capability snapshot is stale and cannot be used to run this capability.",
+            severity: "warning"
+          }
+        ]
+      }
+    : descriptor;
+
+const unknownCapabilityDescriptor = (
+  id: AiClientCapabilityDescriptor["id"],
+  support: "supported" | "unsupported",
+  message: string
+): AiClientCapabilityDescriptor => ({
+  id,
+  support,
+  readiness: "unknown",
+  diagnostics: [
+    { code: "capability_snapshot_unknown", message, severity: "warning" }
+  ]
+});
+
+const localSynthesisReadiness = (
+  snapshot: SelectedCapabilitySnapshot | null,
+  descriptor: AiClientCapabilityDescriptor | null
+): AiClientCapabilityDescriptor => {
+  if (!snapshot || !descriptor) {
+    return unknownCapabilityDescriptor(
+      "local_synthesis",
+      "supported",
+      "Local Synthesis capability snapshot is unavailable."
+    );
+  }
+  const current = staleDescriptor(descriptor, snapshot.stale);
+  if (current.readiness === "stale") return current;
+  if (snapshot.authenticationState === "unauthenticated") {
+    return { ...current, readiness: "unauthenticated" };
+  }
+  if (snapshot.authenticationState !== "authenticated") {
+    return { ...current, readiness: "unknown" };
+  }
+  if (snapshot.healthState !== "healthy") {
+    return { ...current, readiness: "unavailable" };
+  }
+  if (snapshot.models.length === 0) {
+    return {
+      ...current,
+      readiness: "unavailable",
+      diagnostics: [
+        ...current.diagnostics,
+        {
+          code: "model_unavailable",
+          message: "No runnable model was reported by AI Client snapshot.",
+          severity: "warning"
+        }
+      ]
+    };
+  }
+  return current;
+};
+
+export const inspectAiClientReadiness = (input: {
+  codex: KoedServerStatus["codex"];
+  claudeCode: KoedServerStatus["claudeCode"];
+  pi: KoedServerStatus["pi"];
+  codexTranscriptWatcher: KoedServerComponentStatus;
+  claudeTranscriptWatcher: KoedServerComponentStatus;
+  mcpServer: KoedServerComponentStatus;
+  localAiRuntime: KoedServerComponentStatus;
+  capabilityReadModel?: CapabilitySnapshotReadModel | null;
+  now: string;
+}): Record<string, KoedAiClientReadiness> => {
+  const clients = [
+    {
+      driverId: "codex" as const,
+      displayName: "Codex",
+      profile: input.codex,
+      capture: input.codexTranscriptWatcher
+    },
+    {
+      driverId: "claude" as const,
+      displayName: "Claude Code",
+      profile: input.claudeCode,
+      capture: input.claudeTranscriptWatcher
+    },
+    {
+      driverId: "pi" as const,
+      displayName: "Pi",
+      profile: input.pi,
+      capture: input.pi
+    }
+  ];
+  return Object.fromEntries(
+    clients.map(({ driverId, displayName, profile, capture }) => {
+      const details = profile.details ?? {};
+      const snapshot = snapshotFor(
+        input.capabilityReadModel ?? null,
+        driverId,
+        input.now
+      );
+      const profileReady = readinessForState(profile.state);
+      const captureFallback =
+        profileReady === "ready"
+          ? readinessForState(capture.state)
+          : profileReady === "unknown"
+            ? "unknown"
+            : "not_ready";
+      const mcpFallback =
+        profileReady === "ready" && input.mcpServer.state === "healthy"
+          ? "ready"
+          : profileReady === "unknown" || input.mcpServer.state === "starting"
+            ? "unknown"
+            : "not_ready";
+      const overlayUnknownProfileReadiness = (
+        descriptor: AiClientCapabilityDescriptor,
+        fallback: "ready" | "not_ready" | "unknown"
+      ): AiClientCapabilityDescriptor =>
+        descriptor.readiness === "unknown" && descriptor.support === "supported"
+          ? {
+              ...descriptor,
+              readiness: fallback,
+              diagnostics: [
+                ...descriptor.diagnostics,
+                {
+                  code: "profile_readiness_overlay",
+                  message:
+                    "Snapshot was unknown; current integration profile readiness was used.",
+                  severity: fallback === "not_ready" ? "warning" : "info"
+                }
+              ]
+            }
+          : descriptor;
+      const captureDescriptor = overlayUnknownProfileReadiness(
+        descriptorFor(snapshot, "automatic_capture") ??
+          capabilityDescriptor(
+            "automatic_capture",
+            "supported",
+            captureFallback,
+            capture.message ?? "Automatic capture profile check completed."
+          ),
+        captureFallback
+      );
+      const mcpDescriptor = overlayUnknownProfileReadiness(
+        descriptorFor(snapshot, "mcp_recall") ??
+          capabilityDescriptor(
+            "mcp_recall",
+            "supported",
+            mcpFallback,
+            input.mcpServer.message ?? "MCP Recall profile check completed."
+          ),
+        mcpFallback
+      );
+      const synthesisDescriptor = localSynthesisReadiness(
+        snapshot,
+        descriptorFor(snapshot, "local_synthesis")
+      );
+      const managedDescriptor =
+        driverId === "pi"
+          ? unknownCapabilityDescriptor(
+              "managed_conversation_start",
+              "unsupported",
+              "Pi does not support Managed Conversation."
+            )
+          : (descriptorFor(snapshot, "managed_conversation_start") ??
+            unknownCapabilityDescriptor(
+              "managed_conversation_start",
+              "supported",
+              "Managed Conversation capability snapshot is unavailable."
+            ));
+      const capabilities = [
+        staleDescriptor(captureDescriptor, snapshot?.stale ?? false),
+        staleDescriptor(mcpDescriptor, snapshot?.stale ?? false),
+        synthesisDescriptor,
+        staleDescriptor(managedDescriptor, snapshot?.stale ?? false)
+      ];
+      const version =
+        snapshot?.clientVersion ??
+        (typeof details.version === "string" ? details.version : null);
+      const authenticated =
+        snapshot?.authenticationState ??
+        (details.authenticated === true
+          ? "authenticated"
+          : details.authenticated === false
+            ? "unauthenticated"
+            : "unknown");
+      const installed =
+        version || ("detected" in profile && profile.detected === true)
+          ? healthy(
+              version
+                ? `${displayName} ${version} is installed.`
+                : `${displayName} is installed.`,
+              { version }
+            )
+          : profile.state === "not_configured"
+            ? notConfigured(`${displayName} installation is unknown.`)
+            : profile;
+      return [
+        driverId,
+        {
+          driverId,
+          instanceId: snapshot?.instanceId ?? `${driverId}.default`,
+          displayName: snapshot
+            ? (input.capabilityReadModel?.instances.find(
+                (instance) => instance.instanceId === snapshot.instanceId
+              )?.displayName ?? displayName)
+            : displayName,
+          installed,
+          version,
+          authentication: authenticated,
+          profile,
+          capabilities,
+          observedAt: snapshot?.observedAt ?? input.now,
+          snapshotState: snapshot
+            ? snapshot.stale
+              ? "stale"
+              : "current"
+            : input.capabilityReadModel === undefined
+              ? "profile"
+              : "unknown"
+        }
+      ];
+    })
+  );
+};
+
+export const evaluateAiClientReadiness = (
+  readiness: KoedAiClientReadiness | null | undefined
+): {
+  ok: boolean;
+  state: "healthy" | "needs_attention";
+  message: string;
+  action?: string;
+} => {
+  const required = [
+    "automatic_capture",
+    "mcp_recall",
+    "local_synthesis"
+  ] as const;
+  const missing = required.filter(
+    (id) =>
+      !readiness?.capabilities.some(
+        (capability) =>
+          capability.id === id &&
+          capability.support === "supported" &&
+          capability.readiness === "ready"
+      )
+  );
+  const profileReady = readiness?.profile.state === "healthy";
+  const ok = Boolean(readiness && profileReady && missing.length === 0);
+  if (ok && readiness) {
+    return {
+      ok: true,
+      state: "healthy",
+      message: `${readiness.displayName} profile and required capabilities are ready.`
+    };
+  }
+  const message = !readiness
+    ? "AI Client readiness snapshot is unavailable."
+    : !profileReady
+      ? (readiness.profile.message ??
+        `${readiness.displayName} profile is not ready.`)
+      : `Required AI Client capabilities are not ready: ${missing.join(", ")}.`;
+  return {
+    ok: false,
+    state: "needs_attention",
+    message,
+    ...(readiness?.profile.action ? { action: readiness.profile.action } : {})
+  };
+};
+
 const inspectLastVerification = (
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
@@ -1162,6 +1623,21 @@ export const aggregateState = (
   return "healthy";
 };
 
+const inspectSafely = <T>(label: string, inspect: () => T, fallback: T): T => {
+  try {
+    return inspect();
+  } catch {
+    return {
+      ...needsAttention(
+        `${label} status could not be inspected.`,
+        `Repair ${label} integration, then refresh status.`,
+        { kind: "inspection_error" }
+      ),
+      ...fallback
+    } as T;
+  }
+};
+
 export const collectKoedServerStatus = async (
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: KoedServerStatusDependencies = {}
@@ -1230,23 +1706,50 @@ export const collectKoedServerStatus = async (
     apiUrl,
     deps.fetch
   );
+  const capabilityReadModel = await fetchAiClientCapabilityReadModel(
+    paths,
+    runtimeEnvironment,
+    repoEnv,
+    apiUrl,
+    deps.fetch
+  );
   const localAiRuntime = inspectLocalAiRuntime(
     runtime,
     runtimeProcessRunning,
     serverConfig.runtimeMode,
     deps
   );
-  const codex = inspectCodex(runtimeEnvironment, paths, deps);
-  const claudeCode = inspectClaudeCode(runtimeEnvironment, paths, deps);
-  const pi = inspectPi(runtimeEnvironment, paths, deps);
-  const captureHook = inspectCaptureHook(runtimeEnvironment, paths, deps);
+  const codex = inspectSafely(
+    "Codex",
+    () => inspectCodex(runtimeEnvironment, paths, deps),
+    { state: "needs_attention", configured: false }
+  );
+  const claudeCode = inspectSafely(
+    "Claude Code",
+    () => inspectClaudeCode(runtimeEnvironment, paths, deps),
+    { state: "needs_attention", configured: false, detected: false }
+  );
+  const pi = inspectSafely(
+    "Pi",
+    () => inspectPi(runtimeEnvironment, paths, deps),
+    { state: "needs_attention", configured: false, detected: false }
+  );
+  const captureHook = inspectSafely(
+    "Supported Capture Hook",
+    () => inspectCaptureHook(runtimeEnvironment, paths, deps),
+    { state: "needs_attention" }
+  );
   const codexTranscriptWatcher = inspectCodexTranscriptWatcher(
     serverConfig.codexTranscriptWatcherEnabled,
     runtime,
     runtimeProcessRunning,
     deps
   );
-  const mcpServer = inspectMcp(runtimeEnvironment, paths, deps);
+  const mcpServer = inspectSafely(
+    "MCP Server",
+    () => inspectMcp(runtimeEnvironment, paths, deps),
+    { state: "needs_attention" }
+  );
   const claudeTranscriptWatcher = inspectClaudeTranscriptWatcher(
     serverConfig.claudeTranscriptWatcherEnabled,
     runtime,
@@ -1338,6 +1841,17 @@ export const collectKoedServerStatus = async (
   };
   const coreState = aggregateState(Object.values(coreComponents));
   const lastVerification = inspectLastVerification(paths, deps);
+  const aiClients = inspectAiClientReadiness({
+    codex,
+    claudeCode,
+    pi,
+    codexTranscriptWatcher,
+    claudeTranscriptWatcher,
+    mcpServer,
+    localAiRuntime,
+    capabilityReadModel,
+    now: deps.now().toISOString()
+  });
   const [deviceIdentity, upstreamBackends] = await Promise.all([
     inspectDeviceIdentity(paths, environment),
     Promise.resolve(inspectUpstreamBackends(paths, deps))
@@ -1363,6 +1877,7 @@ export const collectKoedServerStatus = async (
     codex,
     claudeCode,
     pi,
+    aiClients,
     lcmSummaryService,
     deviceIdentity,
     upstreamBackends,
