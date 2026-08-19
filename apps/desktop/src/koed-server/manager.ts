@@ -43,6 +43,12 @@ import type {
 } from "../types.js";
 import type { DesktopCommandName } from "../ipc/protocol.js";
 import {
+  localAiClientCommandSchema,
+  localAiClientResponseSchema,
+  type LocalAiClientCommand,
+  type LocalAiClientResponse
+} from "../ipc/local-ai-client-protocol.js";
+import {
   parseManagedConversationResult,
   type ManagedConversationRequest,
   type ManagedConversationResult
@@ -76,6 +82,8 @@ import {
   withProtectedJsonFd,
   withProtectedTextFd
 } from "../ipc/protected-json-fd.js";
+import { readLocalAiClientReadModel } from "./local-ai-client-read-model.js";
+import { refreshLocalAiRuntime } from "./local-ai-client-refresh.js";
 import {
   PERSONAL_DEVICE_PAIRING_PROGRESS_VERSION,
   type PersonalDevicePairingProgress
@@ -100,6 +108,10 @@ export type DesktopCommandHandler = (
 export type PersonalMemoryDesktopHandler = (
   request: PersonalDesktopRequest
 ) => Promise<PersonalDesktopResult>;
+
+export type LocalAiClientDesktopHandler = (
+  request: LocalAiClientCommand
+) => Promise<LocalAiClientResponse>;
 
 export type ManagedConversationDesktopHandler = (
   request: ManagedConversationRequest
@@ -144,6 +156,7 @@ export interface KoedServerManagerOptions {
 export interface KoedServerManager {
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
+  localAiClients: LocalAiClientDesktopHandler;
   managedConversation: ManagedConversationDesktopHandler;
   subscribePersonalMemory: (
     listener: (change: PersonalDesktopChange) => void,
@@ -302,8 +315,15 @@ const waitForAbortOrDelay = (
     );
   });
 
-const resolveKoedHome = (environment: NodeJS.ProcessEnv): string =>
-  resolve(environment.KOED_HOME?.trim() || `${homedir()}/.koed`);
+const resolveKoedHome = (environment: NodeJS.ProcessEnv): string => {
+  const configured = environment.KOED_HOME?.trim();
+  if (!configured) return resolve(homedir(), ".koed");
+  if (configured === "~") return homedir();
+  if (configured.startsWith("~/") || configured.startsWith("~\\")) {
+    return resolve(homedir(), configured.slice(2));
+  }
+  return resolve(configured);
+};
 
 const resolveLocalAppCredentialPath = (
   environment: NodeJS.ProcessEnv
@@ -1112,31 +1132,36 @@ export const createKoedEnvironment = (
     packagedResourcesPath?: string;
   } = {}
 ): NodeJS.ProcessEnv => {
+  const valueOr = (key: string, fallback: string): string =>
+    environment[key]?.trim() || fallback;
   const dependencyMode = options.desktopManagedLocal
-    ? (environment.KOED_DEPENDENCY_MODE ?? "bundled-local")
-    : environment.KOED_DEPENDENCY_MODE;
+    ? valueOr("KOED_DEPENDENCY_MODE", "bundled-local")
+    : environment.KOED_DEPENDENCY_MODE?.trim();
   return {
     ...environment,
     ...(!options.packagedDesktop || environment.KOED_REPO_ROOT?.trim()
-      ? { KOED_REPO_ROOT: environment.KOED_REPO_ROOT ?? repoRoot }
+      ? { KOED_REPO_ROOT: valueOr("KOED_REPO_ROOT", repoRoot) }
       : {}),
-    ...(dependencyMode === "bundled-local" && !environment.KOED_AUTO_PORTS
+    ...(dependencyMode === "bundled-local" &&
+    !environment.KOED_AUTO_PORTS?.trim()
       ? { KOED_AUTO_PORTS: "1" }
       : {}),
     ...(options.desktopManagedLocal
       ? {
-          KOED_RUNTIME_MODE: environment.KOED_RUNTIME_MODE ?? "local-personal",
+          KOED_RUNTIME_MODE: valueOr("KOED_RUNTIME_MODE", "local-personal"),
           KOED_DEPENDENCY_MODE: dependencyMode,
-          KOED_TEAM_COLLABORATION_ENABLED:
-            environment.KOED_TEAM_COLLABORATION_ENABLED ?? "true",
-          WORK_QUEUE_BACKEND: environment.WORK_QUEUE_BACKEND ?? "local",
+          KOED_TEAM_COLLABORATION_ENABLED: valueOr(
+            "KOED_TEAM_COLLABORATION_ENABLED",
+            "true"
+          ),
+          WORK_QUEUE_BACKEND: valueOr("WORK_QUEUE_BACKEND", "local"),
           ...(options.packagedDesktop
             ? {
-                KOED_PACKAGED_DESKTOP: environment.KOED_PACKAGED_DESKTOP ?? "1",
-                KOED_PACKAGED_RESOURCES_PATH:
-                  environment.KOED_PACKAGED_RESOURCES_PATH ??
-                  options.packagedResourcesPath ??
-                  repoRoot
+                KOED_PACKAGED_DESKTOP: valueOr("KOED_PACKAGED_DESKTOP", "1"),
+                KOED_PACKAGED_RESOURCES_PATH: valueOr(
+                  "KOED_PACKAGED_RESOURCES_PATH",
+                  options.packagedResourcesPath ?? repoRoot
+                )
               }
             : {})
         }
@@ -2537,6 +2562,76 @@ export const createKoedServerManager = ({
     });
   };
 
+  const localAiClientReadModel = async () => {
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL("/v1/memory/local-agent-settings", apiOrigin),
+        init: { method: "GET" }
+      }),
+      8 * 1_024 * 1_024
+    );
+    return readLocalAiClientReadModel(payload, environment);
+  };
+
+  const localAiClients: LocalAiClientDesktopHandler = async (value) => {
+    const request = localAiClientCommandSchema.parse(value);
+    let refreshed = false;
+    let refreshError: string | null = null;
+    if (request.operation === "refresh") {
+      try {
+        ({ refreshed, refreshError } = await refreshLocalAiRuntime({
+          fetch: personalMemoryFetch,
+          koedHome: resolveKoedHome(environment)
+        }));
+      } catch {
+        refreshError = "Capability refresh could not be completed.";
+      }
+    } else if (request.operation === "set") {
+      await saveLocalAiClientSetting(request);
+    } else if (request.operation === "reset") {
+      await resetLocalAiClientSetting(request.flowKey);
+    }
+    return localAiClientResponseSchema.parse({
+      operation: request.operation,
+      readModel: await localAiClientReadModel(),
+      ...(request.operation === "refresh" ? { refreshed, refreshError } : {})
+    });
+  };
+
+  const saveLocalAiClientSetting = async (
+    request: Extract<LocalAiClientCommand, { operation: "set" }>
+  ) => {
+    await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/memory/local-agent-settings/${encodeURIComponent(request.flowKey)}`,
+          apiOrigin
+        ),
+        init: {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(request.assignment)
+        }
+      }),
+      1 * 1_024 * 1_024
+    );
+  };
+
+  const resetLocalAiClientSetting = async (
+    flowKey: Extract<LocalAiClientCommand, { operation: "reset" }>["flowKey"]
+  ) => {
+    await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/memory/local-agent-settings/${encodeURIComponent(flowKey)}`,
+          apiOrigin
+        ),
+        init: { method: "DELETE" }
+      }),
+      256 * 1_024
+    );
+  };
+
   const personalMemory: PersonalMemoryDesktopHandler = async (value) => {
     const request = personalDesktopRequestSchema.parse(value);
     try {
@@ -3057,6 +3152,7 @@ export const createKoedServerManager = ({
 
   return {
     personalMemory,
+    localAiClients,
     managedConversation,
     subscribePersonalMemory,
     resume,

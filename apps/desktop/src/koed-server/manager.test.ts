@@ -407,6 +407,28 @@ describe("Koed server desktop manager", () => {
     });
   });
 
+  it("uses managed-local defaults when environment values are blank", () => {
+    expect(
+      createKoedEnvironment(
+        "/repo",
+        {
+          KOED_RUNTIME_MODE: " ",
+          KOED_DEPENDENCY_MODE: " ",
+          KOED_TEAM_COLLABORATION_ENABLED: " ",
+          WORK_QUEUE_BACKEND: " ",
+          KOED_AUTO_PORTS: " "
+        },
+        { desktopManagedLocal: true }
+      )
+    ).toMatchObject({
+      KOED_RUNTIME_MODE: "local-personal",
+      KOED_DEPENDENCY_MODE: "bundled-local",
+      KOED_TEAM_COLLABORATION_ENABLED: "true",
+      WORK_QUEUE_BACKEND: "local",
+      KOED_AUTO_PORTS: "1"
+    });
+  });
+
   it("defaults packaged Desktop managed local server to bundled-local", () => {
     const packagedEnvironment = createKoedEnvironment(
       "/repo",

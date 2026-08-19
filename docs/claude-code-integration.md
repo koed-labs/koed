@@ -157,9 +157,11 @@ capture as verified.
 ## Per-flow Synthesis routing
 
 Memory Answer, LCM Summary, session-title synthesis, and Curated Memory Review
-resolve provider and model independently. Set a flow's provider to `claude` and
-choose a model exposed by the local Claude Agent SDK model list. Other flows may
-remain on `codex` when Codex is also installed.
+resolve provider, AI Client instance, model, and reasoning effort independently.
+Set a flow's provider to `claude` and choose a model exposed by the local Claude
+Agent SDK model list. Other flows may remain on `codex` or `pi` when installed.
+Desktop Advanced settings shows current auth, availability, and snapshot
+staleness; unavailable persisted assignments remain visible and do not fall back.
 
 For example:
 
@@ -207,6 +209,7 @@ Installing one integration neither configures nor disables the other.
   check, repair, or remove Claude later.
 - Desktop setup configures MCP and hooks but does not run an automated end-to-end
   capture fixture. Verify a fresh live session explicitly.
-- Existing synthesis defaults remain Codex-oriented. A Claude-only installation
-  must select `claude` and an exposed Claude model for each flow it wants Claude
-  Code to run.
+- Documented synthesis defaults remain Codex-oriented. A Claude-only installation
+  must select `claude`, its explicit instance, and an exposed Claude model for each
+  flow it wants Claude Code to run. Resetting one flow leaves other assignments
+  unchanged.

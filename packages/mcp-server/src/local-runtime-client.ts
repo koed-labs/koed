@@ -106,6 +106,18 @@ export class LocalAiRuntimeClient {
     )) as unknown as LocalRuntimeCapabilities;
   }
 
+  async refreshCapabilities(
+    signal?: AbortSignal,
+    timeoutMs = 5_000
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "/v1/capabilities/refresh",
+      { method: "POST" },
+      signal,
+      timeoutMs
+    );
+  }
+
   async callTool(
     name: LocalRuntimeToolName,
     input: Record<string, unknown>,

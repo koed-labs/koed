@@ -5,10 +5,11 @@ memory and evidence but does not run LLM synthesis.
 
 ## Flows
 
-The supervised Local AI Runtime owns three synthesis flows:
+The supervised Local AI Runtime owns three services and four configurable flow
+assignments:
 
 - MCP Memory Answer: a fresh isolated worker for each `memory_answer` call.
-- LCM Summary: background LCM Summary and captured-session title work.
+- LCM Summary and Session Title: background LCM Summary and captured-session title work.
 - Curated Memory Review: asynchronous source-linked proposal review.
 
 Codex, Claude, and Pi are supported local providers. Each flow independently
@@ -16,7 +17,9 @@ selects AI Client instance, model, and supported model options. Pi model IDs
 retain full underlying provider/model identity. Capability publication probes only
 instances explicitly listed in `KOED_AI_CLIENT_INSTANCE_REGISTRY`; an empty or
 missing registry publishes zero instances. Setup is responsible for registering
-provider defaults.
+provider defaults. Desktop reads persisted settings and latest current or stale
+capability snapshots immediately, then asks the authorized Local AI Runtime to
+refresh capabilities asynchronously with a bounded timeout.
 
 ## Precedence
 
@@ -43,7 +46,11 @@ enabled instance state, current capability snapshot, selected model, and
 explicitly reported reasoning effort. Stale, unhealthy, unauthenticated, or
 mismatched assignments fail closed; environment defaults are used only when no
 persisted assignment exists. Settings or capability API failures never silently
-fall back.
+fall back. Desktop exposes exactly `mcp_memory_answer` (Memory Answer),
+`lcm_summary`, `session_title`, and `curated_memory_review`; `manual_memory_answer`
+is intentionally hidden. Reset is an explicit DELETE for one flow assignment.
+The read model includes documented defaults so a missing assignment can be
+identified without changing persisted state.
 
 `MEMORY_CODEX_APP_SERVER_BINARY` selects the Codex app-server binary.
 `KOED_CLAUDE_CODE_EXECUTABLE` selects a separately installed Claude Code

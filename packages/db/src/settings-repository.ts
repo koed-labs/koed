@@ -397,6 +397,22 @@ export const createSettingsRepository = (db: KoedDb) => ({
     return mapLocalMemoryAgentSettingRecord(rows[0]!);
   },
 
+  async deleteLocalMemoryAgentSetting(
+    actor: ActorContext,
+    flowKey: LocalMemoryAgentSettingsFlowKey
+  ): Promise<boolean> {
+    const rows = await db
+      .delete(localMemoryAgentSettings)
+      .where(
+        and(
+          eq(localMemoryAgentSettings.ownerUserId, actor.userId),
+          eq(localMemoryAgentSettings.flowKey, flowKey)
+        )
+      )
+      .returning({ flowKey: localMemoryAgentSettings.flowKey });
+    return rows.length > 0;
+  },
+
   async getEffectiveCapturePolicy(
     actor: ActorContext,
     input: { projectId?: string; threadId?: string; sessionId?: string } = {}

@@ -1,5 +1,7 @@
 import { aiClientCapabilityIds } from "@koed/shared";
+import type { MemorySourceRepository } from "@koed/db";
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   aiClientCapabilitySnapshotSchema,
@@ -9,11 +11,39 @@ import {
   localMemoryAgentSettingsSchema
 } from "./local-agent-settings-schemas.js";
 
+type AssignmentInput = z.infer<typeof localMemoryAgentSettingsSchema>;
+type AiClientInstance = Awaited<
+  ReturnType<MemorySourceRepository["listAiClientInstances"]>
+>[number];
+type CapabilitySnapshot = Awaited<
+  ReturnType<MemorySourceRepository["listCurrentAiClientCapabilitySnapshots"]>
+>[number];
+
 const assignmentUnavailable = (
   message: string
 ): Error & {
   statusCode: number;
 } => Object.assign(new Error(message), { statusCode: 409 });
+
+const documentedDefault = (timeoutMs: number) => ({
+  provider: "codex" as const,
+  ai_client_instance_id: "codex.default",
+  model: "gpt-5.6-luna",
+  reasoning_effort: "low",
+  timeout_ms: timeoutMs,
+  max_attempts: 2,
+  source: "code" as const,
+  available: true,
+  persistable: true,
+  reason: null
+});
+
+const documentedDefaults = () => ({
+  mcp_memory_answer: documentedDefault(120_000),
+  lcm_summary: documentedDefault(120_000),
+  session_title: documentedDefault(120_000),
+  curated_memory_review: documentedDefault(90_000)
+});
 
 const modelId = (model: Record<string, unknown>): string | null => {
   const value = model.fullId ?? model.id ?? model.model;
@@ -45,22 +75,88 @@ const localSynthesisReady = (
   return value.support === "supported" && value.readiness === "ready";
 };
 
-export const registerLocalAgentSettingsRoutes = (
+const validateAssignment = (
+  instances: AiClientInstance[],
+  snapshots: CapabilitySnapshot[],
+  input: AssignmentInput
+) => {
+  const instance = instances.find(
+    (candidate) => candidate.instanceId === input.ai_client_instance_id
+  );
+  if (!instance) {
+    throw assignmentUnavailable(
+      `AI Client instance "${input.ai_client_instance_id}" is not configured`
+    );
+  }
+  validateInstance(instance, input);
+  const snapshot = snapshots.find(
+    (candidate) => candidate.instanceId === input.ai_client_instance_id
+  );
+  validateSnapshot(snapshot, input);
+  const selectedModel = snapshot!.models.find(
+    (candidate) => modelId(candidate) === input.model
+  );
+  if (!selectedModel) {
+    throw assignmentUnavailable(
+      `Model "${input.model}" is not configured or reported for AI Client instance "${input.ai_client_instance_id}"`
+    );
+  }
+  const supportedEfforts = supportedReasoningEfforts(selectedModel);
+  if (!supportedEfforts || !supportedEfforts.includes(input.reasoning_effort)) {
+    throw assignmentUnavailable(
+      `Reasoning effort "${input.reasoning_effort}" is not reported for model "${input.model}" on AI Client instance "${input.ai_client_instance_id}"`
+    );
+  }
+};
+
+const validateInstance = (
+  instance: AiClientInstance,
+  input: AssignmentInput
+) => {
+  if (!instance.enabled) {
+    throw assignmentUnavailable(
+      `AI Client instance "${input.ai_client_instance_id}" is disabled`
+    );
+  }
+  if (instance.driverId !== input.provider) {
+    throw assignmentUnavailable(
+      `AI Client instance "${input.ai_client_instance_id}" belongs to driver "${instance.driverId}"`
+    );
+  }
+};
+
+const validateSnapshot = (
+  snapshot: CapabilitySnapshot | undefined,
+  input: AssignmentInput
+) => {
+  if (
+    !snapshot ||
+    snapshot.healthState !== "healthy" ||
+    snapshot.authenticationState !== "authenticated"
+  ) {
+    throw assignmentUnavailable(
+      `AI Client instance "${input.ai_client_instance_id}" has no current healthy authenticated capability snapshot`
+    );
+  }
+  if (!localSynthesisReady(snapshot.capabilities)) {
+    throw assignmentUnavailable(
+      `AI Client instance "${input.ai_client_instance_id}" does not report ready local synthesis`
+    );
+  }
+};
+
+const registerInstanceListRoute = (
   app: FastifyInstance,
   context: ApiRouteContext
 ) => {
   const {
     requireRepository,
     auth: { authenticate },
-    rateLimit: {
-      memoryRead: memoryReadRateLimit,
-      memoryWrite: memoryWriteRateLimit
-    }
+    rateLimit
   } = context;
-
   app.get(
     "/v1/memory/ai-client-instances",
-    { preHandler: memoryReadRateLimit },
+    { preHandler: rateLimit.memoryRead },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -72,10 +168,20 @@ export const registerLocalAgentSettingsRoutes = (
       return { instances, capabilitySnapshots };
     }
   );
+};
 
+const registerInstanceWriteRoute = (
+  app: FastifyInstance,
+  context: ApiRouteContext
+) => {
+  const {
+    requireRepository,
+    auth: { authenticate },
+    rateLimit
+  } = context;
   app.put(
     "/v1/memory/ai-client-instances/:instanceId",
-    { preHandler: memoryWriteRateLimit },
+    { preHandler: rateLimit.memoryWrite },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -94,10 +200,20 @@ export const registerLocalAgentSettingsRoutes = (
       return { instance };
     }
   );
+};
 
+const registerCapabilitySnapshotRoute = (
+  app: FastifyInstance,
+  context: ApiRouteContext
+) => {
+  const {
+    requireRepository,
+    auth: { authenticate },
+    rateLimit
+  } = context;
   app.post(
     "/v1/memory/ai-client-instances/:instanceId/capability-snapshots",
-    { preHandler: memoryWriteRateLimit },
+    { preHandler: rateLimit.memoryWrite },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -120,23 +236,51 @@ export const registerLocalAgentSettingsRoutes = (
       return { capabilitySnapshot };
     }
   );
+};
 
+const registerSettingsListRoute = (
+  app: FastifyInstance,
+  context: ApiRouteContext
+) => {
+  const {
+    requireRepository,
+    auth: { authenticate },
+    rateLimit
+  } = context;
   app.get(
     "/v1/memory/local-agent-settings",
-    { preHandler: memoryReadRateLimit },
+    { preHandler: rateLimit.memoryRead },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
-      const settings = await repo.listLocalMemoryAgentSettings({
-        userId: user.id
-      });
-      return { settings };
+      const actor = { userId: user.id };
+      const [settings, instances, capabilitySnapshots] = await Promise.all([
+        repo.listLocalMemoryAgentSettings(actor),
+        repo.listAiClientInstances(actor),
+        repo.listAiClientCapabilitySnapshots(actor)
+      ]);
+      return {
+        settings,
+        instances,
+        capabilitySnapshots,
+        defaults: documentedDefaults()
+      };
     }
   );
+};
 
+const registerSettingsWriteRoute = (
+  app: FastifyInstance,
+  context: ApiRouteContext
+) => {
+  const {
+    requireRepository,
+    auth: { authenticate },
+    rateLimit
+  } = context;
   app.put(
     "/v1/memory/local-agent-settings/:flowKey",
-    { preHandler: memoryWriteRateLimit },
+    { preHandler: rateLimit.memoryWrite },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -147,58 +291,7 @@ export const registerLocalAgentSettingsRoutes = (
         repo.listAiClientInstances(actor),
         repo.listCurrentAiClientCapabilitySnapshots(actor)
       ]);
-      const instance = instances.find(
-        (candidate) => candidate.instanceId === input.ai_client_instance_id
-      );
-      if (!instance) {
-        throw assignmentUnavailable(
-          `AI Client instance "${input.ai_client_instance_id}" is not configured`
-        );
-      }
-      if (!instance.enabled) {
-        throw assignmentUnavailable(
-          `AI Client instance "${input.ai_client_instance_id}" is disabled`
-        );
-      }
-      if (instance.driverId !== input.provider) {
-        throw assignmentUnavailable(
-          `AI Client instance "${input.ai_client_instance_id}" belongs to driver "${instance.driverId}"`
-        );
-      }
-      const snapshot = snapshots.find(
-        (candidate) => candidate.instanceId === input.ai_client_instance_id
-      );
-      if (
-        !snapshot ||
-        snapshot.healthState !== "healthy" ||
-        snapshot.authenticationState !== "authenticated"
-      ) {
-        throw assignmentUnavailable(
-          `AI Client instance "${input.ai_client_instance_id}" has no current healthy authenticated capability snapshot`
-        );
-      }
-      if (!localSynthesisReady(snapshot.capabilities)) {
-        throw assignmentUnavailable(
-          `AI Client instance "${input.ai_client_instance_id}" does not report ready local synthesis`
-        );
-      }
-      const selectedModel = snapshot.models.find(
-        (candidate) => modelId(candidate) === input.model
-      );
-      if (!selectedModel) {
-        throw assignmentUnavailable(
-          `Model "${input.model}" is not configured or reported for AI Client instance "${input.ai_client_instance_id}"`
-        );
-      }
-      const supportedEfforts = supportedReasoningEfforts(selectedModel);
-      if (
-        !supportedEfforts ||
-        !supportedEfforts.includes(input.reasoning_effort)
-      ) {
-        throw assignmentUnavailable(
-          `Reasoning effort "${input.reasoning_effort}" is not reported for model "${input.model}" on AI Client instance "${input.ai_client_instance_id}"`
-        );
-      }
+      validateAssignment(instances, snapshots, input);
       const setting = await repo.upsertLocalMemoryAgentSetting(actor, {
         flowKey: params.flowKey,
         provider: input.provider,
@@ -211,4 +304,41 @@ export const registerLocalAgentSettingsRoutes = (
       return { setting };
     }
   );
+};
+
+const registerSettingsDeleteRoute = (
+  app: FastifyInstance,
+  context: ApiRouteContext
+) => {
+  const {
+    requireRepository,
+    auth: { authenticate },
+    rateLimit
+  } = context;
+  app.delete(
+    "/v1/memory/local-agent-settings/:flowKey",
+    { preHandler: rateLimit.memoryWrite },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticate(request);
+      const params = localMemoryAgentSettingsParamsSchema.parse(request.params);
+      const deleted = await repo.deleteLocalMemoryAgentSetting(
+        { userId: user.id },
+        params.flowKey
+      );
+      return { flow_key: params.flowKey, reset: deleted };
+    }
+  );
+};
+
+export const registerLocalAgentSettingsRoutes = (
+  app: FastifyInstance,
+  context: ApiRouteContext
+) => {
+  registerInstanceListRoute(app, context);
+  registerInstanceWriteRoute(app, context);
+  registerCapabilitySnapshotRoute(app, context);
+  registerSettingsListRoute(app, context);
+  registerSettingsWriteRoute(app, context);
+  registerSettingsDeleteRoute(app, context);
 };

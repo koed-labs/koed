@@ -551,7 +551,8 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
   Team collaboration broker. It remains required for non-external runtimes when
   Team collaboration is disabled because Personal broker commands and
   subscriptions remain available.
-- `MEMORY_CURATED_REVIEW_PROVIDER`: local Curated Memory review provider. Only `codex` is supported.
+- `MEMORY_CURATED_REVIEW_PROVIDER`: local Curated Memory review provider. Supported values are `codex`, `claude`, and `pi`; default `codex`. Pi requires full provider/model ID.
+- `MEMORY_CURATED_REVIEW_AI_CLIENT_INSTANCE`: selected local AI Client instance for Curated Memory Review. Default `<provider>.default`.
 - `MEMORY_CURATED_REVIEW_MODEL`: model for the separate local Curated Memory reviewer. Default `gpt-5.6-luna`.
 - `MEMORY_CURATED_REVIEW_REASONING_EFFORT`: reasoning effort for Curated Memory review. Default `low`.
 - `MEMORY_CURATED_REVIEW_TIMEOUT_MS`: maximum duration of one local review call. Default `90000`.
@@ -789,6 +790,7 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_API_TOKEN`: Personal API Token provisioned for the Local AI Runtime. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`; it is not written into MCP configuration.
 - `MEMORY_RAW_INGEST_BATCH_BYTES`: target maximum request size for canonical conversation-item ingestion batches. Default `180000`. Oversized logical items use at most 64 transport chunks of 256 KiB each and fail before upload above the 16 MiB logical-item ceiling.
 - `MEMORY_API_REQUEST_TIMEOUT_MS`: timeout for Local AI Runtime API calls. Default `60_000`.
+- `KOED_AI_CLIENT_INSTANCE_REGISTRY`: explicit JSON registry of local AI Client instances probed by the Local AI Runtime. Default `KOED_HOME/config/ai-client-instances.json`; missing or empty registry publishes no instances. Setup commands register provider defaults.
 - `MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS`: when `true`, exposes diagnostic MCP tools such as `memory_access_check`. Default `false`; use the MCP `doctor` CLI command for normal setup checks.
 - `MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS`: when `true`, exposes low-level diagnostic MCP retrieval tools such as `memory_search` and `memory_expand`. Default `false`; normal recall should use `memory_answer`.
 - `MEMORY_CODEX_APP_SERVER_BINARY`: Codex app-server binary used by local Synthesis flows. Default `codex`.
@@ -816,7 +818,7 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_LCM_SUMMARY_MAX_ATTEMPTS`: maximum local LCM Summary synthesis attempts.
 - `MEMORY_LCM_SUMMARY_RETRY_DELAY_MS`: delay between local LCM Summary retry attempts.
 - `MEMORY_LCM_SUMMARY_CONCURRENCY`: maximum concurrent local LCM Summary workers.
-- `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: maximum prompt budget for local Codex LCM Summary calls. Default `48000`.
+- `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: maximum prompt budget for selected local AI Client LCM Summary calls. Default `48000`.
 - `MEMORY_LCM_BACKGROUND_INITIAL_DELAY_MS`: delay before the Local AI Runtime first checks for pending work.
 - `MEMORY_LCM_BACKGROUND_PUSH_DELAY_MS`: delay used when the local service is nudged after capture.
 - `MEMORY_LCM_BACKGROUND_INTERVAL_MS`: periodic background check interval for pending summaries.
@@ -842,10 +844,7 @@ Koed relies on the connected AI Client for Synthesis; backend LLM provider confi
 The Local AI Runtime is enabled by default in this build. It generates
 captured-session titles and LCM summaries through the selected local AI Client.
 Failures are reported as diagnostics and pending summaries remain searchable as
-degraded evidence. The API stores per-user Memory Answer and LCM Summary
-settings; the Local AI Runtime reads them at execution time. `.env` values are
-bootstrap defaults only; precedence is API user setting, then `.env`, then code
-default.
+degraded evidence. The API stores per-user Memory Answer, LCM Summary, session-title, and Curated Memory Review assignments independently; the Local AI Runtime reads them at execution time. `.env` values are bootstrap defaults only; precedence is API user setting, then `.env`, then code default. Desktop Advanced settings exposes only `mcp_memory_answer` (Memory Answer), `lcm_summary`, `session_title`, and `curated_memory_review`; `manual_memory_answer` is not a supported selector. Reset deletes one selected assignment and never changes other flows.
 
 LCM summary prompt-version changes are forward-only. Existing completed
 summaries are not automatically regenerated; new prompts apply to new or

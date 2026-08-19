@@ -853,6 +853,15 @@ export class MemoryApiClient {
     );
   }
 
+  async deleteLocalMemoryAgentSetting(
+    flowKey: LocalMemoryAgentFlowKey
+  ): Promise<{ flow_key: LocalMemoryAgentFlowKey; reset: boolean }> {
+    return this.request(
+      "DELETE",
+      `/v1/memory/local-agent-settings/${encodeURIComponent(flowKey)}`
+    );
+  }
+
   async upsertLocalMemoryAgentSetting(
     flowKey: LocalMemoryAgentFlowKey,
     input: {
@@ -1057,7 +1066,7 @@ export class MemoryApiClient {
   }
 
   protected async request<T>(
-    method: "GET" | "POST" | "PATCH" | "PUT",
+    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     path: string,
     body?: unknown,
     options: { authorization?: string } = {}

@@ -450,6 +450,31 @@ export const startLocalAiRuntime = async ({
           });
           return;
         }
+        if (
+          request.method === "POST" &&
+          requestUrl.pathname === "/v1/capabilities/refresh"
+        ) {
+          if (!services.capabilityPublisher) {
+            json(response, 503, {
+              error: "Local AI Client capability publisher is unavailable"
+            });
+            return;
+          }
+          const publications = await services.capabilityPublisher.refresh();
+          const failed = publications.filter(
+            (publication) => !publication.published
+          );
+          json(response, failed.length > 0 ? 503 : 200, {
+            protocolVersion: LOCAL_AI_RUNTIME_PROTOCOL_VERSION,
+            publications,
+            ...(failed.length > 0
+              ? {
+                  error: `Capability refresh failed for ${failed.length} AI Client instance${failed.length === 1 ? "" : "s"}`
+                }
+              : {})
+          });
+          return;
+        }
         const toolPrefix = "/v1/tools/";
         if (
           request.method !== "POST" ||

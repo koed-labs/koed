@@ -328,6 +328,81 @@ describe("Local AI Runtime", () => {
     ).toThrow();
   });
 
+  it("refreshes capabilities through authenticated bounded runtime client", async () => {
+    const koedHome = tempHome();
+    const refresh = vi.fn(async () => [
+      {
+        instanceId: "codex.default",
+        driverId: "codex",
+        published: true,
+        error: null
+      }
+    ]);
+    const runtime = await startLocalAiRuntime({
+      environment: { KOED_HOME: koedHome },
+      serviceFactory: async () => ({
+        executor: defaultExecutor(),
+        capabilityPublisher: { refresh, stop: vi.fn() },
+        close: vi.fn(async () => undefined)
+      })
+    });
+    try {
+      await expect(
+        new LocalAiRuntimeClient({ KOED_HOME: koedHome }).refreshCapabilities()
+      ).resolves.toMatchObject({ protocolVersion: 1 });
+      expect(refresh).toHaveBeenCalledTimes(1);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("reports capability publication failures as unavailable", async () => {
+    const koedHome = tempHome();
+    const runtime = await startLocalAiRuntime({
+      environment: { KOED_HOME: koedHome },
+      serviceFactory: async () => ({
+        executor: defaultExecutor(),
+        capabilityPublisher: {
+          refresh: vi.fn(async () => [
+            {
+              instanceId: "codex.default",
+              driverId: "codex",
+              published: false,
+              error: "Codex is not authenticated"
+            }
+          ]),
+          stop: vi.fn()
+        },
+        close: vi.fn(async () => undefined)
+      })
+    });
+    try {
+      await expect(
+        new LocalAiRuntimeClient({ KOED_HOME: koedHome }).refreshCapabilities()
+      ).rejects.toThrow("Capability refresh failed for 1 AI Client instance");
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("rejects refresh when capability publisher is unavailable", async () => {
+    const koedHome = tempHome();
+    const runtime = await startLocalAiRuntime({
+      environment: { KOED_HOME: koedHome },
+      serviceFactory: async () => ({
+        executor: defaultExecutor(),
+        close: vi.fn(async () => undefined)
+      })
+    });
+    try {
+      await expect(
+        new LocalAiRuntimeClient({ KOED_HOME: koedHome }).refreshCapabilities()
+      ).rejects.toThrow("Local AI Client capability publisher is unavailable");
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("rejects malformed, oversized, and unknown requests without dispatch", async () => {
     const koedHome = tempHome();
     const environment = { KOED_HOME: koedHome };

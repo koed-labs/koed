@@ -1181,6 +1181,7 @@ export function App({
             }
           })
         }
+        localAiClients={window.koedDesktop?.localAiClients}
         onThemeChange={(preference) => void themeStore.set(preference)}
         statusStore={activeStatusStore}
         theme={theme.preference}

@@ -115,7 +115,7 @@ Activation baseline is separate from explicit historical import. Live watcher ne
 
 ## Local Synthesis
 
-Pi can be assigned independently to Memory Answer, LCM Summary, session-title generation, and Curated Memory Review. Assignment requires healthy authenticated `pi.default` or configured Pi instance capability snapshot and full provider/model ID.
+Pi can be assigned independently to Memory Answer, LCM Summary, session-title generation, and Curated Memory Review. Assignment requires healthy authenticated `pi.default` or configured Pi instance capability snapshot and full provider/model ID. Desktop Advanced settings searches Pi display name, instance ID, provider, and full model ID, and offers only reasoning levels explicitly reported for selected model. Stale or unavailable persisted assignments remain visible and block only that flow; reset removes only selected flow assignment.
 
 Koed launches Pi with strict-LF JSONL RPC using:
 
@@ -150,7 +150,7 @@ Relevant environment:
 Common failures:
 
 - **Pi missing/incompatible**: install Pi `0.84.2+` and rerun setup.
-- **No models**: authenticate model through Pi, then refresh capability snapshot.
+- **No models**: authenticate model through Pi, then use Desktop Refresh capabilities or refresh capability snapshot.
 - **Recall tool absent**: ensure package configured and extensions not disabled.
 - **Ephemeral session**: remove `--no-session` for automatic capture.
 - **Capture stopped**: inspect Local AI Runtime logs for malformed record, truncation, prefix mutation, policy, or pause diagnostic. Cursor does not advance on these errors.

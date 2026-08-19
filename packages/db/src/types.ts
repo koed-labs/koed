@@ -2339,6 +2339,10 @@ export interface MemorySourceRepository
       maxAttempts: number;
     }
   ): Promise<LocalMemoryAgentSettingRecord>;
+  deleteLocalMemoryAgentSetting(
+    actor: ActorContext,
+    flowKey: LocalMemoryAgentSettingsFlowKey
+  ): Promise<boolean>;
   createHistoricalImportRun(
     actor: ActorContext
   ): Promise<HistoricalImportRunRecord>;

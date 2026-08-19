@@ -31,6 +31,8 @@ import {
 import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
 import type { ComponentStatus } from "../../../types.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
+import type { DesktopApi } from "../../../types.js";
+import { LocalAiClientSettingsSection } from "./LocalAiClientSettingsSection.js";
 import { useDesktopStatus } from "../../state/use-status.js";
 import "./preferences.css";
 
@@ -71,6 +73,7 @@ export type PreferencesViewProps = {
   collaborationSnapshot?: CollaborationSnapshot | null;
   initialSection?: PreferencesSection;
   launch?: LocalLaunchCapability;
+  localAiClients?: DesktopApi["localAiClients"];
   onSectionChange?: (section: PreferencesSection) => void;
   onThemeChange: (theme: DesktopThemePreference) => void;
   statusStore: DesktopStatusStore;
@@ -521,8 +524,9 @@ const integrationConsentCopy: Record<
 };
 
 function AdvancedSection({
+  localAiClients,
   statusStore
-}: Pick<PreferencesViewProps, "statusStore">) {
+}: Pick<PreferencesViewProps, "localAiClients" | "statusStore">) {
   const snapshot = useDesktopStatus(statusStore);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingIntegrationCommand, setPendingIntegrationCommand] = useState<
@@ -615,6 +619,7 @@ function AdvancedSection({
 
   return (
     <div className="koed-preference-section">
+      <LocalAiClientSettingsSection localAiClients={localAiClients} />
       <p className="koed-advanced-intro">
         Operator diagnostics describe local implementation detail. They do not
         expose API Token values or remote credentials.
@@ -803,6 +808,7 @@ export function PreferencesView({
   collaborationSnapshot,
   initialSection = "general",
   launch,
+  localAiClients,
   onSectionChange,
   onThemeChange,
   statusStore,
@@ -866,7 +872,10 @@ export function PreferencesView({
           <AboutSection acknowledgements={acknowledgements} version={version} />
         ) : null}
         {section === "advanced" ? (
-          <AdvancedSection statusStore={statusStore} />
+          <AdvancedSection
+            localAiClients={localAiClients}
+            statusStore={statusStore}
+          />
         ) : null}
       </section>
     </main>

@@ -764,6 +764,27 @@ describe("MemoryApiClient", () => {
     });
   });
 
+  it("deletes one local AI Client setting with bearer authentication", async () => {
+    const apiUrl = await createApi((request, response) => {
+      expect(request.method).toBe("DELETE");
+      expect(request.url).toBe(
+        "/v1/memory/local-agent-settings/mcp_memory_answer"
+      );
+      expect(request.headers.authorization).toBe("Bearer cmt_test");
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({ flow_key: "mcp_memory_answer", reset: true })
+      );
+    });
+
+    await expect(
+      new MemoryApiClient({
+        apiUrl,
+        apiToken: "cmt_test"
+      }).deleteLocalMemoryAgentSetting("mcp_memory_answer")
+    ).resolves.toEqual({ flow_key: "mcp_memory_answer", reset: true });
+  });
+
   it("validates bearer token access through /v1/access/check", async () => {
     const apiUrl = await createApi((request, response) => {
       expect(request.headers.authorization).toBe("Bearer cmt_test");

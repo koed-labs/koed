@@ -25,6 +25,7 @@ import {
 import {
   createKoedEnvironment,
   createKoedServerManager,
+  setupIntegrationHealthy,
   type KoedServerManager
 } from "./koed-server/manager.js";
 import {
@@ -320,6 +321,7 @@ const bootstrap = async () => {
   registerAppProtocol();
   registerDesktopCommandHandlers(ipcMain, server.handlers, {
     allowedRendererOrigins,
+    localAiClients: server.localAiClients,
     personalMemory: server.personalMemory,
     managedConversation: server.managedConversation,
     consumePendingPersonalDevicePairingLink: (expectedLink) =>
@@ -370,6 +372,11 @@ const bootstrap = async () => {
         koedEnvironment.PDS_RUNTIME_SECRET_REF = runtimeReference;
       }
       const result = await server.resume();
+      if (setupIntegrationHealthy(result)) {
+        void server
+          .localAiClients({ operation: "refresh" })
+          .catch(() => undefined);
+      }
       void desktopMenuBar?.refresh();
       return result;
     }

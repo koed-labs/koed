@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isLoopbackHostname } from "@koed/shared";
 import { z } from "zod";
 
 export const LOCAL_AI_RUNTIME_PROTOCOL_VERSION = 1 as const;
@@ -38,22 +39,31 @@ export interface LocalRuntimeCapabilities {
   curatedMemoryIntakeAvailable: boolean;
 }
 
-const registrationSchema = z.object({
-  protocolVersion: z.literal(LOCAL_AI_RUNTIME_PROTOCOL_VERSION),
-  url: z
-    .string()
-    .url()
-    .refine((value) => {
-      const parsed = new URL(value);
-      return (
-        parsed.protocol === "http:" &&
-        (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")
-      );
-    }, "Local AI runtime URL must use loopback HTTP"),
-  authorization: z.string().regex(/^Bearer [A-Za-z0-9_-]{32,}$/),
-  pid: z.number().int().positive(),
-  startedAt: z.string().datetime()
-});
+const registrationSchema = z
+  .object({
+    protocolVersion: z.literal(LOCAL_AI_RUNTIME_PROTOCOL_VERSION),
+    url: z
+      .string()
+      .url()
+      .refine((value) => {
+        const parsed = new URL(value);
+        return (
+          parsed.protocol === "http:" &&
+          isLoopbackHostname(parsed.hostname) &&
+          parsed.port !== "" &&
+          Number(parsed.port) > 0 &&
+          !parsed.username &&
+          !parsed.password &&
+          !parsed.search &&
+          !parsed.hash &&
+          (parsed.pathname === "/" || parsed.pathname === "")
+        );
+      }, "Local AI runtime URL must use loopback HTTP"),
+    authorization: z.string().regex(/^Bearer [A-Za-z0-9_-]{32,}$/),
+    pid: z.number().int().positive(),
+    startedAt: z.string().datetime()
+  })
+  .strict();
 
 export type LocalRuntimeRegistration = z.infer<typeof registrationSchema>;
 

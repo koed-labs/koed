@@ -999,6 +999,13 @@ export const routeIdentityContracts = [
     "Update local AI-client synthesis settings."
   ),
   route(
+    "DELETE",
+    "/v1/memory/local-agent-settings/{flowKey}",
+    "session_or_api_token",
+    "local_synthesis",
+    "Reset one local AI-client synthesis setting."
+  ),
+  route(
     "GET",
     "/v1/memory/session-titles/pending",
     "api_token",

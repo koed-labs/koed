@@ -9,6 +9,7 @@ import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
 import type {
   DesktopCommandContext,
   DesktopCommandHandler,
+  LocalAiClientDesktopHandler,
   PersonalMemoryDesktopHandler
 } from "../koed-server/manager.js";
 import type { DesktopSetupSnapshot } from "../types.js";
@@ -16,6 +17,7 @@ import {
   collaborationCommandChannel,
   collaborationEventChannel,
   clipboardWriteChannel,
+  localAiClientCommandChannel,
   desktopRendererOrigin,
   isDesktopCommandName,
   managedConversationCommandChannel,
@@ -37,6 +39,10 @@ import {
 import { parsePersonalDevicePairingProgress } from "./personal-device-pairing-protocol.js";
 import type { DesktopThemePreference } from "../window/theme-preference.js";
 import { parsePersonalDevicePairingLink } from "../personal-device-pairing-link.js";
+import {
+  localAiClientCommandSchema,
+  localAiClientResponseSchema
+} from "./local-ai-client-protocol.js";
 
 export const invokeChannel = "koed:invoke";
 
@@ -109,6 +115,7 @@ export const registerDesktopCommandHandlers = (
   handlers: Record<DesktopCommandName, DesktopCommandHandler>,
   options: {
     allowedRendererOrigins: ReadonlySet<string>;
+    localAiClients?: LocalAiClientDesktopHandler;
     personalMemory: PersonalMemoryDesktopHandler;
     managedConversation: (
       request: ManagedConversationRequest
@@ -228,6 +235,23 @@ export const registerDesktopCommandHandlers = (
       return options.consumePendingPersonalDevicePairingLink(expectedLink);
     }
   );
+
+  ipcMain.handle(localAiClientCommandChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins)) {
+      throw new Error("Untrusted Desktop IPC sender.");
+    }
+    const request = localAiClientCommandSchema.parse(value);
+    if (!options.localAiClients) {
+      throw new Error("Local AI Client settings are unavailable.");
+    }
+    const response = localAiClientResponseSchema.parse(
+      await options.localAiClients(request)
+    );
+    if (response.operation !== request.operation) {
+      throw new Error("Invalid Local AI Client operation correlation.");
+    }
+    return response;
+  });
 
   ipcMain.handle(
     personalMemoryCommandChannel,

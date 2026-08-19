@@ -8,6 +8,10 @@ import type {
 import type { PersonalDevicePairingProgress } from "./ipc/personal-device-pairing-protocol.js";
 import type { DesktopThemePreference } from "./window/theme-preference.js";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
+import type {
+  LocalAiClientFlowKey,
+  LocalAiClientResponse
+} from "./ipc/local-ai-client-protocol.js";
 
 export type ComponentState =
   | "not_configured"
@@ -122,6 +126,22 @@ export interface DesktopApi {
   ) => Promise<T>;
   personalMemory?: PersonalDesktopApi;
   managedConversations?: ManagedConversationDesktopApi;
+  localAiClients?: {
+    list: () => Promise<LocalAiClientResponse>;
+    refresh: () => Promise<LocalAiClientResponse>;
+    set: (
+      flowKey: LocalAiClientFlowKey,
+      assignment: {
+        provider: "codex" | "claude" | "pi";
+        ai_client_instance_id: string;
+        model: string;
+        reasoning_effort: string;
+        timeout_ms: number;
+        max_attempts: number;
+      }
+    ) => Promise<LocalAiClientResponse>;
+    reset: (flowKey: LocalAiClientFlowKey) => Promise<LocalAiClientResponse>;
+  };
   clipboard?: {
     writeText: (value: string) => Promise<void>;
   };

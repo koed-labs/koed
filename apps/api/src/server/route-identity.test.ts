@@ -36,6 +36,16 @@ describe("route identity contract", () => {
     }
   });
 
+  it("identifies local AI Client reset as a session-or-token DELETE", () => {
+    expect(
+      routeIdentityFor("DELETE", "/v1/memory/local-agent-settings/{flowKey}")
+    ).toMatchObject({
+      identity: "session_or_api_token",
+      domain: "local_synthesis",
+      status: "implemented"
+    });
+  });
+
   it("does not advertise the retired Memory Question update route", () => {
     expect(
       routeIdentityFor("PATCH", "/v1/memory/questions/{questionId}")

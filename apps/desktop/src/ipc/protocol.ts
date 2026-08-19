@@ -71,6 +71,7 @@ export const themePreferenceGetChannel = "koed:theme-preference:get";
 export const themePreferenceSetChannel = "koed:theme-preference:set";
 export const personalMemoryCommandChannel = "koed:personal-memory:command";
 export const personalMemoryEventChannel = "koed:personal-memory:event";
+export { localAiClientCommandChannel } from "./local-ai-client-protocol.js";
 export const personalDevicePairingLinkChannel =
   "koed:personal-device-pairing:link";
 export const personalDevicePairingLinkConsumeChannel =

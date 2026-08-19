@@ -1,8 +1,9 @@
 # Codex Integration
 
-Codex and Claude Code are supported AI Clients. This page covers Codex; see
-[Claude Code integration](claude-code-integration.md) for Claude setup,
-capture, managed Conversations, and local synthesis.
+Codex, Claude Code, and Pi are supported AI Clients. This page covers Codex;
+see [Claude Code integration](claude-code-integration.md) and
+[Pi integration](pi-integration.md) for other client setup. Select each flow's
+instance and model in [Local AI Runtime Settings](local-memory-agent-settings.md).
 
 ## Recommended Setup
 
@@ -232,7 +233,8 @@ that, start a fresh Codex session and ask it to check memory access through the
 
 The Local AI Runtime uses the Koed API Token for Recall, LCM Summary submission,
 and Memory Answer evidence. The MCP adapter receives neither that token nor
-upstream credentials. Koed relies on Codex for Synthesis; the backend does not
+upstream credentials. Koed relies on the selected connected AI Client for
+Synthesis; the backend does not
 make server-side LLM calls in this build. The runtime-hosted Transcript Watcher
 performs automatic Conversation capture; running the MCP adapter alone does
 not. Recall-only or MCP-only integrations are experimental because they do not

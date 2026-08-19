@@ -4096,6 +4096,9 @@ const createFakeRepository = () => {
       localMemoryAgentSettings.set(key, record);
       return record;
     },
+    async deleteLocalMemoryAgentSetting(actor, flowKey) {
+      return localMemoryAgentSettings.delete(`${actor.userId}:${flowKey}`);
+    },
     async createMemoryNode(actor: ActorContext, input: CreateMemoryNodeInput) {
       const record: MemoryNodeRecord = {
         id: randomUUID(),
@@ -15491,6 +15494,51 @@ describe("account and access flows", () => {
       url: "/v1/memory/local-agent-settings",
       headers
     });
+    const resetMcp = await app.inject({
+      method: "DELETE",
+      url: "/v1/memory/local-agent-settings/mcp_memory_answer",
+      headers
+    });
+    const resetAgain = await app.inject({
+      method: "DELETE",
+      url: "/v1/memory/local-agent-settings/mcp_memory_answer",
+      headers
+    });
+    const listedAfterReset = await app.inject({
+      method: "GET",
+      url: "/v1/memory/local-agent-settings",
+      headers
+    });
+    const unauthenticatedReset = await app.inject({
+      method: "DELETE",
+      url: "/v1/memory/local-agent-settings/lcm_summary"
+    });
+    const invalidFlowReset = await app.inject({
+      method: "DELETE",
+      url: "/v1/memory/local-agent-settings/unsupported_flow",
+      headers
+    });
+    const secondRegistered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "local-agent-settings-other@example.com",
+        password: "password123"
+      }
+    });
+    const secondToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: browserSessionHeaders(cookieHeader(secondRegistered)),
+      payload: { name: "Other Client" }
+    });
+    const crossUserReset = await app.inject({
+      method: "DELETE",
+      url: "/v1/memory/local-agent-settings/lcm_summary",
+      headers: {
+        authorization: `Bearer ${jsonBody<TokenResponse>(secondToken).token}`
+      }
+    });
     await app.close();
 
     expect(instance.statusCode, instance.body).toBe(200);
@@ -15505,6 +15553,31 @@ describe("account and access flows", () => {
     expect(savedLcm.statusCode).toBe(200);
     expect(savedCuratedReview.statusCode).toBe(200);
     expect(listed.statusCode).toBe(200);
+    const listedPayload = jsonBody<{
+      instances: Array<{ instanceId: string; driverId: string }>;
+      capabilitySnapshots: Array<{ instanceId: string; stale: boolean }>;
+      defaults: {
+        mcp_memory_answer: {
+          source: string;
+          available: boolean;
+          provider: string;
+          model: string;
+        };
+      };
+    }>(listed);
+    expect(listedPayload.instances).toEqual([
+      expect.objectContaining({
+        instanceId: "codex.default",
+        driverId: "codex"
+      })
+    ]);
+    expect(listedPayload.capabilitySnapshots).toEqual([
+      expect.objectContaining({ instanceId: "codex.default", stale: false })
+    ]);
+    expect(listedPayload.defaults.mcp_memory_answer.source).toBe("code");
+    expect(listedPayload.defaults.mcp_memory_answer.available).toBe(true);
+    expect(listedPayload.defaults.mcp_memory_answer.provider).toBe("codex");
+    expect(listedPayload.defaults.mcp_memory_answer.model).toBe("gpt-5.6-luna");
     expect(
       jsonBody<{ settings: LocalMemoryAgentSettingRecord[] }>(listed).settings
     ).toEqual([
@@ -15523,6 +15596,25 @@ describe("account and access flows", () => {
         model: "gpt-5.4",
         reasoningEffort: "high"
       })
+    ]);
+    expect(resetMcp.statusCode).toBe(200);
+    expect(jsonBody<{ reset: boolean }>(resetMcp).reset).toBe(true);
+    expect(resetAgain.statusCode).toBe(200);
+    expect(jsonBody<{ reset: boolean }>(resetAgain).reset).toBe(false);
+    expect(unauthenticatedReset.statusCode).toBe(401);
+    expect(invalidFlowReset.statusCode).toBe(400);
+    expect(crossUserReset.statusCode).toBe(200);
+    expect(jsonBody<{ reset: boolean }>(crossUserReset).reset).toBe(false);
+    expect(listedAfterReset.statusCode).toBe(200);
+    expect(
+      jsonBody<{ defaults: Record<string, unknown> }>(listed).defaults
+    ).toHaveProperty("mcp_memory_answer");
+    expect(
+      jsonBody<{ settings: LocalMemoryAgentSettingRecord[] }>(listedAfterReset)
+        .settings
+    ).toEqual([
+      expect.objectContaining({ flowKey: "curated_memory_review" }),
+      expect.objectContaining({ flowKey: "lcm_summary" })
     ]);
   });
 

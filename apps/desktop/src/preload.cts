@@ -11,6 +11,7 @@ import {
 } from "@koed/shared/collaboration";
 import { createPersonalMemoryPreloadApi } from "./ipc/personal-memory-preload.js";
 import { createManagedConversationPreloadApi } from "./ipc/managed-conversation-preload.js";
+import { createLocalAiClientPreloadApi } from "./ipc/local-ai-client-preload.js";
 import { createPersonalDevicePairingPreloadApi } from "./ipc/personal-device-pairing-preload.js";
 import {
   clipboardWriteChannel,
@@ -41,6 +42,9 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     }
   ),
   managedConversations: createManagedConversationPreloadApi((channel, value) =>
+    ipcRenderer.invoke(channel, value)
+  ),
+  localAiClients: createLocalAiClientPreloadApi((channel, value) =>
     ipcRenderer.invoke(channel, value)
   ),
   clipboard: Object.freeze({
