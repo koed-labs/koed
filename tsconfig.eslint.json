@@ -2,7 +2,6 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "allowImportingTsExtensions": true,
-    "allowJs": true,
     "jsx": "react-jsx",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
@@ -35,8 +34,7 @@
     "apps/**/*.ts",
     "apps/**/*.tsx",
     "packages/**/*.ts",
-    "packages/**/*.tsx",
-    "packages/**/*.mjs"
+    "packages/**/*.tsx"
   ],
   "exclude": ["**/dist/**", "**/node_modules/**"]
 }
