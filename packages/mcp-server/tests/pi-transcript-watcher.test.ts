@@ -14,6 +14,21 @@ afterEach(() => {
 });
 
 const line = (value: unknown): string => `${JSON.stringify(value)}\n`;
+const appendPaddingRecords = (
+  target: string,
+  minimumBytes = 17 * 1024 * 1024
+): number => {
+  const recordsPerChunk = 256 * 1024;
+  const chunk = "{}\n".repeat(recordsPerChunk);
+  let bytes = 0;
+  let lines = 0;
+  while (bytes <= minimumBytes) {
+    fs.appendFileSync(target, chunk);
+    bytes += Buffer.byteLength(chunk);
+    lines += recordsPerChunk;
+  }
+  return lines;
+};
 
 describe("Pi transcript watcher", () => {
   it("resumes from durable cursor and fails closed on truncation", async () => {
@@ -42,13 +57,16 @@ describe("Pi transcript watcher", () => {
     const segmentContent = new Map<string, string>();
     const listedAfterOffsets: number[] = [];
     const createdExternalItemIds: string[] = [];
+    let captureEnabled = true;
     const client = {
       async lookupConversationSourceArtifact() {
         if (!artifact) throw new MemoryApiError("not found", { status: 404 });
         return { artifact };
       },
       async getEffectiveCapturePolicy() {
-        return { policy: { captureState: "enabled" } };
+        return {
+          policy: { captureState: captureEnabled ? "enabled" : "disabled" }
+        };
       },
       async ensureConversationSourceArtifact(input: Record<string, unknown>) {
         artifact = {
@@ -73,6 +91,8 @@ describe("Pi transcript watcher", () => {
           segmentIndex: segments.length,
           sourceStartOffset: input.expectedProviderOffset,
           sourceEndOffset: input.sourceEndOffset,
+          sourceStartLine: input.expectedProviderLine,
+          sourceEndLine: input.sourceEndLine,
           plaintextDigest: createHash("sha256").update(bytes).digest("hex"),
           plaintextSize: bytes.length
         };
@@ -155,6 +175,34 @@ describe("Pi transcript watcher", () => {
       "user-1:0"
     ]);
 
+    captureEnabled = false;
+    const pausedLines = appendPaddingRecords(transcriptPath);
+    await processPiTranscriptSignal(client, state, signal, env);
+    fs.appendFileSync(
+      transcriptPath,
+      line({
+        type: "message",
+        id: "user-after-pause",
+        parentId: "user-1",
+        timestamp: "2026-04-01T00:00:10.000Z",
+        message: { role: "user", content: "Capture resumed" }
+      })
+    );
+    captureEnabled = true;
+    while (
+      (cursor as { sourceOffset?: number } | null)?.sourceOffset !==
+      fs.statSync(transcriptPath).size
+    )
+      await processPiTranscriptSignal(client, state, signal, env);
+    expect(createdExternalItemIds).toEqual([
+      `${sourceSessionId}:0`,
+      "user-1:0",
+      "user-after-pause:0"
+    ]);
+    expect((cursor as { sourceLine?: unknown } | null)?.sourceLine).toBe(
+      pausedLines + 3
+    );
+
     fs.appendFileSync(
       transcriptPath,
       Array.from({ length: 8 }, (_, index) =>
@@ -186,6 +234,7 @@ describe("Pi transcript watcher", () => {
     expect(createdExternalItemIds).toEqual([
       `${sourceSessionId}:0`,
       "user-1:0",
+      "user-after-pause:0",
       ...Array.from({ length: 8 }, (_, index) => `assistant-${index + 1}:0`)
     ]);
     expect((cursor as { sourceOffset?: unknown } | null)?.sourceOffset).toBe(
@@ -196,5 +245,79 @@ describe("Pi transcript watcher", () => {
     await expect(
       processPiTranscriptSignal(client, state, signal, env)
     ).rejects.toThrow("pi_session_truncated");
+  });
+
+  it("streams a large pre-activation baseline when opening live capture", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-baseline-"));
+    temporaryDirectories.push(root);
+    const sessions = path.join(root, "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const sourceSessionId = randomUUID();
+    const transcriptPath = path.join(sessions, `${sourceSessionId}.jsonl`);
+    const cwd = "/tmp/pi-large-baseline";
+    fs.writeFileSync(
+      transcriptPath,
+      line({ type: "session", version: 3, id: sourceSessionId, cwd })
+    );
+    const baselineLines = appendPaddingRecords(transcriptPath);
+    const baseline = fs.statSync(transcriptPath).size;
+    fs.appendFileSync(transcriptPath, line({ type: "model_change" }));
+    let artifact: Record<string, unknown> | null = null;
+    let ensuredLiveStartLine: unknown;
+    const boundary = fs.statSync(transcriptPath).size;
+    const client = {
+      async lookupConversationSourceArtifact() {
+        throw new MemoryApiError("not found", { status: 404 });
+      },
+      async getEffectiveCapturePolicy() {
+        return { policy: { captureState: "enabled" } };
+      },
+      async ensureConversationSourceArtifact(input: Record<string, unknown>) {
+        ensuredLiveStartLine = input.liveStartLine;
+        artifact = {
+          id: randomUUID(),
+          sessionId: randomUUID(),
+          providerCursorOffset: 0,
+          providerCursorLine: 0,
+          liveStartOffset: input.liveStartOffset,
+          liveStartLine: input.liveStartLine,
+          sourceFingerprint: input.sourceFingerprint
+        };
+        return { artifact };
+      },
+      async appendConversationSourceSegment(
+        artifactId: string,
+        input: Record<string, unknown>
+      ) {
+        artifact = {
+          ...artifact,
+          id: artifactId,
+          providerCursorOffset: input.sourceEndOffset,
+          providerCursorLine: input.sourceEndLine
+        };
+        return { artifact };
+      },
+      async getConversationSourceCursor() {
+        return {
+          cursor: { sourceOffset: boundary, sourceLine: baselineLines + 2 }
+        };
+      }
+    } as unknown as MemoryApiClient;
+
+    await processPiTranscriptSignal(
+      client,
+      {
+        version: 1,
+        activatedAt: new Date(Date.now() + 60_000).toISOString(),
+        baselines: { [fs.realpathSync(transcriptPath)]: baseline }
+      },
+      { sourceSessionId, transcriptPath, cwd },
+      {
+        KOED_HOME: path.join(root, "koed"),
+        PI_CODING_AGENT_SESSION_DIR: sessions
+      }
+    );
+
+    expect(ensuredLiveStartLine).toBe(baselineLines + 1);
   });
 });

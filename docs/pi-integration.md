@@ -35,7 +35,7 @@ pnpm pi:configure
 pnpm pi:check
 ```
 
-Setup stages and validates the Koed-owned package beside `$KOED_HOME/integrations/pi/`, atomically replaces that stable path, and then runs `pi install`. A failed install restores the previous package and registration. Pi records the stable package path in the active global profile. The next ordinary `pi` startup loads the integration; no wrapper or separate extension command is needed.
+Setup stages and validates the Koed-owned package beside `$KOED_HOME/integrations/pi/`, atomically replaces that stable path, and then runs `pi install`. Both koed-server setup and the Local Operator Script use the same exception-safe transaction: a failed filesystem swap or install restores the previous package, and a failed install also restores its registration. If filesystem restoration itself fails, Koed preserves and reports the backup path instead of deleting the last working copy. Pi records the stable package path in the active global profile. The next ordinary `pi` startup loads the integration; no wrapper or separate extension command is needed.
 
 Koed canonicalizes the Pi executable before invoking it. On Windows, npm command shims are resolved to the verifiable Pi Node entry point and are never passed directly to process-spawn APIs. Koed passes a bounded
 setup environment containing profile/system essentials plus `KOED_HOME`, not
@@ -75,6 +75,9 @@ Watcher:
 - keeps independent durable `canonical_live` source cursor;
 - verifies only the terminal covered journal segment before append, avoiding repeated prefix replay;
 - consumes canonical source bytes in bounded journal pages;
+- streams activation and historical-frontier line counting without loading the
+  complete prefix, and resolves a Capture Pause resume line from journal
+  metadata plus at most one bounded covering segment;
 - stops visibly on malformed complete records, unsupported session versions, truncation, or covered-prefix mutation;
 - enforces Capture Policy and Capture Pause before source creation, journal append, and raw ingestion;
 - creates Personal Memory only;

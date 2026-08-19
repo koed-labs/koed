@@ -2,15 +2,12 @@ import { spawnSync as nodeSpawnSync } from "node:child_process";
 import {
   accessSync,
   constants,
-  cpSync,
   existsSync,
-  mkdirSync,
-  renameSync,
   realpathSync,
-  rmSync,
   statSync
 } from "node:fs";
 import { dirname, delimiter, isAbsolute, join, resolve } from "node:path";
+import { installPiPackageTransaction } from "./pi-package-transaction.mjs";
 import { resolveKoedServerPaths } from "./paths.js";
 
 export const MINIMUM_PI_VERSION = "0.84.2";
@@ -230,40 +227,28 @@ export const setupPi = (
         "Pi has no authenticated models. Authenticate at least one Pi model before setup."
       );
     }
-    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-    const suffix = `${process.pid}-${Date.now()}`;
-    const staged = `${target}.stage-${suffix}`;
-    const backup = `${target}.backup-${suffix}`;
-    rmSync(staged, { recursive: true, force: true });
-    rmSync(backup, { recursive: true, force: true });
-    cpSync(source, staged, { recursive: true });
-    if (
-      !existsSync(resolve(staged, "package.json")) ||
-      !existsSync(resolve(staged, "extensions/koed.mjs"))
-    ) {
-      rmSync(staged, { recursive: true, force: true });
-      throw new Error("The staged Koed Pi package is incomplete.");
-    }
-    const hadPrevious = existsSync(target);
-    if (hadPrevious) renameSync(target, backup);
-    renameSync(staged, target);
-    const result = runPi(["install", target], 30_000);
-    const ok = !result.error && result.status === 0;
-    let rollbackError: string | undefined;
-    if (ok) {
-      rmSync(backup, { recursive: true, force: true });
-    } else {
-      rmSync(target, { recursive: true, force: true });
-      if (hadPrevious) {
-        renameSync(backup, target);
-        const rollback = runPi(["install", target], 30_000);
-        if (rollback.error || rollback.status !== 0)
-          rollbackError =
-            rollback.error?.message ||
-            rollback.stderr?.trim() ||
-            `rollback exited with code ${rollback.status ?? 1}`;
+    const transaction = installPiPackageTransaction({
+      source,
+      target,
+      install: () => runPi(["install", target], 30_000),
+      installSucceeded: (candidate) => {
+        const result = candidate as ReturnType<typeof runPi>;
+        return !result.error && result.status === 0;
       }
-    }
+    });
+    const result = transaction.installResult as
+      | ReturnType<typeof runPi>
+      | undefined;
+    const rollback = transaction.registrationResult as
+      | ReturnType<typeof runPi>
+      | undefined;
+    const ok = transaction.ok;
+    const hadPrevious = transaction.hadPrevious;
+    const rollbackError = rollback
+      ? rollback.error?.message ||
+        rollback.stderr?.trim() ||
+        `rollback exited with code ${rollback.status ?? 1}`
+      : transaction.registrationError;
     return {
       ok,
       state: ok ? "healthy" : "needs_attention",
@@ -272,19 +257,21 @@ export const setupPi = (
       checkedAt,
       executablePath: executable,
       modelCount: models.length,
-      ...(result.stdout ? { stdout: result.stdout.trim() } : {}),
-      ...(result.stderr ? { stderr: result.stderr.trim() } : {}),
+      ...(result?.stdout ? { stdout: result.stdout.trim() } : {}),
+      ...(result?.stderr ? { stderr: result.stderr.trim() } : {}),
       ...(!ok
         ? {
             error:
-              result.error?.message ??
-              result.stderr?.trim() ??
-              `Pi setup failed with exit code ${result.status ?? 1}.`,
-            action: rollbackError
-              ? `The previous package was restored but its Pi registration could not be verified: ${rollbackError}. Fix Pi, then rerun koed-server setup pi --json.`
-              : hadPrevious
-                ? "The previous Koed Pi package was restored. Fix the Pi package installation error, then rerun koed-server setup pi --json."
-                : "The failed package candidate was removed. Fix the Pi package installation error, then rerun koed-server setup pi --json."
+              result?.error?.message ??
+              result?.stderr?.trim() ??
+              transaction.error,
+            action: transaction.restorationError
+              ? `The previous package could not be restored (${transaction.restorationError}). It remains at ${transaction.backupPath ?? "the backup path"}; repair the filesystem before retrying.`
+              : rollbackError
+                ? `The previous package was restored but its Pi registration could not be verified: ${rollbackError}. Fix Pi, then rerun koed-server setup pi --json.`
+                : hadPrevious
+                  ? "The previous Koed Pi package was restored. Fix the Pi package installation error, then rerun koed-server setup pi --json."
+                  : "The failed package candidate was removed. Fix the Pi package installation error, then rerun koed-server setup pi --json."
           }
         : {})
     };

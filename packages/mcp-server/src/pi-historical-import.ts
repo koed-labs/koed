@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 
-import { completeTranscriptBoundary } from "./codex-transcript-journal.js";
+import {
+  completeTranscriptBoundary,
+  countTranscriptLines
+} from "./codex-transcript-journal.js";
 import type { RawConversationItemRequest } from "./conversation-source-types.js";
 import { MemoryApiClient, MemoryApiError } from "./index.js";
 import {
@@ -56,6 +59,8 @@ const objectFrom = <T>(response: Record<string, unknown>, key: string): T => {
   return value as T;
 };
 const readRange = (target: string, start: number, end: number): Buffer => {
+  if (end - start > 16 * 1024 * 1024)
+    throw new Error("pi_historical_read_range_unbounded");
   const bytes = Buffer.alloc(end - start);
   const descriptor = fs.openSync(target, "r");
   try {
@@ -120,10 +125,7 @@ export const registerPiHistoricalTranscriptSource = async (
         journalStartOffset: 0,
         journalStartLine: 0,
         liveStartOffset: boundary,
-        liveStartLine: readRange(target, 0, boundary).reduce(
-          (count, byte) => count + (byte === 10 ? 1 : 0),
-          0
-        ),
+        liveStartLine: await countTranscriptLines(target, boundary),
         currentSourceLength: file.size,
         sourceCreatedAt: file.birthtime.toISOString(),
         sourceModifiedAt: file.mtime.toISOString(),

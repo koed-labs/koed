@@ -87,6 +87,10 @@ Pi persistent sessions use `sourceKind=pi`, `sourceRuntime=pi`,
 Watcher journals complete LF-terminated records, verifies only the terminal
 covered segment on each pass, consumes bounded journal pages, and advances its
 independent durable live cursor only after raw ingestion and Projection succeed.
+Activation and historical-frontier line counts stream from disk. After a
+Capture Pause or disabled Capture Policy, the resume line comes from retained
+journal line metadata and, only when the offset is internal to a segment, one
+bounded verified segment; Koed does not replay the skipped transcript span.
 User, AI Client
 text, tool calls/results, and direct bash records may project. Compaction and
 branch summaries, thinking, custom/unsupported records, model changes, and

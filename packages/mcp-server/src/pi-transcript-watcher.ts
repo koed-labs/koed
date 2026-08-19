@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { MemoryApiClient, MemoryApiError, defaultConfig } from "./index.js";
-import { completeTranscriptBoundary } from "./codex-transcript-journal.js";
+import {
+  completeTranscriptBoundary,
+  countTranscriptLines
+} from "./codex-transcript-journal.js";
 import {
   parsePiSessionJournalBytes,
   type PiSessionParserState
@@ -46,9 +49,13 @@ type Segment = {
   segmentIndex: number;
   sourceStartOffset: number;
   sourceEndOffset: number;
+  sourceStartLine: number;
+  sourceEndLine: number;
   plaintextDigest: string;
   plaintextSize: number;
 };
+
+const MAX_PI_DIRECT_READ_BYTES = 16 * 1024 * 1024;
 
 const piJournalPageBytes = (env: NodeJS.ProcessEnv): number => {
   const configured = Number(env.MEMORY_PI_TRANSCRIPT_MAX_BYTES_PER_BATCH);
@@ -212,6 +219,8 @@ const artifactFrom = (response: Record<string, unknown>): Artifact => {
   return response.artifact as Artifact;
 };
 const readRange = (target: string, start: number, end: number): Buffer => {
+  if (end - start > MAX_PI_DIRECT_READ_BYTES)
+    throw new Error("pi_session_read_range_unbounded");
   const bytes = Buffer.alloc(end - start);
   const descriptor = fs.openSync(target, "r");
   try {
@@ -235,11 +244,44 @@ const journalSegmentBytes = async (
     throw new Error("pi_journal_segment_content_missing");
   const bytes = Buffer.from(response.bytesBase64, "base64");
   if (
+    segment.plaintextSize > MAX_PI_DIRECT_READ_BYTES ||
     bytes.length !== segment.plaintextSize ||
     createHash("sha256").update(bytes).digest("hex") !== segment.plaintextDigest
   )
     throw new Error("pi_journal_segment_verification_failed");
   return bytes;
+};
+const journalLineAtOffset = async (
+  client: MemoryApiClient,
+  artifactId: string,
+  sourceOffset: number
+): Promise<number> => {
+  if (sourceOffset === 0) return 0;
+  const page = await client.listConversationSourceSegments(artifactId, {
+    afterOffset: sourceOffset - 1,
+    limit: 1
+  });
+  const segment = (page.segments as Segment[] | undefined)?.[0];
+  if (
+    !segment ||
+    segment.sourceStartOffset > sourceOffset ||
+    segment.sourceEndOffset < sourceOffset ||
+    !Number.isSafeInteger(segment.sourceStartLine) ||
+    !Number.isSafeInteger(segment.sourceEndLine) ||
+    segment.sourceStartLine < 0 ||
+    segment.sourceEndLine < segment.sourceStartLine
+  )
+    throw new Error("pi_journal_segment_chain_incomplete");
+  if (sourceOffset === segment.sourceStartOffset)
+    return segment.sourceStartLine;
+  if (sourceOffset === segment.sourceEndOffset) return segment.sourceEndLine;
+  const bytes = await journalSegmentBytes(client, artifactId, segment);
+  return (
+    segment.sourceStartLine +
+    bytes
+      .subarray(0, sourceOffset - segment.sourceStartOffset)
+      .reduce((count, byte) => count + (byte === 0x0a ? 1 : 0), 0)
+  );
 };
 const policyAllowsCapture = async (
   client: MemoryApiClient,
@@ -329,13 +371,7 @@ export const processPiTranscriptSignal = async (
         journalStartOffset: 0,
         journalStartLine: 0,
         liveStartOffset: baseline,
-        liveStartLine:
-          baseline === 0
-            ? 0
-            : readRange(target, 0, baseline).reduce(
-                (count, byte) => count + (byte === 10 ? 1 : 0),
-                0
-              ),
+        liveStartLine: await countTranscriptLines(target, baseline),
         currentSourceLength: file.size,
         sourceCreatedAt: file.birthtime.toISOString(),
         sourceModifiedAt: file.mtime.toISOString(),
@@ -423,13 +459,10 @@ export const processPiTranscriptSignal = async (
     cursorOffset,
     state.baselines[target] ?? cursorOffset
   );
-  const skippedLines =
-    captureStart > cursorOffset
-      ? readRange(target, cursorOffset, captureStart).reduce(
-          (count, byte) => count + (byte === 10 ? 1 : 0),
-          0
-        )
-      : 0;
+  const captureStartLine =
+    captureStart === cursorOffset
+      ? cursorLine
+      : await journalLineAtOffset(client, artifact.id, captureStart);
   const page = await client.listConversationSourceSegments(artifact.id, {
     afterOffset: captureStart,
     limit: 1
@@ -452,7 +485,7 @@ export const processPiTranscriptSignal = async (
   const parsed = parsePiSessionJournalBytes({
     bytes,
     absoluteStartOffset: captureStart,
-    lineIndexOffset: cursorLine + skippedLines,
+    lineIndexOffset: captureStartLine,
     sessionId: artifact.sessionId,
     externalSessionId: identity.id,
     sourceFingerprint: artifact.sourceFingerprint ?? hash(identity.id),

@@ -3,17 +3,15 @@ import { spawnSync } from "node:child_process";
 import {
   accessSync,
   constants,
-  cpSync,
   existsSync,
-  mkdirSync,
   realpathSync,
-  renameSync,
   rmSync,
   statSync
 } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installPiPackageTransaction } from "../packages/koed-server/src/pi-package-transaction.mjs";
 
 const mode = process.argv.includes("--remove")
   ? "remove"
@@ -214,43 +212,37 @@ if (mode === "check") {
   process.exit(0);
 }
 
-mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-const suffix = `${process.pid}-${Date.now()}`;
-const staged = `${target}.stage-${suffix}`;
-const backup = `${target}.backup-${suffix}`;
-rmSync(staged, { recursive: true, force: true });
-rmSync(backup, { recursive: true, force: true });
-cpSync(source, staged, { recursive: true });
-if (
-  !existsSync(resolve(staged, "package.json")) ||
-  !existsSync(resolve(staged, "extensions/koed.mjs"))
-) {
-  rmSync(staged, { recursive: true, force: true });
-  console.error("The staged Koed Pi package is incomplete.");
-  process.exit(1);
-}
-const hadPrevious = existsSync(target);
-if (hadPrevious) renameSync(target, backup);
-renameSync(staged, target);
-const install = run(["install", target]);
-if (install.status !== 0) {
-  rmSync(target, { recursive: true, force: true });
-  if (hadPrevious) {
-    renameSync(backup, target);
-    const rollback = run(["install", target]);
-    if (rollback.error || rollback.status !== 0) {
-      console.error(
-        `${install.stderr?.trim() || "Pi package installation failed."} The previous package was restored, but its registration could not be verified: ${rollback.error?.message || rollback.stderr?.trim() || `exit ${rollback.status ?? 1}`}`
-      );
-      process.exit(1);
-    }
+const transaction = installPiPackageTransaction({
+  source,
+  target,
+  install: () => run(["install", target]),
+  installSucceeded: (result) => !result.error && result.status === 0
+});
+if (!transaction.ok) {
+  const install = transaction.installResult;
+  const rollback = transaction.registrationResult;
+  const failure =
+    install?.error?.message ||
+    install?.stderr?.trim() ||
+    transaction.error ||
+    "Pi package installation failed.";
+  if (transaction.restorationError) {
+    console.error(
+      `${failure} The previous package could not be restored: ${transaction.restorationError}. It remains at ${transaction.backupPath || "the backup path"}.`
+    );
+    process.exit(1);
+  }
+  if (transaction.registrationError) {
+    console.error(
+      `${failure} The previous package was restored, but its registration could not be verified: ${rollback?.error?.message || rollback?.stderr?.trim() || transaction.registrationError}`
+    );
+    process.exit(1);
   }
   console.error(
-    `${install.stderr?.trim() || "Pi package installation failed."} ${hadPrevious ? "The previous Koed Pi package was restored." : "The failed package candidate was removed."}`
+    `${failure} ${transaction.hadPrevious ? "The previous Koed Pi package was restored." : "The failed package candidate was removed."}`
   );
   process.exit(1);
 }
-rmSync(backup, { recursive: true, force: true });
 console.log("Pi integration configured.");
 console.log(`KOED_HOME: ${koedHome}`);
 console.log(`Package: ${target}`);

@@ -16,8 +16,11 @@ need them.
 
 > [!IMPORTANT]
 > Codex, Claude Code, and Pi are independently installed supported AI Client
-> integrations. Install and sign in to the client or clients you use; Koed does
-> not bundle either runtime or provider credentials.
+> integrations. The current guided fresh-install bootstrap is temporarily
+> Codex-first and requires supported Codex even when Claude Code or Pi is also
+> used. Codex-free core readiness and client-neutral onboarding are tracked in
+> KOE-375, KOE-377, and KOE-378. Koed does not bundle AI Client runtimes or
+> provider credentials.
 
 ### Requirements
 
@@ -26,11 +29,13 @@ need them.
 - Homebrew for the source-checkout bundled-local runtime install. Packaged
   Desktop can use packaged native runtime assets; external dependency mode does
   not require Homebrew.
-- At least one supported AI Client installed and signed in: Codex CLI `0.144.0`
-  or newer, Claude Code, or Pi `0.84.2` or newer. Codex default
-  `gpt-5.6-luna` model is unavailable in older Codex releases. Claude synthesis
-  reuses local Claude Code subscription through pinned Agent SDK. Pi synthesis
-  reuses Pi-managed local authentication through isolated RPC.
+- Codex CLI `0.144.0` or newer installed and signed in for the current guided
+  fresh-install bootstrap. The Codex default `gpt-5.6-luna` model is unavailable
+  in older releases.
+- Optionally, Claude Code or Pi `0.84.2` or newer installed and signed in as an
+  additional supported AI Client. Claude synthesis reuses the local Claude Code
+  subscription through the pinned Agent SDK. Pi synthesis reuses Pi-managed
+  local authentication through isolated RPC.
 
 If you are on Windows, run Koed inside WSL as Linux tooling. Keep `KOED_HOME`
 and checkout paths on Linux filesystem paths inside WSL; native Windows

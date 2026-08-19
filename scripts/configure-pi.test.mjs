@@ -11,8 +11,50 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import {
+  installPiPackageTransaction,
+  piPackageFileSystem
+} from "../packages/koed-server/src/pi-package-transaction.mjs";
 
 const root = resolve(import.meta.dirname, "..");
+
+test("Pi package transaction restores the stable package when the filesystem swap fails", () => {
+  const temporary = mkdtempSync(join(tmpdir(), "koed-pi-swap-rollback-"));
+  const source = join(temporary, "source");
+  const target = join(temporary, "integrations", "pi");
+  mkdirSync(join(source, "extensions"), { recursive: true });
+  mkdirSync(join(target, "extensions"), { recursive: true });
+  writeFileSync(join(source, "package.json"), '{"version":"new"}\n');
+  writeFileSync(join(source, "extensions", "koed.mjs"), "// new\n");
+  writeFileSync(join(target, "package.json"), '{"version":"old"}\n');
+  writeFileSync(join(target, "extensions", "koed.mjs"), "// old\n");
+  let renames = 0;
+
+  const result = installPiPackageTransaction({
+    source,
+    target,
+    install: () => ({ status: 0 }),
+    installSucceeded: (candidate) => candidate.status === 0,
+    suffix: "swap-failure",
+    fileSystem: {
+      ...piPackageFileSystem,
+      rename(from, to) {
+        renames += 1;
+        if (renames === 2) throw new Error("injected stage swap failure");
+        piPackageFileSystem.rename(from, to);
+      }
+    }
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /injected stage swap failure/);
+  assert.match(readFileSync(join(target, "package.json"), "utf8"), /old/);
+  assert.equal(
+    existsSync(`${target}.stage-swap-failure`) ||
+      existsSync(`${target}.backup-swap-failure`),
+    false
+  );
+});
 
 test("Pi configure/check/remove preserves unrelated profile settings", () => {
   const temporary = mkdtempSync(join(tmpdir(), "koed-configure-pi-"));
