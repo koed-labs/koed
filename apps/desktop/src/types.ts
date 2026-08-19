@@ -33,6 +33,7 @@ export interface KoedServerStatus {
   redis: ComponentStatus;
   workerQueues: ComponentStatus;
   embeddingService: ComponentStatus;
+  localAiRuntime?: ComponentStatus;
   apiToken: ComponentStatus & { configured: boolean };
   mcpServer: ComponentStatus;
   captureHook: ComponentStatus;
@@ -49,6 +50,10 @@ export interface KoedServerStatus {
     notChecked: number;
   };
   lastVerification: ComponentStatus & { checkedAt: string | null };
+  core?: {
+    state: ComponentState;
+    components: Record<string, ComponentStatus>;
+  };
   serverPackage?: ComponentStatus & {
     currentVersion?: string;
     source?: "standalone" | "bundled-fallback" | "unavailable";

@@ -121,26 +121,21 @@ AI Runtime.
    supervisor, and returns machine-readable JSON without streaming startup logs.
 8. `koed-server status --json` and `koed-server doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
-   Worker process state, local API Token configuration, MCP Server doctor
-   output, Supported Capture Hook config, per-client Codex, Claude Code, and Pi
-   config, LCM Summary Service availability, and last verification metadata.
-   Status compares the active
-   local API URL/token against the Koed-managed Codex MCP block and separately
-   verifies the credential-free Capture Hook command path. MCP configuration
-   contains `KOED_HOME` rather than API credentials. Stale ports,
-   credentials, or runtime paths show as explicit integration mismatches.
-   Readiness gates include Postgres reachability and version,
-   current migrations, pgvector, local or BullMQ queue backend availability,
-   and Embedding Service model/dimension compatibility. Historical-import
-   backlog and aggregate Transcript Watcher process/status data are diagnostic
-   only, never readiness gates. Claude Code and Pi integration checks are also
-   optional diagnostics: selecting one for capture, Recall, or local Synthesis
-   requires that client to be healthy, but their absence does not make the core
-   Koed runtime or another AI Client unhealthy.
-9. `koed-server setup codex --json` wraps the existing guided bootstrap path so
-   Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
-   local credential, verification, and doctor setup can be invoked through
-   the control plane. Setup applies persisted auto-allocated local ports before
+   Worker and Local AI Runtime process state, local API Token configuration, MCP
+   artifact health, Supported Capture Hook config, per-client Codex, Claude
+   Code, and Pi config, LCM Summary Service process health, and last
+   verification metadata. Core status is separate from client diagnostics:
+   zero configured AI Clients is healthy core state. Client profile MCP config,
+   Capture Hook, Transcript Watcher, authentication, and synthesis readiness do
+   not gate core. Doctor prints all diagnostics, but only core components affect
+   `ok`, `state`, and exit status. LCM process health is separate from any
+   assigned client/model readiness. MCP configuration contains `KOED_HOME`
+   rather than API credentials. Stale ports, credentials, or runtime paths show
+   as explicit mismatches.
+9. `koed-server setup core --json` validates or provisions client-neutral core
+   local credential state, and core verification. `koed-server setup codex
+--json` remains an explicit Codex profile compatibility path that may compose
+   core setup with Codex MCP/Capture Hook configuration. Setup applies persisted auto-allocated local ports before
    resolving the API URL, so Desktop-managed ports and direct CLI
    setup write the same target URL/token. `koed-server repair codex --json` is
    the narrower Desktop repair path: it rewrites the Koed-managed Codex MCP
@@ -160,9 +155,8 @@ AI Runtime.
    Claude setup replaces only an MCP entry proven to be Koed-owned; Pi's
    installed package derives custom `KOED_HOME` from its stable package path.
 10. Koed Desktop can start/connect to the same headless command surface, run
-    the first-launch Codex bootstrap and health-check sequence, poll status,
-    offer one-click Codex repair plus explicitly confirmed, optional Claude Code
-    and Pi setup/repair for stale local config, and
+    mandatory client-neutral core setup and health checks, poll status, offer
+    explicit per-client setup/repair for stale local config, and
     provision the embedding model through `koed-server models status/install
 --json` in bundled-local mode without requiring the Operator to invoke
     repo-local scripts directly. Its Project and Captured Session navigation is

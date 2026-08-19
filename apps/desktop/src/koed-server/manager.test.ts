@@ -128,7 +128,7 @@ describe("Koed server desktop manager", () => {
       mcpServer: { state: "healthy" },
       captureHook: { state: "healthy" },
       lcmSummaryService: { state: "healthy" },
-      codex: { state: "healthy" },
+      codex: { state: "healthy", configured: true },
       claudeCode: { state: "not_configured", detected: true },
       pi: { state: "healthy", detected: true }
     };
@@ -138,7 +138,7 @@ describe("Koed server desktop manager", () => {
       "Claude Code",
       "Pi"
     ]);
-    expect(setupIntegrationHealthy(status)).toBe(false);
+    expect(setupIntegrationHealthy(status)).toBe(true);
     expect(
       setupIntegrationHealthy({
         ...status,
@@ -166,18 +166,16 @@ describe("Koed server desktop manager", () => {
     );
 
     expect(run.mock.calls.map(([args]) => args)).toEqual([
-      ["repair", "codex"],
       ["setup", "claude"],
       ["setup", "pi"]
     ]);
     expect(progress).toEqual([
-      "Configuring Codex capture and recall…",
       "Configuring Claude Code capture and recall…",
       "Configuring Pi capture and recall…"
     ]);
     expect(result).toEqual({
       ok: true,
-      message: "Codex, Claude Code, and Pi integrations are configured."
+      message: "Claude Code and Pi integrations are configured."
     });
   });
 

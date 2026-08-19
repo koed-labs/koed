@@ -5,13 +5,14 @@ import {
   closeSync,
   mkdirSync,
   openSync,
-  realpathSync
+  realpathSync,
+  writeFileSync
 } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRepoEnv } from "./env-file.js";
 import { capSupervisorLog } from "./supervisor-log.js";
-import { repairCodexIntegration, setupCodex } from "./setup.js";
+import { repairCodexIntegration, setupCodex, setupCore } from "./setup.js";
 import { setupPi } from "./pi-setup.js";
 import { setupClaude } from "./claude-setup.js";
 import { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
@@ -72,6 +73,7 @@ import {
   rotateDeviceIdentity
 } from "./device-identity.js";
 import { runPersonalSyncCommand } from "./personal-sync.js";
+import type { KoedServerDoctorResult } from "./types.js";
 
 export const usageText = `Usage: koed-server <command> [options]
 
@@ -99,6 +101,7 @@ Commands:
   personal-sync retry --json
   personal-sync local-replica remove --json
   personal-sync conflict resolve --json
+  setup core --json      Prepare Koed core services and local credential
   setup codex --json     Configure the supported Codex integration
   setup claude --json    Configure the supported Claude Code integration
   setup pi --json        Configure the supported Pi integration
@@ -155,6 +158,7 @@ export interface KoedServerCliDependencies {
   startDaemon?: typeof startKoedServerDaemon;
   stop?: typeof stopKoedServer;
   restart?: typeof restartKoedServer;
+  setupCore?: typeof setupCore;
   setupCodex?: typeof setupCodex;
   setupClaude?: typeof setupClaude;
   setupPi?: typeof setupPi;
@@ -199,6 +203,29 @@ const printJson = (
   value: unknown
 ) => {
   stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+};
+
+const persistDoctorVerification = (
+  paths: ReturnType<typeof resolveKoedServerPaths>,
+  doctor: KoedServerDoctorResult
+): void => {
+  mkdirSync(resolve(paths.lastVerificationPath, ".."), {
+    recursive: true,
+    mode: 0o700
+  });
+  writeFileSync(
+    paths.lastVerificationPath,
+    `${JSON.stringify(
+      {
+        ok: doctor.ok,
+        checkedAt: doctor.generatedAt,
+        message: doctor.summary
+      },
+      null,
+      2
+    )}\n`,
+    { mode: 0o600 }
+  );
 };
 
 const mergeRepoEnvironment = (
@@ -420,6 +447,7 @@ export const runKoedServerCli = async (
     startDaemon = startKoedServerDaemon,
     stop = stopKoedServer,
     restart = restartKoedServer,
+    setupCore: setupCoreIntegration = setupCore,
     setupCodex: setup = setupCodex,
     setupClaude: setupClaudeIntegration = setupClaude,
     setupPi: setupPiIntegration = setupPi,
@@ -490,6 +518,7 @@ export const runKoedServerCli = async (
 
     if (command === "doctor") {
       const doctor = await collectDoctor();
+      persistDoctorVerification(resolvePaths(), doctor);
       if (wantsJson) {
         printJson(stdout, doctor);
       } else {
@@ -569,8 +598,22 @@ export const runKoedServerCli = async (
       return result.ok ? 0 : 1;
     }
 
+    if (command === "setup" && subcommand === "core") {
+      const result = await setupCoreIntegration();
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(
+          result.ok
+            ? "Koed core setup completed.\n"
+            : `${result.error ?? "Koed core setup failed."}\n`
+        );
+      }
+      return result.ok ? 0 : 1;
+    }
+
     if (command === "setup" && subcommand === "codex") {
-      const result = setup();
+      const result = await setup();
       if (wantsJson) {
         printJson(stdout, result);
       } else {

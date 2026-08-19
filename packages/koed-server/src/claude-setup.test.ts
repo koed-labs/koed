@@ -88,7 +88,7 @@ describe("Claude Code setup", () => {
         KOED_HOME: resolve(root, "koed"),
         KOED_REPO_ROOT: root,
         CLAUDE_SETTINGS_PATH: settingsPath,
-        KOED_CLAUDE_CODE_EXECUTABLE: "/opt/claude",
+        KOED_CLAUDE_CODE_EXECUTABLE: "/bin/sh",
         MEMORY_API_TOKEN: "must-not-leak",
         MEMORY_API_URL: "https://must-not-leak.example",
         ANTHROPIC_API_KEY: "provider-secret-must-not-leak",
@@ -151,7 +151,7 @@ describe("Claude Code setup", () => {
         HOME: root,
         KOED_HOME: resolve(root, "koed"),
         KOED_REPO_ROOT: root,
-        KOED_CLAUDE_CODE_EXECUTABLE: "/opt/claude"
+        KOED_CLAUDE_CODE_EXECUTABLE: "/bin/sh"
       },
       ((_command: string, args: string[]) => {
         calls.push(args);

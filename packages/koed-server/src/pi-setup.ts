@@ -9,6 +9,10 @@ import {
 import { dirname, delimiter, isAbsolute, join, resolve } from "node:path";
 import { installPiPackageTransaction } from "./pi-package-transaction.mjs";
 import { resolveKoedServerPaths } from "./paths.js";
+import {
+  assertAiClientRegistryWritable,
+  registerExplicitAiClient
+} from "./ai-client-registry.js";
 
 export const MINIMUM_PI_VERSION = "0.84.2";
 
@@ -174,6 +178,22 @@ export const setupPi = (
   spawnSync: typeof nodeSpawnSync = nodeSpawnSync
 ): KoedServerSetupPiResult => {
   const paths = resolveKoedServerPaths(environment);
+  try {
+    assertAiClientRegistryWritable({
+      ...environment,
+      KOED_HOME: paths.koedHome
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      state: "needs_attention",
+      command: `${environment.KOED_PI_EXECUTABLE?.trim() || "pi"} install ${resolve(paths.koedHome, "integrations/pi")}`,
+      koedHome: paths.koedHome,
+      checkedAt: new Date().toISOString(),
+      error: error instanceof Error ? error.message : String(error),
+      action: "Fix malformed AI Client registry, then rerun Pi setup."
+    };
+  }
   const sourceCandidates = [
     resolve(paths.repoRoot, "packages/mcp-server/integrations/pi"),
     resolve(paths.repoRoot, "koed-runtime/mcp-server/integrations/pi"),
@@ -249,9 +269,26 @@ export const setupPi = (
         rollback.stderr?.trim() ||
         `rollback exited with code ${rollback.status ?? 1}`
       : transaction.registrationError;
+    let registrationError: string | undefined;
+    if (ok) {
+      try {
+        const registered = registerExplicitAiClient({
+          environment: { ...environment, KOED_HOME: paths.koedHome },
+          driverId: "pi",
+          executablePath: executable,
+          displayName: "Pi",
+          configHome: environment.PI_CODING_AGENT_DIR
+        });
+        if (!registered) registrationError = "Pi registration failed.";
+      } catch (error) {
+        registrationError =
+          error instanceof Error ? error.message : String(error);
+      }
+    }
+    const setupOk = ok && !registrationError;
     return {
-      ok,
-      state: ok ? "healthy" : "needs_attention",
+      ok: setupOk,
+      state: setupOk ? "healthy" : "needs_attention",
       command: `${executable} install ${target}`,
       koedHome: paths.koedHome,
       checkedAt,
@@ -262,6 +299,7 @@ export const setupPi = (
       ...(!ok
         ? {
             error:
+              registrationError ??
               result?.error?.message ??
               result?.stderr?.trim() ??
               transaction.error,

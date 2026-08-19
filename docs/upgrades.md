@@ -25,4 +25,20 @@ rollback mechanism after `0013`; restore the backup taken before the upgrade.
 CI executes `pnpm db:migrate:acceptance`, including backup/restore and
 interrupted-transaction recovery, against disposable databases.
 
-After upgrade, verify API readiness, Postgres, Redis/BullMQ, the Embedding Service, and Worker queues.
+After upgrade, verify API readiness, Postgres, Redis/BullMQ, the Embedding Service,
+Worker queues, and core credential/artifact health:
+
+```bash
+node packages/koed-server/dist/cli.js setup core --json
+node packages/koed-server/dist/cli.js status --json
+node packages/koed-server/dist/cli.js doctor --json
+```
+
+Core setup validates and reuses an existing local API Token when available. It
+does not edit AI Client profiles. Existing Codex-only installations retain their
+Codex configuration, token, and Personal Memory; when the Koed-owned marker is
+present and the registry lacks Codex, core migration registers `codex.default`
+while preserving existing registry entries and Codex config bytes. Unrelated
+detected Codex installations are not selected.
+Run `setup codex --json` for explicit Codex repair. Claude Code and Pi register
+only after their explicit setup succeeds.

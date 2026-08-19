@@ -39,6 +39,7 @@ const statusFixture = (
   redis: component(state),
   workerQueues: component(state),
   embeddingService: component(state),
+  localAiRuntime: component(state),
   apiToken: { ...component(state), configured: state === "healthy" },
   mcpServer: component(state),
   captureHook: component(state),
@@ -137,7 +138,7 @@ describe("SetupChecklist", () => {
     });
   });
 
-  it("keeps onboarding open for a detected AI Client that still needs setup", () => {
+  it("allows onboarding completion when detected AI Client setup is deferred", () => {
     const status = {
       ...statusFixture("healthy"),
       claudeCode: {
@@ -158,13 +159,10 @@ describe("SetupChecklist", () => {
     expect(integration?.components.map(({ label }) => label)).toEqual([
       "API Token",
       "MCP Server",
-      "Capture Hook",
-      "Codex",
-      "Claude Code",
-      "Pi"
+      "Local AI Runtime"
     ]);
-    expect(integration?.action?.command).toBe("setup_claude");
-    expect(setupIsReady(status)).toBe(false);
+    expect(integration?.action).toBeNull();
+    expect(setupIsReady(status)).toBe(true);
   });
 
   it("reserves the compact error state for confirmed attention", () => {

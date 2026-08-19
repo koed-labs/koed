@@ -632,22 +632,64 @@ const koedServerConfigEnvironment = (
     repoEnv.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED
 });
 
-const inspectApiToken = (
+const inspectApiToken = async (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv,
-  repoEnv: Record<string, string>
-): KoedServerStatus["apiToken"] => {
+  repoEnv: Record<string, string>,
+  apiUrl: string,
+  fetch: typeof globalThis.fetch
+): Promise<KoedServerStatus["apiToken"]> => {
   const token = resolveActiveIntegrationApiToken(paths, environment, repoEnv);
   if (!token) {
     return {
       ...notConfigured(
-        "No local API Token is configured for Koed integrations.",
-        "Run koed-server setup codex --json or create an API Token."
+        "No local API Token is configured for Koed core services.",
+        "Run koed-server setup core --json or create an API Token."
       ),
       configured: false
     };
   }
-  return { ...healthy("A local API Token is configured."), configured: true };
+  try {
+    const response = await fetch(new URL("/v1/access/check", apiUrl), {
+      headers: { authorization: `Bearer ${token.token}` }
+    });
+    if (response.ok) {
+      return {
+        ...healthy("Local API Token authenticated successfully."),
+        configured: true
+      };
+    }
+    if (response.status === 401 || response.status === 403) {
+      return {
+        ...needsAttention(
+          "Local API Token is invalid or revoked.",
+          "Run koed-server setup core --json to validate or rotate the local credential.",
+          { httpStatus: response.status }
+        ),
+        configured: true
+      };
+    }
+    return {
+      ...needsAttention(
+        `Koed API access validation returned HTTP ${response.status}.`,
+        "Check Koed API health and rerun diagnostics.",
+        { kind: "service_error", httpStatus: response.status }
+      ),
+      configured: true
+    };
+  } catch (error) {
+    return {
+      ...needsAttention(
+        "Koed API could not validate local API Token.",
+        "Check Koed API/network health and rerun diagnostics. Token was not rotated.",
+        {
+          kind: "service_error",
+          error: error instanceof Error ? error.message : String(error)
+        }
+      ),
+      configured: true
+    };
+  }
 };
 
 const tomlStringValue = (content: string, key: string): string | null => {
@@ -814,7 +856,7 @@ const inspectMcp = (
         : "MCP Server build output was not found.",
       appRuntime.kind === "packaged"
         ? "Rebuild Koed Desktop packaging so koed-runtime includes the MCP Server and Supported Capture Hook artifacts."
-        : "Run pnpm --filter @koed/mcp-server build or koed-server setup codex --json.",
+        : "Run pnpm --filter @koed/mcp-server build or koed-server setup core --json.",
       {
         artifactSource: appRuntime.artifactSource,
         runtimeRoot: appRuntime.root,
@@ -856,6 +898,44 @@ const inspectMcp = (
       runtimeRoot: appRuntime.root
     }
   );
+};
+
+const inspectLocalAiRuntime = (
+  runtime: KoedServerRuntimeState | null,
+  runtimeProcessRunning: boolean,
+  runtimeMode: "local-personal" | "external" | "developer",
+  deps: Required<KoedServerStatusDependencies>
+): KoedServerComponentStatus => {
+  if (runtimeMode === "external") {
+    return healthy(
+      "Local AI Runtime is not required in external runtime mode.",
+      {
+        required: false
+      }
+    );
+  }
+  const pid = runtime?.processes?.localAiRuntime;
+  if (!runtimeProcessRunning) {
+    return runtime
+      ? needsAttention(
+          "Local AI Runtime process is not running.",
+          "Run koed-server start --daemon or inspect Koed logs."
+        )
+      : starting("Waiting for Koed server to start the Local AI Runtime.");
+  }
+  if (!pid) {
+    return needsAttention(
+      "Local AI Runtime process is not recorded in runtime state.",
+      "Restart koed-server and inspect Koed logs."
+    );
+  }
+  return deps.checkPid(pid)
+    ? healthy("Local AI Runtime process is running.", { pid })
+    : needsAttention(
+        "Local AI Runtime process is not running.",
+        "Run koed-server restart --json or inspect Koed logs.",
+        { pid }
+      );
 };
 
 const inspectCodexTranscriptWatcher = (
@@ -953,7 +1033,7 @@ const inspectLastVerification = (
     return {
       ...notConfigured(
         "No setup verification has been recorded yet.",
-        "Run koed-server setup codex --json."
+        "Run koed-server setup core --json."
       ),
       checkedAt: null
     };
@@ -962,7 +1042,7 @@ const inspectLastVerification = (
     ...(value.ok === false
       ? needsAttention(
           value.message ?? "Last verification failed.",
-          "Run koed-server setup codex --json."
+          "Run koed-server setup core --json."
         )
       : healthy("Last setup verification passed.")),
     checkedAt: value.checkedAt
@@ -1143,7 +1223,19 @@ export const collectKoedServerStatus = async (
   const serviceEnvironment = { ...repoEnv, ...runtimeEnvironment };
   const useBundledLocalDependencies =
     serverConfig.dependencyMode === "bundled-local";
-  const apiToken = inspectApiToken(paths, runtimeEnvironment, repoEnv);
+  const apiToken = await inspectApiToken(
+    paths,
+    runtimeEnvironment,
+    repoEnv,
+    apiUrl,
+    deps.fetch
+  );
+  const localAiRuntime = inspectLocalAiRuntime(
+    runtime,
+    runtimeProcessRunning,
+    serverConfig.runtimeMode,
+    deps
+  );
   const codex = inspectCodex(runtimeEnvironment, paths, deps);
   const claudeCode = inspectClaudeCode(runtimeEnvironment, paths, deps);
   const pi = inspectPi(runtimeEnvironment, paths, deps);
@@ -1226,17 +1318,25 @@ export const collectKoedServerStatus = async (
             workerPid: workerPid ?? null
           });
   const lcmSummaryService =
-    mcpServer.state === "healthy"
-      ? healthy("LCM Summary Service is available through the MCP Server.")
-      : mcpServer.state === "not_configured"
-        ? notConfigured(
-            "LCM Summary Service needs the MCP Server setup.",
-            "Run koed-server setup codex --json."
-          )
-        : needsAttention(
-            "LCM Summary Service status could not be verified.",
-            "Fix MCP Server health first."
-          );
+    localAiRuntime.state === "healthy"
+      ? healthy(
+          "LCM Summary Service process is available through the Local AI Runtime."
+        )
+      : needsAttention(
+          "LCM Summary Service process is not healthy.",
+          "Fix Local AI Runtime health first."
+        );
+  const coreComponents = {
+    api: apiReady.api,
+    database: databaseStatus,
+    redis: redisStatus,
+    workerQueues,
+    embeddingService: embeddingStatus,
+    localAiRuntime,
+    apiToken,
+    mcpServer
+  };
+  const coreState = aggregateState(Object.values(coreComponents));
   const lastVerification = inspectLastVerification(paths, deps);
   const [deviceIdentity, upstreamBackends] = await Promise.all([
     inspectDeviceIdentity(paths, environment),
@@ -1254,6 +1354,7 @@ export const collectKoedServerStatus = async (
     redis: redisStatus,
     workerQueues,
     embeddingService: embeddingStatus,
+    localAiRuntime,
     apiToken,
     mcpServer,
     captureHook,
@@ -1265,23 +1366,15 @@ export const collectKoedServerStatus = async (
     lcmSummaryService,
     deviceIdentity,
     upstreamBackends,
-    lastVerification
+    lastVerification,
+    core: { state: coreState, components: coreComponents }
   } satisfies KoedServerStatus;
 
-  const blockingComponents = [
-    statusWithoutState.api,
-    statusWithoutState.database,
-    statusWithoutState.redis,
-    statusWithoutState.workerQueues,
-    statusWithoutState.embeddingService,
-    statusWithoutState.apiToken,
-    statusWithoutState.mcpServer,
-    statusWithoutState.captureHook,
-    statusWithoutState.codex,
-    statusWithoutState.lcmSummaryService
-  ];
-  const state = aggregateState(blockingComponents);
-  return { ...statusWithoutState, state, ok: state === "healthy" };
+  return {
+    ...statusWithoutState,
+    state: coreState,
+    ok: coreState === "healthy"
+  };
 };
 
 export const collectKoedServerDoctor = async (
@@ -1295,6 +1388,7 @@ export const collectKoedServerDoctor = async (
     ["redis", "Redis", status.redis],
     ["workerQueues", "Redis/queues", status.workerQueues],
     ["embeddingService", "Embedding Service", status.embeddingService],
+    ["localAiRuntime", "Local AI Runtime", status.localAiRuntime],
     ["apiToken", "Local credential/API Token", status.apiToken],
     ["mcpServer", "MCP Server", status.mcpServer],
     ["captureHook", "Supported Capture Hook", status.captureHook],
@@ -1320,28 +1414,24 @@ export const collectKoedServerDoctor = async (
     label: label as string,
     ...(component as KoedServerComponentStatus)
   }));
-  const blockingChecks = checks.filter(
-    (check) =>
-      check.id !== "lastVerification" &&
-      check.id !== "upstreamBackends" &&
-      check.id !== "deviceIdentity" &&
-      check.id !== "codexTranscriptWatcher" &&
-      check.id !== "claudeTranscriptWatcher" &&
-      check.id !== "claudeCode" &&
-      check.id !== "pi"
-  );
+  const coreCheckIds = new Set(Object.keys(status.core.components));
+  const blockingChecks = checks.filter((check) => coreCheckIds.has(check.id));
   const failed = blockingChecks.filter(
     (check) => check.state === "needs_attention"
   );
   const missing = blockingChecks.filter(
     (check) => check.state === "not_configured"
   );
+  const startingChecks = blockingChecks.filter(
+    (check) => check.state === "starting"
+  );
   const summary =
     failed[0]?.message ??
     missing[0]?.message ??
+    startingChecks[0]?.message ??
     "Koed local control plane is healthy.";
   return {
-    ok: failed.length === 0 && missing.length === 0,
+    ok: blockingChecks.every((check) => check.state === "healthy"),
     state: status.state,
     summary,
     koedHome: status.koedHome,

@@ -95,6 +95,8 @@ const createPackagedAppRuntime = (root: string) => {
     "koed-runtime/mcp-server/dist/local-runtime-cli.js",
     "koed-runtime/mcp-server/dist/capture-hook.js",
     "koed-runtime/api/node_modules/@koed/db/dist/index.js",
+    "koed-runtime/api/node_modules/@koed/db/dist/connection.js",
+    "koed-runtime/api/node_modules/@koed/db/dist/user-api-token-repository.js",
     "koed-runtime/api/node_modules/@koed/db/drizzle/meta/_journal.json"
   ]) {
     const path = resolve(root, entry);

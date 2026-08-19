@@ -23,6 +23,7 @@ export interface KoedServerStatus {
   redis: KoedServerComponentStatus;
   workerQueues: KoedServerComponentStatus;
   embeddingService: KoedServerComponentStatus;
+  localAiRuntime: KoedServerComponentStatus;
   apiToken: KoedServerComponentStatus & { configured: boolean };
   mcpServer: KoedServerComponentStatus;
   captureHook: KoedServerComponentStatus;
@@ -51,6 +52,10 @@ export interface KoedServerStatus {
     notChecked: number;
   };
   lastVerification: KoedServerComponentStatus & { checkedAt: string | null };
+  core: {
+    state: KoedServerComponentState;
+    components: Record<string, KoedServerComponentStatus>;
+  };
 }
 
 export interface KoedServerDoctorCheck extends KoedServerComponentStatus {

@@ -134,12 +134,29 @@ Example bundled-local `KOED_HOME/config/server.json`:
 }
 ```
 
-`koed-server status --json` and `doctor --json` report healthy only after
-Postgres is reachable, Postgres version is compatible, migrations are current,
-pgvector is enabled, the configured work queue backend is ready, and the
-Embedding Service reports the expected model and dimensions. Doctor repair
-actions point to migrations, pgvector setup, dependency URLs, queue backend, or
-model/runtime mismatch.
+`koed-server setup core --json` is the client-neutral Operator bootstrap. It
+creates or reuses and validates the local API Token used privately by the
+Local AI Runtime. It does not write final verification state; `doctor --json`
+persists final success or failure. `koed-server setup codex --json`, `setup claude`, and
+`setup pi` are explicit client-profile commands and are not run by core setup.
+The Desktop supervisor may provision the same local credential automatically;
+manual token bootstrap remains supported.
+
+`koed-server status --json` and `doctor --json` report core components separately
+from AI Client profile diagnostics. Core includes API, storage, queues, Embedding
+Service, Local AI Runtime process, MCP artifacts, and local credential. Zero
+configured AI Clients is healthy core state. Codex, Claude Code, and Pi
+configuration, authentication, Capture Hook, Transcript Watcher, and synthesis
+readiness remain client diagnostics. LCM Summary Service process health is
+reported separately from any assigned AI Client/model. Doctor prints all client
+diagnostics, but only core failures affect `ok`, `state`, and exit status.
+
+AI Client instances are written to the local registry after explicit profile
+setup succeeds. One-time core migration also registers `codex.default` when an
+existing Codex config contains Koed's ownership marker and the registry lacks
+Codex; it preserves existing registry entries and config bytes. Unrelated
+detection never selects a client or edits its profile. Existing Codex configuration, API Token, and Personal Memory remain
+in place.
 
 ## Clone-Safe Local Device Identity
 

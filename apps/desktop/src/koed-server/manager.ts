@@ -221,6 +221,7 @@ const diagnosticStatus = ({
     redis: component(),
     workerQueues: component("Start Koed"),
     embeddingService: component("Install runtime assets"),
+    localAiRuntime: component("Start Koed"),
     apiToken: { ...component("Run setup"), configured: false },
     mcpServer: component("Run setup"),
     captureHook: component("Run setup"),
@@ -915,14 +916,15 @@ export const detectedSetupAiClients = (
   statusValue: unknown
 ): SetupAiClient[] => {
   const status = objectValue(statusValue);
-  const clients: SetupAiClient[] = [
-    {
+  const clients: SetupAiClient[] = [];
+  if (objectValue(status?.codex)?.configured === true) {
+    clients.push({
       component: "codex",
       id: "codex",
       label: "Codex",
       setupArgs: ["setup", "codex"]
-    }
-  ];
+    });
+  }
   if (objectValue(status?.claudeCode)?.detected === true) {
     clients.push({
       component: "claudeCode",
@@ -945,15 +947,9 @@ export const detectedSetupAiClients = (
 export const setupIntegrationHealthy = (statusValue: unknown): boolean => {
   const status = objectValue(statusValue);
   return (
-    [
-      status?.apiToken,
-      status?.mcpServer,
-      status?.captureHook,
-      status?.lcmSummaryService
-    ].every(componentHealthy) &&
-    detectedSetupAiClients(status).every(({ component }) =>
-      componentHealthy(status?.[component])
-    )
+    [status?.apiToken, status?.mcpServer].every(componentHealthy) &&
+    (status?.localAiRuntime === undefined ||
+      componentHealthy(status.localAiRuntime))
   );
 };
 
@@ -2859,8 +2855,8 @@ export const createKoedServerManager = ({
               complete: integrationComplete,
               detectedAiClients: detectedAiClients.map(({ label }) => label),
               message: integrationComplete
-                ? `${formatAiClientList(detectedAiClients.map(({ label }) => label))} integration${detectedAiClients.length === 1 ? " is" : "s are"} configured.`
-                : `Capture and recall need to be configured for ${formatAiClientList(detectedAiClients.map(({ label }) => label))}.`
+                ? "Koed core runtime and MCP artifacts are ready. AI Client setup is optional."
+                : "Koed core runtime and MCP artifacts need attention."
             },
             verification: {
               complete: verificationComplete,
@@ -2961,16 +2957,14 @@ export const createKoedServerManager = ({
         };
       }
       case "integration": {
-        const current = objectValue(await statusWithEnrollmentReconciliation());
-        return configureDetectedSetupAiClients(
-          current,
-          (args) => runJson(args, 120_000),
-          (message) =>
-            onProgress({
-              completedBytes: null,
-              message,
-              totalBytes: null
-            })
+        onProgress({
+          completedBytes: null,
+          message: "Preparing Koed core integration artifacts…",
+          totalBytes: null
+        });
+        return setupActionResult(
+          await runJson(["setup", "core"], 330_000),
+          "Koed core setup failed."
         );
       }
       case "verification": {
@@ -3028,6 +3022,7 @@ export const createKoedServerManager = ({
       status: statusWithEnrollmentReconciliation,
       doctor: () => runJson(["doctor"], 45_000),
       stop,
+      setup_core: () => runJson(["setup", "core"], 330_000),
       setup_codex: () => runJson(["setup", "codex"], 120_000),
       repair_codex: () => runJson(["repair", "codex"], 120_000),
       setup_pi: () => runOptionalAiClientSetup("Pi", ["setup", "pi"]),

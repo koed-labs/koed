@@ -48,8 +48,8 @@ For server/private VPS terminology and migration notes, see
 ## Manual control-plane commands
 
 `pnpm desktop:start` opens Koed Desktop, which auto-starts `koed-server`, runs
-AI Client bootstrap when needed, and keeps the startup screen visible until the
-system is ready.
+mandatory core setup when needed, and keeps the startup screen visible until
+core services are ready. AI Client setup is optional and explicit.
 
 Desktop creates and loads its main window before it resumes the managed local
 `koed-server`. Platform secret-provider initialization runs in the background
@@ -58,16 +58,14 @@ or interactive operating-system credential provider therefore cannot leave the
 User with no application window. A fresh or incomplete setup opens the guided
 setup without silently installing runtime or model assets. After explicit User
 confirmation, Desktop checks and runs the package, native runtime, embedding
-model, local services, AI Client integration, and final verification stages in
-order. Codex remains part of first-run setup. Desktop also detects Claude Code
-and Pi from their executable or global profile files, lists detected clients on
-the setup page, and configures each one automatically. A detected client that
-is installed but unsupported or unauthenticated stops setup with its actionable
-client-specific error. Completed stages are skipped. Only the active stage is shown as running,
-model download progress comes from transferred artifact bytes, and a failure
-stops the workflow with a retry that re-inspects local state. The automatic
-resume wait is bounded so broken local runtime state remains diagnosable from
-the app.
+model, local services, client-neutral core artifacts, and final verification
+stages in order. It may report detected AI Clients, but detection is diagnostic
+only: mandatory setup never selects, edits, or configures Codex, Claude Code, or
+Pi. Existing client profiles remain untouched. Completed stages are skipped.
+Only the active stage is shown as running, model download progress comes from
+transferred artifact bytes, and a failure stops the workflow with a retry that
+re-inspects local state. The automatic resume wait is bounded so broken local
+runtime state remains diagnosable from the app.
 
 The normal Desktop surface is a product UI rather than an operations dashboard.
 It keeps successful setup details collapsed, surfaces remediation only when
@@ -88,6 +86,7 @@ shell:
 ```bash
 node packages/koed-server/dist/cli.js status --json
 node packages/koed-server/dist/cli.js doctor --json
+node packages/koed-server/dist/cli.js setup core --json
 node packages/koed-server/dist/cli.js identity status --json
 node packages/koed-server/dist/cli.js identity rotate --json
 node packages/koed-server/dist/cli.js start --daemon --json
@@ -669,6 +668,18 @@ docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up 
 pnpm api-token:create --owner-email smoke@example.local --name lcm-smoke
 MEMORY_API_TOKEN=<token> pnpm smoke:lcm
 ```
+
+## Core readiness and AI Client diagnostics
+
+`setup core --json` is client-neutral. It validates or creates the local API Token
+without changing Codex, Claude Code, or Pi profiles. `doctor --json` persists final
+verification state; `setup core` does not record final verification. `setup codex`,
+`setup claude`, and `setup pi` are explicit profile operations. Status and doctor
+always print client diagnostics, but only API, storage, queues, Embedding Service,
+Local AI Runtime process, MCP
+artifacts, and local credential affect core health. Zero configured AI Clients is
+valid core state. LCM Summary Service process health is reported separately from
+client/model assignment readiness.
 
 ## Production Notes
 

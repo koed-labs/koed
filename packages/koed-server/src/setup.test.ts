@@ -8,7 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { repairCodexIntegration, setupCodex } from "./setup.js";
+import { repairCodexIntegration, setupCodex, setupCore } from "./setup.js";
 
 const temps: string[] = [];
 const tempDir = () => {
@@ -60,6 +60,32 @@ const writeLocalSecrets = (
   );
 };
 
+const runSetupCodex = (
+  options: Parameters<typeof setupCodex>[0]
+): ReturnType<typeof setupCodex> =>
+  setupCodex({
+    resolveRuntime: (paths) =>
+      ({
+        kind: "source",
+        artifactSource: "source-checkout",
+        root: paths.repoRoot,
+        apiEntry: resolve(paths.repoRoot, "api.js"),
+        workerEntry: resolve(paths.repoRoot, "worker.js"),
+        embeddingServiceEntry: resolve(paths.repoRoot, "embedding.js"),
+        mcpCli: resolve(paths.repoRoot, "mcp.js"),
+        localAiRuntime: resolve(paths.repoRoot, "local-ai.js"),
+        captureHook: resolve(paths.repoRoot, "capture.js"),
+        dbPackageRoot: resolve(paths.repoRoot, "db"),
+        missing: []
+      }) as never,
+    provisionLocalApiToken: async () => ({
+      token: "core-token",
+      reused: true,
+      ownerUserId: "personal-owner"
+    }),
+    ...options
+  });
+
 afterEach(() => {
   for (const path of temps.splice(0)) {
     rmSync(path, { recursive: true, force: true });
@@ -67,7 +93,133 @@ afterEach(() => {
 });
 
 describe("Codex setup wrapper", () => {
-  it("passes repo env and requested environment to bootstrap", () => {
+  it("provisions core through injectable packaged runtime seam before Codex bootstrap", async () => {
+    const root = tempDir();
+    const order: string[] = [];
+    const result = await setupCodex({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "external",
+        DATABASE_URL: "postgres://operator/db",
+        API_TOKEN_PEPPER: "pepper"
+      },
+      resolveRuntime: (paths) => {
+        order.push("runtime");
+        return {
+          kind: "packaged",
+          artifactSource: "explicit-override",
+          root: paths.repoRoot,
+          apiEntry: "api",
+          workerEntry: "worker",
+          embeddingServiceEntry: "embedding",
+          mcpCli: "mcp",
+          localAiRuntime: "local-ai",
+          captureHook: "capture",
+          dbPackageRoot: "db",
+          missing: []
+        } as never;
+      },
+      provisionLocalApiToken: async () => {
+        order.push("provision");
+        return { token: "core", reused: false, ownerUserId: "owner" };
+      },
+      migrateCodex: () => ({ migrated: false }),
+      spawnSync: () => {
+        order.push("bootstrap");
+        return spawnResult();
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(order).toEqual(["runtime", "provision", "bootstrap"]);
+  });
+
+  it("keeps core healthy when legacy Codex migration lacks optional executable", async () => {
+    const root = tempDir();
+    const codexConfig = resolve(root, "codex/config.toml");
+    mkdirSync(resolve(root, "codex"), { recursive: true });
+    writeFileSync(codexConfig, "# >>> koed\n# <<< koed\n");
+    const result = await setupCore({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "external",
+        DATABASE_URL: "postgres://operator/db",
+        API_TOKEN_PEPPER: "pepper",
+        CODEX_CONFIG_PATH: codexConfig,
+        PATH: resolve(root, "missing-bin")
+      },
+      resolveRuntime: (paths) => ({
+        kind: "packaged",
+        artifactSource: "explicit-override",
+        root: paths.repoRoot,
+        apiEntry: "api",
+        workerEntry: "worker",
+        embeddingServiceEntry: "embedding",
+        mcpCli: "mcp",
+        localAiRuntime: "local-ai",
+        captureHook: "capture",
+        dbPackageRoot: "db",
+        missing: []
+      }),
+      provisionLocalApiToken: async () => ({
+        token: "core",
+        reused: false,
+        ownerUserId: "owner"
+      })
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.stderr).toContain(
+      "Skipped legacy Codex registration migration"
+    );
+  });
+
+  it("migrates existing Koed marker without changing Codex profile bytes", async () => {
+    const root = tempDir();
+    const codexConfig = resolve(root, "codex/config.toml");
+    mkdirSync(resolve(root, "codex"), { recursive: true });
+    const profile = '# >>> koed\n# <<< koed\nprofile = "operator"\n';
+    writeFileSync(codexConfig, profile);
+    const result = await setupCore({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "external",
+        DATABASE_URL: "postgres://operator/db",
+        API_TOKEN_PEPPER: "pepper",
+        CODEX_CONFIG_PATH: codexConfig,
+        MEMORY_CODEX_APP_SERVER_BINARY: "/bin/sh",
+        PATH: "/bin"
+      },
+      resolveRuntime: (paths) => ({
+        kind: "packaged",
+        artifactSource: "explicit-override",
+        root: paths.repoRoot,
+        apiEntry: "api",
+        workerEntry: "worker",
+        embeddingServiceEntry: "embedding",
+        mcpCli: "mcp",
+        localAiRuntime: "local-ai",
+        captureHook: "capture",
+        dbPackageRoot: "db",
+        missing: []
+      }),
+      provisionLocalApiToken: async () => ({
+        token: "core",
+        reused: false,
+        ownerUserId: "owner"
+      })
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readFileSync(codexConfig, "utf8")).toBe(profile);
+    expect(
+      readFileSync(resolve(root, "config/ai-client-instances.json"), "utf8")
+    ).toContain("codex.default");
+  });
+  it("passes repo env and requested environment to bootstrap", async () => {
     const root = tempDir();
     const calls: Array<{
       command: string;
@@ -75,7 +227,7 @@ describe("Codex setup wrapper", () => {
       env?: NodeJS.ProcessEnv;
     }> = [];
 
-    const result = setupCodex({
+    const result = await runSetupCodex({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -99,11 +251,11 @@ describe("Codex setup wrapper", () => {
     expect(call!.env?.KOED_SERVER_MANAGED).toBe("1");
   });
 
-  it("persists the token created by bootstrap and redacts it from JSON output", () => {
+  it("persists the token created by bootstrap and redacts it from JSON output", async () => {
     const root = tempDir();
     writeFileSync(resolve(root, ".env"), "MEMORY_API_TOKEN=old_token\n");
 
-    const result = setupCodex({
+    const result = await runSetupCodex({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -128,7 +280,7 @@ describe("Codex setup wrapper", () => {
     ).toMatchObject({ apiToken: "new_token", source: "repo-env" });
   });
 
-  it("uses active runtime URLs when setup is run without auto-port environment", () => {
+  it("uses active runtime URLs when setup is run without auto-port environment", async () => {
     const root = tempDir();
     mkdirSync(resolve(root, "run"), { recursive: true });
     writeFileSync(
@@ -143,7 +295,7 @@ describe("Codex setup wrapper", () => {
     );
     const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
-    const result = setupCodex({
+    const result = await runSetupCodex({
       environment: { KOED_HOME: root, KOED_REPO_ROOT: root },
       spawnSync: (_command, _args, options) => {
         calls.push({ env: options?.env });
@@ -157,7 +309,7 @@ describe("Codex setup wrapper", () => {
     expect(calls[0]?.env?.MEMORY_API_URL).toBe("http://localhost:43300");
   });
 
-  it("inherits active bundled-local mode and ports without repeated flags", () => {
+  it("inherits active bundled-local mode and ports without repeated flags", async () => {
     const root = tempDir();
     writeRuntimeState(root);
     writeLocalPorts(root);
@@ -171,7 +323,7 @@ describe("Codex setup wrapper", () => {
     );
     const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
-    setupCodex({
+    await runSetupCodex({
       environment: { KOED_HOME: root, KOED_REPO_ROOT: root },
       spawnSync: (_command, _args, options) => {
         calls.push({ env: options?.env });
@@ -186,7 +338,7 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("uses persisted packaged Postgres password with URL encoding", () => {
+  it("uses persisted packaged Postgres password with URL encoding", async () => {
     const root = tempDir();
     writeRuntimeState(root);
     writeLocalPorts(root);
@@ -197,7 +349,7 @@ describe("Codex setup wrapper", () => {
     );
     const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
-    setupCodex({
+    await runSetupCodex({
       environment: { KOED_HOME: root, KOED_REPO_ROOT: root },
       spawnSync: (_command, _args, options) => {
         calls.push({ env: options?.env });
@@ -211,14 +363,14 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("prefers explicit bundled-local database overrides", () => {
+  it("prefers explicit bundled-local database overrides", async () => {
     const root = tempDir();
     writeRuntimeState(root);
     writeLocalPorts(root);
     writeLocalSecrets(root, { API_TOKEN_PEPPER: "unrelated-pepper" });
     const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
-    setupCodex({
+    await runSetupCodex({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -236,17 +388,18 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("preserves an explicit DATABASE_URL without reading persisted secrets", () => {
+  it("preserves an explicit DATABASE_URL without reading persisted secrets", async () => {
     const root = tempDir();
     writeRuntimeState(root);
     mkdirSync(resolve(root, "config"), { recursive: true });
     writeFileSync(resolve(root, "config/local-service-secrets.json"), "{");
     const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
-    const result = setupCodex({
+    const result = await runSetupCodex({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "external",
         DATABASE_URL: "postgres://operator/explicit"
       },
       spawnSync: (_command, _args, options) => {
@@ -259,7 +412,7 @@ describe("Codex setup wrapper", () => {
     expect(calls[0]?.env?.DATABASE_URL).toBe("postgres://operator/explicit");
   });
 
-  it("keeps explicit external setup isolated from bundled-local state", () => {
+  it("keeps explicit external setup isolated from bundled-local state", async () => {
     const root = tempDir();
     writeRuntimeState(root);
     writeLocalPorts(root);
@@ -267,7 +420,7 @@ describe("Codex setup wrapper", () => {
     writeFileSync(resolve(root, "config/local-service-secrets.json"), "{");
     const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
-    const result = setupCodex({
+    const result = await runSetupCodex({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -289,36 +442,39 @@ describe("Codex setup wrapper", () => {
   it.each([
     ["invalid JSON", "{"],
     ["invalid secret shape", JSON.stringify({ POSTGRES_PASSWORD: 42 })]
-  ])("fails before bootstrap for persisted secrets with %s", (_case, value) => {
-    const root = tempDir();
-    writeRuntimeState(root);
-    mkdirSync(resolve(root, "config"), { recursive: true });
-    writeFileSync(resolve(root, "config/local-service-secrets.json"), value);
-    let spawnCalls = 0;
+  ])(
+    "fails before bootstrap for persisted secrets with %s",
+    async (_case, value) => {
+      const root = tempDir();
+      writeRuntimeState(root);
+      mkdirSync(resolve(root, "config"), { recursive: true });
+      writeFileSync(resolve(root, "config/local-service-secrets.json"), value);
+      let spawnCalls = 0;
 
-    const result = setupCodex({
-      environment: { KOED_HOME: root, KOED_REPO_ROOT: root },
-      spawnSync: () => {
-        spawnCalls += 1;
-        return spawnResult();
-      }
-    });
+      const result = await runSetupCodex({
+        environment: { KOED_HOME: root, KOED_REPO_ROOT: root },
+        spawnSync: () => {
+          spawnCalls += 1;
+          return spawnResult();
+        }
+      });
 
-    expect(result.ok).toBe(false);
-    expect(result.state).toBe("needs_attention");
-    expect(result.error).toContain("local-service-secrets.json");
-    expect(result.error).toContain("malformed");
-    expect(result.action).toContain("restart packaged Koed Desktop");
-    expect(spawnCalls).toBe(0);
-  });
+      expect(result.ok).toBe(false);
+      expect(result.state).toBe("needs_attention");
+      expect(result.error).toContain("local-service-secrets.json");
+      expect(result.error).toContain("malformed");
+      expect(result.action).toContain("restart packaged Koed Desktop");
+      expect(spawnCalls).toBe(0);
+    }
+  );
 
-  it("fails before bootstrap when persisted Postgres password is missing", () => {
+  it("fails before bootstrap when persisted Postgres password is missing", async () => {
     const root = tempDir();
     writeRuntimeState(root);
     writeLocalSecrets(root, { API_TOKEN_PEPPER: "unrelated-pepper" });
     let spawnCalls = 0;
 
-    const result = setupCodex({
+    const result = await runSetupCodex({
       environment: { KOED_HOME: root, KOED_REPO_ROOT: root },
       spawnSync: () => {
         spawnCalls += 1;
@@ -333,7 +489,7 @@ describe("Codex setup wrapper", () => {
     expect(spawnCalls).toBe(0);
   });
 
-  it("does not propagate unrelated persisted service secrets", () => {
+  it("does not propagate unrelated persisted service secrets", async () => {
     const root = tempDir();
     writeRuntimeState(root);
     writeLocalSecrets(root, {
@@ -344,7 +500,7 @@ describe("Codex setup wrapper", () => {
     });
     const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
-    setupCodex({
+    await runSetupCodex({
       environment: { KOED_HOME: root, KOED_REPO_ROOT: root },
       spawnSync: (_command, _args, options) => {
         calls.push({ env: options?.env });
@@ -362,7 +518,7 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("ignores structurally invalid persisted runtime state", () => {
+  it("ignores structurally invalid persisted runtime state", async () => {
     const root = tempDir();
     mkdirSync(resolve(root, "run"), { recursive: true });
     writeFileSync(
@@ -371,7 +527,7 @@ describe("Codex setup wrapper", () => {
     );
     const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
-    const result = setupCodex({
+    const result = await runSetupCodex({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -388,7 +544,7 @@ describe("Codex setup wrapper", () => {
     expect(calls[0]?.env?.DATABASE_URL).toBe("postgres://operator/external");
   });
 
-  it("ignores valid bundled-local runtime state when its PID is dead", () => {
+  it("ignores valid bundled-local runtime state when its PID is dead", async () => {
     const root = tempDir();
     writeRuntimeState(root, "bundled-local", 424_242);
     writeLocalPorts(root);
@@ -411,7 +567,7 @@ describe("Codex setup wrapper", () => {
     const checkedPids: number[] = [];
     const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
-    const result = setupCodex({
+    const result = await runSetupCodex({
       environment: { KOED_HOME: root, KOED_REPO_ROOT: root },
       checkPid: (pid) => {
         checkedPids.push(pid);
@@ -424,7 +580,7 @@ describe("Codex setup wrapper", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(checkedPids).toEqual([424_242]);
+    expect(checkedPids).toEqual([424_242, 424_242]);
     expect(result.apiUrl).toBe("https://repo-api.example.test");
     expect(calls).toHaveLength(1);
     expect(calls[0]?.env?.DATABASE_URL).toBe("postgres://repository/external");
@@ -434,9 +590,9 @@ describe("Codex setup wrapper", () => {
     expect(readFileSync(runtimeStatePath, "utf8")).toBe(staleRuntimeState);
   });
 
-  it("returns actionable failure JSON on bootstrap error", () => {
+  it("returns actionable failure JSON on bootstrap error", async () => {
     const root = tempDir();
-    const result = setupCodex({
+    const result = await runSetupCodex({
       environment: { KOED_HOME: root, KOED_REPO_ROOT: root },
       spawnSync: () => spawnResult(2, "", "bad"),
       now: () => new Date("2026-01-01T00:00:00.000Z")
@@ -448,7 +604,7 @@ describe("Codex setup wrapper", () => {
     expect(result.action).toContain("rerun koed-server setup codex --json");
   });
 
-  it("repairs Codex using the active Desktop API Token", () => {
+  it("repairs Codex using the active Desktop API Token", async () => {
     const root = tempDir();
     mkdirSync(resolve(root, "config"), { recursive: true });
     writeFileSync(
@@ -496,7 +652,44 @@ describe("Codex setup wrapper", () => {
     });
   });
 
-  it("writes isolated device configuration beneath CODEX_HOME", () => {
+  it("leaves Codex profile untouched when executable is missing", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "desktop_token" })
+    );
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(
+      resolve(root, "packages/mcp-server/dist/capture-hook.js"),
+      ""
+    );
+    const codexConfigPath = resolve(root, "codex.toml");
+    const profile = '[mcp_servers.other]\ncommand = "other"\n';
+    writeFileSync(codexConfigPath, profile);
+
+    const result = repairCodexIntegration({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        CODEX_CONFIG_PATH: codexConfigPath,
+        MEMORY_CODEX_APP_SERVER_BINARY: resolve(root, "missing-codex"),
+        PATH: ""
+      },
+      now: () => new Date("2026-01-01T00:00:00.000Z")
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("AI Client executable was not found");
+    expect(readFileSync(codexConfigPath, "utf8")).toBe(profile);
+    expect(() =>
+      readFileSync(resolve(root, "config/ai-client-instances.json"), "utf8")
+    ).toThrow();
+  });
+
+  it("writes isolated device configuration beneath CODEX_HOME", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "isolated-codex");
     mkdirSync(resolve(root, "config"), { recursive: true });
@@ -535,7 +728,7 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("uses the supervisor credential for an active automatic-port runtime", () => {
+  it("uses the supervisor credential for an active automatic-port runtime", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "isolated-codex");
     writeRuntimeState(root, "bundled-local", process.pid, true);
@@ -576,7 +769,7 @@ describe("Codex setup wrapper", () => {
     ).not.toContain("repo_token");
   });
 
-  it("repairs Codex using current configuration when runtime state is stale", () => {
+  it("repairs Codex using current configuration when runtime state is stale", async () => {
     const root = tempDir();
     writeRuntimeState(root, "bundled-local", 424_242);
     writeFileSync(

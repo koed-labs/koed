@@ -54,7 +54,9 @@ const createPackageRoot = () => {
     "embedding-service/dist/index.js",
     "mcp-server/dist/cli.js",
     "mcp-server/dist/capture-hook.js",
-    "api/node_modules/@koed/db/dist/index.js"
+    "api/node_modules/@koed/db/dist/index.js",
+    "api/node_modules/@koed/db/dist/connection.js",
+    "api/node_modules/@koed/db/dist/user-api-token-repository.js"
   ]) {
     writeFile(resolve(runtime, file));
   }

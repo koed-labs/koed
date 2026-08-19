@@ -72,6 +72,66 @@ afterEach(() => {
 });
 
 describe("status state aggregation", () => {
+  it.each([
+    [200, "healthy", "Local API Token authenticated successfully."],
+    [401, "needs_attention", "Run koed-server setup core --json"],
+    [403, "needs_attention", "Run koed-server setup core --json"],
+    [503, "needs_attention", "Check Koed API health and rerun diagnostics."]
+  ])(
+    "maps API Token HTTP %s to safe status action",
+    async (httpStatus, state, action) => {
+      const root = tempDir();
+      const status = await collectKoedServerStatus(
+        {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_DEPENDENCY_MODE: "external",
+          MEMORY_API_TOKEN: "local-token"
+        },
+        {
+          fetch: async (url) =>
+            String(url).endsWith("/v1/access/check")
+              ? response(httpStatus === 200, httpStatus, {})
+              : response(true, 200, { checks: [] }),
+          spawnSync: () => spawnResult(""),
+          now: () => new Date("2026-01-01T00:00:00.000Z")
+        }
+      );
+
+      expect(status.apiToken.state).toBe(state);
+      if (httpStatus === 200) {
+        expect(status.apiToken.message).toContain(action);
+      } else {
+        expect(status.apiToken.action).toContain(action);
+      }
+    }
+  );
+
+  it("keeps token unchanged and reports network action when validation fails to connect", async () => {
+    const root = tempDir();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "external",
+        MEMORY_API_TOKEN: "local-token"
+      },
+      {
+        fetch: async (url) => {
+          if (String(url).endsWith("/v1/access/check")) {
+            throw new Error("connection refused");
+          }
+          return response(true, 200, { checks: [] });
+        },
+        spawnSync: () => spawnResult(""),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.apiToken.state).toBe("needs_attention");
+    expect(status.apiToken.action).toContain("Token was not rotated");
+  });
+
   it("prioritizes needs_attention, then not_configured, then starting", () => {
     expect(aggregateState([healthy(), notConfigured("missing")])).toBe(
       "not_configured"
@@ -789,8 +849,9 @@ describe("status and doctor JSON contracts", () => {
       }
     );
 
-    expect(status.apiToken.state).toBe("healthy");
+    expect(status.apiToken.state).toBe("needs_attention");
     expect(status.apiToken.configured).toBe(true);
+    expect(status.apiToken.action).not.toContain("setup core");
     expect(status.mcpServer.state).toBe("healthy");
     expect(doctorEnvironments[0]?.MEMORY_API_TOKEN).toBeUndefined();
     expect(doctorEnvironments[0]?.MEMORY_API_URL).toBeUndefined();
@@ -917,7 +978,7 @@ describe("status and doctor JSON contracts", () => {
     );
   });
 
-  it("maps fully prepared but stopped supervisor to starting", async () => {
+  it("fails core readiness when prepared local runtime supervisor is stopped", async () => {
     const root = tempDir();
     mkdirSync(resolve(root, ".codex"), { recursive: true });
     mkdirSync(resolve(root, "hook"), { recursive: true });
@@ -973,7 +1034,7 @@ describe("status and doctor JSON contracts", () => {
 
     expect(status.runtimeMode).toBe("developer");
     expect(status.dependencyMode).toBe("external");
-    expect(status.state).toBe("healthy");
+    expect(status.state).toBe("needs_attention");
     expect(status.codexTranscriptWatcher.state).toBe("starting");
   });
   it("prefers running runtime state over plain-shell dependency defaults", async () => {

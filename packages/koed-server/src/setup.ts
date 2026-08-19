@@ -31,12 +31,19 @@ import { applyPersistedLocalPorts } from "./ports.js";
 import { isProcessRunning } from "./process-liveness.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import {
+  assertAiClientRegistryWritable,
+  migrateKoedOwnedCodexRegistrationBestEffort,
+  registerExplicitAiClient,
+  resolveExecutablePath
+} from "./ai-client-registry.js";
+import { provisionLocalApiToken } from "./local-api-token.js";
+import {
   applyActiveRuntimeUrls,
   readActiveRuntimeState
 } from "./runtime-state.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
-export interface KoedServerSetupCodexResult {
+export interface KoedServerSetupCoreResult {
   ok: boolean;
   state: "healthy" | "needs_attention";
   koedHome: string;
@@ -48,6 +55,8 @@ export interface KoedServerSetupCodexResult {
   error?: string;
   action?: string;
 }
+
+export type KoedServerSetupCodexResult = KoedServerSetupCoreResult;
 
 type SpawnSyncLike = (
   command: string,
@@ -64,6 +73,10 @@ export interface KoedServerSetupOptions {
   existsSync?: typeof nodeExistsSync;
   checkPid?: (pid: number) => boolean;
   now?: () => Date;
+  resolveRuntime?: typeof resolveKoedAppRuntime;
+  provisionLocalApiToken?: typeof provisionLocalApiToken;
+  migrateCodex?: typeof migrateKoedOwnedCodexRegistrationBestEffort;
+  reportDiagnostic?: (message: string) => void;
 }
 
 export interface KoedServerRepairCodexResult {
@@ -220,15 +233,33 @@ export const repairCodexIntegration = ({
   }
 
   try {
+    const integrationEnvironment: NodeJS.ProcessEnv = {
+      ...repoEnv,
+      ...environment,
+      KOED_HOME: paths.koedHome
+    };
+    assertAiClientRegistryWritable(integrationEnvironment);
+    const codexExecutablePath = resolveExecutablePath(
+      integrationEnvironment.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex",
+      integrationEnvironment
+    );
     const result = configureCodexIntegration({
       paths,
-      environment: { ...repoEnv, ...environment },
+      environment: integrationEnvironment,
       apiUrl,
       readFileSync,
       writeFileSync,
       mkdirSync,
       existsSync
     });
+    const registered = registerExplicitAiClient({
+      environment: integrationEnvironment,
+      driverId: "codex",
+      executablePath: codexExecutablePath,
+      displayName: "Codex",
+      configHome: integrationEnvironment.CODEX_HOME
+    });
+    if (!registered) throw new Error("Codex registration failed.");
     const repaired: KoedServerRepairCodexResult = {
       ok: true,
       state: "healthy",
@@ -292,11 +323,31 @@ const resolveBundledDatabaseEnvironment = (
   invocationEnvironment: NodeJS.ProcessEnv,
   environment: NodeJS.ProcessEnv,
   repoEnv: Record<string, string>,
-  dependencies: Pick<KoedServerSetupOptions, "existsSync" | "readFileSync">
+  dependencies: Pick<KoedServerSetupOptions, "existsSync" | "readFileSync">,
+  recoveryCommand = "codex"
 ): BundledDatabaseResolution => {
   const explicitDatabaseUrl = trimValue(invocationEnvironment.DATABASE_URL);
-  if (explicitDatabaseUrl) {
+  if (explicitDatabaseUrl && recoveryCommand !== "core") {
     return { ok: true, environment: { DATABASE_URL: explicitDatabaseUrl } };
+  }
+  if (explicitDatabaseUrl && recoveryCommand === "core") {
+    const persisted = readLocalServiceSecrets(paths, dependencies);
+    if (persisted.state === "invalid") {
+      return {
+        ok: false,
+        error: `Persisted local service secrets at ${persisted.path} are malformed: ${persisted.error}.`,
+        action: `Fix or remove ${persisted.path}, then rerun koed-server setup core --json.`
+      };
+    }
+    return {
+      ok: true,
+      environment: {
+        DATABASE_URL: explicitDatabaseUrl,
+        ...(persisted.state === "valid" && persisted.secrets.API_TOKEN_PEPPER
+          ? { API_TOKEN_PEPPER: persisted.secrets.API_TOKEN_PEPPER }
+          : {})
+      }
+    };
   }
   const explicitPassword =
     trimValue(invocationEnvironment.POSTGRES_PASSWORD) ??
@@ -308,14 +359,14 @@ const resolveBundledDatabaseEnvironment = (
     return {
       ok: false,
       error: `Persisted local service secrets at ${persisted.path} are malformed: ${persisted.error}.`,
-      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed-server setup codex --json.`
+      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed-server setup ${recoveryCommand} --json.`
     };
   }
   if (persisted.state === "valid" && !persisted.secrets.POSTGRES_PASSWORD) {
     return {
       ok: false,
       error: `Persisted local service secrets at ${persisted.path} are missing required POSTGRES_PASSWORD.`,
-      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed-server setup codex --json.`
+      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed-server setup ${recoveryCommand} --json.`
     };
   }
   const password =
@@ -332,9 +383,16 @@ const resolveBundledDatabaseEnvironment = (
   };
   return {
     ok: true,
-    environment: localPostgresEnv(
-      resolveLocalPostgresRuntimePaths(paths, postgresEnvironment)
-    )
+    environment: {
+      ...localPostgresEnv(
+        resolveLocalPostgresRuntimePaths(paths, postgresEnvironment)
+      ),
+      ...(recoveryCommand === "core" &&
+      persisted.state === "valid" &&
+      persisted.secrets.API_TOKEN_PEPPER
+        ? { API_TOKEN_PEPPER: persisted.secrets.API_TOKEN_PEPPER }
+        : {})
+    }
   };
 };
 
@@ -389,7 +447,8 @@ const resolveSetupCodexBase = (
 
 const prepareSetupCodex = (
   invocationEnvironment: NodeJS.ProcessEnv,
-  options: KoedServerSetupOptions
+  options: KoedServerSetupOptions,
+  recoveryCommand = "codex"
 ): PreparedSetupCodex => {
   const base = resolveSetupCodexBase(invocationEnvironment, options);
   const database =
@@ -399,7 +458,8 @@ const prepareSetupCodex = (
           invocationEnvironment,
           base.environment,
           base.repoEnv,
-          options
+          options,
+          recoveryCommand
         )
       : { ok: true as const, environment: {} };
   if (!database.ok) {
@@ -426,6 +486,7 @@ const prepareSetupCodex = (
         ...base.repoEnv,
         ...base.environment,
         ...database.environment,
+        KOED_HOME: base.paths.koedHome,
         KOED_SERVER_MANAGED: "1"
       }
     }
@@ -455,7 +516,7 @@ const runSetupBootstrap = (
 ): KoedServerSetupCodexResult => {
   const result = spawnSync(process.execPath, [context.scriptPath], {
     cwd: context.paths.repoRoot,
-    env: context.childEnv,
+    env: { ...context.childEnv, KOED_CORE_TOKEN_VALIDATED: "1" },
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 300_000
@@ -473,7 +534,7 @@ const runSetupBootstrap = (
       state: "needs_attention",
       error: result.error.message,
       action:
-        "Fix the reported setup failure, then rerun koed-server setup codex --json."
+        "Fix the reported client setup failure, then rerun koed-server setup codex --json."
     };
   }
   const redactApiTokens = (value: string): string =>
@@ -491,14 +552,15 @@ const runSetupBootstrap = (
         state: "needs_attention",
         error: `Codex setup failed with exit code ${result.status ?? 1}.`,
         action:
-          "Review stdout/stderr, fix the reported setup failure, then rerun koed-server setup codex --json."
+          "Review stdout/stderr, fix the reported client setup failure, then rerun koed-server setup codex --json."
       };
 };
 
 const writeSetupVerification = (
   paths: KoedServerPaths,
   result: { ok: boolean; checkedAt: string; error?: string },
-  writeFileSync: typeof nodeWriteFileSync
+  writeFileSync: typeof nodeWriteFileSync,
+  successMessage = "Koed core setup completed."
 ): void => {
   writeFileSync(
     paths.lastVerificationPath,
@@ -506,7 +568,7 @@ const writeSetupVerification = (
       {
         ok: result.ok,
         checkedAt: result.checkedAt,
-        message: result.ok ? "Codex setup completed." : result.error
+        message: result.ok ? successMessage : result.error
       },
       null,
       2
@@ -515,25 +577,152 @@ const writeSetupVerification = (
   );
 };
 
-export const setupCodex = (
+export const setupCore = async (
   options: KoedServerSetupOptions = {}
-): KoedServerSetupCodexResult => {
+): Promise<KoedServerSetupCoreResult> => {
   const environment = options.environment ?? process.env;
+  const prepared = prepareSetupCodex(environment, options, "core");
+  if (!prepared.ok) return prepared.result;
+  const { context } = prepared;
+  const base = {
+    koedHome: context.paths.koedHome,
+    apiUrl: context.apiUrl,
+    checkedAt: context.checkedAt,
+    command: "provision local API Token"
+  };
+  try {
+    const runtime = (options.resolveRuntime ?? resolveKoedAppRuntime)(
+      context.paths,
+      context.childEnv,
+      options.existsSync ?? nodeExistsSync
+    );
+    if (runtime.missing.length > 0) {
+      throw new Error(
+        `Koed runtime artifacts are missing: ${runtime.missing.join(", ")}.`
+      );
+    }
+    const provisioned = await (
+      options.provisionLocalApiToken ?? provisionLocalApiToken
+    )(
+      context.paths,
+      runtime,
+      context.childEnv,
+      context.repoEnv,
+      options.now ?? (() => new Date())
+    );
+    const migration = (
+      options.migrateCodex ?? migrateKoedOwnedCodexRegistrationBestEffort
+    )({
+      environment: context.childEnv,
+      readFileSync: options.readFileSync ?? nodeReadFileSync
+    });
+    if (migration.diagnostic) {
+      (options.reportDiagnostic ?? (() => undefined))(migration.diagnostic);
+    }
+    return {
+      ...base,
+      ok: true,
+      state: "healthy",
+      stdout: provisioned.reused
+        ? "Reused validated local API Token."
+        : "Provisioned local API Token.",
+      ...(migration.diagnostic ? { stderr: migration.diagnostic } : {})
+    };
+  } catch (error) {
+    return {
+      ...base,
+      ok: false,
+      state: "needs_attention",
+      error: error instanceof Error ? error.message : String(error),
+      action:
+        "Fix the reported core setup failure, then rerun koed-server setup core --json."
+    };
+  }
+};
+
+export const setupCodex = async (
+  options: KoedServerSetupOptions = {}
+): Promise<KoedServerSetupCodexResult> => {
+  const core = await setupCore(options);
   const writeFileSync = options.writeFileSync ?? nodeWriteFileSync;
+  if (!core.ok) {
+    const paths = resolveKoedServerPaths(options.environment ?? process.env);
+    writeSetupVerification(
+      paths,
+      core,
+      writeFileSync,
+      "Codex setup completed."
+    );
+    return core;
+  }
+  const environment = options.environment ?? process.env;
   const prepared = prepareSetupCodex(environment, options);
   if (!prepared.ok) {
     writeSetupVerification(prepared.paths, prepared.result, writeFileSync);
     return prepared.result;
   }
   const { context } = prepared;
+  try {
+    assertAiClientRegistryWritable(context.childEnv);
+  } catch (error) {
+    const failed = {
+      ok: false,
+      state: "needs_attention" as const,
+      koedHome: context.paths.koedHome,
+      apiUrl: context.apiUrl,
+      checkedAt: context.checkedAt,
+      command: "resolve AI Client registry",
+      error: error instanceof Error ? error.message : String(error),
+      action: "Fix malformed AI Client registry, then rerun Codex setup."
+    };
+    writeSetupVerification(
+      context.paths,
+      failed,
+      writeFileSync,
+      "Codex setup completed."
+    );
+    return failed;
+  }
   persistSetupApiToken(context);
   const result = runSetupBootstrap(
     context,
     options.spawnSync ?? (nodeSpawnSync as SpawnSyncLike)
   );
   if (result.ok) {
-    persistSetupApiToken(context, loadRepoEnv(context.paths.repoRoot), true);
+    try {
+      persistSetupApiToken(context, loadRepoEnv(context.paths.repoRoot), true);
+      const registered = registerExplicitAiClient({
+        environment: context.childEnv,
+        driverId: "codex",
+        executablePath:
+          context.childEnv.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex",
+        displayName: "Codex",
+        configHome: context.childEnv.CODEX_HOME
+      });
+      if (!registered) throw new Error("Codex registration failed.");
+    } catch (error) {
+      const failed = {
+        ...result,
+        ok: false,
+        state: "needs_attention" as const,
+        error: error instanceof Error ? error.message : String(error),
+        action:
+          "Fix Codex registration, then rerun koed-server setup codex --json."
+      };
+      writeSetupVerification(
+        context.paths,
+        failed,
+        writeFileSync,
+        "Codex setup completed."
+      );
+      return failed;
+    }
   }
-  writeSetupVerification(context.paths, result, writeFileSync);
+  writeSetupVerification(
+    context.paths,
+    result,
+    writeFileSync,
+    "Codex setup completed."
+  );
   return result;
 };

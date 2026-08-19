@@ -2,6 +2,7 @@ export const desktopCommandNames = [
   "status",
   "doctor",
   "stop",
+  "setup_core",
   "setup_codex",
   "repair_codex",
   "setup_pi",

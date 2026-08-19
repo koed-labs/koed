@@ -101,8 +101,8 @@ describe("Desktop status model", () => {
       command: "runtime_install"
     });
     expect(recoveryActionForStatusComponent("captureHook")).toMatchObject({
-      label: "Fix Codex integration",
-      command: "repair_codex"
+      label: "Run diagnostics",
+      command: "doctor"
     });
     expect(recoveryActionForStatusComponent("workerQueues")).toMatchObject({
       label: "Ensure worker stack",

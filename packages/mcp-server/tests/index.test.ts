@@ -1490,7 +1490,11 @@ describe("LCM summary background service", () => {
           response.end(
             JSON.stringify({
               instances: [
-                { instanceId: "codex.default", driverId: "codex", enabled: true }
+                {
+                  instanceId: "codex.default",
+                  driverId: "codex",
+                  enabled: true
+                }
               ],
               capabilitySnapshots: [
                 {

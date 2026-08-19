@@ -61,6 +61,8 @@ const packagedRuntime = (
     localAiRuntime,
     captureHook,
     resolve(dbPackageRoot, "dist", "index.js"),
+    resolve(dbPackageRoot, "dist", "connection.js"),
+    resolve(dbPackageRoot, "dist", "user-api-token-repository.js"),
     resolve(dbPackageRoot, "drizzle", "meta", "_journal.json")
   ];
   return {

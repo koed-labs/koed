@@ -10,6 +10,11 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import {
+  assertAiClientRegistryWritable,
+  registerExplicitAiClient,
+  resolveExecutablePath
+} from "./ai-client-registry.js";
 
 export const MINIMUM_CLAUDE_CODE_VERSION = "2.1.227";
 export const CLAUDE_HOOK_EVENTS = [
@@ -193,6 +198,7 @@ export const setupClaude = (
   });
 
   try {
+    assertAiClientRegistryWritable(environment);
     if (!existsSync(runtime.mcpCli) || !existsSync(runtime.captureHook)) {
       return failure(
         "Koed's Claude Code integration artifacts are missing.",
@@ -323,6 +329,14 @@ export const setupClaude = (
       mode: 0o600
     });
     chmodSync(settingsPath, 0o600);
+    const registered = registerExplicitAiClient({
+      environment,
+      driverId: "claude",
+      executablePath: resolveExecutablePath(executable, environment),
+      displayName: "Claude Code",
+      configHome: environment.CLAUDE_CONFIG_DIR
+    });
+    if (!registered) throw new Error("Claude Code registration failed.");
 
     return {
       ok: true,

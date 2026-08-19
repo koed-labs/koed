@@ -3,6 +3,7 @@ import type { KoedServerStatus } from "../../types.js";
 export type DesktopCommand =
   | "status"
   | "doctor"
+  | "setup_core"
   | "setup_codex"
   | "repair_codex"
   | "setup_pi"
@@ -25,6 +26,7 @@ export type DesktopCommand =
 const defaultTimeoutMs: Record<DesktopCommand, number> = {
   status: 135_000,
   doctor: 90_000,
+  setup_core: 330_000,
   setup_codex: 120_000,
   repair_codex: 120_000,
   setup_pi: 120_000,

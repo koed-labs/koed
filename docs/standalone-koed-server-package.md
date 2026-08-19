@@ -12,8 +12,8 @@ standalone install/update path is proven.
 
 - Desktop remains the Operator-facing control surface.
 - `koed-server` remains the local control plane and owns service lifecycle,
-  setup, status, doctor, runtime install, model install, and AI-client
-  integration contracts.
+  client-neutral core setup, status, doctor, runtime install, model install,
+  and explicit AI Client profile integration contracts.
 - The standalone `koed-server` package contains the JS/service runtime needed to
   run Koed app processes.
 - Native runtime artifacts remain a separate artifact line for Postgres,
@@ -36,6 +36,8 @@ koed-runtime/
   api/
     dist/index.js
     node_modules/@koed/db/dist/index.js
+    node_modules/@koed/db/dist/connection.js
+    node_modules/@koed/db/dist/user-api-token-repository.js
     node_modules/@koed/db/drizzle/meta/_journal.json
   worker/
     dist/index.js
@@ -72,12 +74,14 @@ Desktop should contain:
 - bundled metadata for supported `koed-server` versions and download locations;
 - a minimal packaged fallback `koed-server` runtime during the transition;
 - install/update UI for the standalone `koed-server` package;
-- UI for setup, status, doctor, logs, Codex setup, and repair actions.
+- UI for core setup, status, doctor, logs, and explicit AI Client profile
+  setup/repair actions.
 
 Desktop should not implement dependency detection, DB migration checks, native
 runtime install, model install, API Token setup, Supported Capture Hook setup,
-or Codex setup directly. It should call `koed-server` contracts and render their
-machine-readable output.
+or AI Client profile setup directly. It should call `koed-server` contracts and
+render their machine-readable output. Mandatory Desktop setup calls only the
+client-neutral core contract; client detection never implies profile selection.
 
 ### Standalone `koed-server` package
 
@@ -100,6 +104,8 @@ Required `koed-runtime` files:
 
 - `api/dist/index.js`
 - `api/node_modules/@koed/db/dist/index.js`
+- `api/node_modules/@koed/db/dist/connection.js`
+- `api/node_modules/@koed/db/dist/user-api-token-repository.js`
 - `api/node_modules/@koed/db/drizzle/meta/_journal.json`
 - `worker/dist/index.js`
 - `embedding-service/dist/index.js`
@@ -249,6 +255,8 @@ Each standalone package should include a manifest:
       "mcp-server/dist/cli.js",
       "mcp-server/dist/capture-hook.js",
       "api/node_modules/@koed/db/dist/index.js",
+      "api/node_modules/@koed/db/dist/connection.js",
+      "api/node_modules/@koed/db/dist/user-api-token-repository.js",
       "api/node_modules/@koed/db/drizzle/meta/_journal.json"
     ]
   },

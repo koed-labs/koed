@@ -29,6 +29,8 @@ export const requiredPackageRuntimeFiles = [
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
   "api/node_modules/@koed/db/dist/index.js",
+  "api/node_modules/@koed/db/dist/connection.js",
+  "api/node_modules/@koed/db/dist/user-api-token-repository.js",
   "api/node_modules/@koed/db/drizzle/meta/_journal.json"
 ];
 

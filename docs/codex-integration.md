@@ -14,18 +14,26 @@ node packages/koed-server/dist/cli.js start
 ```
 
 `koed-server start` is long-running. After it reports that the API is ready, run
-the Codex setup wrapper from another terminal:
+client-neutral core setup from another terminal:
+
+```bash
+node packages/koed-server/dist/cli.js setup core --json
+```
+
+Core setup creates or reuses the local API Token and writes the app-provisioned
+local credential. It does not edit Codex configuration or record final
+verification; `doctor --json` records each final verification result. To explicitly configure Codex after core setup,
+run:
 
 ```bash
 node packages/koed-server/dist/cli.js setup codex --json
 ```
 
-The setup command prepares the environment, creates or reuses the local API
-Token once the API is ready, writes the app-provisioned local credential,
-writes the Codex MCP and Capture Hook configuration, verifies capture, and
-finishes with a doctor check. Koed Desktop runs this guided client setup path
-automatically on startup when needed; `pnpm clients:bootstrap` remains the
-underlying Local Operator Script for manual recovery.
+That compatibility command writes only Koed-owned Codex MCP/Capture Hook
+configuration, registers the resolved Codex executable, and preserves unrelated
+Codex settings. Koed Desktop mandatory
+setup runs core setup only. `pnpm clients:bootstrap` remains an explicit
+Codex-focused Local Operator Script for manual recovery.
 
 ## API Token
 
@@ -56,10 +64,11 @@ Environment:
 Working directory: /path/to/koed
 ```
 
-`koed-server setup codex` writes this configuration automatically. The adapter
-discovers the authenticated Local AI Runtime through an owner-only registration
-under `KOED_HOME`; API and upstream credentials are not copied into Codex MCP
-configuration.
+`koed-server setup codex` writes this configuration only after explicit Codex
+setup. The adapter discovers the authenticated Local AI Runtime through an
+owner-only local registration under `KOED_HOME`; API and upstream credentials
+are not copied into Codex MCP configuration. Installing or detecting Codex does
+not select it for other flows.
 If Codex Desktop cannot resolve `node`, set the command to an absolute Node path
 or run setup with `MEMORY_NODE_COMMAND=/path/to/node`. Shell-managed versions
 from NVM, pyenv, or similar tools may not be on the PATH when Codex runs hooks.

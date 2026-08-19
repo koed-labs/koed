@@ -44,8 +44,9 @@ const stageCopy: Record<
     description: "Start Personal Memory and background processing."
   },
   integration: {
-    title: "AI Client integrations",
-    description: "Configure capture and recall for each detected AI Client."
+    title: "Koed core integration",
+    description:
+      "Prepare local credential and MCP artifacts. AI Client setup is optional."
   },
   verification: {
     title: "Verification",
@@ -70,13 +71,6 @@ const stageProgress = (stage: DesktopSetupStage): number | null =>
   stage.totalBytes > 0
     ? Math.min(1, stage.completedBytes / stage.totalBytes)
     : null;
-
-const formatClientList = (clients: readonly string[]): string =>
-  clients.length < 2
-    ? (clients[0] ?? "detected AI Clients")
-    : clients.length === 2
-      ? clients.join(" and ")
-      : `${clients.slice(0, -1).join(", ")}, and ${clients.at(-1)}`;
 
 const overallProgress = (snapshot: DesktopSetupSnapshot): number => {
   const completed = snapshot.stages.filter(
@@ -232,8 +226,8 @@ export function SetupChecklist({
           <div>
             <h1 id="koed-setup-title">Set up Koed</h1>
             <p>
-              Koed will prepare Personal Memory and connect your detected AI
-              Clients.
+              Koed will prepare Personal Memory and local core services.
+              Detected AI Client setup remains optional.
             </p>
           </div>
           {!running ? (
@@ -311,15 +305,9 @@ export function SetupChecklist({
             <DialogTitle>Set up Koed on this computer?</DialogTitle>
             <DialogDescription>
               Koed will install or link its local runtime, download and verify
-              the embedding model, start local services, and configure
-              {snapshot?.stages.find(({ id }) => id === "integration")
-                ?.detectedAiClients?.length
-                ? ` ${formatClientList(
-                    snapshot.stages.find(({ id }) => id === "integration")!
-                      .detectedAiClients!
-                  )}`
-                : " detected AI Clients"}
-              . Existing completed steps will be left alone.
+              the embedding model, start local services, and prepare Koed core
+              artifacts. Detected AI Client setup remains optional. Existing
+              completed steps will be left alone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
