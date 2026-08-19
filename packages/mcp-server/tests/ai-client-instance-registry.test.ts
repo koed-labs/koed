@@ -146,6 +146,39 @@ describe("local AI Client instance registry", () => {
     });
   });
 
+  it("isolates missing executable probes from valid registry entries", () => {
+    const value = fixture();
+    fs.writeFileSync(
+      value.registryPath,
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "claude.missing",
+            driverId: "claude",
+            displayName: "Missing Claude",
+            executablePath: path.join(value.root, "missing")
+          },
+          {
+            instanceId: "claude.valid",
+            driverId: "claude",
+            displayName: "Valid Claude",
+            executablePath: value.executablePath
+          }
+        ]
+      })
+    );
+    const registry = loadLocalAiClientInstanceRegistry({
+      KOED_AI_CLIENT_INSTANCE_REGISTRY: value.registryPath
+    });
+    expect(registry.instances).toHaveLength(2);
+    expect(registry.instances[0]).toMatchObject({
+      instanceId: "claude.missing"
+    });
+    expect(typeof registry.instances[0]?.configurationError).toBe("string");
+    expect(registry.instances[1]).toMatchObject({ instanceId: "claude.valid" });
+  });
+
   it("rejects unknown fields, duplicate IDs, relative executables, and driver mismatch", () => {
     const value = fixture();
     const write = (instances: unknown[]) =>
@@ -162,11 +195,23 @@ describe("local AI Client instance registry", () => {
         unexpected: true
       }
     ]);
+    const malformed = loadLocalAiClientInstanceRegistry({
+      KOED_AI_CLIENT_INSTANCE_REGISTRY: value.registryPath
+    });
+    expect(malformed.instances[0]).toMatchObject({
+      instanceId: "claude.pro",
+      driverId: "claude"
+    });
+    expect(malformed.instances[0]?.configurationError).toContain(
+      "unknown or missing fields"
+    );
     expect(() =>
-      loadLocalAiClientInstanceRegistry({
-        KOED_AI_CLIENT_INSTANCE_REGISTRY: value.registryPath
+      resolveLocalAiClientInstance({
+        instanceId: "claude.pro",
+        driverId: "claude",
+        env: { KOED_AI_CLIENT_INSTANCE_REGISTRY: value.registryPath }
       })
-    ).toThrow("unknown or missing fields");
+    ).toThrow("configuration is unavailable");
 
     write([
       {
@@ -176,11 +221,11 @@ describe("local AI Client instance registry", () => {
         executablePath: "./claude"
       }
     ]);
-    expect(() =>
+    expect(
       loadLocalAiClientInstanceRegistry({
         KOED_AI_CLIENT_INSTANCE_REGISTRY: value.registryPath
-      })
-    ).toThrow("must be absolute");
+      }).instances[0]?.configurationError
+    ).toContain("must be absolute");
 
     write([
       {

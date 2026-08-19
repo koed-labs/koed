@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  aiClientCapabilityIds,
   assertAiClientDriverId,
   assertAiClientInstanceId,
   defaultAiClientInstanceId,
@@ -16,6 +17,29 @@ describe("AI Client identifiers", () => {
     expect(isSupportedAiClientDriverId("future-client")).toBe(false);
     expect(isSupportedAiClientDriverId("claude")).toBe(true);
     expect(defaultAiClientInstanceId("claude")).toBe("claude.default");
+  });
+
+  it("keeps client capability and model identities separate", () => {
+    expect(aiClientCapabilityIds.localSynthesis).toBe("local_synthesis");
+    expect(new Set(Object.values(aiClientCapabilityIds)).size).toBe(
+      Object.values(aiClientCapabilityIds).length
+    );
+    const target = {
+      driverId: "claude" as const,
+      instanceId: "claude.work" as const,
+      model: {
+        provider: "anthropic",
+        model: "claude-sonnet-4",
+        fullId: "anthropic/claude-sonnet-4"
+      },
+      reasoningEffort: "high"
+    };
+    expect(target).toMatchObject({
+      driverId: "claude",
+      instanceId: "claude.work",
+      model: { provider: "anthropic", model: "claude-sonnet-4" }
+    });
+    expect(target.model).not.toHaveProperty("driverId");
   });
 
   it.each(["", "../claude", "Claude", "claude/default", "claude default"])(

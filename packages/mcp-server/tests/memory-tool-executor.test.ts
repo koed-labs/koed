@@ -62,7 +62,11 @@ describe("MemoryToolExecutor", () => {
   it("runs Memory Answer from the requesting adapter cwd", async () => {
     const client = {
       accessCheck: vi.fn(async () => ({})),
-      listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] }))
+      listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
+      listAiClientInstances: vi.fn(async () => ({
+        instances: [],
+        capabilitySnapshots: []
+      }))
     } as unknown as MemoryApiClient;
     let observedOptions: {
       cwd: string | undefined;

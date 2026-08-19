@@ -1,3 +1,4 @@
+import { aiClientCapabilityIds } from "@koed/shared";
 import type { FastifyInstance } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import {
@@ -15,7 +16,7 @@ const assignmentUnavailable = (
 } => Object.assign(new Error(message), { statusCode: 409 });
 
 const modelId = (model: Record<string, unknown>): string | null => {
-  const value = model.model ?? model.id;
+  const value = model.fullId ?? model.id ?? model.model;
   return typeof value === "string" && value.trim() ? value.trim() : null;
 };
 
@@ -29,6 +30,19 @@ const supportedReasoningEfforts = (
     const effort = (candidate as Record<string, unknown>).reasoningEffort;
     return typeof effort === "string" ? [effort] : [];
   });
+};
+
+const localSynthesisReady = (
+  capabilities: Record<string, unknown>
+): boolean => {
+  const descriptors = capabilities.descriptors;
+  if (!descriptors || typeof descriptors !== "object") return false;
+  const descriptor = (descriptors as Record<string, unknown>)[
+    aiClientCapabilityIds.localSynthesis
+  ];
+  if (!descriptor || typeof descriptor !== "object") return false;
+  const value = descriptor as Record<string, unknown>;
+  return value.support === "supported" && value.readiness === "ready";
 };
 
 export const registerLocalAgentSettingsRoutes = (
@@ -53,7 +67,7 @@ export const registerLocalAgentSettingsRoutes = (
       const actor = { userId: user.id };
       const [instances, capabilitySnapshots] = await Promise.all([
         repo.listAiClientInstances(actor),
-        repo.listCurrentAiClientCapabilitySnapshots(actor)
+        repo.listAiClientCapabilitySnapshots(actor)
       ]);
       return { instances, capabilitySnapshots };
     }
@@ -163,6 +177,11 @@ export const registerLocalAgentSettingsRoutes = (
           `AI Client instance "${input.ai_client_instance_id}" has no current healthy authenticated capability snapshot`
         );
       }
+      if (!localSynthesisReady(snapshot.capabilities)) {
+        throw assignmentUnavailable(
+          `AI Client instance "${input.ai_client_instance_id}" does not report ready local synthesis`
+        );
+      }
       const selectedModel = snapshot.models.find(
         (candidate) => modelId(candidate) === input.model
       );
@@ -173,9 +192,8 @@ export const registerLocalAgentSettingsRoutes = (
       }
       const supportedEfforts = supportedReasoningEfforts(selectedModel);
       if (
-        (input.provider === "claude" || input.provider === "pi") &&
-        (!supportedEfforts ||
-          !supportedEfforts.includes(input.reasoning_effort))
+        !supportedEfforts ||
+        !supportedEfforts.includes(input.reasoning_effort)
       ) {
         throw assignmentUnavailable(
           `Reasoning effort "${input.reasoning_effort}" is not reported for model "${input.model}" on AI Client instance "${input.ai_client_instance_id}"`

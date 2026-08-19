@@ -12,13 +12,13 @@ import {
   MemoryApiClient,
   backendToolCapabilitiesFrom,
   defaultAnswerScope,
-  localMemoryAgentSettingFor,
   memoryAccessCheck,
   workerOverridesFromLocalMemorySetting,
   type BackendToolCapabilities
 } from "./index.js";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 import { logger } from "./logger.js";
+import { resolveLocalMemoryAgentConfig } from "./ai-client-assignment.js";
 import {
   answerMarkdownFromAnswer,
   citationsFromAnswer,
@@ -200,19 +200,16 @@ export class MemoryToolExecutor {
     void include_evidence;
     void response_detail;
     const retrievalScope = defaultAnswerScope(await this.client.accessCheck());
-    const localAgentSettings = await this.client
-      .listLocalMemoryAgentSettings()
-      .then((response) => response.settings)
-      .catch(() => []);
-    const workerConfig = {
-      ...resolveMemoryAnswerWorkerConfig(
-        this.environment,
-        workerOverridesFromLocalMemorySetting(
-          localMemoryAgentSettingFor(localAgentSettings, "mcp_memory_answer")
+    const workerConfig = await resolveLocalMemoryAgentConfig({
+      client: this.client,
+      flowKey: "mcp_memory_answer",
+      fallback: () => resolveMemoryAnswerWorkerConfig(this.environment),
+      fromSetting: (setting) =>
+        resolveMemoryAnswerWorkerConfig(
+          this.environment,
+          workerOverridesFromLocalMemorySetting(setting)
         )
-      ),
-      cwd: caller.cwd
-    };
+    }).then((config) => ({ ...config, cwd: caller.cwd }));
     const projectId =
       input.search_domain === "project"
         ? normalizeProjectId(input.project_id, caller)

@@ -10,6 +10,7 @@ export interface LocalAiClientInstanceConfiguration {
   displayName: string;
   executablePath: string;
   configHome?: string;
+  configurationError?: string;
 }
 
 interface LocalAiClientInstanceRegistry {
@@ -51,30 +52,15 @@ export const aiClientInstanceRegistryPath = (
       )
   );
 
-export const loadLocalAiClientInstanceRegistry = (
-  env: NodeJS.ProcessEnv = process.env
-): LocalAiClientInstanceRegistry => {
-  const target = aiClientInstanceRegistryPath(env);
-  if (!fs.existsSync(target)) return { version: 1, instances: [] };
-  const root = JSON.parse(fs.readFileSync(target, "utf8")) as unknown;
-  if (!root || typeof root !== "object" || Array.isArray(root)) {
-    throw new Error("AI Client instance registry must be an object");
+const readableConfiguration = (
+  candidate: unknown,
+  index: number
+): LocalAiClientInstanceConfiguration | null => {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return null;
   }
-  const value = root as Record<string, unknown>;
-  exactKeys(value, ["version", "instances"], "AI Client instance registry");
-  if (value.version !== 1 || !Array.isArray(value.instances)) {
-    throw new Error("AI Client instance registry version is unsupported");
-  }
-  const seen = new Set<string>();
-  const instances = value.instances.map((candidate, index) => {
-    if (
-      !candidate ||
-      typeof candidate !== "object" ||
-      Array.isArray(candidate)
-    ) {
-      throw new Error(`AI Client instance ${index} must be an object`);
-    }
-    const entry = candidate as Record<string, unknown>;
+  const entry = candidate as Record<string, unknown>;
+  try {
     const hasConfigHome = Object.hasOwn(entry, "configHome");
     exactKeys(
       entry,
@@ -93,10 +79,7 @@ export const loadLocalAiClientInstanceRegistry = (
     const driverId = assertAiClientDriverId(
       nonEmpty(entry.driverId, "AI Client driver ID")
     );
-    if (seen.has(instanceId)) {
-      throw new Error(`Duplicate AI Client instance ID: ${instanceId}`);
-    }
-    seen.add(instanceId);
+    const displayName = nonEmpty(entry.displayName, "AI Client display name");
     const configuredExecutable = nonEmpty(
       entry.executablePath,
       "AI Client executable path"
@@ -120,10 +103,77 @@ export const loadLocalAiClientInstanceRegistry = (
     return {
       instanceId,
       driverId,
-      displayName: nonEmpty(entry.displayName, "AI Client display name"),
+      displayName,
       executablePath,
       ...(configHome ? { configHome } : {})
     };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const instanceId =
+      typeof entry.instanceId === "string" && entry.instanceId.trim()
+        ? entry.instanceId.trim()
+        : null;
+    const driverId =
+      typeof entry.driverId === "string" && entry.driverId.trim()
+        ? entry.driverId.trim()
+        : null;
+    if (!instanceId || !driverId) {
+      process.emitWarning(
+        `Ignoring AI Client registry entry ${index}: ${message}`,
+        "KoedAiClientRegistry"
+      );
+      return null;
+    }
+    try {
+      assertAiClientInstanceId(instanceId);
+      assertAiClientDriverId(driverId);
+    } catch {
+      process.emitWarning(
+        `Ignoring AI Client registry entry ${index}: ${message}`,
+        "KoedAiClientRegistry"
+      );
+      return null;
+    }
+    return {
+      instanceId,
+      driverId,
+      displayName:
+        typeof entry.displayName === "string" && entry.displayName.trim()
+          ? entry.displayName.trim()
+          : instanceId,
+      executablePath:
+        typeof entry.executablePath === "string" ? entry.executablePath : "",
+      ...(typeof entry.configHome === "string"
+        ? { configHome: entry.configHome }
+        : {}),
+      configurationError: message
+    };
+  }
+};
+
+export const loadLocalAiClientInstanceRegistry = (
+  env: NodeJS.ProcessEnv = process.env
+): LocalAiClientInstanceRegistry => {
+  const target = aiClientInstanceRegistryPath(env);
+  if (!fs.existsSync(target)) return { version: 1, instances: [] };
+  const root = JSON.parse(fs.readFileSync(target, "utf8")) as unknown;
+  if (!root || typeof root !== "object" || Array.isArray(root)) {
+    throw new Error("AI Client instance registry must be an object");
+  }
+  const value = root as Record<string, unknown>;
+  exactKeys(value, ["version", "instances"], "AI Client instance registry");
+  if (value.version !== 1 || !Array.isArray(value.instances)) {
+    throw new Error("AI Client instance registry version is unsupported");
+  }
+  const seen = new Set<string>();
+  const instances = value.instances.flatMap((candidate, index) => {
+    const parsed = readableConfiguration(candidate, index);
+    if (!parsed) return [];
+    if (seen.has(parsed.instanceId)) {
+      throw new Error(`Duplicate AI Client instance ID: ${parsed.instanceId}`);
+    }
+    seen.add(parsed.instanceId);
+    return [parsed];
   });
   return { version: 1, instances };
 };
@@ -145,6 +195,11 @@ export const resolveLocalAiClientInstance = (input: {
   if (configured.driverId !== driverId) {
     throw new Error(
       `AI Client instance "${instanceId}" belongs to driver "${configured.driverId}", not "${driverId}".`
+    );
+  }
+  if (configured.configurationError) {
+    throw new Error(
+      `AI Client instance "${instanceId}" configuration is unavailable: ${configured.configurationError}`
     );
   }
   return configured;

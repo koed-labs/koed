@@ -19,7 +19,10 @@ export type {
   AiClientSourceRuntime
 } from "./ai-client-source-adapters.js";
 export {
+  aiClientCapabilityIds,
+  aiClientDriverIdMaxLength,
   aiClientIdentifierPattern,
+  aiClientInstanceIdMaxLength,
   assertAiClientDriverId,
   assertAiClientInstanceId,
   defaultAiClientInstanceId,
@@ -27,10 +30,21 @@ export {
   supportedAiClientDriverIds
 } from "./ai-client-contract.js";
 export type {
+  AiClientCapabilityDescriptor,
+  AiClientCapabilityId,
+  AiClientCapabilityReadiness,
+  AiClientCapabilitySnapshot,
+  AiClientCapabilitySupport,
+  AiClientDiagnostic,
+  AiClientDiagnosticSeverity,
   AiClientDriverId,
+  AiClientExecutionTarget,
   AiClientInstanceId,
   AiClientModelCapability,
+  AiClientModelIdentity,
   AiClientModelProvenance,
+  AiClientRecoveryAction,
+  AiClientRecoveryActionId,
   SupportedAiClientDriverId
 } from "./ai-client-contract.js";
 

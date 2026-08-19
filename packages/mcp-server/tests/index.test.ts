@@ -1046,6 +1046,9 @@ describe("LCM summary background service", () => {
     const client = {
       async listLocalMemoryAgentSettings() {
         return { settings: [] };
+      },
+      async listAiClientInstances() {
+        return { instances: [], capabilitySnapshots: [] };
       }
     };
 
@@ -1072,6 +1075,9 @@ describe("LCM summary background service", () => {
     const fakeClient = {
       async listLocalMemoryAgentSettings() {
         return { settings: [] };
+      },
+      async listAiClientInstances() {
+        return { instances: [], capabilitySnapshots: [] };
       },
       async listPendingSessionTitles() {
         return { sessions: [] };
@@ -1114,12 +1120,46 @@ describe("LCM summary background service", () => {
               ownerUserId: "user-1",
               flowKey: "lcm_summary",
               provider: "codex",
+              aiClientInstanceId: "codex.default",
               model: "gpt-5.4-persisted",
               reasoningEffort: "xhigh",
               timeoutMs: 123_000,
               maxAttempts: 4,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString()
+            }
+          ]
+        };
+      },
+      async listAiClientInstances() {
+        return {
+          instances: [
+            { instanceId: "codex.default", driverId: "codex", enabled: true }
+          ],
+          capabilitySnapshots: [
+            {
+              instanceId: "codex.default",
+              healthState: "healthy",
+              authenticationState: "authenticated",
+              stale: false,
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              models: [
+                {
+                  id: "gpt-5.4-persisted",
+                  fullId: "gpt-5.4-persisted",
+                  supportedReasoningEfforts: ["xhigh"]
+                }
+              ],
+              capabilities: {
+                descriptors: {
+                  local_synthesis: {
+                    id: "local_synthesis",
+                    support: "supported",
+                    readiness: "ready",
+                    diagnostics: []
+                  }
+                }
+              }
             }
           ]
         };
@@ -1260,6 +1300,63 @@ describe("LCM summary background service", () => {
     const authorizationBoundary = "server-issued-boundary";
     const apiUrl = await createApi((request, response) => {
       response.setHeader("content-type", "application/json");
+      if (request.url === "/v1/memory/local-agent-settings") {
+        response.end(
+          JSON.stringify({
+            settings: [
+              {
+                ownerUserId: "fixture-user",
+                flowKey: "mcp_memory_answer",
+                provider: "codex",
+                aiClientInstanceId: "codex.default",
+                model: "gpt-5.6-luna",
+                reasoningEffort: "low",
+                timeoutMs: 5_000,
+                maxAttempts: 1,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+              }
+            ]
+          })
+        );
+        return;
+      }
+      if (request.url === "/v1/memory/ai-client-instances") {
+        response.end(
+          JSON.stringify({
+            instances: [
+              { instanceId: "codex.default", driverId: "codex", enabled: true }
+            ],
+            capabilitySnapshots: [
+              {
+                instanceId: "codex.default",
+                healthState: "healthy",
+                authenticationState: "authenticated",
+                stale: false,
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                models: [
+                  {
+                    id: "gpt-5.6-luna",
+                    fullId: "gpt-5.6-luna",
+                    supportedReasoningEfforts: ["low"]
+                  }
+                ],
+                capabilities: {
+                  descriptors: {
+                    local_synthesis: {
+                      id: "local_synthesis",
+                      support: "supported",
+                      readiness: "ready",
+                      diagnostics: []
+                    }
+                  }
+                }
+              }
+            ]
+          })
+        );
+        return;
+      }
       if (request.url === "/v1/memory/search") {
         let body = "";
         request.on("data", (chunk) => {
@@ -1326,7 +1423,7 @@ describe("LCM summary background service", () => {
           config: {
             ...resolveMemoryAnswerWorkerConfig({
               MEMORY_ANSWER_PROVIDER: "codex",
-              MEMORY_ANSWER_TIMEOUT_MS: "1000",
+              MEMORY_ANSWER_TIMEOUT_MS: "5000",
               MEMORY_ANSWER_MAX_ATTEMPTS: "1",
               MEMORY_ANSWER_MAX_SEARCHES: "2",
               MEMORY_ANSWER_MAX_EXPANSIONS: "0",
@@ -1389,6 +1486,42 @@ describe("LCM summary background service", () => {
         const parsed = body
           ? (JSON.parse(body) as Record<string, unknown>)
           : {};
+        if (request.url === "/v1/memory/ai-client-instances") {
+          response.end(
+            JSON.stringify({
+              instances: [
+                { instanceId: "codex.default", driverId: "codex", enabled: true }
+              ],
+              capabilitySnapshots: [
+                {
+                  instanceId: "codex.default",
+                  healthState: "healthy",
+                  authenticationState: "authenticated",
+                  stale: false,
+                  expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                  models: [
+                    {
+                      id: "gpt-5.6-luna",
+                      fullId: "gpt-5.6-luna",
+                      supportedReasoningEfforts: ["low"]
+                    }
+                  ],
+                  capabilities: {
+                    descriptors: {
+                      local_synthesis: {
+                        id: "local_synthesis",
+                        support: "supported",
+                        readiness: "ready",
+                        diagnostics: []
+                      }
+                    }
+                  }
+                }
+              ]
+            })
+          );
+          return;
+        }
         if (request.url === "/v1/capabilities") {
           response.end(
             JSON.stringify({ capabilitySchemaVersion: 4, capabilities: {} })
@@ -1557,6 +1690,63 @@ describe("LCM summary background service", () => {
     let submittedSummary: string | null = null;
     const apiUrl = await createApi((request, response) => {
       response.setHeader("content-type", "application/json");
+      if (request.url === "/v1/memory/local-agent-settings") {
+        response.end(
+          JSON.stringify({
+            settings: [
+              {
+                ownerUserId: "fixture-user",
+                flowKey: "mcp_memory_answer",
+                provider: "codex",
+                aiClientInstanceId: "codex.default",
+                model: "gpt-5.6-luna",
+                reasoningEffort: "low",
+                timeoutMs: 5_000,
+                maxAttempts: 1,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+              }
+            ]
+          })
+        );
+        return;
+      }
+      if (request.url === "/v1/memory/ai-client-instances") {
+        response.end(
+          JSON.stringify({
+            instances: [
+              { instanceId: "codex.default", driverId: "codex", enabled: true }
+            ],
+            capabilitySnapshots: [
+              {
+                instanceId: "codex.default",
+                healthState: "healthy",
+                authenticationState: "authenticated",
+                stale: false,
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                models: [
+                  {
+                    id: "gpt-5.6-luna",
+                    fullId: "gpt-5.6-luna",
+                    supportedReasoningEfforts: ["low"]
+                  }
+                ],
+                capabilities: {
+                  descriptors: {
+                    local_synthesis: {
+                      id: "local_synthesis",
+                      support: "supported",
+                      readiness: "ready",
+                      diagnostics: []
+                    }
+                  }
+                }
+              }
+            ]
+          })
+        );
+        return;
+      }
       if (request.url === "/v1/memory/capture-personal-event") {
         captured = true;
         response.end(
@@ -1708,7 +1898,7 @@ describe("LCM summary background service", () => {
           config: {
             ...resolveMemoryAnswerWorkerConfig({
               MEMORY_ANSWER_PROVIDER: "codex",
-              MEMORY_ANSWER_TIMEOUT_MS: "1000",
+              MEMORY_ANSWER_TIMEOUT_MS: "5000",
               MEMORY_ANSWER_MAX_ATTEMPTS: "1",
               MEMORY_ANSWER_MAX_SEARCHES: "2",
               MEMORY_ANSWER_MAX_EXPANSIONS: "0",

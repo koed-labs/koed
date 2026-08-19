@@ -96,6 +96,70 @@ describe("Local AI Runtime", () => {
     expect(curatedStop).toHaveBeenCalledTimes(1);
   });
 
+  it("publishes capabilities during runtime startup and stops publisher on close", async () => {
+    const refresh = vi.fn(async () => []);
+    const stop = vi.fn();
+    const dependencies = {
+      startLcmSummaryService: vi.fn(() => null),
+      watchKoedLocalWork: vi.fn(),
+      startCuratedMemoryReviewService: vi.fn(() => ({ stop: vi.fn() })),
+      startCodexTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      startClaudeTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      startAiClientCapabilityPublisher: vi.fn(() => ({ refresh, stop })),
+      createExecutor: vi.fn(() => defaultExecutor())
+    } as unknown as LocalAiRuntimeServiceDependencies;
+    const apiClient = new MemoryApiClient({
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token"
+    });
+    const environment = { KOED_HOME: tempHome() };
+
+    const services = await startDefaultLocalAiRuntimeServices(
+      { apiClient, environment, koedHome: environment.KOED_HOME },
+      dependencies
+    );
+
+    expect(dependencies.startAiClientCapabilityPublisher).toHaveBeenCalledWith(
+      apiClient,
+      environment
+    );
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await services.close();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not await a hanging capability refresh during startup", async () => {
+    let resolveRefresh!: () => void;
+    const refresh = vi.fn(
+      () =>
+        new Promise<[]>((resolve) => {
+          resolveRefresh = () => resolve([]);
+        })
+    );
+    const stop = vi.fn();
+    const dependencies = {
+      startLcmSummaryService: vi.fn(() => null),
+      watchKoedLocalWork: vi.fn(),
+      startCuratedMemoryReviewService: vi.fn(() => ({ stop: vi.fn() })),
+      startCodexTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      startClaudeTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      startAiClientCapabilityPublisher: vi.fn(() => ({ refresh, stop })),
+      createExecutor: vi.fn(() => defaultExecutor())
+    } as unknown as LocalAiRuntimeServiceDependencies;
+    const services = await startDefaultLocalAiRuntimeServices(
+      {
+        apiClient: new MemoryApiClient({ apiUrl: "http://127.0.0.1:3300" }),
+        environment: {},
+        koedHome: tempHome()
+      },
+      dependencies
+    );
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await services.close();
+    expect(stop).toHaveBeenCalledTimes(1);
+    resolveRefresh();
+  });
+
   it("does not start disabled transcript watchers", async () => {
     const dependencies = {
       startLcmSummaryService: vi.fn(() => null),

@@ -1,8 +1,4 @@
-import {
-  MemoryApiError,
-  workerOverridesFromLocalMemorySetting,
-  type MemoryApiClient
-} from "./index.js";
+import { MemoryApiError, type MemoryApiClient } from "./index.js";
 import {
   CURATED_MEMORY_REVIEW_PROMPT_VERSION,
   resolveCuratedMemoryReviewConfig,
@@ -11,6 +7,7 @@ import {
   type CuratedMemoryReviewConfig
 } from "./curated-memory-review-worker.js";
 import { aiClientExecutionIdentity } from "./ai-client-runner.js";
+import { resolveLocalMemoryAgentConfig } from "./ai-client-assignment.js";
 
 export interface CuratedMemoryReviewServiceHandle {
   stop(): void;
@@ -31,19 +28,23 @@ const intEnv = (
 const reviewWorkerConfig = async (
   client: MemoryApiClient,
   fallback: CuratedMemoryReviewConfig
-): Promise<CuratedMemoryReviewConfig> => {
-  const stored = await client.listLocalMemoryAgentSettings();
-  const setting = stored.settings.find(
-    (item) => item.flowKey === "curated_memory_review"
-  );
-  return setting
-    ? resolveCuratedMemoryReviewConfig(fallback.env, {
-        ...workerOverridesFromLocalMemorySetting(setting),
+): Promise<CuratedMemoryReviewConfig> =>
+  resolveLocalMemoryAgentConfig({
+    client,
+    flowKey: "curated_memory_review",
+    fallback: () => fallback,
+    fromSetting: (setting) =>
+      resolveCuratedMemoryReviewConfig(fallback.env, {
+        provider: setting.provider as CuratedMemoryReviewConfig["provider"],
+        aiClientInstanceId: setting.aiClientInstanceId,
+        model: setting.model,
+        reasoningEffort: setting.reasoningEffort,
+        timeoutMs: setting.timeoutMs,
+        maxAttempts: setting.maxAttempts,
         retryDelayMs: fallback.retryDelayMs,
         maxPromptTokens: fallback.maxPromptTokens
       })
-    : fallback;
-};
+  });
 
 export const startCuratedMemoryReviewService = (
   client: MemoryApiClient,

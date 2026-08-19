@@ -1621,6 +1621,10 @@ export interface AiClientCapabilitySnapshotRecord {
   createdAt: string;
 }
 
+export interface AiClientCapabilitySnapshotDiagnosticRecord extends AiClientCapabilitySnapshotRecord {
+  stale: boolean;
+}
+
 export interface CuratedMemoryTopicRecord {
   id: string;
   ownerUserId: string;
@@ -2293,6 +2297,9 @@ export interface MemorySourceRepository
     actor: ActorContext
   ): Promise<LocalMemoryAgentSettingRecord[]>;
   listAiClientInstances(actor: ActorContext): Promise<AiClientInstanceRecord[]>;
+  listAiClientCapabilitySnapshots(
+    actor: ActorContext
+  ): Promise<AiClientCapabilitySnapshotDiagnosticRecord[]>;
   upsertAiClientInstance(
     actor: ActorContext,
     input: {

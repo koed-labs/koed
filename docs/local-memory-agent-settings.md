@@ -13,7 +13,10 @@ The supervised Local AI Runtime owns three synthesis flows:
 
 Codex, Claude, and Pi are supported local providers. Each flow independently
 selects AI Client instance, model, and supported model options. Pi model IDs
-retain full underlying provider/model identity.
+retain full underlying provider/model identity. Capability publication probes only
+instances explicitly listed in `KOED_AI_CLIENT_INSTANCE_REGISTRY`; an empty or
+missing registry publishes zero instances. Setup is responsible for registering
+provider defaults.
 
 ## Precedence
 
@@ -34,6 +37,13 @@ Curated Memory Review settings resolve in this order:
 1. API user setting in `local_memory_agent_settings`.
 2. `MEMORY_CURATED_REVIEW_*` environment defaults.
 3. Code defaults.
+
+A persisted assignment is revalidated immediately before each execution against
+enabled instance state, current capability snapshot, selected model, and
+explicitly reported reasoning effort. Stale, unhealthy, unauthenticated, or
+mismatched assignments fail closed; environment defaults are used only when no
+persisted assignment exists. Settings or capability API failures never silently
+fall back.
 
 `MEMORY_CODEX_APP_SERVER_BINARY` selects the Codex app-server binary.
 `KOED_CLAUDE_CODE_EXECUTABLE` selects a separately installed Claude Code

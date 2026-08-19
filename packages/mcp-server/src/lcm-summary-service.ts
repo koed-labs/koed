@@ -4,6 +4,7 @@ import {
   type MemoryApiClient,
   workerOverridesFromLocalMemorySetting
 } from "./index.js";
+import { resolveLocalMemoryAgentConfig } from "./ai-client-assignment.js";
 import {
   resolveLcmSummaryWorkerConfig,
   summarizePendingLcmNodes,
@@ -105,30 +106,26 @@ export const resolveLcmSummaryWorkerConfigFromSettings = (
 };
 
 export const resolvePersistedLcmSummaryWorkerConfig = async (
-  client: Pick<MemoryApiClient, "listLocalMemoryAgentSettings">,
+  client: Pick<
+    MemoryApiClient,
+    "listLocalMemoryAgentSettings" | "listAiClientInstances"
+  >,
   env: NodeJS.ProcessEnv = process.env,
   overrides: LcmSummaryWorkerConfigOverrides = {},
   fallbackConfig?: LcmSummaryWorkerConfig,
   flowKey: "lcm_summary" | "session_title" = "lcm_summary"
-): Promise<LcmSummaryWorkerConfig> => {
-  const settings = await client
-    .listLocalMemoryAgentSettings()
-    .then((response) => response.settings)
-    .catch(() => []);
-  const persistedWorkerOverrides = workerOverridesFromLocalMemorySetting(
-    localMemoryAgentSettingFor(settings, flowKey)
-  );
-  if (persistedWorkerOverrides) {
-    return resolveLcmSummaryWorkerConfig(env, {
-      ...persistedWorkerOverrides,
-      ...definedWorkerOverrides(overrides)
-    });
-  }
-  if (!Object.values(overrides).some((value) => value !== undefined)) {
-    return fallbackConfig ?? resolveLcmSummaryWorkerConfig(env);
-  }
-  return resolveLcmSummaryWorkerConfig(env, overrides);
-};
+): Promise<LcmSummaryWorkerConfig> =>
+  resolveLocalMemoryAgentConfig({
+    client,
+    flowKey,
+    fallback: () =>
+      fallbackConfig ?? resolveLcmSummaryWorkerConfig(env, overrides),
+    fromSetting: (setting) =>
+      resolveLcmSummaryWorkerConfig(env, {
+        ...workerOverridesFromLocalMemorySetting(setting),
+        ...definedWorkerOverrides(overrides)
+      })
+  });
 
 export const resolveLcmSummaryServiceConfig = (
   env: NodeJS.ProcessEnv = process.env
@@ -232,14 +229,12 @@ export const startLcmSummaryService = (
     void reason;
     lastRunAt = new Date().toISOString();
     try {
-      const currentWorkerConfig =
-        runOptions.workerConfig ??
-        (await resolvePersistedLcmSummaryWorkerConfig(
-          client,
-          process.env,
-          {},
-          fallbackWorkerConfig
-        ));
+      const currentWorkerConfig = await resolvePersistedLcmSummaryWorkerConfig(
+        client,
+        process.env,
+        {},
+        runOptions.workerConfig ?? fallbackWorkerConfig
+      );
       const titleWorkerConfig = await resolvePersistedLcmSummaryWorkerConfig(
         client,
         process.env,
