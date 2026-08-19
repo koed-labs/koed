@@ -28,10 +28,11 @@ need them.
   Desktop can use packaged native runtime assets; external dependency mode does
   not require Homebrew.
 - No AI Client is required for core Koed readiness.
-- Optionally, install and authenticate Codex, Claude Code, or Pi `0.84.2` or
-  newer before explicitly configuring that client. Claude synthesis reuses the
-  local Claude Code subscription through the pinned Agent SDK. Pi synthesis
-  reuses Pi-managed local authentication through isolated RPC.
+- Optionally, install and authenticate Codex, Claude Code, or Pi before
+  explicitly configuring that client. Claude Code requires `2.1.227` or newer;
+  Pi requires `0.84.2` or newer. Claude synthesis reuses the local Claude Code
+  subscription through the pinned Agent SDK. Pi synthesis reuses Pi-managed
+  local authentication through isolated RPC.
 
 If you are on Windows, run Koed inside WSL as Linux tooling. Keep `KOED_HOME`
 and checkout paths on Linux filesystem paths inside WSL; native Windows
@@ -80,6 +81,28 @@ node packages/koed-server/dist/cli.js setup core --json
 
 `setup codex --json` remains an explicit Codex profile compatibility command; it
 never selects Codex merely because Codex is installed.
+
+### Health and routing model
+
+Core health covers Koed services and remains healthy with zero configured AI
+Clients. Client installation, authentication, capture, capability snapshots,
+and synthesis readiness are separate per-client diagnostics; one broken client
+does not make core unhealthy. A stale or unavailable capability snapshot blocks
+only affected operations.
+
+Memory Answer, LCM Summary, Session Title, and Curated Memory Review each have
+an independent provider, AI Client instance, model, and reasoning-effort
+assignment. Persisted assignments take precedence over environment defaults;
+environment and documented Codex defaults apply only when no assignment exists.
+An explicit unavailable assignment fails closed and never falls back to another
+client or provider.
+
+Managed Conversations are separate from ordinary externally managed
+Conversations: Koed owns lifecycle and exact AI Client instance for Managed
+Conversations, while Codex, Claude Code, or Pi owns its ordinary Conversation
+and Koed captures its source through that client's watcher. Managed Conversation
+ownership does not select synthesis providers. See [Managed Conversation
+routing](docs/managed-conversation-ai-client-routing.md).
 
 ## Advanced setup and configuration
 

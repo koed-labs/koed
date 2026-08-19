@@ -805,9 +805,11 @@ export class MemoryApiClient {
       instanceId: string;
       driverId: string;
       enabled: boolean;
+      configIdentityHash?: string | null;
     }>;
     capabilitySnapshots: Array<{
       instanceId: string;
+      installationIdentityHash?: string;
       healthState: string;
       authenticationState: string;
       models: Array<Record<string, unknown>>;

@@ -61,6 +61,8 @@ export interface KoedServerStatus {
   claudeCode?: ComponentStatus & { configured: boolean; detected?: boolean };
   pi?: ComponentStatus & { configured: boolean; detected?: boolean };
   aiClients?: Record<string, AiClientReadiness>;
+  aiClientInstances?: Record<string, AiClientReadiness>;
+  aiClientFlowReadiness?: Record<string, ComponentStatus>;
   lcmSummaryService: ComponentStatus;
   personalDeviceSync?: ComponentStatus;
   upstreamBackends: ComponentStatus & {

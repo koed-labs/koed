@@ -3,9 +3,12 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import {
+  chmodSync as nodeChmodSync,
   existsSync as nodeExistsSync,
   mkdirSync as nodeMkdirSync,
   readFileSync as nodeReadFileSync,
+  statSync as nodeStatSync,
+  unlinkSync as nodeUnlinkSync,
   writeFileSync as nodeWriteFileSync
 } from "node:fs";
 import { homedir } from "node:os";
@@ -83,6 +86,7 @@ export interface KoedServerSetupOptions {
   resolveRuntime?: typeof resolveKoedAppRuntime;
   provisionLocalApiToken?: typeof provisionLocalApiToken;
   migrateCodex?: typeof migrateKoedOwnedCodexRegistrationBestEffort;
+  registerAiClient?: typeof registerExplicitAiClient;
   reportDiagnostic?: (message: string) => void;
 }
 
@@ -320,6 +324,7 @@ export const repairCodexIntegration = ({
   mkdirSync = nodeMkdirSync,
   existsSync = nodeExistsSync,
   checkPid = isProcessRunning,
+  registerAiClient = registerExplicitAiClient,
   now = () => new Date()
 }: Omit<
   KoedServerSetupOptions,
@@ -354,13 +359,26 @@ export const repairCodexIntegration = ({
     };
   }
 
+  const integrationEnvironment: NodeJS.ProcessEnv = {
+    ...repoEnv,
+    ...environment,
+    KOED_HOME: paths.koedHome
+  };
+  const codexConfigPath = resolve(
+    integrationEnvironment.CODEX_CONFIG_PATH ??
+      `${integrationEnvironment.CODEX_HOME ?? `${homedir()}/.codex`}/config.toml`
+  );
+  let registrySnapshot: ReturnType<typeof captureAiClientRegistry> | undefined;
+  let originalConfig: string | null = null;
+  let originalMode: number | null = null;
+  let profileWritten = false;
   try {
-    const integrationEnvironment: NodeJS.ProcessEnv = {
-      ...repoEnv,
-      ...environment,
-      KOED_HOME: paths.koedHome
-    };
     assertAiClientRegistryWritable(integrationEnvironment);
+    registrySnapshot = captureAiClientRegistry(integrationEnvironment);
+    if (existsSync(codexConfigPath)) {
+      originalConfig = String(readFileSync(codexConfigPath, "utf8"));
+      originalMode = nodeStatSync(codexConfigPath).mode & 0o777;
+    }
     const codexExecutablePath = resolveExecutablePath(
       integrationEnvironment.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex",
       integrationEnvironment
@@ -374,7 +392,8 @@ export const repairCodexIntegration = ({
       mkdirSync,
       existsSync
     });
-    const registered = registerExplicitAiClient({
+    profileWritten = true;
+    const registered = registerAiClient({
       environment: integrationEnvironment,
       driverId: "codex",
       executablePath: codexExecutablePath,
@@ -396,7 +415,31 @@ export const repairCodexIntegration = ({
     writeSetupVerification(paths, repaired, writeFileSync);
     return repaired;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const failures = [error instanceof Error ? error.message : String(error)];
+    if (profileWritten) {
+      try {
+        if (originalConfig === null) {
+          if (existsSync(codexConfigPath)) nodeUnlinkSync(codexConfigPath);
+        } else {
+          writeFileSync(codexConfigPath, originalConfig, { mode: 0o600 });
+          if (originalMode !== null)
+            nodeChmodSync(codexConfigPath, originalMode);
+        }
+      } catch (restoreError) {
+        failures.push(
+          `Codex profile rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
+    if (registrySnapshot) {
+      try {
+        restoreAiClientRegistry(integrationEnvironment, registrySnapshot);
+      } catch (restoreError) {
+        failures.push(
+          `AI Client registry rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
+        );
+      }
+    }
     const failed: KoedServerRepairCodexResult = {
       ok: false,
       state: "needs_attention",
@@ -404,7 +447,7 @@ export const repairCodexIntegration = ({
       apiUrl,
       checkedAt,
       command: "write Codex config",
-      error: message,
+      error: failures.join(" "),
       action:
         "Review the reported failure, fix the Codex integration artifacts, then run the Codex-specific repair action again."
     };
@@ -813,14 +856,16 @@ export const setupCodex = async (
   if (result.ok) {
     try {
       persistSetupApiToken(context, loadRepoEnv(context.paths.repoRoot), true);
-      const registered = registerExplicitAiClient({
-        environment: context.childEnv,
-        driverId: "codex",
-        executablePath:
-          context.childEnv.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex",
-        displayName: "Codex",
-        configHome: context.childEnv.CODEX_HOME
-      });
+      const registered = (options.registerAiClient ?? registerExplicitAiClient)(
+        {
+          environment: context.childEnv,
+          driverId: "codex",
+          executablePath:
+            context.childEnv.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex",
+          displayName: "Codex",
+          configHome: context.childEnv.CODEX_HOME
+        }
+      );
       if (!registered) throw new Error("Codex registration failed.");
     } catch (error) {
       const failed = {

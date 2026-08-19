@@ -8,6 +8,8 @@ export type SupportedAiClientDriverId = "codex" | "claude" | "pi";
 export const supportedAiClientDriverIds = ["codex", "claude", "pi"] as const;
 export const aiClientDriverIdMaxLength = 96;
 export const aiClientInstanceIdMaxLength = 128;
+export const aiClientDiagnosticCodeMaxLength = 160;
+export const aiClientDiagnosticMessageMaxLength = 2000;
 
 export const aiClientCapabilityIds = {
   setup: "setup",
@@ -129,3 +131,73 @@ export interface AiClientModelCapability {
   supportedReasoningEfforts?: string[];
   options?: Record<string, unknown>;
 }
+
+const aiClientDiagnosticMessages: Record<string, string> = {
+  discovery_failed: "AI Client discovery failed.",
+  profile_check: "AI Client profile check completed.",
+  capability_snapshot_stale: "Capability snapshot is stale.",
+  capability_snapshot_unknown: "Capability snapshot is unavailable.",
+  model_unavailable: "Configured model is unavailable.",
+  profile_readiness_overlay: "Current AI Client profile readiness was used.",
+  codex_version_unavailable: "Codex version could not be determined."
+};
+
+const sanitizeDiagnosticCode = (value: unknown): string => {
+  if (
+    typeof value === "string" &&
+    Object.hasOwn(aiClientDiagnosticMessages, value)
+  ) {
+    return value;
+  }
+  return "diagnostic";
+};
+
+export const aiClientModelLabel = (model: {
+  id: string;
+  displayName?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  fullId?: string | null;
+}): string => {
+  const fullId =
+    model.fullId?.trim() ||
+    [model.provider?.trim(), model.model?.trim()].filter(Boolean).join("/") ||
+    model.id.trim();
+  const displayName = model.displayName?.trim();
+  return displayName && displayName !== fullId
+    ? `${displayName} (${fullId})`
+    : fullId;
+};
+
+export const sanitizeAiClientDiagnostics = (
+  diagnostics: unknown
+): AiClientDiagnostic[] => {
+  if (!Array.isArray(diagnostics)) return [];
+  return diagnostics
+    .flatMap((candidate) => {
+      if (
+        !candidate ||
+        typeof candidate !== "object" ||
+        Array.isArray(candidate)
+      ) {
+        return [];
+      }
+      const item = candidate as Record<string, unknown>;
+      const severity =
+        item.severity === "info" ||
+        item.severity === "warning" ||
+        item.severity === "error"
+          ? item.severity
+          : "warning";
+      const code = sanitizeDiagnosticCode(item.code);
+      const result: AiClientDiagnostic = {
+        code,
+        message:
+          aiClientDiagnosticMessages[code] ??
+          "AI Client diagnostic unavailable.",
+        severity
+      };
+      return [result];
+    })
+    .slice(0, 100);
+};

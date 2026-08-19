@@ -1,4 +1,9 @@
-import { aiClientCapabilityIds } from "@koed/shared";
+import {
+  aiClientCapabilityIds,
+  codeDefaultAssignmentFor,
+  documentDefault,
+  localAiClientFlowKeys
+} from "@koed/shared";
 import type { MemorySourceRepository } from "@koed/db";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -25,25 +30,16 @@ const assignmentUnavailable = (
   statusCode: number;
 } => Object.assign(new Error(message), { statusCode: 409 });
 
-const documentedDefault = (timeoutMs: number) => ({
-  provider: "codex" as const,
-  ai_client_instance_id: "codex.default",
-  model: "gpt-5.6-luna",
-  reasoning_effort: "low",
-  timeout_ms: timeoutMs,
-  max_attempts: 2,
-  source: "code" as const,
-  available: true,
-  persistable: true,
-  reason: null
-});
-
-const documentedDefaults = () => ({
-  mcp_memory_answer: documentedDefault(120_000),
-  lcm_summary: documentedDefault(120_000),
-  session_title: documentedDefault(120_000),
-  curated_memory_review: documentedDefault(90_000)
-});
+const documentedDefaults = () =>
+  Object.fromEntries(
+    localAiClientFlowKeys.map((flowKey) => [
+      flowKey,
+      (() => {
+        const documented = documentDefault(codeDefaultAssignmentFor(flowKey));
+        return { ...documented.assignment, ...documented };
+      })()
+    ])
+  );
 
 const modelId = (model: Record<string, unknown>): string | null => {
   const value = model.fullId ?? model.id ?? model.model;
@@ -161,11 +157,17 @@ const registerInstanceListRoute = (
       const repo = requireRepository();
       const user = await authenticate(request);
       const actor = { userId: user.id };
-      const [instances, capabilitySnapshots] = await Promise.all([
+      const [instances, capabilitySnapshots, settings] = await Promise.all([
         repo.listAiClientInstances(actor),
-        repo.listAiClientCapabilitySnapshots(actor)
+        repo.listAiClientCapabilitySnapshots(actor),
+        repo.listLocalMemoryAgentSettings(actor)
       ]);
-      return { instances, capabilitySnapshots };
+      return {
+        instances,
+        capabilitySnapshots,
+        settings,
+        defaults: documentedDefaults()
+      };
     }
   );
 };

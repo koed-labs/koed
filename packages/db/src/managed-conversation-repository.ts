@@ -656,7 +656,7 @@ export const createManagedConversationRepository = (
               409
             );
           }
-          const digestInput = {
+          const expectedDigest = startDigest({
             projectId,
             provider: input.provider,
             aiClientInstanceId: input.aiClientInstanceId,
@@ -664,25 +664,8 @@ export const createManagedConversationRepository = (
             runnerDeviceId: input.runnerDeviceId,
             initialPrompt: input.initialPrompt,
             deferUntilRuntimeBinding: input.deferUntilRuntimeBinding
-          };
-          const expectedDigest = startDigest(digestInput);
-          const persistedOwner = `${execution.rows[0].provider}.default`;
-          const legacyAllowed =
-            input.aiClientInstanceId === persistedOwner &&
-            execution.rows[0].provider === input.provider &&
-            (existing.rows[0].request_digest ===
-              startDigest({ ...digestInput, aiClientInstanceId: undefined }) ||
-              (input.provider === "codex" &&
-                existing.rows[0].request_digest ===
-                  startDigest({
-                    ...digestInput,
-                    provider: undefined,
-                    aiClientInstanceId: undefined
-                  })));
-          if (
-            existing.rows[0].request_digest !== expectedDigest &&
-            !legacyAllowed
-          ) {
+          });
+          if (existing.rows[0].request_digest !== expectedDigest) {
             throw statusError(
               "Managed Conversation idempotency key was reused",
               409

@@ -179,6 +179,34 @@ export const loadLocalAiClientInstanceRegistry = (
   return { version: 1, instances };
 };
 
+const executableContentHashPrefixBytes = 65_536;
+
+// Filesystem mtime resolution and inode reuse are unreliable change signals on
+// some CI and container filesystems, so identity also hashes a bounded prefix
+// of the executable's bytes to guarantee content replacement is detected even
+// when stat metadata coincidentally matches the previous installation.
+const hashExecutableContentPrefix = (executablePath: string): string | null => {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(executablePath, "r");
+    const buffer = Buffer.alloc(executableContentHashPrefixBytes);
+    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    return createHash("sha256")
+      .update(buffer.subarray(0, bytesRead))
+      .digest("hex");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Best-effort close; identity computation must not throw on cleanup.
+      }
+    }
+  }
+};
+
 export const localAiClientInstanceConfigIdentity = (
   instance: LocalAiClientInstanceConfiguration
 ): string => {
@@ -197,6 +225,9 @@ export const localAiClientInstanceConfigIdentity = (
   } catch {
     // Unavailable executable identity must not collide with a valid installation.
   }
+  const executableContentHash = hashExecutableContentPrefix(
+    instance.executablePath
+  );
   return createHash("sha256")
     .update(
       JSON.stringify({
@@ -204,6 +235,7 @@ export const localAiClientInstanceConfigIdentity = (
         driverId: instance.driverId,
         executablePath: instance.executablePath,
         executableStat,
+        executableContentHash,
         configHome: instance.configHome ?? null
       })
     )

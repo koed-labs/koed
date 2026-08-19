@@ -13,11 +13,18 @@ import {
   resolveCodexAppServerBinary,
   runCodexAppServerTurn
 } from "../src/codex-app-server-runner.js";
+import {
+  parseCodexVersion,
+  probeCodexVersion
+} from "../src/ai-client-runner.js";
 
 const writeFakeAppServer = (
   directory: string,
   options: {
     malformedStdout?: string;
+    versionOutput?: string;
+    versionExitCode?: number;
+    versionDelayMs?: number;
     modelPages?: Array<{
       expectedCursor?: string | null;
       response: Record<string, unknown>;
@@ -44,6 +51,12 @@ import readline from "node:readline";
 import fs from "node:fs";
 import path from "node:path";
 
+if (process.argv.includes("--version")) {
+  const delayMs = ${JSON.stringify(options.versionDelayMs ?? 0)};
+  if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  process.stdout.write(${JSON.stringify(options.versionOutput ?? "codex 0.144.0\\n")});
+  process.exit(${JSON.stringify(options.versionExitCode ?? 0)});
+}
 if (process.argv.includes("exec")) {
   console.error("unexpected codex exec invocation");
   process.exit(42);
@@ -188,6 +201,41 @@ describe("Codex app-server runner", () => {
         ["MEMORY_ANSWER_CODEX_BINARY"]
       )
     ).toBe("/new/codex");
+  });
+
+  it("parses Codex version output without retaining command text", () => {
+    expect(parseCodexVersion("codex-cli 0.144.0 (Homebrew)\\n")).toBe(
+      "0.144.0"
+    );
+    expect(parseCodexVersion("codex development build")).toBeNull();
+  });
+
+  it("bounds Codex version discovery and fails malformed output safely", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-codex-version-test-")
+    );
+    try {
+      const executable = writeFakeAppServer(tempDirectory, {
+        versionOutput: "codex 0.144.0\\n"
+      });
+      await expect(
+        probeCodexVersion(executable, process.env, 5_000)
+      ).resolves.toBe("0.144.0");
+
+      const malformed = writeFakeAppServer(tempDirectory, {
+        versionOutput: "codex development build"
+      });
+      await expect(
+        probeCodexVersion(malformed, process.env, 5_000)
+      ).rejects.toThrow("no parseable version");
+
+      const slow = writeFakeAppServer(tempDirectory, { versionDelayMs: 200 });
+      await expect(
+        probeCodexVersion(slow, process.env, 20)
+      ).rejects.toBeDefined();
+    } finally {
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
   });
 
   it("defines minimal safe worker developer instructions", () => {

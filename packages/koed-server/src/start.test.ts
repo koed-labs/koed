@@ -58,6 +58,7 @@ const healthyStatus = (root: string): KoedServerStatus => ({
   redis: { state: "healthy" },
   workerQueues: { state: "healthy" },
   embeddingService: { state: "healthy" },
+  localAiRuntime: { state: "healthy" },
   apiToken: { state: "healthy", configured: true },
   mcpServer: { state: "healthy" },
   captureHook: { state: "healthy" },
@@ -66,6 +67,9 @@ const healthyStatus = (root: string): KoedServerStatus => ({
   codex: { state: "healthy", configured: true },
   claudeCode: { state: "healthy", configured: true, detected: true },
   pi: { state: "healthy", configured: true, detected: true },
+  aiClients: {},
+  aiClientInstances: {},
+  aiClientFlowReadiness: {} as KoedServerStatus["aiClientFlowReadiness"],
   lcmSummaryService: { state: "healthy" },
   deviceIdentity: {
     state: "healthy",
@@ -83,7 +87,8 @@ const healthyStatus = (root: string): KoedServerStatus => ({
     failed: 0,
     notChecked: 0
   },
-  lastVerification: { state: "healthy", checkedAt: "2026-01-01T00:00:00.000Z" }
+  lastVerification: { state: "healthy", checkedAt: "2026-01-01T00:00:00.000Z" },
+  core: { state: "healthy", components: {} }
 });
 
 const createPackagedAppRuntime = (root: string) => {

@@ -1,3 +1,4 @@
+import { aiClientModelLabel } from "@koed/shared";
 import type {
   LocalAiClientAssignment,
   LocalAiClientFlowKey,
@@ -35,12 +36,7 @@ export const modelId = (
 
 export const modelLabel = (
   model: ReadModel["capabilitySnapshots"][number]["models"][number]
-): string => {
-  const details = [model.provider, model.model].filter(Boolean).join("/");
-  return details && details !== model.fullId
-    ? `${model.displayName ?? model.fullId} (${details})`
-    : (model.displayName ?? model.fullId);
-};
+): string => aiClientModelLabel({ ...model, id: model.fullId });
 
 export const snapshotFor = (readModel: ReadModel, instanceId: string) =>
   readModel.capabilitySnapshots.find(

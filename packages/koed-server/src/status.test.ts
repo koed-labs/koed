@@ -15,6 +15,8 @@ import {
   collectKoedServerDoctor,
   collectKoedServerStatus,
   healthy,
+  inspectAiClientFlowReadiness,
+  inspectAiClientInstanceReadiness,
   inspectAiClientReadiness,
   inspectClaudeCode,
   inspectPi,
@@ -100,7 +102,7 @@ describe("status state aggregation", () => {
       now: "2026-01-01T00:00:00.000Z"
     });
 
-    expect(clients.codex.capabilities).toEqual(
+    expect(clients.codex!.capabilities).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: "automatic_capture",
@@ -109,7 +111,7 @@ describe("status state aggregation", () => {
         expect.objectContaining({ id: "mcp_recall", readiness: "ready" })
       ])
     );
-    expect(clients.claude.capabilities).toEqual(
+    expect(clients.claude!.capabilities).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: "automatic_capture",
@@ -117,7 +119,7 @@ describe("status state aggregation", () => {
         })
       ])
     );
-    expect(clients.pi.capabilities).toEqual(
+    expect(clients.pi!.capabilities).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: "managed_conversation_start",
@@ -125,9 +127,162 @@ describe("status state aggregation", () => {
         })
       ])
     );
-    expect(clients.claude.profile.state).toBe("needs_attention");
-    expect(clients.codex.profile.state).toBe("healthy");
+    expect(clients.claude!.profile.state).toBe("needs_attention");
+    expect(clients.codex!.profile.state).toBe("healthy");
   });
+  it("reports independent flow assignment readiness from defaults and settings", () => {
+    const readModel = {
+      instances: [
+        {
+          instanceId: "codex.default",
+          driverId: "codex" as const,
+          displayName: "Codex",
+          configIdentityHash: "hash"
+        }
+      ],
+      settings: [
+        {
+          flowKey: "lcm_summary" as const,
+          provider: "codex" as const,
+          aiClientInstanceId: "codex.default",
+          model: "missing/model",
+          reasoningEffort: "low",
+          timeoutMs: 120_000,
+          maxAttempts: 2
+        }
+      ],
+      defaults: {},
+      capabilitySnapshots: [
+        {
+          instanceId: "codex.default",
+          installationIdentityHash: "hash",
+          clientVersion: "1.0.0",
+          authenticationState: "authenticated" as const,
+          healthState: "healthy" as const,
+          models: [{ id: "gpt-5.6-luna", supportedReasoningEfforts: ["low"] }],
+          capabilities: {
+            descriptors: {
+              local_synthesis: {
+                id: "local_synthesis",
+                support: "supported" as const,
+                readiness: "ready" as const,
+                diagnostics: []
+              }
+            }
+          },
+          observedAt: "2026-01-01T00:00:00.000Z",
+          expiresAt: "2026-01-01T00:10:00.000Z"
+        }
+      ]
+    };
+    const readiness = inspectAiClientFlowReadiness({
+      environment: {},
+      capabilityReadModel: readModel,
+      now: "2026-01-01T00:01:00.000Z"
+    });
+    expect(readiness.lcm_summary.state).toBe("needs_attention");
+    expect(readiness.mcp_memory_answer.state).toBe("healthy");
+    expect(readiness.session_title.state).toBe("healthy");
+    expect(readiness.curated_memory_review.state).toBe("healthy");
+  });
+
+  it("reports explicit unavailable defaults as nonblocking attention", () => {
+    const readiness = inspectAiClientFlowReadiness({
+      environment: { MEMORY_ANSWER_PROVIDER: "pi" },
+      capabilityReadModel: {
+        instances: [],
+        capabilitySnapshots: [],
+        defaults: {
+          mcp_memory_answer: {
+            source: "code",
+            available: false,
+            assignment: null,
+            reason: "Operator selected no default."
+          }
+        }
+      },
+      now: "2026-01-01T00:00:00.000Z"
+    });
+    expect(readiness.mcp_memory_answer).toMatchObject({
+      state: "needs_attention",
+      source: "unavailable",
+      assignment: null
+    });
+  });
+
+  it("reports every AI Client instance without removing provider readiness", () => {
+    const baseInput: Parameters<typeof inspectAiClientReadiness>[0] = {
+      codex: { ...healthy(), configured: true },
+      claudeCode: {
+        ...notConfigured("Claude Code is not configured."),
+        configured: false,
+        detected: false
+      },
+      pi: {
+        ...notConfigured("Pi is not configured."),
+        configured: false,
+        detected: false
+      },
+      codexTranscriptWatcher: healthy(),
+      claudeTranscriptWatcher: notConfigured(
+        "Claude Transcript Watcher is not configured."
+      ),
+      mcpServer: healthy(),
+      localAiRuntime: healthy(),
+      capabilityReadModel: {
+        instances: [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            displayName: "Codex"
+          },
+          {
+            instanceId: "codex.work",
+            driverId: "codex",
+            displayName: "Codex Work"
+          }
+        ],
+        capabilitySnapshots: ["codex.default", "codex.work"].map(
+          (instanceId) => ({
+            instanceId,
+            clientVersion: "1.0.0",
+            authenticationState: "authenticated" as const,
+            healthState: "healthy" as const,
+            models: [{ id: "model", supportedReasoningEfforts: ["high"] }],
+            capabilities: {
+              descriptors: {
+                local_synthesis: {
+                  id: "local_synthesis",
+                  support: "supported" as const,
+                  readiness: "ready" as const,
+                  diagnostics: []
+                }
+              }
+            },
+            observedAt: "2026-01-01T00:00:00.000Z",
+            expiresAt: "2026-01-01T00:10:00.000Z"
+          })
+        )
+      },
+      now: "2026-01-01T00:00:00.000Z"
+    };
+    const aiClients = inspectAiClientReadiness(baseInput);
+    const aiClientInstances = inspectAiClientInstanceReadiness(baseInput);
+
+    expect(aiClients.codex?.instanceId).toBe("codex.default");
+    expect(Object.keys(aiClientInstances)).toEqual([
+      "codex.default",
+      "codex.work"
+    ]);
+    expect(aiClientInstances["codex.default"]?.instanceId).toBe(
+      "codex.default"
+    );
+    expect(aiClientInstances["codex.work"]).toMatchObject({
+      instanceId: "codex.work",
+      displayName: "Codex Work"
+    });
+  });
+
   it("isolates a broken client inspector from other clients and core status", async () => {
     const root = tempDir();
     const configPath = resolve(root, "config.toml");
@@ -212,9 +367,9 @@ describe("status state aggregation", () => {
         now: "2026-01-01T00:00:00.000Z"
       });
       const readiness = clients[driverId];
-      expect(readiness.snapshotState).toBe("current");
-      expect(readiness.version).toBe("1.2.3");
-      expect(readiness.capabilities).toEqual(
+      expect(readiness!.snapshotState).toBe("current");
+      expect(readiness!.version).toBe("1.2.3");
+      expect(readiness!.capabilities).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             id: "local_synthesis",
@@ -278,7 +433,7 @@ describe("status state aggregation", () => {
       now: "2026-01-01T00:00:00.000Z"
     });
 
-    expect(clients.codex.capabilities).toEqual(
+    expect(clients.codex!.capabilities).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: "automatic_capture",
@@ -344,8 +499,8 @@ describe("status state aggregation", () => {
       },
       now: "2026-01-01T00:00:00.000Z"
     });
-    expect(clients.codex.snapshotState).toBe("stale");
-    expect(clients.codex.capabilities).toEqual(
+    expect(clients.codex!.snapshotState).toBe("stale");
+    expect(clients.codex!.capabilities).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: "automatic_capture",
@@ -423,7 +578,7 @@ describe("status state aggregation", () => {
       },
       now: "2026-01-01T00:00:00.000Z"
     });
-    expect(clients.codex.capabilities).toEqual(
+    expect(clients.codex!.capabilities).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: "local_synthesis",
@@ -431,7 +586,7 @@ describe("status state aggregation", () => {
         })
       ])
     );
-    expect(clients.claude.capabilities).toEqual(
+    expect(clients.claude!.capabilities).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: "local_synthesis", readiness: "ready" })
       ])
@@ -452,7 +607,7 @@ describe("status state aggregation", () => {
         fetch: async (url) => {
           if (String(url).endsWith("/v1/access/check"))
             return response(true, 200, {});
-          if (String(url).endsWith("/v1/memory/ai-client-instances")) {
+          if (String(url).endsWith("/v1/memory/local-agent-settings")) {
             throw new Error("capability API unavailable");
           }
           return response(true, 200, { checks: [] });
@@ -462,13 +617,98 @@ describe("status state aggregation", () => {
       }
     );
     expect(status.core.state).toBeDefined();
-    expect(status.aiClients.codex.snapshotState).toBe("unknown");
+    expect(status.aiClients.codex!.snapshotState).toBe("unknown");
     expect(
-      status.aiClients.codex.capabilities.find(
+      status.aiClients.codex!.capabilities.find(
         (capability) => capability.id === "local_synthesis"
       )
     ).toMatchObject({ readiness: "unknown" });
     expect(JSON.stringify(status)).not.toContain("local-token");
+  });
+
+  it("loads persisted User flow assignments into status readiness", async () => {
+    const root = tempDir();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_RUNTIME_MODE: "external",
+        KOED_DEPENDENCY_MODE: "external",
+        MEMORY_API_TOKEN: "local-token",
+        MEMORY_ANSWER_PROVIDER: "claude"
+      },
+      {
+        fetch: async (url) => {
+          const pathname = new URL(String(url)).pathname;
+          if (pathname === "/v1/access/check") return response(true, 200, {});
+          if (pathname === "/v1/memory/local-agent-settings") {
+            return response(true, 200, {
+              instances: [
+                {
+                  instanceId: "codex.default",
+                  driverId: "codex",
+                  displayName: "Codex",
+                  enabled: true,
+                  configIdentityHash: "identity"
+                }
+              ],
+              settings: [
+                {
+                  flowKey: "mcp_memory_answer",
+                  provider: "codex",
+                  aiClientInstanceId: "codex.default",
+                  model: "openai/gpt-test",
+                  reasoningEffort: "high",
+                  timeoutMs: 30_000,
+                  maxAttempts: 1
+                }
+              ],
+              defaults: {},
+              capabilitySnapshots: [
+                {
+                  instanceId: "codex.default",
+                  installationIdentityHash: "identity",
+                  clientVersion: "1.0.0",
+                  authenticationState: "authenticated",
+                  healthState: "healthy",
+                  models: [
+                    {
+                      fullId: "openai/gpt-test",
+                      supportedReasoningEfforts: ["high"]
+                    }
+                  ],
+                  capabilities: {
+                    descriptors: {
+                      local_synthesis: {
+                        id: "local_synthesis",
+                        support: "supported",
+                        readiness: "ready",
+                        diagnostics: []
+                      }
+                    }
+                  },
+                  observedAt: "2026-01-01T00:00:00.000Z",
+                  expiresAt: "2026-01-01T00:10:00.000Z",
+                  stale: false
+                }
+              ]
+            });
+          }
+          return response(true, 200, { checks: [] });
+        },
+        spawnSync: () => spawnResult(""),
+        now: () => new Date("2026-01-01T00:01:00.000Z")
+      }
+    );
+
+    expect(status.aiClientFlowReadiness.mcp_memory_answer).toMatchObject({
+      state: "healthy",
+      source: "setting",
+      assignment: {
+        provider: "codex",
+        model: "openai/gpt-test"
+      }
+    });
   });
 
   it.each([
@@ -1220,6 +1460,14 @@ describe("status and doctor JSON contracts", () => {
     expect(doctor.state).toBe("needs_attention");
     expect(doctor.summary).toContain("Operator-managed Redis URL");
     expect(doctor.checks.map((check) => check.id)).toContain("mcpServer");
+    expect(doctor.checks.map((check) => check.id)).toEqual(
+      expect.arrayContaining([
+        "aiClientFlow:mcp_memory_answer",
+        "aiClientFlow:lcm_summary",
+        "aiClientFlow:session_title",
+        "aiClientFlow:curated_memory_review"
+      ])
+    );
   });
 
   it("keeps API Tokens out of MCP doctor checks", async () => {

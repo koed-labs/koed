@@ -51,14 +51,16 @@ const readModels = (value: unknown) =>
   Array.isArray(value)
     ? value.flatMap((candidate) => {
         const item = objectValue(candidate);
-        const fullId =
-          text(item?.fullId) ?? text(item?.id) ?? text(item?.model);
+        const provider = text(item?.provider);
+        const model = text(item?.model);
+        const composedFullId = [provider, model].filter(Boolean).join("/");
+        const fullId = text(item?.fullId) ?? (composedFullId || text(item?.id));
         if (!item || !fullId) return [];
         return [
           {
             displayName: text(item.displayName),
-            provider: text(item.provider),
-            model: text(item.model),
+            provider,
+            model,
             fullId,
             reasoningEfforts: readReasoningEfforts(
               item.supportedReasoningEfforts

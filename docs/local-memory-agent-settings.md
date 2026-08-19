@@ -52,6 +52,18 @@ is intentionally hidden. Reset is an explicit DELETE for one flow assignment.
 The read model includes documented defaults so a missing assignment can be
 identified without changing persisted state.
 
+These are separate health gates, not one global provider check:
+
+| Capability family                | Used by                                                                        | Independent failure boundary                  |
+| -------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------- |
+| Automatic Capture and MCP Recall | Provider-specific watcher and Memory Answer access                             | That AI Client's capture or recall path       |
+| Local Synthesis                  | Memory Answer, LCM Summary, Session Title, or Curated Memory Review assignment | Selected flow only                            |
+| Managed Conversation lifecycle   | Desktop start, resume, send, handoff, and fork                                 | Exact persisted owner and requested operation |
+
+A client may be healthy for capture or Local Synthesis while unsupported for
+Managed Conversation. A current core status does not override any per-client,
+per-capability, or per-flow gate.
+
 `MEMORY_CODEX_APP_SERVER_BINARY` selects the Codex app-server binary.
 `KOED_CLAUDE_CODE_EXECUTABLE` selects a separately installed Claude Code
 executable for Claude-backed flows. Claude execution uses only pinned official

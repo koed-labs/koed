@@ -20,6 +20,8 @@ export type {
 } from "./ai-client-source-adapters.js";
 export {
   aiClientCapabilityIds,
+  aiClientDiagnosticCodeMaxLength,
+  aiClientDiagnosticMessageMaxLength,
   aiClientDriverIdMaxLength,
   aiClientIdentifierPattern,
   aiClientInstanceIdMaxLength,
@@ -27,7 +29,9 @@ export {
   assertAiClientInstanceId,
   defaultAiClientInstanceId,
   isSupportedAiClientDriverId,
-  supportedAiClientDriverIds
+  supportedAiClientDriverIds,
+  aiClientModelLabel,
+  sanitizeAiClientDiagnostics
 } from "./ai-client-contract.js";
 export type {
   AiClientCapabilityDescriptor,
@@ -47,6 +51,18 @@ export type {
   AiClientRecoveryActionId,
   SupportedAiClientDriverId
 } from "./ai-client-contract.js";
+export {
+  codeDefaultAssignmentFor,
+  documentDefault,
+  environmentDefaultFor,
+  localAiClientDefaultSpec,
+  localAiClientFlowKeys
+} from "./ai-client-flow-defaults.js";
+export type {
+  LocalAiClientDefault,
+  LocalAiClientFlowKey,
+  LocalAiClientRuntimeAssignment
+} from "./ai-client-flow-defaults.js";
 
 export {
   resolveTeamCollaborationEnabled,

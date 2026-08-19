@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import {
   aiClientCapabilityIds,
   defaultAiClientInstanceId,
+  sanitizeAiClientDiagnostics,
   type AiClientCapabilityDescriptor,
   type AiClientDiagnostic,
   type AiClientModelCapability,
@@ -199,6 +200,48 @@ export const assertClaudeCodeVersionCompatibility = (value: string): void => {
 };
 
 const execFileAsync = promisify(execFile);
+const CODEX_VERSION_PROBE_TIMEOUT_MS = 5_000;
+const CODEX_VERSION_PROBE_MAX_BUFFER = 16 * 1024;
+
+export const parseCodexVersion = (output: string): string | null => {
+  const normalized = [...output]
+    .map((character) =>
+      character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127
+        ? " "
+        : character
+    )
+    .join("");
+  const match = normalized.match(
+    /(?:^|[^0-9])v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?![0-9.])/
+  );
+  return match?.[1] ?? null;
+};
+
+export const probeCodexVersion = async (
+  executablePath: string,
+  environment: NodeJS.ProcessEnv,
+  timeoutMs = CODEX_VERSION_PROBE_TIMEOUT_MS
+): Promise<string> => {
+  const requestedTimeoutMs = Number.isFinite(timeoutMs)
+    ? timeoutMs
+    : CODEX_VERSION_PROBE_TIMEOUT_MS;
+  const boundedTimeoutMs = Math.min(
+    CODEX_VERSION_PROBE_TIMEOUT_MS,
+    Math.max(1, requestedTimeoutMs)
+  );
+  const result = await execFileAsync(executablePath, ["--version"], {
+    env: environment,
+    timeout: boundedTimeoutMs,
+    maxBuffer: CODEX_VERSION_PROBE_MAX_BUFFER,
+    windowsHide: true,
+    encoding: "utf8"
+  });
+  const version = parseCodexVersion(String(result.stdout));
+  if (!version) {
+    throw new Error("Codex --version returned no parseable version.");
+  }
+  return version;
+};
 
 export interface ClaudeExecutableDiscoveryOptions {
   platform?: NodeJS.Platform;
@@ -869,9 +912,9 @@ export const aiClientDiscoveryError = (
   const authenticationState = /auth|sign in|logged in|credential/i.test(message)
     ? "unauthenticated"
     : "unknown";
-  const diagnostics: AiClientDiagnostic[] = [
+  const diagnostics: AiClientDiagnostic[] = sanitizeAiClientDiagnostics([
     { code: "discovery_failed", message, severity: "error" }
-  ];
+  ]);
   return {
     installationIdentityHash: installationIdentityHash(
       input.executablePath ?? input.instanceId
@@ -920,6 +963,10 @@ const codexDriver: AiClientDriver = {
         input.executablePath ?? resolveCodexAppServerBinary(input.environment);
       const cwd = input.cwd ?? process.cwd();
       const model = input.environment.MEMORY_CODEX_MODEL ?? "gpt-5.4-mini";
+      const clientVersion = await probeCodexVersion(
+        executablePath,
+        input.environment
+      );
       const models = await listCodexAppServerModels(
         {
           appServerBinary: executablePath,
@@ -969,7 +1016,7 @@ const codexDriver: AiClientDriver = {
       }
       return {
         installationIdentityHash: installationIdentityHash(executablePath),
-        clientVersion: null,
+        clientVersion,
         authenticationState: "authenticated",
         healthState: "healthy",
         models: normalized,

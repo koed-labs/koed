@@ -173,6 +173,7 @@ describe("Local AI Client settings selectors", () => {
     expect(container.textContent).toContain("Memory Answer");
     expect(container.textContent).toContain("Claude Work");
     expect(container.textContent).toContain("openai/gpt-5");
+    expect(container.textContent).toContain("GPT 5 (openai/gpt-5)");
     expect(container.textContent).toContain("stale capability snapshot");
     expect(container.textContent).not.toContain("Manual Memory Answer");
     expect(container.querySelectorAll("select").length).toBeGreaterThan(0);

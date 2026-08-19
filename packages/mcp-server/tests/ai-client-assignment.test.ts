@@ -93,6 +93,32 @@ describe("AI Client assignment revalidation", () => {
     }
   );
 
+  it.each([
+    "mcp_memory_answer",
+    "lcm_summary",
+    "session_title",
+    "curated_memory_review"
+  ] as const)(
+    "checks local synthesis readiness for %s assignment",
+    async (flowKey) => {
+      const client = clientFor("codex", true, flowKey);
+      const result = await client.listAiClientInstances();
+      const descriptor = result.capabilitySnapshots[0]!.capabilities
+        .descriptors!.local_synthesis as Record<string, unknown>;
+      descriptor.readiness = "not_ready";
+      client.listAiClientInstances.mockResolvedValue(result);
+
+      await expect(
+        resolveLocalMemoryAgentConfig({
+          client,
+          flowKey,
+          fallback: () => "env-default",
+          fromSetting: () => "assigned"
+        })
+      ).rejects.toThrow(new RegExp(`local synthesis.*${flowKey}`));
+    }
+  );
+
   it("uses env default only when assignment is absent", async () => {
     const client = {
       listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),

@@ -38,7 +38,17 @@ import {
   MINIMUM_CLAUDE_CODE_VERSION,
   resolveClaudeSettingsPath
 } from "./claude-setup.js";
-import type { AiClientCapabilityDescriptor } from "@koed/shared";
+import { aiClientReadinessUnknown } from "./types.js";
+import {
+  codeDefaultAssignmentFor,
+  documentDefault,
+  environmentDefaultFor,
+  localAiClientFlowKeys,
+  type AiClientCapabilityDescriptor,
+  type LocalAiClientDefault,
+  type LocalAiClientFlowKey,
+  type LocalAiClientRuntimeAssignment
+} from "@koed/shared";
 import type {
   KoedServerComponentState,
   KoedServerComponentStatus,
@@ -46,6 +56,7 @@ import type {
   KoedServerDoctorResult,
   KoedServerRuntimeState,
   KoedServerStatus,
+  KoedAiClientFlowReadiness,
   KoedAiClientReadiness
 } from "./types.js";
 
@@ -707,7 +718,7 @@ const fetchAiClientCapabilityReadModel = async (
   if (!token) return null;
   try {
     const response = await fetcher(
-      new URL("/v1/memory/ai-client-instances", apiUrl),
+      new URL("/v1/memory/local-agent-settings", apiUrl),
       {
         headers: { authorization: `Bearer ${token.token}` }
       }
@@ -1072,12 +1083,24 @@ const readinessForState = (
 type CapabilitySnapshotReadModel = {
   instances: Array<{
     instanceId: string;
-    driverId: string;
+    driverId: "codex" | "claude" | "pi";
     displayName: string;
+    configIdentityHash?: string | null;
     enabled?: boolean;
   }>;
+  settings?: Array<{
+    flowKey: LocalAiClientFlowKey;
+    provider: "codex" | "claude" | "pi";
+    aiClientInstanceId: string;
+    model: string;
+    reasoningEffort: string;
+    timeoutMs: number;
+    maxAttempts: number;
+  }>;
+  defaults?: Partial<Record<LocalAiClientFlowKey, LocalAiClientDefault>>;
   capabilitySnapshots: Array<{
     instanceId: string;
+    installationIdentityHash?: string;
     clientVersion: string | null;
     authenticationState: "authenticated" | "unauthenticated" | "unknown";
     healthState: "healthy" | "unavailable" | "incompatible" | "error";
@@ -1155,25 +1178,35 @@ const descriptorFor = (
 const snapshotFor = (
   readModel: CapabilitySnapshotReadModel | null,
   driverId: "codex" | "claude" | "pi",
-  now: string
+  now: string,
+  preferredInstanceId?: string
 ): SelectedCapabilitySnapshot | null => {
   if (!readModel) return null;
-  const instance =
-    readModel.instances.find(
-      (candidate) =>
-        typeof candidate.instanceId === "string" &&
-        typeof candidate.driverId === "string" &&
-        candidate.driverId === driverId &&
-        candidate.instanceId === `${driverId}.default` &&
-        candidate.enabled !== false
-    ) ??
-    readModel.instances.find(
-      (candidate) =>
-        typeof candidate.instanceId === "string" &&
-        typeof candidate.driverId === "string" &&
-        candidate.driverId === driverId &&
-        candidate.enabled !== false
-    );
+  const preferredInstance = preferredInstanceId
+    ? readModel.instances.find(
+        (candidate) =>
+          candidate.instanceId === preferredInstanceId &&
+          candidate.driverId === driverId &&
+          candidate.enabled !== false
+      )
+    : undefined;
+  const instance = preferredInstanceId
+    ? preferredInstance
+    : (readModel.instances.find(
+        (candidate) =>
+          typeof candidate.instanceId === "string" &&
+          typeof candidate.driverId === "string" &&
+          candidate.driverId === driverId &&
+          candidate.instanceId === `${driverId}.default` &&
+          candidate.enabled !== false
+      ) ??
+      readModel.instances.find(
+        (candidate) =>
+          typeof candidate.instanceId === "string" &&
+          typeof candidate.driverId === "string" &&
+          candidate.driverId === driverId &&
+          candidate.enabled !== false
+      ));
   if (!instance) return null;
   const snapshot = readModel.capabilitySnapshots
     .filter(
@@ -1281,6 +1314,8 @@ export const inspectAiClientReadiness = (input: {
   mcpServer: KoedServerComponentStatus;
   localAiRuntime: KoedServerComponentStatus;
   capabilityReadModel?: CapabilitySnapshotReadModel | null;
+  /** Select one instance for its driver's readiness view. */
+  instanceId?: string;
   now: string;
 }): Record<string, KoedAiClientReadiness> => {
   const clients = [
@@ -1309,7 +1344,8 @@ export const inspectAiClientReadiness = (input: {
       const snapshot = snapshotFor(
         input.capabilityReadModel ?? null,
         driverId,
-        input.now
+        input.now,
+        input.instanceId
       );
       const profileReady = readinessForState(profile.state);
       const captureFallback =
@@ -1450,6 +1486,215 @@ export const inspectAiClientReadiness = (input: {
     })
   );
 };
+
+/**
+ * Build readiness keyed by persisted instance id. `inspectAiClientReadiness`
+ * remains provider-keyed for older status consumers.
+ */
+export const inspectAiClientInstanceReadiness = (
+  input: Parameters<typeof inspectAiClientReadiness>[0]
+): Record<string, KoedAiClientReadiness> => {
+  const instances = input.capabilityReadModel?.instances ?? [];
+  return Object.fromEntries(
+    instances.map((instance) => {
+      const readiness = inspectAiClientReadiness({
+        ...input,
+        instanceId: instance.instanceId
+      })[instance.driverId];
+      return [
+        instance.instanceId,
+        readiness
+          ? {
+              ...readiness,
+              instanceId: instance.instanceId,
+              displayName: instance.displayName
+            }
+          : aiClientReadinessUnknown(
+              instance.driverId,
+              instance.displayName,
+              input.now
+            )
+      ];
+    })
+  ) as Record<string, KoedAiClientReadiness>;
+};
+
+const assignmentFromSetting = (
+  setting: NonNullable<CapabilitySnapshotReadModel["settings"]>[number]
+): LocalAiClientRuntimeAssignment => ({
+  provider: setting.provider,
+  ai_client_instance_id: setting.aiClientInstanceId,
+  model: setting.model,
+  reasoning_effort: setting.reasoningEffort,
+  timeout_ms: setting.timeoutMs,
+  max_attempts: setting.maxAttempts
+});
+
+const modelIdentifier = (model: unknown): string | null => {
+  if (!model || typeof model !== "object") return null;
+  const value = model as Record<string, unknown>;
+  for (const candidate of [value.fullId, value.id, value.model]) {
+    if (typeof candidate === "string" && candidate.trim())
+      return candidate.trim();
+  }
+  return null;
+};
+
+const modelEfforts = (model: unknown): string[] => {
+  if (!model || typeof model !== "object") return [];
+  const values = (model as Record<string, unknown>).supportedReasoningEfforts;
+  return Array.isArray(values)
+    ? values.flatMap((value) =>
+        typeof value === "string"
+          ? [value]
+          : value &&
+              typeof value === "object" &&
+              typeof (value as Record<string, unknown>).reasoningEffort ===
+                "string"
+            ? [(value as Record<string, unknown>).reasoningEffort as string]
+            : []
+      )
+    : [];
+};
+
+const flowAssignmentReadiness = (input: {
+  flowKey: LocalAiClientFlowKey;
+  environment: NodeJS.ProcessEnv;
+  readModel: CapabilitySnapshotReadModel | null;
+  now: string;
+}): KoedAiClientFlowReadiness => {
+  const documented =
+    input.readModel?.defaults?.[input.flowKey] ??
+    documentDefault(codeDefaultAssignmentFor(input.flowKey));
+  const setting = input.readModel?.settings?.find(
+    (candidate) => candidate.flowKey === input.flowKey
+  );
+  const resolved = setting
+    ? {
+        source: "setting" as const,
+        available: true,
+        assignment: assignmentFromSetting(setting),
+        reason: null
+      }
+    : environmentDefaultFor(input.flowKey, documented, input.environment);
+  const source = resolved.source;
+  if (!resolved.assignment || !resolved.available) {
+    return {
+      flowKey: input.flowKey,
+      source: "unavailable",
+      assignment: resolved.assignment,
+      state: "needs_attention",
+      message:
+        resolved.reason ?? "No effective AI Client assignment is available."
+    };
+  }
+  const assignment = resolved.assignment;
+  const instance = input.readModel?.instances.find(
+    (candidate) => candidate.instanceId === assignment.ai_client_instance_id
+  );
+  if (!instance || instance.enabled === false) {
+    return {
+      flowKey: input.flowKey,
+      source,
+      assignment,
+      state: "needs_attention",
+      message: `AI Client instance "${assignment.ai_client_instance_id}" is unavailable for ${input.flowKey}.`
+    };
+  }
+  if (instance.driverId !== assignment.provider) {
+    return {
+      flowKey: input.flowKey,
+      source,
+      assignment,
+      state: "needs_attention",
+      message: `AI Client instance "${instance.instanceId}" belongs to another AI Client driver.`
+    };
+  }
+  const snapshot = snapshotFor(
+    input.readModel,
+    instance.driverId,
+    input.now,
+    instance.instanceId
+  );
+  const unavailable = (message: string): KoedAiClientFlowReadiness => ({
+    flowKey: input.flowKey,
+    source,
+    assignment,
+    state: "needs_attention",
+    message
+  });
+  if (!snapshot || snapshot.stale) {
+    return unavailable(
+      `AI Client instance "${instance.instanceId}" has no current capability snapshot.`
+    );
+  }
+  if (
+    !instance.configIdentityHash ||
+    !snapshot.installationIdentityHash ||
+    snapshot.installationIdentityHash !== instance.configIdentityHash
+  ) {
+    return unavailable(
+      `AI Client instance "${instance.instanceId}" capability identity is unavailable or changed.`
+    );
+  }
+  if (snapshot.authenticationState !== "authenticated") {
+    return unavailable(
+      `AI Client instance "${instance.instanceId}" is not authenticated.`
+    );
+  }
+  if (snapshot.healthState !== "healthy") {
+    return unavailable(
+      `AI Client instance "${instance.instanceId}" is not healthy.`
+    );
+  }
+  const synthesis = descriptorFor(snapshot, "local_synthesis");
+  if (
+    !synthesis ||
+    synthesis.support !== "supported" ||
+    synthesis.readiness !== "ready"
+  ) {
+    return unavailable(
+      `AI Client instance "${instance.instanceId}" local synthesis is unavailable.`
+    );
+  }
+  const model = snapshot.models.find(
+    (candidate) => modelIdentifier(candidate) === assignment.model
+  );
+  if (!model) {
+    return unavailable(
+      `Model "${assignment.model}" is unavailable on AI Client instance "${instance.instanceId}".`
+    );
+  }
+  if (!modelEfforts(model).includes(assignment.reasoning_effort)) {
+    return unavailable(
+      `Reasoning effort "${assignment.reasoning_effort}" is unavailable for model "${assignment.model}".`
+    );
+  }
+  return {
+    flowKey: input.flowKey,
+    source,
+    assignment,
+    state: "healthy",
+    message: `AI Client instance "${instance.instanceId}" is ready for ${input.flowKey}.`
+  };
+};
+
+export const inspectAiClientFlowReadiness = (input: {
+  environment: NodeJS.ProcessEnv;
+  capabilityReadModel?: CapabilitySnapshotReadModel | null;
+  now: string;
+}): Record<LocalAiClientFlowKey, KoedAiClientFlowReadiness> =>
+  Object.fromEntries(
+    localAiClientFlowKeys.map((flowKey) => [
+      flowKey,
+      flowAssignmentReadiness({
+        flowKey,
+        environment: input.environment,
+        readModel: input.capabilityReadModel ?? null,
+        now: input.now
+      })
+    ])
+  ) as Record<LocalAiClientFlowKey, KoedAiClientFlowReadiness>;
 
 export const evaluateAiClientReadiness = (
   readiness: KoedAiClientReadiness | null | undefined
@@ -1856,7 +2101,7 @@ export const collectKoedServerStatus = async (
   };
   const coreState = aggregateState(Object.values(coreComponents));
   const lastVerification = inspectLastVerification(paths, deps);
-  const aiClients = inspectAiClientReadiness({
+  const readinessInput = {
     codex,
     claudeCode,
     pi,
@@ -1866,6 +2111,13 @@ export const collectKoedServerStatus = async (
     localAiRuntime,
     capabilityReadModel,
     now: deps.now().toISOString()
+  };
+  const aiClients = inspectAiClientReadiness(readinessInput);
+  const aiClientInstances = inspectAiClientInstanceReadiness(readinessInput);
+  const aiClientFlowReadiness = inspectAiClientFlowReadiness({
+    environment: serviceEnvironment,
+    capabilityReadModel,
+    now: readinessInput.now
   });
   const [deviceIdentity, upstreamBackends] = await Promise.all([
     inspectDeviceIdentity(paths, environment),
@@ -1893,6 +2145,8 @@ export const collectKoedServerStatus = async (
     claudeCode,
     pi,
     aiClients,
+    aiClientInstances,
+    aiClientFlowReadiness,
     lcmSummaryService,
     deviceIdentity,
     upstreamBackends,
@@ -1936,6 +2190,14 @@ export const collectKoedServerDoctor = async (
     ["claudeCode", "Claude Code configuration", status.claudeCode],
     ["pi", "Pi configuration", status.pi],
     ["lcmSummaryService", "LCM Summary Service", status.lcmSummaryService],
+    ...localAiClientFlowKeys.map(
+      (flowKey) =>
+        [
+          `aiClientFlow:${flowKey}`,
+          `${flowKey} AI Client assignment`,
+          status.aiClientFlowReadiness[flowKey]
+        ] as const
+    ),
     ["deviceIdentity", "Device identity", status.deviceIdentity],
     ["upstreamBackends", "Upstream Backends", status.upstreamBackends],
     ["lastVerification", "Last verification", status.lastVerification]

@@ -1,10 +1,20 @@
-import type { AiClientCapabilityDescriptor } from "@koed/shared";
+import type {
+  AiClientCapabilityDescriptor,
+  LocalAiClientFlowKey,
+  LocalAiClientRuntimeAssignment
+} from "@koed/shared";
 
 export type KoedServerComponentState =
   | "not_configured"
   | "starting"
   | "healthy"
   | "needs_attention";
+
+export interface KoedAiClientFlowReadiness extends KoedServerComponentStatus {
+  flowKey: LocalAiClientFlowKey;
+  source: "setting" | "environment" | "code" | "unavailable";
+  assignment: LocalAiClientRuntimeAssignment | null;
+}
 
 export interface KoedAiClientReadiness {
   driverId: "codex" | "claude" | "pi";
@@ -67,7 +77,14 @@ export interface KoedServerStatus {
     detected: boolean;
   };
   pi: KoedServerComponentStatus & { configured: boolean; detected: boolean };
+  /** Legacy provider-keyed readiness view. Kept for existing clients. */
   aiClients: Record<string, KoedAiClientReadiness>;
+  /** Instance-keyed readiness view for multi-instance and flow assignments. */
+  aiClientInstances: Record<string, KoedAiClientReadiness>;
+  aiClientFlowReadiness: Record<
+    LocalAiClientFlowKey,
+    KoedAiClientFlowReadiness
+  >;
   lcmSummaryService: KoedServerComponentStatus;
   deviceIdentity: KoedServerComponentStatus & {
     health: string;

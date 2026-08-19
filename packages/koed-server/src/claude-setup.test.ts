@@ -16,8 +16,8 @@ import {
 } from "./claude-setup.js";
 
 const temporaryDirectories: string[] = [];
-const spawnResult = (stdout = "", status = 0) =>
-  ({ stdout, stderr: "", status, signal: null, pid: 1, output: [] }) as never;
+const spawnResult = (stdout = "", status = 0, stderr = "") =>
+  ({ stdout, stderr, status, signal: null, pid: 1, output: [] }) as never;
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
@@ -260,7 +260,7 @@ describe("Claude Code setup", () => {
         if (args[0] === "--version")
           return spawnResult("2.1.227 (Claude Code)\\n");
         if (args[0] === "mcp" && args[1] === "get") {
-          return { ...spawnResult("", 1), stderr: "not found" } as never;
+          return spawnResult("", 1, "not found");
         }
         return spawnResult();
       }) as never

@@ -84,17 +84,15 @@ filesystem guesses:
 - submit one User prompt with a caller idempotency key;
 - stream typed lifecycle events;
 - report provider Conversation, turn, and item identities;
-- quiesce after the current safe boundary;
 - seal and report the durable source boundary;
-- stop without accepting more commands;
 - declare provider and artifact format compatibility;
 - confirm whether restoration preserved the same provider Conversation
   identity.
 
-The current published AI Client contract marks cancel, approval interaction, and
-provider-token streaming unsupported until their end-to-end APIs and Desktop
-surfaces exist. Durable lifecycle reconciliation is not provider-token
-streaming. Codex uses app-server mode behind this interface. Provider credentials,
+The current published AI Client contract keeps cancellation, approval
+interaction, and provider-token streaming unsupported for Codex, Claude Code,
+and Pi Managed Conversation UI. Desktop exposes no controls for these bounded
+differences. Codex uses app-server mode behind this interface. Provider credentials,
 provider home, app-server stdio, and raw protocol messages remain inside the
 runner boundary.
 

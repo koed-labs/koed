@@ -70,6 +70,30 @@ const driver = (
 };
 
 describe("AI Client capability publisher", () => {
+  it("publishes no instances for an empty explicit registry", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-publisher-empty-")
+    );
+    roots.push(root);
+    const registryPath = path.join(root, "instances.json");
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({ version: 1, instances: [] })
+    );
+    const apiClient = {
+      upsertAiClientInstance: vi.fn(async () => ({})),
+      recordAiClientCapabilitySnapshot: vi.fn(async () => ({}))
+    } as unknown as MemoryApiClient;
+
+    await expect(
+      publishAiClientCapabilities(apiClient, {
+        KOED_AI_CLIENT_INSTANCE_REGISTRY: registryPath
+      })
+    ).resolves.toEqual([]);
+    expect(apiClient.upsertAiClientInstance).not.toHaveBeenCalled();
+    expect(apiClient.recordAiClientCapabilitySnapshot).not.toHaveBeenCalled();
+  });
+
   it("publishes only explicitly configured instances", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-publisher-"));
     roots.push(root);

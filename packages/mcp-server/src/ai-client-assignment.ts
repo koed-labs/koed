@@ -53,12 +53,26 @@ const effortMetadata = (model: Record<string, unknown>): string[] | null => {
   return efforts.length > 0 ? efforts : null;
 };
 
-const localSynthesisIsReady = (snapshot: AssignedSnapshot): boolean => {
+const requiredCapabilityForFlow: Record<
+  LocalMemoryAgentFlowKey,
+  keyof typeof aiClientCapabilityIds
+> = {
+  mcp_memory_answer: "localSynthesis",
+  manual_memory_answer: "localSynthesis",
+  lcm_summary: "localSynthesis",
+  curated_memory_review: "localSynthesis",
+  session_title: "localSynthesis"
+};
+
+const capabilityIsReady = (
+  snapshot: AssignedSnapshot,
+  flowKey: LocalMemoryAgentFlowKey
+): boolean => {
   const descriptors = snapshot.capabilities.descriptors;
   if (!descriptors || typeof descriptors !== "object") return false;
-  const descriptor = (descriptors as Record<string, unknown>)[
-    aiClientCapabilityIds.localSynthesis
-  ];
+  const capabilityId =
+    aiClientCapabilityIds[requiredCapabilityForFlow[flowKey]];
+  const descriptor = (descriptors as Record<string, unknown>)[capabilityId];
   if (!descriptor || typeof descriptor !== "object") return false;
   const value = descriptor as Record<string, unknown>;
   return value.support === "supported" && value.readiness === "ready";
@@ -119,9 +133,11 @@ const validateSnapshot = (
       `AI Client instance "${setting.aiClientInstanceId}" is not healthy and authenticated`
     );
   }
-  if (!localSynthesisIsReady(snapshot)) {
+  if (!capabilityIsReady(snapshot, setting.flowKey)) {
+    const capabilityId =
+      aiClientCapabilityIds[requiredCapabilityForFlow[setting.flowKey]];
     blocked(
-      `AI Client instance "${setting.aiClientInstanceId}" does not report ready local synthesis`
+      `AI Client instance "${setting.aiClientInstanceId}" does not report ready ${capabilityId.replaceAll("_", " ")} for ${setting.flowKey}`
     );
   }
   return snapshot;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   aiClientCapabilitySnapshotSchema,
+  aiClientDiagnosticSchema,
   aiClientInstanceParamsSchema,
   aiClientInstanceSchema,
   localMemoryAgentSettingsSchema
@@ -93,6 +94,17 @@ describe("local AI Client settings schemas", () => {
       }).success
     ).toBe(true);
     expect(instanceId).toHaveLength(128);
+  });
+
+  it("bounds diagnostic detail payloads", () => {
+    expect(
+      aiClientDiagnosticSchema.safeParse({
+        code: "discovery_failed",
+        message: "Discovery failed",
+        severity: "error",
+        details: { output: "x".repeat(8_193) }
+      }).success
+    ).toBe(false);
   });
 
   it("enforces descriptor IDs and strict descriptor children", () => {

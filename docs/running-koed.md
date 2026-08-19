@@ -303,9 +303,9 @@ pnpm smoke:personal-joined
 
 This executes the live LCM smoke first, including a real rollup expansion back
 to source Memory Events, then calls the MCP `memory_answer` tool with
-`answer_only`, `with_citations`, and `with_evidence`. Local Codex authentication,
-the bundled embedding model, and the native PostgreSQL client remain live
-prerequisites.
+`answer_only`, `with_citations`, and `with_evidence`. Authentication for the selected local AI Client (Codex by documented default,
+or another explicitly assigned provider), the bundled embedding model, and the
+native PostgreSQL client remain live prerequisites.
 
 For two-device data-plane validation, first pair two distinct, running
 bundled-local Personal installations and confirm both PDS workers are ready.

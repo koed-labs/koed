@@ -38,6 +38,7 @@ const status: KoedServerStatus = {
   redis: { state: "healthy" },
   workerQueues: { state: "healthy" },
   embeddingService: { state: "healthy" },
+  localAiRuntime: { state: "healthy" },
   apiToken: { state: "healthy", configured: true },
   mcpServer: { state: "healthy" },
   captureHook: { state: "healthy" },
@@ -47,6 +48,8 @@ const status: KoedServerStatus = {
   claudeCode: { state: "healthy", configured: true, detected: true },
   pi: { state: "healthy", configured: true, detected: true },
   aiClients: {},
+  aiClientInstances: {},
+  aiClientFlowReadiness: {} as KoedServerStatus["aiClientFlowReadiness"],
   lcmSummaryService: { state: "healthy" },
   deviceIdentity: {
     state: "healthy",
@@ -64,7 +67,8 @@ const status: KoedServerStatus = {
     failed: 0,
     notChecked: 0
   },
-  lastVerification: { state: "healthy", checkedAt: "2026-01-01T00:00:00.000Z" }
+  lastVerification: { state: "healthy", checkedAt: "2026-01-01T00:00:00.000Z" },
+  core: { state: "healthy", components: {} }
 };
 
 const doctor: KoedServerDoctorResult = {
@@ -1405,6 +1409,11 @@ describe("JSON command output", () => {
   });
 
   it("dispatches check, repair, and remove for every AI Client with exit status", async () => {
+    const capabilityIds = [
+      "automatic_capture",
+      "mcp_recall",
+      "local_synthesis"
+    ] as const;
     const readiness = (driverId: "codex" | "claude" | "pi") => ({
       driverId,
       instanceId: `${driverId}.default`,
@@ -1413,14 +1422,12 @@ describe("JSON command output", () => {
       version: "1.0.0",
       authentication: "authenticated" as const,
       profile: { state: "healthy" as const },
-      capabilities: ["automatic_capture", "mcp_recall", "local_synthesis"].map(
-        (id) => ({
-          id,
-          support: "supported" as const,
-          readiness: "ready" as const,
-          diagnostics: []
-        })
-      ),
+      capabilities: capabilityIds.map((id) => ({
+        id,
+        support: "supported" as const,
+        readiness: "ready" as const,
+        diagnostics: []
+      })),
       observedAt: "2026-01-01T00:00:00.000Z",
       snapshotState: "current" as const
     });

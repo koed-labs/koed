@@ -58,27 +58,29 @@ until terminal verification and JSONL reconciliation complete; the worker never
 scans held rows.
 
 Projection uses the DB-backed `projection_policy_rules` table as the explicit
-positive allowlist for Codex transcript item types. The seeded defaults preserve
-the current behavior: user, agent, subagent, tool call/result, and reasoning
-summary items are projected to the UI and embedded semantic memory; system,
-developer, context, lifecycle, token-usage, error, raw reasoning, and unknown
-items remain raw provenance only. Canonical transcript `function_call` and
-`function_call_output` rows are the tool items used for rendering and semantic
-memory; lower-level MCP and patch lifecycle event rows are retained only as raw
-provenance. The server refines generic provider `message` records from their
-raw role before policy lookup, so developer/system records cannot inherit the
-generic message rule. A role-user response item without stable provider
-identity stays a raw-only source record; external JSONL uses the explicit
-`event_msg:user_message` as the projectable prompt. The seeded defaults keep UI
-projection and embedding selection matched for current product behavior, but
-the policy fields are deliberately
-independent so future rules can represent display-only or recall-only transcript
-rows without a schema change. The same policy row also controls whether a
-projected Memory Event may become an LCM source through `include_in_lcm`.
-Unlisted transcript item types default to raw provenance only until a policy row
-deliberately opts them in. After a policy change, the authenticated session
-rebuild operation invalidates prior display, Memory Event, embedding, and LCM
-derivations and reprojects retained canonical items under the new policy.
+positive allowlist for canonical AI Client conversation item types. Provider
+adapters map their own source records into those types: Codex transcript items,
+Claude transcript records, and Pi session entries each retain their source
+adapter identity. The seeded defaults preserve the current behavior: user,
+agent, subagent, tool call/result, and reasoning summary items are projected to
+the UI and embedded semantic memory; system, developer, context, lifecycle,
+token-usage, error, raw reasoning, and unknown items remain raw provenance only.
+Canonical transcript `function_call` and `function_call_output` rows are the tool
+items used for rendering and semantic memory; lower-level MCP and patch
+lifecycle event rows are retained only as raw provenance. The server refines
+generic provider `message` records from their raw role before policy lookup, so
+developer/system records cannot inherit the generic message rule. A role-user
+response item without stable provider identity stays a raw-only source record;
+provider adapters must supply an explicit projectable prompt identity. The
+seeded defaults keep UI projection and embedding selection matched for current
+product behavior, but the policy fields are deliberately independent so future
+rules can represent display-only or recall-only transcript rows without a
+schema change. The same policy row also controls whether a projected Memory
+Event may become an LCM source through `include_in_lcm`. Unlisted transcript
+item types default to raw provenance only until a policy row deliberately opts
+them in. After a policy change, the authenticated session rebuild operation
+invalidates prior display, Memory Event, embedding, and LCM derivations and
+reprojects retained canonical items under the new policy.
 
 ## Pi Session Adapter
 

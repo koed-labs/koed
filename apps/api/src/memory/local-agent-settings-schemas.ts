@@ -43,12 +43,23 @@ export const aiClientInstanceSchema = z
   })
   .strict();
 
+const aiClientDiagnosticDetailsSchema = z
+  .record(z.string().trim().min(1).max(96), z.unknown())
+  .superRefine((details, context) => {
+    if (JSON.stringify(details).length > 8_192) {
+      context.addIssue({
+        code: "custom",
+        message: "AI Client diagnostic details exceed bounded size."
+      });
+    }
+  });
+
 export const aiClientDiagnosticSchema = z
   .object({
     code: z.string().trim().min(1).max(160),
     message: z.string().trim().min(1).max(2000),
     severity: z.enum(["info", "warning", "error"]),
-    details: z.record(z.string(), z.unknown()).optional()
+    details: aiClientDiagnosticDetailsSchema.optional()
   })
   .strict();
 

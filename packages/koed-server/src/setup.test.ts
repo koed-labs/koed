@@ -88,6 +88,7 @@ const runSetupCodex = (
       reused: true,
       ownerUserId: "personal-owner"
     }),
+    registerAiClient: () => true,
     ...options
   });
 
@@ -194,7 +195,8 @@ describe("Codex setup wrapper", () => {
       spawnSync: () => {
         order.push("bootstrap");
         return spawnResult();
-      }
+      },
+      registerAiClient: () => true
     });
 
     expect(result.ok).toBe(true);
@@ -692,7 +694,8 @@ describe("Codex setup wrapper", () => {
         KOED_REPO_ROOT: root,
         KOED_AUTO_PORTS: "1",
         API_HOST_PORT: "43300",
-        CODEX_CONFIG_PATH: codexConfigPath
+        CODEX_CONFIG_PATH: codexConfigPath,
+        MEMORY_CODEX_APP_SERVER_BINARY: process.execPath
       },
       now: () => new Date("2026-01-01T00:00:00.000Z")
     });
@@ -755,6 +758,39 @@ describe("Codex setup wrapper", () => {
     ).toThrow();
   });
 
+  it("rolls back Codex profile when registry registration fails", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "desktop_token" })
+    );
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(
+      resolve(root, "packages/mcp-server/dist/capture-hook.js"),
+      ""
+    );
+    const codexConfigPath = resolve(root, "codex.toml");
+    const profile = '[mcp_servers.other]\ncommand = "other"\n';
+    writeFileSync(codexConfigPath, profile, { mode: 0o640 });
+
+    const result = repairCodexIntegration({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        CODEX_CONFIG_PATH: codexConfigPath,
+        MEMORY_CODEX_APP_SERVER_BINARY: "/bin/sh"
+      },
+      registerAiClient: () => false
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("registration failed");
+    expect(readFileSync(codexConfigPath, "utf8")).toBe(profile);
+  });
+
   it("writes isolated device configuration beneath CODEX_HOME", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "isolated-codex");
@@ -777,7 +813,8 @@ describe("Codex setup wrapper", () => {
         KOED_REPO_ROOT: root,
         KOED_AUTO_PORTS: "1",
         API_HOST_PORT: "43300",
-        CODEX_HOME: codexHome
+        CODEX_HOME: codexHome,
+        MEMORY_CODEX_APP_SERVER_BINARY: process.execPath
       },
       now: () => new Date("2026-01-01T00:00:00.000Z")
     });
@@ -818,7 +855,8 @@ describe("Codex setup wrapper", () => {
         KOED_REPO_ROOT: root,
         CODEX_HOME: codexHome,
         MEMORY_API_URL: "http://localhost:3300",
-        KOED_AUTO_PORTS: "0"
+        KOED_AUTO_PORTS: "0",
+        MEMORY_CODEX_APP_SERVER_BINARY: process.execPath
       },
       now: () => new Date("2026-01-01T00:00:00.000Z")
     });
@@ -861,7 +899,8 @@ describe("Codex setup wrapper", () => {
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
-        CODEX_CONFIG_PATH: codexConfigPath
+        CODEX_CONFIG_PATH: codexConfigPath,
+        MEMORY_CODEX_APP_SERVER_BINARY: process.execPath
       },
       checkPid: (pid) => {
         checkedPids.push(pid);

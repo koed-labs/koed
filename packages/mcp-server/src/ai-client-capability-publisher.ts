@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 
-import { type AiClientCapabilityDescriptor } from "@koed/shared";
+import {
+  sanitizeAiClientDiagnostics,
+  type AiClientCapabilityDescriptor
+} from "@koed/shared";
 import {
   aiClientDiscoveryError,
   aiClientDriverFor,
@@ -88,6 +91,13 @@ const publishDiscovery = async (
   now: Date,
   ttlMs: number
 ): Promise<void> => {
+  const sanitizedDiagnostics = sanitizeAiClientDiagnostics(
+    discovery.diagnostics
+  );
+  const sanitizedCapabilities = discovery.capabilities.map((descriptor) => ({
+    ...descriptor,
+    diagnostics: sanitizeAiClientDiagnostics(descriptor.diagnostics)
+  }));
   const configIdentityHash = instance.configurationError
     ? null
     : localAiClientInstanceConfigIdentity(instance);
@@ -107,8 +117,8 @@ const publishDiscovery = async (
     health_state: discovery.healthState,
     models: discovery.models,
     capabilities: {
-      descriptors: capabilitiesRecord(discovery.capabilities),
-      diagnostics: discovery.diagnostics
+      descriptors: capabilitiesRecord(sanitizedCapabilities),
+      diagnostics: sanitizedDiagnostics
     },
     observed_at: now.toISOString(),
     expires_at: new Date(now.getTime() + ttlMs).toISOString()
