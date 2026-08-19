@@ -10,6 +10,7 @@ import {
   type CuratedMemoryReviewConfig
 } from "../src/curated-memory-review-worker.js";
 
+const identityHash = "f".repeat(64);
 const evidenceId = "11111111-1111-4111-8111-111111111111";
 const proposalId = "22222222-2222-4222-8222-222222222222";
 
@@ -195,11 +196,17 @@ describe("Curated Memory review service", () => {
     });
     vi.mocked(apiClient.listAiClientInstances).mockResolvedValue({
       instances: [
-        { instanceId: "claude.default", driverId: "claude", enabled: true }
+        {
+          instanceId: "claude.default",
+          driverId: "claude",
+          enabled: true,
+          configIdentityHash: identityHash
+        }
       ],
       capabilitySnapshots: [
         {
           instanceId: "claude.default",
+          installationIdentityHash: identityHash,
           healthState: "healthy",
           authenticationState: "authenticated",
           stale: false,

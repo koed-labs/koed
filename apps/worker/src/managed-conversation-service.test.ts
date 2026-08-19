@@ -10,6 +10,7 @@ import {
 
 import {
   ManagedConversationSourceReplicaPendingError,
+  assertManagedConversationExecutionOwner,
   createManagedConversationService,
   managedClaudeRuntimeHome,
   managedConversationFailureCode,
@@ -19,6 +20,32 @@ import {
   shouldRequestManagedConversationSourceRestore,
   shouldRecoverForkPreparationFailure
 } from "./managed-conversation-service.js";
+
+describe("Managed Conversation execution owner", () => {
+  it.each([
+    ["codex", "codex.work"],
+    ["claude", "claude.work"]
+  ])("accepts exact supported owner %s", (provider, instanceId) => {
+    expect(() =>
+      assertManagedConversationExecutionOwner({
+        provider,
+        aiClientInstanceId: instanceId
+      })
+    ).not.toThrow();
+  });
+
+  it("fails closed for missing owner and Pi", () => {
+    expect(() =>
+      assertManagedConversationExecutionOwner({ provider: "codex" })
+    ).toThrow("ManagedConversationProviderUnavailableError");
+    expect(() =>
+      assertManagedConversationExecutionOwner({
+        provider: "pi",
+        aiClientInstanceId: "pi.default"
+      })
+    ).toThrow("ManagedConversationUnsupportedAiClientError");
+  });
+});
 
 describe("Managed Claude runtime home isolation", () => {
   it("uses the persisted transcript home for resume and an exact override for fork", () => {

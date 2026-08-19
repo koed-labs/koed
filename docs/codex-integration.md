@@ -201,10 +201,13 @@ shutdown releases the lease without deleting the rollout. Managed terminal
 boundaries are held until their journaled records project successfully, so a
 later turn cannot be folded into an earlier seal.
 
-There is no Desktop entry point for this experiment. It does not
-attach to external Codex processes and does not replace the supported Transcript
-Watcher. Existing Codex CLI and native-app conversations are captured from
-transcript growth; Capture Hook signals only reduce watcher latency.
+There is no Desktop entry point for this legacy experiment. Desktop-managed
+Conversations use explicit registered AI Client ownership instead: Desktop
+selects `codex` plus exact instance ID from a fresh capability snapshot, and the
+API persists that owner. Worker resumes and transfers only through that exact
+Codex instance; it never falls back to another instance or client. Existing
+Codex CLI and native-app conversations remain captured from transcript growth;
+Capture Hook signals only reduce watcher latency.
 
 Codex hook configuration should include `Stop` as well as prompt/tool hooks. If
 Codex asks you to review or trust changed hooks after editing `config.toml`,

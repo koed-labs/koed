@@ -60,6 +60,13 @@ const instanceSchema = z
   })
   .strict();
 
+const capabilityDescriptorSchema = z
+  .object({
+    support: z.enum(["supported", "unsupported", "unknown"]),
+    readiness: z.enum(["ready", "not_ready", "unknown"])
+  })
+  .strict();
+
 const snapshotSchema = z
   .object({
     instanceId: z.string().min(1),
@@ -70,12 +77,12 @@ const snapshotSchema = z
     ]),
     healthState: z.enum(["healthy", "unavailable", "incompatible", "error"]),
     models: z.array(modelSchema),
-    localSynthesis: z
-      .object({
-        support: z.enum(["supported", "unsupported", "unknown"]),
-        readiness: z.enum(["ready", "not_ready", "unknown"])
-      })
-      .strict(),
+    localSynthesis: capabilityDescriptorSchema,
+    managedConversationStart: capabilityDescriptorSchema.optional(),
+    managedConversationResume: capabilityDescriptorSchema.optional(),
+    managedConversationSend: capabilityDescriptorSchema.optional(),
+    managedConversationHandoff: capabilityDescriptorSchema.optional(),
+    managedConversationFork: capabilityDescriptorSchema.optional(),
     observedAt: z.string(),
     expiresAt: z.string(),
     stale: z.boolean()

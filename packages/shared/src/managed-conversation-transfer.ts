@@ -9,6 +9,8 @@ import {
 
 export const MANAGED_CONVERSATION_TRANSFER_PROTOCOL =
   "koed.managed-conversation-transfer/v1" as const;
+export const MANAGED_CONVERSATION_TRANSFER_PROTOCOL_V2 =
+  "koed.managed-conversation-transfer/v2" as const;
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -33,7 +35,9 @@ export type ManagedConversationHandoffState =
   (typeof managedConversationHandoffStates)[number];
 
 export interface ManagedConversationHandoffManifest {
-  protocol: typeof MANAGED_CONVERSATION_TRANSFER_PROTOCOL;
+  protocol:
+    | typeof MANAGED_CONVERSATION_TRANSFER_PROTOCOL
+    | typeof MANAGED_CONVERSATION_TRANSFER_PROTOCOL_V2;
   operationId: string;
   ownerUserId: string;
   executionId: string;
@@ -47,6 +51,7 @@ export interface ManagedConversationHandoffManifest {
   sourceEndByteCursor: number;
   sourceEndItemCursor: number;
   provider: string;
+  aiClientInstanceId?: string;
   providerThreadId: string;
   providerArtifactRelativePath: string;
   providerCliVersion: string;
@@ -287,47 +292,57 @@ export const parseManagedConversationHandoffManifest = (
   value: unknown
 ): ManagedConversationHandoffManifest => {
   const input = record(value, "Managed Conversation handoff manifest");
-  exactKeys(
-    input,
-    [
-      "protocol",
-      "operationId",
-      "ownerUserId",
-      "executionId",
-      "sourceExecutionGeneration",
-      "nextExecutionGeneration",
-      "logicalSourceId",
-      "sourceGenerationId",
-      "nextSourceGenerationId",
-      "targetOriginKeyId",
-      "sourceClosureHash",
-      "sourceEndByteCursor",
-      "sourceEndItemCursor",
-      "provider",
-      "providerThreadId",
-      "providerArtifactRelativePath",
-      "providerCliVersion",
-      "workspaceSnapshotId",
-      "workspaceManifestDigest",
-      "sourceDeploymentId",
-      "sourceDeviceId",
-      "targetDeploymentId",
-      "targetDeviceId",
-      "authoritySequence",
-      "priorAuthorityLogHead",
-      "nonce",
-      "createdAt",
-      "expiresAt"
-    ],
-    "Managed Conversation handoff manifest"
-  );
-  if (input.protocol !== MANAGED_CONVERSATION_TRANSFER_PROTOCOL) {
+  const baseKeys = [
+    "protocol",
+    "operationId",
+    "ownerUserId",
+    "executionId",
+    "sourceExecutionGeneration",
+    "nextExecutionGeneration",
+    "logicalSourceId",
+    "sourceGenerationId",
+    "nextSourceGenerationId",
+    "targetOriginKeyId",
+    "sourceClosureHash",
+    "sourceEndByteCursor",
+    "sourceEndItemCursor",
+    "provider",
+    "providerThreadId",
+    "providerArtifactRelativePath",
+    "providerCliVersion",
+    "workspaceSnapshotId",
+    "workspaceManifestDigest",
+    "sourceDeploymentId",
+    "sourceDeviceId",
+    "targetDeploymentId",
+    "targetDeviceId",
+    "authoritySequence",
+    "priorAuthorityLogHead",
+    "nonce",
+    "createdAt",
+    "expiresAt"
+  ] as const;
+  if (
+    input.protocol !== MANAGED_CONVERSATION_TRANSFER_PROTOCOL &&
+    input.protocol !== MANAGED_CONVERSATION_TRANSFER_PROTOCOL_V2
+  ) {
     throw new TypeError("Managed Conversation transfer protocol is invalid");
   }
+  exactKeys(
+    input,
+    input.protocol === MANAGED_CONVERSATION_TRANSFER_PROTOCOL_V2
+      ? [...baseKeys, "aiClientInstanceId"]
+      : baseKeys,
+    "Managed Conversation handoff manifest"
+  );
   if (
     typeof input.provider !== "string" ||
     input.provider.length > 96 ||
-    !aiClientIdentifierPattern.test(input.provider)
+    !aiClientIdentifierPattern.test(input.provider) ||
+    (input.protocol === MANAGED_CONVERSATION_TRANSFER_PROTOCOL_V2 &&
+      (typeof input.aiClientInstanceId !== "string" ||
+        input.aiClientInstanceId.length > 128 ||
+        !aiClientIdentifierPattern.test(input.aiClientInstanceId)))
   ) {
     throw new TypeError("Managed Conversation provider is invalid");
   }
@@ -386,6 +401,9 @@ export const parseManagedConversationHandoffManifest = (
       "sourceEndItemCursor"
     ),
     provider: input.provider,
+    ...(input.protocol === MANAGED_CONVERSATION_TRANSFER_PROTOCOL_V2
+      ? { aiClientInstanceId: input.aiClientInstanceId as string }
+      : {}),
     providerThreadId: uuid(input.providerThreadId, "providerThreadId"),
     providerArtifactRelativePath,
     providerCliVersion: input.providerCliVersion,
@@ -425,6 +443,19 @@ export const parseManagedConversationHandoffManifest = (
 export const canonicalManagedConversationHandoffManifest = (
   manifest: ManagedConversationHandoffManifest
 ): string => canonicalize(parseManagedConversationHandoffManifest(manifest));
+
+export const managedConversationAiClientInstanceIdAfterVerification = (input: {
+  manifest: ManagedConversationHandoffManifest;
+  verified: boolean;
+}): string => {
+  if (!input.verified) {
+    throw new Error("Managed Conversation manifest is not verified");
+  }
+  const manifest = parseManagedConversationHandoffManifest(input.manifest);
+  return manifest.protocol === MANAGED_CONVERSATION_TRANSFER_PROTOCOL
+    ? `${manifest.provider}.default`
+    : manifest.aiClientInstanceId!;
+};
 
 const sourceAttestation = (
   manifest: ManagedConversationHandoffManifest,

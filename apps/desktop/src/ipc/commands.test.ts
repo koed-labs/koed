@@ -328,6 +328,8 @@ describe("desktop IPC command registry", () => {
       invoke(renderer(), {
         operation: "start",
         projectId: "project-1",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex.default",
         idempotencyKey: "start-1"
       })
     ).resolves.toEqual({
@@ -344,12 +346,16 @@ describe("desktop IPC command registry", () => {
     expect(managedConversation).toHaveBeenCalledWith({
       operation: "start",
       projectId: "project-1",
+      aiClientDriverId: "codex",
+      aiClientInstanceId: "codex.default",
       idempotencyKey: "start-1"
     });
     await expect(
       invoke(renderer(), {
         operation: "start",
         projectId: "project-1",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex.default",
         idempotencyKey: "start-1",
         cwd: "/private/project"
       })
@@ -358,6 +364,8 @@ describe("desktop IPC command registry", () => {
       invoke(renderer("https://attacker.example/"), {
         operation: "start",
         projectId: "project-1",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex.default",
         idempotencyKey: "start-1"
       })
     ).rejects.toThrow("Untrusted Desktop IPC sender");
@@ -367,6 +375,8 @@ describe("desktop IPC command registry", () => {
     const failedStart = invoke(renderer(), {
       operation: "start",
       projectId: "project-1",
+      aiClientDriverId: "codex",
+      aiClientInstanceId: "codex.default",
       idempotencyKey: "start-1"
     });
     await expect(failedStart).rejects.toThrow("Koed could not start");

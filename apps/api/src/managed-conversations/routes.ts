@@ -8,6 +8,7 @@ import type {
 import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
 import { z } from "zod";
 import {
+  aiClientCapabilityIds,
   fetchBoundedJsonObject,
   readLocalEdgeUpstreamRegistry,
   upstreamAdvertisesCapability,
@@ -33,7 +34,13 @@ const idempotencyKeySchema = z
 const startSchema = z
   .object({
     projectId: z.string().trim().min(1).max(2_048),
-    provider: z.enum(["codex", "claude"]).default("codex"),
+    provider: z.enum(["codex", "claude"]),
+    aiClientInstanceId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/),
     idempotencyKey: idempotencyKeySchema
   })
   .strict();
@@ -44,12 +51,31 @@ const authorityStartSchema = startSchema
   })
   .strict();
 
+const managedExecutionOwnerSchema = z
+  .object({
+    provider: z.enum(["codex", "claude"]),
+    aiClientInstanceId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/)
+  })
+  .passthrough();
+
 const proxiedStartResponseSchema = z
   .object({
     execution: z
       .object({
         id: z.uuid(),
         projectId: z.string().trim().min(1).max(2_048),
+        provider: z.enum(["codex", "claude"]),
+        aiClientInstanceId: z
+          .string()
+          .trim()
+          .min(1)
+          .max(128)
+          .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/),
         executionGeneration: z.number().int().safe().positive()
       })
       .passthrough(),
@@ -198,6 +224,7 @@ const publicExecution = (
     id: string;
     projectId: string;
     provider: string;
+    aiClientInstanceId: string;
     state: string;
     stateVersion: number;
     executionGeneration: number;
@@ -216,6 +243,7 @@ const publicExecution = (
   id: execution.id,
   projectId: execution.projectId,
   provider: execution.provider,
+  aiClientInstanceId: execution.aiClientInstanceId,
   state: execution.state,
   stateVersion: execution.stateVersion,
   executionGeneration: execution.executionGeneration,
@@ -313,6 +341,86 @@ const assertAvailable = (context: ApiRouteContext): void => {
   }
 };
 
+type ManagedCapabilityRepository = Pick<
+  MemorySourceRepository,
+  "listAiClientInstances" | "listCurrentAiClientCapabilitySnapshots"
+>;
+
+const managedCapabilityUnavailable = (message: string) =>
+  Object.assign(new Error(message), { statusCode: 409 });
+
+export const assertManagedCapability = async (
+  repository: ManagedCapabilityRepository,
+  userId: string,
+  input: { provider: string; aiClientInstanceId: string; capability: string }
+): Promise<void> => {
+  const [instances, snapshots] = await Promise.all([
+    repository.listAiClientInstances({ userId }),
+    repository.listCurrentAiClientCapabilitySnapshots({ userId })
+  ]);
+  const instance = instances.find(
+    (candidate) => candidate.instanceId === input.aiClientInstanceId
+  );
+  if (!instance || !instance.enabled) {
+    throw managedCapabilityUnavailable(
+      `AI Client instance "${input.aiClientInstanceId}" is unavailable`
+    );
+  }
+  if (instance.driverId !== input.provider) {
+    throw managedCapabilityUnavailable(
+      `AI Client instance "${input.aiClientInstanceId}" belongs to another AI Client driver`
+    );
+  }
+  const snapshot = snapshots.find(
+    (candidate) => candidate.instanceId === input.aiClientInstanceId
+  );
+  const descriptors = snapshot?.capabilities?.descriptors;
+  const descriptor =
+    descriptors && typeof descriptors === "object"
+      ? (descriptors as Record<string, unknown>)[input.capability]
+      : undefined;
+  const isReady =
+    typeof instance.configIdentityHash === "string" &&
+    typeof snapshot?.installationIdentityHash === "string" &&
+    snapshot.installationIdentityHash === instance.configIdentityHash &&
+    snapshot?.authenticationState === "authenticated" &&
+    snapshot.healthState === "healthy" &&
+    new Date(snapshot.expiresAt).getTime() > Date.now() &&
+    descriptor &&
+    typeof descriptor === "object" &&
+    (descriptor as Record<string, unknown>).support === "supported" &&
+    (descriptor as Record<string, unknown>).readiness === "ready";
+  if (!isReady) {
+    throw managedCapabilityUnavailable(
+      `AI Client instance "${input.aiClientInstanceId}" cannot run ${input.capability}`
+    );
+  }
+};
+
+const assertExecutionCapability = async (
+  repository: ManagedCapabilityRepository &
+    Pick<MemorySourceRepository, "getManagedConversationExecution">,
+  userId: string,
+  executionId: string,
+  capability: string
+) => {
+  const execution = await repository.getManagedConversationExecution(
+    { userId },
+    executionId
+  );
+  if (!execution) {
+    throw Object.assign(new Error("Managed Conversation not found"), {
+      statusCode: 404
+    });
+  }
+  await assertManagedCapability(repository, userId, {
+    provider: execution.provider,
+    aiClientInstanceId: execution.aiClientInstanceId,
+    capability
+  });
+  return execution;
+};
+
 export const registerManagedConversationRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext
@@ -327,12 +435,19 @@ export const registerManagedConversationRoutes = (
     const backend = registry.activeBackendId
       ? upstreamBackendById(registry, registry.activeBackendId)
       : null;
-    if (
-      !backend ||
-      backend.routePolicy.managedExecution !== "enabled" ||
-      !upstreamAdvertisesCapability(backend, "memory.managedConversations")
-    ) {
-      return null;
+    if (!backend) return null;
+    if (backend.routePolicy.managedExecution !== "enabled") return null;
+    const capabilities = backend.capabilities;
+    const capabilitiesValid =
+      capabilities?.state === "validated" &&
+      (!capabilities.expiresAt ||
+        Date.parse(capabilities.expiresAt) > Date.now()) &&
+      upstreamAdvertisesCapability(backend, "memory.managedConversations");
+    if (!capabilitiesValid) {
+      throw Object.assign(
+        new Error("Managed Conversation upstream capabilities are unavailable"),
+        { statusCode: 503 }
+      );
     }
     const authorization =
       context.localEdge.resolveUpstreamAuthorization(backend);
@@ -405,6 +520,45 @@ export const registerManagedConversationRoutes = (
       });
     }
     return { status: response.status, payload };
+  };
+
+  const assertLocalEdgeSourceCapability = async (input: {
+    userId: string;
+    executionId: string;
+    capability: string;
+  }): Promise<{ backendId: string | null }> => {
+    const authority = remoteAuthority();
+    const repository = context.requireRepository();
+    if (!authority) {
+      await assertExecutionCapability(
+        repository,
+        input.userId,
+        input.executionId,
+        input.capability
+      );
+      return { backendId: null };
+    }
+    const executionResponse = await proxyManaged(
+      "GET",
+      `/v1/managed-conversations/${encodeURIComponent(input.executionId)}`,
+      undefined,
+      { expectedBackendId: authority.backend.id }
+    );
+    if (!executionResponse) {
+      throw Object.assign(
+        new Error("Managed Conversation authority is unavailable"),
+        { statusCode: 503 }
+      );
+    }
+    const execution = managedExecutionOwnerSchema.parse(
+      executionResponse.payload.execution
+    );
+    await assertManagedCapability(repository, input.userId, {
+      provider: execution.provider,
+      aiClientInstanceId: execution.aiClientInstanceId,
+      capability: input.capability
+    });
+    return { backendId: authority.backend.id };
   };
 
   const remoteTransferAuthority = async () => {
@@ -710,6 +864,41 @@ export const registerManagedConversationRoutes = (
       ? (await runnerIdentity(request)).deviceId
       : (context.deploymentIdentity.inspect().deviceInstanceId ?? undefined);
 
+  const assertExecutionCapabilityForAuthorityRequest = async (
+    request: FastifyRequest,
+    repository: ManagedCapabilityRepository &
+      Pick<MemorySourceRepository, "getManagedConversationExecution">,
+    userId: string,
+    executionId: string,
+    capability: string
+  ) => {
+    const execution = await repository.getManagedConversationExecution(
+      { userId },
+      executionId
+    );
+    if (!execution) {
+      throw Object.assign(new Error("Managed Conversation not found"), {
+        statusCode: 404
+      });
+    }
+    const isDeviceRequest = /^Koed-Device\s/i.test(
+      request.headers.authorization?.trim() ?? ""
+    );
+    if (
+      !localExecutionProfiles.has(context.config.deploymentProfile) &&
+      isDeviceRequest &&
+      (await runnerIdentity(request)).deviceId === execution.runnerDeviceId
+    ) {
+      return execution;
+    }
+    await assertManagedCapability(repository, userId, {
+      provider: execution.provider,
+      aiClientInstanceId: execution.aiClientInstanceId,
+      capability
+    });
+    return execution;
+  };
+
   const publicExecutionFor = async (
     userId: string,
     execution: Parameters<typeof publicExecution>[0]
@@ -942,6 +1131,18 @@ export const registerManagedConversationRoutes = (
       const deferred =
         "deferUntilRuntimeBinding" in input &&
         input.deferUntilRuntimeBinding === true;
+      if (localExecution || !deferred) {
+        await assertManagedCapability(repository, user.id, {
+          provider: input.provider,
+          aiClientInstanceId: input.aiClientInstanceId,
+          capability: aiClientCapabilityIds.managedConversationStart
+        });
+      } else if (input.provider !== "codex" && input.provider !== "claude") {
+        throw Object.assign(
+          new Error("Hosted managed execution supports Codex or Claude only"),
+          { statusCode: 409 }
+        );
+      }
       const projects =
         localExecution || !deferred
           ? await repository.listLcmGraphThreads(
@@ -986,10 +1187,15 @@ export const registerManagedConversationRoutes = (
         }
         if (
           parsed.data.execution.projectId !== input.projectId ||
+          parsed.data.execution.provider !== input.provider ||
+          parsed.data.execution.aiClientInstanceId !==
+            input.aiClientInstanceId ||
           !projectPath
         ) {
           throw Object.assign(
-            new Error("Managed Conversation authority returned wrong Project"),
+            new Error(
+              "Managed Conversation authority returned wrong owner or Project"
+            ),
             { statusCode: 502 }
           );
         }
@@ -1047,6 +1253,7 @@ export const registerManagedConversationRoutes = (
         {
           projectId: input.projectId,
           provider: input.provider,
+          aiClientInstanceId: input.aiClientInstanceId,
           runnerDeploymentId: runner.deploymentId,
           runnerDeviceId: runner.deviceId,
           idempotencyKey: input.idempotencyKey,
@@ -1140,12 +1347,31 @@ export const registerManagedConversationRoutes = (
       const user = await authenticateManaged(request);
       const { executionId } = executionParamsSchema.parse(request.params);
       const input = promptSchema.parse(request.body);
+      const localSource = localExecutionProfiles.has(
+        context.config.deploymentProfile
+      )
+        ? await assertLocalEdgeSourceCapability({
+            userId: user.id,
+            executionId,
+            capability: aiClientCapabilityIds.managedConversationSend
+          })
+        : null;
       const proxied = await proxyManaged(
         "POST",
         `/v1/managed-conversations/${encodeURIComponent(executionId)}/prompts`,
-        input
+        input,
+        localSource?.backendId
+          ? { expectedBackendId: localSource.backendId }
+          : {}
       );
       if (proxied) return reply.status(proxied.status).send(proxied.payload);
+      await assertExecutionCapabilityForAuthorityRequest(
+        request,
+        context.requireRepository(),
+        user.id,
+        executionId,
+        aiClientCapabilityIds.managedConversationSend
+      );
       const command = await context
         .requireRepository()
         .enqueueManagedConversationPrompt(
@@ -1186,6 +1412,11 @@ export const registerManagedConversationRoutes = (
         executionId
       )}/handoffs`;
       if (actor.kind === "local_edge") {
+        const source = await assertLocalEdgeSourceCapability({
+          userId: actor.user.id,
+          executionId,
+          capability: aiClientCapabilityIds.handoff
+        });
         const grant = await resolveLocalTransferGrant({
           actor,
           actionGrantId: input.actionGrantId,
@@ -1194,7 +1425,7 @@ export const registerManagedConversationRoutes = (
         });
         const proxied = await proxyManaged("POST", path, body, {
           actionGrant: grant.actionGrant,
-          expectedBackendId: grant.backendId
+          expectedBackendId: source.backendId ?? grant.backendId
         });
         if (!proxied) {
           throw Object.assign(
@@ -1211,6 +1442,13 @@ export const registerManagedConversationRoutes = (
         );
       }
       if (actor.kind === "browser") {
+        await assertExecutionCapabilityForAuthorityRequest(
+          request,
+          context.requireRepository(),
+          actor.user.id,
+          executionId,
+          aiClientCapabilityIds.handoff
+        );
         const handoff = await requestHandoff(
           context.requireRepository(),
           actor.user.id,
@@ -1219,6 +1457,13 @@ export const registerManagedConversationRoutes = (
         );
         return reply.status(202).send({ handoff: publicHandoff(handoff) });
       }
+      await assertExecutionCapabilityForAuthorityRequest(
+        request,
+        context.requireRepository(),
+        actor.user.id,
+        executionId,
+        aiClientCapabilityIds.handoff
+      );
       const result = await context.requireRepository().executeActionGrant({
         actionGrant: actor.actionGrant,
         ownerUserId: actor.user.id,
@@ -1301,6 +1546,11 @@ export const registerManagedConversationRoutes = (
         executionId
       )}/forks`;
       if (actor.kind === "local_edge") {
+        const source = await assertLocalEdgeSourceCapability({
+          userId: actor.user.id,
+          executionId,
+          capability: aiClientCapabilityIds.fork
+        });
         const grant = await resolveLocalTransferGrant({
           actor,
           actionGrantId: input.actionGrantId,
@@ -1309,7 +1559,7 @@ export const registerManagedConversationRoutes = (
         });
         const proxied = await proxyManaged("POST", path, body, {
           actionGrant: grant.actionGrant,
-          expectedBackendId: grant.backendId
+          expectedBackendId: source.backendId ?? grant.backendId
         });
         if (!proxied) {
           throw Object.assign(
@@ -1326,6 +1576,13 @@ export const registerManagedConversationRoutes = (
         );
       }
       if (actor.kind === "browser") {
+        await assertExecutionCapabilityForAuthorityRequest(
+          request,
+          context.requireRepository(),
+          actor.user.id,
+          executionId,
+          aiClientCapabilityIds.fork
+        );
         const fork = await requestFork(
           context.requireRepository(),
           actor.user.id,
@@ -1334,6 +1591,13 @@ export const registerManagedConversationRoutes = (
         );
         return reply.status(202).send({ fork: publicFork(fork) });
       }
+      await assertExecutionCapabilityForAuthorityRequest(
+        request,
+        context.requireRepository(),
+        actor.user.id,
+        executionId,
+        aiClientCapabilityIds.fork
+      );
       const result = await context.requireRepository().executeActionGrant({
         actionGrant: actor.actionGrant,
         ownerUserId: actor.user.id,

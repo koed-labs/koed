@@ -1367,24 +1367,39 @@ export const inspectAiClientReadiness = (input: {
         snapshot,
         descriptorFor(snapshot, "local_synthesis")
       );
-      const managedDescriptor =
-        driverId === "pi"
-          ? unknownCapabilityDescriptor(
-              "managed_conversation_start",
-              "unsupported",
-              "Pi does not support Managed Conversation."
-            )
-          : (descriptorFor(snapshot, "managed_conversation_start") ??
-            unknownCapabilityDescriptor(
-              "managed_conversation_start",
-              "supported",
-              "Managed Conversation capability snapshot is unavailable."
-            ));
+      const managedCapabilityIds = [
+        "managed_conversation_start",
+        "managed_conversation_resume",
+        "managed_conversation_send",
+        "managed_conversation_cancel",
+        "approvals",
+        "streaming",
+        "session_identity",
+        "handoff",
+        "fork"
+      ] as const;
+      const managedDescriptors = managedCapabilityIds.map((id) =>
+        staleDescriptor(
+          driverId === "pi"
+            ? unknownCapabilityDescriptor(
+                id,
+                "unsupported",
+                "Pi does not support Managed Conversation."
+              )
+            : (descriptorFor(snapshot, id) ??
+                unknownCapabilityDescriptor(
+                  id,
+                  "supported",
+                  "Managed Conversation capability snapshot is unavailable."
+                )),
+          snapshot?.stale ?? false
+        )
+      );
       const capabilities = [
         staleDescriptor(captureDescriptor, snapshot?.stale ?? false),
         staleDescriptor(mcpDescriptor, snapshot?.stale ?? false),
         synthesisDescriptor,
-        staleDescriptor(managedDescriptor, snapshot?.stale ?? false)
+        ...managedDescriptors
       ];
       const version =
         snapshot?.clientVersion ??

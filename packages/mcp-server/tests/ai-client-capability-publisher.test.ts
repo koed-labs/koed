@@ -115,6 +115,29 @@ describe("AI Client capability publisher", () => {
       expect(result).toHaveLength(1);
       expect(upserts).toEqual(["codex.default"]);
       expect(snapshots).toEqual(upserts);
+      const upsertMock = apiClient.upsertAiClientInstance as unknown as {
+        mock: { calls: unknown[][] };
+      };
+      const upsertCall = upsertMock.mock.calls[0] as
+        | [string, { config_identity_hash?: unknown }]
+        | undefined;
+      expect(upsertCall?.[0]).toBe("codex.default");
+      expect(upsertCall?.[1].config_identity_hash).toEqual(
+        expect.stringMatching(/^[0-9a-f]{64}$/)
+      );
+      const snapshotMock =
+        apiClient.recordAiClientCapabilitySnapshot as unknown as {
+          mock: { calls: unknown[][] };
+        };
+      const snapshotCall = snapshotMock.mock.calls[0] as
+        | [string, { installation_identity_hash?: unknown }]
+        | undefined;
+      expect(snapshotCall?.[1].installation_identity_hash).toBe(
+        upsertCall?.[1].config_identity_hash
+      );
+      expect(snapshotCall?.[1].installation_identity_hash).not.toBe(
+        "a".repeat(64)
+      );
       expect(seen).toContainEqual({
         instanceId: "codex.default",
         executablePath: fs.realpathSync(configuredExecutable)

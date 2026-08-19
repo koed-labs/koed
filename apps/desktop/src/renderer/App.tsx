@@ -1091,6 +1091,7 @@ export function App({
             }
             managedConversationRevision={managedConversationRevision}
             managedConversations={managedConversations}
+            localAiClients={window.koedDesktop?.localAiClients}
             markdownAdapters={collaboration.markdownAdapters}
             onInspectEvent={(event) => {
               setInspector(event);

@@ -30,6 +30,9 @@ import {
   processClaudeTranscriptSignal,
   retainManagedClaudeHome,
   resolveClaudeManagedConversationSource,
+  environmentForLocalAiClientInstance,
+  localAiClientInstanceConfigIdentity,
+  resolveConfiguredLocalAiClientInstance,
   reuseManagedCodexHome,
   reuseManagedClaudeHome,
   type ClaudeWatcherState,
@@ -40,6 +43,8 @@ import {
   canonicalManagedConversationForkManifest,
   createDeviceBoundSourceSigner,
   managedConversationForkManifestDigest,
+  managedConversationAiClientInstanceIdAfterVerification,
+  managedConversationForkAiClientInstanceIdAfterVerification,
   managedConversationHandoffCertificateDigest,
   managedConversationTargetReadinessEvidenceDigest,
   managedConversationTargetReadinessIsFresh,
@@ -263,6 +268,22 @@ const managedConversationError = (name: string, cause?: unknown): Error => {
   return error;
 };
 
+export const assertManagedConversationExecutionOwner = (input: {
+  provider: string;
+  aiClientInstanceId?: string | null;
+}): void => {
+  if (!input.aiClientInstanceId?.trim()) {
+    throw managedConversationError(
+      "ManagedConversationProviderUnavailableError"
+    );
+  }
+  if (input.provider !== "codex" && input.provider !== "claude") {
+    throw managedConversationError(
+      "ManagedConversationUnsupportedAiClientError"
+    );
+  }
+};
+
 export const managedConversationOriginSourceGeneration = (
   value: unknown,
   expected: {
@@ -406,6 +427,48 @@ export const createManagedConversationService = (options: {
     }
   };
 
+  const clientConfigurationForOwner = (
+    provider: string,
+    instanceId: string
+  ) => {
+    if (provider !== "codex" && provider !== "claude") {
+      throw managedConversationError(
+        "ManagedConversationUnsupportedAiClientError"
+      );
+    }
+    try {
+      const instance = resolveConfiguredLocalAiClientInstance({
+        driverId: provider,
+        instanceId,
+        env: process.env
+      });
+      return {
+        instanceId: instance.instanceId,
+        configIdentityHash: localAiClientInstanceConfigIdentity(instance),
+        environment: environmentForLocalAiClientInstance({
+          instance,
+          driverId: provider,
+          env: process.env
+        })
+      };
+    } catch {
+      throw managedConversationError(
+        "ManagedConversationProviderUnavailableError"
+      );
+    }
+  };
+
+  const clientEnvironmentForOwner = (
+    provider: string,
+    instanceId: string
+  ): NodeJS.ProcessEnv =>
+    clientConfigurationForOwner(provider, instanceId).environment;
+
+  const clientEnvironmentFor = (
+    execution: ManagedConversationExecutionRecord
+  ): NodeJS.ProcessEnv =>
+    clientEnvironmentForOwner(execution.provider, execution.aiClientInstanceId);
+
   const createSession = (
     execution: ManagedConversationExecutionRecord,
     binding: ManagedConversationRuntimeBindingRecord,
@@ -423,16 +486,19 @@ export const createManagedConversationService = (options: {
         codexHome: string;
       };
     }
-  ): CodexManagedConversationSession =>
-    new CodexManagedConversationSession({
+  ): CodexManagedConversationSession => {
+    const clientEnvironment = clientEnvironmentFor(execution);
+    return new CodexManagedConversationSession({
       memoryClient,
       projectId: execution.projectId,
       appServer: {
-        appServerBinary: options.appServerBinary,
+        appServerBinary:
+          clientEnvironment.MEMORY_CODEX_APP_SERVER_BINARY ??
+          options.appServerBinary,
         model: options.model,
         reasoningEffort: options.reasoningEffort,
         cwd: override?.projectPath ?? binding.projectPath,
-        env: process.env,
+        env: clientEnvironment,
         clientName: "koed-server-managed-conversation",
         baseInstructions:
           "You are Codex, an AI coding agent working with the user in the selected Project."
@@ -455,6 +521,7 @@ export const createManagedConversationService = (options: {
               }
             : {})
     });
+  };
 
   const createClaudeSession = (
     execution: ManagedConversationExecutionRecord,
@@ -466,6 +533,7 @@ export const createManagedConversationService = (options: {
       managedHome?: string;
     }
   ): ClaudeManagedConversationSession => {
+    const clientEnvironment = clientEnvironmentFor(execution);
     const managedHome = managedClaudeRuntimeHome(
       binding,
       override?.managedHome
@@ -480,7 +548,7 @@ export const createManagedConversationService = (options: {
       cwd: override?.projectPath ?? binding.projectPath,
       model: options.claudeModel,
       permissionMode: "acceptEdits",
-      env: process.env,
+      env: clientEnvironment,
       managedHome: exactHome,
       clientName: "koed-server-managed-conversation",
       tools: { type: "preset", preset: "claude_code" },
@@ -850,6 +918,11 @@ export const createManagedConversationService = (options: {
           }
           runtimeSessions.set("claude", execution.id, {
             executionGeneration: execution.executionGeneration,
+            aiClientInstanceId: execution.aiClientInstanceId,
+            configIdentityHash: clientConfigurationForOwner(
+              execution.provider,
+              execution.aiClientInstanceId
+            ).configIdentityHash,
             session: recoveredSession
           });
           continue;
@@ -918,6 +991,11 @@ export const createManagedConversationService = (options: {
         }
         runtimeSessions.set("codex", execution.id, {
           executionGeneration: execution.executionGeneration,
+          aiClientInstanceId: execution.aiClientInstanceId,
+          configIdentityHash: clientConfigurationForOwner(
+            execution.provider,
+            execution.aiClientInstanceId
+          ).configIdentityHash,
           session: recoveredSession
         });
       } catch (error) {
@@ -1013,10 +1091,15 @@ export const createManagedConversationService = (options: {
   const verifyTargetProviderEnvironment = async (
     projectPath: string,
     expectedCliVersion: string,
-    provider: string
+    provider: string,
+    aiClientInstanceId: string
   ): Promise<{ environmentDigest: string; compatibilityDigest: string }> => {
+    const clientEnvironment = clientEnvironmentForOwner(
+      provider,
+      aiClientInstanceId
+    );
     if (provider === "claude") {
-      const availability = await checkClaudeCodeAvailability(process.env);
+      const availability = await checkClaudeCodeAvailability(clientEnvironment);
       if (
         !availability.available ||
         !availability.authenticated ||
@@ -1044,17 +1127,20 @@ export const createManagedConversationService = (options: {
     if (provider !== "codex") {
       throw new Error("ManagedConversationProviderCompatibilityError");
     }
+    const appServerBinary =
+      clientEnvironment.MEMORY_CODEX_APP_SERVER_BINARY ??
+      options.appServerBinary;
     const compatibility = assertCodexConversationProtocolCompatibility({
-      binary: options.appServerBinary,
+      binary: appServerBinary,
       cwd: projectPath,
-      env: process.env
+      env: clientEnvironment
     });
     const availability = await checkCodexAppServerAvailability(
       {
-        appServerBinary: options.appServerBinary,
+        appServerBinary,
         model: options.model,
         cwd: projectPath,
-        env: process.env,
+        env: clientEnvironment,
         clientName: "koed-managed-conversation-handoff-readiness"
       },
       10_000
@@ -1062,9 +1148,9 @@ export const createManagedConversationService = (options: {
     if (!availability.available) {
       throw new Error("ManagedConversationTargetEnvironmentUnavailableError");
     }
-    const version = spawnSync(options.appServerBinary, ["--version"], {
+    const version = spawnSync(appServerBinary, ["--version"], {
       cwd: projectPath,
-      env: process.env,
+      env: clientEnvironment,
       encoding: "utf8",
       timeout: 10_000,
       shell: process.platform === "win32",
@@ -1117,6 +1203,7 @@ export const createManagedConversationService = (options: {
     projectPath: string;
     providerCliVersion: string;
     provider: string;
+    aiClientInstanceId: string;
   }): Promise<ManagedConversationTargetReadinessEvidence> => {
     if (
       !input.handoff.sourceGenerationId ||
@@ -1129,7 +1216,8 @@ export const createManagedConversationService = (options: {
     const provider = await verifyTargetProviderEnvironment(
       input.projectPath,
       input.providerCliVersion,
-      input.provider
+      input.provider,
+      input.aiClientInstanceId
     );
     const checkedAt = new Date();
     const expiresAt = new Date(
@@ -1845,6 +1933,18 @@ export const createManagedConversationService = (options: {
     ) {
       throw new Error("ManagedConversationSourceAttestationError");
     }
+    const manifest = material.handoff.transferManifest;
+    const aiClientInstanceId =
+      managedConversationAiClientInstanceIdAfterVerification({
+        manifest,
+        verified: true
+      });
+    if (
+      manifest.provider !== command.execution.provider ||
+      aiClientInstanceId !== command.execution.aiClientInstanceId
+    ) {
+      throw new Error("ManagedConversationTransferOwnerMismatchError");
+    }
     const snapshot = await loadWorkspaceSnapshot({
       ownerUserId: command.ownerUserId,
       operationKind: "handoff",
@@ -1874,7 +1974,6 @@ export const createManagedConversationService = (options: {
         path
       );
     }
-    const manifest = material.handoff.transferManifest;
     const transcript = await reconstructTransferTranscript({
       transferKind: "handoff",
       transferId: handoff.id,
@@ -1893,7 +1992,8 @@ export const createManagedConversationService = (options: {
       restoredStateDigest: verified.stateDigest,
       projectPath: verified.path,
       providerCliVersion: manifest.providerCliVersion,
-      provider: manifest.provider
+      provider: manifest.provider,
+      aiClientInstanceId
     });
     return {
       handoff: material.handoff,
@@ -1928,23 +2028,30 @@ export const createManagedConversationService = (options: {
         { userId: command.ownerUserId },
         { forkId: fork.id, targetDeviceId: options.deviceId }
       );
-    if (
-      !material ||
-      !verifyManagedConversationForkManifest({
-        signed: material.signedManifest,
-        sourcePublicKey: material.sourcePublicKey,
+    const verifiedManifest =
+      Boolean(material) &&
+      verifyManagedConversationForkManifest({
+        signed: material!.signedManifest,
+        sourcePublicKey: material!.sourcePublicKey,
         expectedTargetDeviceId: options.deviceId
-      }) ||
-      managedConversationForkManifestDigest(material.signedManifest) !==
-        fork.manifestDigest
-    ) {
+      }) &&
+      managedConversationForkManifestDigest(material!.signedManifest) ===
+        fork.manifestDigest;
+    if (!verifiedManifest) {
       throw new Error("ManagedConversationForkAttestationError");
     }
-    const manifest = material.signedManifest.manifest;
+    const manifest = material!.signedManifest.manifest;
+    const aiClientInstanceId =
+      managedConversationForkAiClientInstanceIdAfterVerification({
+        manifest,
+        verified: true
+      });
     if (
       manifest.targetDeploymentId !== options.deploymentId ||
       manifest.parentExecutionId !== command.executionId ||
-      manifest.parentExecutionGeneration !== command.executionGeneration
+      manifest.parentExecutionGeneration !== command.executionGeneration ||
+      manifest.provider !== command.execution.provider ||
+      aiClientInstanceId !== command.execution.aiClientInstanceId
     ) {
       throw new Error("ManagedConversationForkBoundaryError");
     }
@@ -1952,7 +2059,7 @@ export const createManagedConversationService = (options: {
       ownerUserId: command.ownerUserId,
       operationKind: "fork",
       operationId: fork.id,
-      snapshot: material.snapshot
+      snapshot: material!.snapshot
     });
     if (snapshot.manifestDigest !== manifest.workspaceManifestDigest) {
       throw new Error("ManagedConversationWorkspaceManifestError");
@@ -2000,15 +2107,28 @@ export const createManagedConversationService = (options: {
   const sessionFor = async (
     execution: ManagedConversationExecutionRecord
   ): Promise<CodexManagedConversationSession> => {
-    const current = runtimeSessions.get("codex", execution.id);
-    if (
-      current &&
-      current.executionGeneration === execution.executionGeneration
-    ) {
-      return current.session;
+    const previous = runtimeSessions.get("codex", execution.id);
+    let configuration: ReturnType<typeof clientConfigurationForOwner>;
+    try {
+      configuration = clientConfigurationForOwner(
+        execution.provider,
+        execution.aiClientInstanceId
+      );
+    } catch (error) {
+      if (previous) {
+        await previous.session.closeAndWait().catch(() => undefined);
+        runtimeSessions.delete("codex", execution.id);
+      }
+      throw error;
     }
-    if (current) {
-      void current.session.closeAndWait().catch(() => undefined);
+    const current = runtimeSessions.get("codex", execution.id, {
+      executionGeneration: execution.executionGeneration,
+      aiClientInstanceId: configuration.instanceId,
+      configIdentityHash: configuration.configIdentityHash
+    });
+    if (current) return current.session;
+    if (previous) {
+      await previous.session.closeAndWait().catch(() => undefined);
       runtimeSessions.delete("codex", execution.id);
     }
     let binding = await options.repository.getManagedConversationRuntimeBinding(
@@ -2028,6 +2148,11 @@ export const createManagedConversationService = (options: {
     const session = createSession(execution, binding);
     runtimeSessions.set("codex", execution.id, {
       executionGeneration: execution.executionGeneration,
+      aiClientInstanceId: execution.aiClientInstanceId,
+      configIdentityHash: clientConfigurationForOwner(
+        execution.provider,
+        execution.aiClientInstanceId
+      ).configIdentityHash,
       session
     });
     return session;
@@ -2036,21 +2161,39 @@ export const createManagedConversationService = (options: {
   const sessionForClaude = async (
     execution: ManagedConversationExecutionRecord
   ): Promise<ClaudeManagedConversationSession> => {
-    const current = runtimeSessions.get("claude", execution.id);
-    if (
-      current &&
-      current.executionGeneration === execution.executionGeneration
-    ) {
-      return current.session;
+    const previous = runtimeSessions.get("claude", execution.id);
+    let configuration: ReturnType<typeof clientConfigurationForOwner>;
+    try {
+      configuration = clientConfigurationForOwner(
+        execution.provider,
+        execution.aiClientInstanceId
+      );
+    } catch (error) {
+      if (previous) {
+        await previous.session.closeAndWait().catch(() => undefined);
+        runtimeSessions.delete("claude", execution.id);
+      }
+      throw error;
     }
-    if (current) {
-      void current.session.closeAndWait().catch(() => undefined);
+    const current = runtimeSessions.get("claude", execution.id, {
+      executionGeneration: execution.executionGeneration,
+      aiClientInstanceId: configuration.instanceId,
+      configIdentityHash: configuration.configIdentityHash
+    });
+    if (current) return current.session;
+    if (previous) {
+      await previous.session.closeAndWait().catch(() => undefined);
       runtimeSessions.delete("claude", execution.id);
     }
     const binding = await runtimeBindingFor(execution, execution.ownerUserId);
     const session = createClaudeSession(execution, binding);
     runtimeSessions.set("claude", execution.id, {
       executionGeneration: execution.executionGeneration,
+      aiClientInstanceId: execution.aiClientInstanceId,
+      configIdentityHash: clientConfigurationForOwner(
+        execution.provider,
+        execution.aiClientInstanceId
+      ).configIdentityHash,
       session
     });
     return session;
@@ -2418,6 +2561,11 @@ export const createManagedConversationService = (options: {
           retainManagedClaudeHome(managedHome, process.env);
           runtimeSessions.set("claude", execution.id, {
             executionGeneration: execution.executionGeneration,
+            aiClientInstanceId: execution.aiClientInstanceId,
+            configIdentityHash: clientConfigurationForOwner(
+              execution.provider,
+              execution.aiClientInstanceId
+            ).configIdentityHash,
             session: resumed
           });
         } catch (error) {
@@ -2493,6 +2641,11 @@ export const createManagedConversationService = (options: {
             );
           runtimeSessions.set("codex", execution.id, {
             executionGeneration: execution.executionGeneration,
+            aiClientInstanceId: execution.aiClientInstanceId,
+            configIdentityHash: clientConfigurationForOwner(
+              execution.provider,
+              execution.aiClientInstanceId
+            ).configIdentityHash,
             session: resumed
           });
         } catch (error) {
@@ -2889,13 +3042,40 @@ export const createManagedConversationService = (options: {
         name: "ManagedConversationFencedError"
       });
     }
+    assertManagedConversationExecutionOwner(command.execution);
+    const provider = command.execution.provider as ManagedConversationProvider;
+    const current = runtimeSessions.get(provider, command.executionId);
+    let configuration: ReturnType<typeof clientConfigurationForOwner>;
+    try {
+      configuration = clientConfigurationForOwner(
+        command.execution.provider,
+        command.execution.aiClientInstanceId
+      );
+    } catch (error) {
+      if (current) {
+        await current.session.closeAndWait().catch(() => undefined);
+        runtimeSessions.delete(provider, command.executionId);
+      }
+      throw error;
+    }
+    if (
+      current &&
+      (current.executionGeneration !== command.executionGeneration ||
+        current.aiClientInstanceId !== configuration.instanceId ||
+        current.configIdentityHash !== configuration.configIdentityHash)
+    ) {
+      await current.session.closeAndWait().catch(() => undefined);
+      runtimeSessions.delete(provider, command.executionId);
+    }
     if (command.commandKind === "start") {
       if (command.execution.provider === "claude") {
         const binding = await runtimeBindingFor(
           command.execution,
           command.ownerUserId
         );
-        const availability = await checkClaudeCodeAvailability(process.env);
+        const clientEnvironment = clientEnvironmentFor(command.execution);
+        const availability =
+          await checkClaudeCodeAvailability(clientEnvironment);
         if (
           !availability.available ||
           !availability.version ||
@@ -2905,7 +3085,7 @@ export const createManagedConversationService = (options: {
             "ManagedConversationProviderUnavailableError"
           );
         }
-        const managedHome = prepareManagedClaudeHome(process.env);
+        const managedHome = prepareManagedClaudeHome(clientEnvironment);
         const session = createClaudeSession(command.execution, binding, {
           managedHome
         });
@@ -2970,10 +3150,15 @@ export const createManagedConversationService = (options: {
               providerCliVersion: availability.version
             }
           );
-          retainManagedClaudeHome(managedHome, process.env);
+          retainManagedClaudeHome(managedHome, clientEnvironment);
           managedHomeRetained = true;
           runtimeSessions.set("claude", bound.id, {
             executionGeneration: bound.executionGeneration,
+            aiClientInstanceId: bound.aiClientInstanceId,
+            configIdentityHash: clientConfigurationForOwner(
+              bound.provider,
+              bound.aiClientInstanceId
+            ).configIdentityHash,
             session
           });
           await options.repository.completeManagedConversationCommand({
@@ -2988,7 +3173,7 @@ export const createManagedConversationService = (options: {
         } catch (error) {
           await session.closeAndWait().catch(() => undefined);
           if (!managedHomeRetained) {
-            destroyManagedClaudeHome(managedHome, process.env);
+            destroyManagedClaudeHome(managedHome, clientEnvironment);
           }
           throw error;
         }
@@ -3579,11 +3764,21 @@ export const createManagedConversationService = (options: {
         if (claudeSession) {
           runtimeSessions.set("claude", command.executionId, {
             executionGeneration: command.executionGeneration,
+            aiClientInstanceId: command.execution.aiClientInstanceId,
+            configIdentityHash: clientConfigurationForOwner(
+              command.execution.provider,
+              command.execution.aiClientInstanceId
+            ).configIdentityHash,
             session: claudeSession
           });
         } else if (codexSession) {
           runtimeSessions.set("codex", command.executionId, {
             executionGeneration: command.executionGeneration,
+            aiClientInstanceId: command.execution.aiClientInstanceId,
+            configIdentityHash: clientConfigurationForOwner(
+              command.execution.provider,
+              command.execution.aiClientInstanceId
+            ).configIdentityHash,
             session: codexSession
           });
         }
@@ -3899,11 +4094,21 @@ export const createManagedConversationService = (options: {
         if (claudeSession) {
           runtimeSessions.set("claude", bound.id, {
             executionGeneration: bound.executionGeneration,
+            aiClientInstanceId: bound.aiClientInstanceId,
+            configIdentityHash: clientConfigurationForOwner(
+              bound.provider,
+              bound.aiClientInstanceId
+            ).configIdentityHash,
             session: claudeSession
           });
         } else if (codexSession) {
           runtimeSessions.set("codex", bound.id, {
             executionGeneration: bound.executionGeneration,
+            aiClientInstanceId: bound.aiClientInstanceId,
+            configIdentityHash: clientConfigurationForOwner(
+              bound.provider,
+              bound.aiClientInstanceId
+            ).configIdentityHash,
             session: codexSession
           });
         }
@@ -4712,7 +4917,7 @@ export const createManagedConversationService = (options: {
             .catch(() => false)
         )
       );
-      runtimeSessions.clear();
+      runtimeSessions.clear(false);
     }
   };
 };

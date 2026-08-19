@@ -7,7 +7,10 @@ import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ApiRouteContext } from "../server/context.js";
-import { registerManagedConversationRoutes } from "./routes.js";
+import {
+  assertManagedCapability,
+  registerManagedConversationRoutes
+} from "./routes.js";
 
 const writeManagedUpstreamRegistry = (): string => {
   const path = resolve(
@@ -50,6 +53,201 @@ const writeManagedUpstreamRegistry = (): string => {
   );
   return path;
 };
+
+const managedOwner = {
+  provider: "codex",
+  aiClientInstanceId: "codex.default"
+};
+const ownerIdentityHash = "f".repeat(64);
+const managedCapabilityRepository = {
+  listAiClientInstances: async () => [
+    {
+      instanceId: "codex.default",
+      driverId: "codex",
+      enabled: true,
+      configIdentityHash: ownerIdentityHash
+    }
+  ],
+  listCurrentAiClientCapabilitySnapshots: async () => [
+    {
+      instanceId: "codex.default",
+      installationIdentityHash: ownerIdentityHash,
+      authenticationState: "authenticated",
+      healthState: "healthy",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      capabilities: {
+        descriptors: {
+          managed_conversation_start: {
+            support: "supported",
+            readiness: "ready"
+          }
+        }
+      }
+    }
+  ]
+};
+
+describe("managed Conversation capability admission", () => {
+  it("rejects unsupported, stale, and unavailable owners", async () => {
+    await expect(
+      assertManagedCapability(
+        managedCapabilityRepository as unknown as Parameters<
+          typeof assertManagedCapability
+        >[0],
+        randomUUID(),
+        {
+          provider: "pi",
+          aiClientInstanceId: "codex.default",
+          capability: "managed_conversation_start"
+        }
+      )
+    ).rejects.toThrow("belongs to another AI Client driver");
+
+    const pi = {
+      listAiClientInstances: async () => [
+        {
+          instanceId: "pi.default",
+          driverId: "pi",
+          enabled: true,
+          configIdentityHash: ownerIdentityHash
+        }
+      ],
+      listCurrentAiClientCapabilitySnapshots: async () => [
+        {
+          instanceId: "pi.default",
+          installationIdentityHash: ownerIdentityHash,
+          authenticationState: "authenticated",
+          healthState: "healthy",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          capabilities: {
+            descriptors: {
+              managed_conversation_start: {
+                support: "unsupported",
+                readiness: "not_ready"
+              }
+            }
+          }
+        }
+      ]
+    };
+    await expect(
+      assertManagedCapability(
+        pi as unknown as Parameters<typeof assertManagedCapability>[0],
+        randomUUID(),
+        {
+          provider: "pi",
+          aiClientInstanceId: "pi.default",
+          capability: "managed_conversation_start"
+        }
+      )
+    ).rejects.toThrow("cannot run");
+
+    const disabled = {
+      ...managedCapabilityRepository,
+      listAiClientInstances: async () => [
+        { instanceId: "codex.default", driverId: "codex", enabled: false }
+      ]
+    };
+    await expect(
+      assertManagedCapability(
+        disabled as unknown as Parameters<typeof assertManagedCapability>[0],
+        randomUUID(),
+        {
+          provider: "codex",
+          aiClientInstanceId: "codex.default",
+          capability: "managed_conversation_start"
+        }
+      )
+    ).rejects.toThrow("unavailable");
+
+    const stale = {
+      ...managedCapabilityRepository,
+      listCurrentAiClientCapabilitySnapshots: async () => [
+        {
+          instanceId: "codex.default",
+          installationIdentityHash: ownerIdentityHash,
+          authenticationState: "authenticated",
+          healthState: "healthy",
+          expiresAt: "2020-01-01T00:00:00.000Z",
+          capabilities: {
+            descriptors: {
+              managed_conversation_start: {
+                support: "supported",
+                readiness: "ready"
+              }
+            }
+          }
+        }
+      ]
+    };
+    await expect(
+      assertManagedCapability(
+        stale as unknown as Parameters<typeof assertManagedCapability>[0],
+        randomUUID(),
+        {
+          provider: "codex",
+          aiClientInstanceId: "codex.default",
+          capability: "managed_conversation_start"
+        }
+      )
+    ).rejects.toThrow("cannot run");
+
+    const mismatched = {
+      ...managedCapabilityRepository,
+      listCurrentAiClientCapabilitySnapshots: async () => [
+        {
+          instanceId: "codex.default",
+          installationIdentityHash: "e".repeat(64),
+          authenticationState: "authenticated",
+          healthState: "healthy",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          capabilities: {
+            descriptors: {
+              managed_conversation_start: {
+                support: "supported",
+                readiness: "ready"
+              }
+            }
+          }
+        }
+      ]
+    };
+    await expect(
+      assertManagedCapability(
+        mismatched as unknown as Parameters<typeof assertManagedCapability>[0],
+        randomUUID(),
+        {
+          provider: "codex",
+          aiClientInstanceId: "codex.default",
+          capability: "managed_conversation_start"
+        }
+      )
+    ).rejects.toThrow("cannot run");
+
+    const upsertRace = {
+      ...managedCapabilityRepository,
+      listAiClientInstances: async () => [
+        {
+          instanceId: "codex.default",
+          driverId: "codex",
+          enabled: true,
+          configIdentityHash: null
+        }
+      ]
+    };
+    await expect(
+      assertManagedCapability(
+        upsertRace as unknown as Parameters<typeof assertManagedCapability>[0],
+        randomUUID(),
+        {
+          provider: "codex",
+          aiClientInstanceId: "codex.default",
+          capability: "managed_conversation_start"
+        }
+      )
+    ).rejects.toThrow("cannot run");
+  });
+});
 
 describe("managed Conversation routes", () => {
   it("starts the first Conversation from trusted local Project metadata", async () => {
@@ -113,6 +311,8 @@ describe("managed Conversation routes", () => {
                     execution: {
                       id: executionId,
                       projectId,
+                      provider: managedOwner.provider,
+                      aiClientInstanceId: managedOwner.aiClientInstanceId,
                       executionGeneration: 1,
                       state: "starting"
                     },
@@ -127,6 +327,7 @@ describe("managed Conversation routes", () => {
         })
       },
       requireRepository: () => ({
+        ...managedCapabilityRepository,
         listLcmGraphThreads: async () => [],
         upsertManagedConversationRuntimeBinding: upsert,
         getManagedConversationRuntimeBinding: async () => null
@@ -139,6 +340,7 @@ describe("managed Conversation routes", () => {
       url: "/v1/managed-conversations",
       payload: {
         projectId,
+        ...managedOwner,
         idempotencyKey: "phase7-first-project-start"
       }
     });
@@ -215,6 +417,8 @@ describe("managed Conversation routes", () => {
               execution: {
                 id: executionId,
                 projectId,
+                provider: managedOwner.provider,
+                aiClientInstanceId: managedOwner.aiClientInstanceId,
                 executionGeneration: 1,
                 state: "starting"
               },
@@ -228,6 +432,7 @@ describe("managed Conversation routes", () => {
         })
       },
       requireRepository: () => ({
+        ...managedCapabilityRepository,
         listLcmGraphThreads: async () => [{ id: projectId, path: projectPath }],
         upsertManagedConversationRuntimeBinding: upsert,
         getManagedConversationRuntimeBinding: getBinding
@@ -240,6 +445,7 @@ describe("managed Conversation routes", () => {
       url: "/v1/managed-conversations",
       payload: {
         projectId,
+        ...managedOwner,
         idempotencyKey: "phase7-start-binding"
       }
     });
@@ -248,6 +454,7 @@ describe("managed Conversation routes", () => {
       url: "/v1/managed-conversations",
       payload: {
         projectId,
+        ...managedOwner,
         idempotencyKey: "phase7-start-binding"
       }
     });
@@ -258,6 +465,7 @@ describe("managed Conversation routes", () => {
     expect(upstreamCalls).toHaveLength(4);
     expect(upstreamCalls[0]?.body).toEqual({
       projectId,
+      aiClientInstanceId: "codex.default",
       idempotencyKey: "phase7-start-binding",
       deferUntilRuntimeBinding: true,
       provider: "codex"
@@ -323,6 +531,7 @@ describe("managed Conversation routes", () => {
         )
       },
       requireRepository: () => ({
+        ...managedCapabilityRepository,
         listLcmGraphThreads: async () => [
           { id: "lp_verified", path: "/work/verified-project" }
         ],
@@ -335,6 +544,7 @@ describe("managed Conversation routes", () => {
       url: "/v1/managed-conversations",
       payload: {
         projectId: "lp_verified",
+        ...managedOwner,
         idempotencyKey: "phase7-malformed-start"
       }
     });
@@ -377,6 +587,7 @@ describe("managed Conversation routes", () => {
         })
       },
       requireRepository: () => ({
+        ...managedCapabilityRepository,
         getManagedConversationRuntimeBinding: async () => null
       })
     } as unknown as ApiRouteContext);

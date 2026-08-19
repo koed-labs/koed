@@ -145,6 +145,37 @@ describe("Pi AI Client migration", () => {
   });
 });
 
+describe("managed Conversation execution owner migration", () => {
+  it("backfills safe provider identities without adding a foreign key", async () => {
+    const [journalText, migrationSql] = await Promise.all([
+      readDrizzleFile("meta/_journal.json"),
+      readDrizzleFile("0033_fixed_scarlet_witch.sql")
+    ]);
+    const journal = JSON.parse(journalText) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+
+    expect(journal.entries[33]).toEqual(
+      expect.objectContaining({ idx: 33, tag: "0033_fixed_scarlet_witch" })
+    );
+    expect(migrationSql).toContain('ADD COLUMN "ai_client_instance_id" text');
+    expect(migrationSql).toContain('SET "ai_client_instance_id" = CASE');
+    expect(migrationSql).toContain("THEN \"provider\" || '.default'");
+    expect(migrationSql).toContain('THEN "provider"');
+    expect(migrationSql).toContain("ELSE 'legacy.' || md5(\"provider\")");
+    expect(migrationSql).toContain(
+      'char_length("managed_conversation_executions"."ai_client_instance_id") <= 128'
+    );
+    expect(migrationSql).toContain(
+      'ALTER COLUMN "ai_client_instance_id" SET NOT NULL'
+    );
+    expect(migrationSql).toContain(
+      "managed_conversation_executions_ai_client_instance_check"
+    );
+    expect(migrationSql).not.toContain("FOREIGN KEY");
+  });
+});
+
 describe("Claude AI Client migration", () => {
   it("seeds explicit semantic and raw-only Claude projection policies", async () => {
     const migrationSql = await readDrizzleFile("0030_blue_maddog.sql");

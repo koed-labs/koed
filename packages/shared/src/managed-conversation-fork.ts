@@ -6,13 +6,17 @@ import { pdsEd25519PublicKey } from "./personal-device-sync.js";
 
 export const MANAGED_CONVERSATION_FORK_PROTOCOL =
   "koed.managed-conversation-fork/v1" as const;
+export const MANAGED_CONVERSATION_FORK_PROTOCOL_V2 =
+  "koed.managed-conversation-fork/v2" as const;
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
 export interface ManagedConversationForkManifest {
-  protocol: typeof MANAGED_CONVERSATION_FORK_PROTOCOL;
+  protocol:
+    | typeof MANAGED_CONVERSATION_FORK_PROTOCOL
+    | typeof MANAGED_CONVERSATION_FORK_PROTOCOL_V2;
   operationId: string;
   requestDigest: string;
   ownerUserId: string;
@@ -27,6 +31,7 @@ export interface ManagedConversationForkManifest {
   sourceEndByteCursor: number;
   sourceEndItemCursor: number;
   provider: string;
+  aiClientInstanceId?: string;
   providerThreadId: string;
   providerArtifactRelativePath: string;
   providerCliVersion: string;
@@ -150,44 +155,56 @@ export const parseManagedConversationForkManifest = (
   value: unknown
 ): ManagedConversationForkManifest => {
   const input = plainRecord(value, "Managed Conversation fork manifest");
+  const baseKeys = [
+    "protocol",
+    "operationId",
+    "requestDigest",
+    "ownerUserId",
+    "parentExecutionId",
+    "parentExecutionGeneration",
+    "parentLogicalSessionId",
+    "logicalSourceId",
+    "sourceGenerationId",
+    "parentNextSourceGenerationId",
+    "parentNextOriginKeyId",
+    "sourceClosureHash",
+    "sourceEndByteCursor",
+    "sourceEndItemCursor",
+    "provider",
+    "providerThreadId",
+    "providerArtifactRelativePath",
+    "providerCliVersion",
+    "workspaceSnapshotId",
+    "workspaceManifestDigest",
+    "sourceDeploymentId",
+    "sourceDeviceId",
+    "targetDeploymentId",
+    "targetDeviceId",
+    "nonce",
+    "createdAt",
+    "expiresAt"
+  ] as const;
+  if (
+    input.protocol !== MANAGED_CONVERSATION_FORK_PROTOCOL &&
+    input.protocol !== MANAGED_CONVERSATION_FORK_PROTOCOL_V2
+  ) {
+    throw new TypeError("Managed Conversation fork protocol is invalid");
+  }
   exactKeys(
     input,
-    [
-      "protocol",
-      "operationId",
-      "requestDigest",
-      "ownerUserId",
-      "parentExecutionId",
-      "parentExecutionGeneration",
-      "parentLogicalSessionId",
-      "logicalSourceId",
-      "sourceGenerationId",
-      "parentNextSourceGenerationId",
-      "parentNextOriginKeyId",
-      "sourceClosureHash",
-      "sourceEndByteCursor",
-      "sourceEndItemCursor",
-      "provider",
-      "providerThreadId",
-      "providerArtifactRelativePath",
-      "providerCliVersion",
-      "workspaceSnapshotId",
-      "workspaceManifestDigest",
-      "sourceDeploymentId",
-      "sourceDeviceId",
-      "targetDeploymentId",
-      "targetDeviceId",
-      "nonce",
-      "createdAt",
-      "expiresAt"
-    ],
+    input.protocol === MANAGED_CONVERSATION_FORK_PROTOCOL_V2
+      ? [...baseKeys, "aiClientInstanceId"]
+      : baseKeys,
     "Managed Conversation fork manifest"
   );
   if (
-    input.protocol !== MANAGED_CONVERSATION_FORK_PROTOCOL ||
     typeof input.provider !== "string" ||
     input.provider.length > 96 ||
-    !aiClientIdentifierPattern.test(input.provider)
+    !aiClientIdentifierPattern.test(input.provider) ||
+    (input.protocol === MANAGED_CONVERSATION_FORK_PROTOCOL_V2 &&
+      (typeof input.aiClientInstanceId !== "string" ||
+        input.aiClientInstanceId.length > 128 ||
+        !aiClientIdentifierPattern.test(input.aiClientInstanceId)))
   ) {
     throw new TypeError("Managed Conversation fork protocol is invalid");
   }
@@ -232,6 +249,9 @@ export const parseManagedConversationForkManifest = (
       "sourceEndItemCursor"
     ),
     provider: input.provider,
+    ...(input.protocol === MANAGED_CONVERSATION_FORK_PROTOCOL_V2
+      ? { aiClientInstanceId: input.aiClientInstanceId as string }
+      : {}),
     providerThreadId: uuid(input.providerThreadId, "providerThreadId"),
     providerArtifactRelativePath: relativeProviderPath(
       input.providerArtifactRelativePath
@@ -259,6 +279,20 @@ export const parseManagedConversationForkManifest = (
 export const canonicalManagedConversationForkManifest = (
   manifest: ManagedConversationForkManifest
 ): string => canonicalize(parseManagedConversationForkManifest(manifest));
+
+export const managedConversationForkAiClientInstanceIdAfterVerification =
+  (input: {
+    manifest: ManagedConversationForkManifest;
+    verified: boolean;
+  }): string => {
+    if (!input.verified) {
+      throw new Error("Managed Conversation fork manifest is not verified");
+    }
+    const manifest = parseManagedConversationForkManifest(input.manifest);
+    return manifest.protocol === MANAGED_CONVERSATION_FORK_PROTOCOL
+      ? `${manifest.provider}.default`
+      : manifest.aiClientInstanceId!;
+  };
 
 export const parseSignedManagedConversationForkManifest = (
   value: unknown

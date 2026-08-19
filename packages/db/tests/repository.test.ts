@@ -1665,12 +1665,14 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-blocked-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
         idempotencyKey: randomUUID()
       }
     );
+    expect(managed.execution.aiClientInstanceId).toBe("codex.default");
     const [claimed] = await repo.claimManagedConversationCommands({
       ownerUserId: owner.id,
       runnerId: "managed-blocked-runner",
@@ -1743,6 +1745,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-runtime-ready-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -1818,6 +1821,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-abandoned-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -1920,6 +1924,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-reacquire-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2008,6 +2013,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-fork-failure-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2112,6 +2118,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-idle-handoff-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2212,6 +2219,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-source-generation-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2308,6 +2316,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "workspace-chunks-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,

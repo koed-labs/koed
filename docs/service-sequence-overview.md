@@ -142,6 +142,31 @@ AI Runtime.
    without degrading core status. Pi reports Managed Conversation unsupported.
    These records do not select execution flows or change Managed Conversation
    routing.
+
+## Desktop-managed Conversation execution
+
+Desktop-managed Conversation lifecycle uses explicit AI Client ownership:
+
+1. Desktop presents enabled Codex, Claude Code, and Pi instances from the
+   published capability read model. It enables start only for an instance with
+   a fresh, healthy, authenticated `managed_conversation_start` snapshot.
+2. Desktop sends both driver and instance ID. API validates ownership, enabled
+   state, and fresh capability readiness before creating or idempotently
+   returning execution.
+3. Database persists `provider` and `ai_client_instance_id` independently.
+   Migration `0033_fixed_scarlet_witch` backfills historical rows as
+   `${provider}.default`; no foreign key is used so retained execution history
+   survives client removal.
+4. Worker resolves exact persisted driver and instance on start, resume, send,
+   cancellation, handoff, and fork. Codex uses app-server and Claude Code uses
+   the Agent SDK. Missing, stale, unavailable, or unsupported owners fail
+   closed; Pi is visible but unsupported for this lifecycle.
+5. Handoff and fork manifests and child executions retain exact owner identity.
+   Desktop displays selected client name and gates send and transfer controls
+   from current owner capability readiness.
+
+See [managed Conversation AI Client routing](managed-conversation-ai-client-routing.md).
+
 9. `koed-server setup core --json` validates or provisions client-neutral core
    local credential state. Final verification is recorded by `doctor --json`.
    `koed-server setup codex --json` remains an explicit Codex profile
@@ -781,9 +806,11 @@ Captured Session and reconciles that child's rollout independently. Parent and
 child turns use the same terminal-evidence requirement and remain distinct
 through Projection and downstream memory.
 
-This path currently has no frontend and does not replace the Transcript Watcher.
-Threads started outside Koed are captured from transcript growth; Supported
-Capture Hook signals only reduce watcher latency.
+Desktop exposes explicit managed Conversation start, resume, send, handoff, and
+fork actions for selected AI Client instances. It does not expose provider-native
+cancel, approvals, or token streaming controls because those capabilities remain
+unsupported. Threads started outside Koed are captured from transcript growth;
+Supported Capture Hook signals only reduce watcher latency.
 
 Commercial/private VPS/Team deployments can run encrypted-field backfill over
 existing human-readable Memory and evidence columns. Backfill is whitelist-based

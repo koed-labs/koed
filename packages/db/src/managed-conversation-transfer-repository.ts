@@ -8,7 +8,7 @@ import {
 } from "node:crypto";
 
 import {
-  MANAGED_CONVERSATION_TRANSFER_PROTOCOL,
+  MANAGED_CONVERSATION_TRANSFER_PROTOCOL_V2,
   canonicalManagedConversationHandoffManifest,
   countersignManagedConversationHandoffCertificate,
   decryptEnvelopeToUtf8,
@@ -743,12 +743,13 @@ export const createManagedConversationTransferRepository = (
         const execution = await client.query<{
           state: string;
           provider: string;
+          ai_client_instance_id: string;
           execution_generation: number;
           runner_id: string | null;
           provider_thread_id: string | null;
           provider_cli_version: string | null;
         }>(
-          `select state, provider, execution_generation, runner_id, provider_thread_id,
+          `select state, provider, ai_client_instance_id, execution_generation, runner_id, provider_thread_id,
                   provider_cli_version
              from managed_conversation_executions
             where id = $2 and owner_user_id = $1
@@ -862,7 +863,7 @@ export const createManagedConversationTransferRepository = (
         const authoritySequence = log.head_sequence + 1;
         const now = new Date();
         const manifest: ManagedConversationHandoffManifest = {
-          protocol: MANAGED_CONVERSATION_TRANSFER_PROTOCOL,
+          protocol: MANAGED_CONVERSATION_TRANSFER_PROTOCOL_V2,
           operationId: handoff.operation_id,
           ownerUserId: actor.userId,
           executionId: handoff.execution_id,
@@ -876,6 +877,7 @@ export const createManagedConversationTransferRepository = (
           sourceEndByteCursor: input.sourceEndByteCursor,
           sourceEndItemCursor: input.sourceEndItemCursor,
           provider: execution.rows[0].provider,
+          aiClientInstanceId: execution.rows[0].ai_client_instance_id,
           providerThreadId: execution.rows[0].provider_thread_id,
           providerArtifactRelativePath: input.providerArtifactRelativePath,
           providerCliVersion: execution.rows[0].provider_cli_version,

@@ -12,6 +12,8 @@ export {
   aiClientInstanceRegistryPath,
   environmentForLocalAiClientInstance,
   loadLocalAiClientInstanceRegistry,
+  localAiClientInstanceConfigIdentity,
+  resolveConfiguredLocalAiClientInstance,
   resolveLocalAiClientInstance
 } from "./ai-client-instance-registry.js";
 export type { LocalAiClientInstanceConfiguration } from "./ai-client-instance-registry.js";

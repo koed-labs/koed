@@ -47,6 +47,7 @@ import {
 import { MemoryToolExecutor } from "../src/memory-tool-executor.js";
 
 const servers: http.Server[] = [];
+const identityHash = "f".repeat(64);
 
 describe("Curated Memory review settings", () => {
   it("uses only dedicated environment settings when no persisted override exists", () => {
@@ -1155,11 +1156,17 @@ describe("LCM summary background service", () => {
       async listAiClientInstances() {
         return {
           instances: [
-            { instanceId: "codex.default", driverId: "codex", enabled: true }
+            {
+              instanceId: "codex.default",
+              driverId: "codex",
+              enabled: true,
+              configIdentityHash: identityHash
+            }
           ],
           capabilitySnapshots: [
             {
               instanceId: "codex.default",
+              installationIdentityHash: identityHash,
               healthState: "healthy",
               authenticationState: "authenticated",
               stale: false,

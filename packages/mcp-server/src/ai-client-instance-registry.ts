@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -178,6 +179,37 @@ export const loadLocalAiClientInstanceRegistry = (
   return { version: 1, instances };
 };
 
+export const localAiClientInstanceConfigIdentity = (
+  instance: LocalAiClientInstanceConfiguration
+): string => {
+  let executableStat: Record<string, number> | null = null;
+  try {
+    const stat = fs.statSync(instance.executablePath);
+    executableStat = {
+      device: stat.dev,
+      inode: stat.ino,
+      mode: stat.mode,
+      size: stat.size,
+      modifiedMs: stat.mtimeMs,
+      changedMs: stat.ctimeMs,
+      birthMs: stat.birthtimeMs
+    };
+  } catch {
+    // Unavailable executable identity must not collide with a valid installation.
+  }
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        instanceId: instance.instanceId,
+        driverId: instance.driverId,
+        executablePath: instance.executablePath,
+        executableStat,
+        configHome: instance.configHome ?? null
+      })
+    )
+    .digest("hex");
+};
+
 export const resolveLocalAiClientInstance = (input: {
   instanceId: string;
   driverId: string;
@@ -203,6 +235,20 @@ export const resolveLocalAiClientInstance = (input: {
     );
   }
   return configured;
+};
+
+export const resolveConfiguredLocalAiClientInstance = (input: {
+  instanceId: string;
+  driverId: string;
+  env?: NodeJS.ProcessEnv;
+}): LocalAiClientInstanceConfiguration => {
+  const instance = resolveLocalAiClientInstance(input);
+  if (!instance) {
+    throw new Error(
+      `AI Client instance "${input.instanceId}" is not configured.`
+    );
+  }
+  return instance;
 };
 
 export const environmentForLocalAiClientInstance = (input: {

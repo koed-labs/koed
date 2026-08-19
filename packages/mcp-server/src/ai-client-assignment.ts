@@ -13,10 +13,12 @@ interface AssignedInstance {
   instanceId: string;
   driverId: string;
   enabled: boolean;
+  configIdentityHash?: string | null;
 }
 
 interface AssignedSnapshot {
   instanceId: string;
+  installationIdentityHash?: string;
   healthState: string;
   authenticationState: string;
   models: Array<Record<string, unknown>>;
@@ -86,13 +88,25 @@ const validateInstance = (
 
 const validateSnapshot = (
   setting: LocalMemoryAgentSettingRecord,
+  instances: AssignedInstance[],
   snapshots: AssignedSnapshot[],
   now: number
 ): AssignedSnapshot => {
   const snapshot = snapshots.find(
     (candidate) => candidate.instanceId === setting.aiClientInstanceId
   );
-  if (!snapshot || snapshot.stale || Date.parse(snapshot.expiresAt) <= now) {
+  const instance = instances.find(
+    (candidate) => candidate.instanceId === setting.aiClientInstanceId
+  );
+  if (
+    !snapshot ||
+    snapshot.stale ||
+    Date.parse(snapshot.expiresAt) <= now ||
+    !instance ||
+    !instance.configIdentityHash ||
+    !snapshot.installationIdentityHash ||
+    snapshot.installationIdentityHash !== instance.configIdentityHash
+  ) {
     throw new AiClientAssignmentError(
       `AI Client instance "${setting.aiClientInstanceId}" capability snapshot is stale or unavailable`
     );
@@ -140,7 +154,7 @@ const validateAssignment = (
   now = Date.now()
 ): void => {
   validateInstance(setting, instances);
-  const snapshot = validateSnapshot(setting, snapshots, now);
+  const snapshot = validateSnapshot(setting, instances, snapshots, now);
   validateModel(setting, snapshot);
 };
 

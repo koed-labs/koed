@@ -2071,6 +2071,8 @@ export const createKoedServerManager = ({
   ): {
     id: string;
     projectId: string;
+    provider: "codex" | "claude" | "pi";
+    aiClientInstanceId: string;
     state: string;
     executionGeneration: number;
     sessionId: string | null;
@@ -2081,13 +2083,19 @@ export const createKoedServerManager = ({
       typeof execution?.id !== "string" ||
       typeof execution.projectId !== "string" ||
       typeof execution.state !== "string" ||
-      typeof execution.executionGeneration !== "number"
+      typeof execution.executionGeneration !== "number" ||
+      (execution.provider !== "codex" &&
+        execution.provider !== "claude" &&
+        execution.provider !== "pi") ||
+      typeof execution.aiClientInstanceId !== "string"
     ) {
       return null;
     }
     return {
       id: execution.id,
       projectId: execution.projectId,
+      provider: execution.provider,
+      aiClientInstanceId: execution.aiClientInstanceId,
       state: execution.state,
       executionGeneration: execution.executionGeneration,
       sessionId:
@@ -2181,6 +2189,8 @@ export const createKoedServerManager = ({
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               projectId: request.projectId,
+              provider: request.aiClientDriverId,
+              aiClientInstanceId: request.aiClientInstanceId,
               idempotencyKey: request.idempotencyKey
             })
           }
@@ -2205,7 +2215,11 @@ export const createKoedServerManager = ({
                 executionId: execution.id,
                 projectId: execution.projectId,
                 capturedSessionId: execution.sessionId,
-                threadId: execution.providerThreadId
+                threadId: execution.providerThreadId,
+                executionOwner: {
+                  driverId: execution.provider,
+                  instanceId: execution.aiClientInstanceId
+                }
               }
             }
           : {})
@@ -2235,14 +2249,18 @@ export const createKoedServerManager = ({
                 executionId: execution.id,
                 projectId: execution.projectId,
                 capturedSessionId: execution.sessionId,
-                threadId: execution.providerThreadId
+                threadId: execution.providerThreadId,
+                executionOwner: {
+                  driverId: execution.provider,
+                  instanceId: execution.aiClientInstanceId
+                }
               }
             }
           : {}),
         ...(failed
           ? {
               message:
-                "Codex could not start this Conversation. Start a new Conversation to try again."
+                "AI Client could not start this Conversation. Start a new Conversation to try again."
             }
           : execution.state === "reconciling"
             ? {
@@ -2334,6 +2352,14 @@ export const createKoedServerManager = ({
     );
     const conversation = {
       executionId: execution?.id ?? null,
+      ...(execution
+        ? {
+            executionOwner: {
+              driverId: execution.provider,
+              instanceId: execution.aiClientInstanceId
+            }
+          }
+        : {}),
       projectId:
         request.operation === "resume"
           ? request.projectId
@@ -2342,26 +2368,40 @@ export const createKoedServerManager = ({
       threadId: request.threadId
     };
     if (request.operation === "resume") {
+      const publishedResume = execution
+        ? (await localAiClientReadModel()).capabilitySnapshots.find(
+            (snapshot) => snapshot.instanceId === execution.aiClientInstanceId
+          )?.managedConversationResume
+        : undefined;
+      const resumeReady =
+        publishedResume?.support === "supported" &&
+        publishedResume.readiness === "ready";
       return parseManagedConversationResult({
         operation: "resume",
-        status:
-          execution?.state === "running"
+        status: !resumeReady
+          ? "read_only"
+          : execution?.state === "running"
             ? "ready"
             : execution?.state === "reconciling"
               ? "reconciling"
               : "read_only",
         conversation,
-        ...(execution?.state === "reconciling"
+        ...(!resumeReady
           ? {
               message:
-                "Koed is reconciling the last provider operation. Prompt submission remains disabled."
+                "Selected AI Client does not publish Conversation resume."
             }
-          : execution?.state === "running"
-            ? {}
-            : {
+          : execution?.state === "reconciling"
+            ? {
                 message:
-                  "This Captured Session is not owned by a writable local Koed runtime."
-              })
+                  "Koed is reconciling the last provider operation. Prompt submission remains disabled."
+              }
+            : execution?.state === "running"
+              ? {}
+              : {
+                  message:
+                    "This Captured Session is not owned by a writable local Koed runtime."
+                })
       });
     }
     if (!execution || execution.state !== "running") {

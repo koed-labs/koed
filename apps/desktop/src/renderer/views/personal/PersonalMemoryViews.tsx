@@ -54,6 +54,7 @@ import type {
   ManagedConversationDesktopApi,
   ManagedConversationIdentity
 } from "../../../ipc/managed-conversation-protocol.js";
+import type { LocalAiClientReadModel } from "../../../ipc/local-ai-client-protocol.js";
 import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
 import "./personal-memory.css";
 
@@ -73,6 +74,9 @@ export type PersonalMemoryWorkspaceProps = {
   assignSessionProject?: PersonalDesktopApi["assignSessionProject"];
   managedConversationRevision?: number;
   managedConversations?: ManagedConversationDesktopApi | null;
+  localAiClients?: {
+    list: () => Promise<{ readModel: LocalAiClientReadModel }>;
+  };
   markdownAdapters?: MarkdownPlatformAdapters;
   onInspectEvent?: (selection: PersonalMemoryInspectorEvent) => void;
   onNavigate: (route: PersonalMemoryRoute) => void;
@@ -390,9 +394,43 @@ function SessionRow({
   );
 }
 
+type ManagedConversationCapability = {
+  support: "supported" | "unsupported" | "unknown";
+  readiness: "ready" | "not_ready" | "unknown";
+};
+
+type ManagedConversationOwner = {
+  aiClientDriverId: "codex" | "claude" | "pi";
+  aiClientInstanceId: string;
+  displayName: string;
+  ready: boolean;
+  resume: ManagedConversationCapability;
+  send: ManagedConversationCapability;
+  handoff: ManagedConversationCapability;
+  fork: ManagedConversationCapability;
+};
+
+const capabilityReady = (capability: ManagedConversationCapability) =>
+  capability.support === "supported" && capability.readiness === "ready";
+
+const unknownManagedCapability = (): ManagedConversationCapability => ({
+  support: "unknown",
+  readiness: "unknown"
+});
+
+const unavailableManagedCapability = (): ManagedConversationCapability => ({
+  support: "unsupported",
+  readiness: "not_ready"
+});
+
 function ProjectDetail({
   error,
   loading,
+  managedAiLoadError,
+  managedAiReadModel,
+  managedConversationOwner,
+  managedConversationOwners,
+  onManagedConversationOwnerChange,
   managedConversationRevision,
   managedConversations,
   onManagedConversationStarted,
@@ -402,6 +440,11 @@ function ProjectDetail({
 }: {
   error: string | null;
   loading: boolean;
+  managedAiLoadError?: string | null;
+  managedAiReadModel?: LocalAiClientReadModel | null;
+  managedConversationOwner?: ManagedConversationOwner;
+  managedConversationOwners?: ManagedConversationOwner[];
+  onManagedConversationOwnerChange?: (instanceId: string) => void;
   managedConversationRevision: number;
   managedConversations?: ManagedConversationDesktopApi | null;
   onManagedConversationStarted: (
@@ -446,7 +489,7 @@ function ProjectDetail({
             status: "error",
             message:
               result.message ??
-              "Codex could not establish a writable Conversation.",
+              "Selected AI Client could not establish a writable Conversation.",
             executionId: null
           });
         }
@@ -535,17 +578,22 @@ function ProjectDetail({
           disabled={
             !managedConversations ||
             !project.path ||
+            !managedConversationOwner?.ready ||
             startState.status === "starting"
           }
           onClick={() => {
-            if (!managedConversations) return;
+            if (!managedConversations || !managedConversationOwner) return;
             setStartState({
               status: "starting",
               message: "",
               executionId: null
             });
+            const idempotencyKey = `desktop-conversation:${crypto.randomUUID()}`;
             void managedConversations
-              .start(project.id, `desktop-conversation:${crypto.randomUUID()}`)
+              .start(project.id, idempotencyKey, {
+                aiClientDriverId: managedConversationOwner.aiClientDriverId,
+                aiClientInstanceId: managedConversationOwner.aiClientInstanceId
+              })
               .then((result) => {
                 if (result.status === "ready" && result.conversation) {
                   setStartState({
@@ -558,7 +606,7 @@ function ProjectDetail({
                 }
                 setStartState({
                   status: "starting",
-                  message: "Starting Codex in this Project…",
+                  message: "Starting AI Client Conversation in this Project…",
                   executionId: result.executionId
                 });
               })
@@ -579,6 +627,35 @@ function ProjectDetail({
           {startState.status === "starting" ? "Starting Conversation…" : "New"}
         </button>
       </header>
+      {managedAiLoadError ? (
+        <p className="personal-managed-error" role="alert">
+          AI Client discovery unavailable: {managedAiLoadError}
+        </p>
+      ) : null}
+      {managedAiReadModel ? (
+        <label className="personal-managed-owner-selector">
+          Execution owner
+          <select
+            aria-label="Managed Conversation execution owner"
+            value={managedConversationOwner?.aiClientInstanceId ?? ""}
+            onChange={(event) =>
+              onManagedConversationOwnerChange?.(event.target.value)
+            }
+          >
+            <option value="">Choose AI Client owner…</option>
+            {(managedConversationOwners ?? []).map((owner) => (
+              <option
+                disabled={!owner.ready}
+                key={owner.aiClientInstanceId}
+                value={owner.aiClientInstanceId}
+              >
+                {owner.displayName} · {owner.aiClientDriverId}
+                {!owner.ready ? " · unavailable" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       {startState.message ? (
         <p
           className={
@@ -628,6 +705,7 @@ function ProjectDetail({
 function StoreConversation({
   authorizeManagedConversationTransfer,
   managedConversationRevision,
+  managedConversationOwners,
   managedConversations,
   markdownAdapters,
   pendingCanonicalConversation,
@@ -638,6 +716,7 @@ function StoreConversation({
 }: {
   authorizeManagedConversationTransfer?: PersonalMemoryWorkspaceProps["authorizeManagedConversationTransfer"];
   managedConversationRevision: number;
+  managedConversationOwners?: ManagedConversationOwner[];
   managedConversations?: ManagedConversationDesktopApi | null;
   markdownAdapters?: MarkdownPlatformAdapters;
   pendingCanonicalConversation: boolean;
@@ -691,6 +770,7 @@ function StoreConversation({
         <ManagedConversationComposer
           api={managedConversations}
           authorizeTransfer={authorizeManagedConversationTransfer}
+          managedConversationOwners={managedConversationOwners}
           conversation={{
             executionId: null,
             projectId: project.id,
@@ -727,16 +807,16 @@ const transferLifecycleMessage = (
   const states: Record<string, string> = {
     requested: `${label} requested`,
     quiesce_requested: "Stopping writes at a safe boundary",
-    provider_stopped: "Codex stopped on the source device",
+    provider_stopped: "AI Client stopped on the source device",
     source_sealed: "Conversation source sealed",
     source_prepared: "Conversation and workspace prepared",
     source_attested: "Source verified; waiting for the target device",
     workspace_prepared: "Workspace transferred; verifying target",
     target_verified: "Target device verified",
     lease_transferred: "Execution authority moved to the target",
-    restoring: "Restoring Codex on the target device",
+    restoring: "Restoring AI Client on the target device",
     identity_verified: "Native Conversation identity verified",
-    provider_created: "Independent Codex Conversation created",
+    provider_created: "Independent AI Client Conversation created",
     child_bound: "Fork lineage verified",
     running:
       transfer.operation === "handoff"
@@ -755,11 +835,13 @@ function ManagedConversationComposer({
   api,
   authorizeTransfer,
   conversation,
+  managedConversationOwners,
   managedConversationRevision
 }: {
   api: ManagedConversationDesktopApi;
   authorizeTransfer?: PersonalMemoryWorkspaceProps["authorizeManagedConversationTransfer"];
   conversation: ManagedConversationIdentity;
+  managedConversationOwners?: ManagedConversationOwner[];
   managedConversationRevision: number;
 }) {
   const [draft, setDraft] = useState("");
@@ -773,7 +855,7 @@ function ManagedConversationComposer({
   const [transferBusy, setTransferBusy] = useState(false);
   const [state, setState] = useState<ComposerState>({
     status: "attaching",
-    message: "Confirming local Codex execution…"
+    message: "Confirming selected AI Client execution…"
   });
   const submissionRef = useRef<{
     idempotencyKey: string;
@@ -821,7 +903,7 @@ function ManagedConversationComposer({
     submissionRef.current = null;
     setState({
       status: "attaching",
-      message: "Confirming local Codex execution…"
+      message: "Confirming selected AI Client execution…"
     });
     void api
       .resume({
@@ -832,17 +914,33 @@ function ManagedConversationComposer({
       .then((result) => {
         if (!active) return;
         setResolvedConversation(result.conversation);
+        const owner = managedConversationOwners?.find(
+          (candidate) =>
+            candidate.aiClientDriverId ===
+              result.conversation.executionOwner?.driverId &&
+            candidate.aiClientInstanceId ===
+              result.conversation.executionOwner?.instanceId
+        );
+        const resumeUnsupported =
+          managedConversationOwners !== undefined &&
+          (!owner || !capabilityReady(owner.resume));
         setState(
-          result.status === "ready"
-            ? { status: "ready", message: "" }
-            : {
-                status: result.status,
+          resumeUnsupported
+            ? {
+                status: "read_only",
                 message:
-                  result.message ??
-                  (result.status === "read_only"
-                    ? "This Captured Session is read-only."
-                    : "Koed is reconciling this Conversation.")
+                  "Selected AI Client does not publish Conversation resume."
               }
+            : result.status === "ready"
+              ? { status: "ready", message: "" }
+              : {
+                  status: result.status,
+                  message:
+                    result.message ??
+                    (result.status === "read_only"
+                      ? "This Captured Session is read-only."
+                      : "Koed is reconciling this Conversation.")
+                }
         );
       })
       .catch((cause: unknown) => {
@@ -860,6 +958,9 @@ function ManagedConversationComposer({
     conversation.capturedSessionId,
     conversation.projectId,
     conversation.threadId,
+    conversation.executionOwner?.driverId,
+    conversation.executionOwner?.instanceId,
+    managedConversationOwners,
     managedConversationRevision
   ]);
 
@@ -880,7 +981,10 @@ function ManagedConversationComposer({
           };
     submissionRef.current = submission;
     submissionInFlightRef.current = true;
-    setState({ status: "sending", message: "Sending prompt to Codex…" });
+    setState({
+      status: "sending",
+      message: "Sending prompt to selected AI Client…"
+    });
     try {
       const result = await api.send({
         capturedSessionId: resolvedConversation.capturedSessionId,
@@ -893,7 +997,7 @@ function ManagedConversationComposer({
           status: "reconciling",
           message:
             result.message ??
-            "Codex may have accepted this prompt. Koed is reconciling it."
+            "AI Client may have accepted this prompt. Koed is reconciling it."
         });
         return;
       }
@@ -905,7 +1009,7 @@ function ManagedConversationComposer({
       setState({
         status: "reconciling",
         message:
-          "Koed could not confirm whether Codex accepted this prompt. It will not be submitted again automatically."
+          "Koed could not confirm whether AI Client accepted this prompt. It will not be submitted again automatically."
       });
     }
   }, [
@@ -916,7 +1020,24 @@ function ManagedConversationComposer({
     state.status
   ]);
 
-  const disabled = state.status !== "ready";
+  const executionOwner = resolvedConversation.executionOwner;
+  const owner = managedConversationOwners?.find(
+    (candidate) =>
+      candidate.aiClientDriverId === executionOwner?.driverId &&
+      candidate.aiClientInstanceId === executionOwner?.instanceId
+  );
+  const ownerDisplayName =
+    owner?.displayName ?? executionOwner?.driverId ?? "AI Client";
+  const ownerSendReady = managedConversationOwners
+    ? owner !== undefined && capabilityReady(owner.send)
+    : true;
+  const ownerHandoffReady = managedConversationOwners
+    ? owner !== undefined && capabilityReady(owner.handoff)
+    : true;
+  const ownerForkReady = managedConversationOwners
+    ? owner !== undefined && capabilityReady(owner.fork)
+    : true;
+  const disabled = state.status !== "ready" || !ownerSendReady;
   return (
     <form
       aria-busy={state.status === "sending"}
@@ -926,9 +1047,15 @@ function ManagedConversationComposer({
         void submit();
       }}
     >
+      <div className="personal-managed-owner-label">
+        Execution owner:{" "}
+        {executionOwner
+          ? `${ownerDisplayName} · ${executionOwner.instanceId}`
+          : ownerDisplayName}
+      </div>
       <div className="personal-managed-composer-field">
         <label>
-          <span className="sr-only">Prompt Codex</span>
+          <span className="sr-only">Prompt selected AI Client</span>
           <textarea
             disabled={disabled}
             onChange={(event) => {
@@ -955,7 +1082,7 @@ function ManagedConversationComposer({
             }}
             placeholder={
               state.status === "ready"
-                ? "Ask Codex to work in this Project"
+                ? "Ask selected AI Client to work in this Project"
                 : "Prompt unavailable"
             }
             rows={1}
@@ -1022,7 +1149,7 @@ function ManagedConversationComposer({
               </select>
             </label>
             <button
-              disabled={transferBusy || !selectedTarget}
+              disabled={transferBusy || !selectedTarget || !ownerHandoffReady}
               onClick={() => {
                 const operationId = crypto.randomUUID();
                 setTransferBusy(true);
@@ -1060,7 +1187,7 @@ function ManagedConversationComposer({
               Move
             </button>
             <button
-              disabled={transferBusy || !selectedTarget}
+              disabled={transferBusy || !selectedTarget || !ownerForkReady}
               onClick={() => {
                 const operationId = crypto.randomUUID();
                 setTransferBusy(true);
@@ -1280,6 +1407,7 @@ function SessionDetail({
   authorizeManagedConversationTransfer,
   candidates,
   managedConversationRevision,
+  managedConversationOwners,
   managedConversations,
   markdownAdapters,
   onAssigned,
@@ -1297,6 +1425,7 @@ function SessionDetail({
   authorizeManagedConversationTransfer?: PersonalMemoryWorkspaceProps["authorizeManagedConversationTransfer"];
   candidates: readonly WorkspaceShareCandidate[];
   managedConversationRevision: number;
+  managedConversationOwners?: ManagedConversationOwner[];
   managedConversations?: ManagedConversationDesktopApi | null;
   markdownAdapters?: MarkdownPlatformAdapters;
   onAssigned?: PersonalMemoryWorkspaceProps["onSessionProjectAssigned"];
@@ -1459,6 +1588,7 @@ function SessionDetail({
             authorizeManagedConversationTransfer
           }
           managedConversationRevision={managedConversationRevision}
+          managedConversationOwners={managedConversationOwners}
           managedConversations={managedConversations}
           markdownAdapters={markdownAdapters}
           onInspectEvent={onInspectEvent}
@@ -1477,6 +1607,7 @@ export function PersonalMemoryWorkspace({
   authorizeManagedConversationTransfer,
   managedConversationRevision = 0,
   managedConversations,
+  localAiClients,
   markdownAdapters,
   onInspectEvent,
   onNavigate,
@@ -1494,6 +1625,85 @@ export function PersonalMemoryWorkspace({
   const [managedDrafts, setManagedDrafts] = useState<
     ReadonlyMap<string, PersonalDesktopProjectThread>
   >(new Map());
+  const [managedAiReadModel, setManagedAiReadModel] =
+    useState<LocalAiClientReadModel | null>(null);
+  const [managedAiLoadError, setManagedAiLoadError] = useState<string | null>(
+    null
+  );
+  const [selectedManagedOwner, setSelectedManagedOwner] = useState("");
+  useEffect(() => {
+    if (!localAiClients) return;
+    let active = true;
+    const load = () => {
+      void localAiClients
+        .list()
+        .then((result) => {
+          if (!active) return;
+          setManagedAiReadModel(result.readModel);
+          setManagedAiLoadError(null);
+        })
+        .catch((cause: unknown) => {
+          if (!active) return;
+          setManagedAiReadModel(null);
+          setManagedAiLoadError(
+            cause instanceof Error ? cause.message : String(cause)
+          );
+        });
+    };
+    load();
+    const timer = window.setInterval(load, 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [localAiClients]);
+  const managedConversationOwners = useMemo<ManagedConversationOwner[]>(
+    () =>
+      managedAiReadModel?.instances.map(
+        (instance): ManagedConversationOwner => {
+          const snapshot = managedAiReadModel.capabilitySnapshots.find(
+            (candidate) => candidate.instanceId === instance.instanceId
+          );
+          const snapshotCurrent =
+            snapshot !== undefined &&
+            snapshot.stale === false &&
+            Number.isFinite(Date.parse(snapshot.expiresAt)) &&
+            Date.parse(snapshot.expiresAt) > Date.now();
+          const baseReady =
+            instance.enabled &&
+            snapshotCurrent &&
+            snapshot.authenticationState === "authenticated" &&
+            snapshot.healthState === "healthy";
+          const managedConversationStart =
+            snapshot?.managedConversationStart ?? unknownManagedCapability();
+          const resume =
+            snapshot?.managedConversationResume ?? unknownManagedCapability();
+          const send =
+            snapshot?.managedConversationSend ?? unknownManagedCapability();
+          const handoff =
+            snapshot?.managedConversationHandoff ?? unknownManagedCapability();
+          const fork =
+            snapshot?.managedConversationFork ?? unknownManagedCapability();
+          return {
+            aiClientDriverId: instance.driverId,
+            aiClientInstanceId: instance.instanceId,
+            displayName: instance.displayName,
+            ready:
+              baseReady &&
+              instance.driverId !== "pi" &&
+              capabilityReady(managedConversationStart),
+            resume: baseReady ? resume : unavailableManagedCapability(),
+            send: baseReady ? send : unavailableManagedCapability(),
+            handoff: baseReady ? handoff : unavailableManagedCapability(),
+            fork: baseReady ? fork : unavailableManagedCapability()
+          };
+        }
+      ) ?? [],
+    [managedAiReadModel]
+  );
+  const managedConversationOwner = managedConversationOwners.find(
+    (owner) => owner.aiClientInstanceId === selectedManagedOwner
+  );
   const projects = useMemo(
     () =>
       snapshot.projectOrder.flatMap((id) => {
@@ -1583,6 +1793,9 @@ export function PersonalMemoryWorkspace({
             }
             candidates={workspaceCandidates}
             managedConversationRevision={managedConversationRevision}
+            managedConversationOwners={
+              localAiClients ? managedConversationOwners : undefined
+            }
             managedConversations={managedConversations}
             markdownAdapters={markdownAdapters}
             onAssigned={onSessionProjectAssigned}
@@ -1600,16 +1813,28 @@ export function PersonalMemoryWorkspace({
           <ProjectDetail
             error={projects.length === 0 ? snapshot.error : null}
             loading={snapshot.loading && projects.length === 0}
+            managedAiLoadError={managedAiLoadError}
+            managedAiReadModel={managedAiReadModel}
             managedConversationRevision={managedConversationRevision}
+            managedConversationOwner={managedConversationOwner}
+            managedConversationOwners={
+              localAiClients ? managedConversationOwners : undefined
+            }
+            onManagedConversationOwnerChange={setSelectedManagedOwner}
             managedConversations={managedConversations}
             onManagedConversationStarted={(conversation) => {
               if (!selectedProject) return;
               const now = new Date().toISOString();
               const draft: PersonalDesktopProjectThread = {
                 id: conversation.threadId,
-                name: "New Codex Conversation",
+                name: "New AI Client Conversation",
                 sessionId: conversation.capturedSessionId,
-                sourceAiClient: "codex",
+                sourceAiClient:
+                  conversation.executionOwner?.driverId === "claude"
+                    ? "claude-code"
+                    : conversation.executionOwner?.driverId === "pi"
+                      ? "pi"
+                      : "codex",
                 projectId: selectedProject.id,
                 projectName: selectedProject.name,
                 projectPath: selectedProject.path,

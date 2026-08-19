@@ -283,10 +283,12 @@ export const registerDesktopCommandHandlers = (
       } catch {
         const messages: Record<ManagedConversationResult["operation"], string> =
           {
-            start: "Koed could not start the managed Codex Conversation.",
-            inspect: "Koed could not inspect the managed Codex Conversation.",
-            resume: "Koed could not confirm the managed Codex Conversation.",
-            send: "Koed could not submit the prompt to the managed Codex Conversation.",
+            start: "Koed could not start the managed AI Client Conversation.",
+            inspect:
+              "Koed could not inspect the managed AI Client Conversation.",
+            resume:
+              "Koed could not confirm the managed AI Client Conversation.",
+            send: "Koed could not submit the prompt to the managed AI Client Conversation.",
             targets: "Koed could not load Personal Devices.",
             transfer_status:
               "Koed could not load the managed Conversation transfer status.",

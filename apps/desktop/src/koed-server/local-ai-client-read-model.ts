@@ -77,6 +77,13 @@ const readSnapshots = (value: unknown) =>
         const capabilities = objectValue(item.capabilities);
         const descriptors = objectValue(capabilities?.descriptors);
         const synthesis = objectValue(descriptors?.local_synthesis);
+        const managedDescriptor = (id: string) =>
+          objectValue(descriptors?.[id]);
+        const managedStart = managedDescriptor("managed_conversation_start");
+        const managedResume = managedDescriptor("managed_conversation_resume");
+        const managedSend = managedDescriptor("managed_conversation_send");
+        const managedHandoff = managedDescriptor("handoff");
+        const managedFork = managedDescriptor("fork");
         return [
           {
             instanceId,
@@ -86,6 +93,26 @@ const readSnapshots = (value: unknown) =>
             localSynthesis: {
               support: readSupport(synthesis?.support),
               readiness: readReadiness(synthesis?.readiness)
+            },
+            managedConversationStart: {
+              support: readSupport(managedStart?.support),
+              readiness: readReadiness(managedStart?.readiness)
+            },
+            managedConversationResume: {
+              support: readSupport(managedResume?.support),
+              readiness: readReadiness(managedResume?.readiness)
+            },
+            managedConversationSend: {
+              support: readSupport(managedSend?.support),
+              readiness: readReadiness(managedSend?.readiness)
+            },
+            managedConversationHandoff: {
+              support: readSupport(managedHandoff?.support),
+              readiness: readReadiness(managedHandoff?.readiness)
+            },
+            managedConversationFork: {
+              support: readSupport(managedFork?.support),
+              readiness: readReadiness(managedFork?.readiness)
             },
             observedAt: text(item.observedAt) ?? "",
             expiresAt: text(item.expiresAt) ?? "",

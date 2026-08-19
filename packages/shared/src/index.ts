@@ -145,9 +145,11 @@ export type {
 export {
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
   MANAGED_CONVERSATION_TRANSFER_PROTOCOL,
+  MANAGED_CONVERSATION_TRANSFER_PROTOCOL_V2,
   assertManagedConversationHandoffTransition,
   canonicalManagedConversationTargetReadinessEvidence,
   canonicalManagedConversationHandoffManifest,
+  managedConversationAiClientInstanceIdAfterVerification,
   countersignManagedConversationHandoffCertificate,
   createManagedConversationAuthorityPrivateKey,
   managedConversationAuthorityLogHead,
@@ -165,7 +167,9 @@ export {
 } from "./managed-conversation-transfer.js";
 export {
   MANAGED_CONVERSATION_FORK_PROTOCOL,
+  MANAGED_CONVERSATION_FORK_PROTOCOL_V2,
   canonicalManagedConversationForkManifest,
+  managedConversationForkAiClientInstanceIdAfterVerification,
   managedConversationForkManifestDigest,
   parseManagedConversationForkManifest,
   parseSignedManagedConversationForkManifest,

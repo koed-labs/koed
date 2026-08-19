@@ -9,6 +9,13 @@ Koed does not require Codex for the Claude integration. Codex and Claude Code
 may both connect to the same local Koed deployment, but neither installation is
 used as a fallback for the other.
 
+Desktop-managed Conversations require explicit `claude` driver and instance
+selection. API accepts only an enabled instance with a fresh healthy,
+authenticated `managed_conversation_start` capability snapshot. Worker keeps
+that exact instance through restart, send, handoff, and fork; it does not fall
+back to Codex or another Claude instance. Pi remains visible in Desktop as an
+unsupported Managed Conversation owner.
+
 ## Requirements
 
 - A running local `koed-server`. The default API host port is `3300`.

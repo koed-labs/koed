@@ -1,3 +1,8 @@
+import {
+  aiClientIdentifierPattern,
+  aiClientInstanceIdMaxLength
+} from "@koed/shared";
+
 export const managedConversationCommandChannel =
   "koed:managed-conversation:command";
 
@@ -39,6 +44,17 @@ const identifier = (value: unknown, label: string): string => {
   return value;
 };
 
+const aiClientInstanceIdentifier = (value: unknown, label: string): string => {
+  const result = identifier(value, label);
+  if (
+    result.length > aiClientInstanceIdMaxLength ||
+    !aiClientIdentifierPattern.test(result)
+  ) {
+    throw new TypeError(`${label} is invalid.`);
+  }
+  return result;
+};
+
 const idempotencyKey = (value: unknown): string => {
   const key = identifier(value, "Managed Conversation idempotency key");
   if (
@@ -64,6 +80,8 @@ const prompt = (value: unknown): string => {
 export type ManagedConversationStartRequest = {
   operation: "start";
   projectId: string;
+  aiClientDriverId: "codex" | "claude" | "pi";
+  aiClientInstanceId: string;
   idempotencyKey: string;
 };
 
@@ -132,6 +150,10 @@ export type ManagedConversationIdentity = {
   projectId: string;
   capturedSessionId: string;
   threadId: string;
+  executionOwner?: {
+    driverId: "codex" | "claude" | "pi";
+    instanceId: string;
+  };
 };
 
 export type ManagedConversationTransferLifecycle = {
@@ -208,12 +230,30 @@ export const parseManagedConversationRequest = (
   if (input.operation === "start") {
     exactKeys(
       input,
-      ["operation", "projectId", "idempotencyKey"],
+      [
+        "operation",
+        "projectId",
+        "aiClientDriverId",
+        "aiClientInstanceId",
+        "idempotencyKey"
+      ],
       "Managed Conversation start"
     );
+    if (
+      input.aiClientDriverId !== "codex" &&
+      input.aiClientDriverId !== "claude" &&
+      input.aiClientDriverId !== "pi"
+    ) {
+      throw new TypeError("AI Client driver id is invalid.");
+    }
     return {
       operation: "start",
       projectId: identifier(input.projectId, "Project id"),
+      aiClientDriverId: input.aiClientDriverId,
+      aiClientInstanceId: aiClientInstanceIdentifier(
+        input.aiClientInstanceId,
+        "AI Client instance id"
+      ),
       idempotencyKey: idempotencyKey(input.idempotencyKey)
     };
   }
@@ -340,11 +380,28 @@ export const parseManagedConversationRequest = (
 
 const parseIdentity = (value: unknown): ManagedConversationIdentity => {
   const identity = record(value, "Managed Conversation identity");
-  exactKeys(
-    identity,
-    ["executionId", "projectId", "capturedSessionId", "threadId"],
-    "Managed Conversation identity"
-  );
+  const keys = ["executionId", "projectId", "capturedSessionId", "threadId"];
+  if (identity.executionOwner !== undefined) keys.push("executionOwner");
+  exactKeys(identity, keys, "Managed Conversation identity");
+  const owner =
+    identity.executionOwner === undefined
+      ? undefined
+      : record(identity.executionOwner, "Managed Conversation execution owner");
+  if (owner) {
+    exactKeys(
+      owner,
+      ["driverId", "instanceId"],
+      "Managed Conversation execution owner"
+    );
+  }
+  if (
+    owner &&
+    owner.driverId !== "codex" &&
+    owner.driverId !== "claude" &&
+    owner.driverId !== "pi"
+  ) {
+    throw new TypeError("Managed Conversation execution owner is invalid.");
+  }
   return {
     executionId:
       identity.executionId === null
@@ -355,7 +412,18 @@ const parseIdentity = (value: unknown): ManagedConversationIdentity => {
       identity.capturedSessionId,
       "Captured Session id"
     ),
-    threadId: identifier(identity.threadId, "Conversation id")
+    threadId: identifier(identity.threadId, "Conversation id"),
+    ...(owner
+      ? {
+          executionOwner: {
+            driverId: owner.driverId as "codex" | "claude" | "pi",
+            instanceId: aiClientInstanceIdentifier(
+              owner.instanceId,
+              "AI Client instance id"
+            )
+          }
+        }
+      : {})
   };
 };
 
@@ -614,7 +682,11 @@ export const parseManagedConversationResult = (
 export interface ManagedConversationDesktopApi {
   start: (
     projectId: string,
-    idempotencyKey: string
+    idempotencyKey: string,
+    owner: {
+      aiClientDriverId: "codex" | "claude" | "pi";
+      aiClientInstanceId: string;
+    }
   ) => Promise<Extract<ManagedConversationResult, { operation: "start" }>>;
   inspect: (
     executionId: string

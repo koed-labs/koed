@@ -757,14 +757,30 @@ const managedCapabilityIds: Set<string> = new Set([
   aiClientCapabilityIds.fork
 ]);
 
-const supportedCapabilityIds = (driver: AiClientProvider): Set<string> =>
-  driver === "pi"
-    ? new Set(
-        Object.values(aiClientCapabilityIds).filter(
-          (id) => !managedCapabilityIds.has(id)
-        )
+const implementedManagedCapabilityIds: Set<string> = new Set([
+  aiClientCapabilityIds.managedConversationStart,
+  aiClientCapabilityIds.managedConversationResume,
+  aiClientCapabilityIds.managedConversationSend,
+  aiClientCapabilityIds.sessionIdentity,
+  aiClientCapabilityIds.handoff,
+  aiClientCapabilityIds.fork
+]);
+
+const supportedCapabilityIds = (driver: AiClientProvider): Set<string> => {
+  if (driver === "pi") {
+    return new Set(
+      Object.values(aiClientCapabilityIds).filter(
+        (id) => !managedCapabilityIds.has(id)
       )
-    : new Set(Object.values(aiClientCapabilityIds));
+    );
+  }
+  return new Set(
+    Object.values(aiClientCapabilityIds).filter(
+      (id) =>
+        !managedCapabilityIds.has(id) || implementedManagedCapabilityIds.has(id)
+    )
+  );
+};
 
 const capability = (
   id: (typeof aiClientCapabilityIds)[keyof typeof aiClientCapabilityIds],
@@ -779,7 +795,11 @@ const capability = (
       ? synthesisReady
         ? "ready"
         : "not_ready"
-      : "unknown";
+      : managedCapabilityIds.has(id)
+        ? implementedManagedCapabilityIds.has(id)
+          ? "ready"
+          : "not_ready"
+        : "unknown";
   return {
     id,
     support: supported ? "supported" : "unsupported",
@@ -867,9 +887,7 @@ export const aiClientDiscoveryError = (
         item.support === "supported" &&
         authenticationState === "unauthenticated"
           ? "unauthenticated"
-          : item.support === "supported"
-            ? "unavailable"
-            : "not_ready"
+          : "unavailable"
     })),
     diagnostics
   };

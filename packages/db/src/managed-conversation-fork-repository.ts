@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, verify } from "node:crypto";
 
 import {
-  MANAGED_CONVERSATION_FORK_PROTOCOL,
+  MANAGED_CONVERSATION_FORK_PROTOCOL_V2,
   canonicalManagedConversationForkManifest,
   managedConversationForkManifestDigest,
   parseManagedConversationForkManifest,
@@ -210,6 +210,7 @@ type ExecutionRow = {
   owner_user_id: string;
   project_id: string;
   provider: string;
+  ai_client_instance_id: string;
   state: ManagedConversationExecutionRecord["state"];
   state_version: number;
   execution_generation: number;
@@ -243,7 +244,7 @@ const FORK_COLUMNS = `
 `;
 
 const EXECUTION_COLUMNS = `
-  id, owner_user_id, project_id, provider, state,
+  id, owner_user_id, project_id, provider, ai_client_instance_id, state,
   state_version, execution_generation, runner_deployment_id, runner_device_id,
   runner_id, runner_lease_expires_at, logical_session_id, provider_thread_id,
   provider_cli_version, source_generation_id, last_error_code,
@@ -315,6 +316,7 @@ const mapExecution = (
   ownerUserId: row.owner_user_id,
   projectId: row.project_id,
   provider: row.provider,
+  aiClientInstanceId: row.ai_client_instance_id,
   state: row.state,
   stateVersion: row.state_version,
   executionGeneration: row.execution_generation,
@@ -712,7 +714,7 @@ export const createManagedConversationForkRepository = (
       }
       const now = new Date();
       const manifest: ManagedConversationForkManifest = {
-        protocol: MANAGED_CONVERSATION_FORK_PROTOCOL,
+        protocol: MANAGED_CONVERSATION_FORK_PROTOCOL_V2,
         operationId: fork.operation_id,
         requestDigest: fork.request_digest,
         ownerUserId: actor.userId,
@@ -727,6 +729,7 @@ export const createManagedConversationForkRepository = (
         sourceEndByteCursor: input.sourceEndByteCursor,
         sourceEndItemCursor: input.sourceEndItemCursor,
         provider: parent.provider,
+        aiClientInstanceId: parent.ai_client_instance_id,
         providerThreadId: parent.provider_thread_id,
         providerArtifactRelativePath: input.providerArtifactRelativePath,
         providerCliVersion: parent.provider_cli_version,
@@ -1115,15 +1118,16 @@ export const createManagedConversationForkRepository = (
       const fencingToken = randomBytes(32).toString("base64url");
       const child = await client.query<ExecutionRow>(
         `insert into managed_conversation_executions (
-           id, owner_user_id, project_id, provider, fencing_token_hash,
-           runner_deployment_id, runner_device_id
-         ) values ($1,$2,$3,$4,$5,$6,$7)
+           id, owner_user_id, project_id, provider, ai_client_instance_id,
+           fencing_token_hash, runner_deployment_id, runner_device_id
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8)
          returning ${EXECUTION_COLUMNS}`,
         [
           childId,
           actor.userId,
           parent.rows[0].project_id,
           parent.rows[0].provider,
+          parent.rows[0].ai_client_instance_id,
           sha256(fencingToken),
           fork.target_deployment_id,
           fork.target_device_id

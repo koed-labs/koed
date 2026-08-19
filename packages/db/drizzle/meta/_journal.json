@@ -232,6 +232,13 @@
       "when": 1787061682115,
       "tag": "0032_pi_source_runtime",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1787161195478,
+      "tag": "0033_fixed_scarlet_witch",
+      "breakpoints": true
     }
   ]
 }

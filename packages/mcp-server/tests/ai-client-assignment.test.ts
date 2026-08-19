@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { resolveLocalMemoryAgentConfig } from "../src/ai-client-assignment.js";
 
+const identityHash = "f".repeat(64);
+
 const setting = (
   provider: "codex" | "claude" | "pi",
   flowKey:
@@ -38,12 +40,14 @@ const clientFor = (
       {
         instanceId: `${provider}.work`,
         driverId: provider,
-        enabled: true
+        enabled: true,
+        configIdentityHash: identityHash
       }
     ],
     capabilitySnapshots: [
       {
         instanceId: `${provider}.work`,
+        installationIdentityHash: identityHash,
         healthState: "healthy",
         authenticationState: "authenticated",
         stale: false,

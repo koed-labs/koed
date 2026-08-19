@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { type AiClientCapabilityDescriptor } from "@koed/shared";
 import {
   aiClientDiscoveryError,
@@ -7,6 +9,7 @@ import {
 import {
   environmentForLocalAiClientInstance,
   loadLocalAiClientInstanceRegistry,
+  localAiClientInstanceConfigIdentity,
   type LocalAiClientInstanceConfiguration
 } from "./ai-client-instance-registry.js";
 import type { MemoryApiClient } from "./index.js";
@@ -46,6 +49,38 @@ const capabilitiesRecord = (
     capabilities.map((descriptor) => [descriptor.id, descriptor])
   );
 
+const sameRegistryIdentity = (
+  left: LocalAiClientInstanceConfiguration,
+  right: LocalAiClientInstanceConfiguration
+): boolean => {
+  if (left.configurationError || right.configurationError) {
+    return (
+      left.configurationError === right.configurationError &&
+      left.instanceId === right.instanceId &&
+      left.driverId === right.driverId &&
+      left.executablePath === right.executablePath &&
+      left.configHome === right.configHome
+    );
+  }
+  return (
+    localAiClientInstanceConfigIdentity(left) ===
+    localAiClientInstanceConfigIdentity(right)
+  );
+};
+
+const combinedIdentityHash = (input: {
+  installationIdentityHash: string;
+  configIdentityHash: string | null;
+}): string =>
+  createHash("sha256")
+    .update(
+      JSON.stringify({
+        installationIdentityHash: input.installationIdentityHash,
+        configIdentityHash: input.configIdentityHash
+      })
+    )
+    .digest("hex");
+
 const publishDiscovery = async (
   apiClient: MemoryApiClient,
   instance: LocalAiClientInstanceConfiguration,
@@ -53,12 +88,20 @@ const publishDiscovery = async (
   now: Date,
   ttlMs: number
 ): Promise<void> => {
+  const configIdentityHash = instance.configurationError
+    ? null
+    : localAiClientInstanceConfigIdentity(instance);
+  const identityHash = combinedIdentityHash({
+    installationIdentityHash: discovery.installationIdentityHash,
+    configIdentityHash
+  });
   await apiClient.upsertAiClientInstance(instance.instanceId, {
     driver_id: instance.driverId,
-    display_name: instance.displayName
+    display_name: instance.displayName,
+    config_identity_hash: identityHash
   });
   await apiClient.recordAiClientCapabilitySnapshot(instance.instanceId, {
-    installation_identity_hash: discovery.installationIdentityHash,
+    installation_identity_hash: identityHash,
     client_version: discovery.clientVersion,
     authentication_state: discovery.authenticationState,
     health_state: discovery.healthState,
@@ -129,6 +172,14 @@ export const publishAiClientCapabilities = async (
     try {
       const discovery = await discoverInstance(instance, environment);
       if (options.isActive && !options.isActive()) break;
+      const current = instancesFor(environment).find(
+        (candidate) => candidate.instanceId === instance.instanceId
+      );
+      if (!current || !sameRegistryIdentity(instance, current)) {
+        throw new Error(
+          `AI Client instance "${instance.instanceId}" changed during capability discovery`
+        );
+      }
       await publishDiscovery(apiClient, instance, discovery, now, ttlMs);
       results.push({
         instanceId: instance.instanceId,
