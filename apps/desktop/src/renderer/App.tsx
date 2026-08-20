@@ -571,6 +571,7 @@ export function App({
     section:
       | "general"
       | "capture"
+      | "ai-clients"
       | "team-connection"
       | "about"
       | "advanced" = "general"

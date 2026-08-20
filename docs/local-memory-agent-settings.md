@@ -49,6 +49,10 @@ persisted assignment exists. Settings or capability API failures never silently
 fall back. Desktop exposes exactly `mcp_memory_answer` (Memory Answer),
 `lcm_summary`, `session_title`, and `curated_memory_review`; `manual_memory_answer`
 is intentionally hidden. Reset is an explicit DELETE for one flow assignment.
+The Desktop surface for these selectors is **Preferences → AI Clients**, which is
+configuration rather than diagnostics; **Preferences → Advanced Diagnostics**
+retains only Operator diagnostics and integration setup, check, repair, and
+removal actions.
 The read model includes documented defaults so a missing assignment can be
 identified without changing persisted state.
 

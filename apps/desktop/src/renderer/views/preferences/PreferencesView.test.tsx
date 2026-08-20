@@ -204,6 +204,54 @@ describe("PreferencesView", () => {
     expect(disconnect).not.toHaveBeenCalled();
   });
 
+  it("keeps AI Client settings in their own configuration section", async () => {
+    const emptyDefault = {
+      source: "code",
+      available: false,
+      assignment: null,
+      reason: "No configured AI Client."
+    };
+    const localAiClients = {
+      list: vi.fn(async () => ({
+        operation: "list",
+        readModel: {
+          instances: [],
+          capabilitySnapshots: [],
+          settings: [],
+          defaults: {
+            mcp_memory_answer: emptyDefault,
+            lcm_summary: emptyDefault,
+            session_title: emptyDefault,
+            curated_memory_review: emptyDefault
+          }
+        }
+      })),
+      refresh: vi.fn(),
+      set: vi.fn(),
+      reset: vi.fn()
+    } as unknown as DesktopApi["localAiClients"];
+
+    await renderPreferences({ initialSection: "ai-clients", localAiClients });
+    expect(
+      [...container.querySelectorAll("nav button")].map((button) =>
+        button.textContent?.trim()
+      )
+    ).toEqual([
+      "General",
+      "AI Clients",
+      "Team Connection",
+      "About",
+      "Advanced Diagnostics"
+    ]);
+    expect(container.querySelector(".koed-local-ai-settings")).toBeTruthy();
+
+    await renderPreferences({ initialSection: "advanced", localAiClients });
+    expect(container.querySelector(".koed-local-ai-settings")).toBeNull();
+    expect(container.textContent).not.toContain(
+      "Opening saved AI Client settings"
+    );
+  });
+
   it("keeps Operator diagnostics collapsed and excludes credential values", async () => {
     await renderPreferences({ initialSection: "advanced" });
     const details = container.querySelector("details");

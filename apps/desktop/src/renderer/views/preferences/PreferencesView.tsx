@@ -39,6 +39,7 @@ import "./preferences.css";
 export type PreferencesSection =
   | "general"
   | "capture"
+  | "ai-clients"
   | "team-connection"
   | "about"
   | "advanced";
@@ -86,6 +87,7 @@ const sections: readonly {
   label: string;
 }[] = [
   { id: "general", label: "General" },
+  { id: "ai-clients", label: "AI Clients" },
   { id: "team-connection", label: "Team Connection" },
   { id: "about", label: "About" },
   { id: "advanced", label: "Advanced Diagnostics" }
@@ -523,10 +525,19 @@ const integrationConsentCopy: Record<
   }
 };
 
+function AiClientsSection({
+  localAiClients
+}: Pick<PreferencesViewProps, "localAiClients">) {
+  return (
+    <div className="koed-preference-section">
+      <LocalAiClientSettingsSection localAiClients={localAiClients} />
+    </div>
+  );
+}
+
 function AdvancedSection({
-  localAiClients,
   statusStore
-}: Pick<PreferencesViewProps, "localAiClients" | "statusStore">) {
+}: Pick<PreferencesViewProps, "statusStore">) {
   const snapshot = useDesktopStatus(statusStore);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingIntegrationCommand, setPendingIntegrationCommand] = useState<
@@ -619,7 +630,6 @@ function AdvancedSection({
 
   return (
     <div className="koed-preference-section">
-      <LocalAiClientSettingsSection localAiClients={localAiClients} />
       <p className="koed-advanced-intro">
         Operator diagnostics describe local implementation detail. They do not
         expose API Token values or remote credentials.
@@ -862,6 +872,9 @@ export function PreferencesView({
           />
         ) : null}
         {section === "capture" ? <CaptureSection capture={capture} /> : null}
+        {section === "ai-clients" ? (
+          <AiClientsSection localAiClients={localAiClients} />
+        ) : null}
         {section === "team-connection" ? (
           <TeamConnectionSection
             collaborationClient={collaborationClient}
@@ -872,10 +885,7 @@ export function PreferencesView({
           <AboutSection acknowledgements={acknowledgements} version={version} />
         ) : null}
         {section === "advanced" ? (
-          <AdvancedSection
-            localAiClients={localAiClients}
-            statusStore={statusStore}
-          />
+          <AdvancedSection statusStore={statusStore} />
         ) : null}
       </section>
     </main>
