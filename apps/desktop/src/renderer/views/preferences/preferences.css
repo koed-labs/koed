@@ -1,13 +1,17 @@
 .koed-preferences {
   display: grid;
   grid-template-columns: 210px minmax(0, 760px);
-  min-block-size: 100%;
+  block-size: 100%;
+  min-block-size: 0;
+  overflow: hidden;
   justify-content: center;
   background: var(--background);
   color: var(--foreground);
 }
 
 .koed-preferences > nav {
+  min-block-size: 0;
+  overflow-y: auto;
   padding: 24px 12px;
   border-inline-end: 1px solid var(--border);
 }
@@ -43,6 +47,8 @@
 
 .koed-preferences-content {
   min-inline-size: 0;
+  min-block-size: 0;
+  overflow-y: auto;
   padding: 0 28px 48px;
 }
 
@@ -405,12 +411,14 @@
 @media (max-width: 720px) {
   .koed-preferences {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .koed-preferences > nav {
     display: flex;
     gap: 4px;
     overflow-x: auto;
+    overflow-y: hidden;
     padding: 10px 14px;
     border-inline-end: 0;
     border-block-end: 1px solid var(--border);
