@@ -174,9 +174,10 @@ const trim = (value: string | undefined): string | undefined => {
 
 const accelerationPolicy = (
   value: string | undefined,
-  name: string
+  name: string,
+  defaultPolicy: AccelerationPolicy = "auto"
 ): AccelerationPolicy => {
-  const normalized = value?.trim().toLowerCase() || "auto";
+  const normalized = value?.trim().toLowerCase() || defaultPolicy;
   if (!["auto", "cpu", "metal", "cuda"].includes(normalized)) {
     throw new Error(`${name} must be auto, cpu, metal, or cuda`);
   }
@@ -578,8 +579,9 @@ export const resolveEnv = (
       true
     ),
     rerankerAccelerationPolicy: accelerationPolicy(
-      environment.KOED_RERANKER_ACCELERATION ?? "cpu",
-      "KOED_RERANKER_ACCELERATION"
+      environment.KOED_RERANKER_ACCELERATION,
+      "KOED_RERANKER_ACCELERATION",
+      "cpu"
     ),
     rerankerAccelerationDevice: trim(environment.KOED_RERANKER_DEVICE) ?? null,
     embeddingServiceToken: environment.EMBEDDING_SERVICE_TOKEN?.trim() ?? "",

@@ -333,7 +333,8 @@ describe("llama-server adapter helpers", () => {
       async () => ({
         listing: "Available devices:\n  CUDA0: test GPU",
         devices: [{ id: "CUDA0", backend: "cuda" }]
-      })
+      }),
+      { platform: "linux", arch: "x64" }
     );
 
     await client.start();
@@ -346,6 +347,62 @@ describe("llama-server adapter helpers", () => {
     expect(client.acceleration()).toMatchObject({
       backend: "cpu",
       fallbackReason: "cuda_startup_failed"
+    });
+    await client.stop();
+  });
+
+  it("discovers a CUDA reranker independently from CPU embedding", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      stdout: null,
+      stderr: null,
+      kill: vi.fn((signal: NodeJS.Signals) => {
+        child.signalCode = signal;
+        child.emit("exit", null, signal);
+        return true;
+      })
+    });
+    const config = testConfig({ embeddingAccelerationPolicy: "cpu" });
+    const listDevices = vi.fn(async (_binary: string, policy?: string) => {
+      expect(policy).toBe("cuda");
+      return {
+        listing: "Available devices:\n  CUDA0: test GPU",
+        devices: [{ id: "CUDA0", backend: "cuda" as const }]
+      };
+    });
+    const client = new LlamaServerClient(
+      config,
+      testLogger(),
+      {
+        name: "reranker",
+        modelPath: config.modelPath!,
+        port: config.rerankerServerPort,
+        pooling: "rank",
+        embedding: true,
+        reranking: true,
+        nCtx: config.rerankerNCtx,
+        nThreads: config.rerankerNThreads,
+        nBatch: config.rerankerNBatch,
+        nUbatch: config.rerankerNUbatch,
+        parallel: config.rerankerParallel,
+        promptCacheEnabled: config.rerankerPromptCacheEnabled,
+        accelerationPolicy: "cuda",
+        accelerationDevice: null
+      },
+      async () =>
+        new Response(JSON.stringify({ status: "ok" }), { status: 200 }),
+      (() => child) as unknown as typeof import("node:child_process").spawn,
+      listDevices,
+      { platform: "linux", arch: "x64" }
+    );
+
+    await client.start();
+
+    expect(listDevices).toHaveBeenCalledWith(config.llamaServerBinary, "cuda");
+    expect(client.acceleration()).toMatchObject({
+      backend: "cuda",
+      device: "CUDA0"
     });
     await client.stop();
   });

@@ -52,6 +52,7 @@ export class LlamaServerError extends Error {}
 type FetchLike = typeof fetch;
 type SpawnLike = typeof spawn;
 type ListDevicesLike = typeof listLlamaDevices;
+type HostPlatform = { platform: NodeJS.Platform; arch: string };
 const llamaServerShutdownGraceMs = 2_000;
 
 const waitForChildExit = (
@@ -227,7 +228,8 @@ export class LlamaServerClient {
     private readonly options: LlamaServerOptions,
     private readonly fetcher: FetchLike = globalThis.fetch.bind(globalThis),
     private readonly spawner: SpawnLike = spawn,
-    private readonly listDevices: ListDevicesLike = listLlamaDevices
+    private readonly listDevices: ListDevicesLike = listLlamaDevices,
+    private readonly host?: HostPlatform
   ) {
     this.baseUrl = `http://127.0.0.1:${options.port}`;
     this.logPath = `/tmp/koed-${options.name}-llama-server.log`;
@@ -271,12 +273,15 @@ export class LlamaServerClient {
       return resolveAcceleration("cpu", []);
     }
     try {
-      const discovered = await this.listDevices(this.config.llamaServerBinary);
+      const discovered = await this.listDevices(
+        this.config.llamaServerBinary,
+        this.options.accelerationPolicy
+      );
       const resolved = resolveAcceleration(
         this.options.accelerationPolicy,
         discovered.devices,
         this.options.accelerationDevice,
-        undefined,
+        this.host,
         discovered.listing
       );
       if (resolved.fallbackReason) {

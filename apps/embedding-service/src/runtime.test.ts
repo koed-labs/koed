@@ -184,6 +184,19 @@ describe("EmbeddingRuntime", () => {
     ).toEqual([["a"], ["b", "c"]]);
   });
 
+  it("limits embedding batches to llama-server's physical microbatch", async () => {
+    const runtime = new EmbeddingRuntime(
+      testConfig({
+        llamaNBatch: 8192,
+        llamaNUbatch: 512,
+        llamaBatchTokenHeadroom: 8
+      }),
+      testLogger()
+    );
+
+    expect(runtime.embeddingBatchTokenLimit()).toBe(504);
+  });
+
   it("uses llama-server rerank scores", async () => {
     const fakeServer = new FakeLlamaServer();
     const runtime = new EmbeddingRuntime(

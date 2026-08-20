@@ -161,6 +161,16 @@ describe("Embedding Service env config", () => {
     expect(config.rerankerAccelerationPolicy).toBe("cpu");
   });
 
+  it("keeps the safe acceleration defaults when values are blank", () => {
+    const config = resolveEnv({
+      KOED_EMBEDDING_ACCELERATION: "",
+      KOED_RERANKER_ACCELERATION: ""
+    });
+
+    expect(config.embeddingAccelerationPolicy).toBe("auto");
+    expect(config.rerankerAccelerationPolicy).toBe("cpu");
+  });
+
   it("rejects unknown acceleration policies", () => {
     expect(() =>
       resolveEnv({ KOED_EMBEDDING_ACCELERATION: "fastest" })

@@ -21,14 +21,19 @@ export interface ResolvedAcceleration {
 }
 
 const execFileAsync = promisify(execFile);
+const deviceDiscoveryTimeoutMs = 30_000;
 
-const discoveryEnvironment = (llamaServerBinary: string): NodeJS.ProcessEnv => {
+const discoveryEnvironment = (
+  llamaServerBinary: string,
+  policy: AccelerationPolicy
+): NodeJS.ProcessEnv => {
   const llamaDir = dirname(llamaServerBinary);
   const existing = process.env.LD_LIBRARY_PATH?.trim();
   const existingDyld = process.env.DYLD_LIBRARY_PATH?.trim();
   return {
     ...process.env,
     LLAMA_ARG_UI: "false",
+    KOED_LLAMA_SERVER_BACKEND: policy,
     LD_LIBRARY_PATH: existing ? `${llamaDir}:${existing}` : llamaDir,
     DYLD_LIBRARY_PATH: existingDyld ? `${llamaDir}:${existingDyld}` : llamaDir
   };
@@ -43,7 +48,7 @@ export const parseLlamaDevices = (listing: string): LlamaDevice[] => {
     const normalized = id.toLowerCase();
     const backend = normalized.startsWith("cuda")
       ? "cuda"
-      : normalized.startsWith("metal")
+      : normalized.startsWith("metal") || normalized.startsWith("mtl")
         ? "metal"
         : "cpu";
     devices.set(id, { id, backend });
@@ -52,12 +57,13 @@ export const parseLlamaDevices = (listing: string): LlamaDevice[] => {
 };
 
 export const listLlamaDevices = async (
-  llamaServerBinary: string
+  llamaServerBinary: string,
+  policy: AccelerationPolicy = "auto"
 ): Promise<{ listing: string; devices: LlamaDevice[] }> => {
   const output = await execFileAsync(llamaServerBinary, ["--list-devices"], {
     encoding: "utf8",
-    env: discoveryEnvironment(llamaServerBinary),
-    timeout: 10_000,
+    env: discoveryEnvironment(llamaServerBinary, policy),
+    timeout: deviceDiscoveryTimeoutMs,
     maxBuffer: 1024 * 1024
   });
   const listing = `${output.stdout}\n${output.stderr}`.trim();

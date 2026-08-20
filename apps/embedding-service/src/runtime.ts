@@ -68,7 +68,10 @@ export class EmbeddingRuntime {
 
   embeddingBatchTokenLimit(): number {
     const headroom = Math.max(0, this.config.llamaBatchTokenHeadroom);
-    return Math.max(1, this.config.llamaNBatch - headroom);
+    return Math.max(
+      1,
+      Math.min(this.config.llamaNBatch, this.config.llamaNUbatch) - headroom
+    );
   }
 
   async loadEmbeddingModel(): Promise<void> {

@@ -7,14 +7,14 @@ import {
 
 const listing = `Available devices:
   CUDA0: NVIDIA GPU (16384 MiB, 15000 MiB free)
-  Metal: Apple M-series (16384 MiB, 12000 MiB free)
+  MTL0: Apple M-series (16384 MiB, 12000 MiB free)
   BLAS: OpenBLAS (0 MiB, 0 MiB free)`;
 
 describe("llama-server acceleration policy", () => {
   it("parses only bounded device identifiers and backend classes", () => {
     expect(parseLlamaDevices(listing)).toEqual([
       { id: "CUDA0", backend: "cuda" },
-      { id: "Metal", backend: "metal" },
+      { id: "MTL0", backend: "metal" },
       { id: "BLAS", backend: "cpu" }
     ]);
   });
@@ -32,7 +32,7 @@ describe("llama-server acceleration policy", () => {
         platform: "darwin",
         arch: "arm64"
       })
-    ).toMatchObject({ backend: "metal", device: "Metal", gpuLayers: "all" });
+    ).toMatchObject({ backend: "metal", device: "MTL0", gpuLayers: "all" });
   });
 
   it("falls back visibly only in auto mode", () => {
@@ -57,8 +57,8 @@ describe("llama-server acceleration policy", () => {
   it("honors a compatible explicit device and rejects a mismatched one", () => {
     const devices = parseLlamaDevices(listing);
     expect(resolveAcceleration("cuda", devices, "CUDA0").device).toBe("CUDA0");
-    expect(() => resolveAcceleration("cuda", devices, "Metal")).toThrow(
-      'device "Metal"'
+    expect(() => resolveAcceleration("cuda", devices, "MTL0")).toThrow(
+      'device "MTL0"'
     );
   });
 
