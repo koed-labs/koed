@@ -150,7 +150,7 @@ type MemoryQuestionDetailRow = MemoryQuestionShellRow & {
 type DesktopAskThreadRow = MemoryQuestionShellRow & {
   latest_question_id: string;
   latest_status: MemoryQuestionStatus;
-  latest_updated_at: Date;
+  latest_updated_at: string;
   turn_count: string | number;
 };
 
@@ -714,7 +714,10 @@ export const createMemoryQuestionRepository = (
             jsonb_array_length(coalesce(first_question.evidence, '[]'::jsonb)) as evidence_count,
             latest.id as latest_question_id,
             latest.status as latest_status,
-            latest.updated_at as latest_updated_at,
+            to_char(
+              latest.updated_at at time zone 'UTC',
+              'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+            ) as latest_updated_at,
             latest.turn_count
           from ranked latest
           join memory_questions first_question
@@ -749,13 +752,13 @@ export const createMemoryQuestionRepository = (
           firstQuestion: row.query,
           latestStatus: row.latest_status,
           turnCount: Number(row.turn_count),
-          updatedAt: row.latest_updated_at.toISOString()
+          updatedAt: row.latest_updated_at
         })),
         nextCursor:
           hasMore && last
             ? {
                 latestQuestionId: last.latest_question_id,
-                updatedAt: last.latest_updated_at.toISOString()
+                updatedAt: last.latest_updated_at
               }
             : null
       };

@@ -214,12 +214,25 @@ describe("route identity contract", () => {
     }
     for (const [method, path] of [
       ["GET", "/v1/collaboration/personal/notes"],
+      ["POST", "/v1/collaboration/personal/notes"],
       ["GET", "/v1/collaboration/personal/notes/{noteId}"],
       ["PATCH", "/v1/collaboration/personal/notes/{noteId}/title"]
     ] as const) {
       expect(routeIdentityFor(method, path)).toMatchObject({
         identity: "session_or_api_token_or_device_credential",
         domain: "collaboration",
+        teamAuthority: "none"
+      });
+    }
+    for (const [method, path] of [
+      ["GET", "/v1/memory/ask/threads"],
+      ["GET", "/v1/memory/ask/threads/{askThreadId}"],
+      ["POST", "/v1/memory/ask/questions"],
+      ["PATCH", "/v1/memory/ask/questions/{questionId}"]
+    ] as const) {
+      expect(routeIdentityFor(method, path)).toMatchObject({
+        identity: "api_token",
+        domain: "local_synthesis",
         teamAuthority: "none"
       });
     }
@@ -500,6 +513,7 @@ describe("route identity contract", () => {
       collaboration: [
         "GET /v1/teams/navigation",
         "GET /v1/collaboration/personal/notes",
+        "POST /v1/collaboration/personal/notes",
         "GET /v1/collaboration/personal/notes/{noteId}",
         "PATCH /v1/collaboration/personal/notes/{noteId}/title",
         "GET /v1/collaboration/teams/{teamId}/participants",

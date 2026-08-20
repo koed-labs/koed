@@ -265,12 +265,14 @@ export class MemoryToolExecutor {
         signal
       );
     } catch (error) {
-      if (signal?.aborted) throw error;
       await this.client.completePendingDesktopAsk(pending.id, {
         status: "error",
-        error_message: "Koed could not answer this question. Try again.",
+        error_message: signal?.aborted
+          ? "This Ask was interrupted before it completed. Try again."
+          : "Koed could not answer this question. Try again.",
         attempt_count: 1
       });
+      if (signal?.aborted) throw error;
     }
     const completed = desktopAskQuestionFromResponse(
       await this.client.getQuestion(pending.id)

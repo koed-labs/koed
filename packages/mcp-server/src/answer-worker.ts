@@ -5,6 +5,7 @@ import {
   MEMORY_RETRIEVAL_HINT_MAX_COUNT,
   MEMORY_RETRIEVAL_HINT_MAX_LENGTH,
   MEMORY_RETRIEVAL_SEMANTIC_HINT_MAX_COUNT,
+  MEMORY_ANSWER_TIMEOUT_MAX_MS,
   EMBEDDING_RETRIEVAL_DOCUMENT_TRANSFORM,
   EMBEDDING_RETRIEVAL_QUERY_TRANSFORM,
   resolveSupportedEmbeddingModelConfig
@@ -553,7 +554,7 @@ export const resolveMemoryAnswerWorkerConfig = (
     timeoutMs: parsePositiveInteger(
       overrides.timeoutMs ?? resolveEnvValue(env, "MEMORY_ANSWER_TIMEOUT_MS"),
       DEFAULT_ANSWER_TIMEOUT_MS,
-      { min: 1000, max: 600000 }
+      { min: 1000, max: MEMORY_ANSWER_TIMEOUT_MAX_MS }
     ),
     maxAttempts: parsePositiveInteger(
       overrides.maxAttempts ??

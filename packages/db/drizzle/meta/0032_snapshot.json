@@ -1,5 +1,5 @@
 {
-  "id": "a5f22d65-781b-4db2-9f4f-db5a6bd27c80",
+  "id": "bfddeea3-5d95-4995-acae-b819a84e06a0",
   "prevId": "818179a8-ee42-4278-95b4-e1602e473581",
   "version": "7",
   "dialect": "postgresql",
@@ -16424,18 +16424,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "ask_thread_id": {
-          "name": "ask_thread_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ask_turn_index": {
-          "name": "ask_turn_index",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
         "idempotency_key": {
           "name": "idempotency_key",
           "type": "text",
@@ -16648,68 +16636,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "memory_questions_owner_ask_turn_idx": {
-          "name": "memory_questions_owner_ask_turn_idx",
-          "columns": [
-            {
-              "expression": "owner_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "ask_thread_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "ask_turn_index",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"memory_questions\".\"origin\" = 'desktop_ask'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "memory_questions_owner_ask_recent_idx": {
-          "name": "memory_questions_owner_ask_recent_idx",
-          "columns": [
-            {
-              "expression": "owner_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "ask_thread_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"memory_questions\".\"origin\" = 'desktop_ask'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -16751,11 +16677,7 @@
         },
         "memory_questions_origin_check": {
           "name": "memory_questions_origin_check",
-          "value": "\"memory_questions\".\"origin\" in ('mcp_memory_answer', 'desktop_ask')"
-        },
-        "memory_questions_ask_identity_check": {
-          "name": "memory_questions_ask_identity_check",
-          "value": "(\"memory_questions\".\"origin\" = 'mcp_memory_answer' and \"memory_questions\".\"ask_thread_id\" is null and \"memory_questions\".\"ask_turn_index\" is null)\n        or (\"memory_questions\".\"origin\" = 'desktop_ask' and \"memory_questions\".\"ask_thread_id\" is not null and \"memory_questions\".\"ask_turn_index\" >= 0 and \"memory_questions\".\"team_workspace_id\" is null and \"memory_questions\".\"search_domain\" = 'global')"
+          "value": "\"memory_questions\".\"origin\" = 'mcp_memory_answer'"
         },
         "memory_questions_retrieval_scope_check": {
           "name": "memory_questions_retrieval_scope_check",
@@ -16767,7 +16689,7 @@
         },
         "memory_questions_status_check": {
           "name": "memory_questions_status_check",
-          "value": "(\"memory_questions\".\"status\" = 'pending' and \"memory_questions\".\"answer_markdown\" is null and \"memory_questions\".\"error_message\" is null and \"memory_questions\".\"answered_at\" is null)\n        or (\"memory_questions\".\"status\" = 'answered' and \"memory_questions\".\"answer_markdown\" is not null and \"memory_questions\".\"error_message\" is null and \"memory_questions\".\"answered_at\" is not null)\n        or (\"memory_questions\".\"status\" = 'error' and \"memory_questions\".\"answer_markdown\" is null and \"memory_questions\".\"error_message\" is not null and \"memory_questions\".\"answered_at\" is not null)"
+          "value": "(\"memory_questions\".\"status\" = 'answered' and \"memory_questions\".\"answer_markdown\" is not null and \"memory_questions\".\"error_message\" is null)\n        or (\"memory_questions\".\"status\" = 'error' and \"memory_questions\".\"error_message\" is not null)"
         }
       },
       "isRLSEnabled": false
@@ -33480,7 +33402,7 @@
     "public.memory_question_status": {
       "name": "memory_question_status",
       "schema": "public",
-      "values": ["pending", "answered", "error"]
+      "values": ["answered", "error"]
     },
     "public.memory_replica_lifecycle": {
       "name": "memory_replica_lifecycle",
@@ -33655,7 +33577,7 @@
     "public.source_runtime": {
       "name": "source_runtime",
       "schema": "public",
-      "values": ["codex", "codex-cli", "claude-code"]
+      "values": ["codex", "codex-cli", "claude-code", "pi"]
     },
     "public.sync_change_operation": {
       "name": "sync_change_operation",

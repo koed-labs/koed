@@ -41,7 +41,8 @@ export const visibilityScope = pgEnum("visibility_scope", ["personal"]);
 export const sourceRuntime = pgEnum("source_runtime", [
   "codex",
   "codex-cli",
-  "claude-code"
+  "claude-code",
+  "pi"
 ]);
 export const captureMethod = pgEnum("capture_method", [
   "transcript",
@@ -3101,6 +3102,7 @@ export const managedConversationExecutions = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     projectId: text("project_id").notNull(),
     provider: text("provider").notNull().default("codex"),
+    aiClientInstanceId: text("ai_client_instance_id").notNull(),
     state: text("state").notNull().default("starting"),
     stateVersion: integer("state_version").notNull().default(1),
     executionGeneration: integer("execution_generation").notNull().default(1),
@@ -3153,6 +3155,11 @@ export const managedConversationExecutions = pgTable(
     check(
       "managed_conversation_executions_provider_check",
       sql`${table.provider} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'`
+    ),
+    check(
+      "managed_conversation_executions_ai_client_instance_check",
+      sql`char_length(${table.aiClientInstanceId}) <= 128
+        and ${table.aiClientInstanceId} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'`
     ),
     check(
       "managed_conversation_executions_generation_check",

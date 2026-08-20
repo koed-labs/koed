@@ -1534,6 +1534,7 @@ export function PersonalMemoryWorkspace({
       <main className="personal-memory-detail-pane">
         {effectiveRoute === "session" && selectedProject && selectedThread ? (
           <SessionDetail
+            key={selectedThread.id}
             assignSessionProject={assignSessionProject}
             authorizeManagedConversationTransfer={
               authorizeManagedConversationTransfer

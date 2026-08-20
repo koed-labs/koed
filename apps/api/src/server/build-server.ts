@@ -49,8 +49,8 @@ import {
   type CollaborationActionGrantControl
 } from "../local-edge/collaboration-action-grant-control.js";
 import {
-  projectPersonalNoteToMemory,
-  reconcilePersonalNotesToMemory
+  drainPersonalNotesToMemory,
+  projectPersonalNoteToMemory
 } from "../collaboration/personal-note-memory.js";
 import { createCollaborationActionGrantLifecycle } from "../local-edge/collaboration-action-grant-lifecycle.js";
 import { createLocalSharedMemoryCandidatePreparation } from "../local-edge/shared-memory-candidate-preparation.js";
@@ -932,6 +932,15 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const collaborationNavigationInvalidationListeners = new Set<
     (backendId: string) => void
   >();
+  const reconcileAllPersonalNotes = async (ownerUserId: string) => {
+    await drainPersonalNotesToMemory(
+      {
+        repository: requireRepository(),
+        enqueueEmbedding
+      },
+      { ownerUserId }
+    );
+  };
   const routeContext = {
     config,
     requireRepository,
@@ -949,14 +958,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           },
           input
         );
-        await reconcilePersonalNotesToMemory(
-          {
-            repository: requireRepository(),
-            enqueueEmbedding
-          },
-          { ownerUserId: input.ownerUserId, limit: 50 }
-        );
+        await reconcileAllPersonalNotes(input.ownerUserId);
       },
+      reconcilePersonalNotes: reconcileAllPersonalNotes,
       actionGrantLifecycle: collaborationActionGrantLifecycle,
       actionGrantControl: collaborationActionGrantControl,
       sharedMemoryControl: collaborationSharedMemoryControl,
@@ -1212,6 +1216,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerCollaborationRoutes(app, {
     requireCollaborationRepository: requireRepository,
     projectPersonalNote: routeContext.collaboration.projectPersonalNote,
+    reconcilePersonalNotes: routeContext.collaboration.reconcilePersonalNotes,
     authenticateSessionOrDeviceCredential:
       authHelpers.authenticateSessionOrDeviceCredential,
     authenticateApiToken: authHelpers.authenticateApiToken,

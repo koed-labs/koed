@@ -1036,6 +1036,13 @@ export const routeIdentityContracts = [
     "List owner-authorized Personal Notes."
   ),
   route(
+    "POST",
+    "/v1/collaboration/personal/notes",
+    "session_or_api_token_or_device_credential",
+    "collaboration",
+    "Create one owner-authorized Personal Note."
+  ),
+  route(
     "GET",
     "/v1/collaboration/personal/notes/{noteId}",
     "session_or_api_token_or_device_credential",
@@ -1048,6 +1055,34 @@ export const routeIdentityContracts = [
     "session_or_api_token_or_device_credential",
     "collaboration",
     "Rename one owner-authorized Personal Note."
+  ),
+  route(
+    "GET",
+    "/v1/memory/ask/threads",
+    "api_token",
+    "local_synthesis",
+    "List Personal Ask threads."
+  ),
+  route(
+    "GET",
+    "/v1/memory/ask/threads/{askThreadId}",
+    "api_token",
+    "local_synthesis",
+    "Read one Personal Ask thread."
+  ),
+  route(
+    "POST",
+    "/v1/memory/ask/questions",
+    "api_token",
+    "local_synthesis",
+    "Create a pending Personal Ask question."
+  ),
+  route(
+    "PATCH",
+    "/v1/memory/ask/questions/{questionId}",
+    "api_token",
+    "local_synthesis",
+    "Complete a pending Personal Ask question."
   ),
   route(
     "GET",

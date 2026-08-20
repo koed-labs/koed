@@ -21,6 +21,12 @@ CREATE TABLE "personal_note_projection_cursors" (
         and "personal_note_projection_cursors"."existing_count" + "personal_note_projection_cursors"."created_count" + "personal_note_projection_cursors"."failure_count" = "personal_note_projection_cursors"."scanned_count")
 );
 --> statement-breakpoint
+ALTER TABLE "memory_questions" DROP CONSTRAINT "memory_questions_origin_check";--> statement-breakpoint
+ALTER TABLE "memory_questions" DROP CONSTRAINT "memory_questions_status_check";--> statement-breakpoint
+ALTER TABLE "memory_questions" ALTER COLUMN "status" SET DATA TYPE text USING "status"::text;--> statement-breakpoint
+DROP TYPE "public"."memory_question_status";--> statement-breakpoint
+CREATE TYPE "public"."memory_question_status" AS ENUM('pending', 'answered', 'error');--> statement-breakpoint
+ALTER TABLE "memory_questions" ALTER COLUMN "status" SET DATA TYPE "public"."memory_question_status" USING "status"::"public"."memory_question_status";--> statement-breakpoint
 ALTER TABLE "team_session_share_grants" DROP CONSTRAINT "team_session_share_grants_identity_check";--> statement-breakpoint
 ALTER TABLE "team_session_share_grants" DROP CONSTRAINT "team_session_share_grants_representation_check";--> statement-breakpoint
 ALTER TABLE "collaboration_pending_share_source_work" ALTER COLUMN "local_session_id" DROP NOT NULL;--> statement-breakpoint
@@ -51,6 +57,8 @@ ALTER TABLE "collaboration_pending_share_source_work"
 ALTER TABLE "collaboration_pending_share_source_work" ADD COLUMN "source_kind" "shared_memory_source_kind" DEFAULT 'captured_session' NOT NULL;--> statement-breakpoint
 ALTER TABLE "collaboration_pending_share_source_work" ADD COLUMN "local_note_id" uuid;--> statement-breakpoint
 ALTER TABLE "collaboration_pending_share_source_work" ADD COLUMN "local_memory_event_id" uuid;--> statement-breakpoint
+ALTER TABLE "memory_questions" ADD COLUMN "ask_thread_id" uuid;--> statement-breakpoint
+ALTER TABLE "memory_questions" ADD COLUMN "ask_turn_index" integer;--> statement-breakpoint
 ALTER TABLE "pending_share_operations" ADD COLUMN "source_kind" "shared_memory_source_kind" DEFAULT 'captured_session' NOT NULL;--> statement-breakpoint
 ALTER TABLE "pending_share_operations" ADD COLUMN "source_session_id" uuid;--> statement-breakpoint
 ALTER TABLE "pending_share_operations" ADD COLUMN "source_note_id" uuid;--> statement-breakpoint
@@ -83,6 +91,8 @@ ALTER TABLE "personal_note_projection_cursors" ADD CONSTRAINT "personal_note_pro
 ALTER TABLE "personal_note_projection_cursors" ADD CONSTRAINT "personal_note_projection_cursors_owner_thread_fk" FOREIGN KEY ("thread_id","owner_user_id") REFERENCES "public"."collaboration_threads"("id","personal_owner_user_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "collaboration_pending_share_source_work" ADD CONSTRAINT "collaboration_pending_share_source_work_local_note_id_collaboration_messages_id_fk" FOREIGN KEY ("local_note_id") REFERENCES "public"."collaboration_messages"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "collaboration_pending_share_source_work" ADD CONSTRAINT "collaboration_pending_share_source_work_local_memory_event_id_memory_events_id_fk" FOREIGN KEY ("local_memory_event_id") REFERENCES "public"."memory_events"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "memory_questions_owner_ask_turn_idx" ON "memory_questions" USING btree ("owner_user_id","ask_thread_id","ask_turn_index") WHERE "memory_questions"."origin" = 'desktop_ask';--> statement-breakpoint
+CREATE INDEX "memory_questions_owner_ask_recent_idx" ON "memory_questions" USING btree ("owner_user_id","ask_thread_id","updated_at" DESC NULLS LAST,"id" DESC NULLS LAST) WHERE "memory_questions"."origin" = 'desktop_ask';--> statement-breakpoint
 ALTER TABLE "collaboration_pending_share_source_work" ADD CONSTRAINT "csm_pending_source_work_source_check" CHECK (("collaboration_pending_share_source_work"."source_kind" = 'captured_session'
           and "collaboration_pending_share_source_work"."local_session_id" is not null
           and "collaboration_pending_share_source_work"."local_note_id" is null
@@ -91,6 +101,12 @@ ALTER TABLE "collaboration_pending_share_source_work" ADD CONSTRAINT "csm_pendin
           and "collaboration_pending_share_source_work"."local_session_id" is null
           and "collaboration_pending_share_source_work"."local_note_id" is not null
           and "collaboration_pending_share_source_work"."local_memory_event_id" is not null));--> statement-breakpoint
+ALTER TABLE "memory_questions" ADD CONSTRAINT "memory_questions_ask_identity_check" CHECK (("memory_questions"."origin" = 'mcp_memory_answer' and "memory_questions"."ask_thread_id" is null and "memory_questions"."ask_turn_index" is null)
+        or ("memory_questions"."origin" = 'desktop_ask' and "memory_questions"."ask_thread_id" is not null and "memory_questions"."ask_turn_index" >= 0 and "memory_questions"."team_workspace_id" is null and "memory_questions"."search_domain" = 'global'));--> statement-breakpoint
+ALTER TABLE "memory_questions" ADD CONSTRAINT "memory_questions_origin_check" CHECK ("memory_questions"."origin" in ('mcp_memory_answer', 'desktop_ask'));--> statement-breakpoint
+ALTER TABLE "memory_questions" ADD CONSTRAINT "memory_questions_status_check" CHECK (("memory_questions"."status" = 'pending' and "memory_questions"."answer_markdown" is null and "memory_questions"."error_message" is null and "memory_questions"."answered_at" is null)
+        or ("memory_questions"."status" = 'answered' and "memory_questions"."answer_markdown" is not null and "memory_questions"."error_message" is null and "memory_questions"."answered_at" is not null)
+        or ("memory_questions"."status" = 'error' and "memory_questions"."answer_markdown" is null and "memory_questions"."error_message" is not null and "memory_questions"."answered_at" is not null));--> statement-breakpoint
 ALTER TABLE "pending_share_operations" ADD CONSTRAINT "pending_share_operations_source_binding_check" CHECK (("pending_share_operations"."source_kind" = 'captured_session'
           and "pending_share_operations"."source_note_id" is null
           and "pending_share_operations"."source_memory_event_id" is null)

@@ -54,6 +54,9 @@ export function PersonalAskView({
     query: string;
   } | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const selectedThreadIdRef = useRef(selectedThreadId);
+  const activeRequestRef = useRef(0);
+  selectedThreadIdRef.current = selectedThreadId;
 
   useEffect(
     () =>
@@ -73,6 +76,9 @@ export function PersonalAskView({
   );
 
   useEffect(() => {
+    activeRequestRef.current += 1;
+    setBusy(false);
+    setRetryRequest(null);
     headingRef.current?.focus();
     if (!selectedThreadId) {
       setTurns([]);
@@ -104,6 +110,8 @@ export function PersonalAskView({
     if (!trimmed || busy || !api.submitAsk) return;
     const idempotencyKey = retry?.idempotencyKey ?? crypto.randomUUID();
     const pending = optimisticTurn(trimmed);
+    const originatingThreadId = selectedThreadId;
+    const requestId = ++activeRequestRef.current;
     setQuery("");
     setBusy(true);
     setError(null);
@@ -111,14 +119,28 @@ export function PersonalAskView({
     setTurns((current) => [...current, pending]);
     try {
       const completed = await api.submitAsk({
-        ...(selectedThreadId ? { askThreadId: selectedThreadId } : {}),
+        ...(originatingThreadId ? { askThreadId: originatingThreadId } : {}),
         idempotencyKey,
         query: trimmed
       });
+      if (
+        activeRequestRef.current !== requestId ||
+        selectedThreadIdRef.current !== originatingThreadId
+      ) {
+        onThreadsChanged?.();
+        return;
+      }
       setTurns((current) => [...current.slice(0, -1), completed]);
-      if (!selectedThreadId) onSelectThread(completed.askThreadId);
+      if (!originatingThreadId) onSelectThread(completed.askThreadId);
       onThreadsChanged?.();
     } catch {
+      if (
+        activeRequestRef.current !== requestId ||
+        selectedThreadIdRef.current !== originatingThreadId
+      ) {
+        onThreadsChanged?.();
+        return;
+      }
       setTurns((current) => [
         ...current.slice(0, -1),
         {
@@ -130,7 +152,7 @@ export function PersonalAskView({
       setError("The answer could not be completed.");
       setRetryRequest({ idempotencyKey, query: trimmed });
     } finally {
-      setBusy(false);
+      if (activeRequestRef.current === requestId) setBusy(false);
     }
   };
 

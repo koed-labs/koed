@@ -69,10 +69,14 @@ Projection path.
 The API also reconciles historical Notes in owner-scoped pages. A durable
 per-owner cursor records the last processed Notes-to-self sequence and bounded
 counts for existing events, created events, embedding admission, and failures.
-One malformed Note advances as a recorded failure and does not block later
-Notes. Repeated work uses the Note message identity, so it resolves to the same
-Memory Event. Personal Note events and their embeddings stay out of Project
-graph counts, Project activity, session grouping, and LCM work.
+The Notes list drains bounded reconciliation batches before it reads the list,
+so an existing User does not need to create another Note to make historical
+Notes available. One malformed Note advances as a recorded failure and does
+not block later Notes. Retryable Projection or embedding-admission failures do
+not advance the cursor. Repeated work uses the Note message identity, so it
+resolves to the same Memory Event. Personal Note events and their embeddings
+stay out of Project graph counts, Project activity, session grouping, and LCM
+work.
 
 The full-width layout keeps the Note list beside the detail pane. The narrow
 layout uses a list, drill-in detail, and Back action.

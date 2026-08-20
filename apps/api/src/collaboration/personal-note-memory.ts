@@ -142,7 +142,9 @@ export const reconcilePersonalNotesToMemory = async (
   let created = 0;
   let embeddingQueued = 0;
   let failures = 0;
+  let scanned = 0;
   for (const message of page.messages) {
+    scanned += 1;
     let outcome: "existing" | "created" | "failed" = "failed";
     let queued = false;
     let failureCode: string | undefined;
@@ -158,13 +160,17 @@ export const reconcilePersonalNotesToMemory = async (
       });
       outcome = prior ? "existing" : "created";
       queued = projection.embedding.queued;
+      if (!queued) {
+        failures += 1;
+        break;
+      }
       if (outcome === "existing") existing += 1;
       else created += 1;
       if (queued) embeddingQueued += 1;
     } catch (error) {
       failures += 1;
-      failureCode =
-        error instanceof TypeError ? "invalid_note" : "projection_failed";
+      if (!(error instanceof TypeError)) break;
+      failureCode = "invalid_note";
     }
     const advanced =
       await options.repository.advancePersonalNoteProjectionCursor(actor, {
@@ -182,12 +188,31 @@ export const reconcilePersonalNotesToMemory = async (
   }
 
   return {
-    scanned: page.messages.length,
+    scanned,
     existing,
     created,
     embeddingQueued,
     failures,
-    hasMore: page.hasMore,
+    hasMore: page.hasMore || scanned < page.messages.length,
     cursor: durable.lastThreadSequence
   };
+};
+
+export const drainPersonalNotesToMemory = async (
+  options: PersonalNoteMemoryReconciliationOptions,
+  input: { ownerUserId: string; maxBatches?: number }
+): Promise<void> => {
+  const maxBatches = Math.max(
+    1,
+    Math.min(100, Math.trunc(input.maxBatches ?? 100))
+  );
+  let previousCursor = -1;
+  for (let batch = 0; batch < maxBatches; batch += 1) {
+    const result = await reconcilePersonalNotesToMemory(options, {
+      ownerUserId: input.ownerUserId,
+      limit: 100
+    });
+    if (!result.hasMore || result.cursor <= previousCursor) return;
+    previousCursor = result.cursor;
+  }
 };

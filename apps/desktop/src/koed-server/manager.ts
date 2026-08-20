@@ -10,6 +10,8 @@ import {
   isLoopbackHostname,
   readDesktopLocalCredentialAuthorization,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
+  MEMORY_ANSWER_TIMEOUT_MAX_MS,
+  MEMORY_ANSWER_TRANSPORT_OVERHEAD_MS,
   personalDesktopChangeSchema,
   personalDesktopAskSubmitDataSchema,
   personalDesktopAskThreadDataSchema,
@@ -1159,7 +1161,11 @@ export const createKoedServerManager = ({
         },
         body: JSON.stringify({ input, caller })
       },
-      { timeoutMs: 180_000, maxBytes: 2 * 1_024 * 1_024 }
+      {
+        timeoutMs:
+          MEMORY_ANSWER_TIMEOUT_MAX_MS + MEMORY_ANSWER_TRANSPORT_OVERHEAD_MS,
+        maxBytes: 2 * 1_024 * 1_024
+      }
     );
     if (!remote.response.ok) {
       throw new PersonalMemoryBoundaryError(
