@@ -1,4 +1,4 @@
-import { aiClientModelLabel } from "@koed/shared";
+import { aiClientModelLabel } from "@koed/shared/ai-client-contract";
 import type {
   LocalAiClientAssignment,
   LocalAiClientFlowKey,
