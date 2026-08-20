@@ -158,7 +158,9 @@ describe("Claude AI Client migration", () => {
 
 describe("Personal Note Share Grant migrations", () => {
   it("backfills existing grants as Captured Session sources and constrains both source shapes", async () => {
-    const migrationSql = await readDrizzleFile("0033_brainy_silver_surfer.sql");
+    const migrationSql = await readDrizzleFile(
+      "0033_personal_note_sharing.sql"
+    );
 
     expect(migrationSql).toContain("ENUM('captured_session', 'personal_note')");
     expect(migrationSql).toContain(
@@ -176,7 +178,9 @@ describe("Personal Note Share Grant migrations", () => {
   });
 
   it("preserves historical source work and fails ambiguous in-flight work for re-review", async () => {
-    const migrationSql = await readDrizzleFile("0036_brainy_trauma.sql");
+    const migrationSql = await readDrizzleFile(
+      "0033_personal_note_sharing.sql"
+    );
     const addNullable = migrationSql.indexOf(
       'ADD COLUMN "logical_memory_id" uuid;'
     );
@@ -193,17 +197,22 @@ describe("Personal Note Share Grant migrations", () => {
     expect(migrationSql).toContain("source_binding_migration_review_required");
   });
 
-  it("treats cross-deployment source identities as protocol UUIDs, not local rows", async () => {
-    const migrationSql = await readDrizzleFile("0038_orange_titanium_man.sql");
+  it("does not constrain cross-deployment source identities to local rows", async () => {
+    const migrationSql = await readDrizzleFile(
+      "0033_personal_note_sharing.sql"
+    );
 
     expect(migrationSql).toContain(
-      'DROP CONSTRAINT "shared_source_artifacts_source_memory_event_id_memory_events_id_fk"'
+      'ALTER TABLE "shared_source_artifacts" ADD COLUMN "source_memory_event_id" uuid'
     );
-    expect(migrationSql).toContain(
-      'DROP CONSTRAINT "team_session_share_grants_source_memory_event_id_memory_events_id_fk"'
+    expect(migrationSql).not.toContain(
+      "shared_source_artifacts_source_memory_event_id_memory_events_id_fk"
     );
-    expect(migrationSql).toContain(
-      'DROP CONSTRAINT "shared_memory_candidate_previews_source_session_id_sessions_id_fk"'
+    expect(migrationSql).not.toContain(
+      "team_session_share_grants_source_memory_event_id_memory_events_id_fk"
+    );
+    expect(migrationSql).not.toContain(
+      "shared_memory_candidate_previews_source_session_id_sessions_id_fk"
     );
   });
 });
