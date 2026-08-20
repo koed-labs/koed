@@ -1151,6 +1151,9 @@ describe("memory answer worker", () => {
       expect(response.structuredAnswer).toMatchObject({
         memory_status: "insufficient"
       });
+      expect(response.markdown).toBe(
+        "The Codex worker did not finish the Personal Memory search in time. Try again."
+      );
       expect(response.localMemoryWorker.appServerExecutions).toHaveLength(1);
       expect(
         response.localMemoryWorker.appServerExecutions?.map(
@@ -2765,9 +2768,11 @@ describe("memory answer worker", () => {
   });
 
   it("propagates semantic-stage incompleteness instead of treating it as absence", async () => {
+    const requests: Record<string, unknown>[] = [];
     const result = await runScriptedMemoryAnswerFirstPass({
       client: {
-        async search() {
+        async search(input) {
+          requests.push(input);
           return {
             hits: [],
             retrieval: {
@@ -2789,6 +2794,12 @@ describe("memory answer worker", () => {
     });
 
     expect(result.evidence).toEqual([]);
+    expect(requests).toEqual([
+      expect.not.objectContaining({ retrieval_stage: expect.anything() })
+    ]);
+    expect(result.searches).toEqual([
+      expect.objectContaining({ retrievalStage: "all_stages" })
+    ]);
     expect(result.errors).toEqual([
       expect.stringMatching(/semantic retrieval incomplete.*offline/i)
     ]);

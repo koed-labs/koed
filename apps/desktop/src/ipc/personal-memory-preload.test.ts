@@ -35,10 +35,14 @@ describe("Personal Memory preload bridge", () => {
     await expect(api.listProjects()).resolves.toEqual([]);
     expect(Object.keys(api).sort()).toEqual([
       "assignSessionProject",
+      "createNote",
       "listAskThreads",
+      "listNotes",
       "listProjects",
       "loadAskThread",
       "loadEventPage",
+      "loadNote",
+      "renameNote",
       "submitAsk",
       "subscribe",
       "updateSessionTitle"
@@ -47,6 +51,44 @@ describe("Personal Memory preload bridge", () => {
       contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       operation: "personal.projects.list",
       input: {}
+    });
+  });
+
+  it("creates a Personal Note through the protected IPC operation", async () => {
+    const note = {
+      noteId: "11111111-1111-4111-8111-111111111111",
+      title: "Local note",
+      titleVersion: 1,
+      memoryEventId: "22222222-2222-4222-8222-222222222222",
+      createdAt: "2026-08-20T12:00:00.000Z",
+      sourceSequence: 1,
+      event: {
+        id: "22222222-2222-4222-8222-222222222222",
+        actor: "user",
+        eventType: "personal_note_created",
+        timestamp: "2026-08-20T12:00:00.000Z",
+        sourceEventTime: "2026-08-20T12:00:00.000Z",
+        sourceSequence: 1,
+        content: "Local note",
+        contentPreview: "Local note",
+        invalidatedAt: null,
+        metadata: {}
+      }
+    };
+    const invoke = vi
+      .fn()
+      .mockResolvedValue(success("personal.notes.create", { note }));
+    const api = createPersonalMemoryPreloadApi(invoke, events());
+    const input = {
+      body: "Local note",
+      idempotencyKey: "11111111-1111-4111-8111-111111111111"
+    };
+
+    await expect(api.createNote?.(input)).resolves.toEqual(note);
+    expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.notes.create",
+      input
     });
   });
 

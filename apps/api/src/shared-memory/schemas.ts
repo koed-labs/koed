@@ -1,6 +1,9 @@
 import {
   COLLABORATION_SOURCE_PAGE_MAX_ITEMS,
-  collaborationNameSchema
+  collaborationNameSchema,
+  personalNoteSourceSelectionIssues,
+  sharedMemoryCandidatePreviewSchema,
+  sharedMemorySourceRefSchema
 } from "@koed/shared";
 import { z } from "zod";
 import { SHARED_MEMORY_AUTHORITY } from "@koed/db";
@@ -13,6 +16,31 @@ const uuidSchema = z.uuid();
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const nonNegativeVersionSchema = z.number().int().safe().min(0);
 const positiveVersionSchema = z.number().int().safe().positive();
+
+export const personalNoteSourceArtifactUploadSchema = z
+  .object({
+    pendingShareId: uuidSchema,
+    sourceDeploymentProtocolId: uuidSchema,
+    sourceOwnerPrincipalId: uuidSchema,
+    candidate: sharedMemoryCandidatePreviewSchema
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (
+      input.candidate.source?.kind !== "personal_note" ||
+      input.candidate.representation !== "memory_events" ||
+      input.candidate.sourceRevision !== 1 ||
+      input.candidate.itemCount !== 1 ||
+      input.candidate.items.length !== 1 ||
+      input.candidate.manifest.length !== 1
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["candidate"],
+        message: "A source upload must contain one Personal Note Memory Event"
+      });
+    }
+  });
 
 export const sharedMemoryRepresentationSchema = z.enum([
   "memory_events",
@@ -28,6 +56,78 @@ const distinctRepresentationsSchema = z
   .refine((values) => new Set(values).size === values.length, {
     message: "Representations must be distinct"
   });
+
+const validateSourceLogicalMemory = (
+  input: { logicalMemoryId: string; source?: { logicalMemoryId: string } },
+  context: z.RefinementCtx
+) => {
+  if (input.source && input.source.logicalMemoryId !== input.logicalMemoryId) {
+    context.addIssue({
+      code: "custom",
+      path: ["source", "logicalMemoryId"],
+      message: "Shared Memory source must match the logical Memory"
+    });
+  }
+};
+
+const validatePersonalNoteSelection = (
+  input: {
+    logicalMemoryId: string;
+    source?: z.infer<typeof sharedMemorySourceRefSchema>;
+    mode: "snapshot" | "continuous";
+    representation: z.infer<typeof sharedMemoryRepresentationSchema>;
+    allowedRepresentations: Array<
+      z.infer<typeof sharedMemoryRepresentationSchema>
+    >;
+    sourceRevision: number;
+    manifest: Array<{ sourceId: string; revisionHash: string }>;
+  },
+  context: z.RefinementCtx
+) => {
+  validateSourceLogicalMemory(input, context);
+  if (!input.source) return;
+  for (const message of personalNoteSourceSelectionIssues({
+    ...input,
+    source: input.source
+  })) {
+    context.addIssue({ code: "custom", path: ["source"], message });
+  }
+};
+
+const validatePersonalNoteConsent = (
+  input: {
+    logicalMemoryId: string;
+    source?: z.infer<typeof sharedMemorySourceRefSchema>;
+    mode: "snapshot" | "continuous";
+    selectedRepresentation: z.infer<typeof sharedMemoryRepresentationSchema>;
+    allowedRepresentations: Array<
+      z.infer<typeof sharedMemoryRepresentationSchema>
+    >;
+  },
+  context: z.RefinementCtx
+) => {
+  validateSourceLogicalMemory(input, context);
+  if (input.source?.kind !== "personal_note") return;
+  if (input.mode !== "snapshot") {
+    context.addIssue({
+      code: "custom",
+      path: ["mode"],
+      message: "Personal Note sharing requires snapshot mode"
+    });
+  }
+  if (
+    input.selectedRepresentation !== "memory_events" ||
+    input.allowedRepresentations.length !== 1 ||
+    input.allowedRepresentations[0] !== "memory_events"
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["allowedRepresentations"],
+      message:
+        "Personal Note sharing permits only the memory_events representation"
+    });
+  }
+};
 
 export const sharedMemoryAuthoritySchema = z.discriminatedUnion("source", [
   z
@@ -154,6 +254,7 @@ export const createSharedMemoryPreviewSchema = z
 
 export const createSharedMemoryCandidatePreviewSchema = z
   .object({
+    source: sharedMemorySourceRefSchema,
     logicalMemoryId: uuidSchema,
     candidateHash: sha256Schema,
     sourceRevision: nonNegativeVersionSchema,
@@ -183,7 +284,8 @@ export const createSharedMemoryCandidatePreviewSchema = z
   .refine(
     (input) => input.allowedRepresentations.includes(input.representation),
     { message: "Preview representation is outside the approved allowlist" }
-  );
+  )
+  .superRefine(validatePersonalNoteSelection);
 
 export const sharedSourcePreviewReferenceSchema = z
   .object({
@@ -194,6 +296,7 @@ export const sharedSourcePreviewReferenceSchema = z
 
 export const createSourceOwnerConsentSchema = z
   .object({
+    source: sharedMemorySourceRefSchema.optional(),
     consentId: uuidSchema,
     logicalMemoryId: uuidSchema,
     preview: sharedSourcePreviewReferenceSchema,
@@ -209,10 +312,12 @@ export const createSourceOwnerConsentSchema = z
     (input) =>
       input.allowedRepresentations.includes(input.selectedRepresentation),
     { message: "Selected representation is not owner-authorized" }
-  );
+  )
+  .superRefine(validatePersonalNoteConsent);
 
 export const createShareGrantSchema = z
   .object({
+    source: sharedMemorySourceRefSchema.optional(),
     mutationId: uuidSchema,
     logicalGrantId: uuidSchema,
     logicalMemoryId: uuidSchema,
@@ -221,10 +326,12 @@ export const createShareGrantSchema = z
     consentId: uuidSchema,
     authority: sharedMemoryAuthoritySchema
   })
-  .strict();
+  .strict()
+  .superRefine(validateSourceLogicalMemory);
 
 export const createSharedMemoryShareBundleSchema = z
   .object({
+    source: sharedMemorySourceRefSchema,
     mutationId: uuidSchema,
     logicalGrantId: uuidSchema,
     consentId: uuidSchema,
@@ -245,12 +352,14 @@ export const createSharedMemoryShareBundleSchema = z
     (input) =>
       input.allowedRepresentations.includes(input.selectedRepresentation),
     { message: "Selected representation is not owner-authorized" }
-  );
+  )
+  .superRefine(validatePersonalNoteConsent);
 
 export const createPendingShareSchema = createSharedMemoryShareBundleSchema;
 
 export const changeSharedMemoryRepresentationBundleSchema = z
   .object({
+    source: sharedMemorySourceRefSchema,
     mutationId: uuidSchema,
     consentId: uuidSchema,
     logicalMemoryId: uuidSchema,

@@ -91,6 +91,9 @@ const createFixture = () => {
   let revoked = false;
   let representationAvailable = true;
   let repositoryCalls = 0;
+  let personalNoteUpload:
+    | Parameters<SharedMemoryRepository["persistPersonalNoteSourceArtifact"]>[1]
+    | null = null;
   let sourceGrantVersion = 0;
   let sourceGrantLifecycle: "active" | "revoked" = "active";
   let lastListInput:
@@ -460,6 +463,27 @@ const createFixture = () => {
       }
       return previewRecord(input);
     },
+    async persistPersonalNoteSourceArtifact(actor, input) {
+      repositoryCalls += 1;
+      if (actor.userId !== ids.alice) {
+        throw new SharedMemoryAuthorizationError();
+      }
+      personalNoteUpload = input;
+      return {
+        ...previewRecord({
+          logicalMemoryId: input.candidate.logicalMemoryId,
+          remoteReplicaId: ids.remoteReplica,
+          teamId: ids.teamA,
+          teamWorkspaceId: ids.workspaceA,
+          representation: "memory_events"
+        }),
+        source: input.candidate.source,
+        logicalMemoryId: input.candidate.logicalMemoryId,
+        remoteReplicaId: null,
+        syncRelationshipId: null,
+        sourceRevision: 1
+      };
+    },
     async putSourceOwnerPolicy(actor, input) {
       repositoryCalls += 1;
       if (actor.userId !== ids.alice) {
@@ -768,6 +792,9 @@ const createFixture = () => {
     },
     get browserAuthorityReferenceIds() {
       return browserAuthorityReferenceIds;
+    },
+    get personalNoteUpload() {
+      return personalNoteUpload;
     },
     restoreRepresentation() {
       representationAvailable = true;
@@ -1113,6 +1140,84 @@ describe("Shared Memory HTTP routes", () => {
 
     expect([bearer.statusCode, unrelated.statusCode]).toEqual([403, 403]);
     expect(fixture.repositoryCalls).toBe(1);
+    await app.close();
+  });
+
+  it("accepts one bounded Personal Note source only from the approved owner device", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const pendingShareId = randomUUID();
+    const noteId = randomUUID();
+    const memoryEventId = randomUUID();
+    const logicalMemoryId = randomUUID();
+    const source = {
+      kind: "personal_note" as const,
+      noteId,
+      memoryEventId,
+      logicalMemoryId
+    };
+    const candidate = {
+      source,
+      logicalMemoryId,
+      representation: "memory_events" as const,
+      sourceRevision: 1,
+      candidateHash: "c".repeat(64),
+      itemCount: 1,
+      excludedItemCount: 0,
+      manifest: [{ sourceId: memoryEventId, revisionHash: "d".repeat(64) }],
+      byteCount: 128,
+      items: [
+        {
+          id: memoryEventId,
+          representation: "memory_events" as const,
+          sequence: 1,
+          occurredAt: iso,
+          sourceItems: [
+            {
+              id: memoryEventId,
+              sourceKind: "user_message" as const,
+              occurredAt: iso,
+              body: "Ship on Tuesday.",
+              actorName: null,
+              toolName: null,
+              toolCallId: null
+            }
+          ]
+        }
+      ]
+    };
+    const payload = {
+      sourceDeploymentProtocolId: randomUUID(),
+      sourceOwnerPrincipalId: randomUUID(),
+      candidate
+    };
+    const accepted = await app.inject({
+      method: "PUT",
+      url: `/v1/shared-memory/pending-shares/${pendingShareId}/personal-note-source`,
+      headers: { authorization: "Koed-Device owner-share:secret" },
+      payload
+    });
+    const browser = await app.inject({
+      method: "PUT",
+      url: `/v1/shared-memory/pending-shares/${pendingShareId}/personal-note-source`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload
+    });
+    const reader = await app.inject({
+      method: "PUT",
+      url: `/v1/shared-memory/pending-shares/${pendingShareId}/personal-note-source`,
+      headers: { authorization: "Koed-Device reader:secret" },
+      payload
+    });
+
+    expect(accepted.statusCode).toBe(200);
+    expect([browser.statusCode, reader.statusCode]).toEqual([401, 403]);
+    expect(fixture.personalNoteUpload).toMatchObject({
+      pendingShareId,
+      sourceDeploymentProtocolId: payload.sourceDeploymentProtocolId,
+      sourceOwnerPrincipalId: payload.sourceOwnerPrincipalId,
+      candidate: { source, itemCount: 1, sourceRevision: 1 }
+    });
     await app.close();
   });
 

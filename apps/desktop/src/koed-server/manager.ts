@@ -15,6 +15,9 @@ import {
   personalDesktopAskThreadDataSchema,
   personalDesktopAskThreadsDataSchema,
   personalDesktopEventsDataSchema,
+  personalDesktopNoteDataSchema,
+  personalDesktopNoteRenameDataSchema,
+  personalDesktopNotesDataSchema,
   personalDesktopProjectsDataSchema,
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
@@ -589,6 +592,19 @@ export const personalMemoryChangeFromSseFrame = (
       : payload.table === "memory_questions" && typeof payload.id === "string"
         ? [payload.id]
         : [];
+    const noteIds = Array.isArray(payload.noteIds)
+      ? payload.noteIds
+      : payload.table === "personal_notes" && typeof payload.id === "string"
+        ? [payload.id]
+        : [];
+    if (noteIds.length > 0) {
+      const parsed = personalDesktopChangeSchema.safeParse({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        type: "notes_changed",
+        noteIds: [...new Set(noteIds)]
+      });
+      return parsed.success ? parsed.data : null;
+    }
     if (questionIds.length > 0) {
       const parsed = personalDesktopChangeSchema.safeParse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
@@ -2590,6 +2606,122 @@ export const createKoedServerManager = ({
       await desktopAskRuntime.askDesktop(input, { cwd: repoRoot })
     );
 
+  const listPersonalNotes = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.notes.list" }
+    >["input"]
+  ) => {
+    const query = new URLSearchParams({ limit: String(input.limit) });
+    if (input.beforeSequence !== undefined) {
+      query.set("beforeSequence", String(input.beforeSequence));
+    }
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/collaboration/personal/notes?${query.toString()}`,
+          apiOrigin
+        ),
+        init: { method: "GET" }
+      }),
+      4 * 1_024 * 1_024
+    );
+    return personalDesktopNotesDataSchema.parse({
+      notes: payload.notes,
+      nextBeforeSequence: payload.nextBeforeSequence ?? null
+    });
+  };
+
+  const loadPersonalNote = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.notes.load" }
+    >["input"]
+  ) => {
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/collaboration/personal/notes/${encodeURIComponent(input.noteId)}`,
+          apiOrigin
+        ),
+        init: { method: "GET" }
+      }),
+      4 * 1_024 * 1_024
+    );
+    const note = objectValue(payload.note);
+    const event = objectValue(note?.event);
+    if (!note || !event) {
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    }
+    const mappedEvent = personalEventsData({ events: [event] }).events[0];
+    if (!mappedEvent || mappedEvent.id !== note.memoryEventId) {
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    }
+    return personalDesktopNoteDataSchema.parse({
+      note: { ...note, event: mappedEvent }
+    });
+  };
+
+  const createPersonalNote = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.notes.create" }
+    >["input"]
+  ) => {
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL("/v1/collaboration/personal/notes", apiOrigin),
+        init: {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": input.idempotencyKey
+          },
+          body: JSON.stringify({ bodyText: input.body })
+        }
+      }),
+      4 * 1_024 * 1_024
+    );
+    const note = objectValue(payload.note);
+    const event = objectValue(note?.event);
+    if (!note || !event) {
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    }
+    const mappedEvent = personalEventsData({ events: [event] }).events[0];
+    if (!mappedEvent || mappedEvent.id !== note.memoryEventId) {
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    }
+    return personalDesktopNoteDataSchema.parse({
+      note: { ...note, event: mappedEvent }
+    });
+  };
+
+  const renamePersonalNote = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.notes.rename" }
+    >["input"]
+  ) => {
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/collaboration/personal/notes/${encodeURIComponent(input.noteId)}/title`,
+          apiOrigin
+        ),
+        init: {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            expectedTitleVersion: input.expectedTitleVersion,
+            title: input.title
+          })
+        }
+      }),
+      1 * 1_024 * 1_024
+    );
+    return personalDesktopNoteRenameDataSchema.parse({ note: payload.note });
+  };
+
   const personalMemory: PersonalMemoryDesktopHandler = async (value) => {
     const request = personalDesktopRequestSchema.parse(value);
     try {
@@ -2600,13 +2732,22 @@ export const createKoedServerManager = ({
             ? await loadPersonalAskThread(request.input)
             : request.operation === "personal.ask.submit"
               ? await submitPersonalAsk(request.input)
-              : request.operation === "personal.projects.list"
-                ? await listPersonalProjects()
-                : request.operation === "personal.events.load_page"
-                  ? await loadPersonalEventPage(request.input)
-                  : request.operation === "personal.sessions.assign_project"
-                    ? await assignPersonalSessionProject(request.input)
-                    : await updatePersonalSessionTitle(request.input);
+              : request.operation === "personal.notes.list"
+                ? await listPersonalNotes(request.input)
+                : request.operation === "personal.notes.load"
+                  ? await loadPersonalNote(request.input)
+                  : request.operation === "personal.notes.create"
+                    ? await createPersonalNote(request.input)
+                    : request.operation === "personal.notes.rename"
+                      ? await renamePersonalNote(request.input)
+                      : request.operation === "personal.projects.list"
+                        ? await listPersonalProjects()
+                        : request.operation === "personal.events.load_page"
+                          ? await loadPersonalEventPage(request.input)
+                          : request.operation ===
+                              "personal.sessions.assign_project"
+                            ? await assignPersonalSessionProject(request.input)
+                            : await updatePersonalSessionTitle(request.input);
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,

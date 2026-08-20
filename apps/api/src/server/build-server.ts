@@ -39,12 +39,19 @@ import {
   type RateLimitStore
 } from "../infra/index.js";
 import { registerLocalEdgeRoutes } from "../local-edge/routes.js";
-import { readLocalEdgeUpstreamRegistry } from "../local-edge/upstream-routing.js";
+import {
+  readLocalEdgeUpstreamRegistry,
+  safeUpstreamProxyUrl,
+  upstreamBackendById
+} from "../local-edge/upstream-routing.js";
 import {
   createCollaborationActionGrantControl,
   type CollaborationActionGrantControl
 } from "../local-edge/collaboration-action-grant-control.js";
-import { projectPersonalNoteToMemory } from "../collaboration/personal-note-memory.js";
+import {
+  projectPersonalNoteToMemory,
+  reconcilePersonalNotesToMemory
+} from "../collaboration/personal-note-memory.js";
 import { createCollaborationActionGrantLifecycle } from "../local-edge/collaboration-action-grant-lifecycle.js";
 import { createLocalSharedMemoryCandidatePreparation } from "../local-edge/shared-memory-candidate-preparation.js";
 import {
@@ -80,6 +87,7 @@ import {
   crossIdentitySyncDeterministicUuid,
   createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
   createTeamMemoryEnvelopeEncryptionProviderFromEnvironment,
+  fetchBoundedJsonObject,
   inspectDeviceIdentityAtKoedHome,
   reconcileDeviceIdentityDeployment,
   embeddingDispatchKey,
@@ -91,7 +99,8 @@ import {
   memoryEmbedQueueName,
   requestKoedLocalWork,
   readLocalEdgeUpstreamEnrollmentBinding,
-  resolveSupportedEmbeddingModelConfig
+  resolveSupportedEmbeddingModelConfig,
+  type SharedMemorySourceRef
 } from "@koed/shared";
 import {
   createSecureUpstreamFetch,
@@ -345,7 +354,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const collaborationRepository =
     options.collaborationRepository ??
     (pool && envelopeEncryptionProvider
-      ? createCollaborationRepository(pool, { envelopeEncryptionProvider })
+      ? createCollaborationRepository(pool, {
+          envelopeEncryptionProvider,
+          teamEnvelopeEncryptionProvider
+        })
       : null);
   const retentionRepository =
     options.retentionRepository ??
@@ -730,16 +742,85 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       ? identity.deploymentId
       : null;
   };
+  const localSharedMemoryCandidatePreparation = repository
+    ? createLocalSharedMemoryCandidatePreparation({
+        repository,
+        resolveDeploymentId: resolveVerifiedDeploymentId,
+        requestLcmSummaryWork: () =>
+          requestKoedLocalWork(config.koedHome, "lcm-summary")
+      })
+    : null;
   const preparePendingShareSource = async (input: {
     backendId: string;
     localOwnerUserId: string;
-    sessionId: string;
+    source?: SharedMemorySourceRef;
+    sessionId?: string;
+    pendingShareId: string;
     mutationId: string;
   }): Promise<void> => {
     if (!repository) return;
     const deploymentId = resolveVerifiedDeploymentId();
     if (!deploymentId) {
       throw new Error("Verified deployment identity unavailable");
+    }
+    if (input.source?.kind === "personal_note") {
+      if (!localSharedMemoryCandidatePreparation) {
+        throw new Error("Personal Note candidate preparation is unavailable");
+      }
+      const candidate =
+        await localSharedMemoryCandidatePreparation.loadPersonalNoteCandidatePreview(
+          {
+            localOwnerUserId: input.localOwnerUserId,
+            noteId: input.source.noteId
+          }
+        );
+      if (
+        !candidate ||
+        candidate.source?.kind !== "personal_note" ||
+        candidate.source.memoryEventId !== input.source.memoryEventId ||
+        candidate.logicalMemoryId !== input.source.logicalMemoryId
+      ) {
+        throw new Error("Personal Note source changed before upload");
+      }
+      const backend = upstreamBackendById(
+        readLocalEdgeUpstreamRegistry(localEdgeUpstreamBackendsPath),
+        input.backendId
+      );
+      const authorization = backend
+        ? localEdgeResolveUpstreamAuthorization(backend)
+        : null;
+      if (!backend || !authorization) {
+        throw new Error("Personal Note upstream authorization is unavailable");
+      }
+      const { response } = await fetchBoundedJsonObject(
+        localEdgeFetch,
+        safeUpstreamProxyUrl(
+          backend,
+          `/v1/shared-memory/pending-shares/${input.pendingShareId}/personal-note-source`
+        ),
+        {
+          method: "PUT",
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            authorization,
+            "content-type": "application/json",
+            "idempotency-key": input.mutationId
+          },
+          body: JSON.stringify({
+            sourceDeploymentProtocolId: deploymentId,
+            sourceOwnerPrincipalId: input.localOwnerUserId,
+            candidate
+          })
+        },
+        { timeoutMs: 30_000, maxBytes: 64 * 1_024 }
+      );
+      if (!response.ok) {
+        throw new Error(
+          `Personal Note source upload failed (${response.status})`
+        );
+      }
+      return;
     }
     await prepareSourceSyncRelationship(
       {
@@ -752,21 +833,16 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       },
       {
         localUserId: input.localOwnerUserId,
-        sessionId: input.sessionId,
+        sessionId:
+          input.source?.kind === "captured_session"
+            ? input.source.sessionId
+            : input.sessionId!,
         upstreamBackendId: input.backendId,
         idempotencyKey: input.mutationId,
         consentedAt: new Date().toISOString()
       }
     );
   };
-  const localSharedMemoryCandidatePreparation = repository
-    ? createLocalSharedMemoryCandidatePreparation({
-        repository,
-        resolveDeploymentId: resolveVerifiedDeploymentId,
-        requestLcmSummaryWork: () =>
-          requestKoedLocalWork(config.koedHome, "lcm-summary")
-      })
-    : null;
   const collaborationActionGrantLifecycle =
     createCollaborationActionGrantLifecycle({ koedHome: config.koedHome });
   const collaborationSharedMemoryControl =
@@ -782,6 +858,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           preparePendingShareSource,
           loadLocalCandidatePreview:
             localSharedMemoryCandidatePreparation?.loadCandidatePreview,
+          loadPersonalNoteCandidatePreview:
+            localSharedMemoryCandidatePreparation?.loadPersonalNoteCandidatePreview,
           prepareLocalLcmRepresentation:
             localSharedMemoryCandidatePreparation?.prepareLcmRepresentation,
           ensureEnrollmentBinding: (input) =>
@@ -806,7 +884,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             await preparePendingShareSource({
               backendId: item.backendId,
               localOwnerUserId: item.localOwnerUserId,
-              sessionId: item.localSessionId,
+              source: item.source,
+              pendingShareId: item.pendingShareId,
               mutationId: item.mutationId
             });
             await sharedMemoryAuthorityRepository.finishPendingShareSourceWork({
@@ -869,6 +948,13 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             enqueueEmbedding
           },
           input
+        );
+        await reconcilePersonalNotesToMemory(
+          {
+            repository: requireRepository(),
+            enqueueEmbedding
+          },
+          { ownerUserId: input.ownerUserId, limit: 50 }
         );
       },
       actionGrantLifecycle: collaborationActionGrantLifecycle,
@@ -1124,10 +1210,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerApiTokenRoutes(app, routeContext);
   registerTeamRoutes(app, routeContext);
   registerCollaborationRoutes(app, {
-    requireCollaborationRepository,
+    requireCollaborationRepository: requireRepository,
     projectPersonalNote: routeContext.collaboration.projectPersonalNote,
     authenticateSessionOrDeviceCredential:
       authHelpers.authenticateSessionOrDeviceCredential,
+    authenticateApiToken: authHelpers.authenticateApiToken,
     readRateLimit: rateLimitHandlers.memoryRead,
     writeRateLimit: rateLimitHandlers.memoryWrite,
     admission: routeContext.collaboration.admission

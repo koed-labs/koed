@@ -1,0 +1,1 @@
+ALTER TYPE "public"."sync_source_boundary" ADD VALUE 'personal_note';

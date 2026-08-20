@@ -4,6 +4,7 @@ import {
   classifyApprovalActivity,
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest,
+  personalNoteSourceRevisionHash,
   type SharedMemoryCandidatePreview,
   type SharedMemoryRepresentation,
   type SharedMemorySourceItem
@@ -44,6 +45,9 @@ type CandidateRepository = Pick<
   MemorySourceRepository,
   | "createLcmNodes"
   | "getSharedMemoryLcmSyncState"
+  | "getLocalSyncDeployment"
+  | "getPersonalNote"
+  | "getPersonalNoteMemoryEvent"
   | "listCuratedMemoryAssertions"
   | "listLcmGraphEvents"
   | "listLcmGraphNodes"
@@ -241,10 +245,15 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
         sourceRevision
       })
     }));
+    const source = {
+      kind: "captured_session" as const,
+      sessionId: input.sessionId,
+      logicalMemoryId
+    };
     const candidateHash = crossIdentitySyncDigest({
       version: 1,
-      sessionId: input.sessionId,
-      logicalMemoryId,
+      source,
+      sourceOwnerPrincipalId: input.localOwnerUserId,
       representation: input.representation,
       sourceRevision,
       itemCount: items.length,
@@ -254,6 +263,7 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
       items
     });
     return {
+      source,
       sessionId: input.sessionId,
       logicalMemoryId,
       representation: input.representation,
@@ -261,6 +271,94 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
       candidateHash,
       itemCount: items.length,
       excludedItemCount,
+      manifest,
+      byteCount,
+      items
+    };
+  };
+
+  const loadPersonalNoteCandidatePreview = async (input: {
+    localOwnerUserId: string;
+    noteId: string;
+  }): Promise<SharedMemoryCandidatePreview | null> => {
+    const actor = { userId: input.localOwnerUserId };
+    const [note, event, deployment] = await Promise.all([
+      options.repository.getPersonalNote(actor, { noteId: input.noteId }),
+      options.repository.getPersonalNoteMemoryEvent(actor, input.noteId),
+      options.repository.getLocalSyncDeployment()
+    ]);
+    if (
+      !note ||
+      !event ||
+      !deployment ||
+      typeof event.content !== "string" ||
+      event.content.length === 0 ||
+      event.sourceSequence === null
+    ) {
+      return null;
+    }
+    const logicalMemoryId = crossIdentitySyncDeterministicUuid({
+      protocol: "koed.personal-note-share/v1",
+      sourceDeploymentId: deployment.protocolDeploymentId,
+      sourceOwnerPrincipalId: input.localOwnerUserId,
+      noteId: note.noteId,
+      identity: "logical-memory"
+    });
+    const source = {
+      kind: "personal_note" as const,
+      noteId: note.noteId,
+      memoryEventId: event.id,
+      logicalMemoryId
+    };
+    const revisionHash = personalNoteSourceRevisionHash({
+      source,
+      sourceOwnerPrincipalId: input.localOwnerUserId,
+      content: event.content,
+      occurredAt: event.timestamp,
+      sourceSequence: event.sourceSequence
+    });
+    const items: SharedMemorySourceItem[] = [
+      {
+        id: event.id,
+        representation: "memory_events",
+        sequence: 1,
+        occurredAt: event.timestamp,
+        sourceItems: [
+          {
+            id: event.id,
+            sourceKind: "user_message",
+            occurredAt: event.timestamp,
+            body: event.content,
+            actorName: null,
+            toolName: null,
+            toolCallId: null
+          }
+        ]
+      }
+    ];
+    const byteCount = Buffer.byteLength(JSON.stringify(items[0]), "utf8");
+    if (byteCount > 256 * 1_024) return null;
+    const manifest = [{ sourceId: event.id, revisionHash }];
+    const candidateHash = crossIdentitySyncDigest({
+      version: 1,
+      source,
+      sourceOwnerPrincipalId: input.localOwnerUserId,
+      representation: "memory_events",
+      sourceRevision: 1,
+      itemCount: 1,
+      byteCount,
+      excludedItemCount: 0,
+      manifest,
+      items
+    });
+    return {
+      source,
+      logicalMemoryId,
+      representation: "memory_events",
+      sourceRevision: 1,
+      candidateHash,
+      itemCount: 1,
+      excludedItemCount: 0,
       manifest,
       byteCount,
       items
@@ -289,5 +387,9 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
     return state;
   };
 
-  return { loadCandidatePreview, prepareLcmRepresentation };
+  return {
+    loadCandidatePreview,
+    loadPersonalNoteCandidatePreview,
+    prepareLcmRepresentation
+  };
 };

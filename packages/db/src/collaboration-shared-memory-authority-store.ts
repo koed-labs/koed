@@ -6,7 +6,9 @@ import {
   type EnvelopeEncryptionProvider,
   type SharedMemoryConsent,
   type SharedMemoryGrant,
-  type SharedMemoryRepresentation
+  type SharedMemoryRepresentation,
+  type SharedMemorySourceRef,
+  sharedMemorySourceRefSchema
 } from "@koed/shared";
 import type pg from "pg";
 
@@ -45,6 +47,7 @@ export interface CollaborationSharedMemorySourceBinding {
 }
 
 export interface CollaborationRemoteSharedMemoryPreview {
+  source?: SharedMemorySourceRef;
   previewId: string;
   previewHash: string;
   previewRevision: number;
@@ -69,6 +72,7 @@ export interface CollaborationPersistedSharedMemoryPreview
 }
 
 export interface CollaborationRemoteSharedMemoryConsent {
+  source?: SharedMemorySourceRef;
   id: string;
   logicalMemoryId: string;
   teamId: string;
@@ -93,6 +97,7 @@ export interface CollaborationPersistedSharedMemoryConsent extends Collaboration
 }
 
 export interface CollaborationRemoteSharedMemoryGrant {
+  source?: SharedMemorySourceRef;
   id: string;
   logicalGrantId: string;
   logicalMemoryId: string;
@@ -217,7 +222,7 @@ export interface CollaborationSharedMemoryAuthorityStore {
     identity: CollaborationSharedMemoryAuthorityIdentity;
     pendingShareId: string;
     mutationId: string;
-    localSessionId: string;
+    source: SharedMemorySourceRef;
   }): Promise<boolean>;
   claimPendingShareSourceWork(input?: { limit?: number }): Promise<
     Array<{
@@ -227,7 +232,7 @@ export interface CollaborationSharedMemoryAuthorityStore {
       upstreamUserId: string;
       pendingShareId: string;
       mutationId: string;
-      localSessionId: string;
+      source: SharedMemorySourceRef;
     }>
   >;
   finishPendingShareSourceWork(input: {
@@ -345,7 +350,8 @@ const backendIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{1,63}$/;
 const representationSet = new Set<SharedMemoryRepresentation>([
   "memory_events",
   "lcm_leaves",
-  "lcm_rollups"
+  "lcm_rollups",
+  "curated_assertions"
 ]);
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -376,7 +382,7 @@ const validRepresentations = (
 ): values is SharedMemoryRepresentation[] =>
   Array.isArray(values) &&
   values.length >= 1 &&
-  values.length <= 3 &&
+  values.length <= 4 &&
   values.every(isRepresentation) &&
   new Set(values).size === values.length;
 
@@ -638,6 +644,23 @@ const validPersistedPreview = (
   ) {
     return false;
   }
+  const source = sharedMemorySourceRefSchema.safeParse(value.source);
+  if (
+    value.source !== undefined &&
+    (!source.success || source.data.logicalMemoryId !== value.logicalMemoryId)
+  ) {
+    return false;
+  }
+  if (
+    source.success &&
+    source.data.kind === "personal_note" &&
+    (value.representation !== "memory_events" ||
+      value.sourceRevision !== 1 ||
+      value.items.length !== 1 ||
+      value.items[0]?.sourceId !== source.data.memoryEventId)
+  ) {
+    return false;
+  }
   return value.items.every((item) => {
     if (!isObject(item)) return false;
     return (
@@ -670,6 +693,8 @@ const validPersistedConsent = (
     isUuid(value.localOwnerUserId) &&
     isUuid(value.upstreamUserId) &&
     isUuid(value.previewId) &&
+    (consent.source === undefined ||
+      sharedMemorySourceRefSchema.safeParse(consent.source).success) &&
     isUuid(consent.id) &&
     isUuid(consent.logicalMemoryId) &&
     isUuid(consent.teamId) &&
@@ -701,6 +726,8 @@ const validPersistedGrant = (
     backendIdPattern.test(String(value.backendId)) &&
     isUuid(value.localOwnerUserId) &&
     isUuid(value.upstreamUserId) &&
+    (grant.source === undefined ||
+      sharedMemorySourceRefSchema.safeParse(grant.source).success) &&
     isUuid(grant.id) &&
     isUuid(grant.logicalGrantId) &&
     isUuid(grant.logicalMemoryId) &&
@@ -786,6 +813,7 @@ const grantMatchesRow = (
 const mapConsent = (
   consent: CollaborationRemoteSharedMemoryConsent
 ): SharedMemoryConsent => ({
+  ...(consent.source ? { source: consent.source } : {}),
   id: consent.id,
   logicalMemoryId: consent.logicalMemoryId,
   teamId: consent.teamId,
@@ -808,6 +836,7 @@ const mapGrant = (
   grant: CollaborationRemoteSharedMemoryGrant,
   companionThreadId: string
 ): SharedMemoryGrant => ({
+  ...(grant.source ? { source: grant.source } : {}),
   id: grant.id,
   logicalGrantId: grant.logicalGrantId,
   logicalMemoryId: grant.logicalMemoryId,
@@ -1315,15 +1344,23 @@ export const createCollaborationSharedMemoryAuthorityStore = (
       return withTransaction(pool, async (client) => {
         const enrollment = await activeEnrollment(client, identity, "update");
         if (!enrollment) return null;
-        const target = await canonicalPreviewTarget(
-          client,
-          enrollment.id,
-          preview.logicalMemoryId
-        );
-        if (!target) return null;
+        const standalonePersonalNote =
+          preview.source?.kind === "personal_note" ? preview.source : null;
+        const target = standalonePersonalNote
+          ? null
+          : await canonicalPreviewTarget(
+              client,
+              enrollment.id,
+              preview.logicalMemoryId
+            );
+        let previewAuthorityId: string;
+        if (target) previewAuthorityId = target.relationship_id;
+        else if (standalonePersonalNote) {
+          previewAuthorityId = `personal-note:${standalonePersonalNote.noteId}`;
+        } else return null;
         await lockBinding(
           client,
-          `csm:preview:${target.relationship_id}:${preview.teamId}:${preview.teamWorkspaceId}:${preview.representation}`
+          `csm:preview:${previewAuthorityId}:${preview.teamId}:${preview.teamWorkspaceId}:${preview.representation}`
         );
         const existingById = await readPreviewRow(client, enrollment.id, {
           includeExpired: true,
@@ -1383,7 +1420,7 @@ export const createCollaborationSharedMemoryAuthorityStore = (
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
             [
               enrollment.id,
-              target.relationship_id,
+              target?.relationship_id ?? null,
               preview.previewId,
               preview.previewHash,
               persisted.previewRevision,
@@ -1830,11 +1867,12 @@ export const createCollaborationSharedMemoryAuthorityStore = (
     },
 
     async persistPendingShareSourceWork(input) {
+      const parsedSource = sharedMemorySourceRefSchema.safeParse(input.source);
       if (
         !validIdentity(input.identity) ||
         !isUuid(input.pendingShareId) ||
         !isUuid(input.mutationId) ||
-        !isUuid(input.localSessionId)
+        !parsedSource.success
       ) {
         return false;
       }
@@ -1845,13 +1883,38 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           "update"
         );
         if (!enrollment) return false;
-        const session = await client.query(
-          `select 1 from sessions
-            where id=$1 and owner_user_id=$2 and visibility='personal'
-            limit 1`,
-          [input.localSessionId, input.identity.localOwnerUserId]
-        );
-        if (!session.rowCount) return false;
+        const source = parsedSource.data;
+        if (source.kind === "captured_session") {
+          const session = await client.query(
+            `select 1 from sessions
+              where id=$1 and owner_user_id=$2 and visibility='personal'
+              limit 1`,
+            [source.sessionId, input.identity.localOwnerUserId]
+          );
+          if (!session.rowCount) return false;
+        } else {
+          const note = await client.query(
+            `select 1
+               from collaboration_messages message
+               join collaboration_threads thread on thread.id=message.thread_id
+               join memory_events event
+                 on event.id=$2 and event.owner_user_id=$3
+                and event.visibility='personal' and event.session_id is null
+                and event.invalidated_at is null
+                and event.idempotency_key=$4
+              where message.id=$1 and message.personal_owner_user_id=$3
+                and message.sender_user_id=$3 and message.sender_kind='user'
+                and thread.kind='notes_to_self'
+              limit 1`,
+            [
+              source.noteId,
+              source.memoryEventId,
+              input.identity.localOwnerUserId,
+              `personal-note:${source.noteId}`
+            ]
+          );
+          if (!note.rowCount) return false;
+        }
         await lockBinding(
           client,
           `csm:pending-source-work:${enrollment.id}:${input.mutationId}`
@@ -1859,9 +1922,14 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         const existing = await client.query<{
           mutation_id: string;
           pending_share_id: string;
-          local_session_id: string;
+          logical_memory_id: string;
+          source_kind: "captured_session" | "personal_note";
+          local_session_id: string | null;
+          local_note_id: string | null;
+          local_memory_event_id: string | null;
         }>(
-          `select mutation_id,pending_share_id,local_session_id
+          `select mutation_id,pending_share_id,logical_memory_id,source_kind,local_session_id,
+                  local_note_id,local_memory_event_id
              from collaboration_pending_share_source_work
             where enrollment_id=$1 and mutation_id=$2
             limit 1`,
@@ -1871,19 +1939,31 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           return (
             existing.rows[0].mutation_id === input.mutationId &&
             existing.rows[0].pending_share_id === input.pendingShareId &&
-            existing.rows[0].local_session_id === input.localSessionId
+            existing.rows[0].logical_memory_id === source.logicalMemoryId &&
+            existing.rows[0].source_kind === source.kind &&
+            existing.rows[0].local_session_id ===
+              (source.kind === "captured_session" ? source.sessionId : null) &&
+            existing.rows[0].local_note_id ===
+              (source.kind === "personal_note" ? source.noteId : null) &&
+            existing.rows[0].local_memory_event_id ===
+              (source.kind === "personal_note" ? source.memoryEventId : null)
           );
         }
         try {
           await client.query(
             `insert into collaboration_pending_share_source_work
-               (enrollment_id,pending_share_id,mutation_id,local_session_id)
-             values ($1,$2,$3,$4)`,
+               (enrollment_id,pending_share_id,mutation_id,source_kind,
+                logical_memory_id,local_session_id,local_note_id,local_memory_event_id)
+             values ($1,$2,$3,$4,$5,$6,$7,$8)`,
             [
               enrollment.id,
               input.pendingShareId,
               input.mutationId,
-              input.localSessionId
+              source.kind,
+              source.logicalMemoryId,
+              source.kind === "captured_session" ? source.sessionId : null,
+              source.kind === "personal_note" ? source.noteId : null,
+              source.kind === "personal_note" ? source.memoryEventId : null
             ]
           );
         } catch (error) {
@@ -1904,7 +1984,11 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           upstream_user_id: string;
           pending_share_id: string;
           mutation_id: string;
-          local_session_id: string;
+          logical_memory_id: string;
+          source_kind: "captured_session" | "personal_note";
+          local_session_id: string | null;
+          local_note_id: string | null;
+          local_memory_event_id: string | null;
         }>(
           `with candidates as (
              select work.id
@@ -1929,7 +2013,8 @@ export const createCollaborationSharedMemoryAuthorityStore = (
            select claimed.id as work_id,enrollment.backend_id,
                   enrollment.local_owner_user_id,enrollment.upstream_user_id,
                   claimed.pending_share_id,claimed.mutation_id,
-                  claimed.local_session_id
+                  claimed.logical_memory_id,claimed.source_kind,claimed.local_session_id,
+                  claimed.local_note_id,claimed.local_memory_event_id
              from claimed
              join collaboration_shared_memory_enrollments enrollment
                on enrollment.id=claimed.enrollment_id`,
@@ -1942,7 +2027,19 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           upstreamUserId: row.upstream_user_id,
           pendingShareId: row.pending_share_id,
           mutationId: row.mutation_id,
-          localSessionId: row.local_session_id
+          source:
+            row.source_kind === "personal_note"
+              ? {
+                  kind: "personal_note" as const,
+                  noteId: row.local_note_id!,
+                  memoryEventId: row.local_memory_event_id!,
+                  logicalMemoryId: row.logical_memory_id
+                }
+              : {
+                  kind: "captured_session" as const,
+                  sessionId: row.local_session_id!,
+                  logicalMemoryId: row.logical_memory_id
+                }
         }));
       });
     },

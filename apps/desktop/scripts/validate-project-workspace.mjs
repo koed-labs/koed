@@ -576,6 +576,18 @@ const run = async () => {
 
     window.webContents.setZoomFactor(2);
     await delay(100);
+    await window.webContents.executeJavaScript(`(() => {
+      const timeline = document.querySelector('.native-timeline-scroll');
+      if (timeline) {
+        timeline.scrollTop = timeline.scrollHeight;
+        timeline.dispatchEvent(new Event('scroll', { bubbles: true }));
+      }
+    })()`);
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('.native-event-content.memory-markdown h1'))`,
+      "zoomed rich Markdown scroll anchor"
+    );
     const zoomedPersonalFormatting = await inspectPersonalFormatting(window);
     assert.equal(
       zoomedPersonalFormatting.overflow,

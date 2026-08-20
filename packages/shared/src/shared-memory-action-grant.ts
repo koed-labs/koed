@@ -2,6 +2,7 @@ import {
   highRiskActionGrantCanonicalHash,
   HIGH_RISK_ACTION_GRANT_HASH_DOMAINS
 } from "./high-risk-action-grant-hash.js";
+import type { SharedMemorySourceRef } from "./shared-memory-source.js";
 
 export const SHARED_MEMORY_AUTHORITY_ACTION =
   "workspace.memory.share_owned" as const;
@@ -67,6 +68,9 @@ const allowedSetScope = (
   allowedRepresentations: readonly SharedMemoryRepresentation[]
 ): string => [...allowedRepresentations].sort().join(":");
 
+const sourceBody = (source: SharedMemorySourceRef | undefined) =>
+  source ? { source } : {};
+
 export const sharedMemoryPreviewActionGrantBinding = (input: {
   referenceId: string;
   logicalMemoryId: string;
@@ -109,6 +113,7 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
   allowedRepresentations: SharedMemoryRepresentation[];
   mode: "snapshot" | "continuous";
   expiresAt?: string | null;
+  source?: SharedMemorySourceRef;
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
@@ -118,6 +123,7 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
     method: "POST",
     path: "/v1/shared-memory/candidate-previews",
     body: {
+      ...sourceBody(input.source),
       logicalMemoryId: input.logicalMemoryId,
       candidateHash: input.candidateHash,
       sourceRevision: input.sourceRevision,
@@ -148,6 +154,7 @@ export const sharedMemoryConsentActionGrantBinding = (input: {
   previewRevision: number;
   previewHash: string;
   expiresAt?: string | null;
+  source?: SharedMemorySourceRef;
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
@@ -157,6 +164,7 @@ export const sharedMemoryConsentActionGrantBinding = (input: {
     method: "POST",
     path: `/v1/shared-memory/teams/${input.teamId}/workspaces/${input.teamWorkspaceId}/consents`,
     body: {
+      ...sourceBody(input.source),
       consentId: input.consentId,
       logicalMemoryId: input.logicalMemoryId,
       preview: {
@@ -180,6 +188,7 @@ export const sharedMemoryShareActionGrantBinding = (input: {
   teamId: string;
   teamWorkspaceId: string;
   consentId: string;
+  source?: SharedMemorySourceRef;
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
@@ -189,6 +198,7 @@ export const sharedMemoryShareActionGrantBinding = (input: {
     method: "POST",
     path: "/v1/shared-memory/share-grants",
     body: {
+      ...sourceBody(input.source),
       mutationId: input.mutationId,
       logicalGrantId: input.logicalGrantId,
       logicalMemoryId: input.logicalMemoryId,
@@ -215,6 +225,7 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
   selectedRepresentation: SharedMemoryRepresentation;
   expiresAt?: string | null;
   title?: string;
+  source?: SharedMemorySourceRef;
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
@@ -224,6 +235,7 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
     method: "POST",
     path: "/v1/shared-memory/pending-shares",
     body: {
+      ...sourceBody(input.source),
       mutationId: input.mutationId,
       logicalGrantId: input.logicalGrantId,
       consentId: input.consentId,
@@ -260,6 +272,7 @@ export const sharedMemoryShareBundleActionGrantBinding = (input: {
   selectedRepresentation: SharedMemoryRepresentation;
   expiresAt?: string | null;
   title?: string;
+  source?: SharedMemorySourceRef;
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
@@ -269,6 +282,7 @@ export const sharedMemoryShareBundleActionGrantBinding = (input: {
     method: "POST",
     path: "/v1/shared-memory/share-bundles",
     body: {
+      ...sourceBody(input.source),
       mutationId: input.mutationId,
       logicalGrantId: input.logicalGrantId,
       consentId: input.consentId,
@@ -393,6 +407,7 @@ export const sharedMemoryRepresentationActionGrantBinding = (input: {
 
 export const sharedMemoryRepresentationBundleActionGrantBinding = (input: {
   referenceId: string;
+  source: SharedMemorySourceRef;
   mutationId: string;
   consentId: string;
   logicalMemoryId: string;
@@ -416,6 +431,7 @@ export const sharedMemoryRepresentationBundleActionGrantBinding = (input: {
     method: "PUT",
     path: `/v1/shared-memory/share-grants/${input.shareGrantId}/representation-bundle`,
     body: {
+      ...sourceBody(input.source),
       mutationId: input.mutationId,
       consentId: input.consentId,
       logicalMemoryId: input.logicalMemoryId,

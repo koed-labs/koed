@@ -288,7 +288,11 @@ describe("embedding workflow", () => {
     });
 
     await expect(
-      workflow.embedSource("memory_event", "event-1")
+      workflow.embedSource(
+        "memory_event",
+        "event-1",
+        "interactive_recall_question"
+      )
     ).resolves.toEqual({
       dimensions: 3,
       inserted: true,
@@ -299,7 +303,10 @@ describe("embedding workflow", () => {
       "http://embedding.local/embed",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ texts: ["Source text"] })
+        body: JSON.stringify({ texts: ["Source text"] }),
+        headers: expect.objectContaining({
+          "x-koed-embedding-priority": "interactive"
+        })
       })
     );
     expect(String(fetchFn.mock.calls[0]?.[1]?.body)).not.toContain("Instruct:");
@@ -326,6 +333,101 @@ describe("embedding workflow", () => {
         ]
       })
     );
+  });
+
+  it("keeps live capture embedding work in the background lane", async () => {
+    const repository = {
+      getEmbeddableSource: vi.fn().mockResolvedValue(source),
+      getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
+      replaceSourceEmbeddings: vi
+        .fn()
+        .mockResolvedValue({ ids: ["embedding-1"], inserted: true })
+    } as unknown as MemorySourceRepository;
+    const fetchFn = vi.fn().mockResolvedValue(
+      jsonResponse({
+        model: "test-embedding-model",
+        dimensions: 3,
+        vectors: [[1, 2, 3]],
+        chunks: [
+          {
+            inputIndex: 0,
+            chunkIndex: 0,
+            chunkCount: 1,
+            text: "Source text",
+            vector: [1, 2, 3]
+          }
+        ]
+      })
+    );
+    const workflow = createEmbeddingWorkflow({
+      env: workerEnv,
+      fetchFn,
+      repository: () => repository
+    });
+
+    await workflow.embedSource(
+      "memory_event",
+      "event-1",
+      "live_capture_projection"
+    );
+
+    expect(fetchFn).toHaveBeenCalledWith(
+      "http://embedding.local/embed",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "x-koed-embedding-priority": "background"
+        })
+      })
+    );
+  });
+
+  it("yields between bounded background embedding requests", async () => {
+    const longSource = { ...source, text: "x".repeat(9_000) };
+    const repository = {
+      getEmbeddableSource: vi.fn().mockResolvedValue(longSource),
+      getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
+      replaceSourceEmbeddings: vi.fn().mockResolvedValue({
+        ids: ["embedding-1", "embedding-2", "embedding-3"],
+        inserted: true
+      })
+    } as unknown as MemorySourceRepository;
+    const fetchFn = vi.fn().mockImplementation((_url, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { texts: string[] };
+      return Promise.resolve(
+        jsonResponse({
+          model: "test-embedding-model",
+          dimensions: 3,
+          vectors: body.texts.map(() => [1, 2, 3]),
+          chunks: body.texts.map((text, inputIndex) => ({
+            inputIndex,
+            chunkIndex: 0,
+            chunkCount: 1,
+            text,
+            vector: [1, 2, 3]
+          }))
+        })
+      );
+    });
+    const workflow = createEmbeddingWorkflow({
+      env: workerEnv,
+      fetchFn,
+      repository: () => repository
+    });
+
+    await workflow.embedSource(
+      "memory_event",
+      "event-1",
+      "live_capture_projection"
+    );
+
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    for (const [, init] of fetchFn.mock.calls) {
+      const body = JSON.parse(String(init?.body)) as { texts: string[] };
+      expect(body.texts.join("").length).toBeLessThanOrEqual(4_096);
+      expect(new Headers(init?.headers).get("x-koed-embedding-priority")).toBe(
+        "background"
+      );
+    }
   });
 
   it("rejects invalid embedding service payloads", async () => {

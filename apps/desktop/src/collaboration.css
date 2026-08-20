@@ -2082,17 +2082,6 @@
   overflow-y: auto;
 }
 
-.collab-share-summary {
-  align-items: baseline;
-  display: flex;
-  justify-content: space-between;
-}
-
-.collab-share-summary span {
-  color: var(--collab-muted);
-  font-size: 11px;
-}
-
 .collab-owner-grant-list {
   border-block: 1px solid var(--collab-border);
   list-style: none;
@@ -2385,6 +2374,21 @@
   color: var(--collab-muted);
   font-size: 11px;
   margin: -4px 0 0;
+}
+
+.collab-note-share-context {
+  margin: 0;
+}
+
+.collab-note-share-approval {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.collab-note-share-approval strong {
+  font-weight: 600;
 }
 
 .collab-connection-state {

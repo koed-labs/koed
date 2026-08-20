@@ -2,6 +2,7 @@ import {
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest
 } from "./cross-identity-sync.js";
+import type { SharedMemorySourceRef } from "./shared-memory-source.js";
 
 export const SHARED_SOURCE_ARTIFACT_SCHEMA_VERSION = 1 as const;
 export const SHARED_SOURCE_PREVIEW_SCHEMA_VERSION = 1 as const;
@@ -84,9 +85,11 @@ export interface SharedSourceArtifactV1 {
   schemaVersion: typeof SHARED_SOURCE_ARTIFACT_SCHEMA_VERSION;
   artifactId: string;
   logicalMemoryId: string;
+  source?: SharedMemorySourceRef;
   representation: SharedSourceArtifactRepresentation;
   binding: SharedSourceArtifactBindingV1;
-  sync: SharedSourceArtifactSyncBindingV1;
+  /** Present only for Captured Session sources. Personal Note snapshots are standalone. */
+  sync?: SharedSourceArtifactSyncBindingV1;
   policies: SharedSourceArtifactPolicyBindingV1;
   manifest: SharedSourceArtifactManifestEntryV1[];
   manifestHash: string;
@@ -100,6 +103,7 @@ export interface SharedSourcePreviewV1 {
   previewId: string;
   artifactId: string;
   logicalMemoryId: string;
+  source?: SharedMemorySourceRef;
   representation: SharedSourceArtifactRepresentation;
   binding: SharedSourceArtifactBindingV1;
   items: SharedSourceArtifactItemV1[];

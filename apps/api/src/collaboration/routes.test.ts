@@ -5,7 +5,8 @@ import type {
   CollaborationMessageRecord,
   CollaborationRepository,
   CollaborationThreadRecord,
-  CreateCollaborationThreadInput
+  CreateCollaborationThreadInput,
+  MemorySourceRepository
 } from "@koed/db";
 import {
   CollaborationIdempotencyConflictError,
@@ -293,7 +294,11 @@ const createCollaborationFixture = () => {
     return thread;
   };
 
-  const repository: CollaborationRepository = {
+  const repository: CollaborationRepository &
+    Pick<
+      MemorySourceRepository,
+      "findPersonalNoteMemoryEventId" | "getPersonalNoteMemoryEvent"
+    > = {
     async listTeamParticipants(actor, teamId) {
       if (!teamMember(actor.userId, teamId)) return null;
       return [...users.values()]
@@ -451,6 +456,125 @@ const createCollaborationFixture = () => {
         nextAfterSequence: selected[selected.length - 1]?.threadSequence ?? null
       };
     },
+    async getOrCreatePersonalNoteProjectionCursor(actor, input) {
+      const thread = authorizedThread(actor, input.threadId, "read", true);
+      return thread?.kind === "notes_to_self"
+        ? {
+            ownerUserId: actor.userId,
+            threadId: thread.id,
+            lastThreadSequence: 0,
+            scannedCount: 0,
+            existingCount: 0,
+            createdCount: 0,
+            embeddingQueuedCount: 0,
+            failureCount: 0,
+            lastFailureCode: null,
+            updatedAt: iso
+          }
+        : null;
+    },
+    async advancePersonalNoteProjectionCursor() {
+      return null;
+    },
+    async listPersonalNotes(actor, input = {}) {
+      const thread = [...threads.values()].find(
+        (candidate) =>
+          candidate.kind === "notes_to_self" &&
+          candidate.personalOwnerUserId === actor.userId
+      );
+      const selected = thread
+        ? [...(messages.get(thread.id) ?? [])]
+            .filter(
+              (message) =>
+                input.beforeSequence === undefined ||
+                message.threadSequence < input.beforeSequence
+            )
+            .sort((left, right) => right.threadSequence - left.threadSequence)
+            .slice(0, input.limit ?? 50)
+        : [];
+      return {
+        notes: selected.map((message) => ({
+          noteId: message.id,
+          threadId: message.threadId,
+          title:
+            typeof message.metadata.personalNote === "object" &&
+            message.metadata.personalNote !== null &&
+            "title" in message.metadata.personalNote
+              ? String(message.metadata.personalNote.title)
+              : message.bodyText.split(/\r?\n/u)[0]!,
+          titleVersion:
+            typeof message.metadata.personalNote === "object" &&
+            message.metadata.personalNote !== null &&
+            "titleVersion" in message.metadata.personalNote
+              ? Number(message.metadata.personalNote.titleVersion)
+              : 1,
+          body: message.bodyText,
+          createdAt: message.createdAt,
+          sourceSequence: message.threadSequence
+        })),
+        nextBeforeSequence: null
+      };
+    },
+    async getPersonalNote(actor, input) {
+      const page = await this.listPersonalNotes(actor, { limit: 50 });
+      return page.notes.find((note) => note.noteId === input.noteId) ?? null;
+    },
+    async renamePersonalNote(actor, input) {
+      const note = await this.getPersonalNote(actor, { noteId: input.noteId });
+      if (!note) return null;
+      const message = messages
+        .get(note.threadId)
+        ?.find((candidate) => candidate.id === note.noteId);
+      if (!message) return null;
+      message.metadata = {
+        ...message.metadata,
+        personalNote: {
+          title: input.title,
+          titleVersion: note.titleVersion + 1
+        }
+      };
+      return {
+        ...note,
+        title: input.title,
+        titleVersion: note.titleVersion + 1
+      };
+    },
+    async findPersonalNoteMemoryEventId(actor, messageId) {
+      return (await this.getPersonalNote(actor, { noteId: messageId }))
+        ? "99999999-9999-4999-8999-999999999999"
+        : null;
+    },
+    async getPersonalNoteMemoryEvent(actor, messageId) {
+      const note = await this.getPersonalNote(actor, { noteId: messageId });
+      return note
+        ? {
+            id: "99999999-9999-4999-8999-999999999999",
+            actor: "user",
+            eventType: "personal_note_created",
+            sourceRuntime: null,
+            captureMethod: "api",
+            model: null,
+            projectId: null,
+            projectName: null,
+            projectPath: null,
+            sessionId: null,
+            threadId: note.threadId,
+            threadName: null,
+            timestamp: note.createdAt,
+            sourceEventTime: note.createdAt,
+            sourceSequence: note.sourceSequence,
+            capturedAt: note.createdAt,
+            createdAt: note.createdAt,
+            visibility: "personal",
+            invalidatedAt: null,
+            invalidationReason: null,
+            contentPreview: note.body,
+            content: note.body,
+            metadata: {},
+            linkedNodeIds: []
+          }
+        : null;
+    },
     async advanceReadState(actor, input) {
       if (!authorizedThread(actor, input.threadId, "read", true)) return null;
       const message = messages
@@ -575,6 +699,19 @@ const buildTestServer = async (
   registerCollaborationRoutes(app, {
     requireCollaborationRepository: () => fixture.repository,
     projectPersonalNote,
+    authenticateApiToken: async (request) => {
+      const authorization = request.headers.authorization?.trim() ?? "";
+      const user =
+        authorization === "Bearer personal-api-token"
+          ? fixture.users.get(fixture.ids.alice)
+          : null;
+      if (!user) {
+        throw Object.assign(new Error("Invalid API token"), {
+          statusCode: 401
+        });
+      }
+      return user;
+    },
     authenticateSessionOrDeviceCredential: async (
       request,
       operationFamily,
@@ -693,6 +830,119 @@ describe("collaboration HTTP routes", () => {
     expect(channelResponse.statusCode).toBe(201);
     expect(projected).toHaveLength(1);
 
+    await app.close();
+  });
+
+  it("lists, loads, and renames only the owner's bound Personal Notes", async () => {
+    const fixture = createCollaborationFixture();
+    const app = await buildTestServer(fixture);
+    const thread = await fixture.repository.createThread(
+      { userId: fixture.ids.alice },
+      { kind: "notes_to_self", idempotencyKey: "fixed-note-thread" }
+    );
+    const message = await fixture.repository.sendMessage(
+      { userId: fixture.ids.alice },
+      {
+        threadId: thread!.id,
+        idempotencyKey: "fixed-note-message",
+        bodyText: "Launch decision\nShip on Friday."
+      }
+    );
+
+    const list = await app.inject({
+      method: "GET",
+      url: "/v1/collaboration/personal/notes?limit=50",
+      headers: { authorization: "Bearer personal-api-token" }
+    });
+    expect(list.statusCode).toBe(200);
+    expect(
+      jsonBody<{ notes: Array<Record<string, unknown>> }>(list).notes[0]
+    ).toMatchObject({
+      noteId: message!.id,
+      title: "Launch decision",
+      titleVersion: 1,
+      memoryEventId: "99999999-9999-4999-8999-999999999999"
+    });
+
+    const exact = await app.inject({
+      method: "GET",
+      url: `/v1/collaboration/personal/notes/${message!.id}`,
+      headers: { authorization: "Bearer personal-api-token" }
+    });
+    expect(exact.statusCode).toBe(200);
+    expect(
+      jsonBody<{ note: { event: { content: string } } }>(exact).note.event
+        .content
+    ).toBe("Launch decision\nShip on Friday.");
+
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: `/v1/collaboration/personal/notes/${message!.id}/title`,
+      headers: { authorization: "Bearer personal-api-token" },
+      payload: { expectedTitleVersion: 1, title: "Friday launch" }
+    });
+    expect(renamed.statusCode).toBe(200);
+    expect(
+      jsonBody<{ note: Record<string, unknown> }>(renamed).note
+    ).toMatchObject({ title: "Friday launch", titleVersion: 2 });
+
+    const outsider = await app.inject({
+      method: "GET",
+      url: `/v1/collaboration/personal/notes/${message!.id}`,
+      headers: sessionHeaders(fixture.ids.bob)
+    });
+    expect(outsider.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("creates a Personal Note through the owner-scoped Notes route", async () => {
+    const fixture = createCollaborationFixture();
+    const projected: Array<{
+      ownerUserId: string;
+      message: CollaborationMessageRecord;
+    }> = [];
+    const app = await buildTestServer(fixture, undefined, async (input) => {
+      projected.push(input);
+    });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/collaboration/personal/notes",
+      headers: {
+        authorization: "Bearer personal-api-token",
+        "idempotency-key": "desktop-note-create"
+      },
+      payload: { bodyText: "Local note\nSaved in Personal Memory." }
+    });
+
+    expect(created.statusCode, created.body).toBe(201);
+    expect(
+      jsonBody<{ note: Record<string, unknown> }>(created).note
+    ).toMatchObject({
+      title: "Local note",
+      titleVersion: 1,
+      memoryEventId: "99999999-9999-4999-8999-999999999999",
+      event: {
+        eventType: "personal_note_created",
+        content: "Local note\nSaved in Personal Memory."
+      }
+    });
+    expect(projected).toEqual([
+      expect.objectContaining({
+        ownerUserId: fixture.ids.alice,
+        message: expect.objectContaining({
+          bodyText: "Local note\nSaved in Personal Memory."
+        })
+      })
+    ]);
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/collaboration/personal/notes?limit=50",
+      headers: { authorization: "Bearer personal-api-token" }
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(jsonBody<{ notes: unknown[] }>(listed).notes).toHaveLength(1);
     await app.close();
   });
 

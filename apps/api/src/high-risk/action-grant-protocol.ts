@@ -18,6 +18,8 @@ import {
   createSharedMemoryCandidatePreviewSchema,
   createSharedMemoryPreviewSchema,
   createSharedMemoryShareBundleSchema,
+  createPendingShareSchema,
+  changeSharedMemoryRepresentationBundleSchema,
   putTeamConversationSourceGrantSchema,
   revokeShareGrantSchema,
   revokeTeamConversationSourceGrantSchema,
@@ -219,6 +221,7 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("shared_memory.candidate_preview"),
+      source: createSharedMemoryCandidatePreviewSchema.shape.source,
       logicalMemoryId:
         createSharedMemoryCandidatePreviewSchema.shape.logicalMemoryId,
       candidateHash:
@@ -244,6 +247,7 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("shared_memory.share"),
+      source: createSharedMemoryShareBundleSchema.shape.source,
       mutationId: uuidSchema,
       logicalGrantId: uuidSchema,
       logicalMemoryId: uuidSchema,
@@ -265,6 +269,7 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("shared_memory.pending_share"),
+      source: createPendingShareSchema.shape.source,
       mutationId: uuidSchema,
       logicalGrantId: uuidSchema,
       logicalMemoryId: uuidSchema,
@@ -319,6 +324,7 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("shared_memory.change_representation"),
+      source: changeSharedMemoryRepresentationBundleSchema.shape.source,
       mutationId: uuidSchema,
       logicalMemoryId: uuidSchema,
       teamId: uuidSchema,
@@ -656,6 +662,7 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
       return intent.candidate
         ? {
             action: "shared_memory.candidate_preview",
+            source: intent.candidate.source,
             logicalMemoryId: intent.logicalMemoryId,
             candidateHash: intent.candidate.candidateHash,
             sourceRevision: intent.candidate.sourceRevision,
@@ -684,10 +691,9 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
     case "collaboration.share_memory":
       return resolved?.sharedMemoryPreviewId
         ? {
-            action: intent.candidateSessionId
-              ? "shared_memory.pending_share"
-              : "shared_memory.share",
+            action: "shared_memory.pending_share",
             mutationId: intent.mutationId,
+            source: intent.source,
             logicalGrantId: intent.logicalGrantId,
             logicalMemoryId: intent.logicalMemoryId,
             teamId: intent.teamId,
@@ -735,6 +741,7 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
       return resolved?.sharedMemoryPreviewId
         ? {
             action: "shared_memory.change_representation",
+            source: intent.source,
             mutationId: intent.mutationId,
             logicalMemoryId: intent.logicalMemoryId,
             teamId: intent.teamId,

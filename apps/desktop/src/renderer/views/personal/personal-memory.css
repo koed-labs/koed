@@ -409,6 +409,10 @@
 }
 
 .personal-session-title-row h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.5rem;
   min-width: 0;
 }
 
@@ -456,9 +460,10 @@
   border-radius: var(--radius);
   color: var(--foreground);
   font: inherit;
-  font-size: 1.5rem;
+  font-size: 1rem;
   font-weight: 600;
-  line-height: 1.2;
+  letter-spacing: normal;
+  line-height: 1.5rem;
   max-width: min(32rem, 60vw);
   min-width: min(18rem, 50vw);
   padding: 0.25rem 0.45rem;
@@ -1187,7 +1192,7 @@
   font-size: inherit;
 }
 
-.personal-note-detail form > button {
+.personal-note-detail > form > button {
   align-items: center;
   background: var(--primary);
   border: 1px solid var(--primary);
@@ -1308,7 +1313,6 @@
   min-height: 0;
   min-width: 0;
   overflow-y: auto;
-  padding: clamp(1.25rem, 4vw, 3.5rem);
 }
 
 .personal-notes-back {
@@ -1321,21 +1325,134 @@
 }
 
 .personal-note-detail article,
-.personal-note-detail form,
 .personal-note-empty {
-  width: min(48rem, 100%);
+  width: 100%;
   margin: 0 auto;
 }
 
-.personal-note-detail h1 {
-  margin-top: 0;
+.personal-note-detail > form {
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: clamp(1.25rem, 4vw, 3.5rem);
+  width: min(55rem, 100%);
 }
 
-.personal-note-detail time {
-  display: block;
-  margin-bottom: 1.5rem;
+.personal-note-header {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 1rem;
+}
+
+.personal-note-header > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.personal-note-header small,
+.personal-note-header time {
   color: var(--muted-foreground);
+  display: block;
   font-size: 0.75rem;
+}
+
+.personal-note-title-row,
+.personal-note-title-editor {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+  min-width: 0;
+}
+
+.personal-note-title-row h1 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.5rem;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.personal-note-title-edit,
+.personal-note-title-editor button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0.35rem;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  min-height: 1.75rem;
+  min-width: 1.75rem;
+  padding: 0.3rem;
+}
+
+.personal-note-title-edit:hover:not(:disabled),
+.personal-note-title-editor button:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.personal-note-title-edit svg,
+.personal-note-title-editor button svg {
+  height: 0.9rem;
+  width: 0.9rem;
+}
+
+.personal-note-title-editor label {
+  min-width: 0;
+}
+
+.personal-note-title-editor input {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--foreground);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.5rem;
+  max-width: min(32rem, 60vw);
+  min-width: min(18rem, 50vw);
+  padding: 0.25rem 0.45rem;
+}
+
+.personal-note-header time {
+  margin-top: 0.2rem;
+}
+
+.personal-note-header-actions {
+  flex: 0 0 auto;
+}
+
+.personal-note-header .personal-note-share {
+  align-items: center;
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  color: var(--primary-foreground);
+  display: inline-flex;
+  gap: 0.4rem;
+  min-height: 2.25rem;
+  padding: 0.45rem 0.8rem;
+}
+
+.personal-note-header .personal-note-share:disabled,
+.personal-note-title-edit:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.personal-note-markdown {
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: clamp(1.25rem, 4vw, 3.5rem);
+  width: min(55rem, 100%);
 }
 
 .personal-note-detail textarea {
@@ -1358,7 +1475,7 @@
   outline: none;
 }
 
-.personal-note-detail form > button:disabled {
+.personal-note-detail > form > button:disabled {
   cursor: default;
   opacity: 0.5;
 }
@@ -1411,7 +1528,7 @@
 
   .personal-notes-back {
     display: inline-flex;
-    margin-bottom: 1rem;
+    margin: 1rem 1rem 0;
   }
 }
 

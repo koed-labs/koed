@@ -61,6 +61,11 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     getSharedMemoryLcmSyncState: vi.fn(
       async (): Promise<"pending" | "ready"> => "ready"
     ),
+    getLocalSyncDeployment: vi.fn(async () => ({
+      protocolDeploymentId: "deployment-1"
+    })),
+    getPersonalNote: vi.fn(async () => null),
+    getPersonalNoteMemoryEvent: vi.fn(async () => null),
     listCuratedMemoryAssertions: vi.fn(
       async (): Promise<Array<Record<string, unknown>>> => []
     ),
@@ -121,6 +126,50 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
       items: [{ id: "event-1", sequence: 2 }]
     });
     expect(second?.candidateHash).toBe(first?.candidateHash);
+  });
+
+  it("builds one owner-bound immutable Personal Note candidate", async () => {
+    const candidateRepository = repository();
+    const noteId = "00000000-0000-4000-8000-000000000011";
+    const eventId = "00000000-0000-4000-8000-000000000012";
+    candidateRepository.getPersonalNote.mockResolvedValue({
+      noteId,
+      title: "Mutable title",
+      titleVersion: 2
+    });
+    candidateRepository.getPersonalNoteMemoryEvent.mockResolvedValue({
+      id: eventId,
+      content: "Immutable Note body",
+      timestamp: "2026-08-18T12:00:00.000Z",
+      sourceSequence: 7
+    });
+    const preparation = createLocalSharedMemoryCandidatePreparation({
+      repository: candidateRepository as never,
+      resolveDeploymentId: () => "deployment-1",
+      requestLcmSummaryWork: vi.fn()
+    });
+    const input = {
+      localOwnerUserId: "00000000-0000-4000-8000-000000000010",
+      noteId
+    };
+    const first = await preparation.loadPersonalNoteCandidatePreview(input);
+    candidateRepository.getPersonalNote.mockResolvedValue({
+      noteId,
+      title: "Renamed after review",
+      titleVersion: 3
+    });
+    const renamed = await preparation.loadPersonalNoteCandidatePreview(input);
+
+    expect(first).toMatchObject({
+      source: { kind: "personal_note", noteId, memoryEventId: eventId },
+      representation: "memory_events",
+      sourceRevision: 1,
+      itemCount: 1,
+      excludedItemCount: 0,
+      manifest: [{ sourceId: eventId }],
+      items: [{ id: eventId, sequence: 1 }]
+    });
+    expect(renamed?.candidateHash).toBe(first?.candidateHash);
   });
 
   it("maps current curated assertions with eligible evidence", async () => {

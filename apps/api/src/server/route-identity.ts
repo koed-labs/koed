@@ -6,6 +6,7 @@ export type RouteIdentity =
   | "session"
   | "api_token"
   | "session_or_api_token"
+  | "session_or_api_token_or_device_credential"
   | "session_or_device_credential"
   | "api_token_or_device_credential"
   | "internal_service_token"
@@ -1027,6 +1028,27 @@ export const routeIdentityContracts = [
     "Submit local LCM Summary."
   ),
 
+  route(
+    "GET",
+    "/v1/collaboration/personal/notes",
+    "session_or_api_token_or_device_credential",
+    "collaboration",
+    "List owner-authorized Personal Notes."
+  ),
+  route(
+    "GET",
+    "/v1/collaboration/personal/notes/{noteId}",
+    "session_or_api_token_or_device_credential",
+    "collaboration",
+    "Read one owner-authorized Personal Note and its bound Memory Event."
+  ),
+  route(
+    "PATCH",
+    "/v1/collaboration/personal/notes/{noteId}/title",
+    "session_or_api_token_or_device_credential",
+    "collaboration",
+    "Rename one owner-authorized Personal Note."
+  ),
   route(
     "GET",
     "/v1/collaboration/teams/{teamId}/participants",

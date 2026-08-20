@@ -20,6 +20,9 @@ const ids = {
   betaTeam: uuid(121),
   betaWorkspace: uuid(122),
   betaSession: uuid(127),
+  aliceNote: uuid(130),
+  aliceNoteMemoryEvent: uuid(132),
+  aliceNoteLogicalMemory: uuid(134),
   actionGrant: uuid(140)
 };
 const invitationUrl =
@@ -127,6 +130,25 @@ const trustedType = async (window, locator, value) => {
   for (const character of value) {
     window.webContents.sendInputEvent({ type: "char", keyCode: character });
   }
+  await delay(20);
+};
+
+const trustedReplace = async (window, locator, value) => {
+  await trustedClick(window, locator);
+  await evaluate(
+    window,
+    `(() => {
+      const input = (${locator});
+      if (!(input instanceof HTMLInputElement)) return false;
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value'
+      )?.set;
+      setter?.call(input, ${JSON.stringify(value)});
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      return true;
+    })()`
+  );
   await delay(20);
 };
 
@@ -670,6 +692,105 @@ const run = async () => {
     );
     await trustedClick(
       alice,
+      `${byText(".desktop-sidebar-nav-item", "Notes")}`
+    );
+    await waitFor(
+      alice,
+      `${bodyIncludes("Browser launch note")} && ${bodyIncludes("New Note")}`,
+      "Personal Note list"
+    );
+    await trustedClick(
+      alice,
+      `document.querySelector('[aria-label="New Note"]')`
+    );
+    await waitFor(
+      alice,
+      `Boolean(document.querySelector('textarea[aria-label="Note content"]'))`,
+      "new Personal Note composer"
+    );
+    await trustedType(
+      alice,
+      `document.querySelector('textarea[aria-label="Note content"]')`,
+      "Browser-created durable Note"
+    );
+    await trustedClick(alice, `${byText("button", "Save Note")}`);
+    const createdNote = await lastCommand(alice, "collaboration.send_message");
+    assert.equal(createdNote.input.body, "Browser-created durable Note");
+    assert.equal(createdNote.input.thread.threadId, ids.aliceNote);
+    await trustedClick(
+      alice,
+      `[...document.querySelectorAll('.personal-note-items > button')]
+        .find((button) => button.textContent?.includes('Browser launch note'))`
+    );
+    await waitFor(
+      alice,
+      `${bodyIncludes("Two independent reviewers are required.")} && Boolean(document.querySelector('[aria-label="Rename Note"]'))`,
+      "Personal Note exact detail"
+    );
+    await trustedClick(
+      alice,
+      `document.querySelector('[aria-label="Rename Note"]')`
+    );
+    await trustedReplace(
+      alice,
+      `document.querySelector('.personal-note-header input')`,
+      "Renamed browser Note"
+    );
+    await trustedClick(alice, `${byText("button", "Save title")}`);
+    await waitFor(
+      alice,
+      bodyIncludes("Renamed browser Note"),
+      "Personal Note title rename"
+    );
+    await setEmulatedViewport(alice, 640, 800);
+    await waitFor(
+      alice,
+      `document.querySelector('.personal-notes-workspace')?.dataset.narrowView === 'detail' && ${bodyIncludes("Back to Notes")}`,
+      "narrow Personal Note detail"
+    );
+    await setEmulatedViewport(alice, 1280, 800);
+    await trustedClick(
+      alice,
+      `document.querySelector('[aria-label="Share Note"]')`
+    );
+    await waitFor(
+      alice,
+      `${bodyIncludes("Share Note")} && ${bodyIncludes("Snapshot")} && ${bodyIncludes("Memory Event")}`,
+      "fixed Personal Note Share review"
+    );
+    await trustedClick(alice, `${byText("button", "Review")}`);
+    await waitFor(
+      alice,
+      bodyIncludes("Approve sharing this exact one-item Note snapshot"),
+      "exact Personal Note candidate preview"
+    );
+    await trustedClick(alice, `${byText("button", "Approve and share")}`);
+    await waitFor(
+      alice,
+      bodyIncludes("Share accepted"),
+      "Personal Note Pending Share progress"
+    );
+    const noteCandidate = await lastCommand(
+      alice,
+      "collaboration.preview_shared_memory_candidate"
+    );
+    assert.deepEqual(noteCandidate.input, {
+      noteId: ids.aliceNote,
+      representation: "memory_events"
+    });
+    const noteShare = await lastCommand(alice, "collaboration.share_memory");
+    assert.deepEqual(noteShare.input.source, {
+      kind: "personal_note",
+      noteId: ids.aliceNote,
+      memoryEventId: ids.aliceNoteMemoryEvent,
+      logicalMemoryId: ids.aliceNoteLogicalMemory
+    });
+    assert.equal(noteShare.input.mode, "snapshot");
+    assert.deepEqual(noteShare.input.allowedRepresentations, ["memory_events"]);
+    assert.equal(noteShare.input.selectedRepresentation, "memory_events");
+    await trustedClick(alice, `${byText("button", "Close")}`);
+    await trustedClick(
+      alice,
       `${byText(".desktop-sidebar-nav-item", "Shares")}`
     );
     await waitFor(
@@ -821,7 +942,7 @@ const run = async () => {
     );
 
     process.stdout.write(
-      "Collaboration interaction validation passed: owner-wide Shares access and accessibility, trusted Team switching, invitations, channel/DM delivery, Shared Memory layouts, reconnect/replay/backpressure recovery, and stale-event access purge.\n"
+      "Collaboration interaction validation passed: Personal Note create/load/rename/responsive sharing, owner-wide Shares access and accessibility, trusted Team switching, invitations, channel/DM delivery, Shared Memory layouts, reconnect/replay/backpressure recovery, and stale-event access purge.\n"
     );
   } finally {
     for (const window of windows) {

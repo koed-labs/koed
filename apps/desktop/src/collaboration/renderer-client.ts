@@ -36,7 +36,8 @@ import {
   type SharedMemoryCandidatePreview,
   type SharedMemoryPreview,
   type SharedMemoryRepresentation,
-  type SharedMemorySourcePage
+  type SharedMemorySourcePage,
+  type SharedMemorySourceRef
 } from "@koed/shared/collaboration";
 
 import { CollaborationActionGrantProjectionStore } from "./action-grant-projection-store.js";
@@ -312,7 +313,8 @@ export interface CollaborationRendererClient {
     reasonCode: string;
   }): Promise<ConversationSourceAccess>;
   previewSharedMemoryCandidate(input: {
-    sessionId: string;
+    sessionId?: string;
+    noteId?: string;
     representation: SharedMemoryRepresentation;
   }): Promise<SharedMemoryCandidatePreview>;
   prepareSharedMemorySource(input: {
@@ -334,7 +336,7 @@ export interface CollaborationRendererClient {
     representation: SharedMemoryRepresentation;
     allowedRepresentations: SharedMemoryRepresentation[];
     candidate?: {
-      sessionId: string;
+      source: SharedMemorySourceRef;
       candidateHash: string;
       sourceRevision: number;
       itemCount: number;
@@ -350,6 +352,7 @@ export interface CollaborationRendererClient {
     cursor: string;
   }): Promise<SharedMemoryPreview>;
   shareMemory(input: {
+    source: SharedMemorySourceRef;
     mutationId: string;
     logicalGrantId: string;
     consentId: string;
@@ -363,7 +366,6 @@ export interface CollaborationRendererClient {
     previewHash: string;
     expiresAt: string | null;
     title?: string;
-    candidateSessionId?: string;
   }): Promise<SharedMemoryGrant | PendingShare>;
   revokeSharedMemory(input: {
     mutationId: string;
@@ -374,6 +376,7 @@ export interface CollaborationRendererClient {
     reasonCode: string;
   }): Promise<SharedMemoryGrant>;
   changeSharedMemoryRepresentation(input: {
+    source: SharedMemorySourceRef;
     mutationId: string;
     logicalMemoryId: string;
     teamId: string;
@@ -387,7 +390,6 @@ export interface CollaborationRendererClient {
     previewRevision: number;
     previewHash: string;
     expiresAt: string | null;
-    candidateSessionId: string;
   }): Promise<PendingShare>;
   dispose(): void;
 }

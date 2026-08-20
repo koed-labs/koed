@@ -1718,6 +1718,11 @@ const seedConversationSourceFixture = async (client, runtime) => {
       const plaintextDigest = createHash("sha256").update(bytes).digest("hex");
       const manifest = {
         protocol: runtime.shared.CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+        sourceComponentSchemaVersion: 1,
+        sourceComponentId: "main",
+        sourceComponentRole: "primary",
+        parentSourceComponentId: null,
+        contentFraming: "jsonl",
         logicalSourceId: source.logicalSourceId,
         sourceGenerationId: source.sourceGenerationId,
         originKeyId,
@@ -1780,6 +1785,32 @@ const seedConversationSourceFixture = async (client, runtime) => {
       itemCursor = manifest.endItemCursor;
       previousContentDigest = contentDigest;
     }
+    const signedClosure = runtime.shared.signConversationSourceClosureManifest(
+      {
+        protocol: runtime.shared.CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+        sourceComponentSchemaVersion: 1,
+        sourceComponentId: "main",
+        sourceComponentRole: "primary",
+        parentSourceComponentId: null,
+        contentFraming: "jsonl",
+        logicalSourceId: source.logicalSourceId,
+        sourceGenerationId: source.sourceGenerationId,
+        originKeyId,
+        segmentCount: segmentRows.length,
+        endByteCursor: byteCursor,
+        endItemCursor: itemCursor,
+        chainHeadDigest: segmentRows.at(-1).contentDigest,
+        sourceRootDigest: runtime.shared.calculateConversationSourceRootDigest(
+          segmentRows.map((row) => row.contentDigest)
+        ),
+        sourceCreatedAt,
+        closedAt: sourceCreatedAt,
+        priorGenerationClosure: null
+      },
+      privateKey
+    );
+    const closureHash =
+      runtime.shared.calculateConversationSourceClosureDigest(signedClosure);
     await client.query(
       `insert into conversation_source_artifacts (
          id, owner_user_id, session_id, logical_source_id,
@@ -1791,11 +1822,12 @@ const seedConversationSourceFixture = async (client, runtime) => {
          current_source_length, current_journal_sequence, source_created_at,
          source_modified_at, storage_provider, storage_prefix,
          origin_deployment_id, origin_device_id, origin_key_id,
-         origin_public_key, redacted_source_label
+         origin_public_key, redacted_source_label, closure_hash,
+         closure_manifest, closure_signature, finalized_at
        ) values (
          $1,$2,$3,$4,$5,'origin_local','codex','codex',$6,$7,'jsonl',1,
-         'codex-transcript-v1','active',0,0,0,0,$8,$9,$8,$10,$11,$11,
-         'envelope_db',$12,$13,$14,$15,$16,'Fixture Codex session'
+         'codex-transcript-v1','finalized',0,0,0,0,$8,$9,$8,$10,$11,$11,
+         'envelope_db',$12,$13,$14,$15,$16,'Fixture Codex session',$17,$18,$19,$20
        )`,
       [
         source.artifactId,
@@ -1813,7 +1845,11 @@ const seedConversationSourceFixture = async (client, runtime) => {
         fixtureInfrastructure.sourceDeploymentId,
         fixtureUuid(`conversation-source:${source.key}:device`),
         originKeyId,
-        publicKey
+        publicKey,
+        closureHash,
+        json(signedClosure.manifest),
+        signedClosure.signature,
+        signedClosure.manifest.closedAt
       ]
     );
     for (const row of segmentRows) {
@@ -1864,13 +1900,15 @@ const seedConversationSourceFixture = async (client, runtime) => {
          session_id, team_id, team_workspace_id, mode,
          maximum_segment_index, maximum_source_offset, version, lifecycle,
          mutation_id, granted_by_user_id, creator_authority, created_at,
-         updated_at, revoked_at, revoked_by_user_id, revocation_reason
+         updated_at, revoked_at, revoked_by_user_id, revocation_reason,
+         source_generation_id
        ) values (
          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$13,$5,
          'fixture_seed',$14,$14,
          case when $12='revoked' then $14::timestamptz else null end,
          case when $12='revoked' then $5::uuid else null end,
-         case when $12='revoked' then 'fixture_revocation' else null end
+         case when $12='revoked' then 'fixture_revocation' else null end,
+         $15
        )`,
       [
         source.id,
@@ -1886,7 +1924,8 @@ const seedConversationSourceFixture = async (client, runtime) => {
         snapshotMaximumOffset,
         source.lifecycle,
         source.mutationId,
-        sourceCreatedAt
+        sourceCreatedAt,
+        source.sourceGenerationId
       ]
     );
     await client.query(
@@ -1934,9 +1973,10 @@ export const resetFixture = async (client) => {
   const fixtureUserSessionIds = Object.values(fixtureSessionRows).map(
     (session) => session.id
   );
-  const fixtureDeviceCredentialIds = [
-    ...new Set(fixtureMemoryRows.map((memory) => memory.owner))
-  ].map((userKey) => fixtureOwnerInfrastructure(userKey).deviceCredentialId);
+  const fixtureUserKeys = Object.keys(fixtureUsers);
+  const fixtureDeviceCredentialIds = fixtureUserKeys.map(
+    (userKey) => fixtureOwnerInfrastructure(userKey).deviceCredentialId
+  );
   await client.query("begin");
   try {
     await client.query(
@@ -2329,7 +2369,7 @@ export const resetFixture = async (client) => {
     await client.query(
       "delete from sync_external_user_identities where id = any($1::uuid[])",
       [
-        [...new Set(fixtureMemoryRows.map((memory) => memory.owner))].map(
+        fixtureUserKeys.map(
           (userKey) => fixtureOwnerInfrastructure(userKey).remoteUserIdentityId
         )
       ]
@@ -3340,7 +3380,7 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
       "sync_external_user_identities",
       "select * from sync_external_user_identities where id = any($1::uuid[])",
       [
-        [...new Set(fixtureMemoryRows.map((memory) => memory.owner))].map(
+        Object.keys(fixtureUsers).map(
           (key) => fixtureOwnerInfrastructure(key).remoteUserIdentityId
         )
       ]
@@ -3349,7 +3389,7 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
       "device_credentials",
       "select * from device_credentials where id = any($1::uuid[])",
       [
-        [...new Set(fixtureMemoryRows.map((memory) => memory.owner))].map(
+        Object.keys(fixtureUsers).map(
           (key) => fixtureOwnerInfrastructure(key).deviceCredentialId
         )
       ]

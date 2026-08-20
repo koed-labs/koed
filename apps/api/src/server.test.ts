@@ -12498,6 +12498,9 @@ describe("account and access flows", () => {
   });
 
   it("serves Team Shared Memory evidence behind Team authentication", async () => {
+    process.env.KOED_HOME = mkdtempSync(
+      resolve(tmpdir(), "koed-team-note-evidence-")
+    );
     const repository = createFakeRepository();
     const recallInputs: Array<Record<string, unknown>> = [];
     const originalSearchMemoryNodes =
@@ -12507,10 +12510,23 @@ describe("account and access flows", () => {
       return originalSearchMemoryNodes(actor, input);
     };
     const teamCandidateId = randomUUID();
+    const teamSourceArtifactId = randomUUID();
+    const teamNoteId = randomUUID();
+    const teamMemoryEventId = randomUUID();
+    const teamLogicalMemoryId = randomUUID();
+    const teamSourceRevisionHash = "b".repeat(64);
     repository.searchAuthorizedSharedMemorySemanticItems = async () => [
       {
+        source: {
+          kind: "personal_note",
+          noteId: teamNoteId,
+          memoryEventId: teamMemoryEventId,
+          logicalMemoryId: teamLogicalMemoryId
+        },
         candidateId: teamCandidateId,
         shareGrantId: randomUUID(),
+        sourceArtifactId: teamSourceArtifactId,
+        sourceRevisionHash: teamSourceRevisionHash,
         representationId: randomUUID(),
         representation: "lcm_rollups",
         pseudonymousSourceId: "team-source",
@@ -12673,6 +12689,17 @@ describe("account and access flows", () => {
         limit: 1
       }
     });
+    const deviceTeamSearch = await app.inject({
+      method: "POST",
+      url: "/v1/memory/search",
+      headers: { authorization: device.authorization },
+      payload: {
+        query: "Seraphina",
+        retrieval_scope: "personal",
+        team_workspace_id: teamWorkspaceId,
+        limit: 1
+      }
+    });
     const deviceTeamQuestion = await app.inject({
       method: "POST",
       url: "/v1/memory/questions/final",
@@ -12718,6 +12745,7 @@ describe("account and access flows", () => {
     expect(answer.statusCode).toBe(200);
     expect(deviceAnswer.statusCode).toBe(200);
     expect(deviceScoreScan.statusCode).toBe(200);
+    expect(deviceTeamSearch.statusCode).toBe(200);
     expect(deviceTeamQuestion.statusCode).toBe(200);
     expect(rejectedApiTokenTeamQuestion.statusCode).toBe(403);
     const scoreScan = jsonBody<{
@@ -12740,6 +12768,20 @@ describe("account and access flows", () => {
         maxAllowed: 1
       })
     );
+    expect(
+      jsonBody<{
+        hits: Array<{ visibilityProvenance: Record<string, unknown> }>;
+      }>(deviceTeamSearch).hits[0]?.visibilityProvenance
+    ).toMatchObject({
+      sourceArtifactId: teamSourceArtifactId,
+      sourceRevisionHash: teamSourceRevisionHash,
+      source: {
+        kind: "personal_note",
+        noteId: teamNoteId,
+        memoryEventId: teamMemoryEventId,
+        logicalMemoryId: teamLogicalMemoryId
+      }
+    });
     expect(scoreScan.retrieval.stages).toContainEqual(
       expect.objectContaining({
         name: "fresh_pending_search",
@@ -12772,6 +12814,9 @@ describe("account and access flows", () => {
   });
 
   it("serves Team Shared Memory expansion behind Team authentication", async () => {
+    process.env.KOED_HOME = mkdtempSync(
+      resolve(tmpdir(), "koed-team-note-expansion-")
+    );
     const repository = createFakeRepository();
     const expandInputs: Array<Record<string, unknown>> = [];
     repository.expandMemoryNode = async (nodeId, _actor, input) => {
@@ -12792,6 +12837,8 @@ describe("account and access flows", () => {
         parent: {
           candidateId: input.candidateId,
           shareGrantId: randomUUID(),
+          sourceArtifactId: randomUUID(),
+          sourceRevisionHash: "b".repeat(64),
           representationId: randomUUID(),
           representation: "lcm_rollups" as const,
           pseudonymousSourceId: randomUUID(),

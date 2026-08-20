@@ -212,6 +212,17 @@ describe("route identity contract", () => {
         "x-koed-team-authority": "none"
       });
     }
+    for (const [method, path] of [
+      ["GET", "/v1/collaboration/personal/notes"],
+      ["GET", "/v1/collaboration/personal/notes/{noteId}"],
+      ["PATCH", "/v1/collaboration/personal/notes/{noteId}/title"]
+    ] as const) {
+      expect(routeIdentityFor(method, path)).toMatchObject({
+        identity: "session_or_api_token_or_device_credential",
+        domain: "collaboration",
+        teamAuthority: "none"
+      });
+    }
   });
 
   it("pins public, session, API-token, and mixed route security in OpenAPI", () => {
@@ -488,6 +499,9 @@ describe("route identity contract", () => {
     const routeFamilies = {
       collaboration: [
         "GET /v1/teams/navigation",
+        "GET /v1/collaboration/personal/notes",
+        "GET /v1/collaboration/personal/notes/{noteId}",
+        "PATCH /v1/collaboration/personal/notes/{noteId}/title",
         "GET /v1/collaboration/teams/{teamId}/participants",
         "GET /v1/collaboration/teams/{teamId}/threads",
         "GET /v1/collaboration/teams/{teamId}/workspaces/{teamWorkspaceId}/channels",

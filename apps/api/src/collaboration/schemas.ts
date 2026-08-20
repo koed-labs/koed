@@ -188,6 +188,27 @@ export const advanceCollaborationReadStateSchema = z
   .object({ messageId: strictUuidSchema })
   .strict();
 
+export const listPersonalNotesQuerySchema = z
+  .object({
+    beforeSequence: z.coerce.number().int().safe().positive().optional(),
+    limit: z.coerce.number().int().safe().min(1).max(50).default(50)
+  })
+  .strict();
+
+export const personalNoteParamsSchema = z
+  .object({ noteId: strictUuidSchema })
+  .strict();
+
+export const renamePersonalNoteSchema = z
+  .object({
+    expectedTitleVersion: z.number().int().safe().positive(),
+    title: z
+      .string()
+      .transform((value) => value.trim().normalize("NFC"))
+      .pipe(z.string().min(1).max(80))
+  })
+  .strict();
+
 export const collaborationRealtimeScopeSchema = z.discriminatedUnion("scope", [
   z.object({ scope: z.literal("personal") }).strict(),
   z.object({ scope: z.literal("team"), teamId: strictUuidSchema }).strict()

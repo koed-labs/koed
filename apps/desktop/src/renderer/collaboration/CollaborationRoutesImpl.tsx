@@ -15,6 +15,7 @@ import {
   type SharedMemorySourcePage,
   deriveTeamPresenceSnapshot
 } from "@koed/shared/collaboration";
+import type { PersonalDesktopNote } from "@koed/shared/personal-desktop";
 import {
   LcmSummaryFrame,
   MemoryEventFrame,
@@ -23,6 +24,10 @@ import {
   VirtualizedTimeline,
   type MarkdownPlatformAdapters
 } from "@koed/memory-ui";
+
+type BoundSharedMemoryCandidatePreview = SharedMemoryCandidatePreview & {
+  source: NonNullable<SharedMemoryCandidatePreview["source"]>;
+};
 import { Dialog, DialogPopup } from "@koed/ui";
 import {
   Archive,
@@ -109,6 +114,10 @@ export type CollaborationModalState =
       localEntry?: PersonalMemoryEntry;
       sessionId: string;
     }
+  | {
+      kind: "share_personal_note";
+      note: PersonalDesktopNote;
+    }
   | { kind: "connection" };
 
 export const modalIsAuthorized = (
@@ -152,6 +161,13 @@ export const modalIsAuthorized = (
         !localEntry.hasSynchronizedRevision &&
         localEntry.syncState === "not_started"
       )
+    );
+  }
+  if (modal.kind === "share_personal_note") {
+    return (
+      modal.note.noteId.length > 0 &&
+      modal.note.memoryEventId === modal.note.event.id &&
+      modal.note.event.invalidatedAt === null
     );
   }
   if (modal.kind === "workspace_channel") {
@@ -3549,7 +3565,7 @@ function SharedMemoryOwnerModal({
   >(entry.logicalMemoryId ? null : { kind: "new" });
   const [preview, setPreview] = useState<SharedMemoryPreview | null>(null);
   const [candidate, setCandidate] =
-    useState<SharedMemoryCandidatePreview | null>(null);
+    useState<BoundSharedMemoryCandidatePreview | null>(null);
   const [preparingPreview, setPreparingPreview] = useState(false);
   const [revokingGrantId, setRevokingGrantId] = useState<string | null>(null);
   const [stoppingSync, setStoppingSync] = useState(false);
@@ -3735,12 +3751,16 @@ function SharedMemoryOwnerModal({
           sessionId: currentEntry.id,
           representation
         });
-        if (localCandidate.items.length === 0) {
+        if (
+          localCandidate.source?.kind !== "captured_session" ||
+          localCandidate.source.sessionId !== currentEntry.id ||
+          localCandidate.items.length === 0
+        ) {
           throw new CollaborationInputError(
             `No ${representationLabel(representation)} are available for this Personal Memory.`
           );
         }
-        setCandidate(localCandidate);
+        setCandidate({ ...localCandidate, source: localCandidate.source });
       } catch (cause) {
         setPreparingPreview(false);
         throw cause;
@@ -3761,7 +3781,7 @@ function SharedMemoryOwnerModal({
         representation,
         allowedRepresentations: [representation],
         candidate: {
-          sessionId: candidate.sessionId,
+          source: candidate.source,
           candidateHash: candidate.candidateHash,
           sourceRevision: candidate.sourceRevision,
           itemCount: candidate.itemCount,
@@ -3912,6 +3932,7 @@ function SharedMemoryOwnerModal({
           );
         }
         const changed = await client.changeSharedMemoryRepresentation({
+          source: candidate.source,
           mutationId: crypto.randomUUID(),
           logicalMemoryId: candidate.logicalMemoryId,
           teamId,
@@ -3924,8 +3945,7 @@ function SharedMemoryOwnerModal({
           allowedRepresentations: [representation],
           previewRevision: preview.previewRevision,
           previewHash: preview.previewHash,
-          expiresAt: null,
-          candidateSessionId: currentEntry.id
+          expiresAt: null
         });
         if (changed.workspaceAccessState !== "active") {
           throw new CollaborationInputError(
@@ -3940,6 +3960,7 @@ function SharedMemoryOwnerModal({
         completedShareKey = `pending:${changed.id}`;
       } else {
         const shared = await client.shareMemory({
+          source: candidate.source,
           mutationId: crypto.randomUUID(),
           logicalGrantId: crypto.randomUUID(),
           consentId,
@@ -3952,8 +3973,7 @@ function SharedMemoryOwnerModal({
           previewRevision: preview.previewRevision,
           previewHash: preview.previewHash,
           expiresAt: null,
-          title: shareTitle,
-          candidateSessionId: candidate.sessionId
+          title: shareTitle
         });
         if ("grantVersion" in shared) {
           setOwnerGrants((current) => [shared, ...current]);
@@ -4511,6 +4531,247 @@ function SharedMemoryOwnerModal({
   );
 }
 
+function PersonalNoteShareModal({
+  client,
+  markdownAdapters,
+  note,
+  onClose,
+  onViewShare,
+  snapshot
+}: {
+  client: CollaborationRendererClient;
+  markdownAdapters: MarkdownPlatformAdapters;
+  note: PersonalDesktopNote;
+  onClose: () => void;
+  onViewShare?: (shareKey: string) => void;
+  snapshot: CollaborationSnapshot;
+}) {
+  const availableTeams = snapshot.navigation.teams
+    .filter((team) => team.lifecycle === "active")
+    .map((team) => ({
+      ...team,
+      workspaces: team.workspaces.filter(
+        (workspace) =>
+          workspace.lifecycle === "active" && workspace.access === "write"
+      )
+    }))
+    .filter((team) => team.workspaces.length > 0);
+  const initialTeam = availableTeams[0] ?? null;
+  const [teamId, setTeamId] = useState(initialTeam?.id ?? "");
+  const [workspaceId, setWorkspaceId] = useState(
+    initialTeam?.workspaces[0]?.id ?? ""
+  );
+  const [candidate, setCandidate] =
+    useState<BoundSharedMemoryCandidatePreview | null>(null);
+  const [preview, setPreview] = useState<SharedMemoryPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
+  const selectedTeam =
+    availableTeams.find((team) => team.id === teamId) ?? null;
+  const workspaces = selectedTeam?.workspaces ?? [];
+  const selectedWorkspace =
+    workspaces.find((workspace) => workspace.id === workspaceId) ?? null;
+
+  const run = async (operation: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await operation();
+    } catch (cause) {
+      setError(failureMessage(cause, "This Note could not be shared."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const review = () =>
+    run(async () => {
+      if (!selectedTeam || !selectedWorkspace) {
+        throw new CollaborationInputError(
+          "Choose an available Team Workspace."
+        );
+      }
+      const nextCandidate = await client.previewSharedMemoryCandidate({
+        noteId: note.noteId,
+        representation: "memory_events"
+      });
+      if (
+        nextCandidate.source?.kind !== "personal_note" ||
+        nextCandidate.source.noteId !== note.noteId ||
+        nextCandidate.source.memoryEventId !== note.memoryEventId ||
+        nextCandidate.sourceRevision !== 1 ||
+        nextCandidate.itemCount !== 1 ||
+        nextCandidate.items.length !== 1
+      ) {
+        throw new CollaborationInputError(
+          "The reviewed Note snapshot is no longer available."
+        );
+      }
+      const nextPreview = await client.previewSharedMemory({
+        logicalMemoryId: nextCandidate.logicalMemoryId,
+        teamId,
+        workspaceId,
+        representation: "memory_events",
+        allowedRepresentations: ["memory_events"],
+        candidate: {
+          source: nextCandidate.source,
+          candidateHash: nextCandidate.candidateHash,
+          sourceRevision: nextCandidate.sourceRevision,
+          itemCount: nextCandidate.itemCount,
+          excludedItemCount: nextCandidate.excludedItemCount,
+          manifest: nextCandidate.manifest,
+          byteCount: nextCandidate.byteCount,
+          mode: "snapshot",
+          expiresAt: null
+        }
+      });
+      if (
+        nextPreview.representation !== "memory_events" ||
+        nextPreview.itemCount !== 1 ||
+        nextPreview.items.length !== 1
+      ) {
+        throw new CollaborationInputError(
+          "The Team policy did not approve this one-Note snapshot."
+        );
+      }
+      setCandidate({ ...nextCandidate, source: nextCandidate.source });
+      setPreview(nextPreview);
+    });
+
+  const share = () =>
+    run(async () => {
+      if (!candidate || !preview || !selectedWorkspace) return;
+      const result = await client.shareMemory({
+        source: candidate.source,
+        mutationId: crypto.randomUUID(),
+        logicalGrantId: crypto.randomUUID(),
+        consentId: crypto.randomUUID(),
+        logicalMemoryId: candidate.logicalMemoryId,
+        teamId,
+        workspaceId,
+        mode: "snapshot",
+        allowedRepresentations: ["memory_events"],
+        selectedRepresentation: "memory_events",
+        previewRevision: preview.previewRevision,
+        previewHash: preview.previewHash,
+        expiresAt: null,
+        title: note.title
+      });
+      setPendingKey(
+        "grantVersion" in result ? `grant:${result.id}` : `pending:${result.id}`
+      );
+    });
+
+  return (
+    <Modal label={`Share ${note.title}`} onClose={onClose}>
+      <ModalHeader title="Share Note" onClose={onClose} />
+      <div className="collab-form collab-share-memory-form">
+        {pendingKey ? (
+          <div className="collab-share-complete" role="status">
+            <CircleCheck aria-hidden="true" />
+            <strong>Share accepted</strong>
+            <p>Note is being shared {selectedWorkspace?.name}.</p>
+          </div>
+        ) : (
+          <>
+            {!preview ? (
+              <>
+                <label>
+                  Team
+                  <select
+                    value={teamId}
+                    onChange={(event) => {
+                      const nextTeam = availableTeams.find(
+                        (team) => team.id === event.currentTarget.value
+                      );
+                      setTeamId(event.currentTarget.value);
+                      setWorkspaceId(nextTeam?.workspaces[0]?.id ?? "");
+                      setCandidate(null);
+                      setPreview(null);
+                    }}
+                  >
+                    {availableTeams.map((team) => (
+                      <option key={team.id} value={team.id}>
+                        {team.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Workspace
+                  <select
+                    value={workspaceId}
+                    onChange={(event) => {
+                      setWorkspaceId(event.currentTarget.value);
+                      setCandidate(null);
+                      setPreview(null);
+                    }}
+                  >
+                    {workspaces.map((workspace) => (
+                      <option key={workspace.id} value={workspace.id}>
+                        {workspace.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            ) : null}
+            {preview ? (
+              <>
+                <p className="collab-note-share-approval">
+                  Approve to share this note with{" "}
+                  <strong>{selectedWorkspace?.name}</strong>.
+                </p>
+                <div className="collab-preview-list shared-conversation-preview">
+                  <ConversationRows
+                    events={sharedMemoryConversationEvents(preview.items)}
+                    markdownAdapters={markdownAdapters}
+                    scope="workspace"
+                  />
+                </div>
+              </>
+            ) : null}
+            <p className="collab-form-context collab-note-share-context">
+              Later edits or renames will not change this shared copy.
+            </p>
+            {availableTeams.length === 0 ? (
+              <p className="collab-form-error" role="alert">
+                No writable Team Workspace is available.
+              </p>
+            ) : null}
+          </>
+        )}
+        {error ? (
+          <p className="collab-form-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <footer className="collab-modal-actions">
+          <button className="secondary" onClick={onClose} type="button">
+            {pendingKey ? "Close" : "Cancel"}
+          </button>
+          {pendingKey ? (
+            <button onClick={() => onViewShare?.(pendingKey)} type="button">
+              View share
+            </button>
+          ) : (
+            <button
+              aria-busy={busy ? "true" : undefined}
+              disabled={busy || availableTeams.length === 0}
+              onClick={() => void (preview ? share() : review())}
+              type="button"
+            >
+              {busy ? "Working…" : preview ? "Approve and share" : "Review"}
+            </button>
+          )}
+        </footer>
+      </div>
+    </Modal>
+  );
+}
+
 function ModalLayer({
   client,
   markdownAdapters,
@@ -4597,6 +4858,19 @@ function ModalLayer({
           This source is no longer available.
         </div>
       </Modal>
+    );
+  }
+
+  if (modal.kind === "share_personal_note") {
+    return (
+      <PersonalNoteShareModal
+        client={client}
+        markdownAdapters={markdownAdapters}
+        note={modal.note}
+        onClose={onClose}
+        onViewShare={onViewShare}
+        snapshot={snapshot}
+      />
     );
   }
 

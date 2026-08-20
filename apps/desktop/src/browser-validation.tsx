@@ -711,6 +711,10 @@ const interactionIds = {
   betaDiscussionLogical: uuid(129),
   aliceNotes: uuid(130),
   bobNotes: uuid(131),
+  aliceNoteMemoryEvent: uuid(132),
+  bobNoteMemoryEvent: uuid(133),
+  aliceNoteLogicalMemory: uuid(134),
+  bobNoteLogicalMemory: uuid(135),
   actionGrant: uuid(140),
   personalSubscription: uuid(141),
   alphaSubscription: uuid(142),
@@ -732,6 +736,75 @@ const interactionPerson = (actor: StatefulActor) => ({
   presence: "available" as const,
   membershipState: "enabled" as const
 });
+
+const interactionNote = (
+  actor: StatefulActor,
+  title: string,
+  titleVersion: number
+) => {
+  const noteId =
+    actor === "alice" ? interactionIds.aliceNotes : interactionIds.bobNotes;
+  const memoryEventId =
+    actor === "alice"
+      ? interactionIds.aliceNoteMemoryEvent
+      : interactionIds.bobNoteMemoryEvent;
+  return {
+    noteId,
+    memoryEventId,
+    title,
+    titleVersion,
+    createdAt: timestamp,
+    sourceSequence: 1,
+    event: {
+      id: memoryEventId,
+      actor: "user" as const,
+      eventType: "personal_note_created",
+      timestamp,
+      sourceEventTime: timestamp,
+      sourceSequence: 1,
+      content: "# Browser launch note\nTwo independent reviewers are required.",
+      contentPreview: "Browser launch note",
+      metadata: {},
+      invalidatedAt: null
+    }
+  };
+};
+
+const interactionNoteSummary = (
+  actor: StatefulActor,
+  title: string,
+  titleVersion: number
+) => {
+  const note = interactionNote(actor, title, titleVersion);
+  return {
+    noteId: note.noteId,
+    memoryEventId: note.memoryEventId,
+    title: note.title,
+    titleVersion: note.titleVersion,
+    createdAt: note.createdAt,
+    sourceSequence: note.sourceSequence
+  };
+};
+
+const createInteractionPersonalMemoryApi = (
+  actor: StatefulActor
+): PersonalDesktopApi => {
+  let title = "Browser launch note";
+  let titleVersion = 1;
+  return {
+    ...personalMemoryApi,
+    listNotes: async () => ({
+      notes: [interactionNoteSummary(actor, title, titleVersion)],
+      nextBeforeSequence: null
+    }),
+    loadNote: async () => interactionNote(actor, title, titleVersion),
+    renameNote: async ({ title: nextTitle }) => {
+      title = nextTitle;
+      titleVersion += 1;
+      return interactionNoteSummary(actor, title, titleVersion);
+    }
+  };
+};
 
 const interactionParticipant = (actor: StatefulActor) => {
   const person = interactionPerson(actor);
@@ -1394,6 +1467,30 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
             { label: "Workspace", value: intent.workspaceId }
           ]
         };
+      case "collaboration.preview_shared_memory":
+        return {
+          version: 1 as const,
+          title: "Review Note snapshot?",
+          description: "Review the exact Personal Note snapshot.",
+          consequence: "One immutable Memory Event will be reviewed.",
+          confirmLabel: "Review snapshot",
+          details: [
+            { label: "Team", value: intent.teamId },
+            { label: "Workspace", value: intent.workspaceId }
+          ]
+        };
+      case "collaboration.share_memory":
+        return {
+          version: 1 as const,
+          title: "Share Note snapshot?",
+          description: "Approve the exact reviewed Personal Note snapshot.",
+          consequence: "The Workspace will receive one immutable Memory Event.",
+          confirmLabel: "Share snapshot",
+          details: [
+            { label: "Team", value: intent.teamId },
+            { label: "Workspace", value: intent.workspaceId }
+          ]
+        };
       default:
         throw new Error(
           `Unexpected Native-review browser intent: ${intent.intent}`
@@ -1505,6 +1602,124 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
                 ...(activeOwnedShare ? [activeOwnedShare] : [])
               ],
           nextCursor: null
+        });
+      case "collaboration.preview_shared_memory_candidate": {
+        const note = interactionNote(actor, "Browser launch note", 1);
+        const logicalMemoryId =
+          actor === "alice"
+            ? interactionIds.aliceNoteLogicalMemory
+            : interactionIds.bobNoteLogicalMemory;
+        const source = {
+          kind: "personal_note" as const,
+          noteId: note.noteId,
+          memoryEventId: note.memoryEventId,
+          logicalMemoryId
+        };
+        const item = {
+          id: note.memoryEventId,
+          representation: "memory_events" as const,
+          sequence: 1,
+          occurredAt: timestamp,
+          sourceItems: [
+            {
+              id: note.memoryEventId,
+              sourceKind: "user_message" as const,
+              occurredAt: timestamp,
+              body: note.event.content,
+              actorName: null,
+              toolName: null,
+              toolCallId: null
+            }
+          ]
+        };
+        return result(parsed, {
+          candidate: {
+            source,
+            logicalMemoryId,
+            representation: "memory_events",
+            sourceRevision: 1,
+            candidateHash: "c".repeat(64),
+            itemCount: 1,
+            excludedItemCount: 0,
+            manifest: [
+              { sourceId: note.memoryEventId, revisionHash: "d".repeat(64) }
+            ],
+            byteCount: 256,
+            items: [item]
+          }
+        });
+      }
+      case "collaboration.preview_shared_memory": {
+        const candidate = parsed.input.candidate;
+        const note = interactionNote(actor, "Browser launch note", 1);
+        return result(parsed, {
+          preview: {
+            source: candidate?.source,
+            logicalMemoryId: parsed.input.logicalMemoryId,
+            teamId: parsed.input.teamId,
+            workspaceId: parsed.input.workspaceId,
+            representation: "memory_events",
+            allowedRepresentations: ["memory_events"],
+            previewRevision: 1,
+            sourceRevision: 1,
+            policyRevision: 1,
+            contentPolicyVersion: 1,
+            classifierVersion: 1,
+            redactedContentHash: "a".repeat(64),
+            previewHash: "b".repeat(64),
+            itemCount: 1,
+            items: [
+              {
+                id: note.memoryEventId,
+                representation: "memory_events",
+                sequence: 1,
+                occurredAt: timestamp,
+                sourceItems: [
+                  {
+                    id: note.memoryEventId,
+                    sourceKind: "user_message",
+                    occurredAt: timestamp,
+                    body: note.event.content,
+                    actorName: null,
+                    toolName: null,
+                    toolCallId: null
+                  }
+                ]
+              }
+            ],
+            nextCursor: null
+          }
+        });
+      }
+      case "collaboration.share_memory":
+        return result(parsed, {
+          pendingShare: {
+            source: parsed.input.source,
+            id: interactionIds.pendingShare,
+            mutationId: parsed.input.mutationId,
+            logicalGrantId: parsed.input.logicalGrantId,
+            consentId: parsed.input.consentId,
+            logicalMemoryId: parsed.input.logicalMemoryId,
+            teamId: parsed.input.teamId,
+            workspaceId: parsed.input.workspaceId,
+            representation: "memory_events",
+            allowedRepresentations: ["memory_events"],
+            mode: "snapshot",
+            sourceRevision: 1,
+            state: "preparing",
+            stage: "accepted",
+            workspaceAccessState: "none",
+            sourceUpdateState: "preparing",
+            operationVersion: 1,
+            attemptCount: 0,
+            redactedFailureCode: null,
+            lastProgressAt: timestamp,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            activatedAt: null,
+            revokedAt: null,
+            grantId: null
+          }
         });
       case "collaboration.get_owned_share": {
         const share = [
@@ -1854,6 +2069,13 @@ const CollaborationInteractionsValidationApp = () => {
       }),
     [fixture]
   );
+  const personalApi = useMemo(() => {
+    const actor =
+      new URLSearchParams(window.location.search).get("actor") === "bob"
+        ? "bob"
+        : "alice";
+    return createInteractionPersonalMemoryApi(actor);
+  }, []);
   useEffect(() => {
     const browserWindow = window as Window & {
       __koedCollaborationInteractions?: StatefulBrowserControls;
@@ -1875,6 +2097,7 @@ const CollaborationInteractionsValidationApp = () => {
         sharedSessionId: interactionIds.alphaSession
       }}
       onboardingComplete
+      personalMemoryApi={personalApi}
       statusReadyOverride
     />
   );

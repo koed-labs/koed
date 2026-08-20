@@ -3970,7 +3970,8 @@ export const createMemorySourceRepository = (
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
     ...createCollaborationRepository(pool, {
-      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+      teamEnvelopeEncryptionProvider: options.teamEnvelopeEncryptionProvider
     }),
     ...sharedMemoryRepository,
     ...createTeamConversationSourceRepository(pool),
@@ -6379,6 +6380,7 @@ export const createMemorySourceRepository = (
             from memory_events me
             where me.visibility = 'personal'
               and me.owner_user_id = $1
+              and coalesce(me.payload #>> '{metadata,semanticUnitType}', '') <> 'personal_note'
           )
           select
             (select count(*) from visible_events where invalidated_at is null)::text as captured_events,
@@ -6418,6 +6420,7 @@ export const createMemorySourceRepository = (
               or exists (
                 select 1 from memory_events ev
                 where ev.id = me.memory_event_id
+                  and coalesce(ev.payload #>> '{metadata,semanticUnitType}', '') <> 'personal_note'
                   and (
                     ev.visibility = 'personal' and ev.owner_user_id = $1
                   )
@@ -6838,6 +6841,7 @@ export const createMemorySourceRepository = (
           cross join cursor_order co
           left join sessions s on s.id = me.session_id
           where ($2::boolean = true or me.invalidated_at is null)
+            and coalesce(me.payload #>> '{metadata,semanticUnitType}', '') <> 'personal_note'
             and (
               $6::uuid is not null
               or me.session_id is null
@@ -7527,6 +7531,7 @@ export const createMemorySourceRepository = (
           from memory_events me
           left join sessions s on s.id = me.session_id
           where ($2::boolean = true or me.invalidated_at is null)
+            and coalesce(me.payload #>> '{metadata,semanticUnitType}', '') <> 'personal_note'
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and (
               $4::text is null
@@ -9586,6 +9591,90 @@ export const createMemorySourceRepository = (
       } finally {
         client.release();
       }
+    },
+
+    async findPersonalNoteMemoryEventId(actor, messageId) {
+      if (!uuidPattern.test(messageId))
+        throw new TypeError("messageId must be a UUID");
+      const result = await pool.query<{ id: string }>(
+        `select id
+           from memory_events
+          where owner_user_id=$1
+            and visibility='personal'
+            and session_id is null
+            and idempotency_key=$2
+            and invalidated_at is null
+          limit 1`,
+        [actor.userId, `personal-note:${messageId}`]
+      );
+      return result.rows[0]?.id ?? null;
+    },
+
+    async getPersonalNoteMemoryEvent(actor, messageId) {
+      if (!uuidPattern.test(messageId)) {
+        throw new TypeError("messageId must be a UUID");
+      }
+      const result = await pool.query<{
+        id: string;
+        owner_user_id: string;
+        visibility: Visibility;
+        event_type: string;
+        source_runtime: SourceRuntime | null;
+        capture_method: CaptureMethod;
+        source_event_time: Date | null;
+        source_sequence: number | string | null;
+        captured_at: Date;
+        created_at: Date;
+        invalidated_at: Date | null;
+        invalidation_reason: string | null;
+      }>(
+        `select id,owner_user_id,visibility,event_type,source_runtime,
+                capture_method,source_event_time,source_sequence,captured_at,
+                created_at,invalidated_at,invalidation_reason
+           from memory_events
+          where owner_user_id=$1
+            and visibility='personal'
+            and session_id is null
+            and idempotency_key=$2
+            and invalidated_at is null
+          limit 1`,
+        [actor.userId, `personal-note:${messageId}`]
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      const payload = await decryptAuthorizedMemoryEventPayload(
+        pool,
+        await resolveMemoryEventEncryptionProvider(row.id),
+        { ownerUserId: actor.userId, memoryEventId: row.id }
+      );
+      if (
+        !payload ||
+        payload.rawEventType !== "personal_note_created" ||
+        payload.metadata?.semanticUnitType !== "personal_note" ||
+        payload.metadata?.collaborationMessageId !== messageId
+      ) {
+        return null;
+      }
+      return mapLcmGraphEvent({
+        ...row,
+        actor: payload.actor ?? null,
+        event_type: payload.rawEventType,
+        model: null,
+        project_id: null,
+        project_name: null,
+        project_path: null,
+        session_id: null,
+        thread_id:
+          typeof payload.metadata.collaborationThreadId === "string"
+            ? payload.metadata.collaborationThreadId
+            : null,
+        thread_name: null,
+        content: payload.content ?? null,
+        metadata: payload.metadata,
+        linked_node_ids: [],
+        includeContent: true,
+        includeRaw: false
+      });
     },
 
     async createMemoryEvent(actor, input) {
@@ -12299,6 +12388,18 @@ export const createMemorySourceRepository = (
               : filteredNodeSourceItems,
         sources: hydratedSources.map(mapMemoryEvent)
       } satisfies ExpandedMemoryNode;
+    },
+    async notifyPersonalNoteChanged(actor, messageId, operation) {
+      await pool.query(`select pg_notify('koed_graph_updates',$1)`, [
+        JSON.stringify({
+          table: "personal_notes",
+          operation,
+          id: messageId,
+          ownerUserId: actor.userId,
+          visibility: "personal",
+          changedAt: new Date().toISOString()
+        })
+      ]);
     }
   };
   return repository;

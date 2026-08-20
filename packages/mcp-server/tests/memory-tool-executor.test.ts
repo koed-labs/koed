@@ -96,6 +96,7 @@ describe("MemoryToolExecutor", () => {
     let observedOptions: {
       cwd: string | undefined;
       projectId: string | undefined;
+      responseDetail: string | undefined;
     } | null = null;
     const answerWithMemoryWorker: NonNullable<
       MemoryToolExecutorServices["answerWithMemoryWorker"]
@@ -105,7 +106,8 @@ describe("MemoryToolExecutor", () => {
       }
       observedOptions = {
         cwd: options.config?.cwd,
-        projectId: options.projectId
+        projectId: options.projectId,
+        responseDetail: options.responseDetail
       };
       throw new Error("worker boundary reached");
     };
@@ -126,7 +128,8 @@ describe("MemoryToolExecutor", () => {
     ).rejects.toThrow("worker boundary reached");
     expect(observedOptions).toEqual({
       cwd: "/work/requesting-project",
-      projectId: "/work/requesting-project"
+      projectId: "/work/requesting-project",
+      responseDetail: "internal"
     });
   });
 

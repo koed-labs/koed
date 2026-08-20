@@ -5,6 +5,10 @@ import {
   personalDesktopAskSubmitInputSchema,
   personalDesktopAskThreadInputSchema,
   personalDesktopEventPageInputSchema,
+  personalDesktopNoteCreateInputSchema,
+  personalDesktopNoteListInputSchema,
+  personalDesktopNoteLoadInputSchema,
+  personalDesktopNoteRenameInputSchema,
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
   personalDesktopSessionProjectInputSchema,
@@ -99,6 +103,70 @@ export const createPersonalMemoryPreloadApi = (
         throw new Error("Invalid Personal Ask submit result.");
       }
       return result.data.question;
+    },
+    listNotes: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["listNotes"]>>[0]
+    ) => {
+      const input = personalDesktopNoteListInputSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.notes.list",
+          input
+        })
+      );
+      if (result.operation !== "personal.notes.list") {
+        throw new Error("Invalid Personal Notes list result.");
+      }
+      return result.data;
+    },
+    loadNote: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["loadNote"]>>[0]
+    ) => {
+      const input = personalDesktopNoteLoadInputSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.notes.load",
+          input
+        })
+      );
+      if (result.operation !== "personal.notes.load") {
+        throw new Error("Invalid Personal Note result.");
+      }
+      return result.data.note;
+    },
+    createNote: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["createNote"]>>[0]
+    ) => {
+      const input = personalDesktopNoteCreateInputSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.notes.create",
+          input
+        })
+      );
+      if (result.operation !== "personal.notes.create") {
+        throw new Error("Invalid Personal Note create result.");
+      }
+      return result.data.note;
+    },
+    renameNote: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["renameNote"]>>[0]
+    ) => {
+      const input = personalDesktopNoteRenameInputSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.notes.rename",
+          input
+        })
+      );
+      if (result.operation !== "personal.notes.rename") {
+        throw new Error("Invalid Personal Note rename result.");
+      }
+      return result.data.note;
     },
     listProjects: async () => {
       const result = requireSuccess(

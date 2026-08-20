@@ -634,6 +634,48 @@ describeDb("Collaboration repository", () => {
     expect(
       new Set(noteMessages.map((message) => message?.threadSequence))
     ).toEqual(new Set([1, 2, 3, 4]));
+    const notePage = await repository.listPersonalNotes(actor(ownerUserId), {
+      limit: 2
+    });
+    expect(notePage.notes.map((note) => note.sourceSequence)).toEqual([4, 3]);
+    expect(notePage.notes[0]).toMatchObject({
+      title: "Concurrent private note 3",
+      titleVersion: 1,
+      body: "Concurrent private note 3"
+    });
+    expect(notePage.nextBeforeSequence).toBe(3);
+    expect(
+      await repository.listPersonalNotes(actor(outsiderUserId), { limit: 10 })
+    ).toEqual({ notes: [], nextBeforeSequence: null });
+    expect(
+      await repository.getPersonalNote(actor(outsiderUserId), {
+        noteId: noteMessages[0]!.id
+      })
+    ).toBeNull();
+    const renamed = await repository.renamePersonalNote(actor(ownerUserId), {
+      noteId: noteMessages[0]!.id,
+      expectedTitleVersion: 1,
+      title: "Release decision"
+    });
+    expect(renamed).toMatchObject({
+      title: "Release decision",
+      titleVersion: 2,
+      body: "Concurrent private note 0"
+    });
+    await expect(
+      repository.renamePersonalNote(actor(ownerUserId), {
+        noteId: noteMessages[0]!.id,
+        expectedTitleVersion: 1,
+        title: "Release decision"
+      })
+    ).resolves.toMatchObject({ title: "Release decision", titleVersion: 2 });
+    await expect(
+      repository.renamePersonalNote(actor(ownerUserId), {
+        noteId: noteMessages[0]!.id,
+        expectedTitleVersion: 1,
+        title: "Conflicting title"
+      })
+    ).rejects.toBeInstanceOf(CollaborationStateConflictError);
     expect(
       await repository.listMessages(actor(outsiderUserId), {
         threadId: notes!.id,

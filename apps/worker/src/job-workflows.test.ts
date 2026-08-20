@@ -64,7 +64,22 @@ describe("worker job workflows", () => {
         sourceId: "message-1"
       })
     ).resolves.toEqual({ dimensions: 1024, inserted: true, chunks: 1 });
-    expect(embedSource).toHaveBeenCalledWith("message", "message-1");
+    expect(embedSource).toHaveBeenCalledWith(
+      "message",
+      "message-1",
+      "normal_embedding_lcm"
+    );
+
+    await workflow("memory-embed", {
+      sourceType: "memory_event",
+      sourceId: "note-1",
+      workClass: "live_capture_projection"
+    });
+    expect(embedSource).toHaveBeenLastCalledWith(
+      "memory_event",
+      "note-1",
+      "live_capture_projection"
+    );
   });
 
   it("enqueues projection jobs with durable retry options", async () => {

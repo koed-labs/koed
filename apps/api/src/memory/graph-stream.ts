@@ -9,6 +9,7 @@ export interface GraphUpdatePayload {
   eventRefs?: GraphUpdateEventRef[];
   eventIds?: string[];
   questionIds?: string[];
+  noteIds?: string[];
   ownerUserId?: string | null;
   projectId?: string | null;
   threadId?: string | null;
@@ -142,6 +143,7 @@ export const createGraphStreamService = async ({
     {
       eventRefs: Map<string, GraphUpdateEventRef>;
       questionIds: Set<string>;
+      noteIds: Set<string>;
       payload: GraphUpdatePayload;
       timer: ReturnType<typeof setTimeout>;
     }
@@ -188,6 +190,8 @@ export const createGraphStreamService = async ({
         : null;
     const questionId =
       payload.table === "memory_questions" && payload.id ? payload.id : null;
+    const noteId =
+      payload.table === "personal_notes" && payload.id ? payload.id : null;
     const current = pendingGraphUpdates.get(key);
     if (current) {
       if (eventRef) {
@@ -195,6 +199,9 @@ export const createGraphStreamService = async ({
       }
       if (questionId) {
         current.questionIds.add(questionId);
+      }
+      if (noteId) {
+        current.noteIds.add(noteId);
       }
       pendingGraphUpdates.set(key, { ...current, payload });
       return;
@@ -219,6 +226,9 @@ export const createGraphStreamService = async ({
               ...(pending.questionIds.size > 0
                 ? { questionIds: [...pending.questionIds] }
                 : {}),
+              ...(pending.noteIds.size > 0
+                ? { noteIds: [...pending.noteIds] }
+                : {}),
               changedAt: new Date().toISOString()
             }
           });
@@ -229,6 +239,7 @@ export const createGraphStreamService = async ({
     pendingGraphUpdates.set(key, {
       eventRefs: new Map(eventRef ? [[eventRef.id, eventRef]] : []),
       questionIds: new Set(questionId ? [questionId] : []),
+      noteIds: new Set(noteId ? [noteId] : []),
       payload,
       timer
     });

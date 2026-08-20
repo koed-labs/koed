@@ -140,6 +140,34 @@ export interface CollaborationMessagePageRecord {
   nextAfterSequence: number | null;
 }
 
+export interface PersonalNoteProjectionCursorRecord {
+  ownerUserId: string;
+  threadId: string;
+  lastThreadSequence: number;
+  scannedCount: number;
+  existingCount: number;
+  createdCount: number;
+  embeddingQueuedCount: number;
+  failureCount: number;
+  lastFailureCode: string | null;
+  updatedAt: string;
+}
+
+export interface PersonalNoteRecord {
+  noteId: string;
+  threadId: string;
+  title: string;
+  titleVersion: number;
+  body: string;
+  createdAt: string;
+  sourceSequence: number;
+}
+
+export interface PersonalNotePageRecord {
+  notes: PersonalNoteRecord[];
+  nextBeforeSequence: number | null;
+}
+
 export interface CollaborationMessageReceiptRecord {
   messageId: string;
   recipientStatus: "sent" | "delivered" | "read";
@@ -379,6 +407,33 @@ export interface CollaborationRepository {
       limit?: number;
     }
   ): Promise<CollaborationMessagePageRecord | null>;
+  getOrCreatePersonalNoteProjectionCursor(
+    actor: ActorContext,
+    input: { threadId: string }
+  ): Promise<PersonalNoteProjectionCursorRecord | null>;
+  advancePersonalNoteProjectionCursor(
+    actor: ActorContext,
+    input: {
+      threadId: string;
+      expectedSequence: number;
+      nextSequence: number;
+      outcome: "existing" | "created" | "failed";
+      embeddingQueued?: boolean;
+      failureCode?: string;
+    }
+  ): Promise<PersonalNoteProjectionCursorRecord | null>;
+  listPersonalNotes(
+    actor: ActorContext,
+    input?: { beforeSequence?: number; limit?: number }
+  ): Promise<PersonalNotePageRecord>;
+  getPersonalNote(
+    actor: ActorContext,
+    input: { noteId: string }
+  ): Promise<PersonalNoteRecord | null>;
+  renamePersonalNote(
+    actor: ActorContext,
+    input: { noteId: string; expectedTitleVersion: number; title: string }
+  ): Promise<PersonalNoteRecord | null>;
   advanceReadState(
     actor: ActorContext,
     input: { threadId: string; messageId: string }
@@ -574,6 +629,68 @@ type SubscriptionRow = {
 };
 
 const iso = (value: Date | null): string | null => value?.toISOString() ?? null;
+
+const mapPersonalNoteProjectionCursor = (
+  row: Record<string, unknown>
+): PersonalNoteProjectionCursorRecord => ({
+  ownerUserId: String(row.owner_user_id),
+  threadId: String(row.thread_id),
+  lastThreadSequence: Number(row.last_thread_sequence),
+  scannedCount: Number(row.scanned_count),
+  existingCount: Number(row.existing_count),
+  createdCount: Number(row.created_count),
+  embeddingQueuedCount: Number(row.embedding_queued_count),
+  failureCount: Number(row.failure_count),
+  lastFailureCode:
+    typeof row.last_failure_code === "string" ? row.last_failure_code : null,
+  updatedAt: iso(row.updated_at as Date)!
+});
+
+const normalizePersonalNoteTitle = (value: string): string => {
+  const title = value.trim().normalize("NFC");
+  if (title.length === 0 || Array.from(title).length > 80) {
+    throw new TypeError("Personal Note title must contain 1 to 80 characters");
+  }
+  return title;
+};
+
+const personalNoteFromMessage = (
+  message: CollaborationMessageRecord
+): PersonalNoteRecord => {
+  const namespace =
+    typeof message.metadata.personalNote === "object" &&
+    message.metadata.personalNote !== null &&
+    !Array.isArray(message.metadata.personalNote)
+      ? (message.metadata.personalNote as Record<string, unknown>)
+      : null;
+  const explicitTitle =
+    typeof namespace?.title === "string" ? namespace.title : null;
+  const explicitVersion =
+    typeof namespace?.titleVersion === "number" &&
+    Number.isSafeInteger(namespace.titleVersion) &&
+    namespace.titleVersion >= 2
+      ? namespace.titleVersion
+      : null;
+  const firstLine = message.bodyText
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find(Boolean);
+  const derived = Array.from(firstLine ?? "Untitled Note")
+    .slice(0, 80)
+    .join("");
+  return {
+    noteId: message.id,
+    threadId: message.threadId,
+    title:
+      explicitTitle && explicitVersion
+        ? normalizePersonalNoteTitle(explicitTitle)
+        : derived || "Untitled Note",
+    titleVersion: explicitTitle && explicitVersion ? explicitVersion : 1,
+    body: message.bodyText,
+    createdAt: message.createdAt,
+    sourceSequence: message.threadSequence
+  };
+};
 
 const boundedLimit = (
   value: number | undefined,
@@ -3787,15 +3904,35 @@ export const collaborationSubscriptionPrincipalHash = (
 
 export const createCollaborationRepository = (
   pool: pg.Pool,
-  options: { envelopeEncryptionProvider?: EnvelopeEncryptionProvider }
+  options: {
+    envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+    teamEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  }
 ): CollaborationRepository & CollaborationRealtimeMaterializationRepository => {
-  const requireProvider = (): EnvelopeEncryptionProvider => {
-    if (!options.envelopeEncryptionProvider) {
+  const requireProvider = (
+    scope: CollaborationScope = "personal"
+  ): EnvelopeEncryptionProvider => {
+    const provider =
+      scope === "team"
+        ? (options.teamEnvelopeEncryptionProvider ??
+          options.envelopeEncryptionProvider)
+        : options.envelopeEncryptionProvider;
+    if (!provider) {
       throw new Error(
         "Envelope encryption provider is required for collaboration"
       );
     }
-    return options.envelopeEncryptionProvider;
+    return provider;
+  };
+  const requireThreadProvider = async (
+    client: pg.Pool | pg.PoolClient,
+    threadId: string
+  ): Promise<EnvelopeEncryptionProvider> => {
+    const result = await client.query<{ scope: CollaborationScope }>(
+      `select scope from collaboration_threads where id=$1 limit 1`,
+      [threadId]
+    );
+    return requireProvider(result.rows[0]?.scope);
   };
   return {
     async listTeamParticipants(actor, teamId) {
@@ -3828,7 +3965,12 @@ export const createCollaborationRepository = (
       return withTransaction(pool, async (client) => {
         const prepared = await prepareThreadCreation(client, actor, input);
         if (!prepared) return null;
-        return insertThread(client, actor, requireProvider(), prepared);
+        return insertThread(
+          client,
+          actor,
+          requireProvider(prepared.scope),
+          prepared
+        );
       });
     },
 
@@ -3838,7 +3980,9 @@ export const createCollaborationRepository = (
         includeArchived: input.includeArchived === true
       });
       return row
-        ? (await mapThreadRows(pool, actor, requireProvider(), [row]))[0]!
+        ? (
+            await mapThreadRows(pool, actor, requireProvider(row.scope), [row])
+          )[0]!
         : null;
     },
 
@@ -3846,27 +3990,37 @@ export const createCollaborationRepository = (
       const rows = await listAuthorizedThreadRows(pool, actor, input);
       return rows === null
         ? null
-        : mapThreadRows(pool, actor, requireProvider(), rows);
+        : mapThreadRows(pool, actor, requireProvider(input.scope), rows);
     },
 
     async renameThread(actor, input) {
-      return withTransaction(pool, (client) =>
-        updateThreadName(client, actor, requireProvider(), input)
+      return withTransaction(pool, async (client) =>
+        updateThreadName(
+          client,
+          actor,
+          await requireThreadProvider(client, input.threadId),
+          input
+        )
       );
     },
 
     async updateThreadTopic(actor, input) {
-      return withTransaction(pool, (client) =>
-        updateThreadTopicValue(client, actor, requireProvider(), input)
+      return withTransaction(pool, async (client) =>
+        updateThreadTopicValue(
+          client,
+          actor,
+          await requireThreadProvider(client, input.threadId),
+          input
+        )
       );
     },
 
     async archiveThread(actor, input) {
-      return withTransaction(pool, (client) =>
+      return withTransaction(pool, async (client) =>
         transitionThreadLifecycle(
           client,
           actor,
-          requireProvider(),
+          await requireThreadProvider(client, input.threadId),
           input,
           "archive"
         )
@@ -3874,11 +4028,11 @@ export const createCollaborationRepository = (
     },
 
     async restoreThread(actor, input) {
-      return withTransaction(pool, (client) =>
+      return withTransaction(pool, async (client) =>
         transitionThreadLifecycle(
           client,
           actor,
-          requireProvider(),
+          await requireThreadProvider(client, input.threadId),
           input,
           "restore"
         )
@@ -3886,20 +4040,272 @@ export const createCollaborationRepository = (
     },
 
     async sendMessage(actor, input) {
-      return withTransaction(pool, (client) =>
-        sendCollaborationMessage(client, actor, requireProvider(), input)
+      return withTransaction(pool, async (client) =>
+        sendCollaborationMessage(
+          client,
+          actor,
+          await requireThreadProvider(client, input.threadId),
+          input
+        )
       );
     },
 
     async listMessages(actor, input) {
-      return listCollaborationMessages(pool, actor, requireProvider(), input);
+      return listCollaborationMessages(
+        pool,
+        actor,
+        await requireThreadProvider(pool, input.threadId),
+        input
+      );
+    },
+
+    async getOrCreatePersonalNoteProjectionCursor(actor, input) {
+      const thread = await getAuthorizedThreadRow(pool, actor, input.threadId, {
+        required: "read",
+        includeArchived: true
+      });
+      if (
+        !thread ||
+        thread.scope !== "personal" ||
+        thread.kind !== "notes_to_self" ||
+        thread.personal_owner_user_id !== actor.userId
+      ) {
+        return null;
+      }
+      const result = await pool.query<Record<string, unknown>>(
+        `insert into personal_note_projection_cursors (owner_user_id,thread_id)
+         values ($1,$2)
+         on conflict (owner_user_id) do nothing
+         returning *`,
+        [actor.userId, thread.id]
+      );
+      const row =
+        result.rows[0] ??
+        (
+          await pool.query<Record<string, unknown>>(
+            `select * from personal_note_projection_cursors
+             where owner_user_id=$1 and thread_id=$2`,
+            [actor.userId, thread.id]
+          )
+        ).rows[0];
+      return row ? mapPersonalNoteProjectionCursor(row) : null;
+    },
+
+    async advancePersonalNoteProjectionCursor(actor, input) {
+      const expectedSequence = requireNonNegativeInteger(
+        input.expectedSequence,
+        "expectedSequence"
+      );
+      const nextSequence = requirePositiveInteger(
+        input.nextSequence,
+        "nextSequence"
+      );
+      if (nextSequence <= expectedSequence) {
+        throw new TypeError("nextSequence must advance the Projection cursor");
+      }
+      const failureCode =
+        input.outcome === "failed"
+          ? (input.failureCode ?? "projection_failed").trim().slice(0, 80)
+          : null;
+      const result = await pool.query<Record<string, unknown>>(
+        `update personal_note_projection_cursors cursor
+            set last_thread_sequence=$4,
+                scanned_count=scanned_count+1,
+                existing_count=existing_count+($5='existing')::int,
+                created_count=created_count+($5='created')::int,
+                embedding_queued_count=embedding_queued_count+$6::int,
+                failure_count=failure_count+($5='failed')::int,
+                last_failure_code=$7,
+                updated_at=now()
+           from collaboration_threads thread
+          where cursor.owner_user_id=$1
+            and cursor.thread_id=$2
+            and cursor.last_thread_sequence=$3
+            and thread.id=cursor.thread_id
+            and thread.scope='personal'
+            and thread.kind='notes_to_self'
+            and thread.personal_owner_user_id=$1
+          returning cursor.*`,
+        [
+          actor.userId,
+          input.threadId,
+          expectedSequence,
+          nextSequence,
+          input.outcome,
+          input.embeddingQueued ? 1 : 0,
+          failureCode
+        ]
+      );
+      return result.rows[0]
+        ? mapPersonalNoteProjectionCursor(result.rows[0])
+        : null;
+    },
+
+    async listPersonalNotes(actor, input = {}) {
+      const thread = await pool.query<{ id: string }>(
+        `select id from collaboration_threads
+          where scope='personal' and kind='notes_to_self'
+            and personal_owner_user_id=$1
+          limit 1`,
+        [actor.userId]
+      );
+      if (!thread.rows[0]) return { notes: [], nextBeforeSequence: null };
+      const page = await listCollaborationMessages(
+        pool,
+        actor,
+        requireProvider(),
+        {
+          threadId: thread.rows[0].id,
+          ...(input.beforeSequence !== undefined
+            ? { beforeSequence: input.beforeSequence }
+            : {}),
+          limit: input.limit
+        }
+      );
+      if (!page) return { notes: [], nextBeforeSequence: null };
+      return {
+        notes: [...page.messages]
+          .reverse()
+          .filter(
+            (message) =>
+              message.senderKind === "user" &&
+              message.senderUserId === actor.userId
+          )
+          .map(personalNoteFromMessage),
+        nextBeforeSequence: page.hasMore ? page.nextBeforeSequence : null
+      };
+    },
+
+    async getPersonalNote(actor, input) {
+      const result = await pool.query<MessageRow>(
+        `select ${selectMessageColumnsSql}
+           from collaboration_messages cm
+           join collaboration_threads ct on ct.id=cm.thread_id
+           left join users sender on sender.id=cm.sender_user_id
+          where cm.id=$1
+            and ct.scope='personal'
+            and ct.kind='notes_to_self'
+            and ct.personal_owner_user_id=$2
+            and cm.scope='personal'
+            and cm.personal_owner_user_id=$2
+            and cm.sender_kind='user'
+            and cm.sender_user_id=$2
+          limit 1`,
+        [input.noteId, actor.userId]
+      );
+      if (!result.rows[0]) return null;
+      await attachRecipientStatuses(pool, actor, result.rows);
+      return personalNoteFromMessage(
+        await mapMessageRow(pool, actor, requireProvider(), result.rows[0])
+      );
+    },
+
+    async renamePersonalNote(actor, input) {
+      const title = normalizePersonalNoteTitle(input.title);
+      const expectedTitleVersion = requirePositiveInteger(
+        input.expectedTitleVersion,
+        "expectedTitleVersion"
+      );
+      return withTransaction(pool, async (client) => {
+        const result = await client.query<MessageRow>(
+          `select ${selectMessageColumnsSql}
+             from collaboration_messages cm
+             join collaboration_threads ct on ct.id=cm.thread_id
+             left join users sender on sender.id=cm.sender_user_id
+            where cm.id=$1
+              and ct.scope='personal'
+              and ct.kind='notes_to_self'
+              and ct.personal_owner_user_id=$2
+              and cm.scope='personal'
+              and cm.personal_owner_user_id=$2
+              and cm.sender_kind='user'
+              and cm.sender_user_id=$2
+            limit 1
+            for update of cm`,
+          [input.noteId, actor.userId]
+        );
+        if (!result.rows[0]) return null;
+        await attachRecipientStatuses(client, actor, result.rows);
+        const message = await mapMessageRow(
+          client,
+          actor,
+          requireProvider(),
+          result.rows[0]
+        );
+        const current = personalNoteFromMessage(message);
+        if (current.title === title) return current;
+        if (current.titleVersion !== expectedTitleVersion) {
+          throw new CollaborationStateConflictError(
+            "Personal Note title version conflict"
+          );
+        }
+        const nextVersion = current.titleVersion + 1;
+        const metadata = {
+          ...message.metadata,
+          personalNote: { title, titleVersion: nextVersion }
+        };
+        await upsertEncryptedFieldPayloadWithClient(
+          client,
+          actor,
+          requireProvider(),
+          {
+            sourceTable: "collaboration_messages",
+            sourceId: message.id,
+            sourceColumn: "metadata",
+            plaintext: metadata,
+            visibility: "personal",
+            teamId: null,
+            teamWorkspaceId: null,
+            scope: { objectClass: "collaboration_message" },
+            rowFamily: "collaboration_message",
+            aad: {
+              threadId: message.threadId,
+              threadSequence: message.threadSequence,
+              collaborationScope: "personal",
+              threadKind: "notes_to_self"
+            }
+          }
+        );
+        await client.query(
+          `update collaboration_messages set updated_at=now() where id=$1`,
+          [message.id]
+        );
+        await appendCollaborationOutboxEventWithClient(client, {
+          family: "message_created",
+          scope: "personal",
+          personalOwnerUserId: actor.userId,
+          teamId: null,
+          teamWorkspaceId: null,
+          threadId: message.threadId,
+          messageId: message.id,
+          shareGrantId: null,
+          logicalMemoryId: null,
+          resourceType: "collaboration_message",
+          resourceId: message.id,
+          actorPrincipalId: actor.userId,
+          mutationId: uuidFromHash(
+            `personal-note-title:${message.id}:${nextVersion}:${title}`
+          )
+        });
+        await client.query(`select pg_notify('koed_graph_updates',$1)`, [
+          JSON.stringify({
+            table: "personal_notes",
+            operation: "UPDATE",
+            id: message.id,
+            ownerUserId: actor.userId,
+            visibility: "personal",
+            changedAt: new Date().toISOString()
+          })
+        ]);
+        return { ...current, title, titleVersion: nextVersion };
+      });
     },
 
     async getMessageForRealtime(actor, input) {
       return getCollaborationMessageForRealtime(
         pool,
         actor,
-        requireProvider(),
+        await requireThreadProvider(pool, input.threadId),
         input
       );
     },
@@ -3994,7 +4400,7 @@ export const createCollaborationRepository = (
         const threads = await mapThreadRows(
           client,
           actor,
-          requireProvider(),
+          requireProvider(input.scope),
           rows
         );
         await client.query("commit");

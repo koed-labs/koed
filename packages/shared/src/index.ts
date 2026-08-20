@@ -207,6 +207,14 @@ export {
   personalDesktopErrorSchema,
   personalDesktopEventPageInputSchema,
   personalDesktopEventsDataSchema,
+  personalDesktopNoteDataSchema,
+  personalDesktopNoteListInputSchema,
+  personalDesktopNoteLoadInputSchema,
+  personalDesktopNoteRenameDataSchema,
+  personalDesktopNoteRenameInputSchema,
+  personalDesktopNoteSchema,
+  personalDesktopNoteSummarySchema,
+  personalDesktopNotesDataSchema,
   personalDesktopProjectSchema,
   personalDesktopProjectsDataSchema,
   personalDesktopProjectThreadSchema,
@@ -246,6 +254,11 @@ export type {
   PersonalDesktopConversationEvent,
   PersonalDesktopChange,
   PersonalDesktopEventPageInput,
+  PersonalDesktopNote,
+  PersonalDesktopNoteListInput,
+  PersonalDesktopNoteLoadInput,
+  PersonalDesktopNoteRenameInput,
+  PersonalDesktopNoteSummary,
   PersonalDesktopProject,
   PersonalDesktopProjectThread,
   PersonalDesktopRequest,
@@ -571,6 +584,17 @@ export type {
   SharedMemoryActionGrantBinding,
   SharedMemoryRepresentation as SharedMemoryActionGrantRepresentation
 } from "./shared-memory-action-grant.js";
+export {
+  assertPersonalNoteSourceSelection,
+  personalNoteSourceRevisionHash,
+  personalNoteSourceSelectionIssues,
+  sharedMemorySourceKinds,
+  sharedMemorySourceRefSchema
+} from "./shared-memory-source.js";
+export type {
+  SharedMemorySourceRef,
+  SharedMemorySourceSelection
+} from "./shared-memory-source.js";
 export type {
   CollaborationActionGrantAccessInput,
   CollaborationActionGrantCustodyInput,

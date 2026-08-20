@@ -1789,6 +1789,11 @@ describe("collaboration renderer client", () => {
       allowedRepresentations: ["memory_events"]
     });
     await client.shareMemory({
+      source: {
+        kind: "captured_session",
+        sessionId: ids.capturedSession,
+        logicalMemoryId: ids.logicalMemory
+      },
       mutationId: ids.message,
       logicalGrantId: ids.logicalGrant,
       consentId: ids.consent,

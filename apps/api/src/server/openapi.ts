@@ -117,6 +117,12 @@ const securityForIdentity = (
       return [{ bearerApiToken: [] }];
     case "session_or_api_token":
       return [{ sessionCookie: [] }, { bearerApiToken: [] }];
+    case "session_or_api_token_or_device_credential":
+      return [
+        { sessionCookie: [] },
+        { bearerApiToken: [] },
+        { deviceCredential: [] }
+      ];
     case "session_or_device_credential":
       return [{ sessionCookie: [] }, { deviceCredential: [] }];
     case "api_token_or_device_credential":

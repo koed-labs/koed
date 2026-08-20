@@ -167,6 +167,7 @@ interface CollaborationCommandRouteOptions {
     SourceSyncRelationshipRepository;
   projectPersonalNote?(input: {
     ownerUserId: string;
+    threadKind: "notes_to_self";
     message: CollaborationMessageRecord;
   }): Promise<void>;
   resolveActiveLocalUser: (userId: string) => Promise<ActiveLocalUser | null>;
@@ -2808,6 +2809,7 @@ const dispatchPersonalCommand = async (input: {
         if (existing.kind === "notes_to_self") {
           await input.projectPersonalNote?.({
             ownerUserId: user.id,
+            threadKind: existing.kind,
             message
           });
         }

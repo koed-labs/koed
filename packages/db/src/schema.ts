@@ -236,6 +236,10 @@ export const sharedMemoryRepresentation = pgEnum(
   "shared_memory_representation",
   ["memory_events", "lcm_leaves", "lcm_rollups", "curated_assertions"]
 );
+export const sharedMemorySourceKind = pgEnum("shared_memory_source_kind", [
+  "captured_session",
+  "personal_note"
+]);
 export const sharedMemoryConsentMode = pgEnum("shared_memory_consent_mode", [
   "snapshot",
   "continuous"
@@ -392,7 +396,8 @@ export const deploymentProfile = pgEnum("deployment_profile", [
   "koed_managed_cloud"
 ]);
 export const syncSourceBoundary = pgEnum("sync_source_boundary", [
-  "captured_session"
+  "captured_session",
+  "personal_note"
 ]);
 export const syncReplicaRole = pgEnum("sync_replica_role", [
   "source",
@@ -5118,16 +5123,24 @@ export const sharedSourceArtifacts = pgTable(
       .references((): AnyPgColumn => logicalMemories.id, {
         onDelete: "restrict"
       }),
-    remoteReplicaId: uuid("remote_replica_id")
+    sourceKind: sharedMemorySourceKind("source_kind")
       .notNull()
-      .references((): AnyPgColumn => memoryReplicas.id, {
+      .default("captured_session"),
+    sourceSessionId: uuid("source_session_id"),
+    sourceNoteId: uuid("source_note_id"),
+    sourceMemoryEventId: uuid("source_memory_event_id"),
+    remoteReplicaId: uuid("remote_replica_id").references(
+      (): AnyPgColumn => memoryReplicas.id,
+      {
         onDelete: "restrict"
-      }),
-    syncRelationshipId: uuid("sync_relationship_id")
-      .notNull()
-      .references(() => crossIdentitySyncRelationships.id, {
+      }
+    ),
+    syncRelationshipId: uuid("sync_relationship_id").references(
+      () => crossIdentitySyncRelationships.id,
+      {
         onDelete: "restrict"
-      }),
+      }
+    ),
     ownerUserId: uuid("owner_user_id").references(() => users.id, {
       onDelete: "set null"
     }),
@@ -5261,6 +5274,24 @@ export const sharedSourceArtifacts = pgTable(
     check(
       "shared_source_artifacts_revision_binding_check",
       sql`${table.sourceRevision} = ${table.sourceCursor}`
+    ),
+    check(
+      "shared_source_artifacts_source_binding_check",
+      sql`(${table.sourceKind} = 'captured_session'
+          and ${table.sourceNoteId} is null
+          and ${table.sourceMemoryEventId} is null
+          and ${table.remoteReplicaId} is not null
+          and ${table.syncRelationshipId} is not null)
+        or (${table.sourceKind} = 'personal_note'
+          and ${table.sourceSessionId} is null
+          and ${table.sourceNoteId} is not null
+          and ${table.sourceMemoryEventId} is not null
+          and ${table.remoteReplicaId} is null
+          and ${table.syncRelationshipId} is null
+          and ${table.representation} = 'memory_events'
+          and ${table.sourceRevision} = 1
+          and ${table.sourceCursor} = 1
+          and ${table.packageSequence} = 1)`
     )
   ]
 );
@@ -5277,11 +5308,18 @@ export const sharedSourcePreviews = pgTable(
       .references((): AnyPgColumn => logicalMemories.id, {
         onDelete: "restrict"
       }),
-    remoteReplicaId: uuid("remote_replica_id")
+    sourceKind: sharedMemorySourceKind("source_kind")
       .notNull()
-      .references((): AnyPgColumn => memoryReplicas.id, {
+      .default("captured_session"),
+    sourceSessionId: uuid("source_session_id"),
+    sourceNoteId: uuid("source_note_id"),
+    sourceMemoryEventId: uuid("source_memory_event_id"),
+    remoteReplicaId: uuid("remote_replica_id").references(
+      (): AnyPgColumn => memoryReplicas.id,
+      {
         onDelete: "restrict"
-      }),
+      }
+    ),
     ownerUserId: uuid("owner_user_id").references(() => users.id, {
       onDelete: "set null"
     }),
@@ -5338,6 +5376,20 @@ export const sharedSourcePreviews = pgTable(
       sql`length(${table.previewHash}) = 64
         and length(${table.sourceHash}) = 64
         and length(${table.redactedContentHash}) = 64`
+    ),
+    check(
+      "shared_source_previews_source_binding_check",
+      sql`(${table.sourceKind} = 'captured_session'
+          and ${table.sourceNoteId} is null
+          and ${table.sourceMemoryEventId} is null
+          and ${table.remoteReplicaId} is not null)
+        or (${table.sourceKind} = 'personal_note'
+          and ${table.sourceSessionId} is null
+          and ${table.sourceNoteId} is not null
+          and ${table.sourceMemoryEventId} is not null
+          and ${table.remoteReplicaId} is null
+          and ${table.representation} = 'memory_events'
+          and ${table.sourceRevision} = 1)`
     )
   ]
 );
@@ -5354,6 +5406,12 @@ export const sharedMemoryCandidatePreviews = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     logicalMemoryId: uuid("logical_memory_id").notNull(),
+    sourceKind: sharedMemorySourceKind("source_kind")
+      .notNull()
+      .default("captured_session"),
+    sourceSessionId: uuid("source_session_id"),
+    sourceNoteId: uuid("source_note_id"),
+    sourceMemoryEventId: uuid("source_memory_event_id"),
     teamId: uuid("team_id")
       .notNull()
       .references(() => teams.id, { onDelete: "restrict" }),
@@ -5436,6 +5494,22 @@ export const sharedMemoryCandidatePreviews = pgTable(
         and length(${table.representationPolicyHash}) = 64
         and length(${table.contentPolicyHash}) = 64
         and length(${table.classifierHash}) = 64`
+    ),
+    check(
+      "shared_memory_candidate_previews_source_binding_check",
+      sql`(${table.sourceKind} = 'captured_session'
+          and ${table.sourceNoteId} is null
+          and ${table.sourceMemoryEventId} is null)
+        or (${table.sourceKind} = 'personal_note'
+          and ${table.sourceSessionId} is null
+          and ${table.sourceNoteId} is not null
+          and ${table.sourceMemoryEventId} is not null
+          and ${table.mode} = 'snapshot'
+          and ${table.representation} = 'memory_events'
+          and ${table.allowedRepresentations} = array['memory_events']::shared_memory_representation[]
+          and ${table.sourceRevision} = 1
+          and ${table.itemCount} = 1
+          and ${table.excludedItemCount} = 0)`
     )
   ]
 );
@@ -5458,6 +5532,12 @@ export const pendingShareOperations = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     logicalMemoryId: uuid("logical_memory_id").notNull(),
+    sourceKind: sharedMemorySourceKind("source_kind")
+      .notNull()
+      .default("captured_session"),
+    sourceSessionId: uuid("source_session_id"),
+    sourceNoteId: uuid("source_note_id"),
+    sourceMemoryEventId: uuid("source_memory_event_id"),
     teamId: uuid("team_id")
       .notNull()
       .references(() => teams.id, { onDelete: "restrict" }),
@@ -5645,6 +5725,20 @@ export const pendingShareOperations = pgTable(
              ${table.replacementSourceRevision} >= 0 and
              length(${table.replacementSourceHash}) = 64 and
              ${table.replacementExpectedGrantVersion} > 0)`
+    ),
+    check(
+      "pending_share_operations_source_binding_check",
+      sql`(${table.sourceKind} = 'captured_session'
+          and ${table.sourceNoteId} is null
+          and ${table.sourceMemoryEventId} is null)
+        or (${table.sourceKind} = 'personal_note'
+          and ${table.sourceSessionId} is null
+          and ${table.sourceNoteId} is not null
+          and ${table.sourceMemoryEventId} is not null
+          and ${table.mode} = 'snapshot'
+          and ${table.representation} = 'memory_events'
+          and ${table.allowedRepresentations} = array['memory_events']::shared_memory_representation[]
+          and ${table.sourceRevision} = 1)`
     )
   ]
 );
@@ -5688,11 +5782,18 @@ export const sourceOwnerRepresentationConsents = pgTable(
       .references((): AnyPgColumn => logicalMemories.id, {
         onDelete: "restrict"
       }),
-    remoteReplicaId: uuid("remote_replica_id")
+    sourceKind: sharedMemorySourceKind("source_kind")
       .notNull()
-      .references((): AnyPgColumn => memoryReplicas.id, {
+      .default("captured_session"),
+    sourceSessionId: uuid("source_session_id"),
+    sourceNoteId: uuid("source_note_id"),
+    sourceMemoryEventId: uuid("source_memory_event_id"),
+    remoteReplicaId: uuid("remote_replica_id").references(
+      (): AnyPgColumn => memoryReplicas.id,
+      {
         onDelete: "restrict"
-      }),
+      }
+    ),
     sourceOwnerPrincipalId: uuid("source_owner_principal_id").notNull(),
     teamId: uuid("team_id")
       .notNull()
@@ -5852,6 +5953,23 @@ export const sourceOwnerRepresentationConsents = pgTable(
         or (${table.mode} = 'continuous' and ${table.maximumAuthorizedSourceRevision} is null)`
     ),
     check(
+      "source_owner_consents_source_binding_check",
+      sql`(${table.sourceKind} = 'captured_session'
+          and ${table.sourceNoteId} is null
+          and ${table.sourceMemoryEventId} is null
+          and ${table.remoteReplicaId} is not null)
+        or (${table.sourceKind} = 'personal_note'
+          and ${table.sourceSessionId} is null
+          and ${table.sourceNoteId} is not null
+          and ${table.sourceMemoryEventId} is not null
+          and ${table.remoteReplicaId} is null
+          and ${table.mode} = 'snapshot'
+          and ${table.selectedRepresentation} = 'memory_events'
+          and ${table.allowedRepresentations} = array['memory_events']::shared_memory_representation[]
+          and ${table.sourceRevision} = 1
+          and ${table.maximumAuthorizedSourceRevision} = 1)`
+    ),
+    check(
       "source_owner_consents_lifecycle_check",
       sql`(
         ${table.state} = 'pending'
@@ -5889,6 +6007,11 @@ export const teamSessionShareGrants = pgTable(
       (): AnyPgColumn => logicalMemories.id,
       { onDelete: "restrict" }
     ),
+    sourceKind: sharedMemorySourceKind("source_kind")
+      .notNull()
+      .default("captured_session"),
+    sourceNoteId: uuid("source_note_id"),
+    sourceMemoryEventId: uuid("source_memory_event_id"),
     remoteReplicaId: uuid("remote_replica_id").references(
       (): AnyPgColumn => memoryReplicas.id,
       { onDelete: "restrict" }
@@ -6058,7 +6181,6 @@ export const teamSessionShareGrants = pgTable(
     check(
       "team_session_share_grants_identity_check",
       sql`${table.logicalMemoryId} is not null
-        and ${table.remoteReplicaId} is not null
         and ${table.ownerPrincipalId} is not null
         and ${table.consentId} is not null
         and ${table.sourceOwnerPolicyId} is not null
@@ -6068,7 +6190,16 @@ export const teamSessionShareGrants = pgTable(
         and ${table.workspacePolicyId} is not null
         and ${table.workspacePolicyVersion} > 0
         and ${table.creatorAuthority} is not null
-        and length(trim(${table.creatorAuthority})) > 0`
+        and length(trim(${table.creatorAuthority})) > 0
+        and ((${table.sourceKind} = 'captured_session'
+            and ${table.sourceNoteId} is null
+            and ${table.sourceMemoryEventId} is null
+            and ${table.remoteReplicaId} is not null)
+          or (${table.sourceKind} = 'personal_note'
+            and ${table.sessionId} is null
+            and ${table.sourceNoteId} is not null
+            and ${table.sourceMemoryEventId} is not null
+            and ${table.remoteReplicaId} is null))`
     ),
     check(
       "team_session_share_grants_representation_check",
@@ -6078,6 +6209,10 @@ export const teamSessionShareGrants = pgTable(
         and ${table.contentPolicyVersion} > 0
         and ${table.classifierVersion} > 0
         and ${table.sourceRevision} >= 0
+        and (${table.sourceKind} <> 'personal_note'
+          or (${table.activeRepresentation} = 'memory_events'
+            and ${table.ownerAllowedRepresentations} = array['memory_events']::shared_memory_representation[]
+            and ${table.sourceRevision} = 1))
         and (
           (${table.lifecycle} = 'active'
             and ${table.activeRepresentation} is not null
@@ -6224,6 +6359,12 @@ export const teamMemoryRepresentations = pgTable(
     teamId: uuid("team_id").notNull(),
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
     logicalMemoryId: uuid("logical_memory_id").notNull(),
+    sourceKind: sharedMemorySourceKind("source_kind")
+      .notNull()
+      .default("captured_session"),
+    sourceSessionId: uuid("source_session_id"),
+    sourceNoteId: uuid("source_note_id"),
+    sourceMemoryEventId: uuid("source_memory_event_id"),
     representation: sharedMemoryRepresentation("representation").notNull(),
     sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
     sourceRevisionHash: text("source_revision_hash").notNull(),
@@ -6364,6 +6505,18 @@ export const teamMemoryRepresentations = pgTable(
       "team_memory_representations_hash_check",
       sql`length(${table.sourceRevisionHash}) = 64
         and length(${table.provenanceHash}) = 64`
+    ),
+    check(
+      "team_memory_representations_source_binding_check",
+      sql`(${table.sourceKind} = 'captured_session'
+          and ${table.sourceNoteId} is null
+          and ${table.sourceMemoryEventId} is null)
+        or (${table.sourceKind} = 'personal_note'
+          and ${table.sourceSessionId} is null
+          and ${table.sourceNoteId} is not null
+          and ${table.sourceMemoryEventId} is not null
+          and ${table.representation} = 'memory_events'
+          and ${table.sourceRevision} = 1)`
     ),
     check(
       "team_memory_representations_lifecycle_check",
@@ -7145,6 +7298,59 @@ export const collaborationMessages = pgTable(
       "collaboration_messages_retention_check",
       sql`(${table.retentionPolicyId} is null and ${table.retentionPolicyVersion} is null)
         or (${table.retentionPolicyId} is not null and ${table.retentionPolicyVersion} > 0)`
+    )
+  ]
+);
+
+export const personalNoteProjectionCursors = pgTable(
+  "personal_note_projection_cursors",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => collaborationThreads.id, { onDelete: "restrict" }),
+    lastThreadSequence: bigint("last_thread_sequence", { mode: "number" })
+      .notNull()
+      .default(0),
+    scannedCount: bigint("scanned_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    existingCount: bigint("existing_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    createdCount: bigint("created_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    embeddingQueuedCount: bigint("embedding_queued_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    failureCount: bigint("failure_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    lastFailureCode: text("last_failure_code"),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("personal_note_projection_cursors_thread_unique").on(table.threadId),
+    foreignKey({
+      columns: [table.threadId, table.ownerUserId],
+      foreignColumns: [
+        collaborationThreads.id,
+        collaborationThreads.personalOwnerUserId
+      ],
+      name: "personal_note_projection_cursors_owner_thread_fk"
+    }).onDelete("restrict"),
+    check(
+      "personal_note_projection_cursors_counts_check",
+      sql`${table.lastThreadSequence} >= 0
+        and ${table.scannedCount} >= 0
+        and ${table.existingCount} >= 0
+        and ${table.createdCount} >= 0
+        and ${table.embeddingQueuedCount} >= 0
+        and ${table.failureCount} >= 0
+        and ${table.existingCount} + ${table.createdCount} + ${table.failureCount} = ${table.scannedCount}`
     )
   ]
 );
@@ -9957,9 +10163,21 @@ export const collaborationPendingShareSourceWork = pgTable(
       }),
     pendingShareId: uuid("pending_share_id").notNull(),
     mutationId: uuid("mutation_id").notNull(),
-    localSessionId: uuid("local_session_id")
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    sourceKind: sharedMemorySourceKind("source_kind")
       .notNull()
-      .references(() => sessions.id, { onDelete: "restrict" }),
+      .default("captured_session"),
+    localSessionId: uuid("local_session_id").references(() => sessions.id, {
+      onDelete: "restrict"
+    }),
+    localNoteId: uuid("local_note_id").references(
+      () => collaborationMessages.id,
+      { onDelete: "restrict" }
+    ),
+    localMemoryEventId: uuid("local_memory_event_id").references(
+      () => memoryEvents.id,
+      { onDelete: "restrict" }
+    ),
     state: text("state").notNull().default("pending"),
     attemptCount: integer("attempt_count").notNull().default(0),
     availableAt: timestamp("available_at", { withTimezone: true })
@@ -9985,6 +10203,17 @@ export const collaborationPendingShareSourceWork = pgTable(
       "csm_pending_source_work_state_check",
       sql`${table.state} in ('pending','processing','completed','failed')
         and ${table.attemptCount} >= 0`
+    ),
+    check(
+      "csm_pending_source_work_source_check",
+      sql`(${table.sourceKind} = 'captured_session'
+          and ${table.localSessionId} is not null
+          and ${table.localNoteId} is null
+          and ${table.localMemoryEventId} is null)
+        or (${table.sourceKind} = 'personal_note'
+          and ${table.localSessionId} is null
+          and ${table.localNoteId} is not null
+          and ${table.localMemoryEventId} is not null)`
     )
   ]
 );

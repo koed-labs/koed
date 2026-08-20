@@ -11,7 +11,8 @@ import {
   type CollaborationActionGrantIntent,
   type CollaborationActionGrantReference,
   type CollaborationCommandResult,
-  type CollaborationRendererCommand
+  type CollaborationRendererCommand,
+  type SharedMemorySourceRef
 } from "@koed/shared";
 import { z } from "zod";
 
@@ -81,6 +82,7 @@ export interface CollaborationActionGrantControlContext {
     >;
   }) => Promise<{ remoteReplicaId: string } | null>;
   resolveSharedMemoryConsentPreview?: (input: {
+    source: SharedMemorySourceRef;
     logicalMemoryId: string;
     teamId: string;
     workspaceId: string;
@@ -412,6 +414,7 @@ export const createCollaborationActionGrantControl = (
             intent.intent ===
               "collaboration.change_shared_memory_representation"
               ? await context.resolveSharedMemoryConsentPreview?.({
+                  source: intent.source,
                   logicalMemoryId: intent.logicalMemoryId,
                   teamId: intent.teamId,
                   workspaceId: intent.workspaceId,

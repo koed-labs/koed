@@ -213,15 +213,16 @@ replay batch, and live event resolves authorization from current server state.
 The endpoint- and channel-level rules are defined in the
 [Team Collaboration Action And Credential Matrix](team-collaboration-action-credential-matrix.md).
 
-| Operation family              | Personal owner                   | Scoped enrolled device                  | Remote browser session                      | Personal API Token |
-| ----------------------------- | -------------------------------- | --------------------------------------- | ------------------------------------------- | ------------------ |
-| Personal chat read/write      | local owner only                 | no remote authority                     | no local Personal authority                 | denied             |
-| Team catalog and roster read  | no implicit authority            | explicit scope plus Team authorization  | allowed after Team authorization            | denied             |
-| Team chat read                | no implicit authority            | explicit read scope plus authorization  | allowed after thread authorization          | denied             |
-| Team chat write               | no implicit authority            | explicit write scope plus authorization | allowed after thread authorization          | denied             |
-| Team-shared Memory read/live  | source ownership is insufficient | explicit scope plus grant authorization | allowed after grant/Workspace authorization | denied             |
-| Share creation or change      | initiates and consents locally   | explicit scoped operation               | allowed after source/Workspace checks       | denied             |
-| Team/Workspace administration | no implicit authority            | browser-confirmed action grant          | allowed after role and action checks        | denied             |
+| Operation family                                   | Personal owner                   | Scoped enrolled device                  | Remote browser session                      | Personal API Token          |
+| -------------------------------------------------- | -------------------------------- | --------------------------------------- | ------------------------------------------- | --------------------------- |
+| Personal chat read/write                           | local owner only                 | no remote authority                     | no local Personal authority                 | denied                      |
+| Personal Note metadata/event read and title rename | local owner only                 | explicit Personal collaboration scope   | allowed for the owning User                 | allowed for the owning User |
+| Team catalog and roster read                       | no implicit authority            | explicit scope plus Team authorization  | allowed after Team authorization            | denied                      |
+| Team chat read                                     | no implicit authority            | explicit read scope plus authorization  | allowed after thread authorization          | denied                      |
+| Team chat write                                    | no implicit authority            | explicit write scope plus authorization | allowed after thread authorization          | denied                      |
+| Team-shared Memory read/live                       | source ownership is insufficient | explicit scope plus grant authorization | allowed after grant/Workspace authorization | denied                      |
+| Share creation or change                           | initiates and consents locally   | explicit scoped operation               | allowed after source/Workspace checks       | denied                      |
+| Team/Workspace administration                      | no implicit authority            | browser-confirmed action grant          | allowed after role and action checks        | denied                      |
 
 ### Scope Predicates
 
@@ -299,6 +300,13 @@ The endpoint- and channel-level rules are defined in the
 Team-shared Memory remains owned by its originating User. Sharing changes
 authorization and does not transfer ownership, copy the logical memory
 lifespan, or turn a Captured Session into Team Chat.
+
+A Share Grant has an explicit source binding. A Captured Session follows the
+Cross-Identity Sync flow below. A Personal Note follows a fixed one-event
+snapshot flow: authenticated source upload, standalone encrypted artifact, one
+Team `memory_events` representation, and the standard companion discussion.
+The Personal Note flow has no replica, sync relationship, continuous mode,
+alternate representation, or Conversation Source Access.
 
 ### Cross-Deployment Flow
 

@@ -39,6 +39,7 @@ import {
   TeamConversationSourceConflictError
 } from "@koed/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { z } from "zod";
 
 import type { ApiRouteContext } from "../server/context.js";
 import { createShareBundle } from "./bundles.js";
@@ -53,6 +54,7 @@ import {
   controlPendingShareSchema,
   listOwnedSharesQuerySchema,
   ownedShareParamsSchema,
+  personalNoteSourceArtifactUploadSchema,
   renameOwnedShareSchema,
   listWorkspaceSharedMemoryQuerySchema,
   materializeGrantRepresentationSchema,
@@ -73,6 +75,7 @@ import {
 } from "./schemas.js";
 
 const SMALL_BODY_LIMIT_BYTES = 32 * 1_024;
+const SOURCE_UPLOAD_BODY_LIMIT_BYTES = 300 * 1_024;
 
 const forbidden = () =>
   Object.assign(new Error("Shared Memory operation is not authorized"), {
@@ -430,6 +433,7 @@ const policyDto = (policy: SharedMemoryPolicyRecord) => ({
 });
 
 const persistedPreviewDto = (preview: SharedMemoryPersistedPreviewRecord) => ({
+  ...(preview.source ? { source: preview.source } : {}),
   previewId: preview.previewId,
   previewHash: preview.previewHash,
   previewRevision: preview.previewRevision,
@@ -446,6 +450,7 @@ const persistedPreviewDto = (preview: SharedMemoryPersistedPreviewRecord) => ({
 });
 
 const consentDto = (consent: SharedMemoryConsentRecord) => ({
+  ...(consent.source ? { source: consent.source } : {}),
   id: consent.id,
   logicalMemoryId: consent.logicalMemoryId,
   teamId: consent.teamId,
@@ -480,6 +485,7 @@ const consentDto = (consent: SharedMemoryConsentRecord) => ({
 });
 
 const grantDto = (grant: SharedMemoryGrantRecord) => ({
+  ...(grant.source ? { source: grant.source } : {}),
   id: grant.id,
   logicalGrantId: grant.logicalGrantId,
   logicalMemoryId: grant.logicalMemoryId,
@@ -858,6 +864,7 @@ export const registerSharedMemoryRoutes = (
       );
       const binding = sharedMemoryConsentActionGrantBinding({
         referenceId: authenticated.authority.referenceId,
+        source: input.source,
         consentId: input.consentId,
         logicalMemoryId: input.logicalMemoryId,
         teamId: params.teamId,
@@ -922,6 +929,7 @@ export const registerSharedMemoryRoutes = (
       );
       const binding = sharedMemoryPendingShareActionGrantBinding({
         referenceId: authenticated.authority.referenceId,
+        source: input.source,
         mutationId: input.mutationId,
         logicalGrantId: input.logicalGrantId,
         consentId: input.consentId,
@@ -953,6 +961,7 @@ export const registerSharedMemoryRoutes = (
                     logicalGrantId: input.logicalGrantId,
                     consentId: input.consentId,
                     logicalMemoryId: input.logicalMemoryId,
+                    source: input.source,
                     teamId: input.teamId,
                     teamWorkspaceId: input.teamWorkspaceId,
                     preview: input.preview,
@@ -974,6 +983,45 @@ export const registerSharedMemoryRoutes = (
     }
   );
 
+  app.put(
+    "/v1/shared-memory/pending-shares/:pendingShareId/personal-note-source",
+    {
+      preHandler: context.writeRateLimit,
+      bodyLimit: SOURCE_UPLOAD_BODY_LIMIT_BYTES
+    },
+    async (request) => {
+      rejectApiToken(request);
+      const params = z
+        .object({ pendingShareId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const input = personalNoteSourceArtifactUploadSchema.parse({
+        ...(request.body as Record<string, unknown>),
+        pendingShareId: params.pendingShareId
+      });
+      const authenticated = await context.authenticateDeviceCredential(request);
+      if (
+        !authenticated.credential.operationFamilies.includes(
+          "share_grant_management"
+        )
+      ) {
+        throw forbidden();
+      }
+      const preview = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .persistPersonalNoteSourceArtifact(
+            { userId: authenticated.user.id },
+            {
+              ...input,
+              deviceCredentialId: authenticated.credential.id
+            }
+          )
+      );
+      return { preview: persistedPreviewDto(preview) };
+    }
+  );
+
   app.post(
     "/v1/shared-memory/share-bundles",
     { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
@@ -987,6 +1035,7 @@ export const registerSharedMemoryRoutes = (
       );
       const binding = sharedMemoryShareBundleActionGrantBinding({
         referenceId: authenticated.authority.referenceId,
+        source: input.source,
         mutationId: input.mutationId,
         logicalGrantId: input.logicalGrantId,
         consentId: input.consentId,
@@ -1067,6 +1116,7 @@ export const registerSharedMemoryRoutes = (
       );
       const binding = sharedMemoryShareActionGrantBinding({
         referenceId: authenticated.authority.referenceId,
+        source: input.source,
         mutationId: input.mutationId,
         logicalGrantId: input.logicalGrantId,
         logicalMemoryId: input.logicalMemoryId,
@@ -1123,6 +1173,7 @@ export const registerSharedMemoryRoutes = (
       );
       const binding = sharedMemoryRepresentationBundleActionGrantBinding({
         referenceId: authenticated.authority.referenceId,
+        source: input.source,
         mutationId: input.mutationId,
         consentId: input.consentId,
         logicalMemoryId: input.logicalMemoryId,

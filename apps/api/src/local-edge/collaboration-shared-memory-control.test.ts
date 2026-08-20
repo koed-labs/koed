@@ -44,6 +44,12 @@ const ids = {
   localSession: uuidFor(103)
 };
 
+const capturedSource = {
+  kind: "captured_session" as const,
+  sessionId: ids.localSession,
+  logicalMemoryId: ids.logicalMemory
+};
+
 const binding = () => ({
   sourceRevision: 4,
   sourceHash: hash,
@@ -66,6 +72,7 @@ const sourceItem = (index = 0): PreviewItem => ({
 });
 
 const previewResponse = (items: PreviewItem[] = [sourceItem()]) => ({
+  source: capturedSource,
   previewId: ids.preview,
   previewHash: hash,
   previewRevision: 1,
@@ -82,6 +89,7 @@ const previewResponse = (items: PreviewItem[] = [sourceItem()]) => ({
 });
 
 const consentResponse = () => ({
+  source: capturedSource,
   id: ids.consent,
   logicalMemoryId: ids.logicalMemory,
   teamId: ids.team,
@@ -110,6 +118,7 @@ const grantResponse = (
     updatedAt?: string;
   } = {}
 ) => ({
+  source: capturedSource,
   id: ids.grant,
   logicalGrantId: ids.logicalGrant,
   logicalMemoryId: ids.logicalMemory,
@@ -164,6 +173,7 @@ const collaborationConsent = (): CollaborationPersistedSharedMemoryConsent => ({
   upstreamUserId: ids.upstreamUser,
   previewId: ids.preview,
   consent: {
+    source: capturedSource,
     id: ids.consent,
     logicalMemoryId: ids.logicalMemory,
     teamId: ids.team,
@@ -197,6 +207,7 @@ const collaborationGrant = (
   localOwnerUserId: ids.localOwner,
   upstreamUserId: ids.upstreamUser,
   grant: {
+    source: capturedSource,
     id: ids.grant,
     logicalGrantId: ids.logicalGrant,
     logicalMemoryId: ids.logicalMemory,
@@ -238,6 +249,7 @@ const previewCommand = () => ({
 const shareCommand = () => ({
   ...commandBase("collaboration.share_memory"),
   input: {
+    source: capturedSource,
     mutationId: randomUUID(),
     logicalGrantId: ids.logicalGrant,
     logicalMemoryId: ids.logicalMemory,
@@ -314,6 +326,7 @@ const createFixture = (
   const pendingSourceWork: Array<{
     pendingShareId: string;
     mutationId: string;
+    source: typeof capturedSource;
     localSessionId: string;
   }> = [];
   const previews = new Map<string, CollaborationPersistedSharedMemoryPreview>();
@@ -387,6 +400,7 @@ const createFixture = (
         ...input.identity,
         previewId: input.previewId,
         consent: {
+          source: remote.source,
           id: remote.id,
           logicalMemoryId: remote.logicalMemoryId,
           teamId: remote.teamId,
@@ -448,6 +462,7 @@ const createFixture = (
       pendingSourceWork.push({
         pendingShareId: input.pendingShareId,
         mutationId: input.mutationId,
+        source: input.source as typeof capturedSource,
         localSessionId: input.localSessionId
       });
       return overrides.persistPendingSourceWork ?? true;
@@ -494,6 +509,7 @@ const createFixture = (
       ) {
         response = {
           admission: {
+            source: recorded.body?.source,
             previewId: ids.preview,
             previewHash: hashB,
             previewRevision: 1,
@@ -535,6 +551,7 @@ const createFixture = (
       ) {
         response = {
           pendingShare: {
+            source: recorded.body?.source,
             id: uuidFor(700),
             mutationId: recorded.body?.mutationId,
             logicalGrantId: recorded.body?.logicalGrantId,
@@ -575,6 +592,7 @@ const createFixture = (
       ) {
         response = {
           pendingShare: {
+            source: recorded.body?.source,
             id: uuidFor(701),
             mutationId: recorded.body?.mutationId,
             logicalGrantId: ids.logicalGrant,
@@ -854,6 +872,33 @@ const expectFailure = (
 };
 
 describe("collaboration Shared Memory control", () => {
+  it("resolves a consent preview only for its exact persisted source", async () => {
+    const fixture = createFixture();
+    const input = {
+      source: capturedSource,
+      logicalMemoryId: ids.logicalMemory,
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      selectedRepresentation: "memory_events" as const,
+      allowedRepresentations: ["memory_events" as const],
+      previewRevision: 1,
+      previewHash: hash
+    };
+
+    await expect(
+      fixture.control.resolveConsentPreview(input, context())
+    ).resolves.toEqual({ previewId: ids.preview });
+    await expect(
+      fixture.control.resolveConsentPreview(
+        {
+          ...input,
+          source: { ...capturedSource, sessionId: uuidFor(999) }
+        },
+        context()
+      )
+    ).resolves.toBeNull();
+  });
+
   it("returns a bounded local candidate without resolving remote authority", async () => {
     const loadLocalCandidatePreview = vi.fn(async () => ({
       sessionId: ids.localSession,
@@ -896,6 +941,7 @@ describe("collaboration Shared Memory control", () => {
 
   it("binds a local candidate to an authoritative destination without a sync target", async () => {
     const localCandidate = {
+      source: capturedSource,
       sessionId: ids.localSession,
       logicalMemoryId: ids.logicalMemory,
       representation: "memory_events" as const,
@@ -943,7 +989,7 @@ describe("collaboration Shared Memory control", () => {
       input: {
         ...previewCommand().input,
         candidate: {
-          sessionId: ids.localSession,
+          source: capturedSource,
           candidateHash: hash,
           sourceRevision: 4,
           itemCount: 1,
@@ -1687,7 +1733,7 @@ describe("collaboration Shared Memory control", () => {
     expect(second.data.preview.items[0]?.sequence).toBe(101);
   });
 
-  it("shares, revokes, and changes representation through persisted scoped authority", async () => {
+  it("queues, revokes, and changes representation through persisted scoped authority", async () => {
     const shareFixture = createFixture();
     const shared = await shareFixture.control.dispatch(
       shareCommand(),
@@ -1696,25 +1742,18 @@ describe("collaboration Shared Memory control", () => {
     expect(shared).toMatchObject({
       ok: true,
       data: {
-        grant: {
-          id: ids.grant,
-          companionThreadId: ids.companion,
-          lifecycle: "active"
+        pendingShare: {
+          id: uuidFor(700),
+          source: capturedSource,
+          state: "preparing"
         }
       }
     });
-    const materialization = shareFixture.requests.find((request) =>
-      request.pathname.endsWith("/representations/memory_events")
-    );
-    expect(materialization).toMatchObject({
-      method: "PUT",
-      body: {
-        consentId: ids.consent,
-        expectedGrantVersion: 1,
-        preview: { previewId: ids.preview, previewHash: hash }
-      }
-    });
-    expect(materialization?.body?.mutationId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(
+      shareFixture.requests.some((request) =>
+        request.pathname.endsWith("/representations/memory_events")
+      )
+    ).toBe(false);
 
     const revoked = await shareFixture.control.dispatch(
       {
@@ -1735,10 +1774,7 @@ describe("collaboration Shared Memory control", () => {
       ok: true,
       data: { grant: { lifecycle: "revoked", grantVersion: 2 } }
     });
-    expect(shareFixture.grantPersistenceModes).toEqual([
-      "mutation",
-      "revocation"
-    ]);
+    expect(shareFixture.grantPersistenceModes).toEqual(["revocation"]);
 
     const changeFixture = createFixture();
     const replacementConsentId = uuidFor(500);
@@ -1768,6 +1804,7 @@ describe("collaboration Shared Memory control", () => {
       {
         ...commandBase("collaboration.change_shared_memory_representation"),
         input: {
+          source: capturedSource,
           mutationId: randomUUID(),
           logicalMemoryId: ids.logicalMemory,
           teamId: ids.team,
@@ -1781,7 +1818,6 @@ describe("collaboration Shared Memory control", () => {
           previewRevision: 1,
           previewHash: hashC,
           expiresAt: null,
-          candidateSessionId: ids.localSession,
           actionGrant: { id: ids.actionGrant }
         }
       },
@@ -1827,8 +1863,7 @@ describe("collaboration Shared Memory control", () => {
         ...shareCommand(),
         input: {
           ...shareCommand().input,
-          mutationId,
-          candidateSessionId: ids.localSession
+          mutationId
         }
       },
       context()
@@ -1849,6 +1884,7 @@ describe("collaboration Shared Memory control", () => {
       {
         pendingShareId: uuidFor(700),
         mutationId,
+        source: capturedSource,
         localSessionId: ids.localSession
       }
     ]);
@@ -1871,8 +1907,7 @@ describe("collaboration Shared Memory control", () => {
       {
         ...shareCommand(),
         input: {
-          ...shareCommand().input,
-          candidateSessionId: ids.localSession
+          ...shareCommand().input
         }
       },
       context()
@@ -2046,15 +2081,10 @@ describe("collaboration Shared Memory control", () => {
     ]);
   });
 
-  it("fails closed when preview revision or companion thread persistence is unavailable", async () => {
+  it("fails closed when preview persistence is unavailable", async () => {
     const previewGap = createFixture({ persistPreview: false });
     expectFailure(
       await previewGap.control.dispatch(previewCommand(), context()),
-      "not_available"
-    );
-    const grantGap = createFixture({ persistGrant: false });
-    expectFailure(
-      await grantGap.control.dispatch(shareCommand(), context()),
       "not_available"
     );
   });

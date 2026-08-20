@@ -2,27 +2,60 @@ import type {
   CollaborationMessageRecord,
   MemorySourceRepository
 } from "@koed/db";
+import type { KoedWorkClass } from "@koed/shared";
 
 import type { MemoryJobStatus } from "../memory/jobs.js";
 
 export interface PersonalNoteMemoryProjectionOptions {
-  repository: Pick<MemorySourceRepository, "createMemoryEvent">;
+  repository: Pick<MemorySourceRepository, "createMemoryEvent"> &
+    Partial<Pick<MemorySourceRepository, "notifyPersonalNoteChanged">>;
   enqueueEmbedding(
     sourceType: "memory_event",
-    sourceId: string
+    sourceId: string,
+    workClass?: KoedWorkClass
   ): Promise<MemoryJobStatus>;
+}
+
+export interface PersonalNoteMemoryReconciliationOptions {
+  repository: Pick<
+    MemorySourceRepository,
+    | "createMemoryEvent"
+    | "findPersonalNoteMemoryEventId"
+    | "listThreads"
+    | "listMessages"
+    | "getOrCreatePersonalNoteProjectionCursor"
+    | "advancePersonalNoteProjectionCursor"
+  >;
+  enqueueEmbedding(
+    sourceType: "memory_event",
+    sourceId: string,
+    workClass?: KoedWorkClass
+  ): Promise<MemoryJobStatus>;
+}
+
+export interface PersonalNoteMemoryReconciliationResult {
+  scanned: number;
+  existing: number;
+  created: number;
+  embeddingQueued: number;
+  failures: number;
+  hasMore: boolean;
+  cursor: number;
 }
 
 export const projectPersonalNoteToMemory = async (
   options: PersonalNoteMemoryProjectionOptions,
   input: {
     ownerUserId: string;
+    threadKind: "notes_to_self";
     message: CollaborationMessageRecord;
   }
 ): Promise<{ memoryEventId: string; embedding: MemoryJobStatus }> => {
   if (
     input.message.scope !== "personal" ||
-    input.message.personalOwnerUserId !== input.ownerUserId
+    input.message.personalOwnerUserId !== input.ownerUserId ||
+    input.message.senderKind !== "user" ||
+    input.message.senderUserId !== input.ownerUserId
   ) {
     throw new TypeError("Personal Note owner does not match its message");
   }
@@ -50,6 +83,111 @@ export const projectPersonalNoteToMemory = async (
       sourceSequence: input.message.threadSequence
     }
   );
-  const embedding = await options.enqueueEmbedding("memory_event", event.id);
+  await options.repository
+    .notifyPersonalNoteChanged?.(
+      { userId: input.ownerUserId },
+      input.message.id,
+      "INSERT"
+    )
+    .catch(() => undefined);
+  const embedding = await options.enqueueEmbedding(
+    "memory_event",
+    event.id,
+    "interactive_recall_question"
+  );
   return { memoryEventId: event.id, embedding };
+};
+
+export const reconcilePersonalNotesToMemory = async (
+  options: PersonalNoteMemoryReconciliationOptions,
+  input: { ownerUserId: string; limit?: number }
+): Promise<PersonalNoteMemoryReconciliationResult> => {
+  const limit = Math.max(1, Math.min(100, Math.trunc(input.limit ?? 50)));
+  const actor = { userId: input.ownerUserId };
+  const threads = await options.repository.listThreads(actor, {
+    scope: "personal",
+    includeArchived: true,
+    limit: 100
+  });
+  const notesThread = threads?.find(
+    (thread) =>
+      thread.kind === "notes_to_self" &&
+      thread.personalOwnerUserId === input.ownerUserId
+  );
+  if (!notesThread) {
+    return {
+      scanned: 0,
+      existing: 0,
+      created: 0,
+      embeddingQueued: 0,
+      failures: 0,
+      hasMore: false,
+      cursor: 0
+    };
+  }
+  let durable =
+    await options.repository.getOrCreatePersonalNoteProjectionCursor(actor, {
+      threadId: notesThread.id
+    });
+  if (!durable)
+    throw new Error("Personal Note Projection cursor is unavailable");
+  const page = await options.repository.listMessages(actor, {
+    threadId: notesThread.id,
+    afterSequence: durable.lastThreadSequence,
+    limit
+  });
+  if (!page) throw new Error("Personal Note history is unavailable");
+
+  let existing = 0;
+  let created = 0;
+  let embeddingQueued = 0;
+  let failures = 0;
+  for (const message of page.messages) {
+    let outcome: "existing" | "created" | "failed" = "failed";
+    let queued = false;
+    let failureCode: string | undefined;
+    try {
+      const prior = await options.repository.findPersonalNoteMemoryEventId(
+        actor,
+        message.id
+      );
+      const projection = await projectPersonalNoteToMemory(options, {
+        ownerUserId: input.ownerUserId,
+        threadKind: "notes_to_self",
+        message
+      });
+      outcome = prior ? "existing" : "created";
+      queued = projection.embedding.queued;
+      if (outcome === "existing") existing += 1;
+      else created += 1;
+      if (queued) embeddingQueued += 1;
+    } catch (error) {
+      failures += 1;
+      failureCode =
+        error instanceof TypeError ? "invalid_note" : "projection_failed";
+    }
+    const advanced =
+      await options.repository.advancePersonalNoteProjectionCursor(actor, {
+        threadId: notesThread.id,
+        expectedSequence: durable.lastThreadSequence,
+        nextSequence: message.threadSequence,
+        outcome,
+        embeddingQueued: queued,
+        ...(failureCode ? { failureCode } : {})
+      });
+    if (!advanced) {
+      throw new Error("Personal Note Projection cursor changed concurrently");
+    }
+    durable = advanced;
+  }
+
+  return {
+    scanned: page.messages.length,
+    existing,
+    created,
+    embeddingQueued,
+    failures,
+    hasMore: page.hasMore,
+    cursor: durable.lastThreadSequence
+  };
 };

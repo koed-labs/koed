@@ -14,6 +14,8 @@ import {
   personalDesktopToolDisplaySchema
 } from "./personal-desktop-contract.js";
 import { aiClientIdentifierPattern } from "./ai-client-contract.js";
+import { sharedMemorySourceRefSchema } from "./shared-memory-source.js";
+export type { SharedMemorySourceRef } from "./shared-memory-source.js";
 
 export const COLLABORATION_CONTRACT_VERSION = 4;
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
@@ -1558,6 +1560,28 @@ export const sharedMemoryCandidateManifestEntrySchema = z
   .object({ sourceId: z.uuid(), revisionHash: sha256Schema })
   .strict();
 
+const sharedMemoryCandidateBindingSchema = z
+  .object({
+    source: sharedMemorySourceRefSchema,
+    candidateHash: sha256Schema,
+    sourceRevision: nonNegativeSequenceSchema,
+    itemCount: z.number().int().safe().positive(),
+    excludedItemCount: z.number().int().safe().nonnegative(),
+    manifest: z
+      .array(sharedMemoryCandidateManifestEntrySchema)
+      .min(1)
+      .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS),
+    byteCount: z
+      .number()
+      .int()
+      .safe()
+      .positive()
+      .max(256 * 1_024),
+    mode: z.enum(["snapshot", "continuous"]),
+    expiresAt: collaborationTimestampSchema.nullable()
+  })
+  .strict();
+
 export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
   "intent",
   [
@@ -1627,30 +1651,10 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
       workspaceId: z.uuid(),
       representation: sharedMemoryRepresentationSchema,
       allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
-      candidate: z
-        .object({
-          sessionId: z.uuid(),
-          candidateHash: sha256Schema,
-          sourceRevision: nonNegativeSequenceSchema,
-          itemCount: z.number().int().safe().positive(),
-          excludedItemCount: z.number().int().safe().nonnegative(),
-          manifest: z
-            .array(sharedMemoryCandidateManifestEntrySchema)
-            .min(1)
-            .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS),
-          byteCount: z
-            .number()
-            .int()
-            .safe()
-            .positive()
-            .max(256 * 1_024),
-          mode: z.enum(["snapshot", "continuous"]),
-          expiresAt: collaborationTimestampSchema.nullable()
-        })
-        .strict()
-        .optional()
+      candidate: sharedMemoryCandidateBindingSchema.optional()
     }),
     actionGrantIntent("collaboration.share_memory", {
+      source: sharedMemorySourceRefSchema,
       mutationId: z.uuid(),
       logicalGrantId: z.uuid(),
       consentId: z.uuid(),
@@ -1663,8 +1667,7 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
-      title: collaborationNameSchema.optional(),
-      candidateSessionId: z.uuid().optional()
+      title: collaborationNameSchema.optional()
     }),
     actionGrantIntent("collaboration.revoke_shared_memory", {
       mutationId: z.uuid(),
@@ -1697,6 +1700,7 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
         .regex(/^[A-Za-z][A-Za-z0-9_.-]{0,119}$/)
     }),
     actionGrantIntent("collaboration.change_shared_memory_representation", {
+      source: sharedMemorySourceRefSchema,
       mutationId: z.uuid(),
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
@@ -1709,8 +1713,7 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
       allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
-      expiresAt: collaborationTimestampSchema.nullable(),
-      candidateSessionId: z.uuid()
+      expiresAt: collaborationTimestampSchema.nullable()
     }),
     actionGrantIntent("collaboration.managed_conversation_handoff", {
       executionId: z.uuid(),
@@ -1968,6 +1971,7 @@ export const collaborationWorkspaceSchema = z
 
 export const sharedMemoryPreviewSchema = z
   .object({
+    source: sharedMemorySourceRefSchema.optional(),
     logicalMemoryId: z.uuid(),
     teamId: z.uuid(),
     workspaceId: z.uuid(),
@@ -2010,7 +2014,8 @@ export const sharedMemoryPreviewSchema = z
 
 export const sharedMemoryCandidatePreviewSchema = z
   .object({
-    sessionId: z.uuid(),
+    source: sharedMemorySourceRefSchema.optional(),
+    sessionId: z.uuid().optional(),
     logicalMemoryId: z.uuid(),
     representation: sharedMemoryRepresentationSchema,
     sourceRevision: nonNegativeSequenceSchema,
@@ -2032,6 +2037,56 @@ export const sharedMemoryCandidatePreviewSchema = z
   })
   .strict()
   .superRefine((candidate, context) => {
+    if (!candidate.source && !candidate.sessionId) {
+      context.addIssue({
+        code: "custom",
+        path: ["source"],
+        message: "Candidate source identity is required"
+      });
+    }
+    if (
+      candidate.source?.logicalMemoryId !== undefined &&
+      candidate.source.logicalMemoryId !== candidate.logicalMemoryId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["source", "logicalMemoryId"],
+        message: "Candidate source must match its logical memory"
+      });
+    }
+    if (
+      candidate.source?.kind === "captured_session" &&
+      candidate.sessionId &&
+      candidate.source.sessionId !== candidate.sessionId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["sessionId"],
+        message: "Candidate session must match its source binding"
+      });
+    }
+    if (candidate.source?.kind === "personal_note") {
+      if (candidate.sessionId !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["sessionId"],
+          message: "Personal Note candidates cannot bind a session"
+        });
+      }
+      if (
+        candidate.representation !== "memory_events" ||
+        candidate.sourceRevision !== 1 ||
+        candidate.itemCount !== 1 ||
+        candidate.manifest[0]?.sourceId !== candidate.source.memoryEventId
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["source"],
+          message:
+            "Personal Note candidates require one Memory Event at revision 1"
+        });
+      }
+    }
     if (
       candidate.items.some(
         (item) => item.representation !== candidate.representation
@@ -2057,6 +2112,7 @@ export const sharedMemoryCandidatePreviewSchema = z
 
 export const sharedMemoryConsentSchema = z
   .object({
+    source: sharedMemorySourceRefSchema.optional(),
     id: z.uuid(),
     logicalMemoryId: z.uuid(),
     teamId: z.uuid(),
@@ -2089,6 +2145,7 @@ export const sharedMemoryConsentSchema = z
 
 export const sharedMemoryGrantSchema = z
   .object({
+    source: sharedMemorySourceRefSchema.optional(),
     id: z.uuid(),
     logicalGrantId: z.uuid(),
     logicalMemoryId: z.uuid(),
@@ -2118,6 +2175,7 @@ export const sharedMemoryGrantSchema = z
 
 export const pendingShareSchema = z
   .object({
+    source: sharedMemorySourceRefSchema.optional(),
     id: z.uuid(),
     mutationId: z.uuid(),
     logicalGrantId: z.uuid(),
@@ -2170,6 +2228,7 @@ export const pendingShareSchema = z
 
 export const ownedShareSummarySchema = z
   .object({
+    source: sharedMemorySourceRefSchema.optional(),
     sourceSessionId: z.uuid().nullable(),
     companionThreadId: z.uuid().nullable().optional(),
     sourceTitle: z.string().min(1).max(500),
@@ -2483,7 +2542,8 @@ export const collaborationRendererCommandSchema = z
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.preview_shared_memory_candidate", {
-      sessionId: z.uuid(),
+      sessionId: z.uuid().optional(),
+      noteId: z.uuid().optional(),
       representation: sharedMemoryRepresentationSchema
     }),
     command("collaboration.prepare_shared_memory_source", {
@@ -2505,28 +2565,7 @@ export const collaborationRendererCommandSchema = z
       workspaceId: z.uuid(),
       representation: sharedMemoryRepresentationSchema,
       allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
-      candidate: z
-        .object({
-          sessionId: z.uuid(),
-          candidateHash: sha256Schema,
-          sourceRevision: nonNegativeSequenceSchema,
-          itemCount: z.number().int().safe().positive(),
-          excludedItemCount: z.number().int().safe().nonnegative(),
-          manifest: z
-            .array(sharedMemoryCandidateManifestEntrySchema)
-            .min(1)
-            .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS),
-          byteCount: z
-            .number()
-            .int()
-            .safe()
-            .positive()
-            .max(256 * 1_024),
-          mode: z.enum(["snapshot", "continuous"]),
-          expiresAt: collaborationTimestampSchema.nullable()
-        })
-        .strict()
-        .optional(),
+      candidate: sharedMemoryCandidateBindingSchema.optional(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.load_shared_memory_preview_page", {
@@ -2535,6 +2574,7 @@ export const collaborationRendererCommandSchema = z
       limit: z.number().int().min(1).max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS)
     }),
     command("collaboration.share_memory", {
+      source: sharedMemorySourceRefSchema,
       mutationId: z.uuid(),
       logicalGrantId: z.uuid(),
       consentId: z.uuid(),
@@ -2548,7 +2588,6 @@ export const collaborationRendererCommandSchema = z
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
       title: collaborationNameSchema.optional(),
-      candidateSessionId: z.uuid().optional(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.revoke_shared_memory", {
@@ -2565,6 +2604,7 @@ export const collaborationRendererCommandSchema = z
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.change_shared_memory_representation", {
+      source: sharedMemorySourceRefSchema,
       mutationId: z.uuid(),
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
@@ -2578,7 +2618,6 @@ export const collaborationRendererCommandSchema = z
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
-      candidateSessionId: z.uuid(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.subscribe", {

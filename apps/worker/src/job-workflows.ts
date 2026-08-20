@@ -192,8 +192,12 @@ export const createWorkerJobWorkflow = (config: WorkerJobWorkflowConfig) => {
   };
 
   const runEmbeddingJob = async (data: unknown) => {
-    const { sourceType, sourceId } = embeddingJobData(data);
-    return config.embeddingWorkflow.embedSource(sourceType, sourceId);
+    const { sourceType, sourceId, workClass } = embeddingJobData(data);
+    return config.embeddingWorkflow.embedSource(
+      sourceType,
+      sourceId,
+      workClass
+    );
   };
 
   return async (queueName: WorkerQueueName, data: unknown) => {

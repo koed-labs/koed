@@ -213,6 +213,9 @@ const workerFailureDisplayMessage = (
   exhaustedBudgets: readonly string[]
 ): string => {
   const worker = provider === "codex" ? "The Codex worker" : "The AI Client";
+  if (exhaustedBudgets.includes("wall_time")) {
+    return `${worker} did not finish the Personal Memory search in time. Try again.`;
+  }
   if (exhaustedBudgets.length > 0) {
     return `${worker} reached the Memory Answer resource limit before it could produce a reliable answer. Try a narrower question.`;
   }
@@ -1688,6 +1691,7 @@ const uninspectedAvailableCandidateStages = (
   searches: ToolSearchRecord[]
 ): string[] => {
   const inspected = inspectedSearchStages(searches);
+  if (inspected.has("all_stages")) return [];
   return [...availableCandidateStages(retrievals)].filter(
     (stage) => !inspected.has(stage)
   );
@@ -3189,6 +3193,87 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
     }
   };
   const queries = firstPassQueries(options.query, options.retrievalHints);
+  if (
+    options.searchDomain === "global" &&
+    options.retrievalScope === "personal" &&
+    queries.length === 1 &&
+    options.maxSearches > 1
+  ) {
+    const started = Date.now();
+    try {
+      const result = await beforeDeadline(() =>
+        options.client.search({
+          query: options.query,
+          ...common,
+          limit: options.limit
+        })
+      );
+      const hits = hitsFromSearch(result);
+      const retrieval = retrievalDiagnosticFromSearchResult(result);
+      const retrievalFailure = semanticRetrievalFailure(result);
+      const evidence = combineMemoryAnswerCandidateLists(
+        [],
+        [{ query: options.query, stage: "all_stages", hits }],
+        options.fusion !== false
+      );
+      return {
+        evidence,
+        citations: citationsFromHits(evidence),
+        retrievals: [sanitizeRetrievalDiagnostic(retrieval)],
+        searches: [
+          {
+            query: options.query,
+            retrievalScope: options.retrievalScope,
+            searchDomain: options.searchDomain,
+            retrievalStage: "all_stages",
+            sessionId: options.sessionId,
+            projectId: options.projectId,
+            teamWorkspaceId: options.teamWorkspaceId,
+            recentDays: options.recentDays,
+            sourceAfter: options.sourceAfter,
+            sourceBefore: options.sourceBefore,
+            limit: options.limit,
+            hitCount: hits.length,
+            phase: "first_pass",
+            durationMs: Date.now() - started
+          }
+        ],
+        errors: retrievalFailure
+          ? [
+              `First-pass semantic retrieval incomplete for query: ${retrievalFailure}`
+            ]
+          : [],
+        skippedQueries: []
+      };
+    } catch (error) {
+      return {
+        evidence: [],
+        citations: [],
+        retrievals: [],
+        searches: [
+          {
+            query: options.query,
+            retrievalScope: options.retrievalScope,
+            searchDomain: options.searchDomain,
+            retrievalStage: "all_stages",
+            sessionId: options.sessionId,
+            projectId: options.projectId,
+            teamWorkspaceId: options.teamWorkspaceId,
+            recentDays: options.recentDays,
+            sourceAfter: options.sourceAfter,
+            sourceBefore: options.sourceBefore,
+            limit: options.limit,
+            hitCount: 0,
+            phase: "first_pass",
+            durationMs: Date.now() - started,
+            errorClass: error instanceof Error ? error.name : "Error"
+          }
+        ],
+        errors: [`First-pass search failed for query: ${errorMessage(error)}`],
+        skippedQueries: []
+      };
+    }
+  }
   const followUpReserve = options.maxSearches > 1 ? 1 : 0;
   const firstPassCallBudget = Math.max(
     1,

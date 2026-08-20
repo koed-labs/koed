@@ -93,6 +93,9 @@ const teamHit = (
     sourceRevision: candidate.sourceRevision,
     visibilityProvenance: {
       shareGrantId: candidate.shareGrantId,
+      sourceArtifactId: candidate.sourceArtifactId,
+      sourceRevisionHash: candidate.sourceRevisionHash,
+      ...(candidate.source ? { source: candidate.source } : {}),
       representationId: candidate.representationId,
       representation: candidate.representation,
       provenanceHash: candidate.provenanceHash

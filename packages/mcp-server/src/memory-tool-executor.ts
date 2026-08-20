@@ -463,7 +463,7 @@ export class MemoryToolExecutor {
       sourceAfter: input.source_after,
       sourceBefore: input.source_before,
       limit: input.limit,
-      responseDetail: "with_evidence",
+      responseDetail: "internal",
       retrievalHints: retrieval_hints,
       conversationContext: execution.conversationContext,
       signal

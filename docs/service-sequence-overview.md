@@ -1267,13 +1267,17 @@ grant-based visibility model.
 1. The AI Client calls the MCP Server's `memory_answer` tool with a query,
    Retrieval Scope, Search Domain, and optional bounded retrieval hints.
 2. The MCP adapter forwards the validated call to the Local AI Runtime. The
-   runtime runs a concurrent scripted first pass through the same authorized
-   Recall API used by worker follow-up calls.
-   It gathers a compact scan summary and initial semantic evidence without an
-   additional LLM planning call. Team recall first receives a server-issued,
-   signed run boundary containing the exact admitted Share Grant set and
-   authority-row versions. The MCP Server forwards it on every later search and
-   expansion; the model cannot alter it.
+   runtime runs a scripted first pass through the same authorized Recall API
+   used by worker follow-up calls. A global Personal question without hints
+   uses one hydrated search across all stages. A question with hints uses the
+   concurrent scan and routed search path. The first pass gathers initial
+   semantic evidence without an additional LLM planning call. Interactive
+   query and Note embeddings take priority over background capture embedding.
+   Background embedding uses bounded requests so it releases the model between
+   segments. Team recall first receives a server-issued, signed run boundary
+   containing the exact admitted Share Grant set and authority-row versions.
+   The MCP Server forwards it on every later search and expansion; the model
+   cannot alter it.
 3. The Local AI Runtime starts a memory-answer worker through the selected AI
    Client. Codex uses app-server mode; Claude uses the pinned Agent SDK and
    confirmed local Claude Code executable. The worker receives the original

@@ -1141,6 +1141,11 @@ describe("high-risk action grant routes", () => {
         grantCommitment: `v1:${"a".repeat(64)}`,
         intent: {
           action: "shared_memory.share",
+          source: {
+            kind: "captured_session",
+            sessionId: randomUUID(),
+            logicalMemoryId
+          },
           mutationId: randomUUID(),
           logicalGrantId: randomUUID(),
           logicalMemoryId,

@@ -1863,6 +1863,19 @@ export interface MemorySourceRepository
   createUser(input: CreateUserInput): Promise<{ id: string }>;
   findUserByEmail(email: string): Promise<UserRecord | null>;
   getUser(userId: string): Promise<UserRecord | null>;
+  findPersonalNoteMemoryEventId(
+    actor: ActorContext,
+    messageId: string
+  ): Promise<string | null>;
+  getPersonalNoteMemoryEvent(
+    actor: ActorContext,
+    messageId: string
+  ): Promise<LcmGraphEvent | null>;
+  notifyPersonalNoteChanged(
+    actor: ActorContext,
+    messageId: string,
+    operation: "INSERT" | "UPDATE"
+  ): Promise<void>;
   createCuratedMemoryProposal(
     actor: ActorContext,
     input: CuratedMemoryProposalInput

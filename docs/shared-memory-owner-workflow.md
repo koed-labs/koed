@@ -25,6 +25,8 @@ that is ordinary code organization, not a new workflow owner.
 - **Cross-Identity Sync** moves an authorized owner-private replica to the
   source owner's enrolled identity. It establishes source availability and
   provenance; it creates no Share Grant or Workspace Access.
+- A **Personal Note snapshot** is a standalone one-event source artifact. It
+  does not create a replica or Cross-Identity Sync relationship.
 - A **Team** is the collaboration authority containing destinations and policy.
 - A **Workspace** is the exact destination inside a Team. Changing Team or
   Workspace creates a different destination and invalidates an existing
@@ -39,7 +41,8 @@ that is ordinary code organization, not a new workflow owner.
 | Input                                                                           | Authority                                        | Used for                                                                     |
 | ------------------------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------- |
 | Source ownership and owner principal                                            | Personal Memory repository                       | Who may preview, consent, create, change, and revoke                         |
-| Replica state, source revision/hash, provenance, relationship                   | Cross-Identity Sync repository                   | Whether exact owner-private source bytes are eligible                        |
+| Captured Session replica state, source revision/hash, provenance, relationship  | Cross-Identity Sync repository                   | Whether exact owner-private Captured Session bytes are eligible              |
+| Personal Note id, projected Memory Event, owner, and revision-one hash          | Personal Memory repository                       | Whether the exact standalone Note snapshot is eligible                       |
 | Team, Workspace, membership, Workspace Access                                   | Team Backend                                     | Destination existence and current access                                     |
 | Owner, Team, and Workspace representation policies                              | Transaction-owning Shared Memory repository      | Exact three-policy intersection                                              |
 | Preview ID/hash/revision and encrypted artifact binding                         | Shared Memory repository                         | Immutable consent snapshot and pagination                                    |
@@ -75,6 +78,7 @@ never authoritative inputs.
 | Change destination before consent | Share somewhere else                                   | No in-place retargeting; request a new preview bound to the new Team and Workspace                                                                                                                                                    | Old preview/consent conflicts                                                                                                                                 |
 | Accept Pending Share              | Share this snapshot under selected mode/representation | Persist consent binding, stable mutation/logical-grant identity, Pending Share, safe progress state, audit, and outbox before returning; Workspace access remains `none`                                                              | Exact retry returns the same operation; divergent mutation reuse conflicts                                                                                    |
 | Activate Pending Share            | Complete the accepted share asynchronously             | Start sync only after acceptance; reproduce the complete ordered candidate manifest; stage an unreadable representation; resolve the deterministic companion; publish representation, grant, companion, and Pending Share atomically  | Worker restart reuses durable identities; companion failures remain quarantined and repairable without owner-list side effects                                |
+| Activate Personal Note snapshot   | Share one reviewed Note Memory Event                   | Re-authorize the Note and destination; upload one standalone encrypted artifact; materialize one `memory_events` representation; create the deterministic companion; create no replica or sync relationship                           | Exact artifact, materialization, grant, and companion identities converge across retries; source or policy drift fails closed                                 |
 | Change representation             | Replace/reactivate the representation                  | Persist a durable replacement from the current grant version and fresh candidate preview; prepare it in background; create its authoritative preview and consent; switch grant and materialized representation inside one transaction | The prior representation remains readable during preparation; concurrent changes conflict; restart replay sees either the old or completed new representation |
 | Continuous propagation            | Keep a continuous grant current                        | Repository advances only authorized source revisions under current replica, policies, lifecycle, and encryption context                                                                                                               | Revocation/sync loss stops advancement and retains only the last authorized revision as stale                                                                 |
 | Pause or resume updates           | Stop or continue future continuous revisions           | Change only the continuous consent/update state; keep the last activated representation and Workspace access while paused; append an owner lifecycle event                                                                            | Exact retries are stable; snapshot shares and stale versions fail closed                                                                                      |
@@ -115,6 +119,16 @@ The reviewed binding also includes the selected snapshot or continuous mode.
 Changing that mode in Desktop re-authorizes the preview before consent so the
 final command cannot reuse a preview created for a different mode.
 
+For a Personal Note, the candidate source revision is always 1 and the manifest
+contains exactly its projected Memory Event. Snapshot and `memory_events` are
+the only valid selection. The standalone artifact is sufficient source custody;
+replica and sync relationship identities are invalid for this source branch.
+The authenticated upload carries the local source principal that was used to
+hash the reviewed candidate. The Team Backend verifies the deterministic Note
+identity, binds the source deployment and principal to the authenticated device
+lineage, and then stores the standalone artifact for the remote User. This
+identity binding does not create a Cross-Identity Sync relationship.
+
 The owner may assign a destination-specific Share name during review and rename
 it later from Modify Share. This metadata is stored on the Pending Share and
 the activated Share Grant. It does not change the source Captured Session title
@@ -128,6 +142,9 @@ backend-generated preview was not present in the earlier local candidate cache.
 Owner listing is read-only: it pages by immutable creation tuple, batch-loads
 local authority snapshots, and never creates or repairs a companion. Activation
 and quarantined recovery are the only companion creation paths.
+An accepted Personal Note Pending Share remains owner-visible before its
+standalone logical-memory row is materialized. This lets the Shares view report
+source-upload progress or failure instead of filtering out the operation.
 
 `apps/api/src/local-edge/collaboration-shared-memory-control.ts` has a different
 job. Its preview, share, representation-change, revoke, and pagination handlers

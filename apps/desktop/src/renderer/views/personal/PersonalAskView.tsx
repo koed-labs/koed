@@ -184,7 +184,7 @@ export function PersonalAskView({
               ref={headingRef}
               tabIndex={-1}
             >
-              What would you like to do?
+              What would you like to know?
             </h1>
             {composer}
           </div>

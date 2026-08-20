@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
-import type { CollaborationMessage } from "@koed/shared/collaboration";
+import {
+  PERSONAL_DESKTOP_CONTRACT_VERSION,
+  type PersonalDesktopApi
+} from "@koed/shared/personal-desktop";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -86,7 +88,7 @@ describe("Personal Ask", () => {
         />
       );
     });
-    expect(container.textContent).toContain("What would you like to do?");
+    expect(container.textContent).toContain("What would you like to know?");
     expect(
       container.querySelector(".personal-ask-main")?.getAttribute("data-view")
     ).toBe("welcome");
@@ -228,42 +230,112 @@ describe("Personal Ask", () => {
 });
 
 describe("Personal Notes", () => {
-  it("searches, opens, and creates immutable Notes-to-self messages", async () => {
-    const message: CollaborationMessage = {
-      id: "11111111-1111-4111-8111-111111111111",
-      clientMessageId: null,
-      threadId: "22222222-2222-4222-8222-222222222222",
-      scope: "personal",
-      teamId: null,
-      sequence: 1,
-      sender: {
-        id: "33333333-3333-4333-8333-333333333333",
-        displayName: "You",
-        membershipState: "enabled"
-      },
-      senderKind: "user",
-      body: "# Launch note\nKeep the Ask page focused.",
+  it("retries the list and selected detail after a transient refresh failure", async () => {
+    const summary = {
+      noteId: "11111111-1111-4111-8111-111111111111",
+      title: "Recovered Note",
+      titleVersion: 1,
+      memoryEventId: "44444444-4444-4444-8444-444444444444",
       createdAt: "2026-08-17T12:00:00.000Z",
-      updatedAt: "2026-08-17T12:00:00.000Z",
-      editedAt: null,
-      deletedAt: null,
-      delivery: "sent",
-      recipientStatus: "read",
-      failure: null
+      sourceSequence: 1
+    };
+    const listNotes = vi
+      .fn<NonNullable<PersonalDesktopApi["listNotes"]>>()
+      .mockRejectedValueOnce(new Error("API restarting"))
+      .mockResolvedValue({ notes: [summary], nextBeforeSequence: null });
+    const api: PersonalDesktopApi = {
+      listProjects: vi.fn(async () => []),
+      loadEventPage: vi.fn(async () => []),
+      assignSessionProject: vi.fn(async () => ({ projectId: null })),
+      updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
+      listNotes,
+      subscribe: vi.fn(() => () => undefined)
+    };
+
+    await act(async () => {
+      root.render(
+        <PersonalNotesView
+          api={api}
+          markdownAdapters={adapters}
+          newNote={false}
+          onBack={vi.fn()}
+          onNew={vi.fn()}
+          onSave={vi.fn(async () => undefined)}
+          onSelect={vi.fn()}
+        />
+      );
+    });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Notes could not be refreshed")
+    );
+
+    await click(
+      [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Retry Notes"
+      ) ?? null
+    );
+
+    await vi.waitFor(() => expect(listNotes).toHaveBeenCalledTimes(2));
+    expect(container.textContent).toContain("Recovered Note");
+    expect(container.textContent).not.toContain("Notes could not be refreshed");
+  });
+
+  it("searches, opens, and creates immutable Notes-to-self messages", async () => {
+    let noteChangeListener:
+      | Parameters<PersonalDesktopApi["subscribe"]>[0]
+      | undefined;
+    const summary = {
+      noteId: "11111111-1111-4111-8111-111111111111",
+      title: "Launch note",
+      titleVersion: 1,
+      memoryEventId: "44444444-4444-4444-8444-444444444444",
+      createdAt: "2026-08-17T12:00:00.000Z",
+      sourceSequence: 1
+    };
+    const note = {
+      ...summary,
+      event: {
+        id: summary.memoryEventId,
+        actor: "user",
+        eventType: "personal_note_created",
+        timestamp: summary.createdAt,
+        sourceEventTime: summary.createdAt,
+        sourceSequence: 1,
+        content: "# Launch note\nKeep the Ask page focused.",
+        contentPreview: "Launch note",
+        invalidatedAt: null,
+        metadata: {}
+      }
+    };
+    const api: PersonalDesktopApi = {
+      listProjects: vi.fn(async () => []),
+      loadEventPage: vi.fn(async () => []),
+      assignSessionProject: vi.fn(async () => ({ projectId: null })),
+      updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
+      listNotes: vi.fn(async () => ({
+        notes: [summary],
+        nextBeforeSequence: null
+      })),
+      loadNote: vi.fn(async () => note),
+      renameNote: vi.fn(async ({ title }) => ({ ...summary, title })),
+      subscribe: vi.fn((listener) => {
+        noteChangeListener = listener;
+        return () => undefined;
+      })
     };
     const onSave = vi.fn(async () => undefined);
     const onNew = vi.fn();
     await act(async () => {
       root.render(
         <PersonalNotesView
+          api={api}
           markdownAdapters={adapters}
-          messages={[message]}
           newNote={false}
           onBack={vi.fn()}
           onNew={onNew}
           onSave={onSave}
           onSelect={vi.fn()}
-          selectedNoteId={message.id}
+          selectedNoteId={summary.noteId}
         />
       );
     });
@@ -299,12 +371,20 @@ describe("Personal Notes", () => {
     expect(container.textContent).toContain("Keep the Ask page focused.");
     expect(container.textContent).not.toContain("Delete");
     expect(container.textContent).not.toContain("Edit");
+    await act(async () =>
+      noteChangeListener?.({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        type: "notes_changed",
+        noteIds: [summary.noteId]
+      })
+    );
+    await vi.waitFor(() => expect(api.listNotes).toHaveBeenCalledTimes(2));
 
     await act(async () => {
       root.render(
         <PersonalNotesView
+          api={api}
           markdownAdapters={adapters}
-          messages={[message]}
           newNote
           onBack={vi.fn()}
           onNew={vi.fn()}
@@ -323,8 +403,8 @@ describe("Personal Notes", () => {
     await act(async () => {
       root.render(
         <PersonalNotesView
+          api={api}
           markdownAdapters={adapters}
-          messages={[message]}
           newNote={false}
           onBack={vi.fn()}
           onNew={vi.fn()}

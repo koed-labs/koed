@@ -1,6 +1,7 @@
 import type {
   CollaborationMessageRecord,
-  CollaborationRepository
+  CollaborationRepository,
+  MemorySourceRepository
 } from "@koed/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
@@ -21,6 +22,9 @@ import {
   emptyCollaborationBodySchema,
   listCollaborationMessagesQuerySchema,
   listCollaborationThreadsQuerySchema,
+  listPersonalNotesQuerySchema,
+  personalNoteParamsSchema,
+  renamePersonalNoteSchema,
   renameCollaborationThreadSchema,
   sharedSessionDiscussionParamsSchema,
   teamCollaborationParamsSchema,
@@ -40,12 +44,18 @@ const badRequest = (message: string) =>
   Object.assign(new Error(message), { statusCode: 400 });
 
 export interface CollaborationRouteContext {
-  requireCollaborationRepository(): CollaborationRepository;
+  requireCollaborationRepository(): CollaborationRepository &
+    Pick<
+      MemorySourceRepository,
+      "findPersonalNoteMemoryEventId" | "getPersonalNoteMemoryEvent"
+    >;
   projectPersonalNote(input: {
     ownerUserId: string;
+    threadKind: "notes_to_self";
     message: CollaborationMessageRecord;
   }): Promise<void>;
   authenticateSessionOrDeviceCredential: ApiRouteContext["auth"]["authenticateSessionOrDeviceCredential"];
+  authenticateApiToken: ApiRouteContext["auth"]["authenticateApiToken"];
   readRateLimit: ApiRouteContext["rateLimit"]["memoryRead"];
   writeRateLimit: ApiRouteContext["rateLimit"]["memoryWrite"];
   admission: CollaborationAdmissionController;
@@ -61,6 +71,19 @@ const authenticatePersonalCollaboration = async (
   context.authenticateSessionOrDeviceCredential(request, operationFamily, {
     apiTokenError: "API Tokens cannot authorize collaboration operations"
   });
+
+const authenticatePersonalNote = async (
+  request: FastifyRequest,
+  context: CollaborationRouteContext,
+  operationFamily:
+    | "personal_collaboration_read"
+    | "personal_collaboration_write"
+) => {
+  const authorization = request.headers.authorization?.trim() ?? "";
+  return /^Bearer(?:\s|$)/i.test(authorization)
+    ? context.authenticateApiToken(request)
+    : context.authenticateSessionOrDeviceCredential(request, operationFamily);
+};
 
 const authenticateTeamCollaboration = (
   request: FastifyRequest,
@@ -781,6 +804,7 @@ export const registerCollaborationRoutes = (
         if (personalThread?.kind === "notes_to_self") {
           await context.projectPersonalNote({
             ownerUserId: user.id,
+            threadKind: personalThread.kind,
             message
           });
         }
@@ -884,5 +908,175 @@ export const registerCollaborationRoutes = (
   registerThreadMessageRoutes(
     "/v1/collaboration/teams/:teamId/threads/:threadId",
     "team"
+  );
+
+  app.get(
+    "/v1/collaboration/personal/notes",
+    { preHandler: context.readRateLimit },
+    async (request) => {
+      const user = await authenticatePersonalNote(
+        request,
+        context,
+        "personal_collaboration_read"
+      );
+      const input = listPersonalNotesQuerySchema.parse(request.query);
+      const repository = context.requireCollaborationRepository();
+      const page = await repository.listPersonalNotes(
+        { userId: user.id },
+        input
+      );
+      const notes = (
+        await Promise.all(
+          page.notes.map(async (note) => {
+            const memoryEventId =
+              await repository.findPersonalNoteMemoryEventId(
+                { userId: user.id },
+                note.noteId
+              );
+            return memoryEventId
+              ? {
+                  noteId: note.noteId,
+                  title: note.title,
+                  titleVersion: note.titleVersion,
+                  memoryEventId,
+                  createdAt: note.createdAt,
+                  sourceSequence: note.sourceSequence
+                }
+              : null;
+          })
+        )
+      ).filter((note) => note !== null);
+      return { notes, nextBeforeSequence: page.nextBeforeSequence };
+    }
+  );
+
+  app.post(
+    "/v1/collaboration/personal/notes",
+    { preHandler: context.writeRateLimit, bodyLimit: MESSAGE_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      const user = await authenticatePersonalNote(
+        request,
+        context,
+        "personal_collaboration_write"
+      );
+      const input = createCollaborationMessageSchema.parse(request.body);
+      const repository = context.requireCollaborationRepository();
+      const thread = await repository.createThread(
+        { userId: user.id },
+        {
+          kind: "notes_to_self",
+          idempotencyKey: `personal-notes-to-self:${user.id}`
+        }
+      );
+      if (!thread || thread.kind !== "notes_to_self") throw forbidden();
+      await enforceCollaborationAdmission(
+        reply,
+        context.admission.admitMessage({ userId: user.id })
+      );
+      const message = await repository.sendMessage(
+        { userId: user.id },
+        {
+          threadId: thread.id,
+          idempotencyKey: parseIdempotencyKey(request),
+          bodyText: input.bodyText
+        }
+      );
+      if (!message) throw forbidden();
+      await context.projectPersonalNote({
+        ownerUserId: user.id,
+        threadKind: "notes_to_self",
+        message
+      });
+      const [note, event] = await Promise.all([
+        repository.getPersonalNote({ userId: user.id }, { noteId: message.id }),
+        repository.getPersonalNoteMemoryEvent({ userId: user.id }, message.id)
+      ]);
+      if (!note || !event) {
+        throw Object.assign(new Error("Personal Note projection failed"), {
+          statusCode: 503
+        });
+      }
+      return reply.status(201).send({
+        note: {
+          noteId: note.noteId,
+          title: note.title,
+          titleVersion: note.titleVersion,
+          memoryEventId: event.id,
+          createdAt: note.createdAt,
+          sourceSequence: note.sourceSequence,
+          event
+        }
+      });
+    }
+  );
+
+  app.get(
+    "/v1/collaboration/personal/notes/:noteId",
+    { preHandler: context.readRateLimit },
+    async (request, reply) => {
+      const user = await authenticatePersonalNote(
+        request,
+        context,
+        "personal_collaboration_read"
+      );
+      const { noteId } = personalNoteParamsSchema.parse(request.params);
+      const repository = context.requireCollaborationRepository();
+      const [note, event] = await Promise.all([
+        repository.getPersonalNote({ userId: user.id }, { noteId }),
+        repository.getPersonalNoteMemoryEvent({ userId: user.id }, noteId)
+      ]);
+      if (!note || !event) {
+        return reply.status(404).send({ message: "Personal Note not found" });
+      }
+      return {
+        note: {
+          noteId: note.noteId,
+          title: note.title,
+          titleVersion: note.titleVersion,
+          memoryEventId: event.id,
+          createdAt: note.createdAt,
+          sourceSequence: note.sourceSequence,
+          event
+        }
+      };
+    }
+  );
+
+  app.patch(
+    "/v1/collaboration/personal/notes/:noteId/title",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      const user = await authenticatePersonalNote(
+        request,
+        context,
+        "personal_collaboration_write"
+      );
+      const { noteId } = personalNoteParamsSchema.parse(request.params);
+      const input = renamePersonalNoteSchema.parse(request.body);
+      const repository = context.requireCollaborationRepository();
+      const note = await repository.renamePersonalNote(
+        { userId: user.id },
+        { noteId, ...input }
+      );
+      const memoryEventId = note
+        ? await repository.findPersonalNoteMemoryEventId(
+            { userId: user.id },
+            note.noteId
+          )
+        : null;
+      if (!note || !memoryEventId) {
+        return reply.status(404).send({ message: "Personal Note not found" });
+      }
+      return {
+        note: {
+          noteId: note.noteId,
+          title: note.title,
+          titleVersion: note.titleVersion,
+          memoryEventId,
+          createdAt: note.createdAt,
+          sourceSequence: note.sourceSequence
+        }
+      };
+    }
   );
 };

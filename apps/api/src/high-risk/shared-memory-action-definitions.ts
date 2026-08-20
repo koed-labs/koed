@@ -130,6 +130,7 @@ export const bindSharedMemoryCandidatePreviewOperation = (
 ): HighRiskResolvedActionGrantOperation =>
   sharedMemoryCandidatePreviewActionGrantBinding({
     referenceId,
+    source: intent.source,
     logicalMemoryId: intent.logicalMemoryId,
     candidateHash: intent.candidateHash,
     sourceRevision: intent.sourceRevision,
@@ -151,6 +152,7 @@ export const bindSharedMemoryShareOperation = (
 ): HighRiskResolvedActionGrantOperation =>
   sharedMemoryShareBundleActionGrantBinding({
     referenceId,
+    source: intent.source,
     mutationId: intent.mutationId,
     logicalGrantId: intent.logicalGrantId,
     logicalMemoryId: intent.logicalMemoryId,
@@ -176,6 +178,7 @@ export const bindSharedMemoryPendingShareOperation = (
 ): HighRiskResolvedActionGrantOperation =>
   sharedMemoryPendingShareActionGrantBinding({
     referenceId,
+    source: intent.source,
     mutationId: intent.mutationId,
     logicalGrantId: intent.logicalGrantId,
     logicalMemoryId: intent.logicalMemoryId,
@@ -215,6 +218,7 @@ export const bindSharedMemoryRepresentationChangeOperation = (
 ): HighRiskResolvedActionGrantOperation =>
   sharedMemoryRepresentationBundleActionGrantBinding({
     referenceId,
+    source: intent.source,
     mutationId: intent.mutationId,
     logicalMemoryId: intent.logicalMemoryId,
     teamId: intent.teamId,

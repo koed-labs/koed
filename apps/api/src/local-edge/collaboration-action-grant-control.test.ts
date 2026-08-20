@@ -47,6 +47,12 @@ const ids = {
   localSession: "00000000-0000-4000-8000-000000000014"
 } as const;
 
+const capturedSource = {
+  kind: "captured_session" as const,
+  sessionId: ids.localSession,
+  logicalMemoryId: ids.logicalMemory
+};
+
 const approvalReview = {
   version: 1 as const,
   title: "Create Workspace?",
@@ -227,6 +233,7 @@ describe("collaboration Action Grant control", () => {
         intent: {
           intent: "collaboration.share_memory",
           commandRequestId: ids.commandRequest,
+          source: capturedSource,
           mutationId: ids.mutation,
           logicalGrantId: ids.logicalGrant,
           consentId: ids.consent,
@@ -372,12 +379,13 @@ describe("collaboration Action Grant control", () => {
   });
 
   it("resolves the persisted preview before binding a one-review share bundle", async () => {
+    const resolveSharedMemoryConsentPreview = vi.fn(async () => ({
+      previewId: ids.remoteReplica
+    }));
     const fixture = createFixture({
       context: {
         operationFamilies: new Set(["share_grant_management"]),
-        resolveSharedMemoryConsentPreview: async () => ({
-          previewId: ids.remoteReplica
-        })
+        resolveSharedMemoryConsentPreview
       }
     });
 
@@ -390,12 +398,23 @@ describe("collaboration Action Grant control", () => {
       ok: true,
       command: "collaboration.request_action_grant"
     });
+    expect(resolveSharedMemoryConsentPreview).toHaveBeenCalledWith({
+      source: capturedSource,
+      logicalMemoryId: ids.logicalMemory,
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      selectedRepresentation: "memory_events",
+      allowedRepresentations: ["memory_events", "lcm_leaves"],
+      previewRevision: 2,
+      previewHash: "b".repeat(64)
+    });
     const [, init] = fixture.fetchMock.mock.calls[0]!;
     const payload = JSON.parse(String(init?.body)) as {
       intent: Record<string, unknown>;
     };
     expect(payload.intent).toEqual({
-      action: "shared_memory.share",
+      action: "shared_memory.pending_share",
+      source: capturedSource,
       mutationId: ids.mutation,
       logicalGrantId: ids.logicalGrant,
       consentId: ids.consent,
@@ -419,6 +438,7 @@ describe("collaboration Action Grant control", () => {
       fixture.control.describeIntent(fixture.context.backend, {
         intent: "collaboration.share_memory",
         commandRequestId: ids.commandRequest,
+        source: capturedSource,
         mutationId: ids.mutation,
         logicalGrantId: ids.logicalGrant,
         logicalMemoryId: ids.logicalMemory,
@@ -430,8 +450,7 @@ describe("collaboration Action Grant control", () => {
         selectedRepresentation: "memory_events",
         previewRevision: 2,
         previewHash: "b".repeat(64),
-        expiresAt: null,
-        candidateSessionId: ids.localSession
+        expiresAt: null
       })
     ).toBeNull();
 
@@ -472,6 +491,7 @@ describe("collaboration Action Grant control", () => {
       fixture.control.describeIntent(fixture.context.backend, {
         intent: "collaboration.change_shared_memory_representation",
         commandRequestId: ids.commandRequest,
+        source: capturedSource,
         mutationId: ids.mutation,
         logicalMemoryId: ids.logicalMemory,
         teamId: ids.team,
@@ -484,8 +504,7 @@ describe("collaboration Action Grant control", () => {
         allowedRepresentations: ["lcm_leaves"],
         previewRevision: 2,
         previewHash: "b".repeat(64),
-        expiresAt: null,
-        candidateSessionId: ids.localSession
+        expiresAt: null
       })
     ).toBeNull();
   });

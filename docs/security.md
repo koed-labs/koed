@@ -37,11 +37,14 @@ separate trusted internal-service transport. They do not pass through the
 local-edge upstream transport or its user-configured remote URL policy.
 
 Team Shared Memory embedding keeps the exact Share Grant, representation,
-consent, policy, replica, source-artifact, semantic-item, and encrypted-chunk
+consent, policy, source-artifact, semantic-item, and encrypted-chunk
 authorization rows under shared transaction locks from authorization through
-decrypt and Embedding Service handoff. Revocation uses conflicting locks, so
-revocation-first performs no plaintext handoff and an already-active lease
-finishes before revocation commits.
+decrypt and Embedding Service handoff. Captured Session sources also require
+their replica and sync relationship. Personal Note sources instead require the
+strict standalone Note/event/revision-one binding and forbid replica and sync
+identities. Revocation uses conflicting locks, so revocation-first performs no
+plaintext handoff and an already-active lease finishes before revocation
+commits.
 
 A Team Memory Answer also freezes its admitted authority at run start. The API
 signs an opaque, short-lived contract containing the exact Share Grant set and
@@ -54,9 +57,11 @@ limited to 128 grants and is forwarded by trusted MCP code, not the synthesis
 model.
 
 Direct Team representation reads, semantic searches, score scans, and
-expansion all revalidate current representation, consent, policy, replica,
-source-artifact, and curated-expiry state before returning metadata or
-decrypting content. A mixed permanent/expiring Curated representation expires
+expansion all revalidate current representation, consent, policy,
+source-artifact, source-kind custody, and curated-expiry state before returning
+metadata or decrypting content. Captured Session reads require a current
+authorized replica/sync pair. Personal Note reads require the sessionless
+standalone artifact. A mixed permanent/expiring Curated representation expires
 at its earliest contributing assertion expiry.
 
 ## Data At Rest
@@ -203,6 +208,12 @@ Workspace Access, Share Grant, lifecycle, entitlement, credential operation
 family, and resource scope before selecting or decrypting content. High-risk
 device-mediated administration requires a freshly browser-confirmed, exact,
 one-use action grant; enrollment does not issue reusable admin authority.
+
+The fixed owner-authorized Personal Note list, detail, and title-rename routes
+also accept the Personal API Token held by Electron main. They expose only the
+owning User's Note metadata and bound Personal Memory Event, and do not permit
+Personal chat access, Note body mutation, or any Team operation. The renderer
+never receives the token.
 
 Desktop also treats rendered content as hostile. Markdown has no raw-HTML path,
 safe protocols are allowlisted, remote images are disabled, oversized input is

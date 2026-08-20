@@ -265,12 +265,12 @@ function Rail({
         <RailButton label="Preferences" onClick={onOpenPreferences}>
           <Settings aria-hidden="true" />
         </RailButton>
-        <RailButton
+        {/* <RailButton
           label={`Identity: ${identityLabel}`}
           onClick={onOpenPreferences}
         >
           <UserRound aria-hidden="true" />
-        </RailButton>
+        </RailButton> */}
       </div>
     </nav>
   );

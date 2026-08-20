@@ -37,6 +37,7 @@ export interface ApiRouteContext {
     admission: CollaborationAdmissionController;
     projectPersonalNote?(input: {
       ownerUserId: string;
+      threadKind: "notes_to_self";
       message: CollaborationMessageRecord;
     }): Promise<void>;
     actionGrantLifecycle?: CollaborationActionGrantLifecycle;

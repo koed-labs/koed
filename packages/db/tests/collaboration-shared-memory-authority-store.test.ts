@@ -482,6 +482,99 @@ describeDb("Collaboration Shared Memory authority store", () => {
     });
   });
 
+  it("retains an authoritative Personal Note preview without a sync relationship", async () => {
+    const fixture = await createFixture();
+    await expect(
+      store.bindEnrollment({
+        identity: fixture.identity,
+        remoteDeviceId: fixture.remoteDeviceId
+      })
+    ).resolves.toBe(true);
+
+    await expect(
+      store.persistAuthoritativePreview({
+        identity: fixture.identity,
+        allowedRepresentations: ["memory_events"],
+        preview: previewFor(fixture)
+      })
+    ).resolves.toBeNull();
+
+    const noteId = randomUUID();
+    const memoryEventId = randomUUID();
+    const remote = previewFor(fixture, {
+      source: {
+        kind: "personal_note",
+        noteId,
+        memoryEventId,
+        logicalMemoryId: fixture.logicalMemoryId
+      },
+      sourceRevision: 1,
+      binding: {
+        sourceRevision: 1,
+        sourceHash: hash("b"),
+        representationPolicyRevision: 3,
+        representationPolicyHash: hash("c"),
+        contentPolicyVersion: 4,
+        contentPolicyHash: hash("d"),
+        classifierVersion: 5,
+        classifierHash: hash("e")
+      },
+      items: [
+        {
+          itemType: "user_message",
+          schemaVersion: 1,
+          sourceId: memoryEventId,
+          sourceLogicalMemoryId: fixture.logicalMemoryId,
+          sourceRevision: 1,
+          occurredAt: timestamp,
+          content: { text: "protected Personal Note preview" }
+        }
+      ]
+    });
+    await expect(
+      store.persistAuthoritativeCandidatePreview({
+        identity: fixture.identity,
+        allowedRepresentations: ["memory_events"],
+        preview: remote,
+        previewExpiresAt: new Date(Date.now() + 60_000).toISOString()
+      })
+    ).resolves.toMatchObject({
+      source: { kind: "personal_note", noteId, memoryEventId },
+      previewHash: remote.previewHash,
+      sourceRevision: 1
+    });
+    await expect(
+      store.persistAuthoritativePreview({
+        identity: fixture.identity,
+        allowedRepresentations: ["memory_events"],
+        preview: remote
+      })
+    ).resolves.toMatchObject({
+      source: { kind: "personal_note", noteId, memoryEventId },
+      previewHash: remote.previewHash,
+      sourceRevision: 1
+    });
+    await expect(
+      store.readAuthoritativePreview({
+        ...fixture.identity,
+        previewHash: remote.previewHash
+      })
+    ).resolves.toMatchObject({
+      source: { kind: "personal_note", noteId, memoryEventId },
+      items: [{ sourceId: memoryEventId }]
+    });
+    await expect(
+      pool.query<{ sync_relationship_id: string | null }>(
+        `select sync_relationship_id
+           from collaboration_shared_memory_previews
+          where preview_id = $1`,
+        [remote.previewId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ sync_relationship_id: null }]
+    });
+  });
+
   it("rotates stale authority after authenticated device or upstream identity replacement", async () => {
     const fixture = await createFixture();
     await bindFixture(fixture);
@@ -926,6 +1019,35 @@ describeDb("Collaboration Shared Memory authority store", () => {
     expect(JSON.stringify(atRest.rows)).not.toContain(
       fixture.companionThreadId
     );
+  });
+
+  it("persists a grant that authorizes every supported representation", async () => {
+    const fixture = await createFixture();
+    await bindFixture(fixture);
+    const { consent } = await persistPreviewAndConsent(fixture);
+    const ownerAllowedRepresentations = [
+      "memory_events",
+      "lcm_leaves",
+      "lcm_rollups",
+      "curated_assertions"
+    ] as const;
+    const remoteGrant = grantFor(fixture, consent.consent.id, {
+      ownerAllowedRepresentations: [...ownerAllowedRepresentations]
+    });
+
+    await expect(
+      store.persistAuthoritativeGrant({
+        identity: fixture.identity,
+        grant: remoteGrant,
+        prior: null,
+        companion: companionFor(fixture)
+      })
+    ).resolves.toMatchObject({
+      grant: {
+        id: remoteGrant.id,
+        ownerAllowedRepresentations
+      }
+    });
   });
 
   it("durably persists the explicit companion binding before returning the grant", async () => {

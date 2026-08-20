@@ -7,6 +7,7 @@ import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   crossIdentitySyncDigest,
   crossIdentitySyncDeterministicUuid,
+  personalNoteSourceRevisionHash,
   sharedMemoryGrantScopedSourceId,
   type CapturedSessionSyncPackageV1,
   type EnvelopeEncryptionProvider
@@ -470,6 +471,16 @@ describeDb("Shared Memory repository", () => {
          deployment_identity_id, external_subject_id
        ) values ($1, $2) returning id`,
       [sourceDeployment.rows[0]!.id, remoteExternalSubjectId]
+    );
+    await pool.query(
+      `insert into sync_principal_links (
+         local_user_id, external_user_identity_id, proof_kind, proof_reference
+       ) values ($1, $2, 'test_fixture', $3)`,
+      [
+        ownerUserId,
+        remoteIdentity.rows[0]!.id,
+        `shared-memory-principal-${randomUUID()}`
+      ]
     );
     const credential = await pool.query<{ id: string }>(
       `insert into device_credentials (
@@ -2014,6 +2025,283 @@ describeDb("Shared Memory repository", () => {
       })
     ).resolves.toMatchObject({ claimed: 0, activated: 0, failed: 0 });
     expect(repairedGrantIds.filter((id) => id === grantId)).toHaveLength(0);
+  });
+
+  it("activates, recalls, and revokes an immutable Personal Note without creating a sync replica", async () => {
+    const fixture = await createWorkspaceFixture();
+    const noteId = randomUUID();
+    const memoryEventId = randomUUID();
+    const sourceDeploymentProtocolId = randomUUID();
+    const sourceOwnerPrincipalId = randomUUID();
+    const logicalMemoryId = crossIdentitySyncDeterministicUuid({
+      protocol: "koed.personal-note-share/v1",
+      sourceDeploymentId: sourceDeploymentProtocolId,
+      sourceOwnerPrincipalId,
+      noteId,
+      identity: "logical-memory"
+    });
+    const occurredAt = "2026-01-02T03:04:05.000Z";
+    const body = "The launch checklist requires two independent reviewers.";
+    const source = {
+      kind: "personal_note" as const,
+      noteId,
+      memoryEventId,
+      logicalMemoryId
+    };
+    const items = [
+      {
+        id: memoryEventId,
+        representation: "memory_events" as const,
+        sequence: 1,
+        occurredAt,
+        sourceItems: [
+          {
+            id: memoryEventId,
+            sourceKind: "user_message" as const,
+            occurredAt,
+            body,
+            actorName: null,
+            toolName: null,
+            toolCallId: null
+          }
+        ]
+      }
+    ];
+    const manifest = [
+      {
+        sourceId: memoryEventId,
+        revisionHash: personalNoteSourceRevisionHash({
+          source,
+          sourceOwnerPrincipalId,
+          content: body,
+          occurredAt,
+          sourceSequence: 1
+        })
+      }
+    ];
+    const byteCount = Buffer.byteLength(JSON.stringify(items[0]), "utf8");
+    const candidateHash = crossIdentitySyncDigest({
+      version: 1,
+      source,
+      sourceOwnerPrincipalId,
+      representation: "memory_events",
+      sourceRevision: 1,
+      itemCount: 1,
+      byteCount,
+      excludedItemCount: 0,
+      manifest,
+      items
+    });
+    const candidate = {
+      source,
+      logicalMemoryId,
+      representation: "memory_events" as const,
+      sourceRevision: 1 as const,
+      candidateHash,
+      itemCount: 1,
+      excludedItemCount: 0,
+      manifest,
+      byteCount,
+      items
+    };
+    const shareAuthority = authority(fixture);
+    const reviewed = await repository.createSharedMemoryCandidatePreview(
+      actor(fixture.ownerUserId),
+      {
+        source,
+        logicalMemoryId,
+        candidateHash,
+        sourceRevision: 1,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest,
+        byteCount,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        representation: "memory_events",
+        allowedRepresentations: ["memory_events"],
+        mode: "snapshot",
+        authority: shareAuthority
+      }
+    );
+    expect(reviewed).not.toBeNull();
+    const pending = await repository.createPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: randomUUID(),
+        logicalMemoryId,
+        source,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        preview: reviewed!,
+        previewRevision: reviewed!.previewRevision,
+        title: "Launch reviewers",
+        mode: "snapshot",
+        allowedRepresentations: ["memory_events"],
+        selectedRepresentation: "memory_events",
+        authority: shareAuthority
+      }
+    );
+
+    await expect(
+      repository.listOwnerShares(actor(fixture.ownerUserId), { limit: 10 })
+    ).resolves.toMatchObject({
+      entries: [
+        {
+          kind: "pending",
+          pendingShare: { id: pending.id, state: "preparing" },
+          summary: { sourceTitle: "Launch reviewers" }
+        }
+      ]
+    });
+
+    const persisted = await repository.persistPersonalNoteSourceArtifact(
+      actor(fixture.ownerUserId),
+      {
+        pendingShareId: pending.id,
+        sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId,
+        deviceCredentialId: fixture.deviceCredentialId,
+        candidate
+      }
+    );
+    expect(persisted).toMatchObject({
+      source,
+      logicalMemoryId,
+      remoteReplicaId: null,
+      representation: "memory_events",
+      sourceRevision: 1
+    });
+    await expect(
+      pool.query<{
+        protocol_deployment_id: string;
+        external_subject_id: string;
+        local_user_id: string;
+      }>(
+        `select deployment.protocol_deployment_id,
+                external_user.external_subject_id,link.local_user_id
+           from deployment_identities deployment
+           join sync_external_user_identities external_user
+             on external_user.deployment_identity_id=deployment.id
+           join sync_principal_links link
+             on link.external_user_identity_id=external_user.id
+          where deployment.protocol_deployment_id=$1
+            and external_user.external_subject_id=$2`,
+        [sourceDeploymentProtocolId, sourceOwnerPrincipalId]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          protocol_deployment_id: sourceDeploymentProtocolId,
+          external_subject_id: sourceOwnerPrincipalId,
+          local_user_id: fixture.ownerUserId
+        }
+      ]
+    });
+    await expect(
+      repository.processPendingShares({
+        ensureCompanion: ensurePendingShareCompanion
+      })
+    ).resolves.toMatchObject({ claimed: 1, activated: 1, failed: 0 });
+
+    const ownerView = await repository.getOwnerShare(
+      actor(fixture.ownerUserId),
+      { kind: "pending", id: pending.id }
+    );
+    if (!ownerView || ownerView.kind !== "pending") {
+      throw new Error("expected activated Personal Note Pending Share");
+    }
+    expect(ownerView.pendingShare).toMatchObject({
+      source,
+      state: "activated",
+      stage: "complete"
+    });
+    expect(ownerView.summary.sourceTitle).toBe("Launch reviewers");
+    const shareGrantId = ownerView.pendingShare.grantId!;
+    const storage = await pool.query<{
+      source_kind: string;
+      source_note_id: string;
+      source_memory_event_id: string;
+      remote_replica_id: string | null;
+      session_id: string | null;
+      representation_source_kind: string;
+      replica_count: string;
+      sync_count: string;
+      companion_count: string;
+    }>(
+      `select share.source_kind,share.source_note_id,share.source_memory_event_id,
+              share.remote_replica_id,share.session_id,
+              representation.source_kind as representation_source_kind,
+              (select count(*)::text from memory_replicas replica
+                where replica.logical_memory_id=share.logical_memory_id) as replica_count,
+              (select count(*)::text from cross_identity_sync_relationships sync
+                where sync.logical_memory_id=share.logical_memory_id) as sync_count,
+              (select count(*)::text from collaboration_threads thread
+                where thread.share_grant_id=share.id
+                  and thread.kind='shared_session_discussion') as companion_count
+         from team_session_share_grants share
+         join team_memory_representations representation
+           on representation.share_grant_id=share.id and representation.state='available'
+        where share.id=$1`,
+      [shareGrantId]
+    );
+    expect(storage.rows).toEqual([
+      {
+        source_kind: "personal_note",
+        source_note_id: noteId,
+        source_memory_event_id: memoryEventId,
+        remote_replica_id: null,
+        session_id: null,
+        representation_source_kind: "personal_note",
+        replica_count: "0",
+        sync_count: "0",
+        companion_count: "1"
+      }
+    ]);
+
+    const recalled = await repository.readGrantRepresentation(
+      actor(fixture.readerUserId),
+      { shareGrantId }
+    );
+    expect(recalled?.grant).toMatchObject({
+      source,
+      displayTitle: "Launch reviewers",
+      lifecycle: "active"
+    });
+    expect(recalled?.items).toMatchObject([
+      {
+        itemType: "user_message",
+        sourceLogicalMemoryId: logicalMemoryId,
+        sourceRevision: 1,
+        occurredAt,
+        content: { text: body }
+      }
+    ]);
+
+    const revoked = await repository.revokeShareGrant(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        shareGrantId,
+        expectedGrantVersion: recalled!.grant.grantVersion,
+        reasonCode: "owner_withdrawal",
+        authority: shareAuthority
+      }
+    );
+    expect(revoked.lifecycle).toBe("revoked");
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId
+      })
+    ).resolves.toBeNull();
+    const retainedSource = await pool.query<{ count: string }>(
+      `select count(*)::text as count from shared_source_artifacts
+        where logical_memory_id=$1 and source_kind='personal_note'`,
+      [logicalMemoryId]
+    );
+    expect(retainedSource.rows[0]?.count).toBe("1");
   });
 
   it("fails a Pending Share closed when its reviewed candidate manifest cannot be reproduced", async () => {

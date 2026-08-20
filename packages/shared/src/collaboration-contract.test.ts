@@ -893,6 +893,11 @@ describe("collaboration renderer commands", () => {
       {
         command: "collaboration.share_memory",
         input: {
+          source: {
+            kind: "captured_session",
+            sessionId: ids.sharedSession,
+            logicalMemoryId: ids.logicalMemory
+          },
           mutationId: ids.mutation,
           logicalGrantId: ids.logicalThread,
           logicalMemoryId: ids.logicalMemory,
@@ -905,7 +910,6 @@ describe("collaboration renderer commands", () => {
           previewRevision: 1,
           previewHash: "b".repeat(64),
           expiresAt: null,
-          candidateSessionId: ids.sharedSession,
           actionGrant: actionGrant()
         }
       },
@@ -924,6 +928,11 @@ describe("collaboration renderer commands", () => {
       {
         command: "collaboration.change_shared_memory_representation",
         input: {
+          source: {
+            kind: "captured_session",
+            sessionId: ids.sharedSession,
+            logicalMemoryId: ids.logicalMemory
+          },
           mutationId: ids.mutation,
           logicalMemoryId: ids.logicalMemory,
           teamId: ids.team,
@@ -937,7 +946,6 @@ describe("collaboration renderer commands", () => {
           previewRevision: 1,
           previewHash: "b".repeat(64),
           expiresAt: null,
-          candidateSessionId: ids.sharedSession,
           actionGrant: actionGrant()
         }
       }
@@ -1040,6 +1048,11 @@ describe("collaboration renderer commands", () => {
       {
         intent: "collaboration.share_memory",
         commandRequestId: ids.mutation,
+        source: {
+          kind: "captured_session",
+          sessionId: ids.sharedSession,
+          logicalMemoryId: ids.logicalMemory
+        },
         mutationId: ids.mutation,
         logicalGrantId: ids.logicalThread,
         logicalMemoryId: ids.logicalMemory,
@@ -1051,8 +1064,7 @@ describe("collaboration renderer commands", () => {
         selectedRepresentation: "memory_events",
         previewRevision: 1,
         previewHash: "b".repeat(64),
-        expiresAt: null,
-        candidateSessionId: ids.sharedSession
+        expiresAt: null
       },
       {
         intent: "collaboration.revoke_shared_memory",
@@ -1067,6 +1079,11 @@ describe("collaboration renderer commands", () => {
       {
         intent: "collaboration.change_shared_memory_representation",
         commandRequestId: ids.mutation,
+        source: {
+          kind: "captured_session",
+          sessionId: ids.sharedSession,
+          logicalMemoryId: ids.logicalMemory
+        },
         mutationId: ids.mutation,
         logicalMemoryId: ids.logicalMemory,
         teamId: ids.team,
@@ -1079,8 +1096,7 @@ describe("collaboration renderer commands", () => {
         allowedRepresentations: ["lcm_leaves"],
         previewRevision: 1,
         previewHash: "b".repeat(64),
-        expiresAt: null,
-        candidateSessionId: ids.sharedSession
+        expiresAt: null
       }
     ] as const) {
       expect(

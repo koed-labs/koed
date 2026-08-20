@@ -1184,66 +1184,71 @@ export function App({
         />
       );
   } else if (route.kind === "personal-memory-notes") {
-    const notesView =
-      snapshot?.view.kind === "thread" &&
-      snapshot.view.thread.kind === "notes_to_self"
-        ? snapshot.view
-        : null;
-    content = notesView ? (
-      <PersonalNotesView
-        markdownAdapters={collaboration.markdownAdapters}
-        messages={notesView.messages.items}
-        newNote={route.newNote === true}
-        onBack={() =>
-          navigate({
-            authority: currentNavigationEntry(navigation).authority,
-            route: { kind: "personal-memory-notes" }
-          })
-        }
-        onNew={() =>
-          navigate({
-            authority: currentNavigationEntry(navigation).authority,
-            route: { kind: "personal-memory-notes", newNote: true }
-          })
-        }
-        onSave={async (body) => {
-          const clientMessageId = crypto.randomUUID();
-          const updated = await client.sendMessage({
-            body,
-            clientMessageId,
-            thread: {
-              scope: "personal",
-              threadId: notesView.thread.id
-            }
-          });
-          const created =
-            updated.view.kind === "thread"
-              ? updated.view.messages.items.find(
-                  (message) => message.clientMessageId === clientMessageId
+    content =
+      personalMemoryApi?.createNote &&
+      personalMemoryApi?.listNotes &&
+      personalMemoryApi.loadNote &&
+      personalMemoryApi.renameNote ? (
+        <PersonalNotesView
+          api={personalMemoryApi}
+          markdownAdapters={collaboration.markdownAdapters}
+          newNote={route.newNote === true}
+          onBack={() =>
+            navigate({
+              authority: currentNavigationEntry(navigation).authority,
+              route: { kind: "personal-memory-notes" }
+            })
+          }
+          onNew={() =>
+            navigate({
+              authority: currentNavigationEntry(navigation).authority,
+              route: { kind: "personal-memory-notes", newNote: true }
+            })
+          }
+          onSave={async (body) => {
+            const created = await personalMemoryApi.createNote!({
+              body,
+              idempotencyKey: crypto.randomUUID()
+            });
+            navigate({
+              authority: currentNavigationEntry(navigation).authority,
+              route: {
+                kind: "personal-memory-notes",
+                noteId: created.noteId
+              }
+            });
+          }}
+          onShare={
+            (snapshot?.navigation.teams.some(
+              (team) =>
+                team.lifecycle === "active" &&
+                team.workspaces.some(
+                  (workspace) =>
+                    workspace.lifecycle === "active" &&
+                    workspace.access === "write"
                 )
-              : null;
-          navigate({
-            authority: currentNavigationEntry(navigation).authority,
-            route: {
-              kind: "personal-memory-notes",
-              ...(created ? { noteId: created.id } : {})
-            }
-          });
-        }}
-        onSelect={(noteId) =>
-          navigate({
-            authority: currentNavigationEntry(navigation).authority,
-            route: { kind: "personal-memory-notes", noteId }
-          })
-        }
-        selectedNoteId={route.noteId}
-      />
-    ) : (
-      <EmptyRoute
-        description="Loading your existing Notes-to-self messages."
-        title="Opening Notes"
-      />
-    );
+            ) ?? false)
+              ? (note) =>
+                  collaboration.setModal({
+                    kind: "share_personal_note",
+                    note
+                  })
+              : undefined
+          }
+          onSelect={(noteId) =>
+            navigate({
+              authority: currentNavigationEntry(navigation).authority,
+              route: { kind: "personal-memory-notes", noteId }
+            })
+          }
+          selectedNoteId={route.noteId}
+        />
+      ) : (
+        <EmptyRoute
+          description="Loading your existing Notes-to-self messages."
+          title="Opening Notes"
+        />
+      );
   } else if (route.kind === "personal-memory-shares") {
     if (currentSharesStatus.state !== "ready") {
       let onAction: (() => void) | undefined;
