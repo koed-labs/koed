@@ -1280,7 +1280,7 @@ describe("CollaborationApp", () => {
               projectAssignmentSource: "detected",
               eventCount: 2,
               invalidatedCount: 0,
-              latestAt: "2026-08-05T12:00:00.000Z",
+              latestAt: new Date().toISOString(),
               sample: "A local Captured Session awaiting Team preparation."
             }
           ]
