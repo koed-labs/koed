@@ -9,7 +9,8 @@ import { preflightExperienceReplay } from "./preflight.js";
 import { createCliExperienceReplayDependencies } from "./runtime-options.js";
 
 const databaseUrl = process.env.KOED_EXPERIENCE_REPLAY_DATABASE_URL;
-const suite = databaseUrl ? describe : describe.skip;
+const suite =
+  databaseUrl && process.platform === "linux" ? describe : describe.skip;
 const roots: string[] = [];
 const fixturePath = fileURLToPath(
   new URL("./fixtures/smoke.config.json", import.meta.url)

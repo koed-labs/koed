@@ -81,7 +81,7 @@ import {
   mergeReplayTelemetry,
   type ReplayTelemetryMergeInput
 } from "./telemetry.js";
-import { acquireRunLease } from "./run-lease.js";
+import { acquireRunLease, type RunLeaseSystem } from "./run-lease.js";
 import type {
   TrajectoryJudgeInput,
   TrajectoryJudgeResult
@@ -200,6 +200,8 @@ export interface ExperienceReplayCoordinatorDependencies {
   readonly runId?: string;
   /** Clean tracked source revision used by a recorded product-path runtime. */
   readonly repositoryCommit?: string;
+  /** Host process identity used by the run lease; production uses Linux. */
+  readonly runLeaseSystem?: RunLeaseSystem;
   countEmbeddingTokens(text: string): number;
   runSource(input: {
     task: CoordinatorTask;
@@ -1063,7 +1065,11 @@ export const runExperienceReplay = async (
     throw new Error("Persisted run manifest differs from resolved execution");
   }
   const manifest = priorManifest ?? proposedManifest;
-  const lease = await acquireRunLease(directory.root);
+  const lease = await acquireRunLease(directory.root, {
+    ...(dependencies.runLeaseSystem
+      ? { system: dependencies.runLeaseSystem }
+      : {})
+  });
 
   try {
     await phase(journal, "preflight", "started");

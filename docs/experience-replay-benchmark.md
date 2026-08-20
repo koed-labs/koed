@@ -8,6 +8,15 @@ same task.
 
 ## Start Here
 
+The benchmark coordinator currently requires a Linux host. Native Linux, WSL,
+and Linux containers are supported. Native macOS and Windows hosts are not yet
+supported. Running only the Terminal-Bench task containers through Docker
+Desktop does not make a macOS coordinator compatible because the run lease,
+telemetry, and local Codex bridge still execute on the host. macOS support can
+be added later when those host-side boundaries have cross-platform
+implementations and equivalent safety tests. Artifact-only report, sanitize,
+and campaign-merge commands remain portable.
+
 Choose the smallest workflow that answers the question you are testing:
 
 | Goal                                           | Workflow                              | Model work                                         | Corpus                            |

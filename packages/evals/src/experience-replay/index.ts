@@ -39,6 +39,7 @@ import type {
   OracleCampaignProtocol,
   OracleCampaignShardManifest
 } from "./core/index.js";
+import { assertExperienceReplayHostPlatform } from "./host-platform.js";
 
 const oracleArtifactLocation = (
   corpusDirectory: string,
@@ -128,11 +129,15 @@ export * from "./preflight.js";
 export * from "./recorded-preflight-runtime.js";
 export * from "./replay-scheduler.js";
 export * from "./runtime-options.js";
+export * from "./host-platform.js";
 
 export const runExperienceReplayCli = async (
   argv: readonly string[]
 ): Promise<unknown> => {
   const command = parseExperienceReplayCommand(argv);
+  if (["preflight", "run", "resume"].includes(command.name)) {
+    assertExperienceReplayHostPlatform();
+  }
   switch (command.name) {
     case "campaign-merge": {
       const manifest = JSON.parse(

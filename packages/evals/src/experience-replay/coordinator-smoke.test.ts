@@ -40,6 +40,18 @@ import { mergeOracleCampaignRuns } from "./campaign-merge.js";
 import { qualifyOracleCorpusCollection } from "./oracle-corpus-qualifier.js";
 import { parseOracleQualificationManifest } from "./oracle-qualification-manifest.js";
 import { HarborClientError } from "./harbor-client.js";
+import type { RunLeaseSystem } from "./run-lease.js";
+
+const runLeaseSystem: RunLeaseSystem = {
+  currentOwner: async () => ({
+    hostname: "fixture-host",
+    machineId: "fixture-machine",
+    bootId: "fixture-boot",
+    pid: 1234,
+    processStartTicks: "1001"
+  }),
+  processStartTicks: async (pid) => (pid === 1234 ? "1001" : null)
+};
 
 const productAttestation = {
   schema: "koed-experience-replay-local-product-template-v1",
@@ -369,6 +381,7 @@ const fakeDependencies = (
   events: string[],
   overrides: Partial<ExperienceReplayCoordinatorDependencies> = {}
 ): ExperienceReplayCoordinatorDependencies => ({
+  runLeaseSystem,
   countEmbeddingTokens: (text) =>
     text.trim() ? text.trim().split(/\s+/).length : 0,
   async runSource({ task, lifecycle, developerInstructions }) {
