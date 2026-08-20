@@ -9,12 +9,23 @@ import {
   listenNodeHttpServer
 } from "./server.js";
 import { testConfig } from "./test-helpers.js";
+import type { ResolvedAcceleration } from "./acceleration.js";
+
+const cpuAcceleration: ResolvedAcceleration = {
+  policy: "cpu",
+  backend: "cpu",
+  device: null,
+  gpuLayers: "0",
+  fallbackReason: null,
+  deviceListing: null
+};
 
 class RouteRuntime extends EmbeddingRuntime {
   embedCalls: Array<{ texts: string[]; priority: string | null }> = [];
   rerankCalls: Array<{ query: string; documents: string[] }> = [];
   healthModelLoaded = true;
   healthRerankerLoaded = true;
+  resolvedEmbeddingAcceleration: ResolvedAcceleration = cpuAcceleration;
   embedResult: EmbedResponse = {
     model: "qwen3-0.6b",
     dimensions: 3,
@@ -65,6 +76,14 @@ class RouteRuntime extends EmbeddingRuntime {
     return { active: false, waiting_interactive: 0, waiting_background: 1 };
   }
 
+  override embeddingAcceleration(): ResolvedAcceleration {
+    return this.resolvedEmbeddingAcceleration;
+  }
+
+  override rerankerAcceleration(): ResolvedAcceleration | null {
+    return this.config.rerankerKey ? cpuAcceleration : null;
+  }
+
   override async embedText(
     texts: string[],
     requestedPriority: string | null
@@ -89,15 +108,22 @@ const logger = () => createEmbeddingLogger("critical", () => undefined);
 
 describe("Embedding Service routes", () => {
   it("changes non-CPU hardware identity when the accelerator changes", async () => {
-    const config = testConfig({ backendClass: "cuda" });
-    const first = await capacityHardwareIdentity(
-      config,
-      async () => "CUDA0: device-a"
-    );
-    const second = await capacityHardwareIdentity(
-      config,
-      async () => "CUDA0: device-b"
-    );
+    const first = await capacityHardwareIdentity({
+      policy: "cuda",
+      backend: "cuda",
+      device: "CUDA0",
+      gpuLayers: "all",
+      fallbackReason: null,
+      deviceListing: "CUDA0: device-a"
+    });
+    const second = await capacityHardwareIdentity({
+      policy: "cuda",
+      backend: "cuda",
+      device: "CUDA0",
+      gpuLayers: "all",
+      fallbackReason: null,
+      deviceListing: "CUDA0: device-b"
+    });
 
     expect(first.acceleratorFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(second.acceleratorFingerprint).not.toBe(
@@ -107,10 +133,15 @@ describe("Embedding Service routes", () => {
   });
 
   it("fails non-CPU capacity identity closed without a device listing", async () => {
-    const config = testConfig({ backendClass: "metal" });
-
     await expect(
-      capacityHardwareIdentity(config, async () => null)
+      capacityHardwareIdentity({
+        policy: "metal",
+        backend: "metal",
+        device: "Metal",
+        gpuLayers: "all",
+        fallbackReason: null,
+        deviceListing: null
+      })
     ).rejects.toMatchObject({
       statusCode: 503,
       detail: "embedding accelerator identity is unavailable"
@@ -222,7 +253,6 @@ describe("Embedding Service routes", () => {
   it("protects the content-free capacity identity with the internal token", async () => {
     const config = testConfig({
       embeddingServiceToken: "secret",
-      backendClass: "cpu",
       runtimeVersion: "llama-server-test"
     });
     const runtime = new RouteRuntime(config, logger());
@@ -268,6 +298,30 @@ describe("Embedding Service routes", () => {
     const payload = await json(response);
 
     expect(payload.artifact).toBe(config.modelArtifact);
+  });
+
+  it("does not expose raw accelerator device details through public health", async () => {
+    const config = testConfig();
+    const runtime = new RouteRuntime(config, logger());
+    runtime.resolvedEmbeddingAcceleration = {
+      policy: "cuda",
+      backend: "cuda",
+      device: "CUDA0",
+      gpuLayers: "all",
+      fallbackReason: null,
+      deviceListing: "CUDA0: private device description"
+    };
+    const service = createEmbeddingService(config, runtime, logger());
+
+    const payload = await json(
+      await service.handle(new Request("http://127.0.0.1/health"))
+    );
+
+    expect(payload.acceleration).toBe(
+      "cuda;runtime=llama.cpp;n-gpu-layers=all"
+    );
+    expect(JSON.stringify(payload)).not.toContain("CUDA0");
+    expect(JSON.stringify(payload)).not.toContain("private device");
   });
 
   it("requires embed auth and returns chunk metadata", async () => {

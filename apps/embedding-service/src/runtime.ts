@@ -23,6 +23,10 @@ import type {
   EmbedResponse,
   RerankResponse
 } from "./schemas.js";
+import {
+  accelerationDescription,
+  type ResolvedAcceleration
+} from "./acceleration.js";
 
 export interface ChunkCandidate {
   inputIndex: number;
@@ -42,6 +46,7 @@ export interface LlamaEmbeddingClient {
     measuredTokens: number | null;
   }>;
   rerank(query: string, documents: string[]): Promise<LlamaRerankResult>;
+  acceleration?(): ResolvedAcceleration | null;
 }
 
 export class EmbeddingRuntime {
@@ -140,6 +145,19 @@ export class EmbeddingRuntime {
 
   healthQueueSnapshot() {
     return this.scheduler.snapshot();
+  }
+
+  embeddingAcceleration(): ResolvedAcceleration | null {
+    return this.embeddingServer?.acceleration?.() ?? null;
+  }
+
+  rerankerAcceleration(): ResolvedAcceleration | null {
+    return this.rerankerServer?.acceleration?.() ?? null;
+  }
+
+  modelAcceleration(): string {
+    const resolved = this.embeddingAcceleration();
+    return resolved ? accelerationDescription(resolved) : "loading";
   }
 
   async requireEmbeddingServer(): Promise<LlamaEmbeddingClient> {
@@ -480,7 +498,9 @@ export class EmbeddingRuntime {
         nBatch: this.config.llamaNBatch,
         nUbatch: this.config.llamaNUbatch,
         parallel: this.config.llamaParallel,
-        promptCacheEnabled: false
+        promptCacheEnabled: false,
+        accelerationPolicy: this.config.embeddingAccelerationPolicy,
+        accelerationDevice: this.config.embeddingAccelerationDevice
       });
       await this.startClient(this.embeddingServer);
     } catch (error) {
@@ -527,7 +547,9 @@ export class EmbeddingRuntime {
         nBatch: this.config.rerankerNBatch,
         nUbatch: this.config.rerankerNUbatch,
         parallel: this.config.rerankerParallel,
-        promptCacheEnabled: this.config.rerankerPromptCacheEnabled
+        promptCacheEnabled: this.config.rerankerPromptCacheEnabled,
+        accelerationPolicy: this.config.rerankerAccelerationPolicy,
+        accelerationDevice: this.config.rerankerAccelerationDevice
       });
       await this.startClient(this.rerankerServer);
     } catch (error) {

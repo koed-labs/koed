@@ -12,6 +12,7 @@ target/
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/resources/koed-node/
 coverage/
+.cache/native-runtime/
 .env
 .env.*
 !.env.example

@@ -33,6 +33,17 @@ export interface PackagedRuntimeAssetManifestEntry {
   expectedFiles: string[];
   executablePaths: Record<string, string>;
   installPath?: string;
+  variants?: Array<{
+    backend: "cpu" | "metal" | "cuda";
+    executablePath: string;
+    requirements: {
+      platform: string;
+      architecture: string;
+      minimumCudaToolkit?: string;
+      minimumDriverLinux?: string;
+      discovery?: string;
+    };
+  }>;
 }
 
 export interface PackagedRuntimeAssetManifest {
@@ -433,6 +444,21 @@ const validateManifest = (value: unknown): PackagedRuntimeAssetManifest => {
       throw new Error(
         "Packaged runtime asset executablePaths must be an object."
       );
+    }
+    for (const variant of asset.variants ?? []) {
+      if (!["cpu", "metal", "cuda"].includes(variant.backend)) {
+        throw new Error("Packaged runtime variant backend is invalid.");
+      }
+      safeResolve("/runtime", variant.executablePath);
+      if (
+        !asset.expectedFiles.includes(variant.executablePath) ||
+        !variant.requirements?.platform ||
+        !variant.requirements.architecture
+      ) {
+        throw new Error(
+          "Packaged runtime variant must reference an expected executable and host requirements."
+        );
+      }
     }
   }
   return manifest;

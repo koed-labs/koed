@@ -1,7 +1,7 @@
 {
   "platform": "linux",
   "architecture": "x64",
-  "notes": "Pinned upstream inputs for the Linux x64 Koed native runtime artifact. Linux targets glibc 2.35+ on Ubuntu 22.04. PostgreSQL is source-built on the baseline runner because no selected relocatable upstream Linux binary currently satisfies the packaged runtime contract; llama.cpp uses relocatable upstream release assets.",
+  "notes": "Pinned upstream inputs for the Linux x64 Koed native runtime artifact. Linux targets glibc 2.35+ on Ubuntu 22.04. PostgreSQL is source-built on the baseline runner because no selected relocatable upstream Linux binary currently satisfies the packaged runtime contract; llama.cpp CPU and CUDA builds share one pinned source revision.",
   "postgres": {
     "kind": "source",
     "version": "17.6",
@@ -16,8 +16,16 @@
   },
   "llamaCpp": {
     "kind": "official-release",
-    "version": "b9878",
-    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9878/llama-b9878-bin-ubuntu-x64.tar.gz",
-    "sha256": "fa52c1bdc6a17f28bfeaad28ca6783ff94cf85f36dca4a4bb2d9c7e8687c007b"
+    "version": "b10514",
+    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10514/llama-b10514-bin-ubuntu-x64.tar.gz",
+    "sha256": "17b0be601220b7014180e145292573a23db97128b55ba945b1419b3c1d05954c"
+  },
+  "llamaCppCuda": {
+    "kind": "source-cuda-12.4",
+    "version": "b10514",
+    "cudaToolkitVersion": "12.4",
+    "minimumDriverLinux": "550.54.14",
+    "url": "https://github.com/ggml-org/llama.cpp/archive/refs/tags/b10514.tar.gz",
+    "sha256": "95493d301a03abac5e7afd308280fe0413f9b426dba5033ce0386846ad6a709f"
   }
 }

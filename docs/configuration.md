@@ -668,6 +668,11 @@ policy, or full URLs containing customer content.
 - `KOED_POSTGRES_DATA_DIR`, `KOED_POSTGRES_RUN_DIR`, `KOED_POSTGRES_LOG_PATH`: optional native bundled-local Postgres data, socket/runtime, and log paths. Defaults live under `KOED_HOME`.
 - `KOED_BUNDLED_EMBEDDING_MODE`: deprecated. Bundled-local Embedding Service is native-only; `compose` is ignored and missing native assets report setup guidance.
 - `KOED_EMBEDDING_LLAMA_SERVER_BIN`: llama-server executable for the native bundled-local Embedding Service. Defaults to `KOED_HOME/runtime/llama.cpp/llama-server`, then packaged Desktop resources when running packaged Desktop, with source-checkout `vendor/llama.cpp/llama-server` only as a development fallback; the Docker default `EMBEDDING_LLAMA_SERVER_BINARY=/opt/llama.cpp/llama-server` is ignored for native auto-detection unless overridden with this setting.
+- `KOED_EMBEDDING_ACCELERATION`: embedding acceleration policy: `auto`, `cpu`, `metal`, or `cuda`. Native bundled-local runs default to `auto`; CPU Docker Compose defaults to `cpu`. `auto` prefers Metal on Apple Silicon and CUDA on Linux/WSL when the selected llama-server reports a compatible device, then falls back visibly to CPU. Explicit GPU policies fail instead of falling back.
+- `KOED_EMBEDDING_DEVICE`: optional exact llama-server device identifier, such as `CUDA0`. The device must match the requested backend.
+- `KOED_RERANKER_ACCELERATION`: independent reranker acceleration policy. Defaults to `cpu` to avoid unexpected VRAM contention with embedding work.
+- `KOED_RERANKER_DEVICE`: optional exact llama-server device identifier for the reranker.
+- `EMBEDDING_LLAMA_N_BATCH` and `EMBEDDING_LLAMA_N_UBATCH`: logical batch and micro-batch sizes. The defaults are 8192 and 512. The bounded micro-batch avoids allocating accelerator buffers for the entire logical batch while preserving the configured context and embedding chunk contract.
 - `KOED_PACKAGED_DESKTOP=1`: selects packaged Desktop resolver behavior. Packaged mode does not use source-checkout fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `status --json` and `doctor --json` include runtime artifact source diagnostics such as `koed-home-runtime`, `packaged-resource`, or `source-checkout`.
 - `KOED_EMBEDDING_HOST`, `KOED_EMBEDDING_PORT`: host and port for the native bundled-local Embedding Service. Defaults to `127.0.0.1` and `EMBEDDING_SERVICE_HOST_PORT`/`3800`.
 - `KOED_PDS_LAN_PORT`: private-network Desktop pairing and local PDS relay
@@ -704,6 +709,27 @@ policy, or full URLs containing customer content.
 - `EMBEDDING_MODEL_KEY`: supported embedding model key. The embedding service maps this key to an internal supported model definition and fails startup for unknown keys. Default and currently supported key: `qwen3-0.6b`.
 - `EMBEDDING_RERANKER_KEY`: supported reranker model key. Leave blank to disable reranking. Currently supported key: `qwen3-reranker-0.6b`. Docker Compose maps this root setting to each app's process-local `RERANKER_KEY`; direct app-local runs may set `RERANKER_KEY` explicitly, with the app-local value taking precedence.
 - `EMBEDDING_SERVICE_TOKEN`: shared internal token required by embedding and reranking endpoints when configured. `pnpm env:setup` generates this for Docker Compose deployments.
+
+The CUDA Docker starter is an explicit override and requires a working NVIDIA
+Container Toolkit:
+
+```bash
+docker compose \
+  -f examples/docker-compose/docker-compose.yml \
+  -f examples/docker-compose/docker-compose.cuda.yml \
+  up --build
+```
+
+Use the equivalent two files under `examples/server-compose` for a server
+deployment. The CUDA image is pinned by digest and forced to `cuda`; a missing
+container GPU therefore fails visibly. Do not set a backend-class label: Koed
+derives the capacity backend from the supervised process.
+
+The redistributable native Linux CUDA payload is built with pinned CUDA Toolkit
+12.4 and requires NVIDIA Linux driver 550.54.14 or newer. Runtime compatibility
+is still established by the packaged launcher and `llama-server --list-devices`;
+the version floor alone never asserts that a device is usable.
+
 - `EMBEDDING_SERVICE_HEALTH_TIMEOUT_MS`: timeout for API/worker embedding service health probes used by status and access-check routes. Default `1000`.
 - `EMBEDDING_QUERY_INSTRUCTION_ENABLED`: whether semantic recall query embeddings use the Qwen-style `Instruct: ...\nQuery: ...` wrapper. Default `true` for Qwen3 embedding models. Set `false` to compare retrieval or benchmark behavior without query instructions. Stored Memory Event, Memory Node, message, and other source embeddings are not prefixed.
 - `EMBEDDING_QUERY_INSTRUCTION`: optional instruction text for semantic recall query embeddings. Leave blank to use the Koed default instruction for retrieving relevant Memory Events, conversation items, and summaries.
