@@ -6,12 +6,15 @@ import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  aiClientDriverFor,
+  aiClientDriverRegistry,
   aiClientExecutionIdentity,
   aiClientTaskDriverFor,
   assertClaudeCodeVersionCompatibility,
   checkClaudeCodeAvailability,
   claudeAgentSdkEffort,
   claudeAgentSdkEnvironment,
+  claudeSupportedReasoningEfforts,
   claudeExecutableInstallationIdentity,
   claudeAgentSdkTokenUsage,
   isWslWindowsMount,
@@ -74,6 +77,26 @@ describe("Claude AI Client runner boundary", () => {
     });
   });
 
+  it("publishes only SDK-explicit Claude reasoning efforts", () => {
+    expect(
+      claudeSupportedReasoningEfforts({
+        supportsEffort: false
+      })
+    ).toEqual(["none"]);
+    expect(
+      claudeSupportedReasoningEfforts({
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "high"]
+      })
+    ).toEqual(["low", "high"]);
+    expect(
+      claudeSupportedReasoningEfforts({ supportsEffort: true })
+    ).toBeUndefined();
+    expect(
+      claudeSupportedReasoningEfforts({ supportsEffort: undefined })
+    ).toBeUndefined();
+  });
+
   it("passes only explicit Claude effort values and never coerces an invalid option", () => {
     expect(claudeAgentSdkEffort("none")).toBeUndefined();
     expect(claudeAgentSdkEffort("low")).toBe("low");
@@ -83,7 +106,57 @@ describe("Claude AI Client runner boundary", () => {
     );
   });
 
+  it("registers discovery-capable drivers for every supported AI Client", () => {
+    expect([...aiClientDriverRegistry.keys()]).toEqual([
+      "codex",
+      "claude",
+      "pi"
+    ]);
+    for (const driverId of ["codex", "claude", "pi"] as const) {
+      const driver = aiClientDriverFor(driverId);
+      expect(driver.id).toBe(driverId);
+      expect(typeof driver.discover).toBe("function");
+      expect(typeof driver.runJsonTask).toBe("function");
+    }
+  });
+
+  it("retains driver identity in discovery diagnostics for custom instances", async () => {
+    const discovery = await aiClientDriverFor("codex").discover({
+      instanceId: "work-account",
+      environment: {},
+      executablePath: "/missing/koed-codex"
+    });
+
+    expect(discovery).toMatchObject({
+      healthState: "unavailable",
+      authenticationState: "unknown",
+      diagnostics: [
+        expect.objectContaining({ code: "discovery_failed", severity: "error" })
+      ]
+    });
+    expect(discovery.installationIdentityHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(
+      discovery.capabilities.find((item) => item.id === "local_synthesis")
+    ).toMatchObject({
+      support: "supported",
+      readiness: "unavailable"
+    });
+  });
+
   it("derives provider-specific execution identity", () => {
+    expect(
+      aiClientExecutionIdentity("codex", "codex.work", {
+        provider: "openai",
+        id: "gpt-5.4"
+      })
+    ).toMatchObject({
+      driverId: "codex",
+      modelProvider: "openai",
+      modelId: "gpt-5.4",
+      aiClientInstanceId: "codex.work",
+      transport: "app_server",
+      sourceAdapterVersion: "codex-app-server-v1"
+    });
     expect(aiClientExecutionIdentity("codex", "codex.work")).toMatchObject({
       aiClientInstanceId: "codex.work",
       transport: "app_server",

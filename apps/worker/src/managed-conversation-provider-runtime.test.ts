@@ -14,6 +14,8 @@ describe("ManagedConversationRuntimeRegistry", () => {
 
     registry.set("codex", "execution-1", {
       executionGeneration: 4,
+      aiClientInstanceId: "codex.default",
+      configIdentityHash: "config-hash",
       session: codexSession as never
     });
 

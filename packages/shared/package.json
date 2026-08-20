@@ -22,6 +22,10 @@
     "./secure-upstream-fetch": {
       "types": "./dist/secure-upstream-fetch.d.ts",
       "import": "./dist/secure-upstream-fetch.js"
+    },
+    "./ai-client-contract": {
+      "types": "./dist/ai-client-contract.d.ts",
+      "import": "./dist/ai-client-contract.js"
     }
   },
   "files": [

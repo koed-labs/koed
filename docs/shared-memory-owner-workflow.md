@@ -43,6 +43,7 @@ that is ordinary code organization, not a new workflow owner.
 | Source ownership and owner principal                                            | Personal Memory repository                       | Who may preview, consent, create, change, and revoke                         |
 | Captured Session replica state, source revision/hash, provenance, relationship  | Cross-Identity Sync repository                   | Whether exact owner-private Captured Session bytes are eligible              |
 | Personal Note id, projected Memory Event, owner, and revision-one hash          | Personal Memory repository                       | Whether the exact standalone Note snapshot is eligible                       |
+| Replica state, source revision/hash, provenance, relationship                   | Cross-Identity Sync repository                   | Whether exact owner-private source bytes are eligible                        |
 | Team, Workspace, membership, Workspace Access                                   | Team Backend                                     | Destination existence and current access                                     |
 | Owner, Team, and Workspace representation policies                              | Transaction-owning Shared Memory repository      | Exact three-policy intersection                                              |
 | Preview ID/hash/revision and encrypted artifact binding                         | Shared Memory repository                         | Immutable consent snapshot and pagination                                    |

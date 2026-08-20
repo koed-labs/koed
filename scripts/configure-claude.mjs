@@ -28,6 +28,42 @@ const captureHookPath = resolve(
   repoRoot,
   "packages/mcp-server/dist/capture-hook.js"
 );
+const allowedEnvironment = [
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "PATH",
+  "SHELL",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+  "XDG_CACHE_HOME",
+  "CLAUDE_CONFIG_DIR",
+  "SYSTEMROOT",
+  "COMSPEC",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PATHEXT"
+];
+const childEnvironment = Object.fromEntries(
+  allowedEnvironment.flatMap((name) =>
+    process.env[name] ? [[name, process.env[name]]] : []
+  )
+);
 
 for (const filePath of [mcpCliPath, captureHookPath]) {
   if (!existsSync(filePath)) {
@@ -39,8 +75,27 @@ for (const filePath of [mcpCliPath, captureHookPath]) {
 const runClaude = (args) =>
   spawnSync(claudeCommand, args, {
     encoding: "utf8",
-    env: process.env
+    env: childEnvironment,
+    timeout: 30_000
   });
+const unquote = (value) => {
+  const trimmed = value.trim();
+  return trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+    ? trimmed.slice(1, -1)
+    : trimmed;
+};
+const mcpEntryIsKoedOwned = (output) => {
+  const args = output.match(/^\s*Args:\s+(.+)$/m)?.[1];
+  const configuredKoedHome = output.match(/^\s*KOED_HOME=(.+)$/m)?.[1];
+  return Boolean(
+    args &&
+    configuredKoedHome &&
+    resolve(unquote(args)) === mcpCliPath &&
+    resolve(unquote(configuredKoedHome)) === koedHome
+  );
+};
 
 const auth = runClaude(["auth", "status", "--json"]);
 if (mode !== "remove" && auth.status !== 0) {
@@ -89,7 +144,11 @@ if (mode === "check") {
   const missingHooks = hookEvents.filter(
     (eventName) => !hasKoedHook(settings.hooks[eventName])
   );
-  if (mcp.status !== 0 || missingHooks.length > 0) {
+  if (
+    mcp.status !== 0 ||
+    !mcpEntryIsKoedOwned(mcp.stdout ?? "") ||
+    missingHooks.length > 0
+  ) {
     console.error(
       `Claude Code integration needs repair${
         missingHooks.length > 0
@@ -104,7 +163,13 @@ if (mode === "check") {
 }
 
 if (mode === "remove") {
-  runClaude(["mcp", "remove", "--scope", "user", mcpName]);
+  const existingMcp = runClaude(["mcp", "get", mcpName]);
+  if (
+    existingMcp.status === 0 &&
+    mcpEntryIsKoedOwned(existingMcp.stdout ?? "")
+  ) {
+    runClaude(["mcp", "remove", "--scope", "user", mcpName]);
+  }
   for (const eventName of hookEvents) {
     const remaining = withoutKoedHook(settings.hooks[eventName]);
     if (remaining.length > 0) settings.hooks[eventName] = remaining;
@@ -122,10 +187,23 @@ if (mode === "remove") {
   process.exit(0);
 }
 
-spawnSync(claudeCommand, ["mcp", "remove", "--scope", "user", mcpName], {
-  encoding: "utf8",
-  env: process.env
-});
+const existingMcp = runClaude(["mcp", "get", mcpName]);
+if (
+  existingMcp.status === 0 &&
+  !mcpEntryIsKoedOwned(existingMcp.stdout ?? "")
+) {
+  console.error(
+    `Claude Code already has an unrelated user-scoped MCP server named ${mcpName}. Rename it or set MEMORY_MCP_NAME to a distinct name.`
+  );
+  process.exit(1);
+}
+if (existingMcp.status === 0) {
+  const remove = runClaude(["mcp", "remove", "--scope", "user", mcpName]);
+  if (remove.status !== 0) {
+    console.error(remove.stderr?.trim() || "Claude MCP removal failed.");
+    process.exit(1);
+  }
+}
 const add = spawnSync(
   claudeCommand,
   [
@@ -140,7 +218,7 @@ const add = spawnSync(
     nodeCommand,
     mcpCliPath
   ],
-  { encoding: "utf8", env: process.env }
+  { encoding: "utf8", env: childEnvironment, timeout: 30_000 }
 );
 if (add.status !== 0) {
   console.error(add.stderr?.trim() || "Claude MCP setup failed.");

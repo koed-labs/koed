@@ -36,6 +36,7 @@ export interface ManagedConversationExecutionRecord {
   ownerUserId: string;
   projectId: string;
   provider: string;
+  aiClientInstanceId: string;
   state: ManagedConversationExecutionState;
   stateVersion: number;
   executionGeneration: number;
@@ -121,6 +122,7 @@ export interface ManagedConversationRepository {
     input: {
       projectId: string;
       provider: string;
+      aiClientInstanceId: string;
       runnerDeploymentId: string;
       runnerDeviceId: string;
       idempotencyKey: string;
@@ -313,6 +315,7 @@ type ExecutionRow = {
   owner_user_id: string;
   project_id: string;
   provider: string;
+  ai_client_instance_id: string;
   state: ManagedConversationExecutionState;
   state_version: number;
   execution_generation: number;
@@ -389,7 +392,7 @@ type CommandRow = {
 };
 
 const EXECUTION_COLUMNS = `
-  id, owner_user_id, project_id, provider, state,
+  id, owner_user_id, project_id, provider, ai_client_instance_id, state,
   state_version, execution_generation, runner_deployment_id, runner_device_id,
   runner_id, runner_lease_expires_at, logical_session_id, provider_thread_id,
   provider_cli_version, source_generation_id, last_error_code,
@@ -423,6 +426,7 @@ const mapExecution = (
   ownerUserId: row.owner_user_id,
   projectId: row.project_id,
   provider: row.provider,
+  aiClientInstanceId: row.ai_client_instance_id,
   state: row.state,
   stateVersion: row.state_version,
   executionGeneration: row.execution_generation,
@@ -493,6 +497,30 @@ const mapCommand = (
 
 const sha256 = (value: string): string =>
   createHash("sha256").update(value, "utf8").digest("hex");
+
+const startDigest = (input: {
+  projectId: string;
+  provider?: string;
+  aiClientInstanceId?: string;
+  runnerDeploymentId: string;
+  runnerDeviceId: string;
+  initialPrompt?: string;
+  deferUntilRuntimeBinding?: boolean;
+}): string =>
+  sha256(
+    JSON.stringify({
+      kind: "start",
+      projectId: input.projectId,
+      ...(input.provider === undefined ? {} : { provider: input.provider }),
+      ...(input.aiClientInstanceId === undefined
+        ? {}
+        : { aiClientInstanceId: input.aiClientInstanceId }),
+      runnerDeploymentId: input.runnerDeploymentId,
+      runnerDeviceId: input.runnerDeviceId,
+      initialPrompt: input.initialPrompt ?? null,
+      deferUntilRuntimeBinding: input.deferUntilRuntimeBinding === true
+    })
+  );
 
 const statusError = (
   message: string,
@@ -597,6 +625,8 @@ export const createManagedConversationRepository = (
       const projectId = input.projectId.trim();
       if (
         !projectId ||
+        !input.provider.trim() ||
+        !input.aiClientInstanceId.trim() ||
         !input.runnerDeploymentId ||
         !input.runnerDeviceId ||
         !input.idempotencyKey.trim()
@@ -626,16 +656,15 @@ export const createManagedConversationRepository = (
               409
             );
           }
-          const expectedDigest = sha256(
-            JSON.stringify({
-              kind: "start",
-              projectId,
-              runnerDeploymentId: input.runnerDeploymentId,
-              runnerDeviceId: input.runnerDeviceId,
-              initialPrompt: input.initialPrompt ?? null,
-              deferUntilRuntimeBinding: input.deferUntilRuntimeBinding === true
-            })
-          );
+          const expectedDigest = startDigest({
+            projectId,
+            provider: input.provider,
+            aiClientInstanceId: input.aiClientInstanceId,
+            runnerDeploymentId: input.runnerDeploymentId,
+            runnerDeviceId: input.runnerDeviceId,
+            initialPrompt: input.initialPrompt,
+            deferUntilRuntimeBinding: input.deferUntilRuntimeBinding
+          });
           if (existing.rows[0].request_digest !== expectedDigest) {
             throw statusError(
               "Managed Conversation idempotency key was reused",
@@ -655,28 +684,27 @@ export const createManagedConversationRepository = (
         const executionId = randomUUID();
         const commandId = randomUUID();
         const fencingToken = randomBytes(32).toString("base64url");
-        const requestDigest = sha256(
-          JSON.stringify({
-            kind: "start",
-            projectId,
-            provider: input.provider,
-            runnerDeploymentId: input.runnerDeploymentId,
-            runnerDeviceId: input.runnerDeviceId,
-            initialPrompt: input.initialPrompt ?? null,
-            deferUntilRuntimeBinding: input.deferUntilRuntimeBinding === true
-          })
-        );
+        const requestDigest = startDigest({
+          projectId,
+          provider: input.provider,
+          aiClientInstanceId: input.aiClientInstanceId,
+          runnerDeploymentId: input.runnerDeploymentId,
+          runnerDeviceId: input.runnerDeviceId,
+          initialPrompt: input.initialPrompt,
+          deferUntilRuntimeBinding: input.deferUntilRuntimeBinding
+        });
         const executionResult = await client.query<ExecutionRow>(
           `insert into managed_conversation_executions (
-             id, owner_user_id, project_id, provider, fencing_token_hash,
-             runner_deployment_id, runner_device_id
-           ) values ($1, $2, $3, $4, $5, $6, $7)
+             id, owner_user_id, project_id, provider, ai_client_instance_id,
+             fencing_token_hash, runner_deployment_id, runner_device_id
+           ) values ($1, $2, $3, $4, $5, $6, $7, $8)
            returning ${EXECUTION_COLUMNS}`,
           [
             executionId,
             actor.userId,
             projectId,
             input.provider,
+            input.aiClientInstanceId,
             sha256(fencingToken),
             input.runnerDeploymentId,
             input.runnerDeviceId

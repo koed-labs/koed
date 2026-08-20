@@ -9,7 +9,10 @@ import { describe, expect, it } from "vitest";
 import {
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
   MANAGED_CONVERSATION_TRANSFER_PROTOCOL,
+  MANAGED_CONVERSATION_TRANSFER_PROTOCOL_V2,
   assertManagedConversationHandoffTransition,
+  canonicalManagedConversationHandoffManifest,
+  managedConversationAiClientInstanceIdAfterVerification,
   managedConversationAuthorityLogHead,
   managedConversationHandoffCertificateDigest,
   managedConversationTargetReadinessEvidenceDigest,
@@ -28,7 +31,7 @@ const fixture = () => {
   const sourceDeviceId = randomUUID();
   const targetDeviceId = randomUUID();
   const manifest: ManagedConversationHandoffManifest = {
-    protocol: MANAGED_CONVERSATION_TRANSFER_PROTOCOL,
+    protocol: MANAGED_CONVERSATION_TRANSFER_PROTOCOL_V2,
     operationId: randomUUID(),
     ownerUserId: randomUUID(),
     executionId: randomUUID(),
@@ -42,6 +45,7 @@ const fixture = () => {
     sourceEndByteCursor: 421,
     sourceEndItemCursor: 12,
     provider: "codex",
+    aiClientInstanceId: "codex.work",
     providerThreadId: randomUUID(),
     providerArtifactRelativePath:
       "sessions/2026/07/27/rollout-2026-07-27-example.jsonl",
@@ -79,8 +83,46 @@ const fixture = () => {
 };
 
 describe("Managed Conversation transfer protocol", () => {
+  it("verifies legacy v1 without mutating its signed fields", () => {
+    const value = fixture();
+    const legacyFields = { ...value.manifest };
+    delete legacyFields.aiClientInstanceId;
+    const legacyManifest: ManagedConversationHandoffManifest = {
+      ...legacyFields,
+      protocol: MANAGED_CONVERSATION_TRANSFER_PROTOCOL
+    };
+    const certificate = signManagedConversationHandoffCertificate({
+      manifest: legacyManifest,
+      sourceSigner: {
+        keyId: randomUUID(),
+        sign: (payload) =>
+          sign(null, payload, value.source.privateKey).toString("base64url")
+      },
+      authorityKeyId: randomUUID(),
+      authorityPrivateKey: value.authority.privateKey
+    });
+    expect(
+      verifyManagedConversationHandoffCertificate({
+        certificate,
+        sourcePublicKey: value.source.publicKey,
+        authorityPublicKey: value.authority.publicKey,
+        enforceExpiry: false
+      })
+    ).toBe(true);
+    expect(
+      canonicalManagedConversationHandoffManifest(certificate.manifest)
+    ).not.toContain("aiClientInstanceId");
+    expect(
+      managedConversationAiClientInstanceIdAfterVerification({
+        manifest: certificate.manifest,
+        verified: true
+      })
+    ).toBe("codex.default");
+  });
+
   it("requires source and authority signatures over one immutable transfer", () => {
     const value = fixture();
+    expect(value.manifest.aiClientInstanceId).toBe("codex.work");
     expect(
       verifyManagedConversationHandoffCertificate({
         certificate: value.certificate,

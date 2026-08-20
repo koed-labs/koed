@@ -52,6 +52,12 @@ import type {
 } from "../types.js";
 import type { DesktopCommandName } from "../ipc/protocol.js";
 import {
+  localAiClientCommandSchema,
+  localAiClientResponseSchema,
+  type LocalAiClientCommand,
+  type LocalAiClientResponse
+} from "../ipc/local-ai-client-protocol.js";
+import {
   parseManagedConversationResult,
   type ManagedConversationRequest,
   type ManagedConversationResult
@@ -85,6 +91,8 @@ import {
   withProtectedJsonFd,
   withProtectedTextFd
 } from "../ipc/protected-json-fd.js";
+import { readLocalAiClientReadModel } from "./local-ai-client-read-model.js";
+import { refreshLocalAiRuntime } from "./local-ai-client-refresh.js";
 import {
   PERSONAL_DEVICE_PAIRING_PROGRESS_VERSION,
   type PersonalDevicePairingProgress
@@ -109,6 +117,10 @@ export type DesktopCommandHandler = (
 export type PersonalMemoryDesktopHandler = (
   request: PersonalDesktopRequest
 ) => Promise<PersonalDesktopResult>;
+
+export type LocalAiClientDesktopHandler = (
+  request: LocalAiClientCommand
+) => Promise<LocalAiClientResponse>;
 
 export type ManagedConversationDesktopHandler = (
   request: ManagedConversationRequest
@@ -163,6 +175,7 @@ export interface KoedServerManagerOptions {
 export interface KoedServerManager {
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
+  localAiClients: LocalAiClientDesktopHandler;
   managedConversation: ManagedConversationDesktopHandler;
   subscribePersonalMemory: (
     listener: (change: PersonalDesktopChange) => void,
@@ -240,10 +253,39 @@ const diagnosticStatus = ({
     redis: component(),
     workerQueues: component("Start Koed"),
     embeddingService: component("Install runtime assets"),
+    localAiRuntime: component("Start Koed"),
     apiToken: { ...component("Run setup"), configured: false },
     mcpServer: component("Run setup"),
     captureHook: component("Run setup"),
     codex: { ...component("Run setup"), configured: false },
+    claudeCode: {
+      ...component("Set up Claude Code integration"),
+      configured: false
+    },
+    pi: { ...component("Set up Pi integration"), configured: false },
+    aiClients: Object.fromEntries(
+      (
+        [
+          ["codex", "Codex"],
+          ["claude", "Claude Code"],
+          ["pi", "Pi"]
+        ] as const
+      ).map(([driverId, displayName]) => [
+        driverId,
+        {
+          driverId,
+          instanceId: `${driverId}.default`,
+          displayName,
+          installed: component(`Install ${displayName}`),
+          version: null,
+          authentication: "unknown",
+          profile: component(`Set up ${displayName} integration`),
+          capabilities: [],
+          observedAt: new Date().toISOString(),
+          snapshotState: "unknown"
+        }
+      ])
+    ),
     lcmSummaryService: component(),
     personalDeviceSync: personalDeviceSyncComponent(process.env),
     upstreamBackends: {
@@ -254,7 +296,8 @@ const diagnosticStatus = ({
       failed: 0,
       notChecked: 0
     },
-    lastVerification: { ...component("Run doctor"), checkedAt: null }
+    lastVerification: { ...component("Run doctor"), checkedAt: null },
+    details: {}
   } as DiagnosticStatus;
 };
 
@@ -291,8 +334,15 @@ const waitForAbortOrDelay = (
     );
   });
 
-const resolveKoedHome = (environment: NodeJS.ProcessEnv): string =>
-  resolve(environment.KOED_HOME?.trim() || `${homedir()}/.koed`);
+const resolveKoedHome = (environment: NodeJS.ProcessEnv): string => {
+  const configured = environment.KOED_HOME?.trim();
+  if (!configured) return resolve(homedir(), ".koed");
+  if (configured === "~") return homedir();
+  if (configured.startsWith("~/") || configured.startsWith("~\\")) {
+    return resolve(homedir(), configured.slice(2));
+  }
+  return resolve(configured);
+};
 
 const resolveLocalAppCredentialPath = (
   environment: NodeJS.ProcessEnv
@@ -939,6 +989,92 @@ export const desktopCodexSetupCommand = (
     ? ["repair", "codex"]
     : ["setup", "codex"];
 
+type SetupAiClient = {
+  component: "codex" | "claudeCode" | "pi";
+  id: "codex" | "claude" | "pi";
+  label: "Codex" | "Claude Code" | "Pi";
+  setupArgs: ["setup", "codex" | "claude" | "pi"];
+};
+
+const formatAiClientList = (labels: readonly string[]): string =>
+  labels.length < 2
+    ? (labels[0] ?? "AI Clients")
+    : labels.length === 2
+      ? labels.join(" and ")
+      : `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
+
+export const detectedSetupAiClients = (
+  statusValue: unknown
+): SetupAiClient[] => {
+  const status = objectValue(statusValue);
+  const clients: SetupAiClient[] = [];
+  if (objectValue(status?.codex)?.configured === true) {
+    clients.push({
+      component: "codex",
+      id: "codex",
+      label: "Codex",
+      setupArgs: ["setup", "codex"]
+    });
+  }
+  if (objectValue(status?.claudeCode)?.detected === true) {
+    clients.push({
+      component: "claudeCode",
+      id: "claude",
+      label: "Claude Code",
+      setupArgs: ["setup", "claude"]
+    });
+  }
+  if (objectValue(status?.pi)?.detected === true) {
+    clients.push({
+      component: "pi",
+      id: "pi",
+      label: "Pi",
+      setupArgs: ["setup", "pi"]
+    });
+  }
+  return clients;
+};
+
+export const setupIntegrationHealthy = (statusValue: unknown): boolean => {
+  const status = objectValue(statusValue);
+  return (
+    [status?.apiToken, status?.mcpServer].every(componentHealthy) &&
+    (status?.localAiRuntime === undefined ||
+      componentHealthy(status.localAiRuntime))
+  );
+};
+
+export const configureDetectedSetupAiClients = async (
+  statusValue: unknown,
+  run: (args: string[]) => Promise<unknown>,
+  onProgress: (message: string) => void
+): Promise<DesktopSetupActionResult> => {
+  const status = objectValue(statusValue);
+  const clients = detectedSetupAiClients(status);
+  for (const client of clients) {
+    if (componentHealthy(status?.[client.component])) continue;
+    onProgress(`Configuring ${client.label} capture and recall…`);
+    const args =
+      client.id === "codex"
+        ? desktopCodexSetupCommand(status)
+        : client.setupArgs;
+    const result = await run(args);
+    if (!resultOk(result)) {
+      return {
+        ok: false,
+        message: resultMessage(
+          result,
+          `${client.label} integration could not be configured.`
+        )
+      };
+    }
+  }
+  return {
+    ok: true,
+    message: `${formatAiClientList(clients.map(({ label }) => label))} integration${clients.length === 1 ? " is" : "s are"} configured.`
+  };
+};
+
 const browserActivationUrlFromResult = (value: unknown): string | null => {
   const activationUrl = activationUrlFromResult(value);
   if (!activationUrl) return null;
@@ -1043,31 +1179,36 @@ export const createKoedEnvironment = (
     packagedResourcesPath?: string;
   } = {}
 ): NodeJS.ProcessEnv => {
+  const valueOr = (key: string, fallback: string): string =>
+    environment[key]?.trim() || fallback;
   const dependencyMode = options.desktopManagedLocal
-    ? (environment.KOED_DEPENDENCY_MODE ?? "bundled-local")
-    : environment.KOED_DEPENDENCY_MODE;
+    ? valueOr("KOED_DEPENDENCY_MODE", "bundled-local")
+    : environment.KOED_DEPENDENCY_MODE?.trim();
   return {
     ...environment,
     ...(!options.packagedDesktop || environment.KOED_REPO_ROOT?.trim()
-      ? { KOED_REPO_ROOT: environment.KOED_REPO_ROOT ?? repoRoot }
+      ? { KOED_REPO_ROOT: valueOr("KOED_REPO_ROOT", repoRoot) }
       : {}),
-    ...(dependencyMode === "bundled-local" && !environment.KOED_AUTO_PORTS
+    ...(dependencyMode === "bundled-local" &&
+    !environment.KOED_AUTO_PORTS?.trim()
       ? { KOED_AUTO_PORTS: "1" }
       : {}),
     ...(options.desktopManagedLocal
       ? {
-          KOED_RUNTIME_MODE: environment.KOED_RUNTIME_MODE ?? "local-personal",
+          KOED_RUNTIME_MODE: valueOr("KOED_RUNTIME_MODE", "local-personal"),
           KOED_DEPENDENCY_MODE: dependencyMode,
-          KOED_TEAM_COLLABORATION_ENABLED:
-            environment.KOED_TEAM_COLLABORATION_ENABLED ?? "true",
-          WORK_QUEUE_BACKEND: environment.WORK_QUEUE_BACKEND ?? "local",
+          KOED_TEAM_COLLABORATION_ENABLED: valueOr(
+            "KOED_TEAM_COLLABORATION_ENABLED",
+            "true"
+          ),
+          WORK_QUEUE_BACKEND: valueOr("WORK_QUEUE_BACKEND", "local"),
           ...(options.packagedDesktop
             ? {
-                KOED_PACKAGED_DESKTOP: environment.KOED_PACKAGED_DESKTOP ?? "1",
-                KOED_PACKAGED_RESOURCES_PATH:
-                  environment.KOED_PACKAGED_RESOURCES_PATH ??
-                  options.packagedResourcesPath ??
-                  repoRoot
+                KOED_PACKAGED_DESKTOP: valueOr("KOED_PACKAGED_DESKTOP", "1"),
+                KOED_PACKAGED_RESOURCES_PATH: valueOr(
+                  "KOED_PACKAGED_RESOURCES_PATH",
+                  options.packagedResourcesPath ?? repoRoot
+                )
               }
             : {})
         }
@@ -1198,10 +1339,14 @@ export const createKoedServerManager = ({
           env: invocation.env,
           timeout
         },
-        (_error, stdout) => {
+        (error, stdout, stderr) => {
           try {
             resolvePromise(JSON.parse(stdout));
           } catch {
+            const detail =
+              stderr?.trim() ||
+              error?.message ||
+              "Koed operation returned invalid JSON.";
             resolvePromise(
               args[0] === "status"
                 ? diagnosticStatus({
@@ -1211,7 +1356,8 @@ export const createKoedServerManager = ({
                 : {
                     ok: false,
                     state: "needs_attention",
-                    error: "Koed operation failed."
+                    error: detail,
+                    action: `Retry ${args.join(" ")} after checking Koed logs.`
                   }
             );
           }
@@ -2052,6 +2198,8 @@ export const createKoedServerManager = ({
   ): {
     id: string;
     projectId: string;
+    provider: "codex" | "claude" | "pi";
+    aiClientInstanceId: string;
     state: string;
     executionGeneration: number;
     sessionId: string | null;
@@ -2062,13 +2210,19 @@ export const createKoedServerManager = ({
       typeof execution?.id !== "string" ||
       typeof execution.projectId !== "string" ||
       typeof execution.state !== "string" ||
-      typeof execution.executionGeneration !== "number"
+      typeof execution.executionGeneration !== "number" ||
+      (execution.provider !== "codex" &&
+        execution.provider !== "claude" &&
+        execution.provider !== "pi") ||
+      typeof execution.aiClientInstanceId !== "string"
     ) {
       return null;
     }
     return {
       id: execution.id,
       projectId: execution.projectId,
+      provider: execution.provider,
+      aiClientInstanceId: execution.aiClientInstanceId,
       state: execution.state,
       executionGeneration: execution.executionGeneration,
       sessionId:
@@ -2162,6 +2316,8 @@ export const createKoedServerManager = ({
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               projectId: request.projectId,
+              provider: request.aiClientDriverId,
+              aiClientInstanceId: request.aiClientInstanceId,
               idempotencyKey: request.idempotencyKey
             })
           }
@@ -2186,7 +2342,11 @@ export const createKoedServerManager = ({
                 executionId: execution.id,
                 projectId: execution.projectId,
                 capturedSessionId: execution.sessionId,
-                threadId: execution.providerThreadId
+                threadId: execution.providerThreadId,
+                executionOwner: {
+                  driverId: execution.provider,
+                  instanceId: execution.aiClientInstanceId
+                }
               }
             }
           : {})
@@ -2216,14 +2376,18 @@ export const createKoedServerManager = ({
                 executionId: execution.id,
                 projectId: execution.projectId,
                 capturedSessionId: execution.sessionId,
-                threadId: execution.providerThreadId
+                threadId: execution.providerThreadId,
+                executionOwner: {
+                  driverId: execution.provider,
+                  instanceId: execution.aiClientInstanceId
+                }
               }
             }
           : {}),
         ...(failed
           ? {
               message:
-                "Codex could not start this Conversation. Start a new Conversation to try again."
+                "AI Client could not start this Conversation. Start a new Conversation to try again."
             }
           : execution.state === "reconciling"
             ? {
@@ -2315,6 +2479,14 @@ export const createKoedServerManager = ({
     );
     const conversation = {
       executionId: execution?.id ?? null,
+      ...(execution
+        ? {
+            executionOwner: {
+              driverId: execution.provider,
+              instanceId: execution.aiClientInstanceId
+            }
+          }
+        : {}),
       projectId:
         request.operation === "resume"
           ? request.projectId
@@ -2323,26 +2495,40 @@ export const createKoedServerManager = ({
       threadId: request.threadId
     };
     if (request.operation === "resume") {
+      const publishedResume = execution
+        ? (await localAiClientReadModel()).capabilitySnapshots.find(
+            (snapshot) => snapshot.instanceId === execution.aiClientInstanceId
+          )?.managedConversationResume
+        : undefined;
+      const resumeReady =
+        publishedResume?.support === "supported" &&
+        publishedResume.readiness === "ready";
       return parseManagedConversationResult({
         operation: "resume",
-        status:
-          execution?.state === "running"
+        status: !resumeReady
+          ? "read_only"
+          : execution?.state === "running"
             ? "ready"
             : execution?.state === "reconciling"
               ? "reconciling"
               : "read_only",
         conversation,
-        ...(execution?.state === "reconciling"
+        ...(!resumeReady
           ? {
               message:
-                "Koed is reconciling the last provider operation. Prompt submission remains disabled."
+                "Selected AI Client does not publish Conversation resume."
             }
-          : execution?.state === "running"
-            ? {}
-            : {
+          : execution?.state === "reconciling"
+            ? {
                 message:
-                  "This Captured Session is not owned by a writable local Koed runtime."
-              })
+                  "Koed is reconciling the last provider operation. Prompt submission remains disabled."
+              }
+            : execution?.state === "running"
+              ? {}
+              : {
+                  message:
+                    "This Captured Session is not owned by a writable local Koed runtime."
+                })
       });
     }
     if (!execution || execution.state !== "running") {
@@ -2728,6 +2914,76 @@ export const createKoedServerManager = ({
     return personalDesktopNoteRenameDataSchema.parse({ note: payload.note });
   };
 
+  const localAiClientReadModel = async () => {
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL("/v1/memory/local-agent-settings", apiOrigin),
+        init: { method: "GET" }
+      }),
+      8 * 1_024 * 1_024
+    );
+    return readLocalAiClientReadModel(payload, environment);
+  };
+
+  const localAiClients: LocalAiClientDesktopHandler = async (value) => {
+    const request = localAiClientCommandSchema.parse(value);
+    let refreshed = false;
+    let refreshError: string | null = null;
+    if (request.operation === "refresh") {
+      try {
+        ({ refreshed, refreshError } = await refreshLocalAiRuntime({
+          fetch: personalMemoryFetch,
+          koedHome: resolveKoedHome(environment)
+        }));
+      } catch {
+        refreshError = "Capability refresh could not be completed.";
+      }
+    } else if (request.operation === "set") {
+      await saveLocalAiClientSetting(request);
+    } else if (request.operation === "reset") {
+      await resetLocalAiClientSetting(request.flowKey);
+    }
+    return localAiClientResponseSchema.parse({
+      operation: request.operation,
+      readModel: await localAiClientReadModel(),
+      ...(request.operation === "refresh" ? { refreshed, refreshError } : {})
+    });
+  };
+
+  const saveLocalAiClientSetting = async (
+    request: Extract<LocalAiClientCommand, { operation: "set" }>
+  ) => {
+    await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/memory/local-agent-settings/${encodeURIComponent(request.flowKey)}`,
+          apiOrigin
+        ),
+        init: {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(request.assignment)
+        }
+      }),
+      1 * 1_024 * 1_024
+    );
+  };
+
+  const resetLocalAiClientSetting = async (
+    flowKey: Extract<LocalAiClientCommand, { operation: "reset" }>["flowKey"]
+  ) => {
+    await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/memory/local-agent-settings/${encodeURIComponent(flowKey)}`,
+          apiOrigin
+        ),
+        init: { method: "DELETE" }
+      }),
+      256 * 1_024
+    );
+  };
+
   const personalMemory: PersonalMemoryDesktopHandler = async (value) => {
     const request = personalDesktopRequestSchema.parse(value);
     try {
@@ -3044,13 +3300,8 @@ export const createKoedServerManager = ({
             resolveServerPackageInstallPlan(environment)
           );
           const servicesComplete = setupServicesHealthy(status);
-          const integrationComplete = [
-            status?.apiToken,
-            status?.mcpServer,
-            status?.captureHook,
-            status?.codex,
-            status?.lcmSummaryService
-          ].every(componentHealthy);
+          const detectedAiClients = detectedSetupAiClients(status);
+          const integrationComplete = setupIntegrationHealthy(status);
           const verificationComplete = componentHealthy(
             status?.lastVerification
           );
@@ -3093,9 +3344,10 @@ export const createKoedServerManager = ({
             },
             integration: {
               complete: integrationComplete,
+              detectedAiClients: detectedAiClients.map(({ label }) => label),
               message: integrationComplete
-                ? "Codex integration is configured."
-                : "Codex, MCP, and Capture Hook need to be configured."
+                ? "Koed core runtime and MCP artifacts are ready. AI Client setup is optional."
+                : "Koed core runtime and MCP artifacts need attention."
             },
             verification: {
               complete: verificationComplete,
@@ -3198,13 +3450,12 @@ export const createKoedServerManager = ({
       case "integration": {
         onProgress({
           completedBytes: null,
-          message: "Configuring Codex, MCP, and Capture Hook…",
+          message: "Preparing Koed core integration artifacts…",
           totalBytes: null
         });
-        const current = objectValue(await statusWithEnrollmentReconciliation());
         return setupActionResult(
-          await runJson(desktopCodexSetupCommand(current), 120_000),
-          "Codex integration could not be configured."
+          await runJson(["setup", "core"], 330_000),
+          "Koed core setup failed."
         );
       }
       case "verification": {
@@ -3240,8 +3491,35 @@ export const createKoedServerManager = ({
     return result;
   };
 
+  const runMutatingAiClient = async (
+    client: "Codex" | "Claude Code" | "Pi",
+    args: ["setup" | "repair" | "remove", "codex" | "claude" | "pi"]
+  ) => {
+    const result = await runJson(args, 120_000);
+    if (!resultOk(result)) {
+      throw new Error(
+        resultMessage(result, `${client} integration operation failed.`)
+      );
+    }
+    return result;
+  };
+
+  const runAiClientCheck = async (
+    client: "Codex" | "Claude Code" | "Pi",
+    args: ["check", "codex" | "claude" | "pi"]
+  ) => {
+    const result = await runJson(args, 90_000);
+    if (!resultOk(result)) {
+      throw new Error(
+        resultMessage(result, `${client} integration check failed.`)
+      );
+    }
+    return result;
+  };
+
   return {
     personalMemory,
+    localAiClients,
     managedConversation,
     subscribePersonalMemory,
     resume,
@@ -3249,8 +3527,28 @@ export const createKoedServerManager = ({
       status: statusWithEnrollmentReconciliation,
       doctor: () => runJson(["doctor"], 45_000),
       stop,
-      setup_codex: () => runJson(["setup", "codex"], 120_000),
-      repair_codex: () => runJson(["repair", "codex"], 120_000),
+      setup_core: async () => {
+        const result = await runJson(["setup", "core"], 330_000);
+        if (!resultOk(result)) {
+          throw new Error(resultMessage(result, "Koed core setup failed."));
+        }
+        return result;
+      },
+      setup_codex: () => runMutatingAiClient("Codex", ["setup", "codex"]),
+      check_codex: () => runAiClientCheck("Codex", ["check", "codex"]),
+      repair_codex: () => runMutatingAiClient("Codex", ["repair", "codex"]),
+      remove_codex: () => runMutatingAiClient("Codex", ["remove", "codex"]),
+      setup_pi: () => runMutatingAiClient("Pi", ["setup", "pi"]),
+      check_pi: () => runAiClientCheck("Pi", ["check", "pi"]),
+      repair_pi: () => runMutatingAiClient("Pi", ["repair", "pi"]),
+      remove_pi: () => runMutatingAiClient("Pi", ["remove", "pi"]),
+      setup_claude: () =>
+        runMutatingAiClient("Claude Code", ["setup", "claude"]),
+      check_claude: () => runAiClientCheck("Claude Code", ["check", "claude"]),
+      repair_claude: () =>
+        runMutatingAiClient("Claude Code", ["repair", "claude"]),
+      remove_claude: () =>
+        runMutatingAiClient("Claude Code", ["remove", "claude"]),
       runtime_status: () => runRuntimeStatusJson(),
       runtime_install: (args) => runRuntimeInstallJson(args),
       models_status: () => runModelJson(),

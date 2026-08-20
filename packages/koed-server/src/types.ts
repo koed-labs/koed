@@ -1,8 +1,50 @@
+import type {
+  AiClientCapabilityDescriptor,
+  LocalAiClientFlowKey,
+  LocalAiClientRuntimeAssignment
+} from "@koed/shared";
+
 export type KoedServerComponentState =
   | "not_configured"
   | "starting"
   | "healthy"
   | "needs_attention";
+
+export interface KoedAiClientFlowReadiness extends KoedServerComponentStatus {
+  flowKey: LocalAiClientFlowKey;
+  source: "setting" | "environment" | "code" | "unavailable";
+  assignment: LocalAiClientRuntimeAssignment | null;
+}
+
+export interface KoedAiClientReadiness {
+  driverId: "codex" | "claude" | "pi";
+  instanceId: string;
+  displayName: string;
+  installed: KoedServerComponentStatus;
+  version: string | null;
+  authentication: "authenticated" | "unauthenticated" | "unknown";
+  profile: KoedServerComponentStatus;
+  capabilities: AiClientCapabilityDescriptor[];
+  observedAt: string;
+  snapshotState: "profile" | "current" | "stale" | "unknown";
+}
+
+export const aiClientReadinessUnknown = (
+  driverId: "codex" | "claude" | "pi",
+  displayName: string,
+  now: string
+): KoedAiClientReadiness => ({
+  driverId,
+  instanceId: `${driverId}.default`,
+  displayName,
+  installed: { state: "not_configured", message: "Installation is unknown." },
+  version: null,
+  authentication: "unknown",
+  profile: { state: "not_configured", message: "Profile setup is unknown." },
+  capabilities: [],
+  observedAt: now,
+  snapshotState: "unknown"
+});
 
 export interface KoedServerComponentStatus {
   state: KoedServerComponentState;
@@ -23,12 +65,26 @@ export interface KoedServerStatus {
   redis: KoedServerComponentStatus;
   workerQueues: KoedServerComponentStatus;
   embeddingService: KoedServerComponentStatus;
+  localAiRuntime: KoedServerComponentStatus;
   apiToken: KoedServerComponentStatus & { configured: boolean };
   mcpServer: KoedServerComponentStatus;
   captureHook: KoedServerComponentStatus;
   codexTranscriptWatcher: KoedServerComponentStatus;
   claudeTranscriptWatcher: KoedServerComponentStatus;
   codex: KoedServerComponentStatus & { configured: boolean };
+  claudeCode: KoedServerComponentStatus & {
+    configured: boolean;
+    detected: boolean;
+  };
+  pi: KoedServerComponentStatus & { configured: boolean; detected: boolean };
+  /** Legacy provider-keyed readiness view. Kept for existing clients. */
+  aiClients: Record<string, KoedAiClientReadiness>;
+  /** Instance-keyed readiness view for multi-instance and flow assignments. */
+  aiClientInstances: Record<string, KoedAiClientReadiness>;
+  aiClientFlowReadiness: Record<
+    LocalAiClientFlowKey,
+    KoedAiClientFlowReadiness
+  >;
   lcmSummaryService: KoedServerComponentStatus;
   deviceIdentity: KoedServerComponentStatus & {
     health: string;
@@ -46,6 +102,10 @@ export interface KoedServerStatus {
     notChecked: number;
   };
   lastVerification: KoedServerComponentStatus & { checkedAt: string | null };
+  core: {
+    state: KoedServerComponentState;
+    components: Record<string, KoedServerComponentStatus>;
+  };
 }
 
 export interface KoedServerDoctorCheck extends KoedServerComponentStatus {

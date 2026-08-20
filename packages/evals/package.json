@@ -19,6 +19,8 @@
     "eval:retrieval-success:live": "tsc -b tsconfig.json && node dist/retrieval-success/live-runner.js",
     "eval:retrieval-arena": "tsc -b tsconfig.json && node dist/retrieval-arena/index.js",
     "eval:retrieval-scale": "tsc -b tsconfig.json && node dist/retrieval-arena/scale-cli.js",
+    "eval:experience-replay": "pnpm --filter @koed/mcp-server build && tsc -b tsconfig.json && node dist/experience-replay/index.js",
+    "eval:experience-replay:harbor:test": "cd src/experience-replay/harbor && uv run --locked pytest",
     "eval:workers": "tsc -b tsconfig.json && node dist/worker-json/index.js",
     "test": "tsc -b tsconfig.json && vitest run --passWithNoTests",
     "typecheck": "tsc -b tsconfig.json"
@@ -29,9 +31,15 @@
     "@koed/db": "workspace:*",
     "@koed/mcp-server": "workspace:*",
     "@koed/shared": "workspace:*",
+    "@koed/worker": "workspace:*",
+    "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
     "fastify": "^5.8.5",
     "ioredis": "^5.10.1",
+    "pg": "^8.20.0",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.6"
   }
 }

@@ -14,12 +14,15 @@ import {
 } from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
+  configureDetectedSetupAiClients,
   createKoedEnvironment,
   createKoedServerManager,
+  detectedSetupAiClients,
   desktopCodexSetupCommand,
   personalMemoryChangeFromSseFrame,
   setupStartupReady,
-  setupServicesHealthy
+  setupServicesHealthy,
+  setupIntegrationHealthy
 } from "./manager.js";
 
 type FakeChildProcess = EventEmitter & {
@@ -220,6 +223,177 @@ describe("Koed server desktop manager", () => {
     expect(timeout).toBe(120_000);
   });
 
+  it("routes optional AI Client setup and repair through idempotent Koed Server commands", async () => {
+    const invocations: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => {
+        invocations.push(args);
+        return {
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_REPO_ROOT: "/repo" }
+        };
+      },
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(null, JSON.stringify({ ok: true, state: "healthy" }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await manager.handlers.setup_pi!();
+    await manager.handlers.repair_pi!();
+    await manager.handlers.setup_claude!();
+    await manager.handlers.repair_claude!();
+
+    expect(invocations).toEqual([
+      ["setup", "pi", "--json"],
+      ["repair", "pi", "--json"],
+      ["setup", "claude", "--json"],
+      ["repair", "claude", "--json"]
+    ]);
+  });
+
+  it("requires explicit healthy result from AI Client check handlers", async () => {
+    const invocations: string[][] = [];
+    let healthy = false;
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => {
+        invocations.push(args);
+        return {
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_REPO_ROOT: "/repo" }
+        };
+      },
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify(
+            healthy
+              ? { ok: true, state: "healthy" }
+              : {
+                  ok: false,
+                  state: "needs_attention",
+                  message: "stale snapshot"
+                }
+          ),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.check_codex!()).rejects.toThrow(
+      "stale snapshot"
+    );
+    healthy = true;
+    await expect(manager.handlers.check_codex!()).resolves.toMatchObject({
+      ok: true
+    });
+    expect(invocations).toEqual([
+      ["check", "codex", "--json"],
+      ["check", "codex", "--json"]
+    ]);
+  });
+
+  it("throws actionable errors when mutating AI Client commands return failure", async () => {
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify({
+            ok: false,
+            error: "registry failed",
+            action: "repair registry"
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.remove_claude!()).rejects.toThrow(
+      "registry failed"
+    );
+  });
+
+  it("includes detected optional AI Clients in first-run integration readiness", () => {
+    const status = {
+      apiToken: { state: "healthy" },
+      mcpServer: { state: "healthy" },
+      captureHook: { state: "healthy" },
+      lcmSummaryService: { state: "healthy" },
+      codex: { state: "healthy", configured: true },
+      claudeCode: { state: "not_configured", detected: true },
+      pi: { state: "healthy", detected: true }
+    };
+
+    expect(detectedSetupAiClients(status).map(({ label }) => label)).toEqual([
+      "Codex",
+      "Claude Code",
+      "Pi"
+    ]);
+    expect(setupIntegrationHealthy(status)).toBe(true);
+    expect(
+      setupIntegrationHealthy({
+        ...status,
+        claudeCode: { state: "healthy", detected: true }
+      })
+    ).toBe(true);
+  });
+
+  it("automatically configures every detected, incomplete AI Client", async () => {
+    const run = vi.fn(async (args: string[]) => {
+      void args;
+      return { ok: true, state: "healthy" };
+    });
+    const progress: string[] = [];
+
+    const result = await configureDetectedSetupAiClients(
+      {
+        apiToken: { state: "healthy" },
+        codex: { state: "not_configured" },
+        claudeCode: { state: "not_configured", detected: true },
+        pi: { state: "not_configured", detected: true }
+      },
+      run,
+      (message) => progress.push(message)
+    );
+
+    expect(run.mock.calls.map(([args]) => args)).toEqual([
+      ["setup", "claude"],
+      ["setup", "pi"]
+    ]);
+    expect(progress).toEqual([
+      "Configuring Claude Code capture and recall…",
+      "Configuring Pi capture and recall…"
+    ]);
+    expect(result).toEqual({
+      ok: true,
+      message: "Claude Code and Pi integrations are configured."
+    });
+  });
+
   it("treats local services as ready before later setup stages finish", () => {
     expect(
       setupServicesHealthy({
@@ -397,6 +571,28 @@ describe("Koed server desktop manager", () => {
       createKoedEnvironment("/repo", { KOED_DEPENDENCY_MODE: "bundled-local" })
     ).toMatchObject({
       KOED_REPO_ROOT: "/repo",
+      KOED_AUTO_PORTS: "1"
+    });
+  });
+
+  it("uses managed-local defaults when environment values are blank", () => {
+    expect(
+      createKoedEnvironment(
+        "/repo",
+        {
+          KOED_RUNTIME_MODE: " ",
+          KOED_DEPENDENCY_MODE: " ",
+          KOED_TEAM_COLLABORATION_ENABLED: " ",
+          WORK_QUEUE_BACKEND: " ",
+          KOED_AUTO_PORTS: " "
+        },
+        { desktopManagedLocal: true }
+      )
+    ).toMatchObject({
+      KOED_RUNTIME_MODE: "local-personal",
+      KOED_DEPENDENCY_MODE: "bundled-local",
+      KOED_TEAM_COLLABORATION_ENABLED: "true",
+      WORK_QUEUE_BACKEND: "local",
       KOED_AUTO_PORTS: "1"
     });
   });

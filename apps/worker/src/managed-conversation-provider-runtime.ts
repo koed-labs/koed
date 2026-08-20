@@ -10,9 +10,11 @@ type ProviderSession = {
   claude: ClaudeManagedConversationSession;
 };
 
-type RuntimeSessionEntry<P extends ManagedConversationProvider> = {
+export type RuntimeSessionEntry<P extends ManagedConversationProvider> = {
   provider: P;
   executionGeneration: number;
+  aiClientInstanceId: string;
+  configIdentityHash: string;
   session: ProviderSession[P];
 };
 
@@ -25,12 +27,34 @@ export class ManagedConversationRuntimeRegistry {
 
   get<P extends ManagedConversationProvider>(
     provider: P,
-    executionId: string
+    executionId: string,
+    expected?: {
+      executionGeneration?: number;
+      aiClientInstanceId?: string;
+      configIdentityHash?: string;
+    }
   ): RuntimeSessionEntry<P> | undefined {
     const entry = this.#sessions.get(executionId);
-    return entry?.provider === provider
-      ? (entry as RuntimeSessionEntry<P>)
-      : undefined;
+    if (entry?.provider !== provider) return undefined;
+    if (
+      expected?.executionGeneration !== undefined &&
+      entry.executionGeneration !== expected.executionGeneration
+    ) {
+      return undefined;
+    }
+    if (
+      expected?.aiClientInstanceId !== undefined &&
+      entry.aiClientInstanceId !== expected.aiClientInstanceId
+    ) {
+      return undefined;
+    }
+    if (
+      expected?.configIdentityHash !== undefined &&
+      entry.configIdentityHash !== expected.configIdentityHash
+    ) {
+      return undefined;
+    }
+    return entry as RuntimeSessionEntry<P>;
   }
 
   set<P extends ManagedConversationProvider>(
@@ -61,7 +85,12 @@ export class ManagedConversationRuntimeRegistry {
     return this.#sessions.entries();
   }
 
-  clear(): void {
+  clear(closeSessions = true): void {
+    if (closeSessions) {
+      for (const entry of this.#sessions.values()) {
+        void entry.session.closeAndWait().catch(() => undefined);
+      }
+    }
     this.#sessions.clear();
   }
 }

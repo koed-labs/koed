@@ -4,7 +4,6 @@ import {
   type ChildProcess,
   type SpawnSyncReturns
 } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -13,20 +12,12 @@ import {
   writeFileSync
 } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import {
-  LOCAL_PERSONAL_USER_EMAIL,
-  readDesktopLocalCredentialAuthorization,
-  storeDesktopLocalCredential
-} from "@koed/shared";
 import {
   assertKoedAppRuntimeAvailable,
-  resolveKoedAppRuntime,
-  type KoedAppRuntime
+  resolveKoedAppRuntime
 } from "./app-runtime.js";
 import { resolveKoedServerConfig, type KoedServerConfig } from "./config.js";
 import {
-  loadLocalAppCredential,
   resolveActiveIntegrationApiToken,
   resolveLocalApiToken,
   writeLocalAppCredential
@@ -58,6 +49,12 @@ import {
 import { maintainSupervisorLog } from "./supervisor-log.js";
 import { monitorSupervisorExitRequest } from "./supervisor-exit-request.js";
 import type { KoedServerRuntimeState } from "./types.js";
+import { provisionDesktopApiToken } from "./local-api-token.js";
+import { migrateKoedOwnedCodexRegistrationBestEffort } from "./ai-client-registry.js";
+export {
+  provisionDesktopApiToken,
+  provisionDesktopLocalCredential
+} from "./local-api-token.js";
 
 type SpawnSyncLike = (
   command: string,
@@ -103,175 +100,6 @@ const runCommand = (
   if (result.status !== 0) {
     throw new Error(`${label} failed with exit code ${result.status ?? 1}.`);
   }
-};
-
-const importRuntimeDbModule = async <T>(
-  runtime: KoedAppRuntime,
-  modulePath: string
-): Promise<T> =>
-  import(
-    pathToFileURL(resolve(runtime.dbPackageRoot, modulePath)).href
-  ) as Promise<T>;
-
-const createOpaqueSecret = (prefix: string): string =>
-  `${prefix}_${randomBytes(32).toString("base64url")}`;
-
-const hashApiToken = (apiTokenPepper: string, token: string): string =>
-  createHash("sha256").update(`${apiTokenPepper}${token}`).digest("hex");
-
-const desktopLocalOperationFamilies = [
-  "personal_collaboration_read",
-  "personal_collaboration_write"
-] as const;
-
-interface DesktopApiTokenRepository {
-  findUserByEmail: (email: string) => Promise<{ id: string } | null>;
-  createUser: (input: {
-    email: string;
-    displayName: string | null;
-    passwordHash: string | null;
-  }) => Promise<{ id: string }>;
-  createApiToken: (input: {
-    ownerUserId: string;
-    name: string;
-    tokenHash: string;
-    tokenPrefix: string;
-    scopes: string[];
-    audit: { actorUserId: string | null; actorType: string };
-  }) => Promise<unknown>;
-  getApiTokenUser: (tokenHash: string) => Promise<{ id: string } | null>;
-}
-
-const withDesktopApiTokenRepository = async <T>(
-  runtime: KoedAppRuntime,
-  environment: NodeJS.ProcessEnv,
-  operation: (repo: DesktopApiTokenRepository) => Promise<T>
-): Promise<T> => {
-  const [{ createDbPool, createDb }, { createUserApiTokenRepository }] =
-    await Promise.all([
-      importRuntimeDbModule<{
-        createDbPool: (config?: { connectionString?: string }) => unknown;
-        createDb: (pool: unknown) => unknown;
-      }>(runtime, "dist/connection.js"),
-      importRuntimeDbModule<{
-        createUserApiTokenRepository: (
-          db: unknown
-        ) => DesktopApiTokenRepository;
-      }>(runtime, "dist/user-api-token-repository.js")
-    ]);
-  const pool = createDbPool({
-    connectionString: environment.DATABASE_URL
-  }) as { end: () => Promise<void> };
-  try {
-    return await operation(createUserApiTokenRepository(createDb(pool)));
-  } finally {
-    await pool.end();
-  }
-};
-
-const resolveActiveDesktopOwner = async (
-  repo: DesktopApiTokenRepository
-): Promise<{ id: string }> =>
-  (await repo.findUserByEmail(LOCAL_PERSONAL_USER_EMAIL)) ??
-  repo.createUser({
-    email: LOCAL_PERSONAL_USER_EMAIL,
-    displayName: null,
-    passwordHash: null
-  });
-
-export const provisionDesktopLocalCredential = (
-  paths: KoedServerPaths,
-  ownerUserId: string
-): void => {
-  const existing = readDesktopLocalCredentialAuthorization(paths.koedHome);
-  if (!existing) {
-    storeDesktopLocalCredential(paths.koedHome, {
-      ownerUserId,
-      operationFamilies: [...desktopLocalOperationFamilies]
-    });
-    return;
-  }
-  if (existing.ownerUserId !== ownerUserId.toLowerCase()) {
-    throw new Error(
-      "Stored Desktop Local Credential does not match the active Personal owner."
-    );
-  }
-  if (
-    existing.operationFamilies.length !==
-      desktopLocalOperationFamilies.length ||
-    !desktopLocalOperationFamilies.every((family) =>
-      existing.operationFamilies.includes(family)
-    )
-  ) {
-    throw new Error(
-      "Stored Desktop Local Credential does not have the required Personal operation families."
-    );
-  }
-};
-
-const provisionDesktopApiTokenWithRepository = async (
-  paths: KoedServerPaths,
-  runtime: KoedAppRuntime,
-  environment: NodeJS.ProcessEnv,
-  apiTokenPepper: string
-): Promise<string> => {
-  return withDesktopApiTokenRepository(runtime, environment, async (repo) => {
-    const owner = await resolveActiveDesktopOwner(repo);
-    provisionDesktopLocalCredential(paths, owner.id);
-    const existing = loadLocalAppCredential(paths);
-    if (existing) {
-      const existingOwner = await repo.getApiTokenUser(
-        hashApiToken(apiTokenPepper, existing.apiToken)
-      );
-      if (existingOwner?.id === owner.id) {
-        return existing.apiToken;
-      }
-      if (existingOwner) {
-        throw new Error(
-          "Stored Koed Desktop API Token belongs to a different Personal owner."
-        );
-      }
-    }
-
-    const token = createOpaqueSecret("cmt");
-    await repo.createApiToken({
-      ownerUserId: owner.id,
-      name: "Koed Desktop",
-      tokenHash: hashApiToken(apiTokenPepper, token),
-      tokenPrefix: token.slice(0, 12),
-      scopes: [],
-      audit: { actorUserId: null, actorType: "local_operator_script" }
-    });
-    writeLocalAppCredential(paths, {
-      apiToken: token,
-      provisionedAt: new Date().toISOString(),
-      source: "environment"
-    });
-    return token;
-  });
-};
-
-export const provisionDesktopApiToken = async (
-  paths: KoedServerPaths,
-  runtime: KoedAppRuntime,
-  environment: NodeJS.ProcessEnv
-): Promise<string | null> => {
-  if (environment.KOED_AUTO_PORTS !== "1") {
-    return null;
-  }
-  const apiTokenPepper = environment.API_TOKEN_PEPPER;
-  if (!apiTokenPepper?.trim()) {
-    throw new Error(
-      "API_TOKEN_PEPPER is required before provisioning Desktop API Token."
-    );
-  }
-  console.log("> Provision Koed Desktop API Token");
-  return provisionDesktopApiTokenWithRepository(
-    paths,
-    runtime,
-    environment,
-    apiTokenPepper
-  );
 };
 
 const spawnManagedProcess = (
@@ -978,6 +806,12 @@ export const startKoedServer = async ({
   };
 
   const repoEnv = loadRepoEnv(paths.repoRoot, environment);
+  const migration = migrateKoedOwnedCodexRegistrationBestEffort({
+    environment: { ...repoEnv, ...environment, KOED_HOME: paths.koedHome }
+  });
+  if (migration.diagnostic) {
+    console.warn(migration.diagnostic);
+  }
   const desktopManagedLocal = environment.KOED_AUTO_PORTS === "1";
   const apiToken = desktopManagedLocal
     ? null

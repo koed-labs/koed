@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { resolveKoedServerPaths } from "./paths.js";
 import {
   isKoedServerCliEntrypoint,
   runKoedServerCli,
@@ -37,12 +38,18 @@ const status: KoedServerStatus = {
   redis: { state: "healthy" },
   workerQueues: { state: "healthy" },
   embeddingService: { state: "healthy" },
+  localAiRuntime: { state: "healthy" },
   apiToken: { state: "healthy", configured: true },
   mcpServer: { state: "healthy" },
   captureHook: { state: "healthy" },
   codexTranscriptWatcher: { state: "healthy" },
   claudeTranscriptWatcher: { state: "healthy" },
   codex: { state: "healthy", configured: true },
+  claudeCode: { state: "healthy", configured: true, detected: true },
+  pi: { state: "healthy", configured: true, detected: true },
+  aiClients: {},
+  aiClientInstances: {},
+  aiClientFlowReadiness: {} as KoedServerStatus["aiClientFlowReadiness"],
   lcmSummaryService: { state: "healthy" },
   deviceIdentity: {
     state: "healthy",
@@ -60,7 +67,8 @@ const status: KoedServerStatus = {
     failed: 0,
     notChecked: 0
   },
-  lastVerification: { state: "healthy", checkedAt: "2026-01-01T00:00:00.000Z" }
+  lastVerification: { state: "healthy", checkedAt: "2026-01-01T00:00:00.000Z" },
+  core: { state: "healthy", components: {} }
 };
 
 const doctor: KoedServerDoctorResult = {
@@ -1274,6 +1282,43 @@ describe("JSON command output", () => {
     });
   });
 
+  it("persists doctor success and failure metadata under injected temp KOED_HOME", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-cli-doctor-"));
+    try {
+      const paths = resolveKoedServerPaths({ KOED_HOME: root });
+      const success = { ...doctor, ok: true, summary: "All checks passed." };
+      expect(
+        await runKoedServerCli(["doctor", "--json"], {
+          stdout: writer().stream,
+          resolvePaths: () => paths,
+          collectDoctor: async () => success
+        })
+      ).toBe(0);
+      expect(
+        JSON.parse(readFileSync(paths.lastVerificationPath, "utf8"))
+      ).toMatchObject({
+        ok: true,
+        message: "All checks passed."
+      });
+
+      expect(
+        await runKoedServerCli(["doctor", "--json"], {
+          stdout: writer().stream,
+          resolvePaths: () => paths,
+          collectDoctor: async () => doctor
+        })
+      ).toBe(1);
+      expect(
+        JSON.parse(readFileSync(paths.lastVerificationPath, "utf8"))
+      ).toMatchObject({
+        ok: false,
+        message: "API is not ready"
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("prints doctor --json and returns non-zero for failures", async () => {
     const stdout = writer();
 
@@ -1314,6 +1359,167 @@ describe("JSON command output", () => {
     expect(JSON.parse(stdout.text())).toMatchObject({
       health: "healthy",
       remoteOperationsAllowed: true
+    });
+  });
+
+  it("awaits setup codex before printing JSON result", async () => {
+    const stdout = writer();
+    let completed = false;
+    const exitCode = await runKoedServerCli(["setup", "codex", "--json"], {
+      stdout: stdout.stream,
+      setupCodex: async () => {
+        await Promise.resolve();
+        completed = true;
+        return {
+          ok: true,
+          state: "healthy",
+          koedHome: "/tmp/koed",
+          apiUrl: "http://localhost:3300",
+          checkedAt: "2026-01-01T00:00:00.000Z",
+          command: "codex setup"
+        };
+      }
+    });
+
+    expect(exitCode).toBe(0);
+    expect(completed).toBe(true);
+    expect(JSON.parse(stdout.text())).toMatchObject({ ok: true });
+  });
+
+  it("prints setup claude --json", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(["setup", "claude", "--json"], {
+      stdout: stdout.stream,
+      setupClaude: () => ({
+        ok: true,
+        state: "healthy",
+        koedHome: "/tmp/koed",
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        command: "claude mcp add --scope user koed",
+        settingsPath: "/tmp/.claude/settings.json"
+      })
+    });
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      settingsPath: "/tmp/.claude/settings.json"
+    });
+  });
+
+  it("dispatches check, repair, and remove for every AI Client with exit status", async () => {
+    const capabilityIds = [
+      "automatic_capture",
+      "mcp_recall",
+      "local_synthesis"
+    ] as const;
+    const readiness = (driverId: "codex" | "claude" | "pi") => ({
+      driverId,
+      instanceId: `${driverId}.default`,
+      displayName: driverId,
+      installed: { state: "healthy" as const },
+      version: "1.0.0",
+      authentication: "authenticated" as const,
+      profile: { state: "healthy" as const },
+      capabilities: capabilityIds.map((id) => ({
+        id,
+        support: "supported" as const,
+        readiness: "ready" as const,
+        diagnostics: []
+      })),
+      observedAt: "2026-01-01T00:00:00.000Z",
+      snapshotState: "current" as const
+    });
+    const checkStatus = {
+      ...status,
+      aiClients: {
+        codex: readiness("codex"),
+        claude: readiness("claude"),
+        pi: readiness("pi")
+      }
+    };
+    const result = {
+      ok: true,
+      state: "healthy" as const,
+      koedHome: "/tmp/koed",
+      checkedAt: "2026-01-01T00:00:00.000Z",
+      command: "client operation"
+    };
+    for (const client of ["codex", "claude", "pi"] as const) {
+      const checkOutput = writer();
+      expect(
+        await runKoedServerCli(["check", client, "--json"], {
+          stdout: checkOutput.stream,
+          collectStatus: async () => checkStatus
+        })
+      ).toBe(0);
+      expect((JSON.parse(checkOutput.text()) as { state?: string }).state).toBe(
+        "healthy"
+      );
+
+      const repairOutput = writer();
+      const repairKey = client === "codex" ? "repairCodex" : undefined;
+      expect(
+        await runKoedServerCli(["repair", client, "--json"], {
+          stdout: repairOutput.stream,
+          ...(repairKey ? { repairCodex: () => result } : {}),
+          ...(client === "claude" ? { setupClaude: () => result } : {}),
+          ...(client === "pi" ? { setupPi: () => result } : {})
+        } as never)
+      ).toBe(0);
+
+      const removeOutput = writer();
+      expect(
+        await runKoedServerCli(["remove", client, "--json"], {
+          stdout: removeOutput.stream,
+          ...(client === "codex" ? { removeCodex: () => result } : {}),
+          ...(client === "claude" ? { removeClaude: () => result } : {}),
+          ...(client === "pi" ? { removePi: () => result } : {})
+        } as never)
+      ).toBe(0);
+    }
+  });
+
+  it("returns failed check contract for stale readiness", async () => {
+    const stdout = writer();
+    const staleStatus = {
+      ...status,
+      aiClients: {
+        codex: {
+          driverId: "codex",
+          instanceId: "codex.default",
+          displayName: "Codex",
+          installed: { state: "healthy" },
+          version: "1.0.0",
+          authentication: "authenticated",
+          profile: { state: "healthy" },
+          capabilities: [
+            "automatic_capture",
+            "mcp_recall",
+            "local_synthesis"
+          ].map((id) => ({
+            id,
+            support: "supported",
+            readiness: "stale",
+            diagnostics: []
+          })),
+          observedAt: "2026-01-01T00:00:00.000Z",
+          snapshotState: "stale"
+        }
+      }
+    } as never;
+
+    const exitCode = await runKoedServerCli(["check", "codex", "--json"], {
+      stdout: stdout.stream,
+      collectStatus: async () => staleStatus
+    });
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: false,
+      client: "codex",
+      readiness: { snapshotState: "stale" }
     });
   });
 

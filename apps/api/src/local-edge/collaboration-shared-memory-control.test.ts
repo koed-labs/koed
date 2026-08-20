@@ -990,6 +990,7 @@ describe("collaboration Shared Memory control", () => {
         ...previewCommand().input,
         candidate: {
           source: capturedSource,
+          sessionId: ids.localSession,
           candidateHash: hash,
           sourceRevision: 4,
           itemCount: 1,
@@ -1818,6 +1819,7 @@ describe("collaboration Shared Memory control", () => {
           previewRevision: 1,
           previewHash: hashC,
           expiresAt: null,
+          candidateSessionId: ids.localSession,
           actionGrant: { id: ids.actionGrant }
         }
       },
@@ -1864,6 +1866,8 @@ describe("collaboration Shared Memory control", () => {
         input: {
           ...shareCommand().input,
           mutationId
+          mutationId,
+          candidateSessionId: ids.localSession
         }
       },
       context()
@@ -1908,6 +1912,8 @@ describe("collaboration Shared Memory control", () => {
         ...shareCommand(),
         input: {
           ...shareCommand().input
+          ...shareCommand().input,
+          candidateSessionId: ids.localSession
         }
       },
       context()

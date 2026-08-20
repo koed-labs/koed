@@ -8,7 +8,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   MANAGED_CONVERSATION_FORK_PROTOCOL,
+  MANAGED_CONVERSATION_FORK_PROTOCOL_V2,
   canonicalManagedConversationForkManifest,
+  managedConversationForkAiClientInstanceIdAfterVerification,
   managedConversationForkManifestDigest,
   parseManagedConversationForkManifest,
   verifyManagedConversationForkManifest,
@@ -20,7 +22,7 @@ const fixture = () => {
   const sourceKeyId = randomUUID();
   const targetDeviceId = randomUUID();
   const manifest: ManagedConversationForkManifest = {
-    protocol: MANAGED_CONVERSATION_FORK_PROTOCOL,
+    protocol: MANAGED_CONVERSATION_FORK_PROTOCOL_V2,
     operationId: randomUUID(),
     requestDigest: "1".repeat(64),
     ownerUserId: randomUUID(),
@@ -35,6 +37,7 @@ const fixture = () => {
     sourceEndByteCursor: 42_100,
     sourceEndItemCursor: 92,
     provider: "codex",
+    aiClientInstanceId: "codex.work",
     providerThreadId: randomUUID(),
     providerArtifactRelativePath:
       "sessions/2026/07/27/rollout-2026-07-27-example.jsonl",
@@ -64,8 +67,43 @@ const fixture = () => {
 };
 
 describe("Managed Conversation fork protocol", () => {
+  it("verifies legacy v1 without accepting v2 owner fields", () => {
+    const value = fixture();
+    const legacyFields = { ...value.manifest };
+    delete legacyFields.aiClientInstanceId;
+    const manifest: ManagedConversationForkManifest = {
+      ...legacyFields,
+      protocol: MANAGED_CONVERSATION_FORK_PROTOCOL
+    };
+    const signed = {
+      manifest,
+      source: {
+        keyId: value.signed.source.keyId,
+        signature: sign(
+          null,
+          Buffer.from(canonicalManagedConversationForkManifest(manifest)),
+          value.source.privateKey
+        ).toString("base64url")
+      }
+    };
+    expect(
+      verifyManagedConversationForkManifest({
+        signed,
+        sourcePublicKey: value.source.publicKey,
+        enforceExpiry: false
+      })
+    ).toBe(true);
+    expect(
+      managedConversationForkAiClientInstanceIdAfterVerification({
+        manifest,
+        verified: true
+      })
+    ).toBe("codex.default");
+  });
+
   it("verifies an exact signed parent boundary and target", () => {
     const value = fixture();
+    expect(value.manifest.aiClientInstanceId).toBe("codex.work");
     expect(
       verifyManagedConversationForkManifest({
         signed: value.signed,

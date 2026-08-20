@@ -15,6 +15,7 @@
     "baseUrl": ".",
     "ignoreDeprecations": "6.0",
     "paths": {
+      "@koed/api": ["apps/api/src/server/index.ts"],
       "@koed/core": ["packages/core/src/index.ts"],
       "@koed/db": ["packages/db/src/index.ts"],
       "@koed/koed-server": ["packages/koed-server/src/index.ts"],
@@ -25,6 +26,9 @@
       "@koed/mcp-server/claude-transcript-parser": [
         "packages/mcp-server/src/claude-transcript-parser.ts"
       ],
+      "@koed/mcp-server/runtime-contracts": [
+        "packages/mcp-server/src/runtime-contracts.ts"
+      ],
       "@koed/shared": ["packages/shared/src/index.ts"],
       "@koed/shared/collaboration": [
         "packages/shared/src/collaboration-contract.ts"
@@ -34,6 +38,9 @@
       ],
       "@koed/shared/secure-upstream-fetch": [
         "packages/shared/src/secure-upstream-fetch.ts"
+      ],
+      "@koed/worker/embedding-workflow": [
+        "apps/worker/src/embedding-workflow.ts"
       ]
     },
     "resolveJsonModule": true,

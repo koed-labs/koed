@@ -6,20 +6,39 @@ import {
   type MemoryAnswerWorkerConfig,
   type MemoryAnswerWorkerResponse
 } from "./answer-worker.js";
+import type { AiClientModelCapability } from "@koed/shared";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 export {
   aiClientInstanceRegistryPath,
   environmentForLocalAiClientInstance,
   loadLocalAiClientInstanceRegistry,
+  localAiClientInstanceConfigIdentity,
+  resolveConfiguredLocalAiClientInstance,
   resolveLocalAiClientInstance
 } from "./ai-client-instance-registry.js";
 export type { LocalAiClientInstanceConfiguration } from "./ai-client-instance-registry.js";
 export {
+  publishAiClientCapabilities,
+  startAiClientCapabilityPublisher
+} from "./ai-client-capability-publisher.js";
+export type {
+  AiClientCapabilityPublication,
+  AiClientCapabilityPublisherHandle
+} from "./ai-client-capability-publisher.js";
+export {
+  aiClientDriverFor,
+  aiClientDriverRegistry,
   aiClientTaskDriverFor,
   checkClaudeCodeAvailability,
+  checkPiAvailability,
   listClaudeAgentSdkModels,
+  listPiModels,
   resolveClaudeSdkExecutablePath,
-  runClaudeAgentSdkTask
+  resolvePiExecutable,
+  runClaudeAgentSdkTask,
+  type AiClientDriver,
+  type AiClientDriverDiscovery,
+  type AiClientDriverDiscoveryInput
 } from "./ai-client-runner.js";
 export {
   checkCodexAppServerAvailability,
@@ -76,6 +95,18 @@ export {
   importClaudeHistoricalSource,
   importSelectedClaudeHistory
 } from "./claude-historical-import.js";
+export {
+  discoverPiTranscriptSignals,
+  piSessionRoots,
+  processPiTranscriptSignal,
+  startPiTranscriptWatcher
+} from "./pi-transcript-watcher.js";
+export { parsePiSessionJournalBytes } from "./pi-session-parser.js";
+export {
+  importPiHistoricalSource,
+  importSelectedPiHistory,
+  registerPiHistoricalTranscriptSource
+} from "./pi-historical-import.js";
 export type {
   ClaudeTranscriptWatcherHandle,
   ClaudeWatcherState
@@ -93,6 +124,10 @@ import {
   lcmSummaryLockState,
   resolveLcmSummaryWorkerConfig
 } from "./lcm-summary-worker.js";
+export type {
+  SessionTitleTelemetry,
+  SessionTitleTelemetryObserver
+} from "./session-title-worker.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { resolveCuratedMemoryReviewConfig } from "./curated-memory-review-worker.js";
 export {
@@ -112,16 +147,20 @@ export type {
 export {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   buildLcmSummaryPrompt,
+  executeLcmSummaryNode,
   parseStructuredLcmSummary,
   runLcmSummary,
+  runLcmSummaryPromptWithRetries,
   resolveLcmSummaryWorkerConfig
 } from "./lcm-summary-worker.js";
 export type {
   LcmSummaryRunner,
+  LcmSummaryNodeExecution,
   LcmSummaryNode,
   LcmSummaryPromptResult,
   LcmSummaryWorkerConfig,
-  StructuredLcmSummary
+  StructuredLcmSummary,
+  VersionedLcmSummaryPromptResult
 } from "./lcm-summary-worker.js";
 
 export type RetrievalScope = "personal";
@@ -179,7 +218,7 @@ export const workerOverridesFromLocalMemorySetting = (
   setting: LocalMemoryAgentSettingRecord | undefined
 ):
   | {
-      provider: "codex" | "claude";
+      provider: "codex" | "claude" | "pi";
       aiClientInstanceId: string;
       model: string;
       reasoningEffort: string;
@@ -188,7 +227,9 @@ export const workerOverridesFromLocalMemorySetting = (
     }
   | undefined =>
   setting
-    ? setting.provider === "codex" || setting.provider === "claude"
+    ? setting.provider === "codex" ||
+      setting.provider === "claude" ||
+      setting.provider === "pi"
       ? {
           provider: setting.provider,
           aiClientInstanceId: setting.aiClientInstanceId,
@@ -310,13 +351,19 @@ export const defaultTools = ["memory_answer"] as const;
 
 export const capabilityGatedTools = ["memory_intake_propose"] as const;
 
-export const memoryServerInstructions = loadPrompt(
-  "mcp-server-instructions"
-).body;
-
-export const memoryAnswerToolDescription = loadPrompt(
+const memoryServerInstructionsPrompt = loadPrompt("mcp-server-instructions");
+const memoryAnswerToolDescriptionPrompt = loadPrompt(
   "memory-answer-tool-description"
-).body;
+);
+
+export const memoryServerInstructions = memoryServerInstructionsPrompt.body;
+export const memoryServerInstructionsVersion =
+  memoryServerInstructionsPrompt.version;
+export const memoryAnswerToolDescription =
+  memoryAnswerToolDescriptionPrompt.body;
+export const memoryAnswerToolDescriptionVersion =
+  memoryAnswerToolDescriptionPrompt.version;
+export const mcpRecallPolicyVersion = `${memoryServerInstructionsVersion}+${memoryAnswerToolDescriptionVersion}`;
 
 export const memoryIntakeProposeToolDescription =
   "Propose durable Curated Memory when the user provides stable personal or project information such as preferences, corrections, decisions, plans, relationships, or other reusable context. Submit a concise candidate and real source evidence. When source IDs or a backend Captured Session ID are unavailable, include the exact supporting User statement in evidence_exact_quote so Koed can bind the proposal without guessing across sessions. An asynchronous local review agent receives the complete evidence, decides whether it is supported and durable, rewrites accepted assertions clearly, and handles duplicates or corrections. The proposal call returns immediately. Do not propose public facts, transient task state, guesses, agent-authored claims, or information without source evidence.";
@@ -435,6 +482,21 @@ export class MemoryApiClient {
     return this.request<Record<string, unknown>>("GET", "/v1/capabilities");
   }
 
+  async getEffectiveCapturePolicy(input: {
+    projectId?: string;
+    threadId?: string;
+    sessionId?: string;
+  }): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams();
+    if (input.projectId) params.set("projectId", input.projectId);
+    if (input.threadId) params.set("threadId", input.threadId);
+    if (input.sessionId) params.set("sessionId", input.sessionId);
+    return this.request(
+      "GET",
+      `/v1/capture-policy/effective?${params.toString()}`
+    );
+  }
+
   async createSession(
     input: Record<string, unknown>
   ): Promise<{ session?: { id: string }; skipped?: boolean }> {
@@ -448,7 +510,7 @@ export class MemoryApiClient {
   }
 
   async lookupConversationSourceArtifact(input: {
-    sourceKind: "codex" | "claude-code";
+    sourceKind: "codex" | "claude-code" | "pi";
     externalSessionId: string;
     sourceComponentId?: string;
   }): Promise<Record<string, unknown>> {
@@ -778,9 +840,35 @@ export class MemoryApiClient {
     return this.request("GET", "/v1/memory/local-agent-settings");
   }
 
+  async listAiClientInstances(): Promise<{
+    instances: Array<{
+      instanceId: string;
+      driverId: string;
+      enabled: boolean;
+      configIdentityHash?: string | null;
+    }>;
+    capabilitySnapshots: Array<{
+      instanceId: string;
+      installationIdentityHash?: string;
+      healthState: string;
+      authenticationState: string;
+      models: Array<Record<string, unknown>>;
+      capabilities: Record<string, unknown>;
+      expiresAt: string;
+      stale: boolean;
+    }>;
+  }> {
+    return this.request("GET", "/v1/memory/ai-client-instances");
+  }
+
   async upsertAiClientInstance(
     instanceId: string,
-    input: Record<string, unknown>
+    input: {
+      driver_id: string;
+      display_name: string;
+      config_identity_hash?: string | null;
+      enabled?: boolean;
+    }
   ): Promise<Record<string, unknown>> {
     return this.request(
       "PUT",
@@ -791,7 +879,16 @@ export class MemoryApiClient {
 
   async recordAiClientCapabilitySnapshot(
     instanceId: string,
-    input: Record<string, unknown>
+    input: {
+      installation_identity_hash: string;
+      client_version?: string | null;
+      authentication_state: "authenticated" | "unauthenticated" | "unknown";
+      health_state: "healthy" | "unavailable" | "incompatible" | "error";
+      models: AiClientModelCapability[];
+      capabilities: Record<string, unknown>;
+      observed_at: string;
+      expires_at: string;
+    }
   ): Promise<Record<string, unknown>> {
     return this.request(
       "POST",
@@ -800,10 +897,19 @@ export class MemoryApiClient {
     );
   }
 
+  async deleteLocalMemoryAgentSetting(
+    flowKey: LocalMemoryAgentFlowKey
+  ): Promise<{ flow_key: LocalMemoryAgentFlowKey; reset: boolean }> {
+    return this.request(
+      "DELETE",
+      `/v1/memory/local-agent-settings/${encodeURIComponent(flowKey)}`
+    );
+  }
+
   async upsertLocalMemoryAgentSetting(
     flowKey: LocalMemoryAgentFlowKey,
     input: {
-      provider: "codex" | "claude";
+      provider: "codex" | "claude" | "pi";
       aiClientInstanceId?: string;
       model: string;
       reasoningEffort: string;
@@ -1004,7 +1110,7 @@ export class MemoryApiClient {
   }
 
   protected async request<T>(
-    method: "GET" | "POST" | "PATCH" | "PUT",
+    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     path: string,
     body?: unknown,
     options: { authorization?: string } = {}

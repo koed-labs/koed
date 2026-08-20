@@ -1293,6 +1293,41 @@ export interface CapturedSessionTitleCandidate {
   }>;
 }
 
+export const NORMALIZED_IMPORT_SOURCE_ADAPTER = {
+  sourceKind: "codex",
+  sourceAdapterVersion: "koed-normalized-import-v1",
+  sourceTransport: "normalized_import",
+  sourceRecordType: "normalized_import_item",
+  sourceFormat: "atif",
+  sourceSchemaVersion: "ATIF-v1.7",
+  sourceProducer: "harbor-codex",
+  normalizerAdapter: "harbor-atif",
+  normalizerAdapterVersion: "1.0.0",
+  projectionPolicyEquivalentAdapterVersion: "codex-transcript-v1",
+  projectionDispositionVersion: "codex-transcript-policy-v1"
+} as const;
+
+export type NormalizedImportSourceAdapter =
+  typeof NORMALIZED_IMPORT_SOURCE_ADAPTER;
+
+export type NormalizedImportTranscriptType =
+  | "system_message"
+  | "user_message"
+  | "agent_message"
+  | "reasoning_summary"
+  | "tool_call"
+  | "tool_result";
+
+export interface NormalizedImportAttestation {
+  sessionId: string;
+  projectId: string;
+  externalThreadId: string;
+  taskDigest: string;
+  sourceAttemptId: string;
+  sanitizationManifestHash: string;
+  sequenceStart: number;
+}
+
 export interface ConversationItemInput {
   observationOnly?: boolean;
   visibility?: Visibility;
@@ -1639,6 +1674,10 @@ export interface AiClientCapabilitySnapshotRecord {
   observedAt: string;
   expiresAt: string;
   createdAt: string;
+}
+
+export interface AiClientCapabilitySnapshotDiagnosticRecord extends AiClientCapabilitySnapshotRecord {
+  stale: boolean;
 }
 
 export interface CuratedMemoryTopicRecord {
@@ -2326,6 +2365,9 @@ export interface MemorySourceRepository
     actor: ActorContext
   ): Promise<LocalMemoryAgentSettingRecord[]>;
   listAiClientInstances(actor: ActorContext): Promise<AiClientInstanceRecord[]>;
+  listAiClientCapabilitySnapshots(
+    actor: ActorContext
+  ): Promise<AiClientCapabilitySnapshotDiagnosticRecord[]>;
   upsertAiClientInstance(
     actor: ActorContext,
     input: {
@@ -2365,6 +2407,10 @@ export interface MemorySourceRepository
       maxAttempts: number;
     }
   ): Promise<LocalMemoryAgentSettingRecord>;
+  deleteLocalMemoryAgentSetting(
+    actor: ActorContext,
+    flowKey: LocalMemoryAgentSettingsFlowKey
+  ): Promise<boolean>;
   createHistoricalImportRun(
     actor: ActorContext
   ): Promise<HistoricalImportRunRecord>;

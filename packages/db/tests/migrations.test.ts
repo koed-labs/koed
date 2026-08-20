@@ -107,6 +107,75 @@ describe("collaboration receipt migration", () => {
   });
 });
 
+describe("Pi AI Client migration", () => {
+  it("adds Pi to the persisted source runtime enum idempotently", async () => {
+    const [journalText, migrationSql] = await Promise.all([
+      readDrizzleFile("meta/_journal.json"),
+      readDrizzleFile("0032_pi_source_runtime.sql")
+    ]);
+    const journal = JSON.parse(journalText) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+
+    expect(journal.entries[32]).toEqual(
+      expect.objectContaining({ idx: 32, tag: "0032_pi_source_runtime" })
+    );
+    expect(migrationSql).toContain(
+      `ALTER TYPE "public"."source_runtime" ADD VALUE IF NOT EXISTS 'pi'`
+    );
+    for (const transcriptType of [
+      "user_message",
+      "agent_message",
+      "tool_call",
+      "tool_result",
+      "bash_execution",
+      "agent_reasoning",
+      "compaction",
+      "branch_summary",
+      "unknown"
+    ]) {
+      expect(migrationSql).toContain(
+        `'pi', 'pi-session-v1', '${transcriptType}'`
+      );
+    }
+    expect(migrationSql).toContain(
+      "Pi reasoning, compaction, and branch summaries are retained as raw provenance only."
+    );
+    expect(migrationSql).toContain("ON CONFLICT DO NOTHING;");
+  });
+});
+
+describe("managed Conversation execution owner migration", () => {
+  it("backfills safe provider identities without adding a foreign key", async () => {
+    const [journalText, migrationSql] = await Promise.all([
+      readDrizzleFile("meta/_journal.json"),
+      readDrizzleFile("0033_fixed_scarlet_witch.sql")
+    ]);
+    const journal = JSON.parse(journalText) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+
+    expect(journal.entries[33]).toEqual(
+      expect.objectContaining({ idx: 33, tag: "0033_fixed_scarlet_witch" })
+    );
+    expect(migrationSql).toContain('ADD COLUMN "ai_client_instance_id" text');
+    expect(migrationSql).toContain('SET "ai_client_instance_id" = CASE');
+    expect(migrationSql).toContain("THEN \"provider\" || '.default'");
+    expect(migrationSql).toContain('THEN "provider"');
+    expect(migrationSql).toContain("ELSE 'legacy.' || md5(\"provider\")");
+    expect(migrationSql).toContain(
+      'char_length("managed_conversation_executions"."ai_client_instance_id") <= 128'
+    );
+    expect(migrationSql).toContain(
+      'ALTER COLUMN "ai_client_instance_id" SET NOT NULL'
+    );
+    expect(migrationSql).toContain(
+      "managed_conversation_executions_ai_client_instance_check"
+    );
+    expect(migrationSql).not.toContain("FOREIGN KEY");
+  });
+});
+
 describe("Claude AI Client migration", () => {
   it("seeds explicit semantic and raw-only Claude projection policies", async () => {
     const migrationSql = await readDrizzleFile("0030_blue_maddog.sql");

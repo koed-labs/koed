@@ -1,4 +1,15 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
+import { randomUUID } from "node:crypto";
+import { dirname, resolve } from "node:path";
 import type { KoedServerPaths } from "./paths.js";
 
 export interface LocalAppCredential {
@@ -49,11 +60,34 @@ export const writeLocalAppCredential = (
   paths: KoedServerPaths,
   credential: LocalAppCredential
 ): void => {
-  writeFileSync(
-    paths.localAppCredentialPath,
-    `${JSON.stringify(credential, null, 2)}\n`,
-    { mode: 0o600 }
-  );
+  const target = resolve(paths.localAppCredentialPath);
+  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+  try {
+    if (lstatSync(target).isSymbolicLink()) {
+      throw new Error(
+        "Local API Token credential must not be a symbolic link."
+      );
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, `${JSON.stringify(credential, null, 2)}\n`, {
+      mode: 0o600,
+      flag: "wx"
+    });
+    chmodSync(temporary, 0o600);
+    renameSync(temporary, target);
+    chmodSync(target, 0o600);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // Preserve original write failure.
+    }
+    throw error;
+  }
 };
 
 export const loadLocalAppCredential = (
@@ -66,11 +100,11 @@ export const loadLocalAppCredential = (
     const parsed = JSON.parse(
       readFileSync(paths.localAppCredentialPath, "utf8")
     ) as Partial<LocalAppCredential> | null;
-    if (!parsed?.apiToken) {
+    if (typeof parsed?.apiToken !== "string" || !parsed.apiToken.trim()) {
       return null;
     }
     return {
-      apiToken: parsed.apiToken,
+      apiToken: parsed.apiToken.trim(),
       provisionedAt: parsed.provisionedAt ?? "unknown",
       source: parsed.source ?? "repo-env"
     };

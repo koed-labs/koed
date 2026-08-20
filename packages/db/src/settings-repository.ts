@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { auditEventValues } from "./audit-repository.js";
 import type { KoedDb } from "./connection.js";
 import {
@@ -11,6 +11,7 @@ import {
 } from "./schema.js";
 import type {
   ActorContext,
+  AiClientCapabilitySnapshotDiagnosticRecord,
   AiClientCapabilitySnapshotRecord,
   AiClientInstanceRecord,
   CapturePolicyRecord,
@@ -204,8 +205,10 @@ export const createSettingsRepository = (db: KoedDb) => ({
         set: {
           driverId: input.driverId,
           displayName: input.displayName,
-          configIdentityHash: input.configIdentityHash ?? null,
-          enabled: input.enabled ?? true,
+          ...(input.configIdentityHash !== undefined
+            ? { configIdentityHash: input.configIdentityHash }
+            : {}),
+          ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
           updatedAt: sql`now()`
         }
       })
@@ -236,7 +239,11 @@ export const createSettingsRepository = (db: KoedDb) => ({
           eq(aiClientCapabilitySnapshots.instanceId, input.instanceId)
         )
       )
-      .orderBy(desc(aiClientCapabilitySnapshots.observedAt))
+      .orderBy(
+        desc(aiClientCapabilitySnapshots.observedAt),
+        desc(aiClientCapabilitySnapshots.createdAt),
+        desc(aiClientCapabilitySnapshots.id)
+      )
       .limit(1);
     if (
       current &&
@@ -282,78 +289,56 @@ export const createSettingsRepository = (db: KoedDb) => ({
     return mapAiClientCapabilitySnapshotRecord(row!);
   },
 
+  async listAiClientCapabilitySnapshots(
+    actor: ActorContext
+  ): Promise<AiClientCapabilitySnapshotDiagnosticRecord[]> {
+    const rows = await db
+      .select()
+      .from(aiClientCapabilitySnapshots)
+      .where(eq(aiClientCapabilitySnapshots.ownerUserId, actor.userId))
+      .orderBy(
+        asc(aiClientCapabilitySnapshots.instanceId),
+        desc(aiClientCapabilitySnapshots.observedAt),
+        desc(aiClientCapabilitySnapshots.createdAt),
+        desc(aiClientCapabilitySnapshots.id)
+      );
+    const seen = new Set<string>();
+    const now = Date.now();
+    return rows.flatMap((row) => {
+      if (seen.has(row.instanceId)) return [];
+      seen.add(row.instanceId);
+      return [
+        {
+          ...mapAiClientCapabilitySnapshotRecord(row),
+          stale: row.expiresAt.getTime() <= now
+        }
+      ];
+    });
+  },
+
   async listCurrentAiClientCapabilitySnapshots(
     actor: ActorContext
   ): Promise<AiClientCapabilitySnapshotRecord[]> {
-    const currentRows = await db
+    const rows = await db
       .select()
       .from(aiClientCapabilitySnapshots)
-      .where(
-        and(
-          eq(aiClientCapabilitySnapshots.ownerUserId, actor.userId),
-          gt(aiClientCapabilitySnapshots.expiresAt, sql`now()`)
-        )
-      )
+      .where(eq(aiClientCapabilitySnapshots.ownerUserId, actor.userId))
       .orderBy(
         asc(aiClientCapabilitySnapshots.instanceId),
-        desc(aiClientCapabilitySnapshots.observedAt)
+        desc(aiClientCapabilitySnapshots.observedAt),
+        desc(aiClientCapabilitySnapshots.createdAt),
+        desc(aiClientCapabilitySnapshots.id)
       );
     const seen = new Set<string>();
-    const current = currentRows.flatMap((row) => {
+    const latest = rows.flatMap((row) => {
       if (seen.has(row.instanceId)) return [];
       seen.add(row.instanceId);
       return [row];
     });
-    if (current.length === 0) return [];
-    const healthyRows = await db
-      .select()
-      .from(aiClientCapabilitySnapshots)
-      .where(
-        and(
-          eq(aiClientCapabilitySnapshots.ownerUserId, actor.userId),
-          eq(aiClientCapabilitySnapshots.healthState, "healthy"),
-          inArray(
-            aiClientCapabilitySnapshots.instanceId,
-            current.map((row) => row.instanceId)
-          )
-        )
-      )
-      .orderBy(
-        asc(aiClientCapabilitySnapshots.instanceId),
-        desc(aiClientCapabilitySnapshots.observedAt)
-      );
-    return current.map((row) => {
-      const record = mapAiClientCapabilitySnapshotRecord(row);
-      if (record.healthState === "healthy") return record;
-      const lastKnownGood = healthyRows.find(
-        (candidate) =>
-          candidate.instanceId === row.instanceId &&
-          candidate.installationIdentityHash === row.installationIdentityHash &&
-          candidate.models.length > 0
-      );
-      if (!lastKnownGood) return record;
-      const currentModelIds = new Set(
-        record.models.flatMap((model) => {
-          const id = model.model ?? model.id;
-          return typeof id === "string" ? [id] : [];
-        })
-      );
-      return {
-        ...record,
-        models: [
-          ...record.models,
-          ...lastKnownGood.models.flatMap((model) => {
-            const id = model.model ?? model.id;
-            if (typeof id !== "string" || currentModelIds.has(id)) return [];
-            return [{ ...model, provenance: "last-known-good" }];
-          })
-        ],
-        capabilities: {
-          ...record.capabilities,
-          lastKnownGoodObservedAt: timestampIso(lastKnownGood.observedAt)
-        }
-      };
-    });
+    const now = Date.now();
+    return latest
+      .filter((row) => row.expiresAt.getTime() > now)
+      .map(mapAiClientCapabilitySnapshotRecord);
   },
 
   async listLocalMemoryAgentSettings(
@@ -410,6 +395,22 @@ export const createSettingsRepository = (db: KoedDb) => ({
       .returning();
 
     return mapLocalMemoryAgentSettingRecord(rows[0]!);
+  },
+
+  async deleteLocalMemoryAgentSetting(
+    actor: ActorContext,
+    flowKey: LocalMemoryAgentSettingsFlowKey
+  ): Promise<boolean> {
+    const rows = await db
+      .delete(localMemoryAgentSettings)
+      .where(
+        and(
+          eq(localMemoryAgentSettings.ownerUserId, actor.userId),
+          eq(localMemoryAgentSettings.flowKey, flowKey)
+        )
+      )
+      .returning({ flowKey: localMemoryAgentSettings.flowKey });
+    return rows.length > 0;
   },
 
   async getEffectiveCapturePolicy(

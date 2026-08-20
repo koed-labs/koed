@@ -9,6 +9,13 @@ Koed does not require Codex for the Claude integration. Codex and Claude Code
 may both connect to the same local Koed deployment, but neither installation is
 used as a fallback for the other.
 
+Desktop-managed Conversations require explicit `claude` driver and instance
+selection. API accepts only an enabled instance with a fresh healthy,
+authenticated `managed_conversation_start` capability snapshot. Worker keeps
+that exact instance through restart, send, handoff, and fork; it does not fall
+back to Codex or another Claude instance. Pi remains visible in Desktop as an
+unsupported Managed Conversation owner.
+
 ## Requirements
 
 - A running local `koed-server`. The default API host port is `3300`.
@@ -28,7 +35,14 @@ state stay local and are not stored by the Koed backend.
 
 ## Configure Claude Code
 
-From the Koed checkout after building the MCP Server, run:
+In Koed Desktop, open **Preferences → Advanced Diagnostics** and choose **Set
+up Claude Code integration**. Desktop verifies the independently installed
+Claude Code executable and sign-in, then configures the Koed-owned MCP and Hook
+entries after explicit confirmation. The same screen reports integration health
+and provides an idempotent repair action.
+
+From a contributor checkout after building the MCP Server, the equivalent Local
+Operator Script is:
 
 ```bash
 pnpm claude:configure
@@ -47,7 +61,10 @@ pnpm claude:configure --remove
 ```
 
 Running the normal configure command again repairs the Koed-owned MCP and Hook
-entries without replacing unrelated Claude configuration.
+entries without replacing unrelated Claude configuration. Desktop and the
+headless CLI also expose read-only `check claude --json` plus protected
+`remove claude --json`; removal requires consent and touches only Koed-owned
+entries.
 
 When Claude Code is not on `PATH`, pass an absolute executable path:
 
@@ -64,6 +81,13 @@ The setup script writes only `KOED_HOME` to the local MCP configuration. The
 stateless MCP adapter discovers the authenticated Local AI Runtime through its
 owner-only registration. Neither the MCP adapter nor Capture Hook receives a
 Koed credential.
+
+Before replacing an existing user-scoped MCP entry, setup verifies that its
+command and `KOED_HOME` identify a Koed-owned adapter. An unrelated entry using
+the configured MCP name is preserved and reported as a collision. Claude Code
+setup subprocesses receive a strict system/profile environment allowlist; Koed
+service secrets and provider credential environment variables are not passed
+through.
 
 The watcher coalesces transcript filesystem writes and lifecycle signals for a
 short quiet period before reading the source frontier. This prevents a Stop or
@@ -140,9 +164,11 @@ capture as verified.
 ## Per-flow Synthesis routing
 
 Memory Answer, LCM Summary, session-title synthesis, and Curated Memory Review
-resolve provider and model independently. Set a flow's provider to `claude` and
-choose a model exposed by the local Claude Agent SDK model list. Other flows may
-remain on `codex` when Codex is also installed.
+resolve provider, AI Client instance, model, and reasoning effort independently.
+Set a flow's provider to `claude` and choose a model exposed by the local Claude
+Agent SDK model list. Other flows may remain on `codex` or `pi` when installed.
+Desktop Advanced settings shows current auth, availability, and snapshot
+staleness; unavailable persisted assignments remain visible and do not fall back.
 
 For example:
 
@@ -181,10 +207,16 @@ Installing one integration neither configures nor disables the other.
 
 ## Current setup boundaries
 
-- Claude setup is a Local Operator Script and is not yet a Koed Desktop guided
-  setup or repair stage.
-- The Claude setup command configures MCP and hooks but does not run an automated
-  end-to-end capture fixture. Verify a fresh live session explicitly.
-- Existing synthesis defaults remain Codex-oriented. A Claude-only installation
-  must select `claude` and an exposed Claude model for each flow it wants Claude
-  Code to run.
+- Claude Code remains optional. Guided first-run setup reports executable/profile
+  availability, but never selects or configures Claude automatically. Select
+  Claude Code explicitly in the post-core AI Client screen; setup has its own
+  consent prompt and can be cancelled without affecting core or other clients.
+  A detected but unsupported or unauthenticated installation affects only the
+  Claude client result, not core Koed runtime health. Preferences can set up,
+  check, repair, or remove Claude later.
+- Desktop setup configures MCP and hooks but does not run an automated end-to-end
+  capture fixture. Verify a fresh live session explicitly.
+- Documented synthesis defaults remain Codex-oriented. A Claude-only installation
+  must select `claude`, its explicit instance, and an exposed Claude model for each
+  flow it wants Claude Code to run. Resetting one flow leaves other assignments
+  unchanged.

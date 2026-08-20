@@ -1,6 +1,8 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
   type PathLike
@@ -13,10 +15,16 @@ import {
   collectKoedServerDoctor,
   collectKoedServerStatus,
   healthy,
+  inspectAiClientFlowReadiness,
+  inspectAiClientInstanceReadiness,
+  inspectAiClientReadiness,
+  inspectClaudeCode,
+  inspectPi,
   needsAttention,
   notConfigured,
   statusFromApiReady
 } from "./status.js";
+import { resolveKoedServerPaths } from "./paths.js";
 const temps: string[] = [];
 const tempDir = () => {
   const path = mkdtempSync(resolve(tmpdir(), "koed-server-status-"));
@@ -67,6 +75,702 @@ afterEach(() => {
 });
 
 describe("status state aggregation", () => {
+  it("reports client-neutral capability readiness without treating core as client setup", () => {
+    const component = (
+      state: "healthy" | "needs_attention" | "not_configured"
+    ) => ({
+      state,
+      message: `${state} check`
+    });
+    const clients = inspectAiClientReadiness({
+      codex: { ...component("healthy"), configured: true },
+      claudeCode: {
+        ...component("needs_attention"),
+        configured: false,
+        detected: true
+      },
+      pi: {
+        ...component("healthy"),
+        configured: true,
+        detected: true,
+        details: { version: "0.84.2", authenticated: true }
+      },
+      codexTranscriptWatcher: component("healthy"),
+      claudeTranscriptWatcher: component("healthy"),
+      mcpServer: component("healthy"),
+      localAiRuntime: component("healthy"),
+      now: "2026-01-01T00:00:00.000Z"
+    });
+
+    expect(clients.codex!.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "ready"
+        }),
+        expect.objectContaining({ id: "mcp_recall", readiness: "ready" })
+      ])
+    );
+    expect(clients.claude!.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "not_ready"
+        })
+      ])
+    );
+    expect(clients.pi!.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "managed_conversation_start",
+          support: "unsupported"
+        })
+      ])
+    );
+    expect(clients.claude!.profile.state).toBe("needs_attention");
+    expect(clients.codex!.profile.state).toBe("healthy");
+  });
+  it("reports independent flow assignment readiness from defaults and settings", () => {
+    const readModel = {
+      instances: [
+        {
+          instanceId: "codex.default",
+          driverId: "codex" as const,
+          displayName: "Codex",
+          configIdentityHash: "hash"
+        }
+      ],
+      settings: [
+        {
+          flowKey: "lcm_summary" as const,
+          provider: "codex" as const,
+          aiClientInstanceId: "codex.default",
+          model: "missing/model",
+          reasoningEffort: "low",
+          timeoutMs: 120_000,
+          maxAttempts: 2
+        }
+      ],
+      defaults: {},
+      capabilitySnapshots: [
+        {
+          instanceId: "codex.default",
+          installationIdentityHash: "hash",
+          clientVersion: "1.0.0",
+          authenticationState: "authenticated" as const,
+          healthState: "healthy" as const,
+          models: [{ id: "gpt-5.6-luna", supportedReasoningEfforts: ["low"] }],
+          capabilities: {
+            descriptors: {
+              local_synthesis: {
+                id: "local_synthesis",
+                support: "supported" as const,
+                readiness: "ready" as const,
+                diagnostics: []
+              }
+            }
+          },
+          observedAt: "2026-01-01T00:00:00.000Z",
+          expiresAt: "2026-01-01T00:10:00.000Z"
+        }
+      ]
+    };
+    const readiness = inspectAiClientFlowReadiness({
+      environment: {},
+      capabilityReadModel: readModel,
+      now: "2026-01-01T00:01:00.000Z"
+    });
+    expect(readiness.lcm_summary.state).toBe("needs_attention");
+    expect(readiness.mcp_memory_answer.state).toBe("healthy");
+    expect(readiness.session_title.state).toBe("healthy");
+    expect(readiness.curated_memory_review.state).toBe("healthy");
+  });
+
+  it("reports explicit unavailable defaults as nonblocking attention", () => {
+    const readiness = inspectAiClientFlowReadiness({
+      environment: { MEMORY_ANSWER_PROVIDER: "pi" },
+      capabilityReadModel: {
+        instances: [],
+        capabilitySnapshots: [],
+        defaults: {
+          mcp_memory_answer: {
+            source: "code",
+            available: false,
+            assignment: null,
+            reason: "Operator selected no default."
+          }
+        }
+      },
+      now: "2026-01-01T00:00:00.000Z"
+    });
+    expect(readiness.mcp_memory_answer).toMatchObject({
+      state: "needs_attention",
+      source: "unavailable",
+      assignment: null
+    });
+  });
+
+  it("reports every AI Client instance without removing provider readiness", () => {
+    const baseInput: Parameters<typeof inspectAiClientReadiness>[0] = {
+      codex: { ...healthy(), configured: true },
+      claudeCode: {
+        ...notConfigured("Claude Code is not configured."),
+        configured: false,
+        detected: false
+      },
+      pi: {
+        ...notConfigured("Pi is not configured."),
+        configured: false,
+        detected: false
+      },
+      codexTranscriptWatcher: healthy(),
+      claudeTranscriptWatcher: notConfigured(
+        "Claude Transcript Watcher is not configured."
+      ),
+      mcpServer: healthy(),
+      localAiRuntime: healthy(),
+      capabilityReadModel: {
+        instances: [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            displayName: "Codex"
+          },
+          {
+            instanceId: "codex.work",
+            driverId: "codex",
+            displayName: "Codex Work"
+          }
+        ],
+        capabilitySnapshots: ["codex.default", "codex.work"].map(
+          (instanceId) => ({
+            instanceId,
+            clientVersion: "1.0.0",
+            authenticationState: "authenticated" as const,
+            healthState: "healthy" as const,
+            models: [{ id: "model", supportedReasoningEfforts: ["high"] }],
+            capabilities: {
+              descriptors: {
+                local_synthesis: {
+                  id: "local_synthesis",
+                  support: "supported" as const,
+                  readiness: "ready" as const,
+                  diagnostics: []
+                }
+              }
+            },
+            observedAt: "2026-01-01T00:00:00.000Z",
+            expiresAt: "2026-01-01T00:10:00.000Z"
+          })
+        )
+      },
+      now: "2026-01-01T00:00:00.000Z"
+    };
+    const aiClients = inspectAiClientReadiness(baseInput);
+    const aiClientInstances = inspectAiClientInstanceReadiness(baseInput);
+
+    expect(aiClients.codex?.instanceId).toBe("codex.default");
+    expect(Object.keys(aiClientInstances)).toEqual([
+      "codex.default",
+      "codex.work"
+    ]);
+    expect(aiClientInstances["codex.default"]?.instanceId).toBe(
+      "codex.default"
+    );
+    expect(aiClientInstances["codex.work"]).toMatchObject({
+      instanceId: "codex.work",
+      displayName: "Codex Work"
+    });
+  });
+
+  it("isolates a broken client inspector from other clients and core status", async () => {
+    const root = tempDir();
+    const configPath = resolve(root, "config.toml");
+    writeFileSync(configPath, "# malformed");
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        CODEX_HOME: root,
+        CODEX_CONFIG_PATH: configPath,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async () => response(true, 200, { checks: [] }),
+        readFileSync: ((path: PathLike) => {
+          if (String(path) === configPath)
+            throw new Error("broken Codex config");
+          return readFileSync(path, "utf8");
+        }) as typeof readFileSync,
+        spawnSync: () => spawnResult(""),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+    expect(status.codex.state).toBe("needs_attention");
+    expect(status.aiClients.claude).toBeDefined();
+    expect(status.aiClients.pi).toBeDefined();
+    expect(status.core.state).toBeDefined();
+  });
+
+  it.each([
+    ["codex", "Codex"],
+    ["claude", "Claude Code"],
+    ["pi", "Pi"]
+  ] as const)(
+    "uses %s capability snapshot for readiness",
+    (driverId, displayName) => {
+      const descriptor = (
+        id: string,
+        support: "supported" | "unsupported" = "supported"
+      ) => ({
+        id,
+        support,
+        readiness: support === "unsupported" ? "unknown" : "ready",
+        diagnostics: []
+      });
+      const clients = inspectAiClientReadiness({
+        codex: { ...healthy(), configured: true },
+        claudeCode: { ...healthy(), configured: true, detected: true },
+        pi: { ...healthy(), configured: true, detected: true },
+        codexTranscriptWatcher: healthy(),
+        claudeTranscriptWatcher: healthy(),
+        mcpServer: healthy(),
+        localAiRuntime: needsAttention("runtime unavailable"),
+        capabilityReadModel: {
+          instances: [
+            { instanceId: `${driverId}.default`, driverId, displayName }
+          ],
+          capabilitySnapshots: [
+            {
+              instanceId: `${driverId}.default`,
+              clientVersion: "1.2.3",
+              authenticationState: "authenticated",
+              healthState: "healthy",
+              models: [{ id: "model" }],
+              capabilities: {
+                descriptors: {
+                  automatic_capture: descriptor("automatic_capture"),
+                  mcp_recall: descriptor("mcp_recall"),
+                  local_synthesis: descriptor("local_synthesis"),
+                  managed_conversation_start: descriptor(
+                    "managed_conversation_start",
+                    driverId === "pi" ? "unsupported" : "supported"
+                  )
+                }
+              },
+              observedAt: "2026-01-01T00:00:00.000Z",
+              expiresAt: "2026-01-02T00:00:00.000Z"
+            }
+          ]
+        },
+        now: "2026-01-01T00:00:00.000Z"
+      });
+      const readiness = clients[driverId];
+      expect(readiness!.snapshotState).toBe("current");
+      expect(readiness!.version).toBe("1.2.3");
+      expect(readiness!.capabilities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "local_synthesis",
+            readiness: "ready"
+          }),
+          expect.objectContaining({
+            id: "managed_conversation_start",
+            support: driverId === "pi" ? "unsupported" : "supported",
+            readiness: driverId === "pi" ? "unknown" : "ready"
+          })
+        ])
+      );
+    }
+  );
+
+  it("overlays current profile readiness only for unknown capture and recall descriptors", () => {
+    const unknown = (id: string) => ({
+      id,
+      support: "supported" as const,
+      readiness: "unknown" as const,
+      diagnostics: []
+    });
+    const clients = inspectAiClientReadiness({
+      codex: { ...healthy(), configured: true },
+      claudeCode: { ...healthy(), configured: true, detected: true },
+      pi: { ...healthy(), configured: true, detected: true },
+      codexTranscriptWatcher: healthy(),
+      claudeTranscriptWatcher: healthy(),
+      mcpServer: healthy(),
+      localAiRuntime: healthy(),
+      capabilityReadModel: {
+        instances: [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            displayName: "Codex"
+          }
+        ],
+        capabilitySnapshots: [
+          {
+            instanceId: "codex.default",
+            clientVersion: "1.2.3",
+            authenticationState: "authenticated",
+            healthState: "healthy",
+            models: [{ id: "model" }],
+            capabilities: {
+              descriptors: {
+                automatic_capture: unknown("automatic_capture"),
+                mcp_recall: unknown("mcp_recall"),
+                local_synthesis: unknown("local_synthesis"),
+                managed_conversation_start: unknown(
+                  "managed_conversation_start"
+                )
+              }
+            },
+            observedAt: "2026-01-01T00:00:00.000Z",
+            expiresAt: "2026-01-02T00:00:00.000Z"
+          }
+        ]
+      },
+      now: "2026-01-01T00:00:00.000Z"
+    });
+
+    expect(clients.codex!.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "ready"
+        }),
+        expect.objectContaining({ id: "mcp_recall", readiness: "ready" }),
+        expect.objectContaining({
+          id: "local_synthesis",
+          readiness: "unknown"
+        }),
+        expect.objectContaining({
+          id: "managed_conversation_start",
+          readiness: "unknown"
+        })
+      ])
+    );
+  });
+
+  it("keeps stale snapshots non-runnable and does not use runtime for synthesis", () => {
+    const descriptor = (id: string) => ({
+      id,
+      support: "supported" as const,
+      readiness: "ready" as const,
+      diagnostics: []
+    });
+    const clients = inspectAiClientReadiness({
+      codex: { ...healthy(), configured: true },
+      claudeCode: { ...healthy(), configured: true, detected: true },
+      pi: { ...healthy(), configured: true, detected: true },
+      codexTranscriptWatcher: healthy(),
+      claudeTranscriptWatcher: healthy(),
+      mcpServer: healthy(),
+      localAiRuntime: healthy(),
+      capabilityReadModel: {
+        instances: [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            displayName: "Codex"
+          }
+        ],
+        capabilitySnapshots: [
+          {
+            instanceId: "codex.default",
+            clientVersion: "1.2.3",
+            authenticationState: "authenticated",
+            healthState: "healthy",
+            models: [{ id: "model" }],
+            capabilities: {
+              descriptors: {
+                automatic_capture: descriptor("automatic_capture"),
+                mcp_recall: descriptor("mcp_recall"),
+                local_synthesis: descriptor("local_synthesis"),
+                managed_conversation_start: descriptor(
+                  "managed_conversation_start"
+                )
+              }
+            },
+            observedAt: "2025-12-01T00:00:00.000Z",
+            expiresAt: "2025-12-02T00:00:00.000Z"
+          }
+        ]
+      },
+      now: "2026-01-01T00:00:00.000Z"
+    });
+    expect(clients.codex!.snapshotState).toBe("stale");
+    expect(clients.codex!.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "stale"
+        }),
+        expect.objectContaining({ id: "mcp_recall", readiness: "stale" }),
+        expect.objectContaining({ id: "local_synthesis", readiness: "stale" }),
+        expect.objectContaining({
+          id: "managed_conversation_start",
+          readiness: "stale"
+        })
+      ])
+    );
+  });
+
+  it("isolates broken client snapshot from healthy client snapshot", () => {
+    const snapshot = (
+      driverId: "codex" | "claude",
+      healthState: "healthy" | "unavailable"
+    ) => ({
+      instanceId: `${driverId}.default`,
+      clientVersion: healthState === "healthy" ? "1.2.3" : null,
+      authenticationState:
+        healthState === "healthy"
+          ? ("authenticated" as const)
+          : ("unknown" as const),
+      healthState,
+      models: healthState === "healthy" ? [{ id: "model" }] : [],
+      capabilities: {
+        descriptors: Object.fromEntries(
+          [
+            "automatic_capture",
+            "mcp_recall",
+            "local_synthesis",
+            "managed_conversation_start"
+          ].map((id) => [
+            id,
+            {
+              id,
+              support: "supported",
+              readiness: healthState === "healthy" ? "ready" : "unavailable",
+              diagnostics: []
+            }
+          ])
+        )
+      },
+      observedAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-02T00:00:00.000Z"
+    });
+    const clients = inspectAiClientReadiness({
+      codex: { ...healthy(), configured: true },
+      claudeCode: { ...healthy(), configured: true, detected: true },
+      pi: { ...healthy(), configured: true, detected: true },
+      codexTranscriptWatcher: healthy(),
+      claudeTranscriptWatcher: healthy(),
+      mcpServer: healthy(),
+      localAiRuntime: healthy(),
+      capabilityReadModel: {
+        instances: [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            displayName: "Codex"
+          },
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code"
+          }
+        ],
+        capabilitySnapshots: [
+          snapshot("codex", "unavailable"),
+          snapshot("claude", "healthy")
+        ]
+      },
+      now: "2026-01-01T00:00:00.000Z"
+    });
+    expect(clients.codex!.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "local_synthesis",
+          readiness: "unknown"
+        })
+      ])
+    );
+    expect(clients.claude!.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "local_synthesis", readiness: "ready" })
+      ])
+    );
+  });
+
+  it("isolates capability API failure from core status", async () => {
+    const root = tempDir();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        MEMORY_API_TOKEN: "local-token",
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async (url) => {
+          if (String(url).endsWith("/v1/access/check"))
+            return response(true, 200, {});
+          if (String(url).endsWith("/v1/memory/local-agent-settings")) {
+            throw new Error("capability API unavailable");
+          }
+          return response(true, 200, { checks: [] });
+        },
+        spawnSync: () => spawnResult(""),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+    expect(status.core.state).toBeDefined();
+    expect(status.aiClients.codex!.snapshotState).toBe("unknown");
+    expect(
+      status.aiClients.codex!.capabilities.find(
+        (capability) => capability.id === "local_synthesis"
+      )
+    ).toMatchObject({ readiness: "unknown" });
+    expect(JSON.stringify(status)).not.toContain("local-token");
+  });
+
+  it("loads persisted User flow assignments into status readiness", async () => {
+    const root = tempDir();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_RUNTIME_MODE: "external",
+        KOED_DEPENDENCY_MODE: "external",
+        MEMORY_API_TOKEN: "local-token",
+        MEMORY_ANSWER_PROVIDER: "claude"
+      },
+      {
+        fetch: async (url) => {
+          const pathname = new URL(String(url)).pathname;
+          if (pathname === "/v1/access/check") return response(true, 200, {});
+          if (pathname === "/v1/memory/local-agent-settings") {
+            return response(true, 200, {
+              instances: [
+                {
+                  instanceId: "codex.default",
+                  driverId: "codex",
+                  displayName: "Codex",
+                  enabled: true,
+                  configIdentityHash: "identity"
+                }
+              ],
+              settings: [
+                {
+                  flowKey: "mcp_memory_answer",
+                  provider: "codex",
+                  aiClientInstanceId: "codex.default",
+                  model: "openai/gpt-test",
+                  reasoningEffort: "high",
+                  timeoutMs: 30_000,
+                  maxAttempts: 1
+                }
+              ],
+              defaults: {},
+              capabilitySnapshots: [
+                {
+                  instanceId: "codex.default",
+                  installationIdentityHash: "identity",
+                  clientVersion: "1.0.0",
+                  authenticationState: "authenticated",
+                  healthState: "healthy",
+                  models: [
+                    {
+                      fullId: "openai/gpt-test",
+                      supportedReasoningEfforts: ["high"]
+                    }
+                  ],
+                  capabilities: {
+                    descriptors: {
+                      local_synthesis: {
+                        id: "local_synthesis",
+                        support: "supported",
+                        readiness: "ready",
+                        diagnostics: []
+                      }
+                    }
+                  },
+                  observedAt: "2026-01-01T00:00:00.000Z",
+                  expiresAt: "2026-01-01T00:10:00.000Z",
+                  stale: false
+                }
+              ]
+            });
+          }
+          return response(true, 200, { checks: [] });
+        },
+        spawnSync: () => spawnResult(""),
+        now: () => new Date("2026-01-01T00:01:00.000Z")
+      }
+    );
+
+    expect(status.aiClientFlowReadiness.mcp_memory_answer).toMatchObject({
+      state: "healthy",
+      source: "setting",
+      assignment: {
+        provider: "codex",
+        model: "openai/gpt-test"
+      }
+    });
+  });
+
+  it.each([
+    [200, "healthy", "Local API Token authenticated successfully."],
+    [401, "needs_attention", "Run koed-server setup core --json"],
+    [403, "needs_attention", "Run koed-server setup core --json"],
+    [503, "needs_attention", "Check Koed API health and rerun diagnostics."]
+  ])(
+    "maps API Token HTTP %s to safe status action",
+    async (httpStatus, state, action) => {
+      const root = tempDir();
+      const status = await collectKoedServerStatus(
+        {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_DEPENDENCY_MODE: "external",
+          MEMORY_API_TOKEN: "local-token"
+        },
+        {
+          fetch: async (url) =>
+            String(url).endsWith("/v1/access/check")
+              ? response(httpStatus === 200, httpStatus, {})
+              : response(true, 200, { checks: [] }),
+          spawnSync: () => spawnResult(""),
+          now: () => new Date("2026-01-01T00:00:00.000Z")
+        }
+      );
+
+      expect(status.apiToken.state).toBe(state);
+      if (httpStatus === 200) {
+        expect(status.apiToken.message).toContain(action);
+      } else {
+        expect(status.apiToken.action).toContain(action);
+      }
+    }
+  );
+
+  it("keeps token unchanged and reports network action when validation fails to connect", async () => {
+    const root = tempDir();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "external",
+        MEMORY_API_TOKEN: "local-token"
+      },
+      {
+        fetch: async (url) => {
+          if (String(url).endsWith("/v1/access/check")) {
+            throw new Error("connection refused");
+          }
+          return response(true, 200, { checks: [] });
+        },
+        spawnSync: () => spawnResult(""),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.apiToken.state).toBe("needs_attention");
+    expect(status.apiToken.action).toContain("Token was not rotated");
+  });
+
   it("prioritizes needs_attention, then not_configured, then starting", () => {
     expect(aggregateState([healthy(), notConfigured("missing")])).toBe(
       "not_configured"
@@ -78,6 +782,220 @@ describe("status state aggregation", () => {
     expect(
       aggregateState([{ state: "starting" }, needsAttention("broken")])
     ).toBe("needs_attention");
+  });
+});
+
+describe("Pi integration status", () => {
+  it("reports a registered Koed package in the active Pi profile", () => {
+    const root = tempDir();
+    const packagePath = resolve(root, "integrations/pi");
+    mkdirSync(resolve(packagePath, "extensions"), { recursive: true });
+    writeFileSync(resolve(packagePath, "extensions/koed.mjs"), "export {};\n");
+    const environment = { KOED_HOME: root, KOED_PI_EXECUTABLE: "/opt/pi" };
+
+    const status = inspectPi(environment, resolveKoedServerPaths(environment), {
+      existsSync: (path: PathLike) =>
+        path === resolve(packagePath, "extensions/koed.mjs"),
+      resolvePiExecutable: () => "/opt/pi",
+      spawnSync: (_command: string, args: string[]) =>
+        args[0] === "--version"
+          ? spawnResult("0.84.2\n")
+          : args[0] === "--list-models"
+            ? spawnResult("provider model\nopenai gpt-5.4\n")
+            : spawnResult(`${packagePath}\n`)
+    } as never);
+
+    expect(status).toMatchObject({
+      state: "healthy",
+      configured: true,
+      detected: true
+    });
+    expect(status.details).toMatchObject({
+      executable: "/opt/pi",
+      packagePath,
+      version: "0.84.2",
+      authenticated: true,
+      modelCount: 1
+    });
+  });
+
+  it("separates registered-package health from authenticated-model health", () => {
+    const root = tempDir();
+    const packagePath = resolve(root, "integrations/pi");
+
+    const status = inspectPi(
+      { KOED_HOME: root },
+      resolveKoedServerPaths({ KOED_HOME: root }),
+      {
+        existsSync: (path: PathLike) =>
+          path === resolve(packagePath, "extensions/koed.mjs"),
+        resolvePiExecutable: () => "/opt/pi",
+        spawnSync: (_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("0.84.2\n")
+            : args[0] === "--list-models"
+              ? spawnResult("provider model\n")
+              : spawnResult(`${packagePath}\n`)
+      } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "needs_attention",
+      configured: true
+    });
+    expect(status.details).toMatchObject({
+      packageRegistered: true,
+      authenticated: false,
+      modelCount: 0
+    });
+  });
+
+  it("keeps missing Pi optional but actionable", () => {
+    const root = tempDir();
+    const environment = { KOED_HOME: root };
+
+    const status = inspectPi(environment, resolveKoedServerPaths(environment), {
+      existsSync: () => false,
+      resolvePiExecutable: () => {
+        throw new Error("Pi was not found.");
+      }
+    } as never);
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: false
+    });
+    expect(status.action).toContain("Install Pi");
+  });
+
+  it("detects Pi from its global profile when the executable is unavailable", () => {
+    const root = tempDir();
+    const profilePath = resolve(root, ".pi/agent");
+    mkdirSync(profilePath, { recursive: true });
+    writeFileSync(resolve(profilePath, "settings.json"), "{}");
+    const environment = { HOME: root, KOED_HOME: root };
+
+    const status = inspectPi(environment, resolveKoedServerPaths(environment), {
+      existsSync,
+      resolvePiExecutable: () => {
+        throw new Error("Pi was not found.");
+      }
+    } as never);
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: true
+    });
+  });
+});
+
+describe("Claude Code integration status", () => {
+  it("reports configured MCP, hooks, and authentication", () => {
+    const root = tempDir();
+    const settingsPath = resolve(root, ".claude/settings.json");
+    const captureHook = resolve(
+      root,
+      "packages/mcp-server/dist/capture-hook.js"
+    );
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    mkdirSync(resolve(root, ".claude"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(captureHook, "");
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: Object.fromEntries(
+          [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "Stop",
+            "StopFailure",
+            "SubagentStart",
+            "SubagentStop",
+            "SessionEnd"
+          ].map((eventName) => [
+            eventName,
+            [{ hooks: [{ command: `node ${captureHook}` }] }]
+          ])
+        )
+      })
+    );
+    const settingsContent = readFileSync(settingsPath, "utf8");
+    const environment = {
+      HOME: root,
+      KOED_HOME: resolve(root, "koed"),
+      KOED_REPO_ROOT: root,
+      CLAUDE_SETTINGS_PATH: settingsPath
+    };
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        existsSync,
+        readFileSync: () => settingsContent,
+        spawnSync: (_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("2.1.227 (Claude Code)\n")
+            : args[0] === "mcp" && args[1] === "get"
+              ? spawnResult(
+                  `koed:\n  Type: stdio\n  Command: node\n  Args: ${resolve(root, "packages/mcp-server/dist/cli.js")}\n  Environment:\n    KOED_HOME=${resolve(root, "koed")}\n`
+                )
+              : spawnResult("")
+      } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "healthy",
+      configured: true,
+      detected: true
+    });
+    expect(status.details).toMatchObject({
+      version: "2.1.227 (Claude Code)",
+      settingsPath
+    });
+  });
+
+  it("keeps missing Claude Code optional but actionable", () => {
+    const root = tempDir();
+    const environment = { HOME: root, KOED_HOME: root, KOED_REPO_ROOT: root };
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      { existsSync: () => false, spawnSync: () => spawnResult("", 1) } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: false
+    });
+    expect(status.action).toContain("Install Claude Code");
+  });
+
+  it("detects Claude Code from its global settings when the executable is unavailable", () => {
+    const root = tempDir();
+    const settingsPath = resolve(root, ".claude/settings.json");
+    mkdirSync(resolve(root, ".claude"), { recursive: true });
+    writeFileSync(settingsPath, "{}");
+    const environment = { HOME: root, KOED_HOME: root, KOED_REPO_ROOT: root };
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      { existsSync, spawnSync: () => spawnResult("", 1) } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: true
+    });
   });
 });
 
@@ -542,6 +1460,14 @@ describe("status and doctor JSON contracts", () => {
     expect(doctor.state).toBe("needs_attention");
     expect(doctor.summary).toContain("Operator-managed Redis URL");
     expect(doctor.checks.map((check) => check.id)).toContain("mcpServer");
+    expect(doctor.checks.map((check) => check.id)).toEqual(
+      expect.arrayContaining([
+        "aiClientFlow:mcp_memory_answer",
+        "aiClientFlow:lcm_summary",
+        "aiClientFlow:session_title",
+        "aiClientFlow:curated_memory_review"
+      ])
+    );
   });
 
   it("keeps API Tokens out of MCP doctor checks", async () => {
@@ -570,8 +1496,9 @@ describe("status and doctor JSON contracts", () => {
       }
     );
 
-    expect(status.apiToken.state).toBe("healthy");
+    expect(status.apiToken.state).toBe("needs_attention");
     expect(status.apiToken.configured).toBe(true);
+    expect(status.apiToken.action).not.toContain("setup core");
     expect(status.mcpServer.state).toBe("healthy");
     expect(doctorEnvironments[0]?.MEMORY_API_TOKEN).toBeUndefined();
     expect(doctorEnvironments[0]?.MEMORY_API_URL).toBeUndefined();
@@ -698,7 +1625,7 @@ describe("status and doctor JSON contracts", () => {
     );
   });
 
-  it("maps fully prepared but stopped supervisor to starting", async () => {
+  it("fails core readiness when prepared local runtime supervisor is stopped", async () => {
     const root = tempDir();
     mkdirSync(resolve(root, ".codex"), { recursive: true });
     mkdirSync(resolve(root, "hook"), { recursive: true });
@@ -754,7 +1681,7 @@ describe("status and doctor JSON contracts", () => {
 
     expect(status.runtimeMode).toBe("developer");
     expect(status.dependencyMode).toBe("external");
-    expect(status.state).toBe("healthy");
+    expect(status.state).toBe("needs_attention");
     expect(status.codexTranscriptWatcher.state).toBe("starting");
   });
   it("prefers running runtime state over plain-shell dependency defaults", async () => {

@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "profile": "smoke",
+  "seed": "koed-experience-replay-smoke-v1",
+  "output_dir": "/tmp/koed-experience-replay-smoke",
+  "codex_cli": {
+    "version": "deterministic-smoke",
+    "host_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "container_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "container_code_mode_host_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "coding_agent": {
+    "id": "deterministic-smoke",
+    "reasoning_effort": "low"
+  },
+  "memory_answer": {
+    "model": { "id": "deterministic-smoke", "reasoning_effort": "low" },
+    "prompt_version": "smoke-v1",
+    "output_schema_version": "smoke-v1"
+  },
+  "lcm_summary": {
+    "model": { "id": "deterministic-smoke", "reasoning_effort": "low" },
+    "prompt_version": "smoke-v1",
+    "output_schema_version": "smoke-v1"
+  },
+  "session_title": {
+    "model": { "id": "deterministic-smoke", "reasoning_effort": "low" },
+    "prompt_version": "smoke-v1",
+    "output_schema_version": "smoke-v1"
+  },
+  "trajectory_judge": {
+    "model": { "id": "deterministic-smoke", "reasoning_effort": "low" },
+    "prompt_version": "experience-replay-trajectory-judge-v1",
+    "output_schema_version": "experience-replay-trajectory-judge-v1"
+  },
+  "embedding": {
+    "model": "qwen3-0.6b",
+    "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "tokenizer": "qwen3",
+    "transform": "query-document-v1",
+    "dimensions": 1024
+  },
+  "price_table": {
+    "version": "smoke-v1",
+    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "models": {}
+  },
+  "timeouts": {
+    "agent_seconds": 30,
+    "setup_seconds": 30,
+    "verifier_seconds": 30,
+    "preparation_seconds": 60,
+    "judge_seconds": 60,
+    "teardown_seconds": 30
+  },
+  "admission": {
+    "maximum_trajectory_bytes": 1048576,
+    "estimated_attempt_artifact_bytes": 1048576,
+    "estimated_image_bytes_per_task": 0,
+    "scratch_multiplier": 1,
+    "minimum_free_space_reserve_bytes": 0,
+    "max_input_tokens_per_call": 4096,
+    "max_output_tokens_per_call": 1024,
+    "max_memory_answer_calls_per_attempt": 2,
+    "max_preparation_calls_per_source": 2
+  },
+  "concurrency": 1
+}

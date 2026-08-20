@@ -53,6 +53,9 @@ export function expandConversationDisplayEvents(
       content: segment.content,
       contentPreview: segment.content.slice(0, 16_384),
       invalidatedAt: event.invalidatedAt,
+      ...(event.activityDisplay
+        ? { activityDisplay: event.activityDisplay }
+        : {}),
       metadata: segment.kind === "message" ? {} : { toolName: segment.toolName }
     }));
   });

@@ -5,7 +5,10 @@ import {
   type StdioServerHandle
 } from "@modelcontextprotocol/server/stdio";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createKoedMcpServer } from "../src/mcp-server-factory.js";
+import {
+  createKoedMcpServer,
+  type McpCallerContextResolver
+} from "../src/mcp-server-factory.js";
 import type { LocalAiRuntimeClient } from "../src/local-runtime-client.js";
 import type {
   LocalRuntimeCallerContext,
@@ -27,10 +30,12 @@ afterEach(async () => {
 const connect = async ({
   curatedMemoryIntakeAvailable = true,
   environment = {},
+  callerContextResolver,
   callTool = vi.fn(async (name: LocalRuntimeToolName) => ({ ok: true, name }))
 }: {
   curatedMemoryIntakeAvailable?: boolean;
   environment?: NodeJS.ProcessEnv;
+  callerContextResolver?: McpCallerContextResolver;
   callTool?: (
     name: LocalRuntimeToolName,
     input: Record<string, unknown>,
@@ -51,7 +56,8 @@ const connect = async ({
     (context) =>
       createKoedMcpServer(context, {
         runtimeClient,
-        environment
+        environment,
+        callerContextResolver
       }),
     { transport: serverTransport, legacy: "reject" }
   );
@@ -178,6 +184,36 @@ describe("Koed MCP 2026-07-28 protocol", () => {
       expect.any(Object),
       expect.any(AbortSignal)
     );
+  });
+
+  it("allows a trusted transport to bind caller cwd without losing protocol metadata", async () => {
+    const callTool = vi.fn(
+      async (
+        _name: LocalRuntimeToolName,
+        _input: Record<string, unknown>,
+        caller: LocalRuntimeCallerContext
+      ) => ({ caller })
+    );
+    const { client } = await connect({
+      callTool,
+      callerContextResolver: ({ defaultContext }) => ({
+        ...defaultContext,
+        cwd: "/benchmark/project-a"
+      })
+    });
+
+    const result = await client.callTool({
+      name: "memory_answer",
+      arguments: { query: "Use the trial Project." }
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      caller: {
+        cwd: "/benchmark/project-a",
+        protocolVersion: "2026-07-28",
+        clientInfo: { name: "koed-mcp-v2-test", version: "1.0.0" }
+      }
+    });
   });
 
   it("keeps one adapter connection independent from another", async () => {

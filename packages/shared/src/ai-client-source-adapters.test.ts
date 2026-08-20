@@ -7,7 +7,7 @@ import {
 } from "./ai-client-source-adapters.js";
 
 describe("AI-client source adapter registry", () => {
-  it("contains only the supported Codex V1 and Claude Code V1 tuples", () => {
+  it("contains supported Codex, Claude Code, and Pi tuples", () => {
     expect(aiClientSourceAdapterRegistry).toEqual([
       {
         sourceKind: "codex",
@@ -29,6 +29,13 @@ describe("AI-client source adapter registry", () => {
         artifactFormat: "claude_session_jsonl",
         artifactFormatVersion: 1,
         sourceAdapterVersion: "claude-code-transcript-v1"
+      },
+      {
+        sourceKind: "pi",
+        sourceRuntime: "pi",
+        artifactFormat: "pi_session_jsonl",
+        artifactFormatVersion: 1,
+        sourceAdapterVersion: "pi-session-v1"
       }
     ]);
     expect(Object.isFrozen(aiClientSourceAdapterRegistry)).toBe(true);

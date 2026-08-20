@@ -97,6 +97,70 @@ describe("Local AI Runtime", () => {
     expect(curatedStop).toHaveBeenCalledTimes(1);
   });
 
+  it("publishes capabilities during runtime startup and stops publisher on close", async () => {
+    const refresh = vi.fn(async () => []);
+    const stop = vi.fn();
+    const dependencies = {
+      startLcmSummaryService: vi.fn(() => null),
+      watchKoedLocalWork: vi.fn(),
+      startCuratedMemoryReviewService: vi.fn(() => ({ stop: vi.fn() })),
+      startCodexTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      startClaudeTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      startAiClientCapabilityPublisher: vi.fn(() => ({ refresh, stop })),
+      createExecutor: vi.fn(() => defaultExecutor())
+    } as unknown as LocalAiRuntimeServiceDependencies;
+    const apiClient = new MemoryApiClient({
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token"
+    });
+    const environment = { KOED_HOME: tempHome() };
+
+    const services = await startDefaultLocalAiRuntimeServices(
+      { apiClient, environment, koedHome: environment.KOED_HOME },
+      dependencies
+    );
+
+    expect(dependencies.startAiClientCapabilityPublisher).toHaveBeenCalledWith(
+      apiClient,
+      environment
+    );
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await services.close();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not await a hanging capability refresh during startup", async () => {
+    let resolveRefresh!: () => void;
+    const refresh = vi.fn(
+      () =>
+        new Promise<[]>((resolve) => {
+          resolveRefresh = () => resolve([]);
+        })
+    );
+    const stop = vi.fn();
+    const dependencies = {
+      startLcmSummaryService: vi.fn(() => null),
+      watchKoedLocalWork: vi.fn(),
+      startCuratedMemoryReviewService: vi.fn(() => ({ stop: vi.fn() })),
+      startCodexTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      startClaudeTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      startAiClientCapabilityPublisher: vi.fn(() => ({ refresh, stop })),
+      createExecutor: vi.fn(() => defaultExecutor())
+    } as unknown as LocalAiRuntimeServiceDependencies;
+    const services = await startDefaultLocalAiRuntimeServices(
+      {
+        apiClient: new MemoryApiClient({ apiUrl: "http://127.0.0.1:3300" }),
+        environment: {},
+        koedHome: tempHome()
+      },
+      dependencies
+    );
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await services.close();
+    expect(stop).toHaveBeenCalledTimes(1);
+    resolveRefresh();
+  });
+
   it("does not start disabled transcript watchers", async () => {
     const dependencies = {
       startLcmSummaryService: vi.fn(() => null),
@@ -282,6 +346,81 @@ describe("Local AI Runtime", () => {
     expect(() =>
       readFileSync(localRuntimeRegistrationPath(koedHome))
     ).toThrow();
+  });
+
+  it("refreshes capabilities through authenticated bounded runtime client", async () => {
+    const koedHome = tempHome();
+    const refresh = vi.fn(async () => [
+      {
+        instanceId: "codex.default",
+        driverId: "codex",
+        published: true,
+        error: null
+      }
+    ]);
+    const runtime = await startLocalAiRuntime({
+      environment: { KOED_HOME: koedHome },
+      serviceFactory: async () => ({
+        executor: defaultExecutor(),
+        capabilityPublisher: { refresh, stop: vi.fn() },
+        close: vi.fn(async () => undefined)
+      })
+    });
+    try {
+      await expect(
+        new LocalAiRuntimeClient({ KOED_HOME: koedHome }).refreshCapabilities()
+      ).resolves.toMatchObject({ protocolVersion: 1 });
+      expect(refresh).toHaveBeenCalledTimes(1);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("reports capability publication failures as unavailable", async () => {
+    const koedHome = tempHome();
+    const runtime = await startLocalAiRuntime({
+      environment: { KOED_HOME: koedHome },
+      serviceFactory: async () => ({
+        executor: defaultExecutor(),
+        capabilityPublisher: {
+          refresh: vi.fn(async () => [
+            {
+              instanceId: "codex.default",
+              driverId: "codex",
+              published: false,
+              error: "Codex is not authenticated"
+            }
+          ]),
+          stop: vi.fn()
+        },
+        close: vi.fn(async () => undefined)
+      })
+    });
+    try {
+      await expect(
+        new LocalAiRuntimeClient({ KOED_HOME: koedHome }).refreshCapabilities()
+      ).rejects.toThrow("Capability refresh failed for 1 AI Client instance");
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("rejects refresh when capability publisher is unavailable", async () => {
+    const koedHome = tempHome();
+    const runtime = await startLocalAiRuntime({
+      environment: { KOED_HOME: koedHome },
+      serviceFactory: async () => ({
+        executor: defaultExecutor(),
+        close: vi.fn(async () => undefined)
+      })
+    });
+    try {
+      await expect(
+        new LocalAiRuntimeClient({ KOED_HOME: koedHome }).refreshCapabilities()
+      ).rejects.toThrow("Local AI Client capability publisher is unavailable");
+    } finally {
+      await runtime.close();
+    }
   });
 
   it("rejects malformed, oversized, and unknown requests without dispatch", async () => {

@@ -1,8 +1,9 @@
 # Codex Integration
 
-Codex and Claude Code are supported AI Clients. This page covers Codex; see
-[Claude Code integration](claude-code-integration.md) for Claude setup,
-capture, managed Conversations, and local synthesis.
+Codex, Claude Code, and Pi are supported AI Clients. This page covers Codex;
+see [Claude Code integration](claude-code-integration.md) and
+[Pi integration](pi-integration.md) for other client setup. Select each flow's
+instance and model in [Local AI Runtime Settings](local-memory-agent-settings.md).
 
 ## Recommended Setup
 
@@ -14,18 +15,26 @@ node packages/koed-server/dist/cli.js start
 ```
 
 `koed-server start` is long-running. After it reports that the API is ready, run
-the Codex setup wrapper from another terminal:
+client-neutral core setup from another terminal:
+
+```bash
+node packages/koed-server/dist/cli.js setup core --json
+```
+
+Core setup creates or reuses the local API Token and writes the app-provisioned
+local credential. It does not edit Codex configuration or record final
+verification; `doctor --json` records each final verification result. To explicitly configure Codex after core setup,
+run:
 
 ```bash
 node packages/koed-server/dist/cli.js setup codex --json
 ```
 
-The setup command prepares the environment, creates or reuses the local API
-Token once the API is ready, writes the app-provisioned local credential,
-writes the Codex MCP and Capture Hook configuration, verifies capture, and
-finishes with a doctor check. Koed Desktop runs this guided client setup path
-automatically on startup when needed; `pnpm clients:bootstrap` remains the
-underlying Local Operator Script for manual recovery.
+That compatibility command writes only Koed-owned Codex MCP/Capture Hook
+configuration, registers the resolved Codex executable, and preserves unrelated
+Codex settings. Koed Desktop mandatory
+setup runs core setup only. `pnpm clients:bootstrap` remains an explicit
+Codex-focused Local Operator Script for manual recovery.
 
 ## API Token
 
@@ -56,10 +65,14 @@ Environment:
 Working directory: /path/to/koed
 ```
 
-`koed-server setup codex` writes this configuration automatically. The adapter
-discovers the authenticated Local AI Runtime through an owner-only registration
-under `KOED_HOME`; API and upstream credentials are not copied into Codex MCP
-configuration.
+`koed-server setup codex` writes this configuration only after explicit Codex
+setup. Desktop exposes the same protected setup, check, repair, and remove
+commands after per-action consent. `check codex --json` is read-only and
+`remove codex --json` removes only Koed's marked block and registry entry. The
+adapter discovers the authenticated Local AI Runtime through an owner-only
+local registration under `KOED_HOME`; API and upstream credentials are not
+copied into Codex MCP configuration. Installing or detecting Codex does not
+select it for other flows.
 If Codex Desktop cannot resolve `node`, set the command to an absolute Node path
 or run setup with `MEMORY_NODE_COMMAND=/path/to/node`. Shell-managed versions
 from NVM, pyenv, or similar tools may not be on the PATH when Codex runs hooks.
@@ -188,10 +201,13 @@ shutdown releases the lease without deleting the rollout. Managed terminal
 boundaries are held until their journaled records project successfully, so a
 later turn cannot be folded into an earlier seal.
 
-There is no Desktop entry point for this experiment. It does not
-attach to external Codex processes and does not replace the supported Transcript
-Watcher. Existing Codex CLI and native-app conversations are captured from
-transcript growth; Capture Hook signals only reduce watcher latency.
+There is no Desktop entry point for this legacy experiment. Desktop-managed
+Conversations use explicit registered AI Client ownership instead: Desktop
+selects `codex` plus exact instance ID from a fresh capability snapshot, and the
+API persists that owner. Worker resumes and transfers only through that exact
+Codex instance; it never falls back to another instance or client. Existing
+Codex CLI and native-app conversations remain captured from transcript growth;
+Capture Hook signals only reduce watcher latency.
 
 Codex hook configuration should include `Stop` as well as prompt/tool hooks. If
 Codex asks you to review or trust changed hooks after editing `config.toml`,
@@ -220,7 +236,8 @@ that, start a fresh Codex session and ask it to check memory access through the
 
 The Local AI Runtime uses the Koed API Token for Recall, LCM Summary submission,
 and Memory Answer evidence. The MCP adapter receives neither that token nor
-upstream credentials. Koed relies on Codex for Synthesis; the backend does not
+upstream credentials. Koed relies on the selected connected AI Client for
+Synthesis; the backend does not
 make server-side LLM calls in this build. The runtime-hosted Transcript Watcher
 performs automatic Conversation capture; running the MCP adapter alone does
 not. Recall-only or MCP-only integrations are experimental because they do not
@@ -229,6 +246,9 @@ provide supported automatic capture.
 `memory_answer` is the normal recall tool exposed by default. It is described
 to Codex as recall for prior conversations, remembered preferences,
 user-provided facts, project history, decisions, and cross-session context. It
+instructs Codex to consult the relevant available Personal or authorized Team
+Memory before substantive work in a new chat or on a sufficiently new topic,
+unless the task is simple and Memory certainly cannot materially help. It
 defaults to project search, uses session search only for a known captured
 conversation, and uses global search only for broad cross-project or
 personal-history recall. It returns a compact answer by default so normal Codex

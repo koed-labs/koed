@@ -8,8 +8,8 @@ AI Runtime.
 
 ## Services In Scope
 
-- **AI Client**: Codex is the supported AI Client in this build.
-- **Transcript Watcher**: the local background service that owns correctness for externally managed Codex transcript growth.
+- **AI Client**: Codex, Claude Code, and Pi are supported AI Clients in this build.
+- **Transcript Watcher**: local background service that owns correctness for externally managed Codex, Claude, or Pi Conversation source growth.
 - **Capture Hook**: the TypeScript hook that provides content-free, low-latency wake signals.
 - **MCP Server**: a thin local MCP `2026-07-28` adapter that exposes Koed tools
   and forwards typed requests to the Local AI Runtime.
@@ -121,22 +121,59 @@ AI Runtime.
    supervisor, and returns machine-readable JSON without streaming startup logs.
 8. `koed-server status --json` and `koed-server doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
-   Worker process state, local API Token configuration, MCP Server doctor
-   output, Supported Capture Hook config, Codex config, LCM Summary Service
-   availability, and last verification metadata. Status compares the active
-   local API URL/token against the Koed-managed Codex MCP block and separately
-   verifies the credential-free Capture Hook command path. MCP configuration
-   contains `KOED_HOME` rather than API credentials. Stale ports,
-   credentials, or runtime paths show as explicit integration mismatches.
-   Readiness gates include Postgres reachability and version,
-   current migrations, pgvector, local or BullMQ queue backend availability,
-   and Embedding Service model/dimension compatibility. Historical-import
-   backlog and aggregate Transcript Watcher process/status data are diagnostic
-   only, never readiness gates.
-9. `koed-server setup codex --json` wraps the existing guided bootstrap path so
-   Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
-   local credential, verification, and doctor setup can be invoked through
-   the control plane. Setup applies persisted auto-allocated local ports before
+   Worker and Local AI Runtime process state, local API Token configuration, MCP
+   artifact health, Supported Capture Hook config, per-client Codex, Claude
+   Code, and Pi config, LCM Summary Service process health, and last
+   verification metadata. Core status is separate from client diagnostics:
+   zero configured AI Clients is healthy core state. Client profile MCP config,
+   Capture Hook, Transcript Watcher, authentication, and synthesis readiness do
+   not gate core. Doctor prints all diagnostics, but only core components affect
+   `ok`, `state`, and exit status. LCM process health is separate from any
+   assigned client/model readiness. MCP configuration contains `KOED_HOME`
+   rather than API credentials. Stale ports, credentials, or runtime paths show
+   as explicit mismatches. Status also exposes client-neutral `aiClients` readiness
+   records keyed by registered instance, with installed/version/authentication
+   facts and shared capability descriptors for automatic capture, MCP Recall,
+   local Synthesis, and Managed Conversation. Status reads the authenticated
+   AI Client instance capability read model best-effort: current or stale
+   snapshots authoritatively gate Local Synthesis and Managed Conversation;
+   profile checks only fill unknown Capture Hook or MCP Recall descriptors.
+   Stale snapshots are non-runnable, and read-model failure reports Unknown
+   without degrading core status. Pi reports Managed Conversation unsupported.
+   Legacy `aiClients` remains provider-keyed; `aiClientInstances` exposes every
+   registered instance, including healthy secondary instances when a default is
+   broken. These records do not select execution flows or change Managed
+   Conversation routing. Per-flow assignment readiness is reported separately
+   for Memory Answer, LCM Summary, Session Title, and Curated Memory Review.
+
+## Managed Conversation execution
+
+Desktop uses explicit AI Client ownership for Managed Conversation lifecycle:
+
+1. Desktop presents enabled Codex, Claude Code, and Pi instances from the
+   published capability read model. It enables start only for an instance with
+   a fresh, healthy, authenticated `managed_conversation_start` snapshot.
+2. Desktop sends both driver and instance ID. API validates ownership, enabled
+   state, and fresh capability readiness before creating or idempotently
+   returning execution.
+3. Database persists `provider` and `ai_client_instance_id` independently.
+   Migration `0033_fixed_scarlet_witch` backfills historical rows as
+   `${provider}.default`; no foreign key is used so retained execution history
+   survives client removal.
+4. Worker resolves exact persisted driver and instance on start, resume, send,
+   handoff, and fork. Codex uses app-server and Claude Code uses the Agent SDK.
+   Missing, stale, unavailable, or unsupported owners fail closed; Pi is visible
+   but unsupported for this lifecycle.
+5. Handoff and fork manifests and child executions retain exact owner identity.
+   Desktop displays selected client name and gates send and transfer controls
+   from current owner capability readiness.
+
+See [managed Conversation AI Client routing](managed-conversation-ai-client-routing.md).
+
+9. `koed-server setup core --json` validates or provisions client-neutral core
+   local credential state. Final verification is recorded by `doctor --json`.
+   `koed-server setup codex --json` remains an explicit Codex profile
+   compatibility path that may compose core setup with Codex MCP/Capture Hook configuration. Setup applies persisted auto-allocated local ports before
    resolving the API URL, so Desktop-managed ports and direct CLI
    setup write the same target URL/token. `koed-server repair codex --json` is
    the narrower Desktop repair path: it rewrites the Koed-managed Codex MCP
@@ -147,9 +184,18 @@ AI Runtime.
    both mint the token through the active runtime repository with the same
    database and token pepper used by the API; Electron main only retains and
    rereads that supervisor-owned credential.
+   `koed-server setup claude --json` independently verifies Claude Code version
+   and sign-in, then preserves unrelated user settings while installing Koed's
+   MCP and Supported Capture Hook entries. `koed-server setup pi --json`
+   independently registers Koed's stable local package in the active Pi
+   profile after canonical executable and authenticated-model checks. Both
+   commands are idempotent and use strict subprocess environment allowlists.
+   Claude setup replaces only an MCP entry proven to be Koed-owned; Pi's
+   installed package derives custom `KOED_HOME` from its stable package path.
 10. Koed Desktop can start/connect to the same headless command surface, run
-    the first-launch Codex bootstrap and health-check sequence, poll status,
-    offer one-click Codex integration repair for stale local config, and
+    mandatory client-neutral core setup and health checks, poll status, offer
+    optional independently consented multi-select client setup with defer,
+    per-client check/repair/remove for stale local config, and
     provision the embedding model through `koed-server models status/install
 --json` in bundled-local mode without requiring the Operator to invoke
     repo-local scripts directly. Its Project and Captured Session navigation is
@@ -595,11 +641,20 @@ remains a later integration on top of this durable seat lifecycle state.
 
 ## Ingestion
 
+Capture is provider-specific but follows one correctness boundary: each
+Transcript Watcher reads its AI Client's source of truth, while Projection,
+Personal Memory ownership, and Local AI Runtime supervision stay shared. Codex
+uses `CODEX_HOME/sessions` and `codex-transcript-v1`; Claude uses its transcript
+source and Claude adapter; Pi uses persistent session JSONL and
+`pi-session-v1`. A client may be absent or unhealthy without changing core
+health or another client's capture path.
+
 1. The supervised Transcript Watcher combines recursive filesystem notification
-   hints with bounded periodic rescans of explicit Codex transcript roots. The
-   default root is `CODEX_HOME/sessions`; path-delimited
-   `MEMORY_CODEX_TRANSCRIPT_ROOTS` replaces it. Notifications only reduce
-   latency: missed notifications still converge through rescans.
+   hints with bounded periodic rescans of its configured provider source roots.
+   For Codex, the default root is `CODEX_HOME/sessions`; path-delimited
+   `MEMORY_CODEX_TRANSCRIPT_ROOTS` replaces it. Claude and Pi use their own
+   provider-specific source roots. Notifications only reduce latency: missed
+   notifications still converge through rescans.
 2. The first successful bounded full discovery cycle establishes activation. Files in that
    baseline register an immutable complete-record frontier and leave their
    prefix to historical import. A file created after
@@ -612,20 +667,21 @@ remains a later integration on top of this durable seat lifecycle state.
    hold the cursor; malformed complete records, truncation, and sentinel-covered
    prefix mutation fail visibly without advancing it. Mutations outside sentinel
    windows are intentionally not detected by this bounded check.
-4. Codex may also emit `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`,
-   `SubagentStart`, and `SubagentStop`. The Supported Capture Hook writes only a
-   content-free local wake hint. Stop events additionally record the exact
-   complete JSONL byte frontier under hashed source-routing identities. The
-   watcher journals through that frontier and writes one idempotent,
-   server-validated lifecycle control for the active transcript turn before
-   consuming newer bytes. The Hook never supplies semantic content or provider
-   item identity, and the control cannot render or embed. Missing signals may
-   delay a fallback seal; duplicate, delayed, or reordered signals cannot seal
-   a later frontier or create duplicate content. Transcript JSONL remains the
-   content, provider item identity, and chronology source of truth.
+4. Provider lifecycle signals, when available, write only a content-free local
+   wake hint. Codex emits `SessionStart`, `UserPromptSubmit`, `PostToolUse`,
+   `Stop`, `SubagentStart`, and `SubagentStop`; Claude and Pi use their own
+   lifecycle signals. Stop events additionally record the exact complete JSONL
+   byte frontier under hashed source-routing identities. The watcher journals
+   through that frontier and writes one idempotent, server-validated lifecycle
+   control for the active turn before consuming newer bytes. Hooks never supply
+   semantic content or provider item identity, and controls cannot render or
+   embed. Missing signals may delay a fallback seal; duplicate, delayed, or
+   reordered signals cannot seal a later frontier or create duplicate content.
+   Each provider's transcript or session source remains content, identity, and
+   chronology authority.
 5. The watcher checks Capture Policy and Capture Pause before session creation
-   and before every batch, then converts records with `codex-transcript-v1` into
-   canonical `conversation_items` plus immutable
+   and before every batch, then converts provider records with their explicit
+   adapter version into canonical `conversation_items` plus immutable
    `conversation_item_observations`. The API authenticates the Personal API
    Token and persists each raw batch as Personal Memory. No Team Workspace,
    Share Grant, remote authority, or backend synthesis is introduced.
@@ -635,11 +691,13 @@ remains a later integration on top of this durable seat lifecycle state.
    work to live Projection priority without another canonical item or Memory
    Event. Cursor advancement occurs only after raw persistence and direct live
    Projection succeed.
-7. Projection reads `projection_policy_rules` to decide which Codex transcript
-   item types become UI rows, tool events, Memory Events, embeddings, and LCM
-   sources. The seeded policy projects user, agent, subagent, tool call/result,
-   and reasoning summary items; context, telemetry, raw reasoning, lifecycle,
-   and unknown items remain raw provenance only.
+7. Projection reads `projection_policy_rules` to decide which canonical
+   provider item types become UI rows, tool events, Memory Events, embeddings,
+   and LCM sources. Provider adapters retain Codex, Claude, and Pi source
+   identity while applying one shared policy. The seeded policy projects user,
+   agent, subagent, tool call/result, and reasoning summary items; context,
+   telemetry, raw reasoning, lifecycle, and unknown items remain raw provenance
+   only.
 8. Projection derives Koed semantic rows: Captured Sessions, turns, messages,
    tool events, Memory Events, source links, and token usage where available.
    Agent work is bundled into semantic `agent_turn` Memory Events only when a
@@ -729,14 +787,25 @@ remains a later integration on top of this durable seat lifecycle state.
 17. Pending LCM placeholders remain available as degraded evidence until local
     LCM summaries are submitted.
 
-### Experimental Koed-managed Codex threads
+## Managed Conversation threads
 
-For a Koed-managed thread, local `koed-server` owns a persistent Codex
-app-server stdio connection. Before starting it, the source adapter verifies the
-installed binary's generated protocol schema. Stable item lifecycle events are
-persisted immediately as source observations of canonical conversation items;
-completed item payloads are preferred over started snapshots. App-server source
-time and Koed observation time remain separate.
+For a Managed Conversation thread, local `koed-server` owns persistent work for
+selected Codex or Claude Code AI Client instance. Before starting, provider
+adapter verifies installed client compatibility. Stable item lifecycle events
+are persisted immediately as source observations of canonical Conversation
+items; completed item payloads are preferred over started snapshots. Provider
+source time and Koed observation time remain separate.
+
+### Codex app-server transport
+
+Codex uses persistent app-server stdio. Adapter verifies installed binary's
+generated protocol schema before start.
+
+### Claude Code Agent SDK transport
+
+Claude Code uses its Agent SDK transport and provider-specific transcript
+frontier. Worker persists same canonical Conversation items and applies same
+terminal evidence, ownership, and no-fallback rules as Codex.
 
 Koed assigns each managed prompt a `clientUserMessageId`, which is the exact
 shared user-item identity in app-server and JSONL. Role-user response records
@@ -763,9 +832,11 @@ Captured Session and reconciles that child's rollout independently. Parent and
 child turns use the same terminal-evidence requirement and remain distinct
 through Projection and downstream memory.
 
-This path currently has no frontend and does not replace the Transcript Watcher.
-Threads started outside Koed are captured from transcript growth; Supported
-Capture Hook signals only reduce watcher latency.
+Desktop exposes explicit managed Conversation start, resume, send, handoff, and
+fork actions for selected AI Client instances. It does not expose provider-native
+cancel, approvals, or token streaming controls because those capabilities remain
+unsupported. Threads started outside Koed are captured from transcript growth;
+Supported Capture Hook signals only reduce watcher latency.
 
 Commercial/private VPS/Team deployments can run encrypted-field backfill over
 existing human-readable Memory and evidence columns. Backfill is whitelist-based
@@ -938,11 +1009,13 @@ sequenceDiagram
    reported to the LLM for one repair attempt. A partial repair retains the
    valid summary and valid grounded anchors and drops anything still invalid.
    Other unsupported worker output fails at the worker boundary.
-6. The LCM worker runs the selected local AI Client. Codex uses app-server mode;
-   Claude uses the pinned Agent SDK and confirmed local Claude Code executable.
-   The worker parses the returned structured LCM Summary.
-7. App-server workflow telemetry is persisted as raw-only conversation items,
-   and provider token usage is recorded for attribution.
+6. LCM worker runs the selected AI Client instance through its
+   provider-specific transport. Codex uses app-server mode; Claude uses pinned
+   Agent SDK and confirmed local Claude Code executable; Pi uses isolated
+   strict-LF RPC with no persistent session or user/project resources. The
+   worker parses the returned structured LCM Summary.
+7. Available provider workflow telemetry is persisted as raw-only conversation
+   items where supported, and provider token usage is recorded for attribution.
 8. The LCM worker submits the completed LCM Summary to
    `POST /v1/memory/lcm/summaries/{nodeId}`. The API requires the shared
    semantic-summary schema, matching schema-version metadata, and canonical
@@ -984,16 +1057,16 @@ sequenceDiagram
   participant DB as Database
   participant Runtime as Local AI Runtime
   participant API as API
-  participant Codex as Codex App Server
+  participant Client as Selected AI Client
   participant Worker as Worker
   participant Embed as Embedding Service
 
   DB-->>API: Pending LCM Placeholder nodes
   Runtime->>API: GET pending LCM summaries
   API-->>Runtime: Nodes and source items
-  Runtime->>Codex: Local LCM summary prompt
-  Codex-->>Runtime: Structured LCM Summary
-  Runtime->>API: Persist raw-only telemetry and token usage
+  Runtime->>Client: Local LCM summary prompt through selected transport
+  Client-->>Runtime: Structured LCM Summary
+  Runtime->>API: Persist available telemetry and token usage
   Runtime->>API: POST completed LCM Summary
   API->>DB: Update Memory Node summary
   API->>Worker: Enqueue Memory Node embedding
@@ -1279,8 +1352,9 @@ grant-based visibility model.
    The MCP Server forwards it on every later search and expansion; the model
    cannot alter it.
 3. The Local AI Runtime starts a memory-answer worker through the selected AI
-   Client. Codex uses app-server mode; Claude uses the pinned Agent SDK and
-   confirmed local Claude Code executable. The worker receives the original
+   Client. Codex uses app-server mode; Claude uses pinned Agent SDK and
+   confirmed local Claude Code executable; Pi uses isolated strict-LF RPC and
+   schema-constrained terminating tool. Worker receives original
    question, fixed effective boundary, caller hints, first-pass
    diagnostics, and initial evidence. The worker is given only Koed dynamic RAG
    tools: `scan`, `search`, and `expand`. Personal Project search uses Captured

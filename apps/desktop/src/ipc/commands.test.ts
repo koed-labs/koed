@@ -113,6 +113,25 @@ describe("desktop IPC command registry", () => {
         return { preference, resolvedDark: preference === "dark" };
       }
     );
+    const mutatingHandlers = Object.fromEntries(
+      [
+        "setup_codex",
+        "repair_codex",
+        "remove_codex",
+        "setup_pi",
+        "repair_pi",
+        "remove_pi",
+        "setup_claude",
+        "repair_claude",
+        "remove_claude"
+      ].map((command) => [command, vi.fn(async () => ({ ok: true }))])
+    );
+    const checkHandlers = Object.fromEntries(
+      ["check_codex", "check_pi", "check_claude"].map((command) => [
+        command,
+        vi.fn(async () => ({ ok: true }))
+      ])
+    );
     registerDesktopCommandHandlers(
       {
         handle: (channel, handler) => {
@@ -144,7 +163,9 @@ describe("desktop IPC command registry", () => {
         },
         collaboration,
         setup_inspect: setupInspect,
-        setup_run: setupRun
+        setup_run: setupRun,
+        ...mutatingHandlers,
+        ...checkHandlers
       } as never,
       {
         allowedRendererOrigins: new Set(["koed://app"]),
@@ -166,7 +187,9 @@ describe("desktop IPC command registry", () => {
       consumePendingPersonalDevicePairingLink,
       writeClipboard,
       getThemePreference,
-      setThemePreference
+      setThemePreference,
+      mutatingHandlers,
+      checkHandlers
     };
   };
 
@@ -235,6 +258,25 @@ describe("desktop IPC command registry", () => {
     );
   });
 
+  it("rejects every mutating AI Client command without explicit consent", async () => {
+    const { registered, mutatingHandlers, checkHandlers } = register();
+    const invoke = registered.get(invokeChannel)!;
+    const mutationCommands = Object.keys(mutatingHandlers);
+    for (const command of mutationCommands) {
+      await expect(invoke(renderer(), command, undefined)).rejects.toThrow(
+        "Operator consent is required"
+      );
+      await expect(
+        invoke(renderer(), command, { operatorConsented: false })
+      ).rejects.toThrow("Operator consent is required");
+      expect(mutatingHandlers[command]).not.toHaveBeenCalled();
+    }
+    for (const command of Object.keys(checkHandlers)) {
+      await expect(invoke(renderer(), command)).resolves.toEqual({ ok: true });
+      expect(checkHandlers[command]).toHaveBeenCalledOnce();
+    }
+  });
+
   it("correlates validated pairing progress to the invoking renderer", async () => {
     const { registered } = register();
     const invoke = registered.get(invokeChannel)!;
@@ -286,6 +328,8 @@ describe("desktop IPC command registry", () => {
       invoke(renderer(), {
         operation: "start",
         projectId: "project-1",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex.default",
         idempotencyKey: "start-1"
       })
     ).resolves.toEqual({
@@ -302,12 +346,16 @@ describe("desktop IPC command registry", () => {
     expect(managedConversation).toHaveBeenCalledWith({
       operation: "start",
       projectId: "project-1",
+      aiClientDriverId: "codex",
+      aiClientInstanceId: "codex.default",
       idempotencyKey: "start-1"
     });
     await expect(
       invoke(renderer(), {
         operation: "start",
         projectId: "project-1",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex.default",
         idempotencyKey: "start-1",
         cwd: "/private/project"
       })
@@ -316,6 +364,8 @@ describe("desktop IPC command registry", () => {
       invoke(renderer("https://attacker.example/"), {
         operation: "start",
         projectId: "project-1",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex.default",
         idempotencyKey: "start-1"
       })
     ).rejects.toThrow("Untrusted Desktop IPC sender");
@@ -325,6 +375,8 @@ describe("desktop IPC command registry", () => {
     const failedStart = invoke(renderer(), {
       operation: "start",
       projectId: "project-1",
+      aiClientDriverId: "codex",
+      aiClientInstanceId: "codex.default",
       idempotencyKey: "start-1"
     });
     await expect(failedStart).rejects.toThrow("Koed could not start");

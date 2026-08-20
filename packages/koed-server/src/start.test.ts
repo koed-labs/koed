@@ -58,12 +58,18 @@ const healthyStatus = (root: string): KoedServerStatus => ({
   redis: { state: "healthy" },
   workerQueues: { state: "healthy" },
   embeddingService: { state: "healthy" },
+  localAiRuntime: { state: "healthy" },
   apiToken: { state: "healthy", configured: true },
   mcpServer: { state: "healthy" },
   captureHook: { state: "healthy" },
   codexTranscriptWatcher: { state: "healthy" },
   claudeTranscriptWatcher: { state: "healthy" },
   codex: { state: "healthy", configured: true },
+  claudeCode: { state: "healthy", configured: true, detected: true },
+  pi: { state: "healthy", configured: true, detected: true },
+  aiClients: {},
+  aiClientInstances: {},
+  aiClientFlowReadiness: {} as KoedServerStatus["aiClientFlowReadiness"],
   lcmSummaryService: { state: "healthy" },
   deviceIdentity: {
     state: "healthy",
@@ -81,7 +87,8 @@ const healthyStatus = (root: string): KoedServerStatus => ({
     failed: 0,
     notChecked: 0
   },
-  lastVerification: { state: "healthy", checkedAt: "2026-01-01T00:00:00.000Z" }
+  lastVerification: { state: "healthy", checkedAt: "2026-01-01T00:00:00.000Z" },
+  core: { state: "healthy", components: {} }
 });
 
 const createPackagedAppRuntime = (root: string) => {
@@ -93,6 +100,8 @@ const createPackagedAppRuntime = (root: string) => {
     "koed-runtime/mcp-server/dist/local-runtime-cli.js",
     "koed-runtime/mcp-server/dist/capture-hook.js",
     "koed-runtime/api/node_modules/@koed/db/dist/index.js",
+    "koed-runtime/api/node_modules/@koed/db/dist/connection.js",
+    "koed-runtime/api/node_modules/@koed/db/dist/user-api-token-repository.js",
     "koed-runtime/api/node_modules/@koed/db/drizzle/meta/_journal.json"
   ]) {
     const path = resolve(root, entry);

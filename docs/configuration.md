@@ -102,6 +102,7 @@ verified identity path remains fail-closed for those Team-authority operations.
 - `KOED_DEPENDENCY_MODE`: `external` or `bundled-local`.
 - `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: enables the supervised Codex Transcript Watcher. When unset, developer and local-personal runtime modes enable it. External runtime mode cannot enable it because that mode does not own a Local AI Runtime; attempting to do so fails configuration. `KOED_HOME/config/server.json` may set the equivalent `codexTranscriptWatcherEnabled` field, with the environment taking precedence.
 - `MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED`: enables the Claude Transcript Watcher in the same supervised Local AI Runtime. It has the same runtime-mode defaults and environment-over-file precedence; the equivalent server config field is `claudeTranscriptWatcherEnabled`.
+- `MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED`: enables Pi Transcript Watcher in same Local AI Runtime. Default enabled. Filesystem discovery remains correctness path even when Pi extension is disabled.
 - `KOED_EXTERNAL_DATABASE_URL` or `DATABASE_URL`: Operator-managed Postgres URL in external mode.
 - `KOED_EXTERNAL_REDIS_URL` or `REDIS_URL`: Operator-managed Redis/BullMQ URL when the queue backend is `bullmq`.
 - `KOED_EXTERNAL_EMBEDDING_SERVICE_URL` or `EMBEDDING_SERVICE_URL`: Operator-managed Embedding Service URL in external mode.
@@ -133,12 +134,29 @@ Example bundled-local `KOED_HOME/config/server.json`:
 }
 ```
 
-`koed-server status --json` and `doctor --json` report healthy only after
-Postgres is reachable, Postgres version is compatible, migrations are current,
-pgvector is enabled, the configured work queue backend is ready, and the
-Embedding Service reports the expected model and dimensions. Doctor repair
-actions point to migrations, pgvector setup, dependency URLs, queue backend, or
-model/runtime mismatch.
+`koed-server setup core --json` is the client-neutral Operator bootstrap. It
+creates or reuses and validates the local API Token used privately by the
+Local AI Runtime. It does not write final verification state; `doctor --json`
+persists final success or failure. `koed-server setup codex --json`, `setup claude`, and
+`setup pi` are explicit client-profile commands and are not run by core setup.
+The Desktop supervisor may provision the same local credential automatically;
+manual token bootstrap remains supported.
+
+`koed-server status --json` and `doctor --json` report core components separately
+from AI Client profile diagnostics. Core includes API, storage, queues, Embedding
+Service, Local AI Runtime process, MCP artifacts, and local credential. Zero
+configured AI Clients is healthy core state. Codex, Claude Code, and Pi
+configuration, authentication, Capture Hook, Transcript Watcher, and synthesis
+readiness remain client diagnostics. LCM Summary Service process health is
+reported separately from any assigned AI Client/model. Doctor prints all client
+diagnostics, but only core failures affect `ok`, `state`, and exit status.
+
+AI Client instances are written to the local registry after explicit profile
+setup succeeds. One-time core migration also registers `codex.default` when an
+existing Codex config contains Koed's ownership marker and the registry lacks
+Codex; it preserves existing registry entries and config bytes. Unrelated
+detection never selects a client or edits its profile. Existing Codex configuration, API Token, and Personal Memory remain
+in place.
 
 ## Clone-Safe Local Device Identity
 
@@ -533,8 +551,9 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
   Team collaboration broker. It remains required for non-external runtimes when
   Team collaboration is disabled because Personal broker commands and
   subscriptions remain available.
-- `MEMORY_CURATED_REVIEW_PROVIDER`: local Curated Memory review provider. Only `codex` is supported.
-- `MEMORY_CURATED_REVIEW_MODEL`: model for the separate local Curated Memory reviewer. Default `gpt-5.6-luna`.
+- `MEMORY_CURATED_REVIEW_PROVIDER`: local Curated Memory review provider. Supported values are `codex`, `claude`, and `pi`; default `codex`. Pi requires full provider/model ID.
+- `MEMORY_CURATED_REVIEW_AI_CLIENT_INSTANCE`: selected local AI Client instance for Curated Memory Review. Default `<provider>.default`.
+- `MEMORY_CURATED_REVIEW_MODEL`: model for the separate local Curated Memory reviewer. Default `gpt-5.6-luna` for Codex; Claude uses `haiku` when unset, and Pi requires an explicit full provider/model ID.
 - `MEMORY_CURATED_REVIEW_REASONING_EFFORT`: reasoning effort for Curated Memory review. Default `low`.
 - `MEMORY_CURATED_REVIEW_TIMEOUT_MS`: maximum duration of one local review call. Default `90000`.
 - `MEMORY_CURATED_REVIEW_MAX_ATTEMPTS`: maximum review attempts before a non-stale worker failure becomes a rejection. Default `2`.
@@ -724,6 +743,10 @@ hosted by its supervised Local AI Runtime:
 - `MEMORY_CODEX_TRANSCRIPT_ROOTS`: optional platform path-delimited list of explicit transcript roots. When non-empty, replaces the `CODEX_HOME/sessions` default; it never broadens scanning to arbitrary home directories.
 - `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: watcher supervisor switch. Default `true` for developer/local-personal runtime modes. External runtime mode cannot enable the watcher; capture must run through a local-personal `koed-server`.
 - `MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED`: Claude watcher switch with the same runtime-mode boundary. Claude capture uses private Hook signals and provider source files under the configured Claude home rather than Codex transcript roots.
+- `PI_CODING_AGENT_DIR`: custom Pi profile home. Koed preserves profile boundary for package setup, model authentication, and default session discovery.
+- `PI_CODING_AGENT_SESSION_DIR`: explicit Pi persistent session root.
+- `MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED`: Pi watcher switch. Pi capture uses content-free extension signals plus periodic persistent-session filesystem discovery.
+- `MEMORY_PI_TRANSCRIPT_MAX_BYTES_PER_BATCH`: maximum complete Pi JSONL bytes journaled and consumed per bounded page. Default `4194304`; minimum `1024`; maximum `16777216`.
 - `MEMORY_CODEX_TRANSCRIPT_DEBOUNCE_MS`: coalescing delay for filesystem notifications and Capture Hook wake signals. Default `200`.
 - `MEMORY_CODEX_TRANSCRIPT_MAX_ENTRIES_PER_SCAN`: maximum filesystem entries inspected per scan. Default `4000`.
 - `MEMORY_CODEX_TRANSCRIPT_MAX_FILES_PER_SCAN`: maximum transcript files processed per scan. Default `200`.
@@ -767,15 +790,17 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_API_TOKEN`: Personal API Token provisioned for the Local AI Runtime. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`; it is not written into MCP configuration.
 - `MEMORY_RAW_INGEST_BATCH_BYTES`: target maximum request size for canonical conversation-item ingestion batches. Default `180000`. Oversized logical items use at most 64 transport chunks of 256 KiB each and fail before upload above the 16 MiB logical-item ceiling.
 - `MEMORY_API_REQUEST_TIMEOUT_MS`: timeout for Local AI Runtime API calls. Default `60_000`.
+- `KOED_AI_CLIENT_INSTANCE_REGISTRY`: explicit JSON registry of local AI Client instances probed by the Local AI Runtime. Default `KOED_HOME/config/ai-client-instances.json`; missing or empty registry publishes no instances. Setup commands register provider defaults.
 - `MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS`: when `true`, exposes diagnostic MCP tools such as `memory_access_check`. Default `false`; use the MCP `doctor` CLI command for normal setup checks.
 - `MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS`: when `true`, exposes low-level diagnostic MCP retrieval tools such as `memory_search` and `memory_expand`. Default `false`; normal recall should use `memory_answer`.
 - `MEMORY_CODEX_APP_SERVER_BINARY`: Codex app-server binary used by local Synthesis flows. Default `codex`.
 - `KOED_CLAUDE_CODE_EXECUTABLE`: optional absolute path to a separately installed Claude Code executable. Koed otherwise discovers and validates the local installation; it never accepts an Anthropic API key or bundles Claude Code.
+- `KOED_PI_EXECUTABLE`: optional absolute path to separately installed Pi `0.84.2+`. Koed canonicalizes and validates the installation, resolves Windows npm shims to a verified Node entry point, and reuses Pi-managed authentication; it never accepts Pi provider credentials or bundles Pi.
 - `KOED_CLAUDE_CODE_DISCOVERY_CACHE`: optional absolute local path for the owner-only confirmed installation record. Default `KOED_HOME/state/claude-code-installation.json`.
 - `KOED_MANAGED_CONVERSATION_CLAUDE_MODEL`: model used for Koed-managed Claude Conversations. Default `claude-haiku-4-5-20251001`.
-- `MEMORY_ANSWER_PROVIDER`: AI Client provider for MCP Memory Answer synthesis. Supported values are `codex` and `claude`; default `codex`.
+- `MEMORY_ANSWER_PROVIDER`: AI Client provider for MCP Memory Answer synthesis. Supported values are `codex`, `claude`, and `pi`; default `codex`. Pi requires full provider/model ID.
 - `MEMORY_ANSWER_AI_CLIENT_INSTANCE`: selected local AI Client instance. Default `<provider>.default`.
-- `MEMORY_ANSWER_MODEL`: provider model for MCP Memory Answer synthesis. The Codex default is `gpt-5.6-luna`.
+- `MEMORY_ANSWER_MODEL`: provider model for MCP Memory Answer synthesis. The Codex default is `gpt-5.6-luna`; Claude uses `haiku` when unset, and Pi requires an explicit full provider/model ID.
 - `MEMORY_ANSWER_REASONING_EFFORT`: provider-supported reasoning effort. Default `low`.
 - `MEMORY_ANSWER_TIMEOUT_MS`: timeout for each local MCP Memory Answer app-server turn.
 - `MEMORY_ANSWER_MAX_ATTEMPTS`: maximum local MCP Memory Answer synthesis attempts.
@@ -785,15 +810,15 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_ANSWER_MAX_EVIDENCE_ITEMS`: maximum evidence items admitted to one Memory Answer prompt. Default `50`; valid range `1`–`200`.
 - `MEMORY_ANSWER_MAX_EVIDENCE_TOKENS`: maximum estimated evidence tokens admitted to one Memory Answer prompt. Default `12000`; valid range `256`–`100000`.
 - `MEMORY_ANSWER_MAX_PROMPT_TOKENS`: maximum estimated complete Memory Answer prompt tokens. Default `24000`; valid range `512`–`200000`.
-- `MEMORY_LCM_SUMMARY_PROVIDER`: AI Client provider for LCM Summary and session-title synthesis. Supported values are `codex` and `claude`; default `codex`.
+- `MEMORY_LCM_SUMMARY_PROVIDER`: AI Client provider for LCM Summary and session-title synthesis. Supported values are `codex`, `claude`, and `pi`; default `codex`. Pi requires full provider/model ID.
 - `MEMORY_LCM_SUMMARY_AI_CLIENT_INSTANCE`: selected local AI Client instance. Default `<provider>.default`.
-- `MEMORY_LCM_SUMMARY_MODEL`: provider model for LCM Summary synthesis. The Codex default is `gpt-5.6-luna`.
+- `MEMORY_LCM_SUMMARY_MODEL`: provider model for LCM Summary synthesis. The Codex default is `gpt-5.6-luna`; Claude uses `haiku` when unset, and Pi requires an explicit full provider/model ID.
 - `MEMORY_LCM_SUMMARY_REASONING_EFFORT`: provider-supported reasoning effort. Default `low`.
 - `MEMORY_LCM_SUMMARY_TIMEOUT_MS`: timeout for each local LCM Summary app-server turn.
 - `MEMORY_LCM_SUMMARY_MAX_ATTEMPTS`: maximum local LCM Summary synthesis attempts.
 - `MEMORY_LCM_SUMMARY_RETRY_DELAY_MS`: delay between local LCM Summary retry attempts.
 - `MEMORY_LCM_SUMMARY_CONCURRENCY`: maximum concurrent local LCM Summary workers.
-- `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: maximum prompt budget for local Codex LCM Summary calls. Default `48000`.
+- `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: maximum prompt budget for selected local AI Client LCM Summary calls. Default `48000`.
 - `MEMORY_LCM_BACKGROUND_INITIAL_DELAY_MS`: delay before the Local AI Runtime first checks for pending work.
 - `MEMORY_LCM_BACKGROUND_PUSH_DELAY_MS`: delay used when the local service is nudged after capture.
 - `MEMORY_LCM_BACKGROUND_INTERVAL_MS`: periodic background check interval for pending summaries.
@@ -803,7 +828,7 @@ These values are copied into the AI Client configuration and are not consumed au
 
 `koed-server` supervises one Local AI Runtime after its startup readiness check
 and local API Token resolution, and stops it before the API. The runtime owns
-the Codex and Claude Transcript Watchers, LCM Summary Service, Curated Memory review, and fresh
+Codex, Claude, and Pi Transcript Watchers, LCM Summary Service, Curated Memory review, and fresh
 Memory Answer workers. If the API is still recovering, bounded watcher rescans
 keep retrying. Configure each supported AI Client to run its Supported Capture Hook for
 `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStart`, and
@@ -819,10 +844,7 @@ Koed relies on the connected AI Client for Synthesis; backend LLM provider confi
 The Local AI Runtime is enabled by default in this build. It generates
 captured-session titles and LCM summaries through the selected local AI Client.
 Failures are reported as diagnostics and pending summaries remain searchable as
-degraded evidence. The API stores per-user Memory Answer and LCM Summary
-settings; the Local AI Runtime reads them at execution time. `.env` values are
-bootstrap defaults only; precedence is API user setting, then `.env`, then code
-default.
+degraded evidence. The API stores per-user Memory Answer, LCM Summary, session-title, and Curated Memory Review assignments independently; the Local AI Runtime reads them at execution time. `.env` values are bootstrap defaults only; precedence is API user setting, then `.env`, then code default. Desktop Advanced settings exposes only `mcp_memory_answer` (Memory Answer), `lcm_summary`, `session_title`, and `curated_memory_review`; `manual_memory_answer` is not a supported selector. Reset deletes one selected assignment and never changes other flows.
 
 LCM summary prompt-version changes are forward-only. Existing completed
 summaries are not automatically regenerated; new prompts apply to new or

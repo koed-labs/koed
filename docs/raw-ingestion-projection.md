@@ -58,29 +58,76 @@ until terminal verification and JSONL reconciliation complete; the worker never
 scans held rows.
 
 Projection uses the DB-backed `projection_policy_rules` table as the explicit
-positive allowlist for Codex transcript item types. The seeded defaults preserve
-the current behavior: user, agent, subagent, tool call/result, and reasoning
-summary items are projected to the UI and embedded semantic memory; system,
-developer, context, lifecycle, token-usage, error, raw reasoning, and unknown
-items remain raw provenance only. Canonical transcript `function_call` and
-`function_call_output` rows are the tool items used for rendering and semantic
-memory; lower-level MCP and patch lifecycle event rows are retained only as raw
-provenance. The server refines generic provider `message` records from their
-raw role before policy lookup, so developer/system records cannot inherit the
-generic message rule. A role-user response item without stable provider
-identity stays a raw-only source record; external JSONL uses the explicit
-`event_msg:user_message` as the projectable prompt. The seeded defaults keep UI
-projection and embedding selection matched for current product behavior, but
-the policy fields are deliberately
-independent so future rules can represent display-only or recall-only transcript
-rows without a schema change. The same policy row also controls whether a
-projected Memory Event may become an LCM source through `include_in_lcm`.
-Unlisted transcript item types default to raw provenance only until a policy row
-deliberately opts them in. After a policy change, the authenticated session
-rebuild operation invalidates prior display, Memory Event, embedding, and LCM
-derivations and reprojects retained canonical items under the new policy.
+positive allowlist for canonical AI Client conversation item types. Provider
+adapters map their own source records into those types: Codex transcript items,
+Claude transcript records, and Pi session entries each retain their source
+adapter identity. The seeded defaults preserve the current behavior: user,
+agent, subagent, tool call/result, and reasoning summary items are projected to
+the UI and embedded semantic memory; system, developer, context, lifecycle,
+token-usage, error, raw reasoning, and unknown items remain raw provenance only.
+Canonical transcript `function_call` and `function_call_output` rows are the tool
+items used for rendering and semantic memory; lower-level MCP and patch
+lifecycle event rows are retained only as raw provenance. The server refines
+generic provider `message` records from their raw role before policy lookup, so
+developer/system records cannot inherit the generic message rule. A role-user
+response item without stable provider identity stays a raw-only source record;
+provider adapters must supply an explicit projectable prompt identity. The
+seeded defaults keep UI projection and embedding selection matched for current
+product behavior, but the policy fields are deliberately independent so future
+rules can represent display-only or recall-only transcript rows without a
+schema change. The same policy row also controls whether a projected Memory
+Event may become an LCM source through `include_in_lcm`. Unlisted transcript
+item types default to raw provenance only until a policy row deliberately opts
+them in. After a policy change, the authenticated session rebuild operation
+invalidates prior display, Memory Event, embedding, and LCM derivations and
+reprojects retained canonical items under the new policy.
+
+## Pi Session Adapter
+
+Pi persistent sessions use `sourceKind=pi`, `sourceRuntime=pi`,
+`artifactFormat=pi_session_jsonl`, and `sourceAdapterVersion=pi-session-v1`.
+Watcher journals complete LF-terminated records, verifies only the terminal
+covered segment on each pass, consumes bounded journal pages, and advances its
+independent durable live cursor only after raw ingestion and Projection succeed.
+Activation and historical-frontier line counts stream from disk. After a
+Capture Pause or disabled Capture Policy, the resume line comes from retained
+journal line metadata and, only when the offset is internal to a segment, one
+bounded verified segment; Koed does not replay the skipped transcript span.
+User, AI Client
+text, tool calls/results, and direct bash records may project. Compaction and
+branch summaries, thinking, custom/unsupported records, model changes, and
+other controls remain raw provenance. Entry ID, parent ID, append position,
+provider/model identity, parent-session lineage, and cwd Project context remain
+in metadata. Activation baseline and explicit historical import use separate
+frontiers.
 
 ## Current Codex Adapters
+
+Sanitized AI Client-visible records may enter only through the production-owned
+normalized-import capability. The ordinary API-token conversation-item route
+does not admit caller-asserted normalized provenance. The internal capability
+uses the versioned `koed-normalized-import-v1` adapter with
+`sourceTransport=normalized_import`; this identity is distinct from native
+`codex-transcript-v1` JSONL.
+
+Admission pins the exact ATIF producer, schema, and normalizer versions and the
+successful sanitization-manifest hash. It recomputes source identity, turn
+identity, source hash, idempotency key, component, and canonical item key;
+requires a contiguous sequence; and validates the actor, transcript
+classification, and strict normalized raw shape. The repository binds the
+authenticated owner and verifies the Captured Session, source thread, and
+authoritative Project before persisting an import attestation. Unknown
+classifications, caller-created provenance, sequence gaps, altered raw fields,
+or identity mismatches fail closed.
+
+Projection resolves the six admitted normalized classifications (system, user,
+agent, reasoning summary, tool call, and tool result) through the corresponding
+`codex-transcript-v1` policy rows. The stored attestation names that projection
+policy contract, while the resulting Memory Event records remain authoritative
+for display, embedding, and LCM disposition. This preserves truthful source
+provenance without direct database seeding or pretending normalized records
+were native Codex transcript bytes. Capture Policy and Personal Memory
+ownership remain enforced at the common repository boundary.
 
 The Codex Transcript Watcher, managed transcript ingestion, and historical
 import share `sourceAdapterVersion=codex-transcript-v1`. Exact, complete JSONL

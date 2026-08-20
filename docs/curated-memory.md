@@ -22,16 +22,18 @@ capture or `memory_answer`.
 5. The API stores the proposal as durable pending work and returns immediately.
    The proposing agent does not wait for review and cannot write a canonical
    assertion.
-6. A background service in the local MCP Server leases pending work and hydrates
-   every source item plus a bounded set of current assertion candidates.
-   Missing, deleted, excluded, unauthorized, or undecryptable evidence fails
-   closed before an agent call.
-7. An isolated Codex app-server worker receives the complete evidence bundle as
-   untrusted data. It has no Koed tools, network tools, repository instructions,
-   or ambient conversation context. It semantically accepts or rejects the
-   proposal and, when accepting, writes a self-contained assertion and selects
-   its supporting evidence. It may choose `store`, `merge`, `supersede`, or
-   `conflict`; proposal operation and target fields are hints only.
+6. The supervised Local AI Runtime leases pending work and hydrates every
+   source item plus a bounded set of current assertion candidates. Missing,
+   deleted, excluded, unauthorized, or undecryptable evidence fails closed
+   before an agent call.
+7. The selected AI Client receives the complete evidence bundle as untrusted
+   data through its provider-specific local transport. It has no Koed tools,
+   network tools, repository instructions, or ambient conversation context. It
+   semantically accepts or rejects the proposal and, when accepting, writes a
+   self-contained assertion and selects its supporting evidence. It may choose
+   `store`, `merge`, `supersede`, or `conflict`; proposal operation and target
+   fields are hints only. The Curated Memory Review assignment independently
+   selects Codex app-server, Claude Agent SDK, or Pi RPC.
 8. The API revalidates the lease, evidence identities and revisions, selected
    evidence, and current target before committing atomically. Changed evidence
    releases the proposal for a fresh review. A typed `expires_at` becomes the
@@ -175,13 +177,14 @@ pnpm --filter @koed/evals eval:curated-memory-intake -- --score runs.json
 
 The scorer self-test validates only benchmark fixtures and scoring. The
 deterministic workflow runner creates an isolated database, supplies fixed
-proposal fixtures, and exercises the real protected API, Postgres lease, local
-Codex reviewer, transactional completion, normal Recall path, and independent
-semantic judge. `reviewer-adversarial` sends every case to the reviewer so its
-negative-case decisions can be measured without depending on proposer tool
-choice. The live AI Client mode first observes actual Codex tool choice and then
-runs the same local review path. Deterministic checks cover payload structure,
-source and assertion identity, lifecycle, storage, and Recall. The independent
+proposal fixtures, and exercises the real protected API, Postgres lease, selected
+local AI Client reviewer, transactional completion, normal Recall path, and
+independent semantic judge. `reviewer-adversarial` sends every case to the
+reviewer so its negative-case decisions can be measured without depending on
+proposer tool choice. Live benchmark mode currently uses its Codex-specific
+harness; that harness does not describe a product-wide reviewer default.
+Deterministic checks cover payload structure, source and assertion identity,
+lifecycle, storage, and Recall. The independent
 judge scores only accepted positive assertions; expected rejection plus absence
 from storage and Recall is sufficient for negative cases. Proposer decisions,
 reviewer outcomes, judge quality, false storage, latency, and measured token use

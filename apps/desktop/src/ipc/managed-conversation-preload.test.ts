@@ -20,7 +20,10 @@ describe("Managed Conversation preload bridge", () => {
     }));
     const api = createManagedConversationPreloadApi(invoke);
     await expect(
-      api.start("project-1", "start-request-1")
+      api.start("project-1", "start-request-1", {
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex.default"
+      })
     ).resolves.toMatchObject({
       status: "ready",
       conversation: identity
@@ -38,6 +41,8 @@ describe("Managed Conversation preload bridge", () => {
     expect(invoke).toHaveBeenCalledWith(managedConversationCommandChannel, {
       operation: "start",
       projectId: "project-1",
+      aiClientDriverId: "codex",
+      aiClientInstanceId: "codex.default",
       idempotencyKey: "start-request-1"
     });
   });
@@ -130,7 +135,8 @@ describe("Managed Conversation preload bridge", () => {
     await expect(
       api.start(
         { projectId: "project-1", path: "/secret" } as never,
-        "start-request-1"
+        "start-request-1",
+        { aiClientDriverId: "codex", aiClientInstanceId: "codex.default" }
       )
     ).rejects.toThrow();
     expect(invoke).not.toHaveBeenCalled();

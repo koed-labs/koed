@@ -19,6 +19,10 @@ export default defineConfig({
         replacement: `${root}packages/shared/src/secure-upstream-fetch.ts`
       },
       {
+        find: "@koed/shared/ai-client-contract",
+        replacement: `${root}packages/shared/src/ai-client-contract.ts`
+      },
+      {
         find: "@koed/core",
         replacement: `${root}packages/core/src/index.ts`
       },
@@ -35,8 +39,16 @@ export default defineConfig({
         replacement: `${root}packages/mcp-server/src/claude-transcript-parser.ts`
       },
       {
+        find: "@koed/mcp-server/runtime-contracts",
+        replacement: `${root}packages/mcp-server/src/runtime-contracts.ts`
+      },
+      {
         find: "@koed/mcp-server",
         replacement: `${root}packages/mcp-server/src/index.ts`
+      },
+      {
+        find: "@koed/worker/embedding-workflow",
+        replacement: `${root}apps/worker/src/embedding-workflow.ts`
       },
       {
         find: "@koed/shared",

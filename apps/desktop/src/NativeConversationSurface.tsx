@@ -70,8 +70,8 @@ export type NativeConversationSurfaceProps =
     });
 
 function eventActorLabel(event: DesktopConversationEvent): string {
-  if (event.approvalDecisionDisplay) return "Auto approval";
   if (event.activityDisplay) return event.activityDisplay.label;
+  if (event.approvalDecisionDisplay) return "Auto approval";
   if (event.actor === "user") return "You";
   if (event.actor === "assistant" || event.actor === "agent") {
     return "AI Client";

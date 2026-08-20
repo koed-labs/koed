@@ -16,7 +16,9 @@ When changing the schema:
 
 `pnpm db:migrate:acceptance` uses `DATABASE_URL` to connect to a Postgres
 server and creates a separate disposable database for every acceptance case.
-It fails closed unless all of these cases pass:
+Current journal head is `0033_fixed_scarlet_witch`; its owner backfill is
+covered by migration tests and preserves history without a client-instance
+foreign key. It fails closed unless all of these cases pass:
 
 - a clean run of the full migration journal;
 - the exact populated current-main `0000` through `0012` schema upgraded by the

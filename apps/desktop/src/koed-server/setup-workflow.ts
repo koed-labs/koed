@@ -17,6 +17,7 @@ export const desktopSetupStageIds: DesktopSetupStageId[] = [
 
 export type DesktopSetupCheck = {
   complete: boolean;
+  detectedAiClients?: readonly string[];
   message: string;
 };
 
@@ -45,6 +46,9 @@ const pendingStage = (
   check: DesktopSetupCheck
 ): DesktopSetupStage => ({
   completedBytes: null,
+  ...(check.detectedAiClients
+    ? { detectedAiClients: check.detectedAiClients }
+    : {}),
   id,
   message: check.message,
   state: check.complete ? "complete" : "pending",

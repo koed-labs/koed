@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   createApiTokenBootstrap,
@@ -197,6 +198,23 @@ const resolveBootstrapPaths = (environment) => ({
   )
 });
 
+const readCoreCredential = (environment) => {
+  if (!environment.KOED_HOME) return null;
+  const target = resolve(
+    environment.KOED_HOME,
+    "config/local-app-credential.json"
+  );
+  if (!existsSync(target)) return null;
+  try {
+    const value = JSON.parse(readFileSync(target, "utf8"));
+    return typeof value.apiToken === "string" && value.apiToken.trim()
+      ? value.apiToken.trim()
+      : null;
+  } catch {
+    return null;
+  }
+};
+
 export const runCodexBootstrap = async ({
   argv = process.argv.slice(2),
   environment = process.env,
@@ -207,7 +225,11 @@ export const runCodexBootstrap = async ({
   runCommandFn = runCommand,
   skipSetup = false,
   onTokenCreated = (tokenResult) =>
-    console.log(formatCreateApiTokenResult(tokenResult)),
+    console.log(
+      tokenResult.reused
+        ? "Reused existing Koed local API Token."
+        : formatCreateApiTokenResult(tokenResult)
+    ),
   onComplete = (result) => {
     console.log("Koed Codex bootstrap complete.");
     console.log(`API URL: ${result.args.apiUrl}`);
@@ -264,11 +286,26 @@ export const runCodexBootstrap = async ({
       });
     }
 
-    const tokenResult = await createTokenBootstrap({
-      repo: activeRepo,
-      environment,
-      argv: ["--owner-email", args.ownerEmail, "--name", args.name]
-    });
+    const coreToken =
+      environment.KOED_CORE_TOKEN_VALIDATED === "1"
+        ? readCoreCredential(environment)
+        : null;
+    const tokenResult = coreToken
+      ? {
+          reused: true,
+          owner: { email: args.ownerEmail },
+          token: coreToken,
+          apiToken: {
+            id: "existing-local-credential",
+            tokenPrefix: coreToken.slice(0, 12),
+            createdAt: "existing"
+          }
+        }
+      : await createTokenBootstrap({
+          repo: activeRepo,
+          environment,
+          argv: ["--owner-email", args.ownerEmail, "--name", args.name]
+        });
 
     await onTokenCreated(tokenResult);
 

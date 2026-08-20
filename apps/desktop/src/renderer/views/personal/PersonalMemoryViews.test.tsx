@@ -119,7 +119,8 @@ const managedApi = (
       executionId: "execution-1",
       projectId,
       capturedSessionId: sessionId,
-      threadId: "managed-thread"
+      threadId: "managed-thread",
+      executionOwner: { driverId: "codex", instanceId: "codex.default" }
     }
   })),
   inspect: vi.fn<ManagedConversationDesktopApi["inspect"]>(
@@ -135,7 +136,8 @@ const managedApi = (
       status: "ready",
       conversation: {
         ...conversation,
-        executionId: null
+        executionId: null,
+        executionOwner: { driverId: "codex", instanceId: "codex.default" }
       }
     })
   ),
@@ -233,7 +235,7 @@ describe("PersonalMemoryWorkspace", () => {
   });
 
   it("loads the normalized Project index and restores focus through drilldown", async () => {
-    const source = project([thread(1)]);
+    const source = project([thread(1, { sourceAiClient: "pi" })]);
     const store = new PersonalMemoryStore(
       api({ listProjects: vi.fn(async () => [source]) })
     );
@@ -284,6 +286,12 @@ describe("PersonalMemoryWorkspace", () => {
     expect(
       container.querySelector(".personal-session-row .lucide-brain")
     ).not.toBeNull();
+    const sourceMark = container.querySelector(
+      '.personal-ai-client-mark[data-client="pi"]'
+    );
+    expect(sourceMark?.getAttribute("aria-label")).toBe("Captured with Pi");
+    expect(sourceMark?.getAttribute("title")).toBe("Pi");
+    expect(sourceMark?.querySelector("svg path")).not.toBeNull();
     expect(container.querySelector(".personal-sessions > header")).toBeNull();
   });
 
@@ -763,6 +771,49 @@ describe("PersonalMemoryWorkspace", () => {
         )
     );
     const managed = managedApi({ send });
+    const localAiClients = {
+      list: vi.fn(async () => ({
+        readModel: {
+          instances: [
+            {
+              instanceId: "codex.default",
+              driverId: "codex",
+              displayName: "Codex",
+              enabled: true
+            }
+          ],
+          capabilitySnapshots: [
+            {
+              instanceId: "codex.default",
+              authenticationState: "authenticated",
+              healthState: "healthy",
+              managedConversationStart: {
+                support: "supported",
+                readiness: "ready"
+              },
+              managedConversationResume: {
+                support: "supported",
+                readiness: "ready"
+              },
+              managedConversationSend: {
+                support: "supported",
+                readiness: "ready"
+              },
+              managedConversationHandoff: {
+                support: "supported",
+                readiness: "ready"
+              },
+              managedConversationFork: {
+                support: "supported",
+                readiness: "ready"
+              },
+              expiresAt: "2099-01-01T00:00:00.000Z",
+              stale: false
+            }
+          ]
+        }
+      }))
+    } as never;
     const source = project([thread(2, { sessionId: null })]);
     const store = new PersonalMemoryStore(
       api({ listProjects: vi.fn(async () => [source]) })
@@ -774,6 +825,7 @@ describe("PersonalMemoryWorkspace", () => {
           {({ onNavigate, route }) => (
             <PersonalMemoryWorkspace
               managedConversations={managed}
+              localAiClients={localAiClients}
               onNavigate={onNavigate}
               route={route}
               store={store}
@@ -783,6 +835,12 @@ describe("PersonalMemoryWorkspace", () => {
       );
     });
     await vi.waitFor(() => expect(container.textContent).toContain("New"));
+    await vi.waitFor(() => {
+      const newButton = [
+        ...container.querySelectorAll<HTMLButtonElement>("button")
+      ].find((button) => button.textContent === "New");
+      expect(newButton?.disabled).toBe(false);
+    });
     await act(async () => {
       [...container.querySelectorAll<HTMLButtonElement>("button")]
         .find((button) => button.textContent === "New")
@@ -793,7 +851,8 @@ describe("PersonalMemoryWorkspace", () => {
     );
     expect(managed.start).toHaveBeenCalledWith(
       "project-1",
-      expect.stringMatching(/^desktop-conversation:/)
+      expect.stringMatching(/^desktop-conversation:/),
+      { aiClientDriverId: "codex", aiClientInstanceId: "codex.default" }
     );
     expect(managed.resume).toHaveBeenCalledWith({
       projectId: "project-1",
@@ -803,6 +862,9 @@ describe("PersonalMemoryWorkspace", () => {
     const shell = container.querySelector(".personal-conversation-shell");
     expect(shell?.lastElementChild?.classList).toContain(
       "personal-managed-composer"
+    );
+    expect(container.textContent).toContain(
+      "Execution owner: Codex · codex.default"
     );
     expect(
       shell?.querySelector(".personal-managed-composer-field")

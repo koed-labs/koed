@@ -38,7 +38,13 @@ export type DesktopRoute =
   | TeamRoute
   | {
       kind: "preferences";
-      section: "general" | "capture" | "team-connection" | "about" | "advanced";
+      section:
+        | "general"
+        | "capture"
+        | "ai-clients"
+        | "team-connection"
+        | "about"
+        | "advanced";
     }
   | { kind: "onboarding" };
 

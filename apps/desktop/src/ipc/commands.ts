@@ -9,6 +9,7 @@ import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
 import type {
   DesktopCommandContext,
   DesktopCommandHandler,
+  LocalAiClientDesktopHandler,
   PersonalMemoryDesktopHandler
 } from "../koed-server/manager.js";
 import type { DesktopSetupSnapshot } from "../types.js";
@@ -16,6 +17,7 @@ import {
   collaborationCommandChannel,
   collaborationEventChannel,
   clipboardWriteChannel,
+  localAiClientCommandChannel,
   desktopRendererOrigin,
   isDesktopCommandName,
   managedConversationCommandChannel,
@@ -37,6 +39,10 @@ import {
 import { parsePersonalDevicePairingProgress } from "./personal-device-pairing-protocol.js";
 import type { DesktopThemePreference } from "../window/theme-preference.js";
 import { parsePersonalDevicePairingLink } from "../personal-device-pairing-link.js";
+import {
+  localAiClientCommandSchema,
+  localAiClientResponseSchema
+} from "./local-ai-client-protocol.js";
 
 export const invokeChannel = "koed:invoke";
 
@@ -60,6 +66,18 @@ const senderContexts = new WeakMap<
   WebContents,
   { controller: AbortController; context: DesktopCommandContext }
 >();
+
+const profileMutationCommands = new Set([
+  "setup_codex",
+  "repair_codex",
+  "remove_codex",
+  "setup_pi",
+  "repair_pi",
+  "remove_pi",
+  "setup_claude",
+  "repair_claude",
+  "remove_claude"
+]);
 
 const contextForSender = (sender: WebContents): DesktopCommandContext => {
   const current = senderContexts.get(sender);
@@ -97,6 +115,7 @@ export const registerDesktopCommandHandlers = (
   handlers: Record<DesktopCommandName, DesktopCommandHandler>,
   options: {
     allowedRendererOrigins: ReadonlySet<string>;
+    localAiClients?: LocalAiClientDesktopHandler;
     personalMemory: PersonalMemoryDesktopHandler;
     managedConversation: (
       request: ManagedConversationRequest
@@ -123,6 +142,14 @@ export const registerDesktopCommandHandlers = (
       }
       if (command === "collaboration") {
         throw new Error("Use the strict collaboration command channel.");
+      }
+      if (
+        profileMutationCommands.has(command) &&
+        args?.operatorConsented !== true
+      ) {
+        throw new Error(
+          "Operator consent is required before changing an AI Client profile."
+        );
       }
       const handler = handlers[command];
       return await handler(args, contextForSender(event.sender));
@@ -209,6 +236,23 @@ export const registerDesktopCommandHandlers = (
     }
   );
 
+  ipcMain.handle(localAiClientCommandChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins)) {
+      throw new Error("Untrusted Desktop IPC sender.");
+    }
+    const request = localAiClientCommandSchema.parse(value);
+    if (!options.localAiClients) {
+      throw new Error("Local AI Client settings are unavailable.");
+    }
+    const response = localAiClientResponseSchema.parse(
+      await options.localAiClients(request)
+    );
+    if (response.operation !== request.operation) {
+      throw new Error("Invalid Local AI Client operation correlation.");
+    }
+    return response;
+  });
+
   ipcMain.handle(
     personalMemoryCommandChannel,
     async (event, value: unknown) => {
@@ -239,10 +283,12 @@ export const registerDesktopCommandHandlers = (
       } catch {
         const messages: Record<ManagedConversationResult["operation"], string> =
           {
-            start: "Koed could not start the managed Codex Conversation.",
-            inspect: "Koed could not inspect the managed Codex Conversation.",
-            resume: "Koed could not confirm the managed Codex Conversation.",
-            send: "Koed could not submit the prompt to the managed Codex Conversation.",
+            start: "Koed could not start the managed AI Client Conversation.",
+            inspect:
+              "Koed could not inspect the managed AI Client Conversation.",
+            resume:
+              "Koed could not confirm the managed AI Client Conversation.",
+            send: "Koed could not submit the prompt to the managed AI Client Conversation.",
             targets: "Koed could not load Personal Devices.",
             transfer_status:
               "Koed could not load the managed Conversation transfer status.",

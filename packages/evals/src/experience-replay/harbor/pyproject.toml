@@ -1,0 +1,19 @@
+[project]
+name = "koed-experience-replay-harbor"
+version = "0.0.0"
+description = "Locked Harbor adapter for the Koed experience-replay evaluation"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "harbor @ git+https://github.com/harbor-framework/harbor.git@64afbbcb62165950301e1a6407c729aa26d844ff",
+]
+
+[dependency-groups]
+dev = ["pytest==9.1.1"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = ["-q", "--strict-config", "--strict-markers"]

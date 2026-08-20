@@ -10,6 +10,7 @@ import {
   type CuratedMemoryReviewConfig
 } from "../src/curated-memory-review-worker.js";
 
+const identityHash = "f".repeat(64);
 const evidenceId = "11111111-1111-4111-8111-111111111111";
 const proposalId = "22222222-2222-4222-8222-222222222222";
 
@@ -50,6 +51,10 @@ const serviceConfig = () =>
 const client = (submit: ReturnType<typeof vi.fn>) =>
   ({
     listLocalMemoryAgentSettings: vi.fn().mockResolvedValue({ settings: [] }),
+    listAiClientInstances: vi.fn().mockResolvedValue({
+      instances: [],
+      capabilitySnapshots: []
+    }),
     claimPendingCuratedMemoryReviews: vi
       .fn()
       .mockResolvedValue({ reviews: [reviewBundle()] }),
@@ -186,6 +191,43 @@ describe("Curated Memory review service", () => {
           maxAttempts: 3,
           createdAt: "2026-07-13T00:00:00.000Z",
           updatedAt: "2026-07-13T00:00:00.000Z"
+        }
+      ]
+    });
+    vi.mocked(apiClient.listAiClientInstances).mockResolvedValue({
+      instances: [
+        {
+          instanceId: "claude.default",
+          driverId: "claude",
+          enabled: true,
+          configIdentityHash: identityHash
+        }
+      ],
+      capabilitySnapshots: [
+        {
+          instanceId: "claude.default",
+          installationIdentityHash: identityHash,
+          healthState: "healthy",
+          authenticationState: "authenticated",
+          stale: false,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          models: [
+            {
+              id: "selected-review-model",
+              fullId: "selected-review-model",
+              supportedReasoningEfforts: ["high"]
+            }
+          ],
+          capabilities: {
+            descriptors: {
+              local_synthesis: {
+                id: "local_synthesis",
+                support: "supported",
+                readiness: "ready",
+                diagnostics: []
+              }
+            }
+          }
         }
       ]
     });

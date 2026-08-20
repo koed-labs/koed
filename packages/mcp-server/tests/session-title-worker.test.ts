@@ -6,7 +6,8 @@ import type { MemoryApiClient } from "../src/index.js";
 import {
   buildSessionTitlePrompt,
   generatePendingSessionTitles,
-  type SessionTitleCandidate
+  type SessionTitleCandidate,
+  type SessionTitleTelemetry
 } from "../src/session-title-worker.js";
 
 const tempDirs: string[] = [];
@@ -123,6 +124,7 @@ Please review the IDE parser parity fix.`;
       ].join("\n")
     );
     const submitted: unknown[] = [];
+    const telemetry: SessionTitleTelemetry[] = [];
     const client = {
       async listPendingSessionTitles(input: Record<string, unknown>) {
         expect(input).toMatchObject({ limit: 2, minUserEvents: 3 });
@@ -160,8 +162,14 @@ Please review the IDE parser parity fix.`;
       },
       runner: async () => ({
         title: "Desktop Titles",
-        model: "codex-app-server:test"
-      })
+        model: "codex-app-server:test",
+        tokenUsage: { total: { inputTokens: 120, outputTokens: 8 } },
+        threadId: "thread-title-test",
+        turnId: "turn-title-test"
+      }),
+      telemetryObserver: (value) => {
+        telemetry.push(value);
+      }
     });
 
     expect(result).toMatchObject({
@@ -181,6 +189,17 @@ Please review the IDE parser parity fix.`;
         }
       }
     ]);
+    expect(telemetry).toHaveLength(1);
+    expect(telemetry[0]?.durationMs).toBeTypeOf("number");
+    expect(telemetry[0]).toEqual({
+      sessionId: candidate.id,
+      model: "codex-app-server:test",
+      promptVersion: "operator-session-title-v4",
+      durationMs: telemetry[0]?.durationMs,
+      tokenUsage: { total: { inputTokens: 120, outputTokens: 8 } },
+      threadId: "thread-title-test",
+      turnId: "turn-title-test"
+    });
   });
 
   it("skips title generation while another local memory worker holds the lock", async () => {

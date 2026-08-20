@@ -75,7 +75,7 @@ export const createHistoricalImportSourceSchema = z
   .object({
     runId: z.string().uuid(),
     artifactId: z.string().uuid(),
-    aiClient: z.enum(["codex", "claude"]),
+    aiClient: z.enum(["codex", "claude", "pi"]),
     sourceEventFrom: z.string().datetime({ offset: true }).optional(),
     sourceEventTo: z.string().datetime({ offset: true }).optional(),
     discoveredRecordCount: boundedCounter.optional(),
@@ -171,7 +171,11 @@ const historicalConversationItemSchema = z
     observationComponent: boundedText.optional(),
     projectionStatus: z.enum(["pending", "raw_only"]).optional(),
     projectionVersion: z
-      .enum(["codex-transcript-v1", "claude-code-transcript-v1"])
+      .enum([
+        "codex-transcript-v1",
+        "claude-code-transcript-v1",
+        "pi-session-v1"
+      ])
       .optional(),
     metadata: historicalItemMetadataSchema
   })

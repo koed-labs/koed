@@ -1,5 +1,7 @@
 # Managed Conversation Execution Uses A Fenced Runtime And Durable Realtime Stream
 
+Execution owner routing is defined in [Managed Conversation AI Client Routing](../managed-conversation-ai-client-routing.md). Every execution persists explicit AI Client instance identity; runtime lifecycle selection is fail-closed and provider-neutral.
+
 Status: Accepted.
 
 Related decisions:
@@ -82,14 +84,15 @@ filesystem guesses:
 - submit one User prompt with a caller idempotency key;
 - stream typed lifecycle events;
 - report provider Conversation, turn, and item identities;
-- quiesce after the current safe boundary;
 - seal and report the durable source boundary;
-- stop without accepting more commands;
 - declare provider and artifact format compatibility;
 - confirm whether restoration preserved the same provider Conversation
   identity.
 
-Codex uses app-server mode behind this interface. Provider credentials,
+The current published AI Client contract keeps cancellation, approval
+interaction, and provider-token streaming unsupported for Codex, Claude Code,
+and Pi Managed Conversation UI. Desktop exposes no controls for these bounded
+differences. Codex uses app-server mode behind this interface. Provider credentials,
 provider home, app-server stdio, and raw protocol messages remain inside the
 runner boundary.
 

@@ -13,6 +13,11 @@ import { watchKoedLocalWork } from "@koed/shared";
 import { z } from "zod";
 import { startCodexTranscriptWatcher } from "./codex-transcript-watcher.js";
 import { startClaudeTranscriptWatcher } from "./claude-transcript-watcher.js";
+import { startPiTranscriptWatcher } from "./pi-transcript-watcher.js";
+import {
+  startAiClientCapabilityPublisher,
+  type AiClientCapabilityPublisherHandle
+} from "./ai-client-capability-publisher.js";
 import { startCuratedMemoryReviewService } from "./curated-memory-review-service.js";
 import { resolveCuratedMemoryReviewConfig } from "./curated-memory-review-worker.js";
 import {
@@ -36,9 +41,9 @@ import {
 import { logger } from "./logger.js";
 import { MemoryToolExecutor } from "./memory-tool-executor.js";
 
-const MAX_BODY_BYTES = 256 * 1024;
-const DEFAULT_MAX_ACTIVE_ANSWERS = 2;
-const DEFAULT_MAX_QUEUED_ANSWERS = 16;
+export const LOCAL_AI_RUNTIME_MAX_BODY_BYTES = 256 * 1024;
+export const LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS = 2;
+export const LOCAL_AI_RUNTIME_DEFAULT_MAX_QUEUED_ANSWERS = 16;
 
 const callerSchema = z
   .object({
@@ -157,7 +162,10 @@ const readJsonBody = async (
     request.headers["content-length"] ?? "",
     10
   );
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > LOCAL_AI_RUNTIME_MAX_BODY_BYTES
+  ) {
     request.resume();
     throw Object.assign(new Error("Request body is too large"), {
       statusCode: 413
@@ -168,7 +176,7 @@ const readJsonBody = async (
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_BODY_BYTES) {
+    if (size > LOCAL_AI_RUNTIME_MAX_BODY_BYTES) {
       request.resume();
       throw Object.assign(new Error("Request body is too large"), {
         statusCode: 413
@@ -252,7 +260,7 @@ export interface LocalAiRuntimeToolExecutor {
     caller: z.infer<typeof callerSchema>,
     signal?: AbortSignal
   ): Promise<Record<string, unknown>>;
-  executeDesktopAsk(
+  executeDesktopAsk?(
     input: z.infer<typeof desktopAskRequestSchema>["input"],
     caller: z.infer<typeof callerSchema>,
     signal?: AbortSignal
@@ -261,6 +269,7 @@ export interface LocalAiRuntimeToolExecutor {
 
 export interface LocalAiRuntimeServices {
   executor: LocalAiRuntimeToolExecutor;
+  capabilityPublisher?: AiClientCapabilityPublisherHandle;
   close(): Promise<void>;
 }
 
@@ -276,6 +285,8 @@ export interface LocalAiRuntimeServiceDependencies {
   startCuratedMemoryReviewService: typeof startCuratedMemoryReviewService;
   startCodexTranscriptWatcher: typeof startCodexTranscriptWatcher;
   startClaudeTranscriptWatcher: typeof startClaudeTranscriptWatcher;
+  startPiTranscriptWatcher?: typeof startPiTranscriptWatcher;
+  startAiClientCapabilityPublisher?: typeof startAiClientCapabilityPublisher;
   createExecutor(
     apiClient: MemoryApiClient,
     environment: NodeJS.ProcessEnv,
@@ -294,6 +305,8 @@ const defaultServiceDependencies: LocalAiRuntimeServiceDependencies = {
   startCuratedMemoryReviewService,
   startCodexTranscriptWatcher,
   startClaudeTranscriptWatcher,
+  startPiTranscriptWatcher,
+  startAiClientCapabilityPublisher,
   createExecutor: (apiClient, environment, services) =>
     new MemoryToolExecutor(apiClient, environment, services)
 };
@@ -321,6 +334,9 @@ export const startDefaultLocalAiRuntimeServices = async (
   let claudeTranscriptWatcher: ReturnType<
     typeof startClaudeTranscriptWatcher
   > | null = null;
+  let piTranscriptWatcher: ReturnType<typeof startPiTranscriptWatcher> | null =
+    null;
+  let capabilityPublisher: AiClientCapabilityPublisherHandle | null = null;
   try {
     lcmWorkWatcher = lcmSummaryService
       ? await dependencies.watchKoedLocalWork(
@@ -346,19 +362,39 @@ export const startDefaultLocalAiRuntimeServices = async (
       "false"
         ? null
         : dependencies.startClaudeTranscriptWatcher(apiClient, environment);
+    piTranscriptWatcher =
+      environment.MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() ===
+        "false" || !dependencies.startPiTranscriptWatcher
+        ? null
+        : dependencies.startPiTranscriptWatcher(apiClient, environment);
+    if (dependencies.startAiClientCapabilityPublisher) {
+      capabilityPublisher = dependencies.startAiClientCapabilityPublisher(
+        apiClient,
+        environment
+      );
+      void capabilityPublisher.refresh().catch((error) => {
+        logger.warn(
+          { err: error },
+          "local AI Client capability publication failed"
+        );
+      });
+    }
     const executor = dependencies.createExecutor(apiClient, environment, {
       lcmSummaryService,
       curatedMemoryReviewService
     });
     return {
       executor,
+      capabilityPublisher: capabilityPublisher ?? undefined,
       async close() {
+        capabilityPublisher?.stop();
         lcmWorkWatcher?.stop();
         lcmSummaryService?.stop();
         curatedMemoryReviewService?.stop();
         await Promise.all([
           codexTranscriptWatcher?.stop(),
-          claudeTranscriptWatcher?.stop()
+          claudeTranscriptWatcher?.stop(),
+          piTranscriptWatcher?.stop()
         ]);
       }
     };
@@ -366,9 +402,11 @@ export const startDefaultLocalAiRuntimeServices = async (
     lcmWorkWatcher?.stop();
     lcmSummaryService?.stop();
     curatedMemoryReviewService?.stop();
+    capabilityPublisher?.stop();
     await Promise.all([
       codexTranscriptWatcher?.stop(),
-      claudeTranscriptWatcher?.stop()
+      claudeTranscriptWatcher?.stop(),
+      piTranscriptWatcher?.stop()
     ]);
     throw error;
   }
@@ -389,11 +427,11 @@ export const startLocalAiRuntime = async ({
   const answerAdmission = new AdmissionGate(
     positiveInteger(
       environment.KOED_LOCAL_AI_RUNTIME_MAX_ACTIVE_ANSWERS,
-      DEFAULT_MAX_ACTIVE_ANSWERS
+      LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS
     ),
     positiveInteger(
       environment.KOED_LOCAL_AI_RUNTIME_MAX_QUEUED_ANSWERS,
-      DEFAULT_MAX_QUEUED_ANSWERS
+      LOCAL_AI_RUNTIME_DEFAULT_MAX_QUEUED_ANSWERS
     )
   );
   const authorization = `Bearer ${randomBytes(32).toString("base64url")}`;
@@ -435,8 +473,37 @@ export const startLocalAiRuntime = async ({
         }
         if (
           request.method === "POST" &&
+          requestUrl.pathname === "/v1/capabilities/refresh"
+        ) {
+          if (!services.capabilityPublisher) {
+            json(response, 503, {
+              error: "Local AI Client capability publisher is unavailable"
+            });
+            return;
+          }
+          const publications = await services.capabilityPublisher.refresh();
+          const failed = publications.filter(
+            (publication) => !publication.published
+          );
+          json(response, failed.length > 0 ? 503 : 200, {
+            protocolVersion: LOCAL_AI_RUNTIME_PROTOCOL_VERSION,
+            publications,
+            ...(failed.length > 0
+              ? {
+                  error: `Capability refresh failed for ${failed.length} AI Client instance${failed.length === 1 ? "" : "s"}`
+                }
+              : {})
+          });
+          return;
+        }
+        if (
+          request.method === "POST" &&
           requestUrl.pathname === "/v1/desktop/ask"
         ) {
+          if (!executor.executeDesktopAsk) {
+            json(response, 503, { error: "Desktop Ask is unavailable" });
+            return;
+          }
           const parsed = desktopAskRequestSchema.parse(
             await readJsonBody(request)
           );

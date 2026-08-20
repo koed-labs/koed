@@ -99,4 +99,23 @@ describe("DesktopStatusStore", () => {
       status: status()
     });
   });
+
+  it.each(["setup_pi", "setup_claude"] as const)(
+    "refreshes optional AI Client status after %s",
+    async (command) => {
+      const invoke = vi
+        .fn<DesktopApi["invoke"]>()
+        .mockResolvedValueOnce({ ok: true })
+        .mockResolvedValueOnce(status());
+      window.koedDesktop = { invoke } as DesktopApi;
+      const store = new DesktopStatusStore();
+
+      await store.run(command);
+
+      expect(invoke.mock.calls.map(([name]) => name)).toEqual([
+        command,
+        "status"
+      ]);
+    }
+  );
 });

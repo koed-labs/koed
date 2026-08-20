@@ -155,6 +155,33 @@
   width: 2rem;
 }
 
+.personal-ai-client-mark {
+  background: color-mix(in oklab, var(--muted-foreground) 10%, transparent);
+  color: var(--muted-foreground);
+}
+
+.personal-ai-client-mark[data-client="claude"] {
+  background: color-mix(in oklab, #d97745 13%, transparent);
+  color: color-mix(in oklab, #d97745 78%, var(--foreground));
+}
+
+.personal-ai-client-mark[data-client="codex"] {
+  background: color-mix(in oklab, #168f70 11%, transparent);
+  color: color-mix(in oklab, #168f70 72%, var(--foreground));
+}
+
+.personal-ai-client-mark[data-client="pi"] {
+  background: color-mix(in oklab, #6366f1 13%, transparent);
+  color: color-mix(in oklab, #6366f1 78%, var(--foreground));
+}
+
+.personal-ai-client-mark svg {
+  display: block;
+  height: 1.15rem;
+  width: 1.15rem;
+  fill: currentColor;
+}
+
 .personal-project-row-copy,
 .personal-session-copy,
 .personal-session-meta {
@@ -293,9 +320,15 @@
   justify-content: flex-start;
 }
 
-.personal-project-detail > header > div {
+.personal-project-detail-heading {
   flex: 1;
   min-width: 0;
+}
+
+.personal-new-conversation-group {
+  align-items: stretch;
+  display: inline-flex;
+  flex: 0 0 auto;
 }
 
 .personal-new-conversation {
@@ -305,7 +338,11 @@
   gap: 0.4rem;
   background: var(--primary);
   border: 1px solid var(--primary);
-  border-radius: var(--radius);
+  border-end-end-radius: 0;
+  border-end-start-radius: var(--radius);
+  border-right: none;
+  border-start-end-radius: 0;
+  border-start-start-radius: var(--radius);
   color: var(--primary-foreground);
   min-height: 2.25rem;
   padding: 0.45rem 0.8rem;
@@ -320,6 +357,101 @@
 .personal-new-conversation:disabled svg,
 .personal-managed-composer.state-sending button svg {
   animation: personal-managed-spin 900ms linear infinite;
+}
+
+.personal-new-conversation-owner-picker {
+  position: relative;
+}
+
+.personal-new-conversation-owner-picker > summary,
+button.personal-new-conversation-owner-picker {
+  align-items: center;
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-end-start-radius: 0;
+  border-end-end-radius: var(--radius);
+  border-inline-start: 1px solid
+    color-mix(in oklab, var(--primary-foreground) 30%, transparent);
+  border-start-start-radius: 0;
+  border-start-end-radius: var(--radius);
+  color: var(--primary-foreground);
+  display: inline-flex;
+  gap: 0.3rem;
+  height: 100%;
+  list-style: none;
+  min-height: 2.25rem;
+  padding: 0.45rem 0.55rem;
+}
+
+.personal-new-conversation-owner-picker > summary {
+  cursor: pointer;
+}
+
+.personal-new-conversation-owner-picker > summary::-webkit-details-marker {
+  display: none;
+}
+
+button.personal-new-conversation-owner-picker:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.personal-new-conversation-owner-picker .personal-ai-client-mark {
+  background: transparent;
+  color: inherit;
+  height: 1.1rem;
+  width: 1.1rem;
+}
+
+.personal-new-conversation-owner-picker > summary > svg,
+button.personal-new-conversation-owner-picker > svg {
+  flex: 0 0 auto;
+  height: 0.9rem;
+  transition: transform 150ms ease;
+  width: 0.9rem;
+}
+
+.personal-new-conversation-owner-picker[open] > summary > svg {
+  transform: rotate(180deg);
+}
+
+.personal-new-conversation-owner-picker > ul {
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 0.18);
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0.3rem;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  white-space: nowrap;
+  width: max-content;
+  z-index: 20;
+}
+
+.personal-new-conversation-owner-option {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--radius) - 0.2rem);
+  color: var(--popover-foreground);
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  width: 100%;
+}
+
+.personal-new-conversation-owner-option:hover:not(:disabled),
+.personal-new-conversation-owner-option[aria-checked="true"] {
+  background: var(--accent);
+}
+
+.personal-new-conversation-owner-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .personal-managed-error {
@@ -464,6 +596,9 @@
   font-weight: 600;
   letter-spacing: normal;
   line-height: 1.5rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.2;
   max-width: min(32rem, 60vw);
   min-width: min(18rem, 50vw);
   padding: 0.25rem 0.45rem;

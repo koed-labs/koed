@@ -2,8 +2,19 @@ export const desktopCommandNames = [
   "status",
   "doctor",
   "stop",
+  "setup_core",
   "setup_codex",
+  "check_codex",
   "repair_codex",
+  "remove_codex",
+  "setup_pi",
+  "check_pi",
+  "repair_pi",
+  "remove_pi",
+  "setup_claude",
+  "check_claude",
+  "repair_claude",
+  "remove_claude",
   "runtime_status",
   "runtime_install",
   "models_status",
@@ -60,6 +71,7 @@ export const themePreferenceGetChannel = "koed:theme-preference:get";
 export const themePreferenceSetChannel = "koed:theme-preference:set";
 export const personalMemoryCommandChannel = "koed:personal-memory:command";
 export const personalMemoryEventChannel = "koed:personal-memory:event";
+export { localAiClientCommandChannel } from "./local-ai-client-protocol.js";
 export const personalDevicePairingLinkChannel =
   "koed:personal-device-pairing:link";
 export const personalDevicePairingLinkConsumeChannel =

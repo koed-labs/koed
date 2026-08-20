@@ -309,7 +309,9 @@ const ingestHistoricalBatch = async (
   const sourceAdapterVersion =
     source.sourceKind === "claude-code"
       ? "claude-code-transcript-v1"
-      : "codex-transcript-v1";
+      : source.sourceKind === "pi"
+        ? "pi-session-v1"
+        : "codex-transcript-v1";
   return repo.ingestHistoricalImportBatch(
     { userId },
     {

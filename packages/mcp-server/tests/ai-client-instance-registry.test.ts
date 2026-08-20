@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   environmentForLocalAiClientInstance,
   loadLocalAiClientInstanceRegistry,
+  localAiClientInstanceConfigIdentity,
+  resolveConfiguredLocalAiClientInstance,
   resolveLocalAiClientInstance
 } from "../src/ai-client-instance-registry.js";
 
@@ -72,14 +74,97 @@ describe("local AI Client instance registry", () => {
     });
   });
 
-  it("keeps built-in default instances configuration-free", () => {
+  it("requires exact registry entries for Worker resolution, including defaults", () => {
+    const env = {
+      KOED_AI_CLIENT_INSTANCE_REGISTRY: "/missing/registry.json"
+    };
     expect(
       resolveLocalAiClientInstance({
         instanceId: "claude.default",
         driverId: "claude",
-        env: { KOED_AI_CLIENT_INSTANCE_REGISTRY: "/missing/registry.json" }
+        env
       })
     ).toBeNull();
+    expect(() =>
+      resolveConfiguredLocalAiClientInstance({
+        instanceId: "claude.default",
+        driverId: "claude",
+        env
+      })
+    ).toThrow("not configured");
+  });
+
+  it("changes canonical identity when selected executable configuration changes", () => {
+    const value = fixture();
+    const env = { KOED_AI_CLIENT_INSTANCE_REGISTRY: value.registryPath };
+    const write = (executablePath: string) =>
+      fs.writeFileSync(
+        value.registryPath,
+        JSON.stringify({
+          version: 1,
+          instances: [
+            {
+              instanceId: "claude.pro",
+              driverId: "claude",
+              displayName: "Claude Pro",
+              executablePath
+            }
+          ]
+        })
+      );
+    write(value.executablePath);
+    const first = resolveConfiguredLocalAiClientInstance({
+      instanceId: "claude.pro",
+      driverId: "claude",
+      env
+    });
+    const firstIdentity = localAiClientInstanceConfigIdentity(first);
+    const secondExecutable = path.join(value.root, "claude-v2");
+    fs.writeFileSync(secondExecutable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    write(secondExecutable);
+    const second = resolveConfiguredLocalAiClientInstance({
+      instanceId: "claude.pro",
+      driverId: "claude",
+      env
+    });
+    expect(localAiClientInstanceConfigIdentity(second)).not.toBe(firstIdentity);
+  });
+
+  it("changes identity when executable is replaced at the same path", () => {
+    const value = fixture();
+    const env = { KOED_AI_CLIENT_INSTANCE_REGISTRY: value.registryPath };
+    const write = () =>
+      fs.writeFileSync(
+        value.registryPath,
+        JSON.stringify({
+          version: 1,
+          instances: [
+            {
+              instanceId: "claude.pro",
+              driverId: "claude",
+              displayName: "Claude Pro",
+              executablePath: value.executablePath
+            }
+          ]
+        })
+      );
+    write();
+    const first = resolveConfiguredLocalAiClientInstance({
+      instanceId: "claude.pro",
+      driverId: "claude",
+      env
+    });
+    const firstIdentity = localAiClientInstanceConfigIdentity(first);
+    fs.unlinkSync(value.executablePath);
+    fs.writeFileSync(value.executablePath, "#!/bin/sh\nexit 1\n", {
+      mode: 0o700
+    });
+    const second = resolveConfiguredLocalAiClientInstance({
+      instanceId: "claude.pro",
+      driverId: "claude",
+      env
+    });
+    expect(localAiClientInstanceConfigIdentity(second)).not.toBe(firstIdentity);
   });
 
   it("isolates multiple instances of the same AI Client", () => {
@@ -146,6 +231,39 @@ describe("local AI Client instance registry", () => {
     });
   });
 
+  it("isolates missing executable probes from valid registry entries", () => {
+    const value = fixture();
+    fs.writeFileSync(
+      value.registryPath,
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "claude.missing",
+            driverId: "claude",
+            displayName: "Missing Claude",
+            executablePath: path.join(value.root, "missing")
+          },
+          {
+            instanceId: "claude.valid",
+            driverId: "claude",
+            displayName: "Valid Claude",
+            executablePath: value.executablePath
+          }
+        ]
+      })
+    );
+    const registry = loadLocalAiClientInstanceRegistry({
+      KOED_AI_CLIENT_INSTANCE_REGISTRY: value.registryPath
+    });
+    expect(registry.instances).toHaveLength(2);
+    expect(registry.instances[0]).toMatchObject({
+      instanceId: "claude.missing"
+    });
+    expect(typeof registry.instances[0]?.configurationError).toBe("string");
+    expect(registry.instances[1]).toMatchObject({ instanceId: "claude.valid" });
+  });
+
   it("rejects unknown fields, duplicate IDs, relative executables, and driver mismatch", () => {
     const value = fixture();
     const write = (instances: unknown[]) =>
@@ -162,11 +280,23 @@ describe("local AI Client instance registry", () => {
         unexpected: true
       }
     ]);
+    const malformed = loadLocalAiClientInstanceRegistry({
+      KOED_AI_CLIENT_INSTANCE_REGISTRY: value.registryPath
+    });
+    expect(malformed.instances[0]).toMatchObject({
+      instanceId: "claude.pro",
+      driverId: "claude"
+    });
+    expect(malformed.instances[0]?.configurationError).toContain(
+      "unknown or missing fields"
+    );
     expect(() =>
-      loadLocalAiClientInstanceRegistry({
-        KOED_AI_CLIENT_INSTANCE_REGISTRY: value.registryPath
+      resolveLocalAiClientInstance({
+        instanceId: "claude.pro",
+        driverId: "claude",
+        env: { KOED_AI_CLIENT_INSTANCE_REGISTRY: value.registryPath }
       })
-    ).toThrow("unknown or missing fields");
+    ).toThrow("configuration is unavailable");
 
     write([
       {
@@ -176,11 +306,11 @@ describe("local AI Client instance registry", () => {
         executablePath: "./claude"
       }
     ]);
-    expect(() =>
+    expect(
       loadLocalAiClientInstanceRegistry({
         KOED_AI_CLIENT_INSTANCE_REGISTRY: value.registryPath
-      })
-    ).toThrow("must be absolute");
+      }).instances[0]?.configurationError
+    ).toContain("must be absolute");
 
     write([
       {

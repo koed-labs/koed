@@ -1,12 +1,17 @@
 import type {
   CollaborationCommandResult,
   CollaborationRendererCommand,
+  AiClientCapabilityDescriptor,
   CollaborationRendererEvent,
   PersonalDesktopApi
 } from "@koed/shared";
 import type { PersonalDevicePairingProgress } from "./ipc/personal-device-pairing-protocol.js";
 import type { DesktopThemePreference } from "./window/theme-preference.js";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
+import type {
+  LocalAiClientFlowKey,
+  LocalAiClientResponse
+} from "./ipc/local-ai-client-protocol.js";
 
 export type ComponentState =
   | "not_configured"
@@ -21,6 +26,19 @@ export interface ComponentStatus {
   details?: Record<string, unknown>;
 }
 
+export interface AiClientReadiness {
+  driverId: "codex" | "claude" | "pi";
+  instanceId: string;
+  displayName: string;
+  installed: ComponentStatus;
+  version: string | null;
+  authentication: "authenticated" | "unauthenticated" | "unknown";
+  profile: ComponentStatus;
+  capabilities: AiClientCapabilityDescriptor[];
+  observedAt: string;
+  snapshotState: "profile" | "current" | "stale" | "unknown";
+}
+
 export interface KoedServerStatus {
   ok: boolean;
   state: ComponentState;
@@ -33,10 +51,18 @@ export interface KoedServerStatus {
   redis: ComponentStatus;
   workerQueues: ComponentStatus;
   embeddingService: ComponentStatus;
+  localAiRuntime?: ComponentStatus;
   apiToken: ComponentStatus & { configured: boolean };
   mcpServer: ComponentStatus;
   captureHook: ComponentStatus;
+  codexTranscriptWatcher?: ComponentStatus;
+  claudeTranscriptWatcher?: ComponentStatus;
   codex: ComponentStatus & { configured: boolean };
+  claudeCode?: ComponentStatus & { configured: boolean; detected?: boolean };
+  pi?: ComponentStatus & { configured: boolean; detected?: boolean };
+  aiClients?: Record<string, AiClientReadiness>;
+  aiClientInstances?: Record<string, AiClientReadiness>;
+  aiClientFlowReadiness?: Record<string, ComponentStatus>;
   lcmSummaryService: ComponentStatus;
   personalDeviceSync?: ComponentStatus;
   upstreamBackends: ComponentStatus & {
@@ -47,6 +73,10 @@ export interface KoedServerStatus {
     notChecked: number;
   };
   lastVerification: ComponentStatus & { checkedAt: string | null };
+  core?: {
+    state: ComponentState;
+    components: Record<string, ComponentStatus>;
+  };
   serverPackage?: ComponentStatus & {
     currentVersion?: string;
     source?: "standalone" | "bundled-fallback" | "unavailable";
@@ -69,6 +99,7 @@ export type DesktopSetupStageState =
 
 export interface DesktopSetupStage {
   completedBytes: number | null;
+  detectedAiClients?: readonly string[];
   id: DesktopSetupStageId;
   message: string;
   state: DesktopSetupStageState;
@@ -97,6 +128,22 @@ export interface DesktopApi {
   ) => Promise<T>;
   personalMemory?: PersonalDesktopApi;
   managedConversations?: ManagedConversationDesktopApi;
+  localAiClients?: {
+    list: () => Promise<LocalAiClientResponse>;
+    refresh: () => Promise<LocalAiClientResponse>;
+    set: (
+      flowKey: LocalAiClientFlowKey,
+      assignment: {
+        provider: "codex" | "claude" | "pi";
+        ai_client_instance_id: string;
+        model: string;
+        reasoning_effort: string;
+        timeout_ms: number;
+        max_attempts: number;
+      }
+    ) => Promise<LocalAiClientResponse>;
+    reset: (flowKey: LocalAiClientFlowKey) => Promise<LocalAiClientResponse>;
+  };
   clipboard?: {
     writeText: (value: string) => Promise<void>;
   };

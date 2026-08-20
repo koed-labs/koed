@@ -58,6 +58,19 @@ export const setupStepsFromStatus = (status: KoedServerStatus): SetupStep[] => {
   const serverPackage =
     status.serverPackage ??
     unavailable("Standalone server package status is unavailable.");
+  const localAiRuntime =
+    status.localAiRuntime ??
+    unavailable("Local AI Runtime status is unavailable.");
+  const integrationAction =
+    status.apiToken.state !== "healthy" ||
+    status.mcpServer.state !== "healthy" ||
+    localAiRuntime.state !== "healthy"
+      ? {
+          command: "setup_core" as const,
+          label: "Set up Koed core",
+          requiresConsent: false
+        }
+      : null;
 
   return [
     step({
@@ -124,26 +137,15 @@ export const setupStepsFromStatus = (status: KoedServerStatus): SetupStep[] => {
     }),
     step({
       id: "integration",
-      title: "Codex, MCP, and Capture Hook",
+      title: "Koed core integration",
       description:
-        "Connect the supported AI Client to Personal Memory capture and recall.",
+        "Prepare local credential and MCP artifacts. AI Client setup remains optional.",
       components: [
         { label: "API Token", status: status.apiToken },
         { label: "MCP Server", status: status.mcpServer },
-        { label: "Capture Hook", status: status.captureHook },
-        { label: "Codex", status: status.codex }
+        { label: "Local AI Runtime", status: localAiRuntime }
       ],
-      action: {
-        command:
-          status.codex.state === "not_configured"
-            ? "setup_codex"
-            : "repair_codex",
-        label:
-          status.codex.state === "not_configured"
-            ? "Set up Codex"
-            : "Repair integration",
-        requiresConsent: false
-      }
+      action: integrationAction
     }),
     step({
       id: "health",

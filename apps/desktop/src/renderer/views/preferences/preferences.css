@@ -1,13 +1,17 @@
 .koed-preferences {
   display: grid;
   grid-template-columns: 210px minmax(0, 760px);
-  min-block-size: 100%;
+  block-size: 100%;
+  min-block-size: 0;
+  overflow: hidden;
   justify-content: center;
   background: var(--background);
   color: var(--foreground);
 }
 
 .koed-preferences > nav {
+  min-block-size: 0;
+  overflow-y: auto;
   padding: 24px 12px;
   border-inline-end: 1px solid var(--border);
 }
@@ -43,6 +47,8 @@
 
 .koed-preferences-content {
   min-inline-size: 0;
+  min-block-size: 0;
+  overflow-y: auto;
   padding: 0 28px 48px;
 }
 
@@ -241,6 +247,95 @@
   margin-block: 18px;
 }
 
+.koed-local-ai-settings {
+  display: grid;
+  gap: 14px;
+}
+
+.koed-local-ai-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-block: 18px;
+  border-block-end: 1px solid var(--border);
+}
+
+.koed-local-ai-toolbar h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.koed-local-ai-toolbar p,
+.koed-local-ai-flow-status,
+.koed-local-ai-diagnostic {
+  margin: 4px 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.koed-local-ai-search {
+  display: grid;
+  gap: 6px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.koed-local-ai-flow {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.koed-local-ai-flow legend {
+  padding-inline: 5px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.koed-local-ai-flow label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.koed-local-ai-flow select {
+  min-block-size: 34px;
+  max-inline-size: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--input);
+  border-radius: 7px;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 12px;
+}
+
+.koed-local-ai-flow-status[data-ready="true"] {
+  color: var(--success);
+}
+
+.koed-local-ai-diagnostic {
+  color: var(--destructive-foreground);
+}
+
+.koed-local-ai-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.koed-local-ai-actions span {
+  color: var(--success);
+  font-size: 12px;
+}
+
 .koed-diagnostics {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -316,12 +411,14 @@
 @media (max-width: 720px) {
   .koed-preferences {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .koed-preferences > nav {
     display: flex;
     gap: 4px;
     overflow-x: auto;
+    overflow-y: hidden;
     padding: 10px 14px;
     border-inline-end: 0;
     border-block-end: 1px solid var(--border);

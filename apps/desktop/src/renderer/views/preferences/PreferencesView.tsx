@@ -31,12 +31,15 @@ import {
 import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
 import type { ComponentStatus } from "../../../types.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
+import type { DesktopApi } from "../../../types.js";
+import { LocalAiClientSettingsSection } from "./LocalAiClientSettingsSection.js";
 import { useDesktopStatus } from "../../state/use-status.js";
 import "./preferences.css";
 
 export type PreferencesSection =
   | "general"
   | "capture"
+  | "ai-clients"
   | "team-connection"
   | "about"
   | "advanced";
@@ -71,6 +74,7 @@ export type PreferencesViewProps = {
   collaborationSnapshot?: CollaborationSnapshot | null;
   initialSection?: PreferencesSection;
   launch?: LocalLaunchCapability;
+  localAiClients?: DesktopApi["localAiClients"];
   onSectionChange?: (section: PreferencesSection) => void;
   onThemeChange: (theme: DesktopThemePreference) => void;
   statusStore: DesktopStatusStore;
@@ -83,6 +87,7 @@ const sections: readonly {
   label: string;
 }[] = [
   { id: "general", label: "General" },
+  { id: "ai-clients", label: "AI Clients" },
   { id: "team-connection", label: "Team Connection" },
   { id: "about", label: "About" },
   { id: "advanced", label: "Advanced Diagnostics" }
@@ -449,24 +454,156 @@ function AboutSection({
   );
 }
 
+type IntegrationMutationCommand =
+  | "setup_codex"
+  | "repair_codex"
+  | "remove_codex"
+  | "setup_pi"
+  | "repair_pi"
+  | "remove_pi"
+  | "setup_claude"
+  | "repair_claude"
+  | "remove_claude";
+
+const integrationConsentCopy: Record<
+  IntegrationMutationCommand,
+  { title: string; description: string; confirmLabel: string }
+> = {
+  setup_codex: {
+    title: "Set up the Codex integration?",
+    description:
+      "Koed will add its marked Codex integration block and Supported Capture Hook. Unrelated settings, credentials, and other clients remain untouched.",
+    confirmLabel: "Set up Codex"
+  },
+  repair_codex: {
+    title: "Repair the Codex integration?",
+    description:
+      "Koed will replace only its marked Codex integration block and Supported Capture Hook. Unrelated settings and credentials remain untouched.",
+    confirmLabel: "Repair Codex"
+  },
+  remove_codex: {
+    title: "Remove the Codex integration?",
+    description:
+      "Koed will remove only its marked Codex integration block. Unrelated settings and credentials remain untouched.",
+    confirmLabel: "Remove Codex"
+  },
+  setup_pi: {
+    title: "Set up the Pi integration?",
+    description:
+      "Koed will register its local package in your active global Pi profile, or remove only that Koed-owned package. It preserves unrelated Pi settings, packages, and provider credentials.",
+    confirmLabel: "Set up Pi"
+  },
+  repair_pi: {
+    title: "Repair the Pi integration?",
+    description:
+      "Koed will replace only its package in the active Pi profile. Unrelated packages, settings, and provider credentials remain untouched.",
+    confirmLabel: "Repair Pi"
+  },
+  remove_pi: {
+    title: "Remove the Pi integration?",
+    description:
+      "Koed will remove only its package from the active Pi profile and preserve unrelated packages, settings, and provider credentials.",
+    confirmLabel: "Remove Pi"
+  },
+  setup_claude: {
+    title: "Set up the Claude Code integration?",
+    description:
+      "Koed will add its MCP Server and Supported Capture Hook to Claude Code settings, or remove only those Koed-owned entries. It preserves unrelated settings, hooks, and provider credentials.",
+    confirmLabel: "Set up Claude Code"
+  },
+  repair_claude: {
+    title: "Repair the Claude Code integration?",
+    description:
+      "Koed will replace only its MCP Server and Supported Capture Hook entries in Claude Code. Unrelated settings, hooks, and provider credentials remain untouched.",
+    confirmLabel: "Repair Claude Code"
+  },
+  remove_claude: {
+    title: "Remove the Claude Code integration?",
+    description:
+      "Koed will remove only its owned MCP Server and Supported Capture Hook entries. Unrelated settings, hooks, and provider credentials remain untouched.",
+    confirmLabel: "Remove Claude Code"
+  }
+};
+
+function AiClientsSection({
+  localAiClients
+}: Pick<PreferencesViewProps, "localAiClients">) {
+  return (
+    <div className="koed-preference-section">
+      <LocalAiClientSettingsSection localAiClients={localAiClients} />
+    </div>
+  );
+}
+
 function AdvancedSection({
   statusStore
 }: Pick<PreferencesViewProps, "statusStore">) {
   const snapshot = useDesktopStatus(statusStore);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingIntegrationCommand, setPendingIntegrationCommand] = useState<
+    | "setup_codex"
+    | "repair_codex"
+    | "remove_codex"
+    | "setup_pi"
+    | "repair_pi"
+    | "remove_pi"
+    | "setup_claude"
+    | "repair_claude"
+    | "remove_claude"
+    | null
+  >(null);
   const status = snapshot.status;
 
   useEffect(() => {
-    if (!status) void statusStore.refresh();
-  }, [status, statusStore]);
+    void statusStore.refresh();
+  }, [statusStore]);
+
+  const servicesAreStarting = status
+    ? [
+        status.api,
+        status.database,
+        status.workerQueues,
+        status.embeddingService
+      ].some((component) => component.state === "starting")
+    : false;
+
+  useEffect(() => {
+    if (!servicesAreStarting) return;
+    const timeout = setTimeout(() => void statusStore.refresh(), 1_500);
+    return () => clearTimeout(timeout);
+  }, [servicesAreStarting, snapshot.revision, statusStore]);
 
   const run = async (
-    action: "doctor" | "repair_codex" | "open_logs" | "status"
+    action:
+      | "doctor"
+      | "setup_codex"
+      | "check_codex"
+      | "repair_codex"
+      | "remove_codex"
+      | "setup_pi"
+      | "check_pi"
+      | "repair_pi"
+      | "remove_pi"
+      | "setup_claude"
+      | "check_claude"
+      | "repair_claude"
+      | "remove_claude"
+      | "open_logs"
+      | "status"
   ) => {
     setActionError(null);
     try {
       if (action === "status") await statusStore.refresh();
-      else await statusStore.run(action);
+      else {
+        const mutatesProfile =
+          action.startsWith("setup_") ||
+          action.startsWith("repair_") ||
+          action.startsWith("remove_");
+        await statusStore.run(
+          action,
+          mutatesProfile ? { operatorConsented: true } : undefined
+        );
+      }
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -483,6 +620,8 @@ function AdvancedSection({
           ["MCP Server", status.mcpServer],
           ["Capture Hook", status.captureHook],
           ["Codex", status.codex],
+          ["Claude Code", status.claudeCode],
+          ["Pi", status.pi],
           ["LCM Summary Service", status.lcmSummaryService],
           ["Personal Device Sync", status.personalDeviceSync]
         ] as const
@@ -530,6 +669,36 @@ function AdvancedSection({
         </Button>
         <Button
           disabled={snapshot.busyCommand !== null}
+          onClick={() =>
+            setPendingIntegrationCommand(
+              status?.claudeCode?.state === "not_configured" ||
+                !status?.claudeCode
+                ? "setup_claude"
+                : "repair_claude"
+            )
+          }
+          variant="outline"
+        >
+          {status?.claudeCode?.state === "not_configured" || !status?.claudeCode
+            ? "Set up Claude Code integration"
+            : "Repair Claude Code integration"}
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
+          onClick={() => void run("check_claude")}
+          variant="outline"
+        >
+          Check Claude Code integration
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
+          onClick={() => setPendingIntegrationCommand("remove_claude")}
+          variant="outline"
+        >
+          Remove Claude Code integration
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
           onClick={() => void run("doctor")}
           variant="outline"
         >
@@ -537,10 +706,61 @@ function AdvancedSection({
         </Button>
         <Button
           disabled={snapshot.busyCommand !== null}
-          onClick={() => void run("repair_codex")}
+          onClick={() =>
+            setPendingIntegrationCommand(
+              status?.codex?.state === "not_configured"
+                ? "setup_codex"
+                : "repair_codex"
+            )
+          }
           variant="outline"
         >
-          Repair AI Client integration
+          {status?.codex?.state === "not_configured"
+            ? "Set up Codex integration"
+            : "Repair Codex integration"}
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
+          onClick={() => void run("check_codex")}
+          variant="outline"
+        >
+          Check Codex integration
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
+          onClick={() => setPendingIntegrationCommand("remove_codex")}
+          variant="outline"
+        >
+          Remove Codex integration
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
+          onClick={() =>
+            setPendingIntegrationCommand(
+              status?.pi?.state === "not_configured" || !status?.pi
+                ? "setup_pi"
+                : "repair_pi"
+            )
+          }
+          variant="outline"
+        >
+          {status?.pi?.state === "not_configured" || !status?.pi
+            ? "Set up Pi integration"
+            : "Repair Pi integration"}
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
+          onClick={() => void run("check_pi")}
+          variant="outline"
+        >
+          Check Pi integration
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
+          onClick={() => setPendingIntegrationCommand("remove_pi")}
+          variant="outline"
+        >
+          Remove Pi integration
         </Button>
         <Button
           disabled={snapshot.busyCommand !== null}
@@ -550,6 +770,43 @@ function AdvancedSection({
           <ExternalLink aria-hidden="true" /> Open logs
         </Button>
       </div>
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) setPendingIntegrationCommand(null);
+        }}
+        open={pendingIntegrationCommand !== null}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>
+              {pendingIntegrationCommand
+                ? integrationConsentCopy[pendingIntegrationCommand].title
+                : "AI Client integration"}
+            </DialogTitle>
+            <DialogDescription>
+              {pendingIntegrationCommand
+                ? integrationConsentCopy[pendingIntegrationCommand].description
+                : "Koed changes only its own AI Client integration state."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>
+              Cancel
+            </DialogClose>
+            <Button
+              onClick={() => {
+                const command = pendingIntegrationCommand;
+                setPendingIntegrationCommand(null);
+                if (command) void run(command);
+              }}
+            >
+              {pendingIntegrationCommand
+                ? integrationConsentCopy[pendingIntegrationCommand].confirmLabel
+                : "Continue"}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
     </div>
   );
 }
@@ -561,6 +818,7 @@ export function PreferencesView({
   collaborationSnapshot,
   initialSection = "general",
   launch,
+  localAiClients,
   onSectionChange,
   onThemeChange,
   statusStore,
@@ -614,6 +872,9 @@ export function PreferencesView({
           />
         ) : null}
         {section === "capture" ? <CaptureSection capture={capture} /> : null}
+        {section === "ai-clients" ? (
+          <AiClientsSection localAiClients={localAiClients} />
+        ) : null}
         {section === "team-connection" ? (
           <TeamConnectionSection
             collaborationClient={collaborationClient}

@@ -1665,12 +1665,14 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-blocked-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
         idempotencyKey: randomUUID()
       }
     );
+    expect(managed.execution.aiClientInstanceId).toBe("codex.default");
     const [claimed] = await repo.claimManagedConversationCommands({
       ownerUserId: owner.id,
       runnerId: "managed-blocked-runner",
@@ -1743,6 +1745,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-runtime-ready-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -1818,6 +1821,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-abandoned-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -1920,6 +1924,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-reacquire-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2008,6 +2013,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-fork-failure-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2112,6 +2118,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-idle-handoff-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2212,6 +2219,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "managed-source-generation-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2308,6 +2316,7 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         provider: "codex",
+        aiClientInstanceId: "codex.default",
         projectId: "workspace-chunks-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -16798,6 +16807,255 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("applies Codex transcript policy to truthful normalized-import provenance", async () => {
+    const owner = await repo.createUser({
+      email: `normalized-import-policy-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    const externalThreadId = `normalized-import-${randomUUID()}`;
+    const taskDigest = "sha256:task";
+    const sourceAttemptId = "source-attempt-1";
+    const atifIdentity = "step:2:message";
+    const sequence = 0;
+    const externalTurnId = `attempt:${createHash("sha256").update(sourceAttemptId).digest("hex").slice(0, 32)}:step:2`;
+    const stableItemId = `harbor-atif:1.0.0:${createHash("sha256")
+      .update(
+        JSON.stringify({
+          atifIdentity,
+          sequence,
+          sourceAttemptId,
+          taskDigest
+        })
+      )
+      .digest("hex")}`;
+    const sanitizationManifestHash = `sha256:${"a".repeat(64)}`;
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        projectId: workspaceId,
+        externalSessionId: externalThreadId,
+        sourceRuntime: "codex-cli",
+        captureMethod: "api"
+      }
+    );
+    const canonicalItemKey = codexCanonicalConversationItemKey({
+      externalThreadId,
+      externalTurnId,
+      stableItemId,
+      component: "message"
+    });
+    const rawJson = {
+      type: "normalized_import_item",
+      payload: {
+        type: "user_message",
+        content: "Prior task instructions visible to the AI Client."
+      }
+    };
+    const item: ConversationItemInput = {
+      sessionId: session.id,
+      sourceKind: "codex",
+      sourceAdapterVersion: "koed-normalized-import-v1",
+      sourceTransport: "normalized_import",
+      externalSessionId: externalThreadId,
+      externalThreadId,
+      externalTurnId,
+      externalItemId: stableItemId,
+      canonicalStableItemId: stableItemId,
+      canonicalItemKey,
+      observationComponent: "message",
+      sourceRecordType: "normalized_import_item",
+      sourceEventType: "user_message",
+      sourceSequence: sequence,
+      eventTime: "2026-08-12T01:00:00.000Z",
+      rawJson,
+      rawText: "Prior task instructions visible to the AI Client.",
+      sourceHash: `sha256:${createHash("sha256")
+        .update(JSON.stringify({ externalThreadId, stableItemId, rawJson }))
+        .digest("hex")}`,
+      idempotencyKey: `normalized-import:${createHash("sha256").update(stableItemId).digest("hex")}`,
+      metadata: {
+        transcriptType: "user_message",
+        transcriptIndex: sequence,
+        transcriptAssignedTurnId: externalTurnId,
+        projectId: workspaceId,
+        normalizedImportProvenance: {
+          sourceFormat: "atif",
+          sourceSchemaVersion: "ATIF-v1.7",
+          sourceProducer: "harbor-codex",
+          normalizerAdapter: "harbor-atif",
+          normalizerAdapterVersion: "1.0.0",
+          taskDigest,
+          sourceAttemptId,
+          atifIdentity,
+          stepId: "2",
+          sanitizationManifestHash
+        }
+      }
+    };
+    const attestation = {
+      sessionId: session.id,
+      projectId: workspaceId,
+      externalThreadId,
+      taskDigest,
+      sourceAttemptId,
+      sanitizationManifestHash,
+      sequenceStart: 0
+    };
+
+    await expect(
+      repo.createConversationItems(
+        { userId: owner.id },
+        {
+          items: [
+            {
+              ...item,
+              metadata: { transcriptType: "user_message" }
+            }
+          ]
+        }
+      )
+    ).rejects.toMatchObject({ code: "normalized_import_admission_invalid" });
+
+    await expect(
+      repo.createTrustedNormalizedImport(
+        { userId: owner.id },
+        {
+          attestation,
+          items: [
+            {
+              ...item,
+              canonicalItemKey: `conversation-item:${"0".repeat(64)}`
+            }
+          ]
+        }
+      )
+    ).rejects.toMatchObject({ code: "normalized_import_admission_invalid" });
+
+    await expect(
+      repo.createTrustedNormalizedImport(
+        { userId: owner.id },
+        {
+          attestation: { ...attestation, projectId: randomUUID() },
+          items: [item]
+        }
+      )
+    ).rejects.toMatchObject({ code: "normalized_import_admission_invalid" });
+
+    for (const forgedItem of [
+      { ...item, sourceEventType: "agent_message" },
+      {
+        ...item,
+        rawJson: {
+          ...rawJson,
+          payload: { ...rawJson.payload, role: "assistant" }
+        }
+      },
+      {
+        ...item,
+        metadata: {
+          ...item.metadata,
+          normalizedImportProvenance: {
+            ...(item.metadata!.normalizedImportProvenance as Record<
+              string,
+              unknown
+            >),
+            sourceSchemaVersion: "ATIF-v1.6"
+          }
+        }
+      }
+    ]) {
+      await expect(
+        repo.createTrustedNormalizedImport(
+          { userId: owner.id },
+          { attestation, items: [forgedItem] }
+        )
+      ).rejects.toMatchObject({ code: "normalized_import_admission_invalid" });
+    }
+
+    await expect(
+      repo.createTrustedNormalizedImport(
+        { userId: owner.id },
+        {
+          attestation: { ...attestation, sequenceStart: 1 },
+          items: [{ ...item, sourceSequence: 1 }]
+        }
+      )
+    ).rejects.toMatchObject({ code: "normalized_import_admission_invalid" });
+
+    const intruder = await repo.createUser({
+      email: `normalized-import-intruder-${randomUUID()}@example.com`
+    });
+    await expect(
+      repo.createTrustedNormalizedImport(
+        { userId: intruder.id },
+        { attestation, items: [item] }
+      )
+    ).rejects.toMatchObject({ code: "conversation_session_not_found" });
+
+    const [stored] = await repo.createTrustedNormalizedImport(
+      { userId: owner.id },
+      { attestation, items: [item] }
+    );
+    const projection = await repo.projectPendingConversationItems(
+      { userId: owner.id },
+      { limit: 10 }
+    );
+    const projected = await pool.query<{
+      source_adapter_version: string;
+      projection_policy_key: string | null;
+      include_in_embedding: boolean;
+      include_in_lcm: boolean;
+    }>(
+      `
+        select
+          ci.source_adapter_version,
+          me.projection_policy_key,
+          me.include_in_embedding,
+          me.include_in_lcm
+        from conversation_items ci
+        join memory_event_sources mes on mes.conversation_item_id = ci.id
+        join memory_events me on me.id = mes.memory_event_id
+        where ci.id = $1
+      `,
+      [stored!.id]
+    );
+
+    expect(projection).toMatchObject({
+      messagesCreated: 1,
+      memoryEventsCreated: 1
+    });
+    expect(projected.rows).toEqual([
+      {
+        source_adapter_version: "koed-normalized-import-v1",
+        projection_policy_key: "user_message",
+        include_in_embedding: true,
+        include_in_lcm: true
+      }
+    ]);
+    const storedAttestation = await pool.query<{
+      owner_user_id: string;
+      session_id: string;
+      metadata: Record<string, unknown>;
+    }>(
+      "select owner_user_id, session_id, metadata from conversation_items where id = $1",
+      [stored!.id]
+    );
+    expect(storedAttestation.rows[0]).toMatchObject({
+      owner_user_id: owner.id,
+      session_id: session.id,
+      metadata: {
+        projectId: workspaceId,
+        normalizedImportAttestation: {
+          ownerUserId: owner.id,
+          sessionId: session.id,
+          projectId: workspaceId,
+          projectionDispositionVersion: "codex-transcript-policy-v1",
+          projectionPolicyKey: "user_message"
+        }
+      }
+    });
+  });
+
   it("uses projection policy rules instead of only the hardcoded semantic allowlist", async () => {
     const alice = await repo.createUser({
       email: `alice-projection-policy-${randomUUID()}@example.com`
@@ -22597,13 +22855,63 @@ describeDb("memory repository visibility", () => {
       driverId: "claude",
       displayName: "Expired Claude"
     });
+    const disabled = await repo.upsertAiClientInstance(actor, {
+      instanceId: "codex.work",
+      driverId: "codex",
+      displayName: "Work Codex",
+      configIdentityHash: "f".repeat(64),
+      enabled: false
+    });
+    const preserved = await repo.upsertAiClientInstance(actor, {
+      instanceId: "codex.work",
+      driverId: "codex",
+      displayName: "Work Codex refreshed"
+    });
+    expect(disabled.enabled).toBe(false);
+    expect(preserved).toMatchObject({
+      enabled: false,
+      configIdentityHash: "f".repeat(64),
+      displayName: "Work Codex refreshed"
+    });
     await repo.upsertAiClientInstance(actor, {
       instanceId: "claude.transient",
       driverId: "claude",
       displayName: "Transient Claude"
     });
+    await repo.upsertAiClientInstance(actor, {
+      instanceId: "codex.tie",
+      driverId: "codex",
+      displayName: "Tie Codex"
+    });
     const now = Date.now();
-    const olderUnexpired = await repo.recordAiClientCapabilitySnapshot(actor, {
+    const tieObservedAt = new Date(now - 30_000).toISOString();
+    await repo.recordAiClientCapabilitySnapshot(actor, {
+      instanceId: "codex.tie",
+      installationIdentityHash: "1".repeat(64),
+      authenticationState: "authenticated",
+      healthState: "healthy",
+      models: [{ id: "older", provenance: "reported" }],
+      capabilities: { localSynthesis: true },
+      observedAt: tieObservedAt,
+      expiresAt: new Date(now + 60 * 60_000).toISOString()
+    });
+    await repo.recordAiClientCapabilitySnapshot(actor, {
+      instanceId: "codex.tie",
+      installationIdentityHash: "2".repeat(64),
+      authenticationState: "authenticated",
+      healthState: "healthy",
+      models: [{ id: "newer", provenance: "reported" }],
+      capabilities: { localSynthesis: true },
+      observedAt: tieObservedAt,
+      expiresAt: new Date(now + 60 * 60_000).toISOString()
+    });
+    const tieLatest = await repo.listCurrentAiClientCapabilitySnapshots(actor);
+    expect(
+      tieLatest.find((item) => item.instanceId === "codex.tie")
+    ).toMatchObject({
+      installationIdentityHash: "2".repeat(64)
+    });
+    await repo.recordAiClientCapabilitySnapshot(actor, {
       instanceId: "codex.work",
       installationIdentityHash: "a".repeat(64),
       authenticationState: "authenticated",
@@ -22657,19 +22965,36 @@ describeDb("memory repository visibility", () => {
       }
     );
 
-    expect(await repo.listCurrentAiClientCapabilitySnapshots(actor)).toEqual([
-      {
-        ...transientFailure,
-        models: [
-          { model: "claude-custom", provenance: "configured" },
-          { model: "claude-reported", provenance: "last-known-good" }
-        ],
-        capabilities: {
-          localSynthesis: false,
-          lastKnownGoodObservedAt: new Date(now - 20 * 60_000).toISOString()
-        }
-      },
-      olderUnexpired
+    expect(await repo.listCurrentAiClientCapabilitySnapshots(actor)).toEqual(
+      expect.arrayContaining([
+        transientFailure,
+        expect.objectContaining({
+          instanceId: "codex.tie",
+          installationIdentityHash: "2".repeat(64)
+        })
+      ])
+    );
+    const diagnostics = await repo.listAiClientCapabilitySnapshots(actor);
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        instanceId: "claude.expired",
+        stale: true
+      }),
+      expect.objectContaining({
+        instanceId: "claude.transient",
+        stale: false,
+        healthState: "unavailable"
+      }),
+      expect.objectContaining({
+        instanceId: "codex.tie",
+        stale: false,
+        installationIdentityHash: "2".repeat(64)
+      }),
+      expect.objectContaining({
+        instanceId: "codex.work",
+        stale: true,
+        installationIdentityHash: "b".repeat(64)
+      })
     ]);
   });
 

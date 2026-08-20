@@ -26,10 +26,19 @@ export const createManagedConversationPreloadApi = (
   invoke: ManagedConversationIpcInvoke
 ): ManagedConversationDesktopApi => {
   const api: ManagedConversationDesktopApi = {
-    start: async (projectId: string, idempotencyKey: string) => {
+    start: async (
+      projectId: string,
+      idempotencyKey: string,
+      owner: {
+        aiClientDriverId: "codex" | "claude" | "pi";
+        aiClientInstanceId: string;
+      }
+    ) => {
       const request = parseManagedConversationRequest({
         operation: "start",
         projectId,
+        aiClientDriverId: owner.aiClientDriverId,
+        aiClientInstanceId: owner.aiClientInstanceId,
         idempotencyKey
       }) as Extract<
         ReturnType<typeof parseManagedConversationRequest>,

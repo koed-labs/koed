@@ -5,23 +5,43 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import {
+  aiClientCapabilityIds,
+  defaultAiClientInstanceId,
+  sanitizeAiClientDiagnostics,
+  type AiClientCapabilityDescriptor,
+  type AiClientDiagnostic,
+  type AiClientModelCapability,
+  type AiClientRecoveryActionId
+} from "@koed/shared";
+import {
   query,
   type ModelInfo,
   type SDKMessage
 } from "@anthropic-ai/claude-agent-sdk";
 import {
+  checkPiAvailability,
+  listPiModels,
+  resolvePiExecutable,
+  runPiRpcTask
+} from "./pi-rpc-runner.js";
+import {
+  checkCodexAppServerAvailability,
   koedAiClientWorkerDeveloperInstructions,
+  listCodexAppServerModels,
+  resolveCodexAppServerBinary,
   runCodexAppServerJsonTask,
+  type CodexAppServerModelOption,
   type CodexAppServerRawEvent,
   type CodexThreadTokenUsage
 } from "./codex-app-server-runner.js";
 
-export type AiClientProvider = "codex" | "claude";
+export type AiClientProvider = "codex" | "claude" | "pi";
 
 export interface AiClientRunConfig {
   provider: AiClientProvider;
   aiClientInstanceId?: string;
   model: string;
+  modelProvider?: string;
   reasoningEffort: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -30,15 +50,17 @@ export interface AiClientRunConfig {
   systemPrompt: string;
   developerInstructions?: string;
   outputSchema?: Record<string, unknown>;
+  signal?: AbortSignal;
 }
 
 export interface AiClientRunResult {
   text: string;
   model: string;
+  modelProvider?: string;
   tokenUsage?: CodexThreadTokenUsage;
   provider?: AiClientProvider;
   aiClientInstanceId?: string;
-  transport?: "app_server" | "agent_sdk";
+  transport?: "app_server" | "agent_sdk" | "pi_rpc";
   threadId?: string;
   turnId?: string;
   rawEvents?: CodexAppServerRawEvent[];
@@ -47,48 +69,99 @@ export interface AiClientRunResult {
 
 export interface AiClientExecutionIdentity {
   provider: AiClientProvider;
+  driverId: AiClientProvider;
   aiClientInstanceId: string;
-  transport: "app_server" | "agent_sdk";
-  sourceRuntime: "codex" | "claude-code";
-  sourceKind: "codex" | "claude-code";
-  sourceAdapterVersion: "codex-app-server-v1" | "claude-agent-sdk-v1";
+  modelProvider?: string;
+  modelId?: string;
+  transport: "app_server" | "agent_sdk" | "pi_rpc";
+  sourceRuntime: "codex" | "claude-code" | "pi";
+  sourceKind: "codex" | "claude-code" | "pi";
+  sourceAdapterVersion:
+    | "codex-app-server-v1"
+    | "claude-agent-sdk-v1"
+    | "pi-rpc-v1";
   usageSource: "app_server" | "connector_native";
-  connectorClient: "codex" | "claude";
+  connectorClient: "codex" | "claude" | "pi";
 }
 
 export const aiClientExecutionIdentity = (
   provider: AiClientProvider,
-  aiClientInstanceId = `${provider}.default`
+  aiClientInstanceId = `${provider}.default`,
+  model?: { provider?: string; id?: string }
 ): AiClientExecutionIdentity =>
-  provider === "claude"
+  provider === "pi"
     ? {
         provider,
+        driverId: provider,
         aiClientInstanceId,
-        transport: "agent_sdk",
-        sourceRuntime: "claude-code",
-        sourceKind: "claude-code",
-        sourceAdapterVersion: "claude-agent-sdk-v1",
+        ...(model?.provider ? { modelProvider: model.provider } : {}),
+        ...(model?.id ? { modelId: model.id } : {}),
+        transport: "pi_rpc",
+        sourceRuntime: "pi",
+        sourceKind: "pi",
+        sourceAdapterVersion: "pi-rpc-v1",
         usageSource: "connector_native",
-        connectorClient: "claude"
+        connectorClient: "pi"
       }
-    : {
-        provider,
-        aiClientInstanceId,
-        transport: "app_server",
-        sourceRuntime: "codex",
-        sourceKind: "codex",
-        sourceAdapterVersion: "codex-app-server-v1",
-        usageSource: "app_server",
-        connectorClient: "codex"
-      };
+    : provider === "claude"
+      ? {
+          provider,
+          driverId: provider,
+          aiClientInstanceId,
+          ...(model?.provider ? { modelProvider: model.provider } : {}),
+          ...(model?.id ? { modelId: model.id } : {}),
+          transport: "agent_sdk",
+          sourceRuntime: "claude-code",
+          sourceKind: "claude-code",
+          sourceAdapterVersion: "claude-agent-sdk-v1",
+          usageSource: "connector_native",
+          connectorClient: "claude"
+        }
+      : {
+          provider,
+          driverId: provider,
+          aiClientInstanceId,
+          ...(model?.provider ? { modelProvider: model.provider } : {}),
+          ...(model?.id ? { modelId: model.id } : {}),
+          transport: "app_server",
+          sourceRuntime: "codex",
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-app-server-v1",
+          usageSource: "app_server",
+          connectorClient: "codex"
+        };
 
 export interface AiClientTaskDriver {
-  id: string;
+  id: AiClientProvider;
   runJsonTask(
     prompt: string,
     config: AiClientRunConfig,
     timeoutMs: number
   ): Promise<AiClientRunResult>;
+}
+
+export interface AiClientDriverDiscoveryInput {
+  instanceId: string;
+  environment: NodeJS.ProcessEnv;
+  executablePath?: string;
+  cwd?: string;
+}
+
+export interface AiClientDriverDiscovery {
+  installationIdentityHash: string;
+  clientVersion: string | null;
+  authenticationState: "authenticated" | "unauthenticated" | "unknown";
+  healthState: "healthy" | "unavailable" | "incompatible" | "error";
+  models: AiClientModelCapability[];
+  capabilities: AiClientCapabilityDescriptor[];
+  diagnostics: AiClientDiagnostic[];
+}
+
+export interface AiClientDriver extends AiClientTaskDriver {
+  displayName: string;
+  discover(
+    input: AiClientDriverDiscoveryInput
+  ): Promise<AiClientDriverDiscovery>;
 }
 
 export interface ClaudeCodeAvailability {
@@ -127,6 +200,48 @@ export const assertClaudeCodeVersionCompatibility = (value: string): void => {
 };
 
 const execFileAsync = promisify(execFile);
+const CODEX_VERSION_PROBE_TIMEOUT_MS = 5_000;
+const CODEX_VERSION_PROBE_MAX_BUFFER = 16 * 1024;
+
+export const parseCodexVersion = (output: string): string | null => {
+  const normalized = [...output]
+    .map((character) =>
+      character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127
+        ? " "
+        : character
+    )
+    .join("");
+  const match = normalized.match(
+    /(?:^|[^0-9])v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?![0-9.])/
+  );
+  return match?.[1] ?? null;
+};
+
+export const probeCodexVersion = async (
+  executablePath: string,
+  environment: NodeJS.ProcessEnv,
+  timeoutMs = CODEX_VERSION_PROBE_TIMEOUT_MS
+): Promise<string> => {
+  const requestedTimeoutMs = Number.isFinite(timeoutMs)
+    ? timeoutMs
+    : CODEX_VERSION_PROBE_TIMEOUT_MS;
+  const boundedTimeoutMs = Math.min(
+    CODEX_VERSION_PROBE_TIMEOUT_MS,
+    Math.max(1, requestedTimeoutMs)
+  );
+  const result = await execFileAsync(executablePath, ["--version"], {
+    env: environment,
+    timeout: boundedTimeoutMs,
+    maxBuffer: CODEX_VERSION_PROBE_MAX_BUFFER,
+    windowsHide: true,
+    encoding: "utf8"
+  });
+  const version = parseCodexVersion(String(result.stdout));
+  if (!version) {
+    throw new Error("Codex --version returned no parseable version.");
+  }
+  return version;
+};
 
 export interface ClaudeExecutableDiscoveryOptions {
   platform?: NodeJS.Platform;
@@ -519,6 +634,15 @@ export const claudeAgentSdkTokenUsage = (
   };
 };
 
+export const claudeSupportedReasoningEfforts = (
+  model: Pick<ModelInfo, "supportsEffort" | "supportedEffortLevels">
+): string[] | undefined => {
+  if (model.supportsEffort === false) return ["none"];
+  return Array.isArray(model.supportedEffortLevels)
+    ? [...model.supportedEffortLevels]
+    : undefined;
+};
+
 export const claudeAgentSdkEffort = (
   value: string
 ): "low" | "medium" | "high" | "xhigh" | "max" | undefined => {
@@ -644,8 +768,177 @@ export const listClaudeAgentSdkModels = async (
   }
 };
 
-const codexTaskDriver: AiClientTaskDriver = {
+const installationIdentityHash = (executablePath: string): string => {
+  try {
+    const canonical = fs.realpathSync(executablePath);
+    const stat = fs.statSync(canonical);
+    return createHash("sha256")
+      .update(
+        JSON.stringify({
+          canonical,
+          device: stat.dev,
+          inode: stat.ino,
+          size: stat.size,
+          modifiedMs: stat.mtimeMs
+        })
+      )
+      .digest("hex");
+  } catch {
+    return createHash("sha256").update(executablePath).digest("hex");
+  }
+};
+
+const managedCapabilityIds: Set<string> = new Set([
+  aiClientCapabilityIds.managedConversationStart,
+  aiClientCapabilityIds.managedConversationResume,
+  aiClientCapabilityIds.managedConversationSend,
+  aiClientCapabilityIds.managedConversationCancel,
+  aiClientCapabilityIds.approvals,
+  aiClientCapabilityIds.streaming,
+  aiClientCapabilityIds.sessionIdentity,
+  aiClientCapabilityIds.handoff,
+  aiClientCapabilityIds.fork
+]);
+
+const implementedManagedCapabilityIds: Set<string> = new Set([
+  aiClientCapabilityIds.managedConversationStart,
+  aiClientCapabilityIds.managedConversationResume,
+  aiClientCapabilityIds.managedConversationSend,
+  aiClientCapabilityIds.sessionIdentity,
+  aiClientCapabilityIds.handoff,
+  aiClientCapabilityIds.fork
+]);
+
+const supportedCapabilityIds = (driver: AiClientProvider): Set<string> => {
+  if (driver === "pi") {
+    return new Set(
+      Object.values(aiClientCapabilityIds).filter(
+        (id) => !managedCapabilityIds.has(id)
+      )
+    );
+  }
+  return new Set(
+    Object.values(aiClientCapabilityIds).filter(
+      (id) =>
+        !managedCapabilityIds.has(id) || implementedManagedCapabilityIds.has(id)
+    )
+  );
+};
+
+const capability = (
+  id: (typeof aiClientCapabilityIds)[keyof typeof aiClientCapabilityIds],
+  driver: AiClientProvider,
+  synthesisReady: boolean,
+  recoveryAction?: AiClientRecoveryActionId
+): AiClientCapabilityDescriptor => {
+  const supported = supportedCapabilityIds(driver).has(id);
+  const readiness = !supported
+    ? "not_ready"
+    : id === aiClientCapabilityIds.localSynthesis
+      ? synthesisReady
+        ? "ready"
+        : "not_ready"
+      : managedCapabilityIds.has(id)
+        ? implementedManagedCapabilityIds.has(id)
+          ? "ready"
+          : "not_ready"
+        : "unknown";
+  return {
+    id,
+    support: supported ? "supported" : "unsupported",
+    readiness,
+    diagnostics: [],
+    ...(recoveryAction
+      ? {
+          recoveryAction: {
+            id: recoveryAction,
+            label: `${recoveryAction[0]!.toUpperCase()}${recoveryAction.slice(1)} AI Client`,
+            available: true
+          }
+        }
+      : {})
+  };
+};
+
+const capabilitiesFor = (
+  driver: AiClientProvider,
+  synthesisReady: boolean
+): AiClientCapabilityDescriptor[] =>
+  Object.values(aiClientCapabilityIds).map((id) =>
+    capability(
+      id,
+      driver,
+      synthesisReady,
+      id === aiClientCapabilityIds.setup ||
+        id === aiClientCapabilityIds.check ||
+        id === aiClientCapabilityIds.repair ||
+        id === aiClientCapabilityIds.remove
+        ? id
+        : undefined
+    )
+  );
+
+const normalizedModelCapability = (input: {
+  id: string;
+  provider: string;
+  model?: string;
+  displayName?: string;
+  supportedReasoningEfforts?: string[];
+}): AiClientModelCapability => {
+  const model = input.model?.trim() || input.id.trim();
+  const fullId = input.id.includes("/")
+    ? input.id.trim()
+    : `${input.provider}/${model}`;
+  return {
+    id: input.id,
+    provider: input.provider,
+    model,
+    fullId,
+    ...(input.displayName ? { displayName: input.displayName } : {}),
+    provenance: "reported",
+    ...(input.supportedReasoningEfforts
+      ? { supportedReasoningEfforts: input.supportedReasoningEfforts }
+      : {})
+  };
+};
+
+export const aiClientDiscoveryError = (
+  input: AiClientDriverDiscoveryInput,
+  driver: AiClientProvider,
+  error: unknown,
+  models: AiClientModelCapability[] = []
+): AiClientDriverDiscovery => {
+  const message = error instanceof Error ? error.message : String(error);
+  const authenticationState = /auth|sign in|logged in|credential/i.test(message)
+    ? "unauthenticated"
+    : "unknown";
+  const diagnostics: AiClientDiagnostic[] = sanitizeAiClientDiagnostics([
+    { code: "discovery_failed", message, severity: "error" }
+  ]);
+  return {
+    installationIdentityHash: installationIdentityHash(
+      input.executablePath ?? input.instanceId
+    ),
+    clientVersion: null,
+    authenticationState,
+    healthState: "unavailable",
+    models,
+    capabilities: capabilitiesFor(driver, false).map((item) => ({
+      ...item,
+      diagnostics,
+      readiness:
+        item.support === "supported" &&
+        authenticationState === "unauthenticated"
+          ? "unauthenticated"
+          : "unavailable"
+    })),
+    diagnostics
+  };
+};
+
+const codexDriver: AiClientDriver = {
   id: "codex",
+  displayName: "Codex",
   runJsonTask(prompt, config, timeoutMs) {
     return runCodexAppServerJsonTask(
       prompt,
@@ -663,20 +956,172 @@ const codexTaskDriver: AiClientTaskDriver = {
       },
       timeoutMs
     );
+  },
+  async discover(input) {
+    try {
+      const executablePath =
+        input.executablePath ?? resolveCodexAppServerBinary(input.environment);
+      const cwd = input.cwd ?? process.cwd();
+      const model = input.environment.MEMORY_CODEX_MODEL ?? "gpt-5.4-mini";
+      const clientVersion = await probeCodexVersion(
+        executablePath,
+        input.environment
+      );
+      const models = await listCodexAppServerModels(
+        {
+          appServerBinary: executablePath,
+          model,
+          cwd,
+          env: input.environment,
+          clientName: "koed-capability-discovery",
+          includeHidden: true
+        },
+        10_000
+      );
+      const normalized = models.map((candidate: CodexAppServerModelOption) =>
+        normalizedModelCapability({
+          id: candidate.id,
+          provider: "openai",
+          model: candidate.model,
+          displayName: candidate.label,
+          supportedReasoningEfforts: candidate.supportedReasoningEfforts.map(
+            (effort) => effort.reasoningEffort
+          )
+        })
+      );
+      if (normalized.length === 0) {
+        return aiClientDiscoveryError(
+          { ...input, executablePath },
+          "codex",
+          new Error("Codex reported no models")
+        );
+      }
+      const availability = await checkCodexAppServerAvailability(
+        {
+          appServerBinary: executablePath,
+          model,
+          cwd,
+          env: input.environment,
+          clientName: "koed-capability-check"
+        },
+        10_000
+      );
+      if (!availability.available) {
+        return aiClientDiscoveryError(
+          { ...input, executablePath },
+          "codex",
+          new Error(availability.error ?? "Codex is unavailable"),
+          normalized
+        );
+      }
+      return {
+        installationIdentityHash: installationIdentityHash(executablePath),
+        clientVersion,
+        authenticationState: "authenticated",
+        healthState: "healthy",
+        models: normalized,
+        capabilities: capabilitiesFor("codex", true),
+        diagnostics: []
+      };
+    } catch (error) {
+      return aiClientDiscoveryError(input, "codex", error);
+    }
   }
 };
 
-const claudeTaskDriver: AiClientTaskDriver = {
+const claudeDriver: AiClientDriver = {
   id: "claude",
-  runJsonTask: runClaudeAgentSdkTask
+  displayName: "Claude Code",
+  runJsonTask: runClaudeAgentSdkTask,
+  async discover(input) {
+    try {
+      const availability = await checkClaudeCodeAvailability(input.environment);
+      if (!availability.available || !availability.executablePath) {
+        return aiClientDiscoveryError(
+          {
+            ...input,
+            executablePath: availability.executablePath ?? input.executablePath
+          },
+          "claude",
+          new Error(availability.error ?? "Claude Code is unavailable")
+        );
+      }
+      const models = await listClaudeAgentSdkModels(input.environment);
+      const normalized = models.map((model) =>
+        normalizedModelCapability({
+          id: model.value,
+          provider: "anthropic",
+          model: model.value,
+          displayName: model.displayName,
+          supportedReasoningEfforts: claudeSupportedReasoningEfforts(model)
+        })
+      );
+      return {
+        installationIdentityHash: installationIdentityHash(
+          availability.executablePath
+        ),
+        clientVersion: availability.version,
+        authenticationState: "authenticated",
+        healthState: "healthy",
+        models: normalized,
+        capabilities: capabilitiesFor("claude", true),
+        diagnostics: []
+      };
+    } catch (error) {
+      return aiClientDiscoveryError(input, "claude", error);
+    }
+  }
 };
 
-const taskDrivers = new Map<string, AiClientTaskDriver>(
-  [codexTaskDriver, claudeTaskDriver].map((driver) => [driver.id, driver])
+const piDriver: AiClientDriver = {
+  id: "pi",
+  displayName: "Pi",
+  runJsonTask: runPiRpcTask,
+  async discover(input) {
+    try {
+      const availability = await checkPiAvailability(input.environment);
+      if (!availability.executablePath || !availability.available) {
+        return aiClientDiscoveryError(
+          {
+            ...input,
+            executablePath: availability.executablePath ?? input.executablePath
+          },
+          "pi",
+          new Error(availability.error ?? "Pi is unavailable")
+        );
+      }
+      const models = availability.models.map((model) =>
+        normalizedModelCapability({
+          id: model.id,
+          provider: model.provider,
+          model: model.model,
+          displayName: model.model,
+          supportedReasoningEfforts: model.supportedReasoningEfforts
+        })
+      );
+      return {
+        installationIdentityHash: installationIdentityHash(
+          availability.executablePath
+        ),
+        clientVersion: availability.version,
+        authenticationState: "authenticated",
+        healthState: "healthy",
+        models,
+        capabilities: capabilitiesFor("pi", true),
+        diagnostics: []
+      };
+    } catch (error) {
+      return aiClientDiscoveryError(input, "pi", error);
+    }
+  }
+};
+
+export const aiClientDriverRegistry = new Map<AiClientProvider, AiClientDriver>(
+  [codexDriver, claudeDriver, piDriver].map((driver) => [driver.id, driver])
 );
 
-export const aiClientTaskDriverFor = (driverId: string): AiClientTaskDriver => {
-  const driver = taskDrivers.get(driverId);
+export const aiClientDriverFor = (driverId: string): AiClientDriver => {
+  const driver = aiClientDriverRegistry.get(driverId as AiClientProvider);
   if (!driver) {
     throw new Error(
       `AI Client driver "${driverId}" is not available in this Koed build.`
@@ -684,6 +1129,11 @@ export const aiClientTaskDriverFor = (driverId: string): AiClientTaskDriver => {
   }
   return driver;
 };
+
+export { checkPiAvailability, listPiModels, resolvePiExecutable };
+
+export const aiClientTaskDriverFor = (driverId: string): AiClientTaskDriver =>
+  aiClientDriverFor(driverId);
 
 export const runAiClientJsonTask = async (
   prompt: string,
@@ -697,6 +1147,14 @@ export const runAiClientJsonTask = async (
   );
   return {
     ...result,
-    ...aiClientExecutionIdentity(config.provider, config.aiClientInstanceId)
+    ...aiClientExecutionIdentity(
+      config.provider,
+      config.aiClientInstanceId ?? defaultAiClientInstanceId(config.provider),
+      {
+        provider: result.modelProvider ?? config.modelProvider,
+        id: result.model
+      }
+    ),
+    modelProvider: result.modelProvider ?? config.modelProvider
   };
 };
