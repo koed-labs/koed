@@ -19,6 +19,10 @@ export default defineConfig({
         replacement: `${root}packages/shared/src/secure-upstream-fetch.ts`
       },
       {
+        find: "@koed/shared/ai-client-contract",
+        replacement: `${root}packages/shared/src/ai-client-contract.ts`
+      },
+      {
         find: "@koed/core",
         replacement: `${root}packages/core/src/index.ts`
       },
