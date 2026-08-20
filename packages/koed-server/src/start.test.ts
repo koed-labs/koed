@@ -64,6 +64,8 @@ const healthyStatus = (root: string): KoedServerStatus => ({
   codexTranscriptWatcher: { state: "healthy" },
   claudeTranscriptWatcher: { state: "healthy" },
   codex: { state: "healthy", configured: true },
+  claudeCode: { state: "healthy", configured: true, detected: true },
+  pi: { state: "healthy", configured: true, detected: true },
   lcmSummaryService: { state: "healthy" },
   deviceIdentity: {
     state: "healthy",

@@ -1,4 +1,11 @@
 export { createAuditRepository } from "./audit-repository.js";
+export {
+  correctApprovalActivity,
+  inventoryApprovalActivity,
+  type ApprovalActivityCorrectionResult,
+  type ApprovalActivityInventoryReport,
+  type ApprovalActivityInventoryScope
+} from "./approval-activity-remediation.js";
 export { createAuthSessionRepository } from "./auth-session-repository.js";
 export {
   createDevelopmentWorkspaceSnapshotRepository,
@@ -320,6 +327,9 @@ export {
   type SharedMemorySemanticAuthorizationBoundary,
   type SharedMemoryPreviewAdmissionRecord,
   type SharedMemoryShareReviewRecord,
+  type SharedMemoryPendingShareReviewRecord,
+  type SharedMemoryCandidatePreviewRecord,
+  type PendingShareRecord,
   type SharedMemoryRepresentationChangeReviewRecord,
   type SharedMemoryRevokeReviewRecord,
   type SharedMemoryReviewDestination,

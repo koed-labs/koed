@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
   spawnSync as nodeSpawnSync,
@@ -19,6 +20,23 @@ import { applyPersistedLocalPorts } from "./ports.js";
 import { isProcessRunning } from "./process-liveness.js";
 import { inspectDeviceIdentityStatus } from "./device-identity.js";
 import { collectUpstreamRegistryStatus } from "./upstream-registry.js";
+import {
+  isSupportedPiVersion,
+  MINIMUM_PI_VERSION,
+  piSetupInvocation,
+  piModelIdsFromListOutput,
+  piSetupEnvironment,
+  resolvePiSetupExecutable
+} from "./pi-setup.js";
+import {
+  CLAUDE_HOOK_EVENTS,
+  claudeMcpEntryIsKoedOwned,
+  claudeProcessEnvironment,
+  hasClaudeKoedHook,
+  isSupportedClaudeCodeVersion,
+  MINIMUM_CLAUDE_CODE_VERSION,
+  resolveClaudeSettingsPath
+} from "./claude-setup.js";
 import type {
   KoedServerComponentState,
   KoedServerComponentStatus,
@@ -57,6 +75,7 @@ export interface KoedServerStatusDependencies {
   spawnSync?: SpawnSyncLike;
   existsSync?: typeof existsSync;
   readFileSync?: typeof readFileSync;
+  resolvePiExecutable?: typeof resolvePiSetupExecutable;
   checkPid?: (pid: number) => boolean;
   now?: () => Date;
 }
@@ -66,6 +85,7 @@ const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
   spawnSync: nodeSpawnSync as SpawnSyncLike,
   existsSync,
   readFileSync,
+  resolvePiExecutable: resolvePiSetupExecutable,
   checkPid: isProcessRunning,
   now: () => new Date()
 });
@@ -126,6 +146,288 @@ const readJsonFile = <T>(
   } catch {
     return null;
   }
+};
+
+export const inspectPi = (
+  environment: NodeJS.ProcessEnv,
+  paths: KoedServerPaths,
+  deps: Required<KoedServerStatusDependencies>
+): KoedServerStatus["pi"] => {
+  const packagePath = resolve(paths.koedHome, "integrations/pi");
+  const extensionPath = resolve(packagePath, "extensions/koed.mjs");
+  const profilePath = resolve(
+    environment.PI_CODING_AGENT_DIR?.trim() ||
+      `${environment.HOME?.trim() || homedir()}/.pi/agent`
+  );
+  const detectedFromConfig = [
+    "settings.json",
+    "auth.json",
+    "models-store.json"
+  ].some((name) => deps.existsSync(resolve(profilePath, name)));
+  let executable: string;
+  try {
+    executable = deps.resolvePiExecutable(environment);
+  } catch (error) {
+    return {
+      ...notConfigured(
+        error instanceof Error
+          ? error.message
+          : "Pi is not installed or could not be started.",
+        `Install Pi ${MINIMUM_PI_VERSION} or newer, then set up Pi integration.`
+      ),
+      configured: false,
+      detected: detectedFromConfig
+    };
+  }
+  const childEnvironment = piSetupEnvironment(environment, paths.koedHome);
+  const runPi = (args: string[], timeout: number, maxBuffer?: number) => {
+    const invocation = piSetupInvocation(executable, args);
+    return deps.spawnSync(invocation.command, invocation.args, {
+      encoding: "utf8",
+      env: childEnvironment,
+      timeout,
+      ...(maxBuffer ? { maxBuffer } : {})
+    });
+  };
+  const version = runPi(["--version"], 5_000);
+  const versionText = version.stdout?.trim() ?? "";
+  if (version.error || version.status !== 0) {
+    return {
+      ...notConfigured(
+        "Pi is not installed or could not be started.",
+        `Install Pi ${MINIMUM_PI_VERSION} or newer, then set up Pi integration.`
+      ),
+      configured: false,
+      detected: detectedFromConfig
+    };
+  }
+  if (!isSupportedPiVersion(versionText)) {
+    return {
+      ...needsAttention(
+        `Pi ${versionText || "version"} is unsupported.`,
+        `Install Pi ${MINIMUM_PI_VERSION} or newer, then repair Pi integration.`,
+        { executable, version: versionText }
+      ),
+      configured: false,
+      detected: true
+    };
+  }
+  if (!deps.existsSync(extensionPath)) {
+    return {
+      ...notConfigured(
+        "Koed's Pi package is not installed.",
+        "Set up Pi integration from Koed Desktop.",
+        { executable, version: versionText, packagePath }
+      ),
+      configured: false,
+      detected: true
+    };
+  }
+  const listed = runPi(["list"], 5_000);
+  if (listed.error || listed.status !== 0) {
+    return {
+      ...needsAttention(
+        "Koed could not inspect the active Pi profile.",
+        "Repair Pi integration from Koed Desktop.",
+        { executable, version: versionText, packagePath }
+      ),
+      configured: false,
+      detected: true
+    };
+  }
+  if (!listed.stdout.includes(packagePath)) {
+    return {
+      ...notConfigured(
+        "Koed's package is not registered in the active Pi profile.",
+        "Set up Pi integration from Koed Desktop.",
+        { executable, version: versionText, packagePath }
+      ),
+      configured: false,
+      detected: true
+    };
+  }
+  const listedModels = runPi(["--list-models"], 15_000, 4 * 1024 * 1024);
+  const models =
+    listedModels.error || listedModels.status !== 0
+      ? []
+      : piModelIdsFromListOutput(listedModels.stdout ?? "");
+  if (models.length === 0) {
+    return {
+      ...needsAttention(
+        "Pi's Koed package is registered, but Pi has no authenticated models.",
+        "Authenticate at least one Pi model, then refresh status.",
+        {
+          executable,
+          version: versionText,
+          packagePath,
+          packageRegistered: true,
+          authenticated: false,
+          modelCount: 0
+        }
+      ),
+      configured: true,
+      detected: true
+    };
+  }
+  return {
+    ...healthy("Pi is configured and authenticated for Koed.", {
+      executable,
+      version: versionText,
+      packagePath,
+      packageRegistered: true,
+      authenticated: true,
+      modelCount: models.length
+    }),
+    configured: true,
+    detected: true
+  };
+};
+
+export const inspectClaudeCode = (
+  environment: NodeJS.ProcessEnv,
+  paths: KoedServerPaths,
+  deps: Required<KoedServerStatusDependencies>
+): KoedServerStatus["claudeCode"] => {
+  const executable =
+    environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
+  const settingsPath = resolveClaudeSettingsPath(environment);
+  const detectedFromConfig = deps.existsSync(settingsPath);
+  const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
+  const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  const childEnvironment = claudeProcessEnvironment(environment);
+  const version = deps.spawnSync(executable, ["--version"], {
+    encoding: "utf8",
+    env: childEnvironment,
+    timeout: 5_000
+  });
+  const versionText = version.stdout?.trim() ?? "";
+  if (version.error || version.status !== 0) {
+    return {
+      ...notConfigured(
+        "Claude Code is not installed or could not be started.",
+        `Install Claude Code ${MINIMUM_CLAUDE_CODE_VERSION} or newer, then set up its integration.`
+      ),
+      configured: false,
+      detected: detectedFromConfig
+    };
+  }
+  if (!isSupportedClaudeCodeVersion(versionText)) {
+    return {
+      ...needsAttention(
+        `Claude Code ${versionText || "version"} is unsupported.`,
+        `Install Claude Code ${MINIMUM_CLAUDE_CODE_VERSION} or newer, then repair its integration.`,
+        { executable, version: versionText, settingsPath }
+      ),
+      configured: false,
+      detected: true
+    };
+  }
+  if (
+    !deps.existsSync(runtime.mcpCli) ||
+    !deps.existsSync(runtime.captureHook)
+  ) {
+    return {
+      ...needsAttention(
+        "Koed's Claude Code integration artifacts are missing.",
+        "Repair Koed, then repair the Claude Code integration.",
+        { executable, version: versionText, settingsPath }
+      ),
+      configured: false,
+      detected: true
+    };
+  }
+  if (!deps.existsSync(settingsPath)) {
+    return {
+      ...notConfigured(
+        "Koed is not configured in Claude Code.",
+        "Set up Claude Code integration from Koed Desktop.",
+        { executable, version: versionText, settingsPath }
+      ),
+      configured: false,
+      detected: true
+    };
+  }
+  let settings: { hooks?: Record<string, unknown> };
+  try {
+    settings = JSON.parse(
+      String(deps.readFileSync(settingsPath, "utf8"))
+    ) as typeof settings;
+  } catch {
+    return {
+      ...needsAttention(
+        "Claude Code settings are malformed or unreadable.",
+        "Fix the settings file, then repair the Claude Code integration.",
+        { executable, version: versionText, settingsPath }
+      ),
+      configured: false,
+      detected: true
+    };
+  }
+  const missingHooks = CLAUDE_HOOK_EVENTS.filter(
+    (eventName) =>
+      !hasClaudeKoedHook(settings.hooks?.[eventName], runtime.captureHook)
+  );
+  const mcp = deps.spawnSync(executable, ["mcp", "get", mcpName], {
+    encoding: "utf8",
+    env: childEnvironment,
+    timeout: 10_000
+  });
+  if (
+    !mcp.error &&
+    mcp.status === 0 &&
+    !claudeMcpEntryIsKoedOwned(mcp.stdout ?? "", runtime.mcpCli, paths.koedHome)
+  ) {
+    return {
+      ...needsAttention(
+        `Claude Code has an unrelated user-scoped MCP server named ${mcpName}.`,
+        "Rename or remove the conflicting entry before setting up Koed.",
+        { executable, version: versionText, settingsPath, mcpName }
+      ),
+      configured: false,
+      detected: true
+    };
+  }
+  if (mcp.error || mcp.status !== 0 || missingHooks.length > 0) {
+    return {
+      ...notConfigured(
+        "Claude Code's Koed MCP or Capture Hook configuration is incomplete.",
+        "Set up Claude Code integration from Koed Desktop.",
+        {
+          executable,
+          version: versionText,
+          settingsPath,
+          missingHooks
+        }
+      ),
+      configured: false,
+      detected: true
+    };
+  }
+  const auth = deps.spawnSync(executable, ["auth", "status", "--json"], {
+    encoding: "utf8",
+    env: childEnvironment,
+    timeout: 10_000
+  });
+  if (auth.error || auth.status !== 0) {
+    return {
+      ...needsAttention(
+        "Claude Code is configured for Koed but is not signed in.",
+        "Run `claude auth login`, then refresh status.",
+        { executable, version: versionText, settingsPath }
+      ),
+      configured: false,
+      detected: true
+    };
+  }
+  return {
+    ...healthy("Claude Code is configured for Koed capture and recall.", {
+      executable,
+      version: versionText,
+      settingsPath
+    }),
+    configured: true,
+    detected: true
+  };
 };
 
 const fetchJson = async <T>(
@@ -843,6 +1145,8 @@ export const collectKoedServerStatus = async (
     serverConfig.dependencyMode === "bundled-local";
   const apiToken = inspectApiToken(paths, runtimeEnvironment, repoEnv);
   const codex = inspectCodex(runtimeEnvironment, paths, deps);
+  const claudeCode = inspectClaudeCode(runtimeEnvironment, paths, deps);
+  const pi = inspectPi(runtimeEnvironment, paths, deps);
   const captureHook = inspectCaptureHook(runtimeEnvironment, paths, deps);
   const codexTranscriptWatcher = inspectCodexTranscriptWatcher(
     serverConfig.codexTranscriptWatcherEnabled,
@@ -956,6 +1260,8 @@ export const collectKoedServerStatus = async (
     codexTranscriptWatcher,
     claudeTranscriptWatcher,
     codex,
+    claudeCode,
+    pi,
     lcmSummaryService,
     deviceIdentity,
     upstreamBackends,
@@ -1003,6 +1309,8 @@ export const collectKoedServerDoctor = async (
       status.claudeTranscriptWatcher
     ],
     ["codex", "Codex configuration", status.codex],
+    ["claudeCode", "Claude Code configuration", status.claudeCode],
+    ["pi", "Pi configuration", status.pi],
     ["lcmSummaryService", "LCM Summary Service", status.lcmSummaryService],
     ["deviceIdentity", "Device identity", status.deviceIdentity],
     ["upstreamBackends", "Upstream Backends", status.upstreamBackends],
@@ -1018,7 +1326,9 @@ export const collectKoedServerDoctor = async (
       check.id !== "upstreamBackends" &&
       check.id !== "deviceIdentity" &&
       check.id !== "codexTranscriptWatcher" &&
-      check.id !== "claudeTranscriptWatcher"
+      check.id !== "claudeTranscriptWatcher" &&
+      check.id !== "claudeCode" &&
+      check.id !== "pi"
   );
   const failed = blockingChecks.filter(
     (check) => check.state === "needs_attention"

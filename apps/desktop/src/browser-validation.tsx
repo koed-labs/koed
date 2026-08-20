@@ -9,7 +9,8 @@ import {
   type CollaborationCommandResult,
   type CollaborationRendererEvent,
   type CollaborationRendererCommand,
-  type CollaborationSnapshot
+  type CollaborationSnapshot,
+  type OwnedShareItem
 } from "@koed/shared/collaboration";
 import type {
   PersonalDesktopApi,
@@ -281,6 +282,7 @@ const personalMemoryApi: PersonalDesktopApi = {
   assignSessionProject: async () => ({ projectId: personalProject.id }),
   listProjects: async () => [personalProject],
   loadEventPage: async () => personalEvents,
+  updateSessionTitle: async ({ title }) => ({ title }),
   subscribe: () => () => undefined
 };
 
@@ -695,7 +697,16 @@ const interactionIds = {
   actionGrant: uuid(140),
   personalSubscription: uuid(141),
   alphaSubscription: uuid(142),
-  betaSubscription: uuid(143)
+  betaSubscription: uuid(143),
+  pendingShare: uuid(701),
+  pendingMutation: uuid(702),
+  pendingLogicalGrant: uuid(703),
+  pendingConsent: uuid(704),
+  pendingGrant: uuid(705),
+  pendingPreview: uuid(706),
+  activeGrant: uuid(711),
+  activeLogicalGrant: uuid(712),
+  activeConsent: uuid(713)
 } as const;
 
 const interactionPerson = (actor: StatefulActor) => ({
@@ -889,6 +900,88 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
     acceptedAt: string | null;
     revokedAt: string | null;
   }> = [];
+  let pendingOwnedShare: Extract<OwnedShareItem, { kind: "pending" }> = {
+    kind: "pending",
+    pendingShare: {
+      id: interactionIds.pendingShare,
+      mutationId: interactionIds.pendingMutation,
+      logicalGrantId: interactionIds.pendingLogicalGrant,
+      consentId: interactionIds.pendingConsent,
+      logicalMemoryId: interactionIds.alphaMemory,
+      teamId: interactionIds.alphaTeam,
+      workspaceId: interactionIds.alphaWorkspace,
+      representation: "memory_events",
+      allowedRepresentations: ["memory_events"],
+      mode: "continuous",
+      sourceRevision: 12,
+      state: "activated",
+      stage: "complete",
+      workspaceAccessState: "active",
+      sourceUpdateState: "active",
+      operationVersion: 3,
+      attemptCount: 1,
+      redactedFailureCode: null,
+      lastProgressAt: timestamp,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      activatedAt: timestamp,
+      revokedAt: null,
+      grantId: interactionIds.pendingGrant
+    },
+    sourceAccess: null,
+    summary: {
+      sourceSessionId: interactionIds.alphaSession,
+      sourceTitle: "Packaged asynchronous sharing",
+      teamName: "Electron Team App",
+      workspaceName: "Electron Team App",
+      mode: "continuous",
+      authorizedPreview: {
+        previewId: interactionIds.pendingPreview,
+        previewHash: "a".repeat(64),
+        previewRevision: 1,
+        sourceRevision: 12
+      },
+      lastReadyRevision: 12,
+      lastSuccessfulUpdateAt: timestamp
+    }
+  };
+  let activeOwnedShare: Extract<OwnedShareItem, { kind: "grant" }> | null = {
+    kind: "grant",
+    grant: {
+      id: interactionIds.activeGrant,
+      logicalGrantId: interactionIds.activeLogicalGrant,
+      logicalMemoryId: interactionIds.alphaMemory,
+      ownerUserId:
+        actor === "alice"
+          ? interactionIds.alicePersonal
+          : interactionIds.bobPersonal,
+      teamId: interactionIds.alphaTeam,
+      workspaceId: interactionIds.alphaWorkspace,
+      consentId: interactionIds.activeConsent,
+      ownerAllowedRepresentations: ["lcm_rollups"],
+      activeRepresentation: "lcm_rollups",
+      representationPolicyRevision: 1,
+      sourceRevision: 12,
+      grantVersion: 2,
+      lifecycle: "active",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      revokedAt: null,
+      companionThreadId: interactionIds.alphaDiscussion
+    },
+    sourceAccess: null,
+    summary: {
+      sourceSessionId: interactionIds.alphaSession,
+      sourceTitle: "Packaged revocation fixture",
+      teamName: "Electron Team App",
+      workspaceName: "Electron Team App",
+      mode: "snapshot",
+      authorizedPreview: null,
+      lastReadyRevision: 12,
+      lastSuccessfulUpdateAt: timestamp
+    }
+  };
+  const revokedOwnedShares: OwnedShareItem[] = [];
   const messages = new Map<string, ReturnType<typeof interactionMessage>[]>([
     [
       interactionIds.alphaChannel,
@@ -1271,6 +1364,19 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
           confirmLabel: "Revoke invitation",
           details: [{ label: "Invitation", value: intent.invitationId }]
         };
+      case "collaboration.revoke_shared_memory":
+        return {
+          version: 1 as const,
+          title: "Revoke Workspace access?",
+          description: "Review the exact Shared Memory grant.",
+          consequence:
+            "The Workspace loses access. Personal Memory is not deleted.",
+          confirmLabel: "Revoke Workspace access",
+          details: [
+            { label: "Share Grant", value: intent.shareGrantId },
+            { label: "Workspace", value: intent.workspaceId }
+          ]
+        };
       default:
         throw new Error(
           `Unexpected Native-review browser intent: ${intent.intent}`
@@ -1373,6 +1479,69 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
             nextCursor: null
           }
         });
+      case "collaboration.list_owned_shares":
+        return result(parsed, {
+          shares: parsed.input.history
+            ? revokedOwnedShares
+            : [
+                pendingOwnedShare,
+                ...(activeOwnedShare ? [activeOwnedShare] : [])
+              ],
+          nextCursor: null
+        });
+      case "collaboration.get_owned_share": {
+        const share = [
+          pendingOwnedShare,
+          ...(activeOwnedShare ? [activeOwnedShare] : []),
+          ...revokedOwnedShares
+        ].find(
+          (item) =>
+            item.kind === parsed.input.kind &&
+            (item.kind === "pending" ? item.pendingShare.id : item.grant.id) ===
+              parsed.input.id
+        );
+        if (!share) return failure(parsed);
+        return result(parsed, { share });
+      }
+      case "collaboration.control_pending_share": {
+        const sourceUpdateState =
+          parsed.input.action === "pause"
+            ? "paused"
+            : parsed.input.action === "resume"
+              ? "active"
+              : pendingOwnedShare.pendingShare.sourceUpdateState;
+        pendingOwnedShare = {
+          ...pendingOwnedShare,
+          pendingShare: {
+            ...pendingOwnedShare.pendingShare,
+            sourceUpdateState,
+            operationVersion:
+              pendingOwnedShare.pendingShare.operationVersion + 1,
+            updatedAt: timestamp
+          }
+        };
+        return result(parsed, {
+          pendingShare: pendingOwnedShare.pendingShare
+        });
+      }
+      case "collaboration.revoke_shared_memory": {
+        if (!activeOwnedShare || activeOwnedShare.kind !== "grant") {
+          return failure(parsed);
+        }
+        const revoked: OwnedShareItem = {
+          ...activeOwnedShare,
+          grant: {
+            ...activeOwnedShare.grant,
+            lifecycle: "revoked",
+            grantVersion: activeOwnedShare.grant.grantVersion + 1,
+            updatedAt: timestamp,
+            revokedAt: timestamp
+          }
+        };
+        activeOwnedShare = null;
+        revokedOwnedShares.unshift(revoked);
+        return result(parsed, { grant: revoked.grant });
+      }
       case "collaboration.revoke_invitation": {
         const invitation = invitations.find(
           (item) => item.id === parsed.input.invitationId
@@ -1544,6 +1713,51 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
       reason: "backpressure"
     });
   };
+  const emitPendingShareNeedsAttention = () => {
+    pendingOwnedShare = {
+      ...pendingOwnedShare,
+      pendingShare: {
+        ...pendingOwnedShare.pendingShare,
+        state: "needs_attention",
+        stage: "processing",
+        sourceUpdateState: "failed",
+        operationVersion: pendingOwnedShare.pendingShare.operationVersion + 1,
+        attemptCount: pendingOwnedShare.pendingShare.attemptCount + 1,
+        redactedFailureCode: "source_preparation_stalled",
+        updatedAt: timestamp
+      }
+    };
+    deliverySequence += 1;
+    emit({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      type: "update",
+      subscriptionId: interactionIds.personalSubscription,
+      deliveryId: `delivery_browser_${String(deliverySequence).padStart(20, "0")}`,
+      eventId: uuid(900 + deliverySequence),
+      occurredAt: timestamp,
+      family: "pending_share_lifecycle",
+      resource: {
+        scope: "personal",
+        teamId: null,
+        workspaceId: null,
+        threadId: null,
+        messageId: null,
+        sharedSessionId: null,
+        shareGrantId: null
+      },
+      update: {
+        type: "owned_share_status_changed",
+        pendingShareId: pendingOwnedShare.pendingShare.id,
+        sourceTitle: pendingOwnedShare.summary.sourceTitle,
+        state: pendingOwnedShare.pendingShare.state,
+        stage: pendingOwnedShare.pendingShare.stage,
+        workspaceAccessState:
+          pendingOwnedShare.pendingShare.workspaceAccessState,
+        sourceUpdateState: pendingOwnedShare.pendingShare.sourceUpdateState,
+        redactedFailureCode: pendingOwnedShare.pendingShare.redactedFailureCode
+      }
+    });
+  };
 
   return {
     bridge: {
@@ -1597,6 +1811,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
         });
       },
       emitBackpressure,
+      emitPendingShareNeedsAttention,
       setReconnecting,
       revokeTeamAccess
     }

@@ -9,6 +9,7 @@ RUN corepack enable && corepack prepare pnpm@11.1.2 --activate
 COPY . .
 
 RUN pnpm install --frozen-lockfile \
+  && pnpm --filter @koed/shared build \
   && pnpm --filter @koed/embedding-service build \
   && pnpm --filter @koed/embedding-service deploy --legacy --prod /deploy/embedding-service
 

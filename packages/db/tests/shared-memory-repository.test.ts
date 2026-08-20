@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_POLICY_VERSION,
   createLocalTestKeyEnvelopeEncryptionProvider,
   crossIdentitySyncDigest,
+  crossIdentitySyncDeterministicUuid,
   sharedMemoryGrantScopedSourceId,
   type CapturedSessionSyncPackageV1,
   type EnvelopeEncryptionProvider
@@ -22,7 +24,12 @@ import {
 } from "vitest";
 import type pg from "pg";
 import { createCollaborationRepository } from "../src/collaboration-repository.js";
+import {
+  correctApprovalActivity,
+  inventoryApprovalActivity
+} from "../src/approval-activity-remediation.js";
 import { createDbPool } from "../src/connection.js";
+import { upsertEncryptedFieldPayloadWithClient } from "../src/encrypted-payload-repository.js";
 import {
   createCrossIdentitySyncRepository,
   SyncStateConflictError
@@ -32,7 +39,6 @@ import {
   buildCapturedSessionSyncEvent
 } from "../src/cross-identity-sync-canonical.js";
 import { runDbMigrations } from "../src/migrate.js";
-import { upsertEncryptedFieldPayloadWithClient } from "../src/encrypted-payload-repository.js";
 import {
   createRetentionLifecycleRepository,
   type RetentionLifecycleRepository
@@ -46,11 +52,13 @@ import {
   SharedMemorySourceItemRejectedError,
   type SharedMemoryAuthorityContext,
   type SharedMemoryConsentMode,
+  type SharedMemoryGrantRecord,
   type SharedMemoryPersistedPreviewRecord,
   type SharedMemoryRepository,
   type SharedMemoryRepresentation,
   type SharedMemorySourceItemInput
 } from "../src/shared-memory-repository.js";
+import type { ActorContext } from "../src/types.js";
 
 const databaseUrl = process.env.SHARED_MEMORY_TEST_DATABASE_URL;
 const describeDb = databaseUrl ? describe : describe.skip;
@@ -144,6 +152,7 @@ interface SourceRevisionOptions {
   assistantText?: string;
   assistantToolName?: string | null;
   assistantRawJson?: unknown;
+  assistantRawText?: string;
   assistantMemoryExcludedAt?: string | null;
   assistantMemoryExclusionReason?: string | null;
   includeSummarySnapshot?: boolean;
@@ -187,7 +196,7 @@ describe("Shared Memory source-content policy", () => {
         }
       }
     });
-    expect(
+    expect(() =>
       redactEligibleSharedMemorySourceItem({
         representation: "memory_events",
         logicalMemoryId,
@@ -200,8 +209,10 @@ describe("Shared Memory source-content policy", () => {
           sourceRevision,
           content: { text: "decision", approvalReview: true }
         }
-      }).content
-    ).toEqual({ text: "decision", approvalReview: true });
+      })
+    ).toThrowError(
+      expect.objectContaining({ reasonCode: "approval_activity_excluded" })
+    );
 
     const lcmSourceId = randomUUID();
     expect(
@@ -751,7 +762,7 @@ describeDb("Shared Memory repository", () => {
       sourceRecordType: "message",
       sourceEventType: options?.assistantKind ?? "assistant_message",
       rawJson: options?.assistantRawJson ?? { text: assistantPrimaryText },
-      rawText: assistantPrimaryText,
+      rawText: options?.assistantRawText ?? assistantPrimaryText,
       metadata: {
         actor: options?.assistantActor ?? "assistant",
         seedLabel: label,
@@ -1151,6 +1162,46 @@ describeDb("Shared Memory repository", () => {
     };
   };
 
+  const ensurePendingShareCompanion = async ({
+    actor: owner,
+    grant
+  }: {
+    actor: ActorContext;
+    grant: SharedMemoryGrantRecord;
+  }) =>
+    (await collaboration.createThread(owner, {
+      kind: "shared_session_discussion",
+      idempotencyKey: `pending-share-${grant.id}`,
+      teamId: grant.teamId,
+      teamWorkspaceId: grant.teamWorkspaceId,
+      sharedLogicalMemoryId: grant.logicalMemoryId,
+      shareGrantId: grant.id,
+      pendingShareActivation: true
+    })) !== null;
+
+  const candidateManifest = (
+    source: SourceFixture,
+    representation: SharedMemoryRepresentation
+  ) => {
+    const sourceId =
+      representation === "memory_events"
+        ? source.seededEvents[0]!.eventId
+        : representation === "lcm_leaves"
+          ? source.leaf.nodeId
+          : source.rollup.nodeId;
+    return [
+      {
+        sourceId,
+        revisionHash: crossIdentitySyncDigest({
+          version: 1,
+          sourceId,
+          representation,
+          sourceRevision: source.currentRevision
+        })
+      }
+    ];
+  };
+
   const materialize = async (
     fixture: WorkspaceFixture,
     grant: GrantFixture,
@@ -1290,6 +1341,38 @@ describeDb("Shared Memory repository", () => {
     await pool.end();
   });
 
+  it("uses the semantic sync cursor for a local sharing candidate revision", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "candidate-sync-cursor");
+    await pool.query(
+      `update memory_events
+          set source_sequence=1224712
+        where session_id=$1`,
+      [source.sessionId]
+    );
+
+    const candidateRevision =
+      await syncRepository.prepareCapturedSessionSyncCandidateRevision(
+        actor(fixture.ownerUserId),
+        source.sessionId
+      );
+    const cursor = await pool.query<{ cursor: string }>(
+      `select max(cursor)::text as cursor
+         from sync_semantic_changes
+        where session_id=$1`,
+      [source.sessionId]
+    );
+
+    expect(candidateRevision).toBe(Number(cursor.rows[0]!.cursor));
+    expect(candidateRevision).not.toBe(1224712);
+    await expect(
+      syncRepository.prepareCapturedSessionSyncCandidateRevision(
+        actor(fixture.managerUserId),
+        source.sessionId
+      )
+    ).resolves.toBeNull();
+  });
+
   it("resolves exact read-only Shared Memory approval context and fails closed on ownership", async () => {
     const fixture = await createWorkspaceFixture();
     const sourceFixture = await createSource(fixture, 1, "approval-context");
@@ -1410,6 +1493,1517 @@ describeDb("Shared Memory repository", () => {
     });
   });
 
+  it("inventories and idempotently corrects legacy Approval Activity derivatives", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      mode: "snapshot",
+      label: "legacy-approval-remediation"
+    });
+    await materialize(fixture, grant);
+    const contributorId = grant.seededEvents[0]!.contributorIds[0]!;
+    await pool.query(
+      `update conversation_items
+          set metadata=metadata || '{"providerApprovalKind":"approval_request"}'::jsonb
+        where id=$1`,
+      [contributorId]
+    );
+
+    const before = await inventoryApprovalActivity(pool, {
+      sessionId: grant.sessionId
+    });
+    expect(before).toMatchObject({
+      bounded: { truncated: false },
+      canonical: { approvalActivityRecords: 1, ambiguousRecords: 0 },
+      affected: {
+        memoryEvents: 1,
+        lcmNodes: 2,
+        semanticOwnerPrivateReplicas: 1,
+        continuousShares: 0,
+        snapshotShares: 1,
+        ambiguousSnapshotShares: 0
+      }
+    });
+    expect(before.canonical.recordBytes).toBeGreaterThan(0);
+    await expect(
+      inventoryApprovalActivity(pool, { sessionId: grant.sessionId })
+    ).resolves.toEqual(before);
+
+    const corrected = await correctApprovalActivity(pool, {
+      sessionId: grant.sessionId
+    });
+    expect(corrected).toMatchObject({
+      status: "corrected",
+      conversationItemsExcluded: 1,
+      memoryEventsInvalidated: 1,
+      snapshotShareGrantsRevoked: 1
+    });
+    const state = await pool.query<{
+      event_invalidated: boolean;
+      leaf_invalidated: boolean;
+      rollup_invalidated: boolean;
+      grant_lifecycle: string;
+      grant_reason: string;
+      delete_changes: string;
+      audit_events: string;
+      revocation_events: string;
+    }>(
+      `select
+         (select invalidated_at is not null from memory_events where id=$1)
+           as event_invalidated,
+         (select invalidated_at is not null from memory_nodes where id=$2)
+           as leaf_invalidated,
+         (select invalidated_at is not null from memory_nodes where id=$3)
+           as rollup_invalidated,
+         (select lifecycle from team_session_share_grants where id=$4)
+           as grant_lifecycle,
+         (select revocation_reason from team_session_share_grants where id=$4)
+           as grant_reason,
+         (select count(*)::text from sync_semantic_changes
+           where memory_event_id=$1 and operation='delete') as delete_changes,
+         (select count(*)::text from audit_events
+           where action='shared_memory.snapshot.remediated' and target_id=$4)
+           as audit_events,
+         (select count(*)::text from collaboration_outbox
+           where family='access_revoked' and share_grant_id=$4)
+           as revocation_events`,
+      [
+        grant.seededEvents[0]!.eventId,
+        grant.leaf.nodeId,
+        grant.rollup.nodeId,
+        grant.shareGrantId
+      ]
+    );
+    expect(state.rows[0]).toEqual({
+      event_invalidated: true,
+      leaf_invalidated: true,
+      rollup_invalidated: true,
+      grant_lifecycle: "revoked",
+      grant_reason: "approval_content_remediation",
+      delete_changes: "1",
+      audit_events: "1",
+      revocation_events: "1"
+    });
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.shareGrantId
+      })
+    ).resolves.toBeNull();
+    await expect(
+      correctApprovalActivity(pool, { sessionId: grant.sessionId })
+    ).resolves.toMatchObject({
+      status: "unchanged",
+      conversationItemsExcluded: 0,
+      memoryEventsInvalidated: 0,
+      queuedProjectionWorkRemoved: 0,
+      snapshotShareGrantsRevoked: 0
+    });
+  });
+
+  it("reports ambiguous legacy Approval Activity without partially correcting it", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "ambiguous-approval");
+    const contributorId = source.seededEvents[0]!.contributorIds[0]!;
+    await pool.query(
+      `update conversation_items
+          set metadata=metadata || '{"providerApprovalKind":"approval_future_kind"}'::jsonb
+        where id=$1`,
+      [contributorId]
+    );
+    const report = await inventoryApprovalActivity(pool, {
+      sessionId: source.sessionId
+    });
+    expect(report.canonical).toMatchObject({
+      approvalActivityRecords: 0,
+      ambiguousRecords: 1,
+      ambiguousRecordIds: [contributorId]
+    });
+    await expect(
+      correctApprovalActivity(pool, { sessionId: source.sessionId })
+    ).rejects.toMatchObject({
+      code: "approval_activity_remediation_ambiguous",
+      ambiguousRecordIds: [contributorId]
+    });
+    const unchanged = await pool.query<{
+      memory_excluded_at: Date | null;
+      invalidated_at: Date | null;
+    }>(
+      `select item.memory_excluded_at,event.invalidated_at
+         from conversation_items item
+         join memory_event_sources source on source.conversation_item_id=item.id
+         join memory_events event on event.id=source.memory_event_id
+        where item.id=$1`,
+      [contributorId]
+    );
+    expect(unchanged.rows[0]).toEqual({
+      memory_excluded_at: null,
+      invalidated_at: null
+    });
+  });
+
+  it("quarantines a paused continuous representation immediately and queues one clean rebuild", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(
+      fixture,
+      1,
+      "continuous-approval-remediation"
+    );
+    await putOwnerPolicy(fixture, source);
+    const shareAuthority = authority(fixture);
+    const candidate = await repository.createSharedMemoryCandidatePreview(
+      actor(fixture.ownerUserId),
+      {
+        logicalMemoryId: source.logicalMemoryId,
+        candidateHash: hash("continuous-approval-remediation"),
+        sourceRevision: source.currentRevision,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest: candidateManifest(source, "memory_events"),
+        byteCount: 128,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        representation: "memory_events",
+        allowedRepresentations: allRepresentations,
+        mode: "continuous",
+        authority: shareAuthority
+      }
+    );
+    const pending = await repository.createPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: randomUUID(),
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        preview: candidate!,
+        previewRevision: candidate!.previewRevision,
+        mode: "continuous",
+        allowedRepresentations: allRepresentations,
+        selectedRepresentation: "memory_events",
+        authority: shareAuthority
+      }
+    );
+    await repository.processPendingShares({
+      ensureCompanion: ensurePendingShareCompanion
+    });
+    const activated = await repository.getOwnerShare(
+      actor(fixture.ownerUserId),
+      { kind: "pending", id: pending.id }
+    );
+    if (!activated || activated.kind !== "pending") {
+      throw new Error("expected activated continuous Pending Share");
+    }
+    const grantId = activated.pendingShare.grantId!;
+    await pool.query(
+      `update source_owner_representation_consents
+          set state='paused',paused_at=now()
+        where id=$1`,
+      [activated.pendingShare.consentId]
+    );
+    await pool.query(
+      `update conversation_items
+          set metadata=metadata || '{"providerApprovalKind":"approval_request"}'::jsonb
+        where id=$1`,
+      [source.seededEvents[0]!.contributorIds[0]!]
+    );
+
+    await expect(
+      correctApprovalActivity(pool, { sessionId: source.sessionId })
+    ).resolves.toMatchObject({
+      status: "corrected",
+      continuousShareGrantsQuarantined: 1,
+      continuousRepresentationsQuarantined: 1,
+      continuousRepresentationRebuildsQueued: 1
+    });
+    const quarantined = await pool.query<{
+      lifecycle: string;
+      representation_state: string;
+      semantic_count: string;
+      pending_state: string;
+      failure_code: string;
+    }>(
+      `select g.lifecycle,r.state as representation_state,
+              (select count(*)::text from team_memory_semantic_items semantic
+                where semantic.share_grant_id=g.id) as semantic_count,
+              p.state as pending_state,
+              p.redacted_failure_code as failure_code
+         from team_session_share_grants g
+         join team_memory_representations r on r.share_grant_id=g.id
+         join pending_share_operations p on p.grant_id=g.id
+        where g.id=$1
+        order by r.created_at desc limit 1`,
+      [grantId]
+    );
+    expect(quarantined.rows[0]).toEqual({
+      lifecycle: "unavailable",
+      representation_state: "invalidated",
+      semantic_count: "0",
+      pending_state: "needs_attention",
+      failure_code: "approval_content_remediation"
+    });
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grantId
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.listWorkspaceGrants(actor(fixture.readerUserId), {
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        limit: 10,
+        offset: 0
+      })
+    ).resolves.toMatchObject({ entries: [] });
+    await expect(
+      correctApprovalActivity(pool, { sessionId: source.sessionId })
+    ).resolves.toEqual({
+      status: "unchanged",
+      conversationItemsExcluded: 0,
+      memoryEventsInvalidated: 0,
+      queuedProjectionWorkRemoved: 0,
+      snapshotShareGrantsRevoked: 0,
+      continuousShareGrantsQuarantined: 0,
+      continuousRepresentationsQuarantined: 0,
+      continuousRepresentationRebuildsQueued: 0
+    });
+  });
+
+  it("measures candidate, authoritative preview, pending acceptance, and activation", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "sharing-performance");
+    await putOwnerPolicy(fixture, source);
+    const browserAuthority = authority(fixture);
+    const measure = async <T>(operation: () => Promise<T>) => {
+      const startedAt = performance.now();
+      const result = await operation();
+      return {
+        result,
+        durationMs: Number((performance.now() - startedAt).toFixed(3))
+      };
+    };
+
+    const candidate = await measure(() =>
+      repository.createSharedMemoryCandidatePreview(
+        actor(fixture.ownerUserId),
+        {
+          logicalMemoryId: source.logicalMemoryId,
+          candidateHash: hash("sharing-performance-candidate"),
+          sourceRevision: source.currentRevision,
+          itemCount: 1,
+          excludedItemCount: 0,
+          manifest: candidateManifest(source, "memory_events"),
+          byteCount: 128,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          representation: "memory_events",
+          allowedRepresentations: allRepresentations,
+          mode: "continuous",
+          authority: browserAuthority
+        }
+      )
+    );
+    expect(candidate.result).not.toBeNull();
+
+    const authoritative = await measure(() =>
+      createPersistedPreview(fixture, source, "memory_events")
+    );
+    expect(authoritative.result.logicalMemoryId).toBe(source.logicalMemoryId);
+
+    const pending = await measure(() =>
+      repository.createPendingShare(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: randomUUID(),
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        preview: candidate.result!,
+        previewRevision: candidate.result!.previewRevision,
+        mode: "continuous",
+        allowedRepresentations: allRepresentations,
+        selectedRepresentation: "memory_events",
+        authority: browserAuthority
+      })
+    );
+    expect(pending.result.state).toBe("preparing");
+
+    const activation = await measure(() =>
+      repository.processPendingShares({
+        ensureCompanion: ensurePendingShareCompanion
+      })
+    );
+    expect(activation.result).toMatchObject({
+      claimed: 1,
+      activated: 1,
+      failed: 0
+    });
+
+    const metrics = {
+      fixture: "shared-memory-workflow-performance-v1",
+      candidatePreviewDurationMs: candidate.durationMs,
+      authoritativePreviewDurationMs: authoritative.durationMs,
+      pendingAcceptanceDurationMs: pending.durationMs,
+      activationDurationMs: activation.durationMs,
+      contentSafe: true
+    };
+    expect(
+      Object.values(metrics)
+        .filter((value): value is number => typeof value === "number")
+        .every(
+          (duration) =>
+            Number.isFinite(duration) && duration >= 0 && duration < 30_000
+        )
+    ).toBe(true);
+    console.info(JSON.stringify(metrics));
+  });
+
+  it("creates and repairs the companion before exposing an async share", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "pending-companion");
+    await putOwnerPolicy(fixture, source);
+    const shareAuthority = authority(fixture);
+    const candidate = await repository.createSharedMemoryCandidatePreview(
+      actor(fixture.ownerUserId),
+      {
+        logicalMemoryId: source.logicalMemoryId,
+        candidateHash: hash("pending-companion-memory-events"),
+        sourceRevision: source.currentRevision,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest: candidateManifest(source, "memory_events"),
+        byteCount: 128,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        representation: "memory_events",
+        allowedRepresentations: allRepresentations,
+        mode: "continuous",
+        authority: shareAuthority
+      }
+    );
+    expect(candidate).not.toBeNull();
+    const pending = await repository.createPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: randomUUID(),
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        preview: candidate!,
+        previewRevision: candidate!.previewRevision,
+        mode: "continuous",
+        allowedRepresentations: allRepresentations,
+        selectedRepresentation: "memory_events",
+        authority: shareAuthority
+      }
+    );
+    const representationCountsAtCompanion: string[] = [];
+    const companionResults: boolean[] = [];
+    const companionGrantIds: string[] = [];
+    const companionGrants = new Map<string, SharedMemoryGrantRecord>();
+    const ensureCompanion = vi.fn(
+      async ({
+        actor: owner,
+        grant
+      }: {
+        actor: ActorContext;
+        grant: SharedMemoryGrantRecord;
+      }) => {
+        companionGrantIds.push(grant.id);
+        companionGrants.set(grant.id, grant);
+        const representations = await pool.query<{ count: string }>(
+          `select count(*)::text as count from team_memory_representations
+          where share_grant_id=$1`,
+          [grant.id]
+        );
+        representationCountsAtCompanion.push(
+          representations.rows[0]?.count ?? "missing"
+        );
+        const thread = await collaboration.createThread(owner, {
+          kind: "shared_session_discussion",
+          idempotencyKey: `pending-companion-${grant.id}`,
+          teamId: grant.teamId,
+          teamWorkspaceId: grant.teamWorkspaceId,
+          sharedLogicalMemoryId: grant.logicalMemoryId,
+          shareGrantId: grant.id,
+          pendingShareActivation: true
+        });
+        companionResults.push(thread !== null);
+        return thread !== null;
+      }
+    );
+
+    const activation = await repository.processPendingShares({
+      limit: 100,
+      ensureCompanion
+    });
+    expect(activation).toMatchObject({ claimed: 1, activated: 1, failed: 0 });
+    expect(
+      representationCountsAtCompanion.every((count) => count === "1")
+    ).toBe(true);
+    expect(companionResults.every(Boolean)).toBe(true);
+    const activated = await repository.getOwnerShare(
+      actor(fixture.ownerUserId),
+      { kind: "pending", id: pending.id }
+    );
+    expect(activated).toMatchObject({
+      kind: "pending",
+      pendingShare: { state: "activated" }
+    });
+    const grantId =
+      activated?.kind === "pending" ? activated.pendingShare.grantId : null;
+    expect(grantId).not.toBeNull();
+    expect(companionGrantIds.filter((id) => id === grantId)).toHaveLength(1);
+    const activatedGrant = grantId ? companionGrants.get(grantId) : undefined;
+    expect(activatedGrant).toBeDefined();
+    await pool.query(
+      `update team_workspace_access_grants
+          set access='read',can_share_owned_memory=false,updated_at=now()
+        where team_workspace_id=$1 and user_id=$2`,
+      [fixture.teamWorkspaceId, fixture.ownerUserId]
+    );
+    await expect(
+      ensureCompanion({
+        actor: actor(fixture.ownerUserId),
+        grant: activatedGrant!
+      })
+    ).resolves.toBe(true);
+    const preview = await repository.readOwnerSharePreview(
+      actor(fixture.ownerUserId),
+      { kind: "pending", id: pending.id }
+    );
+    expect(preview).toMatchObject({
+      logicalMemoryId: source.logicalMemoryId,
+      representation: "memory_events",
+      sourceRevision: source.currentRevision
+    });
+    expect(preview?.items.length).toBeGreaterThan(0);
+
+    await pool.query(
+      `delete from collaboration_threads where share_grant_id=$1`,
+      [grantId]
+    );
+    const repairedGrantIds: string[] = [];
+    const repairCompanion = vi.fn(
+      async ({
+        actor: owner,
+        grant
+      }: {
+        actor: ActorContext;
+        grant: SharedMemoryGrantRecord;
+      }) => {
+        repairedGrantIds.push(grant.id);
+        const thread = await collaboration.createThread(owner, {
+          kind: "shared_session_discussion",
+          idempotencyKey: `pending-companion-repair-${grant.id}`,
+          teamId: grant.teamId,
+          teamWorkspaceId: grant.teamWorkspaceId,
+          sharedLogicalMemoryId: grant.logicalMemoryId,
+          shareGrantId: grant.id,
+          pendingShareActivation: true
+        });
+        return thread !== null;
+      }
+    );
+    await expect(
+      repository.processPendingShares({
+        limit: 100,
+        ensureCompanion: repairCompanion
+      })
+    ).resolves.toMatchObject({ claimed: 0, activated: 0, failed: 0 });
+    expect(repairedGrantIds.filter((id) => id === grantId)).toHaveLength(0);
+  });
+
+  it("fails a Pending Share closed when its reviewed candidate manifest cannot be reproduced", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "candidate-manifest-change");
+    await putOwnerPolicy(fixture, source);
+    const shareAuthority = authority(fixture);
+    const candidate = await repository.createSharedMemoryCandidatePreview(
+      actor(fixture.ownerUserId),
+      {
+        logicalMemoryId: source.logicalMemoryId,
+        candidateHash: hash("candidate-manifest-change"),
+        sourceRevision: source.currentRevision,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest: candidateManifest(source, "memory_events"),
+        byteCount: 128,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        representation: "memory_events",
+        allowedRepresentations: allRepresentations,
+        mode: "continuous",
+        authority: shareAuthority
+      }
+    );
+    const pending = await repository.createPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: randomUUID(),
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        preview: candidate!,
+        previewRevision: candidate!.previewRevision,
+        mode: "continuous",
+        allowedRepresentations: allRepresentations,
+        selectedRepresentation: "memory_events",
+        authority: shareAuthority
+      }
+    );
+    const changedManifest = [
+      {
+        sourceId: randomUUID(),
+        revisionHash: hash("changed-reviewed-source")
+      }
+    ];
+    await pool.query(
+      `update shared_memory_candidate_previews
+          set candidate_manifest=$2::jsonb,candidate_manifest_hash=$3
+        where id=$1`,
+      [
+        candidate!.previewId,
+        JSON.stringify(changedManifest),
+        crossIdentitySyncDigest(changedManifest)
+      ]
+    );
+
+    await expect(repository.processPendingShares()).resolves.toMatchObject({
+      claimed: 1,
+      activated: 0,
+      failed: 1
+    });
+    await expect(
+      repository.getOwnerShare(actor(fixture.ownerUserId), {
+        kind: "pending",
+        id: pending.id
+      })
+    ).resolves.toMatchObject({
+      kind: "pending",
+      pendingShare: {
+        state: "failed",
+        workspaceAccessState: "none",
+        redactedFailureCode: "candidate_manifest_changed"
+      }
+    });
+    await expect(
+      repository.listWorkspaceGrants(actor(fixture.readerUserId), {
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        limit: 10,
+        offset: 0
+      })
+    ).resolves.toMatchObject({ entries: [] });
+  });
+
+  it("pages equal-time owned shares by immutable identity despite mutable updates", async () => {
+    const fixture = await createWorkspaceFixture();
+    const shareAuthority = authority(fixture);
+    const pendingShares = [];
+    for (const label of ["equal-time-a", "equal-time-b"]) {
+      const source = await createSource(fixture, 1, label);
+      await putOwnerPolicy(fixture, source);
+      const candidate = await repository.createSharedMemoryCandidatePreview(
+        actor(fixture.ownerUserId),
+        {
+          logicalMemoryId: source.logicalMemoryId,
+          candidateHash: hash(label),
+          sourceRevision: source.currentRevision,
+          itemCount: 1,
+          excludedItemCount: 0,
+          manifest: candidateManifest(source, "memory_events"),
+          byteCount: 128,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          representation: "memory_events",
+          allowedRepresentations: allRepresentations,
+          mode: "continuous",
+          authority: shareAuthority
+        }
+      );
+      pendingShares.push(
+        await repository.createPendingShare(actor(fixture.ownerUserId), {
+          mutationId: randomUUID(),
+          logicalGrantId: randomUUID(),
+          consentId: randomUUID(),
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          preview: candidate!,
+          previewRevision: candidate!.previewRevision,
+          mode: "continuous",
+          allowedRepresentations: allRepresentations,
+          selectedRepresentation: "memory_events",
+          title: label,
+          authority: shareAuthority
+        })
+      );
+    }
+    await pool.query(
+      `update pending_share_operations
+          set created_at='2026-08-16T12:00:00.000Z'
+        where id=any($1::uuid[])`,
+      [pendingShares.map((pending) => pending.id)]
+    );
+
+    const first = await repository.listOwnerShares(actor(fixture.ownerUserId), {
+      limit: 1
+    });
+    expect(first.entries).toHaveLength(1);
+    expect(first.next).not.toBeNull();
+    const firstEntry = first.entries[0]!;
+    await repository.renameOwnerShare(actor(fixture.ownerUserId), {
+      kind: "pending",
+      id: firstEntry.kind === "pending" ? firstEntry.pendingShare.id : "",
+      title: "mutated between immutable pages"
+    });
+    const second = await repository.listOwnerShares(
+      actor(fixture.ownerUserId),
+      {
+        limit: 1,
+        snapshotAt: first.snapshotAt,
+        after: first.next!
+      }
+    );
+    expect(second.entries).toHaveLength(1);
+    const resultIds = [...first.entries, ...second.entries].map((entry) =>
+      entry.kind === "pending" ? entry.pendingShare.id : entry.grant.id
+    );
+    expect(new Set(resultIds)).toEqual(
+      new Set(pendingShares.map((pending) => pending.id))
+    );
+    for (const pending of pendingShares) {
+      const current = await repository.getOwnerShare(
+        actor(fixture.ownerUserId),
+        { kind: "pending", id: pending.id }
+      );
+      if (!current || current.kind !== "pending") {
+        throw new Error("expected Pending Share cleanup state");
+      }
+      await repository.controlPendingShare(actor(fixture.ownerUserId), {
+        pendingShareId: pending.id,
+        mutationId: randomUUID(),
+        expectedOperationVersion: current.pendingShare.operationVersion,
+        action: "revoke"
+      });
+    }
+  });
+
+  it("excludes Approval Activity instead of failing Pending Share activation", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "pending-approval");
+    const originalEvent = source.lastSyncPackage!.changes[0]!.event;
+    if (!originalEvent) throw new Error("Expected a source Memory Event");
+    const originalApprovalContributor = originalEvent.contributors[1]!;
+    const {
+      revisionHash: _originalContributorRevisionHash,
+      ...originalApprovalContributorInput
+    } = originalApprovalContributor;
+    void _originalContributorRevisionHash;
+    const approvalMetadata = {
+      ...originalApprovalContributor.metadata,
+      providerApprovalKind: "approval_request"
+    };
+    const approvalContributor = buildCapturedSessionSyncContributor({
+      ...originalApprovalContributorInput,
+      metadata: approvalMetadata
+    });
+    const { revisionHash: _originalEventRevisionHash, ...originalEventInput } =
+      originalEvent;
+    void _originalEventRevisionHash;
+    const legacyApprovalEvent = buildCapturedSessionSyncEvent({
+      ...originalEventInput,
+      contributors: [originalEvent.contributors[0]!, approvalContributor]
+    });
+    await upsertEncryptedFieldPayloadWithClient(
+      pool,
+      actor(fixture.ownerUserId),
+      ownerProvider,
+      {
+        sourceTable: "conversation_items",
+        sourceId: source.seededEvents[0]!.contributorIds[1]!,
+        sourceColumn: "metadata",
+        plaintext: approvalMetadata,
+        visibility: "owner_private_replica",
+        ownerPrincipalId: source.ownerPrincipalId,
+        rowFamily: "conversation_item",
+        scope: {
+          tenantId: fixture.ownerUserId,
+          objectClass: "conversation_item"
+        }
+      }
+    );
+    await pool.query(
+      `update sync_event_mappings
+          set revision_hash=$2
+        where sync_relationship_id=$1 and active=true`,
+      [source.syncRelationshipId, legacyApprovalEvent.revisionHash]
+    );
+    await putOwnerPolicy(fixture, source);
+    const shareAuthority = authority(fixture);
+    const approvalFilteredPreview =
+      await repository.createAuthoritativeSourcePreview(
+        actor(fixture.ownerUserId),
+        {
+          logicalMemoryId: source.logicalMemoryId,
+          remoteReplicaId: source.remoteReplicaId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          representation: "memory_events",
+          allowedRepresentations: allRepresentations,
+          authority: shareAuthority
+        }
+      );
+    expect(approvalFilteredPreview.items).toHaveLength(1);
+    expect(approvalFilteredPreview.items[0]?.itemType).toBe("user_message");
+    const candidate = await repository.createSharedMemoryCandidatePreview(
+      actor(fixture.ownerUserId),
+      {
+        logicalMemoryId: source.logicalMemoryId,
+        candidateHash: hash("pending-approval-memory-events"),
+        sourceRevision: source.currentRevision,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest: candidateManifest(source, "memory_events"),
+        byteCount: 128,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        representation: "memory_events",
+        allowedRepresentations: allRepresentations,
+        mode: "continuous",
+        authority: shareAuthority
+      }
+    );
+    expect(candidate).not.toBeNull();
+    const pending = await repository.createPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: randomUUID(),
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        preview: candidate!,
+        previewRevision: candidate!.previewRevision,
+        mode: "continuous",
+        allowedRepresentations: allRepresentations,
+        selectedRepresentation: "memory_events",
+        authority: shareAuthority
+      }
+    );
+
+    await expect(
+      repository.processPendingShares({
+        ensureCompanion: ensurePendingShareCompanion
+      })
+    ).resolves.toMatchObject({
+      claimed: 1,
+      activated: 1,
+      failed: 0
+    });
+    const activated = await repository.getOwnerShare(
+      actor(fixture.ownerUserId),
+      { kind: "pending", id: pending.id }
+    );
+    expect(activated).toMatchObject({
+      kind: "pending",
+      pendingShare: {
+        state: "activated",
+        redactedFailureCode: null
+      }
+    });
+    if (!activated || activated.kind !== "pending") {
+      throw new Error("expected activated Pending Share");
+    }
+    const read = await repository.readGrantRepresentation(
+      actor(fixture.readerUserId),
+      { shareGrantId: activated.pendingShare.grantId! }
+    );
+    expect(read?.items).toHaveLength(1);
+    expect(read?.items[0]?.itemType).toBe("user_message");
+  });
+
+  it("waits for an explicit retry after Pending Share activation fails", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "pending-invalid-item", {
+      assistantActor: "observer",
+      assistantKind: "future_protocol_item"
+    });
+    await putOwnerPolicy(fixture, source);
+    const shareAuthority = authority(fixture);
+    const candidate = await repository.createSharedMemoryCandidatePreview(
+      actor(fixture.ownerUserId),
+      {
+        logicalMemoryId: source.logicalMemoryId,
+        candidateHash: hash("pending-invalid-item-memory-events"),
+        sourceRevision: source.currentRevision,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest: candidateManifest(source, "memory_events"),
+        byteCount: 128,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        representation: "memory_events",
+        allowedRepresentations: allRepresentations,
+        mode: "continuous",
+        authority: shareAuthority
+      }
+    );
+    expect(candidate).not.toBeNull();
+    const pending = await repository.createPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: randomUUID(),
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        preview: candidate!,
+        previewRevision: candidate!.previewRevision,
+        mode: "continuous",
+        allowedRepresentations: allRepresentations,
+        selectedRepresentation: "memory_events",
+        authority: shareAuthority
+      }
+    );
+
+    await expect(
+      repository.processPendingShares({
+        ensureCompanion: ensurePendingShareCompanion
+      })
+    ).resolves.toMatchObject({
+      claimed: 1,
+      activated: 0,
+      failed: 1
+    });
+    const failed = await repository.getOwnerShare(actor(fixture.ownerUserId), {
+      kind: "pending",
+      id: pending.id
+    });
+    expect(failed).toMatchObject({
+      kind: "pending",
+      pendingShare: {
+        state: "needs_attention",
+        redactedFailureCode: "activation_failed"
+      }
+    });
+    await expect(
+      repository.processPendingShares({
+        ensureCompanion: ensurePendingShareCompanion
+      })
+    ).resolves.toMatchObject({
+      claimed: 0,
+      activated: 0,
+      failed: 0
+    });
+  });
+
+  it("activates, controls, replaces, and revokes a browser-authorized Pending Share durably", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "pending-browser");
+    await putOwnerPolicy(fixture, source);
+    const browserAuthority = authority(fixture);
+    const shareAuthority = {
+      ...browserAuthority,
+      referenceId: randomUUID()
+    };
+    const createCandidate = (
+      representation: SharedMemoryRepresentation,
+      candidateHash: string
+    ) =>
+      repository.createSharedMemoryCandidatePreview(
+        actor(fixture.ownerUserId),
+        {
+          logicalMemoryId: source.logicalMemoryId,
+          candidateHash,
+          sourceRevision: source.currentRevision,
+          itemCount: 1,
+          excludedItemCount: 0,
+          manifest: candidateManifest(source, representation),
+          byteCount: 128,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          representation,
+          allowedRepresentations: allRepresentations,
+          mode: "continuous",
+          authority: browserAuthority
+        }
+      );
+    const initialCandidate = await createCandidate(
+      "memory_events",
+      hash("pending-browser-memory-events")
+    );
+    const replacementCandidate = await createCandidate(
+      "lcm_leaves",
+      hash("pending-browser-lcm-leaves")
+    );
+    expect(initialCandidate).not.toBeNull();
+    expect(replacementCandidate).not.toBeNull();
+    expect(replacementCandidate?.previewId).not.toBe(
+      initialCandidate?.previewId
+    );
+
+    const mutationId = randomUUID();
+    const pendingInput = {
+      mutationId,
+      logicalGrantId: randomUUID(),
+      consentId: randomUUID(),
+      logicalMemoryId: source.logicalMemoryId,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      preview: initialCandidate!,
+      previewRevision: initialCandidate!.previewRevision,
+      mode: "continuous" as const,
+      allowedRepresentations: allRepresentations,
+      selectedRepresentation: "memory_events" as const,
+      title: "Launch review",
+      authority: shareAuthority
+    };
+    const pending = await repository.createPendingShare(
+      actor(fixture.ownerUserId),
+      pendingInput
+    );
+    await expect(
+      repository.createPendingShare(actor(fixture.ownerUserId), pendingInput)
+    ).resolves.toMatchObject({ id: pending.id, operationVersion: 1 });
+    await expect(
+      repository.createPendingShare(actor(fixture.ownerUserId), {
+        ...pendingInput,
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: randomUUID()
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    await expect(
+      repository.createPendingShare(actor(fixture.ownerUserId), {
+        ...pendingInput,
+        authority: authority(fixture, "manager")
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+
+    const preparing = await repository.listOwnerShares(
+      actor(fixture.ownerUserId),
+      { limit: 10 }
+    );
+    expect(preparing.entries).toHaveLength(1);
+    expect(preparing.entries[0]).toMatchObject({
+      kind: "pending",
+      summary: { sourceTitle: "Launch review" },
+      pendingShare: {
+        id: pending.id,
+        state: "preparing",
+        workspaceAccessState: "none"
+      }
+    });
+    await expect(
+      repository.listOwnerShares(actor(fixture.outsiderUserId), {
+        limit: 10
+      })
+    ).resolves.toMatchObject({ entries: [] });
+    await expect(
+      repository.listWorkspaceGrants(actor(fixture.readerUserId), {
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        limit: 10,
+        offset: 0
+      })
+    ).resolves.toMatchObject({ entries: [] });
+
+    repository = createSharedMemoryRepository(pool, {
+      resolveTeamEncryptionProvider: () => provider,
+      resolvePersonalEncryptionProvider: () => ownerProvider,
+      resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
+    });
+    const activationRun = await repository.processPendingShares({
+      ensureCompanion: ensurePendingShareCompanion
+    });
+    expect(activationRun.claimed).toBeGreaterThan(0);
+    expect(activationRun.activated).toBeGreaterThan(0);
+    expect(activationRun.failed).toBe(0);
+    const activated = await repository.getOwnerShare(
+      actor(fixture.ownerUserId),
+      { kind: "pending", id: pending.id }
+    );
+    expect(activated).toMatchObject({
+      kind: "pending",
+      pendingShare: {
+        state: "activated",
+        workspaceAccessState: "active",
+        sourceUpdateState: "active"
+      }
+    });
+    if (!activated || activated.kind !== "pending") {
+      throw new Error("expected activated Pending Share");
+    }
+    const renamed = await repository.renameOwnerShare(
+      actor(fixture.ownerUserId),
+      { kind: "pending", id: pending.id, title: "Launch retrospective" }
+    );
+    expect(renamed).toMatchObject({
+      kind: "pending",
+      summary: { sourceTitle: "Launch retrospective" }
+    });
+    if (!renamed || renamed.kind !== "pending") {
+      throw new Error("expected renamed Pending Share");
+    }
+    const renamedOperationVersion = renamed.pendingShare.operationVersion;
+    const shareGrantId = activated.pendingShare.grantId!;
+    const workspacePage = await repository.listWorkspaceGrants(
+      actor(fixture.readerUserId),
+      {
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        limit: 10,
+        offset: 0
+      }
+    );
+    expect(workspacePage.entries).toHaveLength(1);
+    expect(workspacePage.entries[0]).toMatchObject({
+      shareGrantId,
+      activeRepresentation: "memory_events",
+      lifecycle: "active"
+    });
+
+    const pauseMutationId = randomUUID();
+    const paused = await repository.controlPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        pendingShareId: pending.id,
+        mutationId: pauseMutationId,
+        expectedOperationVersion: renamedOperationVersion,
+        action: "pause"
+      }
+    );
+    expect(paused).toMatchObject({
+      workspaceAccessState: "active",
+      sourceUpdateState: "paused"
+    });
+    await expect(
+      repository.controlPendingShare(actor(fixture.ownerUserId), {
+        pendingShareId: pending.id,
+        mutationId: pauseMutationId,
+        expectedOperationVersion: renamedOperationVersion,
+        action: "pause"
+      })
+    ).resolves.toMatchObject({ operationVersion: paused.operationVersion });
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId
+      })
+    ).resolves.not.toBeNull();
+    const resumeMutationId = randomUUID();
+    const resumed = await repository.controlPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        pendingShareId: pending.id,
+        mutationId: resumeMutationId,
+        expectedOperationVersion: paused.operationVersion,
+        action: "resume"
+      }
+    );
+    expect(resumed.sourceUpdateState).toBe("active");
+    const controlEventIds = [
+      crossIdentitySyncDeterministicUuid({
+        kind: "pending_share_lifecycle",
+        pendingShareId: pending.id,
+        parentMutationId: pauseMutationId,
+        action: "pause",
+        state: paused.state,
+        operationVersion: paused.operationVersion
+      }),
+      crossIdentitySyncDeterministicUuid({
+        kind: "pending_share_lifecycle",
+        pendingShareId: pending.id,
+        parentMutationId: resumeMutationId,
+        action: "resume",
+        state: resumed.state,
+        operationVersion: resumed.operationVersion
+      })
+    ];
+    const controlEvents = await pool.query<{ mutation_id: string }>(
+      `select mutation_id
+         from collaboration_outbox
+        where family='pending_share_lifecycle'
+          and mutation_id=any($1::uuid[])
+        order by mutation_id`,
+      [controlEventIds]
+    );
+    expect(controlEvents.rows.map((row) => row.mutation_id).sort()).toEqual(
+      controlEventIds.sort()
+    );
+
+    const ownerGrantPage = await repository.listOwnerGrants(
+      actor(fixture.ownerUserId),
+      { logicalMemoryId: source.logicalMemoryId, limit: 10, offset: 0 }
+    );
+    const currentGrant = ownerGrantPage.entries[0]!;
+    const replacementSession = await pool.query<{ id: string }>(
+      `insert into user_sessions (user_id, session_hash, expires_at)
+       values ($1, $2, now() + interval '1 hour') returning id`,
+      [fixture.ownerUserId, hash(`replacement-owner-session:${randomUUID()}`)]
+    );
+    const replacementAuthority = {
+      ...browserAuthority,
+      referenceId: replacementSession.rows[0]!.id
+    };
+    const replacement = await repository.createPendingRepresentationChange(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        consentId: randomUUID(),
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        shareGrantId,
+        expectedGrantVersion: currentGrant.grantVersion,
+        preview: replacementCandidate!,
+        previewRevision: replacementCandidate!.previewRevision,
+        mode: "continuous",
+        allowedRepresentations: allRepresentations,
+        representation: "lcm_leaves",
+        authority: replacementAuthority
+      }
+    );
+    expect(replacement).toMatchObject({
+      state: "preparing",
+      workspaceAccessState: "active",
+      sourceUpdateState: "preparing"
+    });
+    const replacementAuthorityProvenance = await pool.query<{
+      preview_authority_reference_id: string;
+      command_authority_reference_id: string;
+    }>(
+      `select candidate.authority_reference_id as preview_authority_reference_id,
+              pending.replacement_authority_reference_id as command_authority_reference_id
+         from pending_share_operations pending
+         join shared_memory_candidate_previews candidate
+           on candidate.id=pending.replacement_preview_id
+        where pending.id=$1`,
+      [pending.id]
+    );
+    expect(replacementAuthorityProvenance.rows[0]).toEqual({
+      preview_authority_reference_id: browserAuthority.referenceId,
+      command_authority_reference_id: replacementAuthority.referenceId
+    });
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId
+      })
+    ).resolves.toMatchObject({
+      representation: { representation: "memory_events" }
+    });
+    const replacementRun = await repository.processPendingShares({
+      ensureCompanion: ensurePendingShareCompanion
+    });
+    expect(replacementRun).toMatchObject({
+      claimed: 1,
+      activated: 1,
+      waiting: 0,
+      failed: 0
+    });
+    const replacedPage = await repository.listWorkspaceGrants(
+      actor(fixture.readerUserId),
+      {
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        limit: 10,
+        offset: 0
+      }
+    );
+    expect(replacedPage.entries[0]).toMatchObject({
+      shareGrantId,
+      activeRepresentation: "lcm_leaves"
+    });
+    const replacedOwnerGrant = (
+      await repository.listOwnerGrants(actor(fixture.ownerUserId), {
+        logicalMemoryId: source.logicalMemoryId,
+        limit: 10,
+        offset: 0
+      })
+    ).entries[0]!;
+    expect(replacedOwnerGrant.grantVersion).toBe(currentGrant.grantVersion + 1);
+
+    const revocationMutationId = randomUUID();
+    await repository.revokeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: revocationMutationId,
+      shareGrantId,
+      expectedGrantVersion: replacedOwnerGrant.grantVersion,
+      reasonCode: "owner_revoked",
+      authority: browserAuthority
+    });
+    await expect(
+      repository.revokeShareGrant(actor(fixture.ownerUserId), {
+        mutationId: revocationMutationId,
+        shareGrantId,
+        expectedGrantVersion: replacedOwnerGrant.grantVersion,
+        reasonCode: "owner_revoked",
+        authority: browserAuthority
+      })
+    ).resolves.toMatchObject({ lifecycle: "revoked" });
+    await expect(
+      repository.listOwnerShares(actor(fixture.ownerUserId), {
+        limit: 10
+      })
+    ).resolves.toMatchObject({ entries: [] });
+    const history = await repository.listOwnerShares(
+      actor(fixture.ownerUserId),
+      { limit: 10, history: true }
+    );
+    expect(history.entries).toHaveLength(1);
+    expect(history.entries[0]).toMatchObject({
+      kind: "pending",
+      pendingShare: {
+        id: pending.id,
+        state: "revoked",
+        workspaceAccessState: "revoked",
+        sourceUpdateState: "stopped"
+      }
+    });
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId
+      })
+    ).resolves.toBeNull();
+  });
+
+  it("surfaces a stalled Pending Share and resumes it idempotently after worker restart", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "pending-retry");
+    await putOwnerPolicy(fixture, source);
+    const candidate = await repository.createSharedMemoryCandidatePreview(
+      actor(fixture.ownerUserId),
+      {
+        logicalMemoryId: source.logicalMemoryId,
+        candidateHash: hash("pending-retry-candidate"),
+        sourceRevision: source.currentRevision,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest: candidateManifest(source, "memory_events"),
+        byteCount: 128,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        representation: "memory_events",
+        allowedRepresentations: allRepresentations,
+        mode: "continuous",
+        authority: authority(fixture)
+      }
+    );
+    expect(candidate).not.toBeNull();
+    const pending = await repository.createPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: randomUUID(),
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        preview: candidate!,
+        previewRevision: candidate!.previewRevision,
+        mode: "continuous",
+        allowedRepresentations: allRepresentations,
+        selectedRepresentation: "memory_events",
+        authority: authority(fixture)
+      }
+    );
+    await pool.query(
+      "update memory_replicas set latest_revision=0 where id=$1",
+      [source.remoteReplicaId]
+    );
+    await pool.query(
+      `update cross_identity_sync_relationships
+          set target_processing_cursor=0 where id=$1`,
+      [source.syncRelationshipId]
+    );
+    await pool.query(
+      `update pending_share_operations
+          set last_progress_at=now()-interval '2 minutes' where id=$1`,
+      [pending.id]
+    );
+
+    repository = createSharedMemoryRepository(pool, {
+      resolveTeamEncryptionProvider: () => provider,
+      resolvePersonalEncryptionProvider: () => ownerProvider,
+      resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
+    });
+    const stalledRun = await repository.processPendingShares({
+      stallThresholdMs: 60_000
+    });
+    expect(stalledRun.claimed).toBeGreaterThan(0);
+    const stalled = await repository.getOwnerShare(actor(fixture.ownerUserId), {
+      kind: "pending",
+      id: pending.id
+    });
+    expect(stalled).toMatchObject({
+      kind: "pending",
+      pendingShare: {
+        state: "needs_attention",
+        workspaceAccessState: "none",
+        sourceUpdateState: "preparing",
+        redactedFailureCode: "source_preparation_stalled"
+      }
+    });
+    if (!stalled || stalled.kind !== "pending") {
+      throw new Error("expected stalled Pending Share");
+    }
+    const retryMutationId = randomUUID();
+    const retried = await repository.controlPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        pendingShareId: pending.id,
+        mutationId: retryMutationId,
+        expectedOperationVersion: stalled.pendingShare.operationVersion,
+        action: "retry"
+      }
+    );
+    await expect(
+      repository.controlPendingShare(actor(fixture.ownerUserId), {
+        pendingShareId: pending.id,
+        mutationId: retryMutationId,
+        expectedOperationVersion: stalled.pendingShare.operationVersion,
+        action: "retry"
+      })
+    ).resolves.toMatchObject({ operationVersion: retried.operationVersion });
+    const retryEvents = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+         from collaboration_outbox
+        where family='pending_share_lifecycle' and mutation_id=$1`,
+      [
+        crossIdentitySyncDeterministicUuid({
+          kind: "pending_share_lifecycle",
+          pendingShareId: pending.id,
+          parentMutationId: retryMutationId,
+          action: "retry",
+          state: retried.state,
+          operationVersion: retried.operationVersion
+        })
+      ]
+    );
+    expect(retryEvents.rows[0]?.count).toBe("1");
+    await pool.query(
+      "update memory_replicas set latest_revision=$2 where id=$1",
+      [source.remoteReplicaId, source.currentRevision]
+    );
+    await pool.query(
+      `update cross_identity_sync_relationships
+          set target_processing_cursor=$2 where id=$1`,
+      [source.syncRelationshipId, source.currentRevision]
+    );
+    repository = createSharedMemoryRepository(pool, {
+      resolveTeamEncryptionProvider: () => provider,
+      resolvePersonalEncryptionProvider: () => ownerProvider,
+      resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
+    });
+    const resumedRun = await repository.processPendingShares({
+      ensureCompanion: ensurePendingShareCompanion
+    });
+    expect(resumedRun.activated).toBeGreaterThan(0);
+    await expect(
+      repository.getOwnerShare(actor(fixture.ownerUserId), {
+        kind: "pending",
+        id: pending.id
+      })
+    ).resolves.toMatchObject({
+      kind: "pending",
+      pendingShare: {
+        state: "activated",
+        workspaceAccessState: "active",
+        redactedFailureCode: null
+      }
+    });
+  });
+
+  it("stops a Pending Share before activation and moves it to history", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "pending-revoke");
+    await putOwnerPolicy(fixture, source);
+    const candidate = await repository.createSharedMemoryCandidatePreview(
+      actor(fixture.ownerUserId),
+      {
+        logicalMemoryId: source.logicalMemoryId,
+        candidateHash: hash("pending-revoke-candidate"),
+        sourceRevision: source.currentRevision,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest: candidateManifest(source, "memory_events"),
+        byteCount: 128,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        representation: "memory_events",
+        allowedRepresentations: allRepresentations,
+        mode: "continuous",
+        authority: authority(fixture)
+      }
+    );
+    const pending = await repository.createPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: randomUUID(),
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        preview: candidate!,
+        previewRevision: candidate!.previewRevision,
+        mode: "continuous",
+        allowedRepresentations: allRepresentations,
+        selectedRepresentation: "memory_events",
+        authority: authority(fixture)
+      }
+    );
+    const mutationId = randomUUID();
+    const revoked = await repository.controlPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        pendingShareId: pending.id,
+        mutationId,
+        expectedOperationVersion: pending.operationVersion,
+        action: "revoke"
+      }
+    );
+    expect(revoked).toMatchObject({
+      state: "revoked",
+      stage: "complete",
+      workspaceAccessState: "revoked",
+      sourceUpdateState: "stopped",
+      redactedFailureCode: null
+    });
+    await expect(
+      repository.controlPendingShare(actor(fixture.ownerUserId), {
+        pendingShareId: pending.id,
+        mutationId,
+        expectedOperationVersion: pending.operationVersion,
+        action: "revoke"
+      })
+    ).resolves.toMatchObject({ operationVersion: revoked.operationVersion });
+    await expect(
+      repository.listOwnerShares(actor(fixture.ownerUserId), {
+        limit: 10
+      })
+    ).resolves.toMatchObject({ entries: [] });
+    await expect(
+      repository.listOwnerShares(actor(fixture.ownerUserId), {
+        limit: 10,
+        history: true
+      })
+    ).resolves.toMatchObject({
+      entries: [
+        {
+          kind: "pending",
+          pendingShare: { id: pending.id, state: "revoked" }
+        }
+      ]
+    });
+  });
+
   it("encrypts synchronized conversation item metadata and transport payloads", async () => {
     const fixture = await createWorkspaceFixture();
     const secret = `cross-sync-secret-${randomUUID()}`;
@@ -1465,6 +3059,56 @@ describeDb("Shared Memory repository", () => {
           .map((row) => row.source_column)
       ).toEqual(["metadata", "raw_json", "raw_text", "transport_chunk_text"]);
     }
+  });
+
+  it("recovers legacy empty raw text markers without weakening encrypted-field checks", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "empty-raw-text", {
+      assistantRawText: ""
+    });
+    const assistantId = source.seededEvents[0]!.contributorIds[1]!;
+    const stored = await pool.query<{
+      raw_text: string | null;
+      encrypted_columns: string[];
+      encrypted_raw_text_rows: string;
+    }>(
+      `select ci.raw_text,
+              array(select jsonb_array_elements_text(
+                ci.metadata->'encryptedConversationItemColumns'))
+                as encrypted_columns,
+              (select count(*)::text
+                 from encrypted_field_payloads payload
+                where payload.source_table='conversation_items'
+                  and payload.source_id=ci.id
+                  and payload.source_column='raw_text'
+                  and payload.invalidated_at is null)
+                as encrypted_raw_text_rows
+         from conversation_items ci
+        where ci.id=$1`,
+      [assistantId]
+    );
+    expect(stored.rows[0]).toEqual({
+      raw_text: "",
+      encrypted_columns: ["raw_json", "transport_chunk_text", "metadata"],
+      encrypted_raw_text_rows: "0"
+    });
+
+    await pool.query(
+      `update conversation_items
+          set raw_text='[koed encrypted conversation item]'
+        where id=$1`,
+      [assistantId]
+    );
+    const preview = await createPersistedPreview(
+      fixture,
+      source,
+      "memory_events"
+    );
+    expect(preview.items).toHaveLength(2);
+    expect(preview.items.map((item) => item.itemType)).toEqual([
+      "user_message",
+      "assistant_message"
+    ]);
   });
 
   it("rolls back browser consent when bundled Share Grant creation fails", async () => {
@@ -1569,7 +3213,7 @@ describeDb("Shared Memory repository", () => {
       allowed_representations: string[];
       version: number;
     }>(
-      `select allowed_representations,version
+      `select to_json(allowed_representations) as allowed_representations,version
          from source_owner_representation_policies
         where logical_memory_id=$1 and source_owner_principal_id=$2
           and effective_at<=now() and superseded_at is null`,
@@ -2055,7 +3699,7 @@ describeDb("Shared Memory repository", () => {
       workspaceAllowed: ["memory_events", "lcm_leaves"]
     });
     const source = await createSource(fixture);
-    await putOwnerPolicy(fixture, source, ["memory_events", "lcm_leaves"]);
+    await putOwnerPolicy(fixture, source, ["lcm_leaves"]);
     await expect(
       createConsent(fixture, source, {
         representation: "memory_events",
@@ -3533,7 +5177,7 @@ describeDb("Shared Memory repository", () => {
       representation: "lcm_rollups",
       label: "rollup-fidelity"
     });
-    expect(grant.preview.items).toEqual([
+    expect(grant.preview.items).toMatchObject([
       {
         itemType: "lcm_rollup",
         schemaVersion: 1,
@@ -3554,6 +5198,8 @@ describeDb("Shared Memory repository", () => {
       actor(fixture.readerUserId),
       { shareGrantId: grant.shareGrantId, representation: "lcm_rollups" }
     );
+    const previewContent = { ...grant.preview.items[0]!.content };
+    delete previewContent.expansionItems;
     expect(read?.items).toEqual([
       {
         ...grant.preview.items[0],
@@ -3562,7 +5208,7 @@ describeDb("Shared Memory repository", () => {
           grant.rollup.nodeId
         ),
         content: {
-          ...grant.preview.items[0]!.content,
+          ...previewContent,
           sourceIds: grant.rollup.sourceEventIds.map((sourceId) =>
             sharedMemoryGrantScopedSourceId(grant.shareGrantId, sourceId)
           )

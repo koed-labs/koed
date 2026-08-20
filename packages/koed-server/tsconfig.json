@@ -1,6 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "allowJs": true,
     "composite": true,
     "declaration": true,
     "declarationMap": true,
@@ -8,6 +9,6 @@
     "rootDir": "src"
   },
   "references": [{ "path": "../shared" }],
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.mjs"],
   "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"]
 }

@@ -1,6 +1,8 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
   type PathLike
@@ -13,10 +15,13 @@ import {
   collectKoedServerDoctor,
   collectKoedServerStatus,
   healthy,
+  inspectClaudeCode,
+  inspectPi,
   needsAttention,
   notConfigured,
   statusFromApiReady
 } from "./status.js";
+import { resolveKoedServerPaths } from "./paths.js";
 const temps: string[] = [];
 const tempDir = () => {
   const path = mkdtempSync(resolve(tmpdir(), "koed-server-status-"));
@@ -78,6 +83,220 @@ describe("status state aggregation", () => {
     expect(
       aggregateState([{ state: "starting" }, needsAttention("broken")])
     ).toBe("needs_attention");
+  });
+});
+
+describe("Pi integration status", () => {
+  it("reports a registered Koed package in the active Pi profile", () => {
+    const root = tempDir();
+    const packagePath = resolve(root, "integrations/pi");
+    mkdirSync(resolve(packagePath, "extensions"), { recursive: true });
+    writeFileSync(resolve(packagePath, "extensions/koed.mjs"), "export {};\n");
+    const environment = { KOED_HOME: root, KOED_PI_EXECUTABLE: "/opt/pi" };
+
+    const status = inspectPi(environment, resolveKoedServerPaths(environment), {
+      existsSync: (path: PathLike) =>
+        path === resolve(packagePath, "extensions/koed.mjs"),
+      resolvePiExecutable: () => "/opt/pi",
+      spawnSync: (_command: string, args: string[]) =>
+        args[0] === "--version"
+          ? spawnResult("0.84.2\n")
+          : args[0] === "--list-models"
+            ? spawnResult("provider model\nopenai gpt-5.4\n")
+            : spawnResult(`${packagePath}\n`)
+    } as never);
+
+    expect(status).toMatchObject({
+      state: "healthy",
+      configured: true,
+      detected: true
+    });
+    expect(status.details).toMatchObject({
+      executable: "/opt/pi",
+      packagePath,
+      version: "0.84.2",
+      authenticated: true,
+      modelCount: 1
+    });
+  });
+
+  it("separates registered-package health from authenticated-model health", () => {
+    const root = tempDir();
+    const packagePath = resolve(root, "integrations/pi");
+
+    const status = inspectPi(
+      { KOED_HOME: root },
+      resolveKoedServerPaths({ KOED_HOME: root }),
+      {
+        existsSync: (path: PathLike) =>
+          path === resolve(packagePath, "extensions/koed.mjs"),
+        resolvePiExecutable: () => "/opt/pi",
+        spawnSync: (_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("0.84.2\n")
+            : args[0] === "--list-models"
+              ? spawnResult("provider model\n")
+              : spawnResult(`${packagePath}\n`)
+      } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "needs_attention",
+      configured: true
+    });
+    expect(status.details).toMatchObject({
+      packageRegistered: true,
+      authenticated: false,
+      modelCount: 0
+    });
+  });
+
+  it("keeps missing Pi optional but actionable", () => {
+    const root = tempDir();
+    const environment = { KOED_HOME: root };
+
+    const status = inspectPi(environment, resolveKoedServerPaths(environment), {
+      existsSync: () => false,
+      resolvePiExecutable: () => {
+        throw new Error("Pi was not found.");
+      }
+    } as never);
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: false
+    });
+    expect(status.action).toContain("Install Pi");
+  });
+
+  it("detects Pi from its global profile when the executable is unavailable", () => {
+    const root = tempDir();
+    const profilePath = resolve(root, ".pi/agent");
+    mkdirSync(profilePath, { recursive: true });
+    writeFileSync(resolve(profilePath, "settings.json"), "{}");
+    const environment = { HOME: root, KOED_HOME: root };
+
+    const status = inspectPi(environment, resolveKoedServerPaths(environment), {
+      existsSync,
+      resolvePiExecutable: () => {
+        throw new Error("Pi was not found.");
+      }
+    } as never);
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: true
+    });
+  });
+});
+
+describe("Claude Code integration status", () => {
+  it("reports configured MCP, hooks, and authentication", () => {
+    const root = tempDir();
+    const settingsPath = resolve(root, ".claude/settings.json");
+    const captureHook = resolve(
+      root,
+      "packages/mcp-server/dist/capture-hook.js"
+    );
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    mkdirSync(resolve(root, ".claude"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(captureHook, "");
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: Object.fromEntries(
+          [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "Stop",
+            "StopFailure",
+            "SubagentStart",
+            "SubagentStop",
+            "SessionEnd"
+          ].map((eventName) => [
+            eventName,
+            [{ hooks: [{ command: `node ${captureHook}` }] }]
+          ])
+        )
+      })
+    );
+    const settingsContent = readFileSync(settingsPath, "utf8");
+    const environment = {
+      HOME: root,
+      KOED_HOME: resolve(root, "koed"),
+      KOED_REPO_ROOT: root,
+      CLAUDE_SETTINGS_PATH: settingsPath
+    };
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        existsSync,
+        readFileSync: () => settingsContent,
+        spawnSync: (_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("2.1.227 (Claude Code)\n")
+            : args[0] === "mcp" && args[1] === "get"
+              ? spawnResult(
+                  `koed:\n  Type: stdio\n  Command: node\n  Args: ${resolve(root, "packages/mcp-server/dist/cli.js")}\n  Environment:\n    KOED_HOME=${resolve(root, "koed")}\n`
+                )
+              : spawnResult("")
+      } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "healthy",
+      configured: true,
+      detected: true
+    });
+    expect(status.details).toMatchObject({
+      version: "2.1.227 (Claude Code)",
+      settingsPath
+    });
+  });
+
+  it("keeps missing Claude Code optional but actionable", () => {
+    const root = tempDir();
+    const environment = { HOME: root, KOED_HOME: root, KOED_REPO_ROOT: root };
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      { existsSync: () => false, spawnSync: () => spawnResult("", 1) } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: false
+    });
+    expect(status.action).toContain("Install Claude Code");
+  });
+
+  it("detects Claude Code from its global settings when the executable is unavailable", () => {
+    const root = tempDir();
+    const settingsPath = resolve(root, ".claude/settings.json");
+    mkdirSync(resolve(root, ".claude"), { recursive: true });
+    writeFileSync(settingsPath, "{}");
+    const environment = { HOME: root, KOED_HOME: root, KOED_REPO_ROOT: root };
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      { existsSync, spawnSync: () => spawnResult("", 1) } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: true
+    });
   });
 });
 

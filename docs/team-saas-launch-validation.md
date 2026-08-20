@@ -150,6 +150,9 @@ for:
   surfaces, public/authenticated capability discovery, and generated API-token
   rejection coverage for every active Team-authority route advertised by
   OpenAPI.
+- A deterministic Approval Activity package comparison. The fixture uses 38
+  Memory Events, one LCM leaf, and a 412 KiB display projection. The command
+  reports content-safe record counts, byte counts, and encryption times.
 
 Each printed gate command uses explicit Vitest file and test-name filters. A
 failed command stops the run, identifies the failed gate, exits non-zero, and

@@ -58,6 +58,47 @@ export const setupStepsFromStatus = (status: KoedServerStatus): SetupStep[] => {
   const serverPackage =
     status.serverPackage ??
     unavailable("Standalone server package status is unavailable.");
+  const detectedOptionalClients = [
+    ...(status.claudeCode?.detected
+      ? [{ label: "Claude Code", status: status.claudeCode }]
+      : []),
+    ...(status.pi?.detected ? [{ label: "Pi", status: status.pi }] : [])
+  ];
+  const incompleteOptionalClient = detectedOptionalClients.find(
+    ({ status: clientStatus }) => clientStatus.state !== "healthy"
+  );
+  const integrationAction =
+    status.codex.state !== "healthy"
+      ? {
+          command:
+            status.codex.state === "not_configured"
+              ? ("setup_codex" as const)
+              : ("repair_codex" as const),
+          label:
+            status.codex.state === "not_configured"
+              ? "Set up Codex"
+              : "Repair Codex",
+          requiresConsent: false
+        }
+      : incompleteOptionalClient?.label === "Claude Code"
+        ? {
+            command:
+              status.claudeCode?.state === "not_configured"
+                ? ("setup_claude" as const)
+                : ("repair_claude" as const),
+            label: `${status.claudeCode?.state === "not_configured" ? "Set up" : "Repair"} Claude Code`,
+            requiresConsent: false
+          }
+        : incompleteOptionalClient?.label === "Pi"
+          ? {
+              command:
+                status.pi?.state === "not_configured"
+                  ? ("setup_pi" as const)
+                  : ("repair_pi" as const),
+              label: `${status.pi?.state === "not_configured" ? "Set up" : "Repair"} Pi`,
+              requiresConsent: false
+            }
+          : null;
 
   return [
     step({
@@ -124,26 +165,17 @@ export const setupStepsFromStatus = (status: KoedServerStatus): SetupStep[] => {
     }),
     step({
       id: "integration",
-      title: "Codex, MCP, and Capture Hook",
+      title: "AI Client integrations",
       description:
-        "Connect the supported AI Client to Personal Memory capture and recall.",
+        "Connect detected AI Clients to Personal Memory capture and recall.",
       components: [
         { label: "API Token", status: status.apiToken },
         { label: "MCP Server", status: status.mcpServer },
         { label: "Capture Hook", status: status.captureHook },
-        { label: "Codex", status: status.codex }
+        { label: "Codex", status: status.codex },
+        ...detectedOptionalClients
       ],
-      action: {
-        command:
-          status.codex.state === "not_configured"
-            ? "setup_codex"
-            : "repair_codex",
-        label:
-          status.codex.state === "not_configured"
-            ? "Set up Codex"
-            : "Repair integration",
-        requiresConsent: false
-      }
+      action: integrationAction
     }),
     step({
       id: "health",

@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 
-import { COLLABORATION_CONTRACT_VERSION } from "@koed/shared";
+import {
+  COLLABORATION_CONTRACT_VERSION,
+  crossIdentitySyncDigest
+} from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -282,12 +285,21 @@ const createFixture = (
     actionGrantSecret?: string | null;
     persistPreview?: boolean;
     persistGrant?: boolean;
+    persistPendingSourceWork?: boolean;
     previewItems?: PreviewItem[];
     prepareLocalLcmRepresentation?: NonNullable<
       CollaborationSharedMemoryControlOptions["prepareLocalLcmRepresentation"]
     >;
+    preparePendingShareSource?: NonNullable<
+      CollaborationSharedMemoryControlOptions["preparePendingShareSource"]
+    >;
+    loadLocalCandidatePreview?: NonNullable<
+      CollaborationSharedMemoryControlOptions["loadLocalCandidatePreview"]
+    >;
     remoteRead?: RemoteReadResponse;
     remoteOwnerGrants?: ReturnType<typeof grantResponse>[];
+    remoteOwnedShares?: Record<string, unknown>[];
+    deniedDiscussionLogicalMemoryIds?: string[];
     mutateResponse?: (
       request: RecordedRequest,
       response: Record<string, unknown>
@@ -299,10 +311,27 @@ const createFixture = (
   const grantPersistenceModes: Array<
     "mutation" | "revocation" | "authoritative_snapshot" | undefined
   > = [];
+  const pendingSourceWork: Array<{
+    pendingShareId: string;
+    mutationId: string;
+    localSessionId: string;
+  }> = [];
   const previews = new Map<string, CollaborationPersistedSharedMemoryPreview>();
   const consents = new Map<string, CollaborationPersistedSharedMemoryConsent>();
   const grants = new Map<string, CollaborationPersistedSharedMemoryGrant>();
   const previewItems = overrides.previewItems ?? [sourceItem()];
+  const resolvePreviewTargets = vi.fn(
+    async (_identity: unknown, inputs: Array<Record<string, unknown>>) =>
+      inputs.map(() => ({
+        remoteReplicaId: ids.remoteReplica,
+        syncRelationshipId: ids.syncRelationship,
+        localSessionId: ids.localSession
+      }))
+  );
+  const readAuthoritativeGrants = vi.fn(
+    async (_identity: unknown, shareGrantIds: string[]) =>
+      shareGrantIds.map((shareGrantId) => grants.get(shareGrantId) ?? null)
+  );
   const initialPreview: CollaborationPersistedSharedMemoryPreview = {
     ...previewResponse(previewItems),
     backendId: "team-backend",
@@ -327,8 +356,19 @@ const createFixture = (
             localSessionId: ids.localSession
           };
     },
+    resolvePreviewTargets,
     async persistAuthoritativePreview(input) {
       if (overrides.persistPreview === false) return null;
+      const persisted: CollaborationPersistedSharedMemoryPreview = {
+        ...input.preview,
+        ...input.identity,
+        previewRevision: 1,
+        allowedRepresentations: input.allowedRepresentations
+      };
+      previews.set(persisted.previewHash, persisted);
+      return persisted;
+    },
+    async persistAuthoritativeCandidatePreview(input) {
       const persisted: CollaborationPersistedSharedMemoryPreview = {
         ...input.preview,
         ...input.identity,
@@ -398,10 +438,25 @@ const createFixture = (
     async readAuthoritativeGrant(input) {
       return grants.get(input.shareGrantId) ?? null;
     },
+    readAuthoritativeGrants,
     async listAuthoritativeGrants(input) {
       return [...grants.values()].filter(
         (grant) => grant.grant.logicalMemoryId === input.logicalMemoryId
       );
+    },
+    async persistPendingShareSourceWork(input) {
+      pendingSourceWork.push({
+        pendingShareId: input.pendingShareId,
+        mutationId: input.mutationId,
+        localSessionId: input.localSessionId
+      });
+      return overrides.persistPendingSourceWork ?? true;
+    },
+    async claimPendingShareSourceWork() {
+      return [];
+    },
+    async finishPendingShareSourceWork() {
+      return true;
     }
   };
 
@@ -435,11 +490,77 @@ const createFixture = (
         };
       } else if (
         recorded.method === "POST" &&
+        url.pathname.endsWith("/v1/shared-memory/candidate-previews")
+      ) {
+        response = {
+          admission: {
+            previewId: ids.preview,
+            previewHash: hashB,
+            previewRevision: 1,
+            logicalMemoryId: ids.logicalMemory,
+            teamId: ids.team,
+            teamWorkspaceId: ids.workspace,
+            representation: "memory_events",
+            allowedRepresentations: ["memory_events"],
+            sourceRevision: 4,
+            sourceHash: hash,
+            redactedContentHash: hash,
+            representationPolicyRevision: 1,
+            representationPolicyHash: hashB,
+            contentPolicyVersion: 1,
+            contentPolicyHash: hashB,
+            classifierVersion: 1,
+            classifierHash: hashB,
+            mode: "continuous",
+            expiresAt: null,
+            previewExpiresAt: "2099-01-01T00:10:00.000Z",
+            itemCount: recorded.body?.itemCount,
+            excludedItemCount: recorded.body?.excludedItemCount,
+            manifest: recorded.body?.manifest,
+            manifestHash: crossIdentitySyncDigest(recorded.body?.manifest),
+            byteCount: recorded.body?.byteCount,
+            createdAt: iso
+          }
+        };
+      } else if (
+        recorded.method === "POST" &&
         url.pathname.endsWith("/v1/shared-memory/previews")
       ) {
         response = { preview: previewResponse(previewItems) };
       } else if (url.pathname.endsWith("/consents")) {
         response = { consent: consentResponse() };
+      } else if (
+        recorded.method === "POST" &&
+        url.pathname.endsWith("/v1/shared-memory/pending-shares")
+      ) {
+        response = {
+          pendingShare: {
+            id: uuidFor(700),
+            mutationId: recorded.body?.mutationId,
+            logicalGrantId: recorded.body?.logicalGrantId,
+            consentId: recorded.body?.consentId,
+            logicalMemoryId: recorded.body?.logicalMemoryId,
+            teamId: recorded.body?.teamId,
+            workspaceId: recorded.body?.teamWorkspaceId,
+            representation: recorded.body?.selectedRepresentation,
+            allowedRepresentations: recorded.body?.allowedRepresentations,
+            mode: recorded.body?.mode,
+            sourceRevision: 4,
+            state: "preparing",
+            stage: "accepted",
+            workspaceAccessState: "none",
+            sourceUpdateState: "preparing",
+            operationVersion: 1,
+            attemptCount: 0,
+            redactedFailureCode: null,
+            lastProgressAt: iso,
+            createdAt: iso,
+            updatedAt: iso,
+            activatedAt: null,
+            revokedAt: null,
+            grantId: null
+          }
+        };
       } else if (
         recorded.method === "POST" &&
         url.pathname.endsWith("/v1/shared-memory/share-bundles")
@@ -452,29 +573,92 @@ const createFixture = (
         recorded.method === "PUT" &&
         url.pathname.endsWith("/representation-bundle")
       ) {
-        const consentId =
-          typeof recorded.body?.consentId === "string"
-            ? recorded.body.consentId
-            : ids.consent;
         response = {
-          consent: {
-            ...consentResponse(),
-            id: consentId,
-            allowedRepresentations: ["lcm_leaves"],
-            selectedRepresentation: "lcm_leaves",
-            previewHash: hashC
-          },
-          grant: grantResponse({
+          pendingShare: {
+            id: uuidFor(701),
+            mutationId: recorded.body?.mutationId,
+            logicalGrantId: ids.logicalGrant,
+            consentId: recorded.body?.consentId,
+            logicalMemoryId: recorded.body?.logicalMemoryId,
+            teamId: recorded.body?.teamId,
+            workspaceId: recorded.body?.teamWorkspaceId,
             representation: "lcm_leaves",
-            consentId,
-            grantVersion: 2
-          })
+            allowedRepresentations: ["lcm_leaves"],
+            mode: recorded.body?.mode,
+            sourceRevision: 4,
+            state: "preparing",
+            stage: "accepted",
+            workspaceAccessState: "active",
+            sourceUpdateState: "preparing",
+            operationVersion: 2,
+            attemptCount: 0,
+            redactedFailureCode: null,
+            lastProgressAt: iso,
+            createdAt: iso,
+            updatedAt: iso,
+            activatedAt: iso,
+            revokedAt: null,
+            grantId: ids.grant
+          }
         };
       } else if (
         recorded.method === "POST" &&
         url.pathname.endsWith("/v1/shared-memory/share-grants")
       ) {
         response = { grant: grantResponse() };
+      } else if (
+        recorded.method === "PATCH" &&
+        url.pathname.includes("/v1/shared-memory/owned-shares/") &&
+        url.pathname.endsWith("/title")
+      ) {
+        const id = url.pathname.split("/").at(-2);
+        const share = (overrides.remoteOwnedShares ?? []).find((item) => {
+          const record =
+            item.kind === "pending"
+              ? (item.pendingShare as Record<string, unknown>)
+              : (item.grant as Record<string, unknown>);
+          return record.id === id;
+        });
+        if (share) {
+          share.summary = {
+            ...(share.summary as Record<string, unknown>),
+            sourceTitle: recorded.body?.title
+          };
+        }
+        response = { share };
+      } else if (
+        recorded.method === "GET" &&
+        url.pathname.endsWith("/v1/shared-memory/owned-shares")
+      ) {
+        response = {
+          shares: overrides.remoteOwnedShares ?? [],
+          pagination: {
+            limit: Number(url.searchParams.get("limit") ?? 100),
+            hasMore: false,
+            next: null,
+            snapshotAt: iso
+          }
+        };
+      } else if (
+        recorded.method === "GET" &&
+        url.pathname.includes("/v1/shared-memory/owned-shares/")
+      ) {
+        const id = url.pathname.split("/").at(-1);
+        const share = (overrides.remoteOwnedShares ?? []).find((item) => {
+          const record =
+            item.kind === "pending"
+              ? (item.pendingShare as Record<string, unknown>)
+              : (item.grant as Record<string, unknown>);
+          return record.id === id;
+        });
+        response = {
+          share,
+          preview:
+            (share?.summary as Record<string, unknown> | undefined)
+              ?.authorizedPreview == null
+              ? null
+              : previewResponse(previewItems)
+        };
       } else if (
         recorded.method === "GET" &&
         url.pathname.includes("/v1/shared-memory/logical-memories/") &&
@@ -511,6 +695,13 @@ const createFixture = (
         recorded.method === "POST" &&
         url.pathname.endsWith("/discussion")
       ) {
+        if (
+          overrides.deniedDiscussionLogicalMemoryIds?.some((logicalMemoryId) =>
+            url.pathname.includes(`/${logicalMemoryId}/discussion`)
+          )
+        ) {
+          return json({ error: "forbidden" }, 403);
+        }
         response = {
           thread: {
             id: ids.companion,
@@ -577,6 +768,8 @@ const createFixture = (
     authorityStore: store,
     prepareLocalLcmRepresentation:
       overrides.prepareLocalLcmRepresentation ?? (async () => "ready"),
+    loadLocalCandidatePreview: overrides.loadLocalCandidatePreview,
+    preparePendingShareSource: overrides.preparePendingShareSource,
     ensureEnrollmentBinding: overrides.bindEnrollment
       ? async (input) => {
           enrollmentBindings.push(input);
@@ -644,7 +837,10 @@ const createFixture = (
     grants,
     store,
     enrollmentBindings,
-    grantPersistenceModes
+    grantPersistenceModes,
+    pendingSourceWork,
+    resolvePreviewTargets,
+    readAuthoritativeGrants
   };
 };
 
@@ -658,6 +854,139 @@ const expectFailure = (
 };
 
 describe("collaboration Shared Memory control", () => {
+  it("returns a bounded local candidate without resolving remote authority", async () => {
+    const loadLocalCandidatePreview = vi.fn(async () => ({
+      sessionId: ids.localSession,
+      logicalMemoryId: ids.logicalMemory,
+      representation: "memory_events" as const,
+      sourceRevision: 4,
+      candidateHash: hash,
+      itemCount: 0,
+      excludedItemCount: 1,
+      manifest: [],
+      byteCount: 0,
+      items: []
+    }));
+    const fixture = createFixture({
+      upstreamAuthorization: null,
+      loadLocalCandidatePreview
+    });
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.preview_shared_memory_candidate"),
+        input: {
+          sessionId: ids.localSession,
+          representation: "memory_events"
+        }
+      },
+      context()
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { candidate: { candidateHash: hash, excludedItemCount: 1 } }
+    });
+    expect(fixture.requests).toHaveLength(0);
+    expect(loadLocalCandidatePreview).toHaveBeenCalledWith({
+      localOwnerUserId: ids.localOwner,
+      sessionId: ids.localSession,
+      representation: "memory_events"
+    });
+  });
+
+  it("binds a local candidate to an authoritative destination without a sync target", async () => {
+    const localCandidate = {
+      sessionId: ids.localSession,
+      logicalMemoryId: ids.logicalMemory,
+      representation: "memory_events" as const,
+      sourceRevision: 4,
+      candidateHash: hash,
+      itemCount: 1,
+      excludedItemCount: 1,
+      manifest: [{ sourceId: ids.source, revisionHash: hashB }],
+      byteCount: 128,
+      items: [
+        {
+          id: ids.source,
+          representation: "memory_events" as const,
+          sequence: 1,
+          occurredAt: iso,
+          sourceItems: [
+            {
+              id: ids.source,
+              sourceKind: "agent_message" as const,
+              occurredAt: iso,
+              body: "safe semantic candidate",
+              actorName: null,
+              toolName: null,
+              toolCallId: null
+            },
+            {
+              id: uuidFor(154),
+              sourceKind: "tool_call" as const,
+              occurredAt: iso,
+              body: '{"cmd":"pnpm test"}',
+              actorName: null,
+              toolName: "exec_command",
+              toolCallId: "call-preview"
+            }
+          ]
+        }
+      ]
+    };
+    const fixture = createFixture({
+      previewTarget: false,
+      loadLocalCandidatePreview: async () => localCandidate
+    });
+    const command = {
+      ...previewCommand(),
+      input: {
+        ...previewCommand().input,
+        candidate: {
+          sessionId: ids.localSession,
+          candidateHash: hash,
+          sourceRevision: 4,
+          itemCount: 1,
+          excludedItemCount: 1,
+          manifest: [{ sourceId: ids.source, revisionHash: hashB }],
+          byteCount: 128,
+          mode: "continuous" as const,
+          expiresAt: null
+        }
+      }
+    };
+
+    const result = await fixture.control.dispatch(command, context());
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        preview: {
+          logicalMemoryId: ids.logicalMemory,
+          previewHash: hashB,
+          items: [
+            { sourceItems: [{ body: "safe semantic candidate" }] },
+            {
+              sourceItems: [
+                {
+                  body: '{"cmd":"pnpm test"}',
+                  sourceKind: "tool_call",
+                  toolName: "exec_command",
+                  toolCallId: "call-preview",
+                  toolDisplay: expect.objectContaining({ kind: "command" })
+                }
+              ]
+            }
+          ]
+        }
+      }
+    });
+    expect(fixture.requests.map((request) => request.pathname)).toEqual([
+      expect.stringMatching(/device-credentials\/status$/),
+      "/v1/shared-memory/candidate-previews"
+    ]);
+  });
+
   it("reconciles authoritative remote owner grants before listing them", async () => {
     const fixture = createFixture();
     const result = await fixture.control.dispatch(
@@ -748,6 +1077,414 @@ describe("collaboration Shared Memory control", () => {
     expect(fixture.grantPersistenceModes).toEqual(["authoritative_snapshot"]);
   });
 
+  it("keeps Pending Shares visible when an older grant is no longer accessible", async () => {
+    const inaccessibleLogicalMemoryId = uuidFor(810);
+    const inaccessibleGrantId = uuidFor(811);
+    const pendingShareId = uuidFor(812);
+    const inaccessibleGrant = {
+      ...grantResponse(),
+      id: inaccessibleGrantId,
+      logicalGrantId: uuidFor(813),
+      logicalMemoryId: inaccessibleLogicalMemoryId,
+      consentId: uuidFor(814),
+      companionScope: {
+        ...grantResponse().companionScope,
+        logicalMemoryId: inaccessibleLogicalMemoryId,
+        shareGrantId: inaccessibleGrantId
+      }
+    };
+    const pending = {
+      kind: "pending",
+      pendingShare: {
+        id: pendingShareId,
+        mutationId: uuidFor(815),
+        logicalGrantId: uuidFor(816),
+        consentId: uuidFor(817),
+        logicalMemoryId: ids.logicalMemory,
+        teamId: ids.team,
+        workspaceId: ids.workspace,
+        representation: "memory_events",
+        allowedRepresentations: ["memory_events"],
+        mode: "continuous",
+        sourceRevision: 4,
+        state: "preparing",
+        stage: "processing",
+        workspaceAccessState: "none",
+        sourceUpdateState: "preparing",
+        operationVersion: 2,
+        attemptCount: 1,
+        redactedFailureCode: null,
+        lastProgressAt: iso,
+        createdAt: iso,
+        updatedAt: iso,
+        activatedAt: null,
+        revokedAt: null,
+        grantId: null
+      },
+      sourceAccess: null,
+      summary: {
+        sourceSessionId: uuidFor(818),
+        sourceTitle: "Pending owner share",
+        teamName: "Atlas Research",
+        workspaceName: "Launch Plans",
+        mode: "continuous",
+        authorizedPreview: {
+          previewId: ids.preview,
+          previewHash: hash,
+          previewRevision: 1,
+          sourceRevision: 4
+        },
+        lastReadyRevision: null,
+        lastSuccessfulUpdateAt: null
+      }
+    };
+    const fixture = createFixture({
+      remoteOwnedShares: [
+        pending,
+        {
+          kind: "grant",
+          grant: inaccessibleGrant,
+          sourceAccess: null,
+          summary: {
+            ...pending.summary,
+            sourceTitle: "Inaccessible historical grant",
+            authorizedPreview: null
+          }
+        }
+      ],
+      deniedDiscussionLogicalMemoryIds: [inaccessibleLogicalMemoryId]
+    });
+
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.list_owned_shares"),
+        input: { cursor: null, limit: 100, history: false }
+      },
+      context()
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        shares: [
+          {
+            kind: "pending",
+            pendingShare: { id: pendingShareId, state: "preparing" },
+            summary: { sourceSessionId: ids.localSession }
+          }
+        ],
+        nextCursor: null
+      }
+    });
+    expect(
+      fixture.requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname.includes(
+            `/${inaccessibleLogicalMemoryId}/discussion`
+          )
+      )
+    ).toBe(false);
+  });
+
+  it("lists 100 owned shares with one remote read and bounded authority-store batches", async () => {
+    const remoteOwnedShares = Array.from({ length: 100 }, (_, index) => {
+      const shareGrantId = uuidFor(1_000 + index);
+      const logicalMemoryId = uuidFor(1_200 + index);
+      const remoteGrant = {
+        ...grantResponse(),
+        id: shareGrantId,
+        logicalGrantId: uuidFor(1_400 + index),
+        logicalMemoryId,
+        companionScope: {
+          ...grantResponse().companionScope,
+          logicalMemoryId,
+          shareGrantId
+        }
+      };
+      return {
+        kind: "grant" as const,
+        grant: remoteGrant,
+        sourceAccess: null,
+        summary: {
+          sourceSessionId: ids.localSession,
+          companionThreadId: ids.companion,
+          sourceTitle: `Shared source ${index + 1}`,
+          teamName: "Atlas Research",
+          workspaceName: "Launch Plans",
+          mode: "continuous" as const,
+          authorizedPreview: null,
+          lastReadyRevision: 4,
+          lastSuccessfulUpdateAt: iso
+        }
+      };
+    });
+    const fixture = createFixture({ remoteOwnedShares });
+    for (const entry of remoteOwnedShares) {
+      fixture.grants.set(entry.grant.id, {
+        ...collaborationGrant(),
+        grant: {
+          ...collaborationGrant().grant,
+          id: entry.grant.id,
+          logicalGrantId: entry.grant.logicalGrantId,
+          logicalMemoryId: entry.grant.logicalMemoryId
+        }
+      });
+    }
+
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.list_owned_shares"),
+        input: { cursor: null, limit: 100, history: false }
+      },
+      context()
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    if (!result?.ok || result.command !== "collaboration.list_owned_shares") {
+      throw new Error("Expected a batched owned-share page");
+    }
+    expect(result.data.shares).toHaveLength(100);
+    expect(fixture.resolvePreviewTargets).toHaveBeenCalledTimes(1);
+    expect(fixture.readAuthoritativeGrants).toHaveBeenCalledTimes(1);
+    expect(fixture.requests.map((request) => request.pathname)).toEqual([
+      expect.stringMatching(/device-credentials\/status$/),
+      "/v1/shared-memory/owned-shares"
+    ]);
+  });
+
+  it("binds owned-share cursors to immutable pagination context", async () => {
+    const fixture = createFixture({
+      mutateResponse: (request, response) =>
+        request.pathname.endsWith("/v1/shared-memory/owned-shares")
+          ? {
+              ...response,
+              pagination: {
+                limit: 10,
+                hasMore: true,
+                next: {
+                  createdAt: iso,
+                  recordKind: "pending",
+                  id: uuidFor(899)
+                },
+                snapshotAt: iso
+              }
+            }
+          : response
+    });
+    const first = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.list_owned_shares"),
+        input: { cursor: null, limit: 10, history: false }
+      },
+      context()
+    );
+    expect(first).toMatchObject({ ok: true });
+    if (!first?.ok || first.command !== "collaboration.list_owned_shares") {
+      throw new Error("Expected an owned-share page");
+    }
+    const cursor = first.data.nextCursor;
+    expect(cursor).toMatch(/^csms1\./);
+    const tampered = `${cursor!.slice(0, -1)}${cursor!.endsWith("A") ? "B" : "A"}`;
+
+    await expect(
+      fixture.control.dispatch(
+        {
+          ...commandBase("collaboration.list_owned_shares"),
+          input: { cursor: tampered, limit: 10, history: false }
+        },
+        context()
+      )
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "history_expired" }
+    });
+    await expect(
+      fixture.control.dispatch(
+        {
+          ...commandBase("collaboration.list_owned_shares"),
+          input: { cursor, limit: 10, history: true }
+        },
+        context()
+      )
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "history_expired" }
+    });
+  });
+
+  it("returns the retained owner-authorized preview with owned Share detail", async () => {
+    const ownedGrant = {
+      kind: "grant",
+      grant: grantResponse(),
+      sourceAccess: null,
+      summary: {
+        sourceSessionId: uuidFor(48),
+        sourceTitle: "Owner preview",
+        teamName: "Atlas Research",
+        workspaceName: "Launch Plans",
+        mode: "continuous",
+        authorizedPreview: {
+          previewId: ids.preview,
+          previewHash: hash,
+          previewRevision: 1,
+          sourceRevision: 4
+        },
+        lastReadyRevision: 4,
+        lastSuccessfulUpdateAt: iso
+      }
+    };
+    const fixture = createFixture({ remoteOwnedShares: [ownedGrant] });
+    fixture.previews.clear();
+
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.get_owned_share"),
+        input: { kind: "grant", id: ids.grant }
+      },
+      context()
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        share: {
+          kind: "grant",
+          preview: {
+            previewHash: hash,
+            sourceRevision: 4,
+            itemCount: 1
+          }
+        }
+      }
+    });
+    expect(fixture.previews.get(hash)).toMatchObject({
+      previewId: ids.preview,
+      sourceRevision: 4
+    });
+  });
+
+  it("returns the backend-authoritative preview for an activated Pending Share", async () => {
+    const pendingShareId = uuidFor(46);
+    const ownedPending = {
+      kind: "pending",
+      pendingShare: {
+        id: pendingShareId,
+        mutationId: uuidFor(47),
+        logicalGrantId: ids.logicalGrant,
+        consentId: ids.consent,
+        logicalMemoryId: ids.logicalMemory,
+        teamId: ids.team,
+        workspaceId: ids.workspace,
+        representation: "memory_events",
+        allowedRepresentations: ["memory_events"],
+        mode: "continuous",
+        sourceRevision: 4,
+        state: "activated",
+        stage: "complete",
+        workspaceAccessState: "active",
+        sourceUpdateState: "active",
+        operationVersion: 3,
+        attemptCount: 1,
+        redactedFailureCode: null,
+        lastProgressAt: iso,
+        createdAt: iso,
+        updatedAt: iso,
+        activatedAt: iso,
+        revokedAt: null,
+        grantId: ids.grant
+      },
+      sourceAccess: null,
+      summary: {
+        sourceSessionId: ids.localSession,
+        sourceTitle: "Activated owner preview",
+        teamName: "Atlas Research",
+        workspaceName: "Launch Plans",
+        mode: "continuous",
+        authorizedPreview: {
+          previewId: ids.preview,
+          previewHash: hash,
+          previewRevision: 1,
+          sourceRevision: 4
+        },
+        lastReadyRevision: 4,
+        lastSuccessfulUpdateAt: iso
+      }
+    };
+    const fixture = createFixture({ remoteOwnedShares: [ownedPending] });
+    fixture.previews.clear();
+
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.get_owned_share"),
+        input: { kind: "pending", id: pendingShareId }
+      },
+      context()
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        share: {
+          kind: "pending",
+          summary: { sourceSessionId: ids.localSession },
+          preview: {
+            previewHash: hash,
+            sourceRevision: 4,
+            itemCount: 1
+          }
+        }
+      }
+    });
+    expect(fixture.previews.get(hash)).toMatchObject({
+      previewId: ids.preview,
+      sourceRevision: 4
+    });
+  });
+
+  it("renames an owned Share and returns the refreshed local detail", async () => {
+    const ownedGrant = {
+      kind: "grant",
+      grant: grantResponse(),
+      sourceAccess: null,
+      summary: {
+        sourceSessionId: ids.localSession,
+        sourceTitle: "Owner preview",
+        teamName: "Atlas Research",
+        workspaceName: "Launch Plans",
+        mode: "continuous",
+        authorizedPreview: null,
+        lastReadyRevision: 4,
+        lastSuccessfulUpdateAt: iso
+      }
+    };
+    const fixture = createFixture({ remoteOwnedShares: [ownedGrant] });
+
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.rename_owned_share"),
+        input: { kind: "grant", id: ids.grant, title: "Launch review" }
+      },
+      context()
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      command: "collaboration.rename_owned_share",
+      data: {
+        share: { summary: { sourceTitle: "Launch review" } }
+      }
+    });
+    expect(fixture.requests).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "PATCH",
+          body: { title: "Launch review" }
+        })
+      ])
+    );
+  });
+
   it("creates an authoritative preview without accepting renderer content or secrets", async () => {
     const fixture = createFixture();
     const result = await fixture.control.dispatch(previewCommand(), context());
@@ -795,7 +1532,7 @@ describe("collaboration Shared Memory control", () => {
     expect(persisted).not.toHaveProperty("backend");
   });
 
-  it("projects trusted Shared Memory activity with Personal display metadata", async () => {
+  it("projects safe tool activity without inferring approval display from ordinary text", async () => {
     const patch =
       "*** Begin Patch\n*** Update File: src/app.ts\n@@\n-old\n+new\n*** End Patch";
     const fixture = createFixture({
@@ -811,23 +1548,6 @@ describe("collaboration Shared Memory control", () => {
             toolName: "apply_patch",
             toolCallId: "call-shared-patch",
             payload: { input: patch }
-          }
-        },
-        {
-          itemType: "assistant_message" as const,
-          schemaVersion: 1 as const,
-          sourceId: uuidFor(151),
-          sourceLogicalMemoryId: ids.logicalMemory,
-          sourceRevision: 4,
-          occurredAt: iso,
-          content: {
-            approvalReview: true,
-            text: JSON.stringify({
-              outcome: "allow",
-              rationale: "The patch is within the requested scope.",
-              risk_level: "low",
-              user_authorization: "medium"
-            })
           }
         },
         {
@@ -870,26 +1590,37 @@ describe("collaboration Shared Memory control", () => {
         }
       ]
     });
-    expect(result.data.preview.items[1]).toMatchObject({
-      sourceItems: [
-        {
-          sourceKind: "agent_message",
-          approvalDecisionDisplay: {
-            kind: "auto_approval",
-            outcome: "allow",
-            riskLevel: "low",
-            userAuthorization: "medium"
-          }
-        }
-      ]
-    });
-    const ordinaryAssistantItem = result.data.preview.items[2];
+    const ordinaryAssistantItem = result.data.preview.items[1];
     if (ordinaryAssistantItem?.representation !== "memory_events") {
       throw new Error("expected a Memory Events preview item");
     }
     expect(
       ordinaryAssistantItem.sourceItems[0]?.approvalDecisionDisplay
     ).toBeUndefined();
+  });
+
+  it("rejects a malformed remote semantic preview containing Approval Activity", async () => {
+    const fixture = createFixture({
+      previewItems: [
+        {
+          itemType: "assistant_message" as const,
+          schemaVersion: 1 as const,
+          sourceId: uuidFor(151),
+          sourceLogicalMemoryId: ids.logicalMemory,
+          sourceRevision: 4,
+          occurredAt: iso,
+          content: {
+            approvalReview: true,
+            text: "synthetic approval payload"
+          }
+        }
+      ]
+    });
+
+    expectFailure(
+      await fixture.control.dispatch(previewCommand(), context()),
+      "internal_error"
+    );
   });
 
   it("keeps an LCM preview local and retryable until the exact summary snapshot is synced", async () => {
@@ -1050,6 +1781,7 @@ describe("collaboration Shared Memory control", () => {
           previewRevision: 1,
           previewHash: hashC,
           expiresAt: null,
+          candidateSessionId: ids.localSession,
           actionGrant: { id: ids.actionGrant }
         }
       },
@@ -1058,26 +1790,96 @@ describe("collaboration Shared Memory control", () => {
     expect(changed).toMatchObject({
       ok: true,
       data: {
-        grant: { activeRepresentation: "lcm_leaves", grantVersion: 2 }
+        pendingShare: {
+          representation: "lcm_leaves",
+          workspaceAccessState: "active",
+          state: "preparing",
+          grantId: ids.grant
+        }
       }
     });
-    const changedMaterialization = changeFixture.requests.find((request) =>
-      request.pathname.endsWith("/representations/lcm_leaves")
+    const replacementRequest = changeFixture.requests.find((request) =>
+      request.pathname.endsWith("/representation-bundle")
     );
-    expect(changedMaterialization).toMatchObject({
+    expect(replacementRequest).toMatchObject({
       method: "PUT",
       body: {
         consentId: replacementConsentId,
-        expectedGrantVersion: 2,
+        expectedGrantVersion: 1,
         preview: {
           previewId: replacementPreviewId,
           previewHash: hashC
         }
       }
     });
-    expect(changedMaterialization?.body?.mutationId).toMatch(
-      /^[0-9a-f-]{36}$/i
+    expect(changeFixture.pendingSourceWork.at(-1)).toMatchObject({
+      pendingShareId: uuidFor(701),
+      localSessionId: ids.localSession
+    });
+  });
+
+  it("durably records local source preparation before accepting a Pending Share", async () => {
+    const preparePendingShareSource = vi.fn(async () => undefined);
+    const fixture = createFixture({ preparePendingShareSource });
+    const mutationId = randomUUID();
+    const result = await fixture.control.dispatch(
+      {
+        ...shareCommand(),
+        input: {
+          ...shareCommand().input,
+          mutationId,
+          candidateSessionId: ids.localSession
+        }
+      },
+      context()
     );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        pendingShare: {
+          id: uuidFor(700),
+          mutationId,
+          state: "preparing",
+          workspaceAccessState: "none"
+        }
+      }
+    });
+    expect(fixture.pendingSourceWork).toEqual([
+      {
+        pendingShareId: uuidFor(700),
+        mutationId,
+        localSessionId: ids.localSession
+      }
+    ]);
+    expect(preparePendingShareSource).toHaveBeenCalledWith({
+      backendId: "team-backend",
+      localOwnerUserId: ids.localOwner,
+      sessionId: ids.localSession,
+      pendingShareId: uuidFor(700),
+      mutationId
+    });
+  });
+
+  it("fails closed when Pending Share source work cannot be persisted", async () => {
+    const preparePendingShareSource = vi.fn(async () => undefined);
+    const fixture = createFixture({
+      persistPendingSourceWork: false,
+      preparePendingShareSource
+    });
+    const result = await fixture.control.dispatch(
+      {
+        ...shareCommand(),
+        input: {
+          ...shareCommand().input,
+          candidateSessionId: ids.localSession
+        }
+      },
+      context()
+    );
+
+    expectFailure(result, "not_available");
+    expect(preparePendingShareSource).not.toHaveBeenCalled();
   });
 
   it("loads bounded source pages through an authorized remote grant read", async () => {

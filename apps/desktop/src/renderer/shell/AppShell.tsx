@@ -65,7 +65,7 @@ export type AppShellProps = {
   routeFocusKey: string;
 };
 
-const teamInitials = (name: string): string =>
+export const teamInitials = (name: string): string =>
   name
     .trim()
     .split(/\s+/u)

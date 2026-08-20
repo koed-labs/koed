@@ -1,12 +1,15 @@
 import type {
   MemorySourceRepository,
   SharedMemoryRepresentation,
+  SharedMemoryPendingShareReviewRecord,
   SharedMemoryRepresentationChangeReviewRecord,
   SharedMemoryRevokeReviewRecord,
   SharedMemoryShareReviewRecord
 } from "@koed/db";
 import {
   sharedMemoryPreviewActionGrantBinding,
+  sharedMemoryCandidatePreviewActionGrantBinding,
+  sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryRepresentationBundleActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryShareBundleActionGrantBinding,
@@ -27,6 +30,8 @@ import type {
 } from "./action-grant-protocol.js";
 
 type SharedMemoryAction =
+  | "shared_memory.candidate_preview"
+  | "shared_memory.pending_share"
   | "shared_memory.preview"
   | "shared_memory.share"
   | "shared_memory.revoke"
@@ -42,6 +47,8 @@ export type SharedMemoryActionIntent = Extract<
 type SharedMemoryActionRepository = Pick<
   MemorySourceRepository,
   | "getSharedMemoryPreviewAdmission"
+  | "getSharedMemoryCandidatePreviewAdmission"
+  | "getSharedMemoryPendingShareReview"
   | "getSharedMemoryShareReview"
   | "getSharedMemoryRevokeReview"
   | "getSharedMemoryRepresentationChangeReview"
@@ -114,6 +121,30 @@ export const bindSharedMemoryPreviewOperation = (
     allowedRepresentations: intent.allowedRepresentations
   });
 
+export const bindSharedMemoryCandidatePreviewOperation = (
+  intent: Extract<
+    SharedMemoryActionIntent,
+    { action: "shared_memory.candidate_preview" }
+  >,
+  referenceId: string
+): HighRiskResolvedActionGrantOperation =>
+  sharedMemoryCandidatePreviewActionGrantBinding({
+    referenceId,
+    logicalMemoryId: intent.logicalMemoryId,
+    candidateHash: intent.candidateHash,
+    sourceRevision: intent.sourceRevision,
+    itemCount: intent.itemCount,
+    excludedItemCount: intent.excludedItemCount,
+    manifest: intent.manifest,
+    byteCount: intent.byteCount,
+    teamId: intent.teamId,
+    teamWorkspaceId: intent.teamWorkspaceId,
+    representation: intent.representation,
+    allowedRepresentations: intent.allowedRepresentations,
+    mode: intent.mode,
+    expiresAt: intent.expiresAt
+  });
+
 export const bindSharedMemoryShareOperation = (
   intent: Extract<SharedMemoryActionIntent, { action: "shared_memory.share" }>,
   referenceId: string
@@ -132,7 +163,33 @@ export const bindSharedMemoryShareOperation = (
     selectedRepresentation: intent.selectedRepresentation,
     previewRevision: intent.previewRevision,
     previewHash: intent.previewHash,
-    expiresAt: intent.expiresAt
+    expiresAt: intent.expiresAt,
+    title: intent.title
+  });
+
+export const bindSharedMemoryPendingShareOperation = (
+  intent: Extract<
+    SharedMemoryActionIntent,
+    { action: "shared_memory.pending_share" }
+  >,
+  referenceId: string
+): HighRiskResolvedActionGrantOperation =>
+  sharedMemoryPendingShareActionGrantBinding({
+    referenceId,
+    mutationId: intent.mutationId,
+    logicalGrantId: intent.logicalGrantId,
+    logicalMemoryId: intent.logicalMemoryId,
+    teamId: intent.teamId,
+    teamWorkspaceId: intent.teamWorkspaceId,
+    consentId: intent.consentId,
+    previewId: intent.previewId,
+    mode: intent.mode,
+    allowedRepresentations: intent.allowedRepresentations,
+    selectedRepresentation: intent.selectedRepresentation,
+    previewRevision: intent.previewRevision,
+    previewHash: intent.previewHash,
+    expiresAt: intent.expiresAt,
+    title: intent.title
   });
 
 export const bindSharedMemoryRevokeOperation = (
@@ -207,8 +264,11 @@ export const bindConversationSourceRevokeOperation = (
   });
 
 const shareReview = (
-  review: SharedMemoryShareReviewRecord,
-  intent: Extract<SharedMemoryActionIntent, { action: "shared_memory.share" }>
+  review: SharedMemoryShareReviewRecord | SharedMemoryPendingShareReviewRecord,
+  intent: Extract<
+    SharedMemoryActionIntent,
+    { action: "shared_memory.share" | "shared_memory.pending_share" }
+  >
 ): ActionApprovalPolicy =>
   reviewed(
     intent.selectedRepresentation === "memory_events"
@@ -356,6 +416,31 @@ const previewDefinition = {
   }
 };
 
+const candidatePreviewDefinition = {
+  operationFamily: "share_grant_management" as const,
+  async admit(input: SharedMemoryAdmissionInput) {
+    if (input.intent.action !== "shared_memory.candidate_preview") return null;
+    const admitted =
+      await input.repository.getSharedMemoryCandidatePreviewAdmission(
+        { userId: input.userId },
+        {
+          teamId: input.intent.teamId,
+          teamWorkspaceId: input.intent.teamWorkspaceId,
+          representation: input.intent.representation,
+          allowedRepresentations: input.intent.allowedRepresentations
+        }
+      );
+    if (!admitted) unavailable("Shared Memory candidate preview");
+    return {
+      operation: bindSharedMemoryCandidatePreviewOperation(
+        input.intent,
+        input.clientRequestId
+      ),
+      policy: previewPolicy()
+    };
+  }
+};
+
 const shareDefinition = {
   operationFamily: "share_grant_management" as const,
   async admit(input: SharedMemoryAdmissionInput) {
@@ -383,6 +468,41 @@ const shareDefinition = {
     );
     return {
       operation: bindSharedMemoryShareOperation(
+        input.intent,
+        input.clientRequestId
+      ),
+      policy: shareReview(review, input.intent)
+    };
+  }
+};
+
+const pendingShareDefinition = {
+  operationFamily: "share_grant_management" as const,
+  async admit(input: SharedMemoryAdmissionInput) {
+    if (input.intent.action !== "shared_memory.pending_share") return null;
+    const review = requireReview(
+      await input.repository.getSharedMemoryPendingShareReview(
+        { userId: input.userId },
+        {
+          logicalMemoryId: input.intent.logicalMemoryId,
+          logicalGrantId: input.intent.logicalGrantId,
+          teamId: input.intent.teamId,
+          teamWorkspaceId: input.intent.teamWorkspaceId,
+          consentId: input.intent.consentId,
+          preview: {
+            previewId: input.intent.previewId,
+            previewHash: input.intent.previewHash
+          },
+          previewRevision: input.intent.previewRevision,
+          selectedRepresentation: input.intent.selectedRepresentation,
+          allowedRepresentations: input.intent.allowedRepresentations,
+          expiresAt: input.intent.expiresAt
+        }
+      ),
+      "Pending Share acceptance"
+    );
+    return {
+      operation: bindSharedMemoryPendingShareOperation(
         input.intent,
         input.clientRequestId
       ),
@@ -534,6 +654,8 @@ const conversationSourceRevokeDefinition = {
 };
 
 export const sharedMemoryActionDefinitions = {
+  "shared_memory.candidate_preview": candidatePreviewDefinition,
+  "shared_memory.pending_share": pendingShareDefinition,
   "shared_memory.preview": previewDefinition,
   "shared_memory.share": shareDefinition,
   "shared_memory.revoke": revokeDefinition,

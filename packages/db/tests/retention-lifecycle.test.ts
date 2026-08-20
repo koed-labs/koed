@@ -888,17 +888,38 @@ describeDb("retention lifecycle repository", () => {
          scope, kind, team_id, team_workspace_id, system_key, created_by_user_id
        ) values (
          'team', 'workspace_channel', $1, $2, 'workspace.general', $3
-       ) returning id`,
+      ) returning id`,
       [fixture.teamId, fixture.teamWorkspaceId, fixture.userId]
+    );
+    const audienceMembers = [fixture.userId, fixture.secondUserId].sort();
+    await pool.query(
+      `insert into collaboration_thread_audiences (
+         thread_id, version, member_set_hash
+       ) values ($1, 1, $2)`,
+      [
+        thread.rows[0]!.id,
+        hash(
+          `koed:collaboration:audience-members:v1\n${JSON.stringify(audienceMembers)}`
+        )
+      ]
+    );
+    await pool.query(
+      `insert into collaboration_thread_audience_members (
+         thread_id, audience_version, user_id
+       )
+       select $1, 1, member.user_id
+       from unnest($2::uuid[]) as member(user_id)`,
+      [thread.rows[0]!.id, audienceMembers]
     );
     const message = await pool.query<{ id: string }>(
       `insert into collaboration_messages (
-         thread_id, thread_sequence, scope, team_id, team_workspace_id,
+         thread_id, thread_sequence, audience_version, scope, team_id,
+         team_workspace_id,
          sender_kind, sender_principal_id, sender_user_id,
          idempotency_key_hash, request_hash, body_marker, metadata_marker,
          provenance_kind, provenance_id, provenance_marker
        ) values (
-         $1, 1, 'team', $2, $3, 'user', $4, $4, $5, $6,
+         $1, 1, 1, 'team', $2, $3, 'user', $4, $4, $5, $6,
          '[koed encrypted collaboration message]',
          '[koed encrypted collaboration metadata]',
          'fixture', $7, '[koed encrypted collaboration provenance]'

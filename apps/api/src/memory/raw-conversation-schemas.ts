@@ -219,14 +219,15 @@ const conversationItemSchema = z
     visibility: rawVisibilitySchema.optional(),
     sessionId: z.string().uuid().optional(),
     turnId: z.string().uuid().optional(),
-    sourceKind: z.enum(["codex", "codex-cli", "claude-code"]),
+    sourceKind: z.enum(["codex", "codex-cli", "claude-code", "pi"]),
     sourceAdapterVersion: z.enum([
       "codex-transcript-v1",
       "codex-hook-signal-v1",
       "codex-app-server-conversation-v1",
       "codex-app-server-v1",
       "claude-code-transcript-v1",
-      "claude-code-hook-signal-v1"
+      "claude-code-hook-signal-v1",
+      "pi-session-v1"
     ]),
     sourceTransport: z.enum([
       "transcript",
@@ -297,7 +298,9 @@ const conversationItemSchema = z
         artifactFormat:
           item.sourceKind === "claude-code"
             ? "claude_session_jsonl"
-            : "codex_rollout_jsonl",
+            : item.sourceKind === "pi"
+              ? "pi_session_jsonl"
+              : "codex_rollout_jsonl",
         artifactFormatVersion: 1,
         sourceAdapterVersion: item.sourceAdapterVersion
       })
@@ -389,7 +392,8 @@ const conversationItemSchema = z
       "codex-app-server-conversation-v1": ["app_server"],
       "codex-app-server-v1": ["app_server"],
       "claude-code-transcript-v1": ["transcript"],
-      "claude-code-hook-signal-v1": ["hook_signal"]
+      "claude-code-hook-signal-v1": ["hook_signal"],
+      "pi-session-v1": ["transcript"]
     }[item.sourceAdapterVersion];
     if (!allowedTransports.includes(item.sourceTransport)) {
       context.addIssue({
@@ -675,7 +679,7 @@ export const tokenUsageSchema = z.object({
   toolEventId: z.string().uuid().optional(),
   memoryEventId: z.string().uuid().optional(),
   sourceReferences: z.array(tokenUsageSourceReferenceSchema).max(20).optional(),
-  sourceRuntime: z.enum(["codex", "codex-cli", "claude-code"]).optional(),
+  sourceRuntime: z.enum(["codex", "codex-cli", "claude-code", "pi"]).optional(),
   sourceKind: z.string().min(1).optional(),
   sourceAdapterVersion: z.string().min(1).optional(),
   usageSource: z

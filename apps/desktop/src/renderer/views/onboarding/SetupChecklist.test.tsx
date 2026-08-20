@@ -76,6 +76,9 @@ const setupFixture = (
     "verification"
   ].map((id, index) => ({
     completedBytes: id === "model" && state === "running" ? 25 : null,
+    ...(id === "integration"
+      ? { detectedAiClients: ["Codex", "Claude Code", "Pi"] }
+      : {}),
     id: id as DesktopSetupSnapshot["stages"][number]["id"],
     message:
       id === "model" && state === "running"
@@ -134,6 +137,36 @@ describe("SetupChecklist", () => {
     });
   });
 
+  it("keeps onboarding open for a detected AI Client that still needs setup", () => {
+    const status = {
+      ...statusFixture("healthy"),
+      claudeCode: {
+        ...component("not_configured"),
+        configured: false,
+        detected: true
+      },
+      pi: {
+        ...component("healthy"),
+        configured: true,
+        detected: true
+      }
+    };
+
+    const integration = setupStepsFromStatus(status).find(
+      ({ id }) => id === "integration"
+    );
+    expect(integration?.components.map(({ label }) => label)).toEqual([
+      "API Token",
+      "MCP Server",
+      "Capture Hook",
+      "Codex",
+      "Claude Code",
+      "Pi"
+    ]);
+    expect(integration?.action?.command).toBe("setup_claude");
+    expect(setupIsReady(status)).toBe(false);
+  });
+
   it("reserves the compact error state for confirmed attention", () => {
     expect(compactHealthSummary(statusFixture("not_configured"))).toEqual({
       label: "Koed is starting",
@@ -174,6 +207,8 @@ describe("SetupChecklist", () => {
 
     expect(inspect).toHaveBeenCalledOnce();
     expect(container.textContent).toContain("Koed package");
+    expect(container.textContent).toContain("Claude Code detected");
+    expect(container.textContent).toContain("Pi detected");
     expect(container.textContent).toContain("Complete");
     expect(container.querySelectorAll('[data-state="pending"]')).toHaveLength(
       4

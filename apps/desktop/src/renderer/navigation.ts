@@ -1,5 +1,6 @@
 export type PersonalRoute =
   | { kind: "personal-memory-projects" }
+  | { kind: "personal-memory-shares"; shareKey?: string }
   | { kind: "personal-memory-project"; projectId: string }
   | {
       kind: "personal-memory-session";
@@ -145,6 +146,10 @@ export const routePath = (route: DesktopRoute): string => {
       return "/inbox";
     case "personal-memory-projects":
       return "/personal/memory/projects";
+    case "personal-memory-shares":
+      return route.shareKey
+        ? `/personal/memory/shares/${encodeURIComponent(route.shareKey)}`
+        : "/personal/memory/shares";
     case "personal-memory-project":
       return `/personal/memory/projects/${encodeURIComponent(route.projectId)}`;
     case "personal-memory-session":

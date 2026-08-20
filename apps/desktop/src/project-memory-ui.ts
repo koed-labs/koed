@@ -2,7 +2,7 @@ export type DesktopThreadGroup = {
   id: string;
   name: string;
   sessionId?: string | null;
-  sourceAiClient?: "codex" | "codex-cli" | "claude-code" | null;
+  sourceAiClient?: "codex" | "codex-cli" | "claude-code" | "pi" | null;
   projectId: string;
   projectName: string;
   projectPath?: string | null;

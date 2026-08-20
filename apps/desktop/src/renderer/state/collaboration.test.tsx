@@ -4,6 +4,7 @@ import type {
   CollaborationSelection,
   CollaborationSnapshot
 } from "@koed/shared/collaboration";
+import { COLLABORATION_CONTRACT_VERSION } from "@koed/shared/collaboration";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,7 +18,7 @@ const selection: CollaborationSelection = { kind: "personal_memory" };
 
 const snapshot = (revision: number): CollaborationSnapshot =>
   ({
-    contractVersion: 3,
+    contractVersion: COLLABORATION_CONTRACT_VERSION,
     snapshotRevision: revision,
     generatedAt: "2026-07-23T00:00:00.000Z",
     connection: {

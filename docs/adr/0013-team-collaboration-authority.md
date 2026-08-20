@@ -226,6 +226,11 @@ enabled and disabled together by the atomic switch.
 - Remote API, local `koed-server`, Electron main/preload, and renderer negotiate
   explicit capability and protocol versions. Unsupported or stale capability
   combinations fail closed for Team operations while Personal remains usable.
+- Collaboration contract version 4 is an atomic compatibility boundary for the
+  staged Shared Memory result shapes. Deploy the authority before local
+  `koed-server` and Desktop. Version 3 subscriptions must obtain a fresh
+  authorized snapshot; they do not replay protected version 3 payloads into a
+  version 4 client.
 - The atomic server-side gate removes Team route, broker, IPC, and subscription
   admission together without deleting retained data or weakening authorization.
   Retention enforcement continues independently of product admission.

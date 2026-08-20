@@ -8,12 +8,15 @@ import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
 import {
   BookText,
   Brain,
+  Check,
   ChevronDown,
   CircleAlert,
   GitFork,
   LoaderCircle,
   MonitorSmartphone,
-  Send
+  Pencil,
+  Send,
+  X
 } from "lucide-react";
 import {
   useCallback,
@@ -120,13 +123,58 @@ const projectActivity = (project: PersonalDesktopProject): string | null =>
     .sort()
     .at(-1) ?? null;
 
-const sourceAiClientLabel = (
+const sourceAiClientIdentity = (
   source: PersonalDesktopProjectThread["sourceAiClient"]
-): string | null => {
-  if (source === "codex") return "Codex";
-  if (source === "codex-cli") return null;
+): { id: "claude" | "codex" | "pi"; label: string } | null => {
+  if (source === "codex" || source === "codex-cli") {
+    return { id: "codex", label: "Codex" };
+  }
+  if (source === "claude-code") {
+    return { id: "claude", label: "Claude Code" };
+  }
+  if (source === "pi") return { id: "pi", label: "Pi" };
   return null;
 };
+
+function PiSourceLogo() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path d="M4 3h11v3H8v4h7V6h4v7H8v8H4V3Zm11 13h4v5h-4v-5Z" />
+    </svg>
+  );
+}
+
+function AiClientSourceMark({
+  source
+}: {
+  source: PersonalDesktopProjectThread["sourceAiClient"];
+}) {
+  const identity = sourceAiClientIdentity(source);
+  if (!identity) {
+    return (
+      <span className="personal-memory-mark" aria-hidden="true">
+        ◇
+      </span>
+    );
+  }
+  return (
+    <span
+      aria-label={`Captured with ${identity.label}`}
+      className="personal-memory-mark personal-ai-client-mark"
+      data-client={identity.id}
+      role="img"
+      title={identity.label}
+    >
+      {identity.id === "pi" ? (
+        <PiSourceLogo />
+      ) : identity.id === "claude" ? (
+        <span aria-hidden="true">✳</span>
+      ) : (
+        <span aria-hidden="true">C</span>
+      )}
+    </span>
+  );
+}
 
 function ProjectRow({
   project,
@@ -307,9 +355,6 @@ function SessionRow({
   onSelect: () => void;
   thread: PersonalDesktopProjectThread;
 }) {
-  const source = thread.sessionId
-    ? sourceAiClientLabel(thread.sourceAiClient)
-    : null;
   return (
     <button
       className="personal-session-row"
@@ -317,13 +362,12 @@ function SessionRow({
       onClick={onSelect}
       type="button"
     >
-      <span className="personal-memory-mark" aria-hidden="true">
-        ◇
-      </span>
+      <AiClientSourceMark
+        source={thread.sessionId ? thread.sourceAiClient : null}
+      />
       <span className="personal-session-copy">
         <span>
           <strong>{thread.name || "Untitled session"}</strong>
-          {source ? <small>{source}</small> : null}
           {thread.invalidatedCount ? (
             <small className="personal-invalidated-label">
               {thread.invalidatedCount} invalidated
@@ -1266,14 +1310,125 @@ function SessionDetail({
   thread: PersonalDesktopProjectThread;
   pendingCanonicalConversation: boolean;
 }) {
+  const title = thread.name || "Untitled session";
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(title);
+  const [titleBusy, setTitleBusy] = useState(false);
+  const [titleError, setTitleError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!editingTitle) setTitleDraft(title);
+  }, [editingTitle, title]);
+
+  const cancelTitleEdit = () => {
+    setTitleDraft(title);
+    setTitleError(null);
+    setEditingTitle(false);
+  };
+
+  const saveTitle = async () => {
+    const nextTitle = titleDraft.trim();
+    if (!thread.sessionId || titleBusy) return;
+    if (!nextTitle) {
+      setTitleError("Enter a name for this Captured Session.");
+      return;
+    }
+    if (nextTitle === title) {
+      cancelTitleEdit();
+      return;
+    }
+    setTitleBusy(true);
+    setTitleError(null);
+    try {
+      await store.updateSessionTitle({
+        sessionId: thread.sessionId,
+        title: nextTitle
+      });
+      setEditingTitle(false);
+    } catch {
+      setTitleError("Koed could not rename this Captured Session.");
+    } finally {
+      setTitleBusy(false);
+    }
+  };
+
   return (
     <section className="personal-session-detail">
       <header>
         <div>
           <small>{project.name} · Private to you</small>
-          <h2 data-personal-route-focus="session" tabIndex={-1}>
-            {thread.name || "Untitled session"}
-          </h2>
+          {editingTitle ? (
+            <form
+              className="personal-session-title-editor"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveTitle();
+              }}
+            >
+              <label className="sr-only" htmlFor="personal-session-title">
+                Captured Session name
+              </label>
+              <input
+                autoFocus
+                disabled={titleBusy}
+                id="personal-session-title"
+                maxLength={120}
+                onChange={(event) => setTitleDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") cancelTitleEdit();
+                }}
+                value={titleDraft}
+              />
+              <button
+                aria-label="Save Captured Session name"
+                disabled={titleBusy}
+                type="submit"
+              >
+                {titleBusy ? (
+                  <LoaderCircle
+                    aria-hidden="true"
+                    className="personal-session-title-spinner"
+                  />
+                ) : (
+                  <Check aria-hidden="true" />
+                )}
+              </button>
+              <button
+                aria-label="Cancel Captured Session rename"
+                disabled={titleBusy}
+                onClick={cancelTitleEdit}
+                type="button"
+              >
+                <X aria-hidden="true" />
+              </button>
+            </form>
+          ) : (
+            <div className="personal-session-title-row">
+              <h2 data-personal-route-focus="session" tabIndex={-1}>
+                {title}
+              </h2>
+              {thread.sessionId ? (
+                <button
+                  aria-label="Rename Captured Session"
+                  className="personal-session-title-edit"
+                  onClick={() => {
+                    setTitleDraft(title);
+                    setTitleError(null);
+                    setEditingTitle(true);
+                  }}
+                  title="Rename Captured Session"
+                  type="button"
+                >
+                  <Pencil aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+          )}
+          {titleError ? (
+            <p className="personal-session-title-error" role="alert">
+              {titleError}
+            </p>
+          ) : null}
           <p
             aria-label={countLabel(thread.eventCount, "Memory Event")}
             className="personal-memory-event-count"

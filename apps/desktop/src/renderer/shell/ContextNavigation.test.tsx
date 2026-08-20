@@ -45,19 +45,51 @@ describe("context navigation", () => {
           onCreateChannel={vi.fn()}
           onOpenNotes={vi.fn()}
           onOpenProjects={vi.fn()}
+          onOpenShares={vi.fn()}
           onSelectChannel={vi.fn()}
           projectsSelected
+          sharesSelected={false}
         />
       )
     );
     expect(container.textContent).toContain("Private to you");
     expect(container.textContent).toContain("Ask Memory");
+    expect(container.textContent).toContain("Shares");
     expect(container.textContent).not.toContain("Unavailable");
     expect(container.textContent).toContain("Channels");
     expect(container.textContent).toContain("Archived");
     expect(
       container.querySelector('[aria-current="page"]')?.textContent
     ).toContain("Projects");
+  });
+
+  it("mutes unavailable Shares without disabling navigation", async () => {
+    const onOpenShares = vi.fn();
+    await act(async () =>
+      root.render(
+        <PersonalContextNavigation
+          channels={[]}
+          notesSelected={false}
+          onCreateChannel={vi.fn()}
+          onOpenNotes={vi.fn()}
+          onOpenProjects={vi.fn()}
+          onOpenShares={onOpenShares}
+          onSelectChannel={vi.fn()}
+          projectsSelected={false}
+          sharesSelected
+          sharesUnavailable
+        />
+      )
+    );
+
+    const shares = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Shares"
+    ) as HTMLButtonElement;
+    expect(shares.dataset.unavailable).toBe("true");
+    expect(shares.disabled).toBe(false);
+
+    await act(async () => shares.click());
+    expect(onOpenShares).toHaveBeenCalledOnce();
   });
 
   it("renders Team, Workspace, channel, DM, People, and Shared Memory hierarchy", async () => {

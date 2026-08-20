@@ -23,6 +23,47 @@ describe("Desktop status model", () => {
     );
   });
 
+  it("offers setup and repair for optional Pi and Claude Code integrations", () => {
+    const card = statusCards.find((entry) => entry.id === "piIntegration");
+
+    expect(statusComponentKeys).toContain("pi");
+    expect(componentDefinitions.pi.label).toBe("Pi configuration");
+    expect(card).toMatchObject({
+      componentKeys: ["pi"],
+      primaryAction: { command: "repair_pi" }
+    });
+    expect(
+      recoveryActionForStatusComponent("pi", "not_configured")
+    ).toMatchObject({
+      label: "Set up Pi integration",
+      command: "setup_pi"
+    });
+    expect(
+      recoveryActionForStatusComponent("pi", "needs_attention")
+    ).toMatchObject({
+      label: "Repair Pi integration",
+      command: "repair_pi"
+    });
+
+    const claudeCard = statusCards.find(
+      (entry) => entry.id === "claudeIntegration"
+    );
+    expect(statusComponentKeys).toContain("claudeCode");
+    expect(componentDefinitions.claudeCode.label).toBe(
+      "Claude Code configuration"
+    );
+    expect(claudeCard).toMatchObject({
+      componentKeys: ["claudeCode"],
+      primaryAction: { command: "repair_claude" }
+    });
+    expect(
+      recoveryActionForStatusComponent("claudeCode", "not_configured")
+    ).toMatchObject({
+      label: "Set up Claude Code integration",
+      command: "setup_claude"
+    });
+  });
+
   it("presents local readiness as User outcomes", () => {
     expect(statusGroups.map((group) => group.title)).toEqual([
       "Capture",

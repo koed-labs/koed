@@ -295,6 +295,12 @@
   font-weight: 700;
 }
 
+.desktop-sidebar-nav-item[data-unavailable],
+.desktop-sidebar-nav-item[data-unavailable]:hover,
+.desktop-sidebar-nav-item[data-unavailable][data-selected] {
+  color: var(--muted-foreground);
+}
+
 .desktop-sidebar-nav-icon {
   display: grid;
   place-items: center;

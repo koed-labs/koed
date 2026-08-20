@@ -26,6 +26,9 @@ export const createPostgresCollaborationSharedMemoryAuthorityStore = (
     bindEnrollment: repository.bindEnrollment,
     revokeEnrollment: repository.revokeEnrollment,
     revokeBackendEnrollments: repository.revokeBackendEnrollments,
-    bindCompanionSession: repository.bindCompanionSession
+    bindCompanionSession: repository.bindCompanionSession,
+    persistPendingShareSourceWork: repository.persistPendingShareSourceWork,
+    claimPendingShareSourceWork: repository.claimPendingShareSourceWork,
+    finishPendingShareSourceWork: repository.finishPendingShareSourceWork
   });
 };

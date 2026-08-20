@@ -16,3 +16,4 @@ export {
   type WorkspaceShareCandidate
 } from "./adapters.js";
 export { usePersonalMemoryDetail } from "./use-personal-memory-detail.js";
+export { SharesStatusView } from "./SharesStatusView.js";

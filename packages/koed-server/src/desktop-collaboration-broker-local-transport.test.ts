@@ -293,6 +293,55 @@ describe("Desktop collaboration local transport", () => {
     expect(resolveConnection).toHaveBeenCalledWith(false, undefined);
   });
 
+  it("keeps shared-memory candidate previews on the Personal local path", async () => {
+    const resolveConnection = vi.fn(async (requiresTeamBackend: boolean) =>
+      requiresTeamBackend ? connection : personalConnection
+    );
+    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        upstream_backend_id?: string;
+        command: CollaborationRendererCommand;
+      };
+      expect(body.upstream_backend_id).toBeUndefined();
+      return Response.json({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: body.command.requestId,
+        command: body.command.command,
+        ok: false,
+        error: {
+          code: "not_available",
+          userMessage: collaborationSafeErrorMessages.not_available,
+          retryable: false,
+          retryAfterMs: null
+        }
+      });
+    });
+    const transport = createDesktopCollaborationBrokerLocalTransport({
+      fetch: fetchMock,
+      resolveConnection
+    });
+    const command = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId,
+      command: "collaboration.preview_shared_memory_candidate",
+      input: {
+        sessionId: "00000000-0000-4000-8000-000000000008",
+        representation: "memory_events"
+      }
+    });
+
+    await expect(transport.request(command, context())).resolves.toMatchObject({
+      requestId,
+      command: "collaboration.preview_shared_memory_candidate",
+      ok: false,
+      error: { code: "not_available" }
+    });
+    expect(resolveConnection).toHaveBeenCalledWith(false, undefined);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      command
+    });
+  });
+
   it.each([
     { kind: "team_people" as const, teamId },
     {

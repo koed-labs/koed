@@ -28,6 +28,10 @@ test("claude configure writes credential-free hooks and KOED_HOME-only MCP confi
   const koedHome = path.join(directory, "koed home");
   const settingsPath = path.join(directory, ".claude", "settings.json");
   const claudeArgsPath = path.join(directory, "claude-args.jsonl");
+  const claudeEnvironmentPath = path.join(
+    directory,
+    "claude-environment.jsonl"
+  );
   const claudeExecutable = path.join(directory, "claude-fixture.mjs");
   mkdirSync(path.join(directory, "packages/mcp-server/dist"), {
     recursive: true
@@ -42,8 +46,10 @@ test("claude configure writes credential-free hooks and KOED_HOME-only MCP confi
     [
       "#!/usr/bin/env node",
       'import { appendFileSync } from "node:fs";',
-      "appendFileSync(process.env.CLAUDE_ARGS_FILE, `${JSON.stringify(process.argv.slice(2))}\\n`);",
-      'if (process.argv[2] === "auth") console.log(JSON.stringify({ loggedIn: true }));'
+      `appendFileSync(${JSON.stringify(claudeArgsPath)}, \`${"${JSON.stringify(process.argv.slice(2))}"}\\n\`);`,
+      `appendFileSync(${JSON.stringify(claudeEnvironmentPath)}, JSON.stringify({ MEMORY_API_TOKEN: process.env.MEMORY_API_TOKEN, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY, OPENAI_API_KEY: process.env.OPENAI_API_KEY }) + "\\n");`,
+      'if (process.argv[2] === "auth") console.log(JSON.stringify({ loggedIn: true }));',
+      'if (process.argv[2] === "mcp" && process.argv[3] === "get") process.exit(1);'
     ].join("\n")
   );
   chmodSync(claudeExecutable, 0o700);
@@ -59,6 +65,8 @@ test("claude configure writes credential-free hooks and KOED_HOME-only MCP confi
         KOED_HOME: koedHome,
         MEMORY_API_TOKEN: "must-not-be-copied",
         MEMORY_API_URL: "https://must-not-be-copied.example",
+        ANTHROPIC_API_KEY: "must-not-be-copied",
+        OPENAI_API_KEY: "must-not-be-copied",
         MEMORY_NODE_COMMAND: "node"
       }
     });
@@ -74,6 +82,11 @@ test("claude configure writes credential-free hooks and KOED_HOME-only MCP confi
     assert.ok(add.includes(`KOED_HOME=${koedHome}`));
     assert.doesNotMatch(JSON.stringify(add), /MEMORY_API_(TOKEN|URL)/);
     assert.doesNotMatch(JSON.stringify(add), /must-not-be-copied/);
+    for (const line of readFileSync(claudeEnvironmentPath, "utf8")
+      .trim()
+      .split("\n")) {
+      assert.deepEqual(JSON.parse(line), {});
+    }
 
     const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
     for (const eventName of [
@@ -99,6 +112,62 @@ test("claude configure writes credential-free hooks and KOED_HOME-only MCP confi
         /MEMORY_API_(TOKEN|URL)/
       );
     }
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("claude configure preserves an unrelated user-scoped MCP name collision", async () => {
+  const directory = path.join(
+    realpathSync(tmpdir()),
+    `koed-configure-claude-collision-${process.pid}-${Date.now()}`
+  );
+  const argsPath = path.join(directory, "claude-args.jsonl");
+  const executable = path.join(directory, "claude-fixture.mjs");
+  mkdirSync(path.join(directory, "packages/mcp-server/dist"), {
+    recursive: true
+  });
+  writeFileSync(path.join(directory, "packages/mcp-server/dist/cli.js"), "");
+  writeFileSync(
+    path.join(directory, "packages/mcp-server/dist/capture-hook.js"),
+    ""
+  );
+  writeFileSync(
+    executable,
+    [
+      "#!/usr/bin/env node",
+      'import { appendFileSync } from "node:fs";',
+      `appendFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");`,
+      'if (process.argv[2] === "auth") process.exit(0);',
+      'if (process.argv[2] === "mcp" && process.argv[3] === "get") { console.log("koed:\\n  Type: stdio\\n  Command: node\\n  Args: /other/mcp-server/dist/cli.js\\n  Environment:\\n    KOED_HOME=/other"); process.exit(0); }'
+    ].join("\n")
+  );
+  chmodSync(executable, 0o700);
+
+  try {
+    await assert.rejects(
+      execFileAsync(process.execPath, [scriptPath], {
+        cwd: directory,
+        env: {
+          ...process.env,
+          HOME: directory,
+          KOED_CLAUDE_CODE_EXECUTABLE: executable,
+          KOED_HOME: path.join(directory, "koed")
+        }
+      }),
+      /unrelated user-scoped MCP server/
+    );
+    const invocations = readFileSync(argsPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(
+      invocations.some(
+        (args) =>
+          args[0] === "mcp" && (args[1] === "remove" || args[1] === "add")
+      ),
+      false
+    );
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }

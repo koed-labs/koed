@@ -580,6 +580,30 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: read
   },
+  "collaboration.list_owned_shares": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.get_owned_share": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.rename_owned_share": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.control_pending_share": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.share_conversation_source": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.revoke_conversation_source": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
   "collaboration.prepare_shared_memory_source": {
     scope: "team",
     desktopOperationFamily: write
@@ -595,6 +619,10 @@ export const collaborationCommandRegistry = {
   "collaboration.revoke_shared_memory_sync": {
     scope: "team",
     desktopOperationFamily: write
+  },
+  "collaboration.preview_shared_memory_candidate": {
+    scope: "personal",
+    desktopOperationFamily: read
   },
   "collaboration.preview_shared_memory": {
     scope: "team",

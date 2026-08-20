@@ -8,8 +8,8 @@ AI Runtime.
 
 ## Services In Scope
 
-- **AI Client**: Codex is the supported AI Client in this build.
-- **Transcript Watcher**: the local background service that owns correctness for externally managed Codex transcript growth.
+- **AI Client**: Codex, Claude Code, and Pi are supported AI Clients in this build.
+- **Transcript Watcher**: local background service that owns correctness for externally managed Codex, Claude, or Pi Conversation source growth.
 - **Capture Hook**: the TypeScript hook that provides content-free, low-latency wake signals.
 - **MCP Server**: a thin local MCP `2026-07-28` adapter that exposes Koed tools
   and forwards typed requests to the Local AI Runtime.
@@ -122,8 +122,9 @@ AI Runtime.
 8. `koed-server status --json` and `koed-server doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker process state, local API Token configuration, MCP Server doctor
-   output, Supported Capture Hook config, Codex config, LCM Summary Service
-   availability, and last verification metadata. Status compares the active
+   output, Supported Capture Hook config, per-client Codex, Claude Code, and Pi
+   config, LCM Summary Service availability, and last verification metadata.
+   Status compares the active
    local API URL/token against the Koed-managed Codex MCP block and separately
    verifies the credential-free Capture Hook command path. MCP configuration
    contains `KOED_HOME` rather than API credentials. Stale ports,
@@ -132,7 +133,10 @@ AI Runtime.
    current migrations, pgvector, local or BullMQ queue backend availability,
    and Embedding Service model/dimension compatibility. Historical-import
    backlog and aggregate Transcript Watcher process/status data are diagnostic
-   only, never readiness gates.
+   only, never readiness gates. Claude Code and Pi integration checks are also
+   optional diagnostics: selecting one for capture, Recall, or local Synthesis
+   requires that client to be healthy, but their absence does not make the core
+   Koed runtime or another AI Client unhealthy.
 9. `koed-server setup codex --json` wraps the existing guided bootstrap path so
    Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
    local credential, verification, and doctor setup can be invoked through
@@ -147,9 +151,18 @@ AI Runtime.
    both mint the token through the active runtime repository with the same
    database and token pepper used by the API; Electron main only retains and
    rereads that supervisor-owned credential.
+   `koed-server setup claude --json` independently verifies Claude Code version
+   and sign-in, then preserves unrelated user settings while installing Koed's
+   MCP and Supported Capture Hook entries. `koed-server setup pi --json`
+   independently registers Koed's stable local package in the active Pi
+   profile after canonical executable and authenticated-model checks. Both
+   commands are idempotent and use strict subprocess environment allowlists.
+   Claude setup replaces only an MCP entry proven to be Koed-owned; Pi's
+   installed package derives custom `KOED_HOME` from its stable package path.
 10. Koed Desktop can start/connect to the same headless command surface, run
     the first-launch Codex bootstrap and health-check sequence, poll status,
-    offer one-click Codex integration repair for stale local config, and
+    offer one-click Codex repair plus explicitly confirmed, optional Claude Code
+    and Pi setup/repair for stale local config, and
     provision the embedding model through `koed-server models status/install
 --json` in bundled-local mode without requiring the Operator to invoke
     repo-local scripts directly. Its Project and Captured Session navigation is
@@ -938,8 +951,9 @@ sequenceDiagram
    reported to the LLM for one repair attempt. A partial repair retains the
    valid summary and valid grounded anchors and drops anything still invalid.
    Other unsupported worker output fails at the worker boundary.
-6. The LCM worker runs the selected local AI Client. Codex uses app-server mode;
-   Claude uses the pinned Agent SDK and confirmed local Claude Code executable.
+6. LCM worker runs selected local AI Client. Codex uses app-server mode; Claude
+   uses pinned Agent SDK and confirmed local Claude Code executable; Pi uses
+   isolated strict-LF RPC with no persistent session or user/project resources.
    The worker parses the returned structured LCM Summary.
 7. App-server workflow telemetry is persisted as raw-only conversation items,
    and provider token usage is recorded for attribution.
@@ -1275,8 +1289,9 @@ grant-based visibility model.
    authority-row versions. The MCP Server forwards it on every later search and
    expansion; the model cannot alter it.
 3. The Local AI Runtime starts a memory-answer worker through the selected AI
-   Client. Codex uses app-server mode; Claude uses the pinned Agent SDK and
-   confirmed local Claude Code executable. The worker receives the original
+   Client. Codex uses app-server mode; Claude uses pinned Agent SDK and
+   confirmed local Claude Code executable; Pi uses isolated strict-LF RPC and
+   schema-constrained terminating tool. Worker receives original
    question, fixed effective boundary, caller hints, first-pass
    diagnostics, and initial evidence. The worker is given only Koed dynamic RAG
    tools: `scan`, `search`, and `expand`. Personal Project search uses Captured
@@ -1393,6 +1408,55 @@ sequenceDiagram
   Runtime-->>MCP: Compact Memory Answer
   MCP-->>Client: MCP tool result
 ```
+
+## Pending Share activation sequence
+
+1. Desktop reserves the captured session's semantic sync cursor and requests a
+   bounded local candidate at that revision; no sync relationship or upload
+   exists.
+2. The Team Backend validates destination and policy and persists an expiring,
+   immutable candidate binding. The binding covers the ordered source manifest,
+   per-source revision hashes, representation, semantic source revision, item
+   and byte counts, exclusion count, and candidate hash. An oversized candidate
+   fails before consent rather than exposing a truncated authorized set.
+3. One reviewed operation persists Pending Share, audit, and outbox with
+   Workspace access `none`.
+4. The local authority persists source-preparation work before Desktop reports
+   acceptance. A restart-safe local worker starts or resumes synchronization
+   only after acceptance.
+5. The Team worker resumes durable work, waits for the exact source revision,
+   excludes Approval Activity from semantic content, reproduces the complete
+   reviewed manifest, and creates the authoritative encrypted preview. A
+   changed identity, order, revision hash, count, or hash requires owner review.
+6. Consent and an `unavailable` Share Grant are created idempotently.
+7. The Team worker stages the exact representation in a non-readable state and
+   creates or resolves the deterministic Shared Session companion while both
+   the Share Grant and representation remain unavailable. One final transaction
+   attaches the companion, publishes the representation, activates the Share
+   Grant and Pending Share, and emits the lifecycle events. Recovery selects
+   quarantined pre-publication operations and never relies on owner listing to
+   repair authority. The activation transaction appends an owner-only Pending
+   Share lifecycle event before Desktop announces completion.
+8. A deterministic activation failure stops automatic delivery and waits for
+   an explicit retry, which reuses the original identities. If the source moved
+   beyond the reviewed revision, Desktop requires a fresh preview and consent
+   instead. Pause preserves the last authorized representation. Revocation
+   remains separate.
+
+A detail-level replacement reuses this durable lifecycle while keeping the
+current Share Grant active. The worker creates the replacement authoritative
+preview and consent, then changes the grant and materialized representation in
+one transaction. A crash after that transaction reconciles through the stable
+replacement mutation; it does not create a second grant or an access gap.
+
+Approval Activity flows only to the owner activity timeline or separately
+authorized byte-exact Conversation Source Access. Projection, embeddings, LCM,
+Recall, semantic sync, and semantic Shared Memory each enforce the exclusion.
+Correction uses the same complete classification predicate as ingestion and
+uses semantic-change cursors for snapshot boundaries. Contaminated continuous
+representations and their semantic rows become unavailable in the correction
+transaction; durable Pending Share work is then queued to rebuild clean data.
+Conversation Source artifacts and access grants are outside this correction.
 
 ## Implementation Anchors
 

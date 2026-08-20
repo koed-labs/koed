@@ -161,6 +161,25 @@
   font-variant-numeric: tabular-nums;
 }
 
+.koed-setup-step-copy > .koed-setup-clients {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-block-start: 5px;
+  overflow: visible;
+  white-space: normal;
+}
+
+.koed-setup-clients > span {
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--success) 38%, var(--border));
+  border-radius: 999px;
+  color: var(--foreground);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
 .koed-setup-footer,
 .koed-trust-guide > footer {
   display: flex;

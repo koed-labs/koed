@@ -6,6 +6,8 @@ export {
 export { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
 export { restartKoedServer } from "./restart.js";
 export { setupCodex } from "./setup.js";
+export { setupPi } from "./pi-setup.js";
+export { setupClaude } from "./claude-setup.js";
 export { startKoedServer } from "./start.js";
 export { stopKoedServer } from "./stop.js";
 export { runPersonalSyncCommand } from "./personal-sync.js";

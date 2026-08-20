@@ -43,6 +43,8 @@ const status: KoedServerStatus = {
   codexTranscriptWatcher: { state: "healthy" },
   claudeTranscriptWatcher: { state: "healthy" },
   codex: { state: "healthy", configured: true },
+  claudeCode: { state: "healthy", configured: true, detected: true },
+  pi: { state: "healthy", configured: true, detected: true },
   lcmSummaryService: { state: "healthy" },
   deviceIdentity: {
     state: "healthy",
@@ -1314,6 +1316,28 @@ describe("JSON command output", () => {
     expect(JSON.parse(stdout.text())).toMatchObject({
       health: "healthy",
       remoteOperationsAllowed: true
+    });
+  });
+
+  it("prints setup claude --json", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(["setup", "claude", "--json"], {
+      stdout: stdout.stream,
+      setupClaude: () => ({
+        ok: true,
+        state: "healthy",
+        koedHome: "/tmp/koed",
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        command: "claude mcp add --scope user koed",
+        settingsPath: "/tmp/.claude/settings.json"
+      })
+    });
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      settingsPath: "/tmp/.claude/settings.json"
     });
   });
 

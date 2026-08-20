@@ -454,14 +454,40 @@ function AdvancedSection({
 }: Pick<PreferencesViewProps, "statusStore">) {
   const snapshot = useDesktopStatus(statusStore);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingIntegrationCommand, setPendingIntegrationCommand] = useState<
+    "setup_pi" | "repair_pi" | "setup_claude" | "repair_claude" | null
+  >(null);
   const status = snapshot.status;
 
   useEffect(() => {
-    if (!status) void statusStore.refresh();
-  }, [status, statusStore]);
+    void statusStore.refresh();
+  }, [statusStore]);
+
+  const servicesAreStarting = status
+    ? [
+        status.api,
+        status.database,
+        status.workerQueues,
+        status.embeddingService
+      ].some((component) => component.state === "starting")
+    : false;
+
+  useEffect(() => {
+    if (!servicesAreStarting) return;
+    const timeout = setTimeout(() => void statusStore.refresh(), 1_500);
+    return () => clearTimeout(timeout);
+  }, [servicesAreStarting, snapshot.revision, statusStore]);
 
   const run = async (
-    action: "doctor" | "repair_codex" | "open_logs" | "status"
+    action:
+      | "doctor"
+      | "repair_codex"
+      | "setup_pi"
+      | "repair_pi"
+      | "setup_claude"
+      | "repair_claude"
+      | "open_logs"
+      | "status"
   ) => {
     setActionError(null);
     try {
@@ -483,6 +509,8 @@ function AdvancedSection({
           ["MCP Server", status.mcpServer],
           ["Capture Hook", status.captureHook],
           ["Codex", status.codex],
+          ["Claude Code", status.claudeCode],
+          ["Pi", status.pi],
           ["LCM Summary Service", status.lcmSummaryService],
           ["Personal Device Sync", status.personalDeviceSync]
         ] as const
@@ -530,6 +558,22 @@ function AdvancedSection({
         </Button>
         <Button
           disabled={snapshot.busyCommand !== null}
+          onClick={() =>
+            setPendingIntegrationCommand(
+              status?.claudeCode?.state === "not_configured" ||
+                !status?.claudeCode
+                ? "setup_claude"
+                : "repair_claude"
+            )
+          }
+          variant="outline"
+        >
+          {status?.claudeCode?.state === "not_configured" || !status?.claudeCode
+            ? "Set up Claude Code integration"
+            : "Repair Claude Code integration"}
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
           onClick={() => void run("doctor")}
           variant="outline"
         >
@@ -540,7 +584,22 @@ function AdvancedSection({
           onClick={() => void run("repair_codex")}
           variant="outline"
         >
-          Repair AI Client integration
+          Repair Codex integration
+        </Button>
+        <Button
+          disabled={snapshot.busyCommand !== null}
+          onClick={() =>
+            setPendingIntegrationCommand(
+              status?.pi?.state === "not_configured" || !status?.pi
+                ? "setup_pi"
+                : "repair_pi"
+            )
+          }
+          variant="outline"
+        >
+          {status?.pi?.state === "not_configured" || !status?.pi
+            ? "Set up Pi integration"
+            : "Repair Pi integration"}
         </Button>
         <Button
           disabled={snapshot.busyCommand !== null}
@@ -550,6 +609,52 @@ function AdvancedSection({
           <ExternalLink aria-hidden="true" /> Open logs
         </Button>
       </div>
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) setPendingIntegrationCommand(null);
+        }}
+        open={pendingIntegrationCommand !== null}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>
+              {pendingIntegrationCommand === "repair_pi"
+                ? "Repair the Pi integration?"
+                : pendingIntegrationCommand === "setup_pi"
+                  ? "Set up the Pi integration?"
+                  : pendingIntegrationCommand === "repair_claude"
+                    ? "Repair the Claude Code integration?"
+                    : "Set up the Claude Code integration?"}
+            </DialogTitle>
+            <DialogDescription>
+              {pendingIntegrationCommand === "setup_pi" ||
+              pendingIntegrationCommand === "repair_pi"
+                ? "Koed will register its local package in your active global Pi profile. It preserves unrelated Pi settings and packages, and does not receive your Pi or provider credentials."
+                : "Koed will add its MCP Server and Supported Capture Hook to your Claude Code user settings. It preserves unrelated settings and hooks, and does not receive your Claude or provider credentials."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>
+              Cancel
+            </DialogClose>
+            <Button
+              onClick={() => {
+                const command = pendingIntegrationCommand;
+                setPendingIntegrationCommand(null);
+                if (command) void run(command);
+              }}
+            >
+              {pendingIntegrationCommand === "repair_pi"
+                ? "Repair Pi"
+                : pendingIntegrationCommand === "setup_pi"
+                  ? "Set up Pi"
+                  : pendingIntegrationCommand === "repair_claude"
+                    ? "Repair Claude Code"
+                    : "Set up Claude Code"}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
     </div>
   );
 }

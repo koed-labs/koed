@@ -37,6 +37,8 @@ export interface KoedServerStatus {
   mcpServer: ComponentStatus;
   captureHook: ComponentStatus;
   codex: ComponentStatus & { configured: boolean };
+  claudeCode?: ComponentStatus & { configured: boolean; detected?: boolean };
+  pi?: ComponentStatus & { configured: boolean; detected?: boolean };
   lcmSummaryService: ComponentStatus;
   personalDeviceSync?: ComponentStatus;
   upstreamBackends: ComponentStatus & {
@@ -69,6 +71,7 @@ export type DesktopSetupStageState =
 
 export interface DesktopSetupStage {
   completedBytes: number | null;
+  detectedAiClients?: readonly string[];
   id: DesktopSetupStageId;
   message: string;
   state: DesktopSetupStageState;

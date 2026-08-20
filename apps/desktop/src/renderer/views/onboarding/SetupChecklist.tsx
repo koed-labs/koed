@@ -44,8 +44,8 @@ const stageCopy: Record<
     description: "Start Personal Memory and background processing."
   },
   integration: {
-    title: "Codex integration",
-    description: "Configure capture and recall."
+    title: "AI Client integrations",
+    description: "Configure capture and recall for each detected AI Client."
   },
   verification: {
     title: "Verification",
@@ -70,6 +70,13 @@ const stageProgress = (stage: DesktopSetupStage): number | null =>
   stage.totalBytes > 0
     ? Math.min(1, stage.completedBytes / stage.totalBytes)
     : null;
+
+const formatClientList = (clients: readonly string[]): string =>
+  clients.length < 2
+    ? (clients[0] ?? "detected AI Clients")
+    : clients.length === 2
+      ? clients.join(" and ")
+      : `${clients.slice(0, -1).join(", ")}, and ${clients.at(-1)}`;
 
 const overallProgress = (snapshot: DesktopSetupSnapshot): number => {
   const completed = snapshot.stages.filter(
@@ -105,6 +112,13 @@ function SetupStageRow({ stage }: { stage: DesktopSetupStage }) {
             ? stage.message
             : copy.description}
         </span>
+        {stage.id === "integration" && stage.detectedAiClients?.length ? (
+          <span className="koed-setup-clients" aria-label="Detected AI Clients">
+            {stage.detectedAiClients.map((client) => (
+              <span key={client}>{client} detected</span>
+            ))}
+          </span>
+        ) : null}
         {stage.state === "running" &&
         stage.completedBytes !== null &&
         stage.totalBytes !== null ? (
@@ -217,7 +231,10 @@ export function SetupChecklist({
         <header className="koed-setup-header">
           <div>
             <h1 id="koed-setup-title">Set up Koed</h1>
-            <p>Koed will prepare Personal Memory and connect it to Codex.</p>
+            <p>
+              Koed will prepare Personal Memory and connect your detected AI
+              Clients.
+            </p>
           </div>
           {!running ? (
             <Button
@@ -294,8 +311,15 @@ export function SetupChecklist({
             <DialogTitle>Set up Koed on this computer?</DialogTitle>
             <DialogDescription>
               Koed will install or link its local runtime, download and verify
-              the embedding model, start local services, and configure the Codex
-              integration. Existing completed steps will be left alone.
+              the embedding model, start local services, and configure
+              {snapshot?.stages.find(({ id }) => id === "integration")
+                ?.detectedAiClients?.length
+                ? ` ${formatClientList(
+                    snapshot.stages.find(({ id }) => id === "integration")!
+                      .detectedAiClients!
+                  )}`
+                : " detected AI Clients"}
+              . Existing completed steps will be left alone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

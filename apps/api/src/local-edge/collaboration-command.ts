@@ -519,6 +519,7 @@ const remoteSharedGrantIndexSchema = z
     id: z.uuid(),
     logicalMemoryId: z.uuid(),
     ownerUserId: z.uuid().nullable(),
+    title: z.string().min(1).max(80).optional().default("Shared Memory"),
     activeRepresentation: z.enum([
       "memory_events",
       "lcm_leaves",
@@ -1992,7 +1993,7 @@ const loadRemoteTeamNavigation = async (input: {
                   ?.displayName ?? "Team member",
               membershipState: "enabled"
             },
-            title: "Shared Memory",
+            title: grant.title,
             latestActivityAt: grant.updatedAt,
             representation: grant.activeRepresentation,
             representationState:
@@ -3254,6 +3255,22 @@ export const registerCollaborationCommandRoute = (
       }
 
       if (!("upstream_backend_id" in input)) {
+        if (
+          input.command.command ===
+          "collaboration.preview_shared_memory_candidate"
+        ) {
+          const result = await options.sharedMemoryControl?.dispatch(
+            input.command,
+            {
+              localOwnerUserId: user.id,
+              desktopCredentialKeyId: credential.credentialKeyId
+            }
+          );
+          return (
+            result ??
+            failureResult(input.command, safeError("temporarily_unavailable"))
+          );
+        }
         let personalRemoteContext: PersonalRemoteContext | null;
         try {
           personalRemoteContext =

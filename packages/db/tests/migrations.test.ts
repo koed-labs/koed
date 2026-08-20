@@ -107,6 +107,44 @@ describe("collaboration receipt migration", () => {
   });
 });
 
+describe("Pi AI Client migration", () => {
+  it("adds Pi to the persisted source runtime enum idempotently", async () => {
+    const [journalText, migrationSql] = await Promise.all([
+      readDrizzleFile("meta/_journal.json"),
+      readDrizzleFile("0032_pi_source_runtime.sql")
+    ]);
+    const journal = JSON.parse(journalText) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+
+    expect(journal.entries[32]).toEqual(
+      expect.objectContaining({ idx: 32, tag: "0032_pi_source_runtime" })
+    );
+    expect(migrationSql).toContain(
+      `ALTER TYPE "public"."source_runtime" ADD VALUE IF NOT EXISTS 'pi'`
+    );
+    for (const transcriptType of [
+      "user_message",
+      "agent_message",
+      "tool_call",
+      "tool_result",
+      "bash_execution",
+      "agent_reasoning",
+      "compaction",
+      "branch_summary",
+      "unknown"
+    ]) {
+      expect(migrationSql).toContain(
+        `'pi', 'pi-session-v1', '${transcriptType}'`
+      );
+    }
+    expect(migrationSql).toContain(
+      "Pi reasoning, compaction, and branch summaries are retained as raw provenance only."
+    );
+    expect(migrationSql).toContain("ON CONFLICT DO NOTHING;");
+  });
+});
+
 describe("Claude AI Client migration", () => {
   it("seeds explicit semantic and raw-only Claude projection policies", async () => {
     const migrationSql = await readDrizzleFile("0030_blue_maddog.sql");

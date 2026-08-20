@@ -39,8 +39,12 @@ const waitFor = async (window, source, label) => {
     window,
     `document.body?.innerText?.slice(0, 2000) ?? ""`
   );
+  const activeElement = await evaluate(
+    window,
+    `document.activeElement?.outerHTML?.slice(0, 1000) ?? ""`
+  );
   throw new Error(
-    `Timed out waiting for ${label}; observed=${JSON.stringify(observed)} body=${JSON.stringify(body)}`
+    `Timed out waiting for ${label}; observed=${JSON.stringify(observed)} active=${JSON.stringify(activeElement)} body=${JSON.stringify(body)}`
   );
 };
 
@@ -61,6 +65,17 @@ const setEmulatedViewport = async (window, width, height) => {
     "Emulation.setDeviceMetricsOverride",
     { width, height, deviceScaleFactor: 1, mobile: false }
   );
+  await delay(100);
+};
+
+const setReducedMotion = async (window) => {
+  if (!window.webContents.debugger.isAttached()) {
+    window.webContents.debugger.attach("1.3");
+  }
+  await window.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", {
+    media: "screen",
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }]
+  });
   await delay(100);
 };
 
@@ -649,6 +664,90 @@ const run = async () => {
       actionGrant: { id: ids.actionGrant }
     });
 
+    await trustedClick(
+      alice,
+      `document.querySelector('[aria-label="Personal"]')`
+    );
+    await trustedClick(
+      alice,
+      `${byText(".desktop-sidebar-nav-item", "Shares")}`
+    );
+    await waitFor(
+      alice,
+      bodyIncludes("Packaged asynchronous sharing"),
+      "owner-wide Shares route"
+    );
+    await trustedClick(alice, `${byText("button", "Modify")}`);
+    await trustedClick(alice, `${byText("button", "Pause updates")}`);
+    await waitFor(
+      alice,
+      `${byText("button", "Resume updates")} === document.activeElement && ${bodyIncludes("Packaged asynchronous sharing")}`,
+      "stable focus after pausing updates"
+    );
+    await trustedClick(alice, `${byText("button", "Done")}`);
+    await trustedClick(
+      alice,
+      `[...document.querySelectorAll('.collab-share-row')]
+        .find((item) => item.textContent?.includes('Packaged revocation fixture'))`
+    );
+    await evaluate(
+      alice,
+      `window.__koedCollaborationInteractions.emitPendingShareNeedsAttention()`
+    );
+    await waitFor(
+      alice,
+      `document.activeElement?.textContent?.includes('Packaged revocation fixture') &&
+        document.querySelector('.collab-share-detail-workspace')?.textContent?.includes('Packaged revocation fixture') &&
+        [...document.querySelectorAll('[role="status"][aria-live="polite"]')]
+          .some((item) => item.textContent?.includes('Packaged asynchronous sharing: Update needs attention'))`,
+      "stable selection and live announcement after background update"
+    );
+    await setReducedMotion(alice);
+    const reducedMotion = await evaluate(
+      alice,
+      `(() => {
+        const card = document.querySelector('.collab-share-row');
+        return {
+          active: matchMedia('(prefers-reduced-motion: reduce)').matches,
+          transitionDuration: card ? getComputedStyle(card).transitionDuration : null
+        };
+      })()`
+    );
+    assert.equal(reducedMotion.active, true);
+    assert.ok(
+      Number.parseFloat(reducedMotion.transitionDuration ?? "1") <= 0.001,
+      `Expected reduced transition duration, received ${reducedMotion.transitionDuration}`
+    );
+
+    await trustedClick(alice, `${byText("button", "Revoke")}`);
+    await waitFor(
+      alice,
+      bodyIncludes("Your Personal Memory will not be deleted."),
+      "Share revocation confirmation"
+    );
+    await trustedClick(alice, `${byText("button", "Cancel")}`);
+    await waitFor(
+      alice,
+      bodyExcludes("Your Personal Memory will not be deleted."),
+      "canceled Share revocation confirmation"
+    );
+    assert.equal(
+      (await commands(alice)).filter(
+        (command) => command.command === "collaboration.revoke_shared_memory"
+      ).length,
+      0,
+      "Canceling destructive confirmation must preserve access"
+    );
+    await trustedClick(alice, `${byText("button", "Revoke")}`);
+    await trustedClick(alice, `${byText("button", "Revoke Share")}`);
+    await waitFor(
+      alice,
+      `[...document.querySelectorAll('[aria-labelledby="collab-revoked-shares"] .collab-share-row')]
+        .some((item) => item.textContent?.includes('Packaged revocation fixture')) &&
+        document.querySelector('.collab-share-detail-workspace')?.textContent?.includes('Packaged revocation fixture')`,
+      "confirmed Workspace revocation"
+    );
+
     await evaluate(
       bob,
       `window.__koedCollaborationInteractions.setReconnecting()`
@@ -722,7 +821,7 @@ const run = async () => {
     );
 
     process.stdout.write(
-      "Collaboration interaction validation passed: trusted Team switching, invitations, channel/DM delivery, Shared Memory layouts, reconnect/replay/backpressure recovery, and stale-event access purge.\n"
+      "Collaboration interaction validation passed: owner-wide Shares access and accessibility, trusted Team switching, invitations, channel/DM delivery, Shared Memory layouts, reconnect/replay/backpressure recovery, and stale-event access purge.\n"
     );
   } finally {
     for (const window of windows) {

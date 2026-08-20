@@ -46,6 +46,24 @@ describe("conversation source journal component schemas", () => {
     });
   });
 
+  it("accepts Pi persistent session source tuple", () => {
+    expect(
+      conversationSourceArtifactSchema.parse({
+        ...artifact,
+        sourceSession: {
+          ...artifact.sourceSession,
+          sourceRuntime: "pi"
+        },
+        sourceKind: "pi",
+        artifactFormat: "pi_session_jsonl"
+      })
+    ).toMatchObject({
+      sourceKind: "pi",
+      sourceSession: { sourceRuntime: "pi" },
+      artifactFormat: "pi_session_jsonl"
+    });
+  });
+
   it("accepts a parented immutable auxiliary component and rejects bad topology", () => {
     expect(
       conversationSourceArtifactSchema.parse({

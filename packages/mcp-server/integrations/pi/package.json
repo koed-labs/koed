@@ -1,0 +1,17 @@
+{
+  "name": "@koed/pi-integration",
+  "private": true,
+  "version": "1.0.0",
+  "keywords": [
+    "pi-package"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/koed.mjs"
+    ]
+  }
+}

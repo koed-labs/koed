@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Folder,
   Hash,
+  Library,
   LockKeyhole,
   MessageCircle,
   MessagesSquare,
@@ -19,6 +20,7 @@ export type ContextNavItem = {
   id: string;
   label: string;
   selected: boolean;
+  unavailable?: boolean;
   unreadCount?: number;
 };
 
@@ -113,6 +115,7 @@ function NavItem({
       aria-current={item.selected ? "page" : undefined}
       className="desktop-sidebar-nav-item"
       data-selected={item.selected || undefined}
+      data-unavailable={item.unavailable || undefined}
       onClick={() => onSelect(item.id)}
       type="button"
     >
@@ -151,16 +154,22 @@ export function PersonalContextNavigation({
   onCreateChannel,
   onOpenNotes,
   onOpenProjects,
+  onOpenShares,
   onSelectChannel,
-  projectsSelected
+  projectsSelected,
+  sharesSelected,
+  sharesUnavailable = false
 }: {
   channels: readonly ContextNavItem[];
   notesSelected: boolean;
   onCreateChannel: () => void;
   onOpenNotes: () => void;
   onOpenProjects: () => void;
+  onOpenShares: () => void;
   onSelectChannel: (threadId: string) => void;
   projectsSelected: boolean;
+  sharesSelected: boolean;
+  sharesUnavailable?: boolean;
 }) {
   const activeChannels = channels.filter((item) => !item.archived);
   const archivedChannels = channels.filter((item) => item.archived);
@@ -176,6 +185,16 @@ export function PersonalContextNavigation({
             selected: projectsSelected
           }}
           onSelect={onOpenProjects}
+        />
+        <NavItem
+          icon={<Library aria-hidden="true" />}
+          item={{
+            id: "shares",
+            label: "Shares",
+            selected: sharesSelected,
+            unavailable: sharesUnavailable
+          }}
+          onSelect={onOpenShares}
         />
         <LockedFeatureRow
           explanation="Memory Answer needs a dedicated protected Desktop contract."

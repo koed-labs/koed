@@ -36,16 +36,16 @@ that is ordinary code organization, not a new workflow owner.
 
 ## Authoritative inputs
 
-| Input                                                         | Authority                                        | Used for                                                |
-| ------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------- |
-| Source ownership and owner principal                          | Personal Memory repository                       | Who may preview, consent, create, change, and revoke    |
-| Replica state, source revision/hash, provenance, relationship | Cross-Identity Sync repository                   | Whether exact owner-private source bytes are eligible   |
-| Team, Workspace, membership, Workspace Access                 | Team Backend                                     | Destination existence and current access                |
-| Owner, Team, and Workspace representation policies            | Transaction-owning Shared Memory repository      | Exact three-policy intersection                         |
-| Preview ID/hash/revision and encrypted artifact binding       | Shared Memory repository                         | Immutable consent snapshot and pagination               |
-| Consent ID, mode, representation, expiry                      | Source User intent persisted by the Team Backend | Scope of authority delegated by the owner               |
-| Share Grant version/lifecycle and representation version      | Shared Memory repository                         | Optimistic concurrency, retries, change, and revocation |
-| Action Grant and mutation/idempotency IDs                     | Team Backend plus local Action Grant lifecycle   | Exact one-use authority and replay-safe mutation        |
+| Input                                                                           | Authority                                        | Used for                                                                     |
+| ------------------------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------- |
+| Source ownership and owner principal                                            | Personal Memory repository                       | Who may preview, consent, create, change, and revoke                         |
+| Replica state, source revision/hash, provenance, relationship                   | Cross-Identity Sync repository                   | Whether exact owner-private source bytes are eligible                        |
+| Team, Workspace, membership, Workspace Access                                   | Team Backend                                     | Destination existence and current access                                     |
+| Owner, Team, and Workspace representation policies                              | Transaction-owning Shared Memory repository      | Exact three-policy intersection                                              |
+| Preview ID/hash/revision and encrypted artifact binding                         | Shared Memory repository                         | Immutable consent snapshot and pagination                                    |
+| Consent ID, mode, representation, expiry                                        | Source User intent persisted by the Team Backend | Scope of authority delegated by the owner                                    |
+| Share Grant version/lifecycle and representation version                        | Shared Memory repository                         | Optimistic concurrency, retries, change, and revocation                      |
+| Browser session or Action Grant source/reference, plus mutation/idempotency IDs | Team Backend plus local authority lifecycle      | Exact authority reconstruction after worker restart and replay-safe mutation |
 
 Renderer state, labels, cached pages, and locally reconstructed guesses are
 never authoritative inputs.
@@ -55,26 +55,30 @@ never authoritative inputs.
 | State                           | Meaning                                                                                                                                | Recoverable outcome                                          | Fail-closed conditions                                              |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------- |
 | `source_unavailable`            | No current enrolled, provenance-bound replica exists                                                                                   | Complete/retry Cross-Identity Sync                           | Wrong owner/device/backend, revoked or incomplete relationship      |
+| `candidate_ready`               | A bounded local semantic candidate is available for destination and policy review; no sync exists                                      | Accept the exact reviewed binding                            | Candidate expiry, source revision change, destination/policy drift  |
+| `pending_share`                 | Consent, mutation identity, candidate binding, and durable outbox exist; Workspace access is `none`                                    | Background sync, processing, retry, or cancellation          | Widening authority, duplicate logical grant, unredacted diagnostics |
 | `source_ready`                  | Exact replica and representation snapshot are available                                                                                | Request a destination-bound preview                          | Stale provenance, missing LCM snapshot, policy unavailable          |
 | `preview_ready`                 | Authoritative preview is persisted with destination, source revision/hash, destination policies, and an inactive owner-policy proposal | Page it or submit the final reviewed bundle                  | Any binding mismatch or changed destination/policy/source           |
 | `consent_ready`                 | Active owner consent binds the exact preview and selected representation                                                               | Create or replace a Share Grant                              | Expired/revoked consent, representation outside intersection        |
-| `grant_materialization_pending` | Grant mutation succeeded but the selected encrypted Team representation is not confirmed                                               | Retry the same deterministic materialization mutation        | Grant/consent/version/preview mismatch or encryption-key reuse      |
+| `grant_materialization_pending` | Grant exists as `unavailable`; the selected encrypted Team representation is not confirmed                                             | Retry the same deterministic materialization mutation        | Grant/consent/version/preview mismatch or encryption-key reuse      |
 | `grant_active`                  | Share Grant, selected encrypted representation, companion discussion, and local authoritative projection agree                         | Read, continuously advance, change representation, or revoke | Lost Workspace Access, policy invalidation, authority mismatch      |
 | `grant_stale`                   | Last authorized revision remains readable but propagation can no longer advance                                                        | Restore exact authority or revoke                            | Treating stale data as current or ingesting future source revisions |
 | `grant_revoked`                 | Grant authority and representations are invalidated; companion retention follows policy                                                | Idempotently observe the same revocation                     | Reusing a mutation for a different reason/actor or serving content  |
 
 ## Transitions
 
-| Transition                            | User intent                                            | Checks and authoritative mutation                                                                                                                                                                                               | Retry/interruption result                                                                      |
-| ------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Cross-Identity Sync becomes ready     | Make owned Personal Memory available for sharing       | Bind source owner, enrolled device, relationship, replica, revision, provenance, and representation snapshot                                                                                                                    | Pending is retryable; revoked/mismatched identity fails closed                                 |
-| Create preview                        | Inspect exactly what a destination could receive       | Resolve exact replica; require local LCM readiness when selected; use Direct approval; persist the validated remote preview with an inactive exact owner-policy proposal; do not pause consent or invalidate grants             | Same request is safe; malformed/mismatched remote data is not persisted                        |
-| Page preview                          | Inspect the rest of the same snapshot                  | Verify signed cursor identity, preview hash/ID, snapshot key, offset, and stored preview                                                                                                                                        | Expired or changed snapshot returns history-expired, never a new page silently                 |
-| Change destination before consent     | Share somewhere else                                   | No in-place retargeting; request a new preview bound to the new Team and Workspace                                                                                                                                              | Old preview/consent conflicts                                                                  |
-| Record consent and create Share Grant | Share this snapshot under selected mode/representation | In one remote bundle: revalidate and activate the preview's exact owner-policy proposal, persist consent, create grant and outbox; then materialize the exact encrypted representation and persist its authoritative projection | Reuse the same mutation IDs; stale policy proposals or other conflicts require a fresh preview |
-| Change representation                 | Replace/reactivate the representation                  | Require current grant version and a fresh exact preview/consent; invalidate prior representation, update grant, append outbox, materialize replacement                                                                          | Concurrent version change is conflict; deterministic materialization resumes safely            |
-| Continuous propagation                | Keep a continuous grant current                        | Repository advances only authorized source revisions under current replica, policies, lifecycle, and encryption context                                                                                                         | Revocation/sync loss stops advancement and retains only the last authorized revision as stale  |
-| Revoke                                | End destination authority                              | Lock grant/retention scope, require owner and expected version, invalidate representations, advance revocation epoch, schedule retention work, append outbox                                                                    | Exact retry returns the same revoked grant; divergent reuse conflicts                          |
+| Transition                        | User intent                                            | Checks and authoritative mutation                                                                                                                                                                                                     | Retry/interruption result                                                                                                                                     |
+| --------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cross-Identity Sync becomes ready | Make owned Personal Memory available for sharing       | Bind source owner, enrolled device, relationship, replica, revision, provenance, and representation snapshot                                                                                                                          | Pending is retryable; revoked/mismatched identity fails closed                                                                                                |
+| Create candidate preview          | Inspect what could be shared before synchronization    | Reserve the session's semantic sync cursor, build a bounded local candidate at that revision, validate destination/policy remotely, and persist its exact expiring binding; create no relationship, upload, replica, or grant         | Expiry or binding drift requires a fresh candidate                                                                                                            |
+| Page preview                      | Inspect the rest of the same snapshot                  | Verify signed cursor identity, preview hash/ID, snapshot key, offset, and stored preview                                                                                                                                              | Expired or changed snapshot returns history-expired, never a new page silently                                                                                |
+| Change destination before consent | Share somewhere else                                   | No in-place retargeting; request a new preview bound to the new Team and Workspace                                                                                                                                                    | Old preview/consent conflicts                                                                                                                                 |
+| Accept Pending Share              | Share this snapshot under selected mode/representation | Persist consent binding, stable mutation/logical-grant identity, Pending Share, safe progress state, audit, and outbox before returning; Workspace access remains `none`                                                              | Exact retry returns the same operation; divergent mutation reuse conflicts                                                                                    |
+| Activate Pending Share            | Complete the accepted share asynchronously             | Start sync only after acceptance; reproduce the complete ordered candidate manifest; stage an unreadable representation; resolve the deterministic companion; publish representation, grant, companion, and Pending Share atomically  | Worker restart reuses durable identities; companion failures remain quarantined and repairable without owner-list side effects                                |
+| Change representation             | Replace/reactivate the representation                  | Persist a durable replacement from the current grant version and fresh candidate preview; prepare it in background; create its authoritative preview and consent; switch grant and materialized representation inside one transaction | The prior representation remains readable during preparation; concurrent changes conflict; restart replay sees either the old or completed new representation |
+| Continuous propagation            | Keep a continuous grant current                        | Repository advances only authorized source revisions under current replica, policies, lifecycle, and encryption context                                                                                                               | Revocation/sync loss stops advancement and retains only the last authorized revision as stale                                                                 |
+| Pause or resume updates           | Stop or continue future continuous revisions           | Change only the continuous consent/update state; keep the last activated representation and Workspace access while paused; append an owner lifecycle event                                                                            | Exact retries are stable; snapshot shares and stale versions fail closed                                                                                      |
+| Revoke                            | End destination authority                              | Lock grant/retention scope, require owner and expected version, invalidate representations, advance revocation epoch, revoke attached Conversation Source Access, close source streams, schedule retention work, and append outbox    | Exact retry returns the same revoked grant and repairs stale derived lifecycle state; divergent reuse conflicts                                               |
 
 ## Why the repository seam owns bundle invariants
 
@@ -90,6 +94,40 @@ policy, and enforce optimistic versions and idempotency. Tests in
 `packages/db/tests/shared-memory-repository.test.ts` cover bundle rollback,
 stale sync, destination uniqueness, concurrent retries, exact revocation replay,
 policy changes, and encrypted materialization.
+
+Candidate previews store the authority kind and authority reference. A browser
+session can authorize multiple distinct candidates. A one-use device Action
+Grant can authorize only one binding. Pending Share records store the same
+authority source. Thus, a restarted worker does not treat browser authority as
+device authority.
+
+The candidate row also retains the immutable ordered source identities and
+per-source revision hashes, representation, semantic source revision, item and
+byte counts, deterministic exclusion count, and candidate hash. Preview pages
+are slices of that retained set. They never extend the authorized set.
+
+The candidate source revision is the captured session's semantic sync cursor,
+not a Capture Hook transport sequence. Candidate preparation can reserve that
+cursor locally before consent, but it does not create a sync relationship or
+upload source data. After acceptance, the same cursor becomes the exact
+revision that the source worker transfers and the Team worker activates.
+The reviewed binding also includes the selected snapshot or continuous mode.
+Changing that mode in Desktop re-authorizes the preview before consent so the
+final command cannot reuse a preview created for a different mode.
+
+The owner may assign a destination-specific Share name during review and rename
+it later from Modify Share. This metadata is stored on the Pending Share and
+the activated Share Grant. It does not change the source Captured Session title
+or the names of Shares sent to other Workspaces.
+
+Owner Share detail reads the consent-bound authoritative preview from the Team
+Backend after the owner boundary is checked. The local authority validates and
+retains that exact preview revision for paging. This lets an asynchronously
+activated Pending Share display what was actually materialized even when the
+backend-generated preview was not present in the earlier local candidate cache.
+Owner listing is read-only: it pages by immutable creation tuple, batch-loads
+local authority snapshots, and never creates or repairs a companion. Activation
+and quarantined recovery are the only companion creation paths.
 
 `apps/api/src/local-edge/collaboration-shared-memory-control.ts` has a different
 job. Its preview, share, representation-change, revoke, and pagination handlers

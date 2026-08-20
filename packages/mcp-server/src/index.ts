@@ -17,8 +17,11 @@ export type { LocalAiClientInstanceConfiguration } from "./ai-client-instance-re
 export {
   aiClientTaskDriverFor,
   checkClaudeCodeAvailability,
+  checkPiAvailability,
   listClaudeAgentSdkModels,
+  listPiModels,
   resolveClaudeSdkExecutablePath,
+  resolvePiExecutable,
   runClaudeAgentSdkTask
 } from "./ai-client-runner.js";
 export {
@@ -76,6 +79,18 @@ export {
   importClaudeHistoricalSource,
   importSelectedClaudeHistory
 } from "./claude-historical-import.js";
+export {
+  discoverPiTranscriptSignals,
+  piSessionRoots,
+  processPiTranscriptSignal,
+  startPiTranscriptWatcher
+} from "./pi-transcript-watcher.js";
+export { parsePiSessionJournalBytes } from "./pi-session-parser.js";
+export {
+  importPiHistoricalSource,
+  importSelectedPiHistory,
+  registerPiHistoricalTranscriptSource
+} from "./pi-historical-import.js";
 export type {
   ClaudeTranscriptWatcherHandle,
   ClaudeWatcherState
@@ -187,7 +202,7 @@ export const workerOverridesFromLocalMemorySetting = (
   setting: LocalMemoryAgentSettingRecord | undefined
 ):
   | {
-      provider: "codex" | "claude";
+      provider: "codex" | "claude" | "pi";
       aiClientInstanceId: string;
       model: string;
       reasoningEffort: string;
@@ -196,7 +211,9 @@ export const workerOverridesFromLocalMemorySetting = (
     }
   | undefined =>
   setting
-    ? setting.provider === "codex" || setting.provider === "claude"
+    ? setting.provider === "codex" ||
+      setting.provider === "claude" ||
+      setting.provider === "pi"
       ? {
           provider: setting.provider,
           aiClientInstanceId: setting.aiClientInstanceId,
@@ -449,6 +466,21 @@ export class MemoryApiClient {
     return this.request<Record<string, unknown>>("GET", "/v1/capabilities");
   }
 
+  async getEffectiveCapturePolicy(input: {
+    projectId?: string;
+    threadId?: string;
+    sessionId?: string;
+  }): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams();
+    if (input.projectId) params.set("projectId", input.projectId);
+    if (input.threadId) params.set("threadId", input.threadId);
+    if (input.sessionId) params.set("sessionId", input.sessionId);
+    return this.request(
+      "GET",
+      `/v1/capture-policy/effective?${params.toString()}`
+    );
+  }
+
   async createSession(
     input: Record<string, unknown>
   ): Promise<{ session?: { id: string }; skipped?: boolean }> {
@@ -462,7 +494,7 @@ export class MemoryApiClient {
   }
 
   async lookupConversationSourceArtifact(input: {
-    sourceKind: "codex" | "claude-code";
+    sourceKind: "codex" | "claude-code" | "pi";
     externalSessionId: string;
     sourceComponentId?: string;
   }): Promise<Record<string, unknown>> {
@@ -791,7 +823,7 @@ export class MemoryApiClient {
   async upsertLocalMemoryAgentSetting(
     flowKey: LocalMemoryAgentFlowKey,
     input: {
-      provider: "codex" | "claude";
+      provider: "codex" | "claude" | "pi";
       aiClientInstanceId?: string;
       model: string;
       reasoningEffort: string;

@@ -14,12 +14,15 @@ import {
 } from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
+  configureDetectedSetupAiClients,
   createKoedEnvironment,
   createKoedServerManager,
+  detectedSetupAiClients,
   desktopCodexSetupCommand,
   personalMemoryChangeFromSseFrame,
   setupStartupReady,
-  setupServicesHealthy
+  setupServicesHealthy,
+  setupIntegrationHealthy
 } from "./manager.js";
 
 type FakeChildProcess = EventEmitter & {
@@ -82,6 +85,100 @@ describe("Koed server desktop manager", () => {
     await manager.handlers.status!();
 
     expect(timeout).toBe(120_000);
+  });
+
+  it("routes optional AI Client setup and repair through idempotent Koed Server commands", async () => {
+    const invocations: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => {
+        invocations.push(args);
+        return {
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_REPO_ROOT: "/repo" }
+        };
+      },
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(null, JSON.stringify({ ok: true, state: "healthy" }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await manager.handlers.setup_pi!();
+    await manager.handlers.repair_pi!();
+    await manager.handlers.setup_claude!();
+    await manager.handlers.repair_claude!();
+
+    expect(invocations).toEqual([
+      ["setup", "pi", "--json"],
+      ["setup", "pi", "--json"],
+      ["setup", "claude", "--json"],
+      ["setup", "claude", "--json"]
+    ]);
+  });
+
+  it("includes detected optional AI Clients in first-run integration readiness", () => {
+    const status = {
+      apiToken: { state: "healthy" },
+      mcpServer: { state: "healthy" },
+      captureHook: { state: "healthy" },
+      lcmSummaryService: { state: "healthy" },
+      codex: { state: "healthy" },
+      claudeCode: { state: "not_configured", detected: true },
+      pi: { state: "healthy", detected: true }
+    };
+
+    expect(detectedSetupAiClients(status).map(({ label }) => label)).toEqual([
+      "Codex",
+      "Claude Code",
+      "Pi"
+    ]);
+    expect(setupIntegrationHealthy(status)).toBe(false);
+    expect(
+      setupIntegrationHealthy({
+        ...status,
+        claudeCode: { state: "healthy", detected: true }
+      })
+    ).toBe(true);
+  });
+
+  it("automatically configures every detected, incomplete AI Client", async () => {
+    const run = vi.fn(async (args: string[]) => {
+      void args;
+      return { ok: true, state: "healthy" };
+    });
+    const progress: string[] = [];
+
+    const result = await configureDetectedSetupAiClients(
+      {
+        apiToken: { state: "healthy" },
+        codex: { state: "not_configured" },
+        claudeCode: { state: "not_configured", detected: true },
+        pi: { state: "not_configured", detected: true }
+      },
+      run,
+      (message) => progress.push(message)
+    );
+
+    expect(run.mock.calls.map(([args]) => args)).toEqual([
+      ["repair", "codex"],
+      ["setup", "claude"],
+      ["setup", "pi"]
+    ]);
+    expect(progress).toEqual([
+      "Configuring Codex capture and recall…",
+      "Configuring Claude Code capture and recall…",
+      "Configuring Pi capture and recall…"
+    ]);
+    expect(result).toEqual({
+      ok: true,
+      message: "Codex, Claude Code, and Pi integrations are configured."
+    });
   });
 
   it("treats local services as ready before later setup stages finish", () => {
@@ -1241,6 +1338,73 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     expect(JSON.stringify(result)).not.toMatch(
       /main_only_token|must-strip|remote\.example/
     );
+  });
+
+  it("updates a Captured Session title through the fixed owner-scoped route", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "main_only_token" })
+    );
+    const personalMemoryFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          session: {
+            metadata: {
+              threadName: "Release planning",
+              apiToken: "must-strip"
+            }
+          }
+        })
+      )
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://localhost:4170" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+
+    const result = await manager.personalMemory({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.sessions.update_title",
+      input: { sessionId, title: "Release planning" }
+    });
+
+    expect(result).toEqual({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.sessions.update_title",
+      ok: true,
+      data: { title: "Release planning" }
+    });
+    expect(String(personalMemoryFetch.mock.calls[0]?.[0])).toBe(
+      `http://localhost:4170/v1/memory/graph/sessions/${sessionId}/title`
+    );
+    expect(personalMemoryFetch.mock.calls[0]?.[1]?.method).toBe("PATCH");
+    expect(
+      JSON.parse(String(personalMemoryFetch.mock.calls[0]?.[1]?.body))
+    ).toEqual({ title: "Release planning" });
+    expect(JSON.stringify(result)).not.toContain("must-strip");
   });
 
   it("reconciles approved upstream enrollment between ordinary status refreshes", async () => {

@@ -12,11 +12,12 @@ import type {
 import { ActionGrantStatus } from "./ActionGrantStatus.js";
 
 const grant = (
-  state: CollaborationActionGrantProjection["state"]
+  state: CollaborationActionGrantProjection["state"],
+  operation = "Share Memory"
 ): CollaborationActionGrantProjection => ({
   expiresAt: "2026-08-11T12:00:00.000Z",
   id: "action-grant-1",
-  operation: "Share Memory",
+  operation,
   retryable: false,
   state
 });
@@ -85,6 +86,14 @@ describe("ActionGrantStatus", () => {
 
     await act(async () => cancel?.click());
     expect(cancelActionGrant).toHaveBeenCalledWith("action-grant-1");
+    expect(document.body.querySelector("[data-toast]")).toBeNull();
+  });
+
+  it("does not toast Shared Memory preview approval states", async () => {
+    await render([grant("awaiting_approval", "Preview Shared Memory")]);
+    expect(document.body.querySelector("[data-toast]")).toBeNull();
+
+    await render([grant("completed", "Preview Shared Memory")]);
     expect(document.body.querySelector("[data-toast]")).toBeNull();
   });
 });

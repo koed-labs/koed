@@ -173,7 +173,7 @@ export const registerLocalAgentSettingsRoutes = (
       }
       const supportedEfforts = supportedReasoningEfforts(selectedModel);
       if (
-        input.provider === "claude" &&
+        (input.provider === "claude" || input.provider === "pi") &&
         (!supportedEfforts ||
           !supportedEfforts.includes(input.reasoning_effort))
       ) {

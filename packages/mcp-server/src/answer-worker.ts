@@ -33,6 +33,8 @@ import {
   claudeAgentSdkEnvironment,
   claudeAgentSdkTokenUsage,
   resolveClaudeCodeExecutable,
+  resolvePiExecutable,
+  runAiClientJsonTask,
   type AiClientProvider
 } from "./ai-client-runner.js";
 import {
@@ -80,7 +82,7 @@ export interface MemoryAnswerWorkerConfig {
 export interface MemoryAnswerWorkerStatus {
   provider: string;
   aiClientInstanceId?: string;
-  transport?: "app_server" | "agent_sdk";
+  transport?: "app_server" | "agent_sdk" | "pi_rpc";
   promptVersion: string;
   jobId: string;
   model: string | null;
@@ -105,7 +107,7 @@ export interface MemoryAnswerWorkerStatus {
 export interface MemoryAnswerAppServerExecution {
   provider?: AiClientProvider;
   aiClientInstanceId?: string;
-  transport?: "app_server" | "agent_sdk";
+  transport?: "app_server" | "agent_sdk" | "pi_rpc";
   answerJobId?: string;
   attemptIndex?: number;
   status?: "succeeded" | "failed";
@@ -471,8 +473,17 @@ export const resolveMemoryAnswerWorkerConfig = (
     overrides.provider ??
     resolveEnvValue(env, "MEMORY_ANSWER_PROVIDER")?.toLowerCase() ??
     CODEX_ANSWER_PROVIDER;
-  if (provider !== "codex" && provider !== "claude") {
+  if (provider !== "codex" && provider !== "claude" && provider !== "pi") {
     throw new Error(`Unsupported Memory Answer provider: ${provider}`);
+  }
+  if (
+    provider === "pi" &&
+    !overrides.model &&
+    !resolveEnvValue(env, "MEMORY_ANSWER_MODEL")
+  ) {
+    throw new Error(
+      "Pi Memory Answer provider requires a full provider/model ID"
+    );
   }
   const aiClientInstanceId =
     overrides.aiClientInstanceId ??
@@ -543,9 +554,11 @@ export const resolveMemoryAnswerWorkerConfig = (
       instance?.executablePath ??
       (provider === "claude"
         ? resolveClaudeCodeExecutable(instanceEnv)
-        : resolveCodexAppServerBinary(instanceEnv, [
-            "MEMORY_ANSWER_CODEX_BINARY"
-          ])),
+        : provider === "pi"
+          ? resolvePiExecutable(instanceEnv)
+          : resolveCodexAppServerBinary(instanceEnv, [
+              "MEMORY_ANSWER_CODEX_BINARY"
+            ])),
     cwd: process.cwd(),
     env: instanceEnv
   };
@@ -3592,6 +3605,56 @@ const runDynamicToolMemoryAnswer = async (
       state,
       options
     );
+    if (options.config.provider === "pi") {
+      const result = await runAiClientJsonTask(
+        prompt,
+        {
+          provider: "pi",
+          aiClientInstanceId: options.config.aiClientInstanceId,
+          executablePath: options.config.executablePath,
+          model: options.config.model,
+          reasoningEffort: options.config.reasoningEffort,
+          cwd: options.config.cwd,
+          env: options.config.env,
+          clientName: "koed-memory-answer-worker",
+          systemPrompt: koedMemoryAnswerBaseInstructions,
+          developerInstructions: koedMemoryAnswerDeveloperInstructions,
+          signal: options.signal,
+          outputSchema: {
+            type: "object",
+            properties: {
+              schema_version: {
+                type: "string",
+                const: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION
+              },
+              memory_status: {
+                type: "string",
+                enum: ["found", "not_found", "insufficient", "pending_summary"]
+              },
+              relevant_memory_found: { type: "boolean" },
+              answer_markdown: { type: "string" },
+              relevance_explanation: { type: "string" },
+              evidence: { type: "array", items: { type: "object" } },
+              missing: { type: "array", items: { type: "string" } },
+              missing_evidence: { type: "array", items: { type: "string" } }
+            },
+            required: [
+              "schema_version",
+              "memory_status",
+              "relevant_memory_found",
+              "answer_markdown",
+              "relevance_explanation",
+              "evidence",
+              "missing",
+              "missing_evidence"
+            ],
+            additionalProperties: false
+          }
+        },
+        remaining
+      );
+      return { result, state };
+    }
     if (options.config.provider === "claude") {
       return {
         result: await runClaudeMemoryAnswer(

@@ -41,6 +41,13 @@ const destination = {
 };
 
 const repository = () => ({
+  getSharedMemoryCandidatePreviewAdmission: vi.fn(async (_actor, input) => ({
+    effectivePolicyIntersection: input.allowedRepresentations,
+    teamPolicyVersion: 1,
+    teamPolicyHash: "a".repeat(64),
+    workspacePolicyVersion: 1,
+    workspacePolicyHash: "a".repeat(64)
+  })),
   getSharedMemoryPreviewAdmission: vi.fn(async (_actor, input) => ({
     source,
     ...destination,
@@ -64,6 +71,20 @@ const repository = () => ({
     effectivePolicyIntersection: input.allowedRepresentations,
     sourceOwnerPolicyWillActivate: false,
     sourceOwnerPolicyWillReplace: false
+  })),
+  getSharedMemoryPendingShareReview: vi.fn(async (_actor, input) => ({
+    source,
+    ...destination,
+    preview: {
+      previewId: input.preview.previewId,
+      previewHash: input.preview.previewHash,
+      previewRevision: input.previewRevision,
+      representation: input.selectedRepresentation,
+      sourceRevision: 4
+    },
+    effectivePolicyIntersection: input.allowedRepresentations,
+    sourceOwnerPolicyWillActivate: true as const,
+    sourceOwnerPolicyWillReplace: false as const
   })),
   getSharedMemoryRevokeReview: vi.fn(async (_actor, input) => ({
     source: {

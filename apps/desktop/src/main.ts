@@ -310,29 +310,7 @@ const bootstrap = async () => {
   );
   themePreference = readDesktopThemePreference(themePreferenceFile);
   nativeTheme.themeSource = themePreference;
-  const pdsInput = { userDataPath: app.getPath("userData") };
-  const persistentPdsStore = createPdsDesktopSecretStore(pdsInput);
-  koedEnvironment.PDS_DESKTOP_SECRET_STORAGE =
-    persistentPdsStore?.providerKind ?? "unavailable";
-  if (persistentPdsStore) {
-    await ensurePdsDesktopAuthority(persistentPdsStore);
-    const runtimeReference =
-      koedEnvironment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime";
-    const pdsStore = await createCachedPdsDesktopSecretStore(
-      persistentPdsStore,
-      [PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE, runtimeReference]
-    );
-    pdsSecretBridge = await startPdsSecretBridge({
-      koedHome: koedEnvironment.KOED_HOME ?? app.getPath("userData"),
-      providerProgram: process.execPath,
-      providerArgs: [resolve(appDir, "pds-secret-bridge-provider.js")],
-      store: pdsStore
-    });
-    Object.assign(koedEnvironment, pdsSecretBridge.environment);
-    koedEnvironment.PDS_AUTHORITY_SECRET_REF =
-      PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE;
-    koedEnvironment.PDS_RUNTIME_SECRET_REF = runtimeReference;
-  }
+  koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
   koedServer = createServerManager();
   const server = koedServer;
   const desktopIcon = getDesktopIcon();
@@ -367,6 +345,30 @@ const bootstrap = async () => {
   await startDesktopWindowAndRuntime({
     createWindow,
     resumeRuntime: async () => {
+      const persistentPdsStore = createPdsDesktopSecretStore({
+        userDataPath: app.getPath("userData")
+      });
+      koedEnvironment.PDS_DESKTOP_SECRET_STORAGE =
+        persistentPdsStore?.providerKind ?? "unavailable";
+      if (persistentPdsStore) {
+        await ensurePdsDesktopAuthority(persistentPdsStore);
+        const runtimeReference =
+          koedEnvironment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime";
+        const pdsStore = await createCachedPdsDesktopSecretStore(
+          persistentPdsStore,
+          [PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE, runtimeReference]
+        );
+        pdsSecretBridge = await startPdsSecretBridge({
+          koedHome: koedEnvironment.KOED_HOME ?? app.getPath("userData"),
+          providerProgram: process.execPath,
+          providerArgs: [resolve(appDir, "pds-secret-bridge-provider.js")],
+          store: pdsStore
+        });
+        Object.assign(koedEnvironment, pdsSecretBridge.environment);
+        koedEnvironment.PDS_AUTHORITY_SECRET_REF =
+          PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE;
+        koedEnvironment.PDS_RUNTIME_SECRET_REF = runtimeReference;
+      }
       const result = await server.resume();
       void desktopMenuBar?.refresh();
       return result;

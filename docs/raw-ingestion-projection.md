@@ -80,6 +80,25 @@ deliberately opts them in. After a policy change, the authenticated session
 rebuild operation invalidates prior display, Memory Event, embedding, and LCM
 derivations and reprojects retained canonical items under the new policy.
 
+## Pi Session Adapter
+
+Pi persistent sessions use `sourceKind=pi`, `sourceRuntime=pi`,
+`artifactFormat=pi_session_jsonl`, and `sourceAdapterVersion=pi-session-v1`.
+Watcher journals complete LF-terminated records, verifies only the terminal
+covered segment on each pass, consumes bounded journal pages, and advances its
+independent durable live cursor only after raw ingestion and Projection succeed.
+Activation and historical-frontier line counts stream from disk. After a
+Capture Pause or disabled Capture Policy, the resume line comes from retained
+journal line metadata and, only when the offset is internal to a segment, one
+bounded verified segment; Koed does not replay the skipped transcript span.
+User, AI Client
+text, tool calls/results, and direct bash records may project. Compaction and
+branch summaries, thinking, custom/unsupported records, model changes, and
+other controls remain raw provenance. Entry ID, parent ID, append position,
+provider/model identity, parent-session lineage, and cwd Project context remain
+in metadata. Activation baseline and explicit historical import use separate
+frontiers.
+
 ## Current Codex Adapters
 
 Sanitized AI Client-visible records may enter only through the production-owned
@@ -121,22 +140,34 @@ Conversation Source Access grant. Semantic expansion level and raw-source
 access are independent controls. See
 [Team Conversation Source Sharing](team-conversation-source-sharing.md).
 
-Codex approval-review prompts can contain a serialized transcript inside one
-authoritative `user_message`. The trusted transcript adapter recognizes only
-the explicit Codex approval-review envelope and records a bounded display
-projection of its message, tool-call, and tool-result segments. The enclosing
-User Memory Event remains the only canonical semantic item: nested segments do
-not receive independent identity, chronology, recall, embedding, or LCM
-authority. Approval-review guardians preserve their provider parent-thread
-relationship. The Transcript Watcher normalizes Codex's native snake-case
-subagent and parent-thread fields when it registers the Captured Session, while
-the graph projection also recognizes the native fields on existing records.
-Desktop can therefore suppress the duplicate guardian Captured Session when
-the canonical parent Conversation is present and use the bounded projection
-only as a hook-style display fallback for orphaned or legacy data. An incomplete
-approval envelope receives a bounded unavailable-history row instead of raw
-synthetic prompt text. The original outer message remains retained as raw
-provenance.
+Codex approval-specific provider records are **Approval Activity**, not Memory.
+The trusted adapter classifies approval requests, decisions, automatic
+decisions and rationales, approval-specific tool results, and helper
+Conversations from provider structure. Ordinary prose that discusses approval
+is unaffected. The owner can see a bounded, validated activity DTO in the
+Personal Conversation timeline, but Projection creates no Memory Event,
+embedding work, or LCM source from the approval-specific or duplicated review
+copy. The original main-Conversation activity remains eligible under the normal
+Projection rules.
+
+Approval helper Conversations retain their provider parent relationship so
+Desktop can suppress the duplicate helper when the parent timeline supplies
+the activity. Incomplete or unknown trusted records fail closed to a bounded
+unavailable activity row; raw synthetic prompt text is never reinterpreted as
+ordinary User or AI Client content. Replay, historical import, and managed
+Conversation reconciliation use the same classifier and exclusion reason.
+Exact Conversation Source Access remains byte-exact and does not apply this
+semantic filter.
+
+Operator correction reuses this same complete Approval Activity predicate,
+including helper Conversations and every supported approval tool-event kind.
+It compares snapshot consent with `sync_semantic_changes` upsert cursors, never
+with transcript source-sequence values. In one transaction it excludes the raw
+semantic candidate, invalidates derived Memory, revokes contaminated snapshots,
+and quarantines continuous Team representations by making them unreadable and
+deleting their semantic index rows. It then queues idempotent clean
+synchronization. Separately authorized Conversation Source artifacts and access
+grants are unchanged.
 
 Conversation Source Journal custody does not make source bytes Team-visible.
 Team access requires both an active Captured Session Share Grant and a separate

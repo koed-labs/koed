@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
+  approvalActivityClassificationSchema,
   approvalReviewTranscriptDisplayFromText,
   approvalReviewTranscriptDisplaySchema,
   collaborationRendererCommandSchema,
@@ -15,6 +16,7 @@ import {
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
   personalDesktopSessionProjectDataSchema,
+  personalDesktopSessionTitleDataSchema,
   type CollaborationRendererEvent,
   type PersonalDesktopChange,
   type PersonalDesktopRequest,
@@ -223,6 +225,11 @@ const diagnosticStatus = ({
     mcpServer: component("Run setup"),
     captureHook: component("Run setup"),
     codex: { ...component("Run setup"), configured: false },
+    claudeCode: {
+      ...component("Set up Claude Code integration"),
+      configured: false
+    },
+    pi: { ...component("Set up Pi integration"), configured: false },
     lcmSummaryService: component(),
     personalDeviceSync: personalDeviceSyncComponent(process.env),
     upstreamBackends: {
@@ -464,40 +471,48 @@ const personalEventsData = (payload: Record<string, unknown>) => {
     events: events.map((eventValue) => {
       const event = objectValue(eventValue) ?? {};
       const metadata = objectValue(event.metadata);
+      const approvalActivity = approvalActivityClassificationSchema.safeParse(
+        metadata?.approvalActivity
+      ).data;
       const toolDisplay = buildPersonalToolDisplay({
         actor: event.actor,
         content: event.content,
         contentPreview: event.contentPreview,
         metadata
       });
-      const approvalDecisionDisplay = buildPersonalApprovalDisplay({
-        actor: event.actor,
-        content: event.content,
-        metadata
-      });
+      const approvalDecisionDisplay =
+        approvalActivity?.display?.kind === "approval_decision"
+          ? approvalActivity.display.decision
+          : buildPersonalApprovalDisplay({
+              actor: event.actor,
+              content: event.content,
+              metadata
+            });
       const transcriptDisplay =
-        approvalReviewTranscriptDisplaySchema.safeParse(
-          metadata?.approvalReviewTranscriptDisplay
-        ).data ??
-        (typeof event.content === "string"
-          ? (approvalReviewTranscriptDisplayFromText(event.content) ??
-            (isApprovalReviewTranscriptEnvelopeText(event.content)
-              ? {
-                  kind: "approval_review" as const,
-                  version: 1 as const,
-                  truncated: true,
-                  segments: [
-                    {
-                      kind: "message" as const,
-                      sequence: 0,
-                      actor: "agent" as const,
-                      content:
-                        "This approval-review history is incomplete and cannot be displayed safely."
+        approvalActivity?.display?.kind === "approval_review"
+          ? approvalActivity.display.transcript
+          : (approvalReviewTranscriptDisplaySchema.safeParse(
+              metadata?.approvalReviewTranscriptDisplay
+            ).data ??
+            (typeof event.content === "string"
+              ? (approvalReviewTranscriptDisplayFromText(event.content) ??
+                (isApprovalReviewTranscriptEnvelopeText(event.content)
+                  ? {
+                      kind: "approval_review" as const,
+                      version: 1 as const,
+                      truncated: true,
+                      segments: [
+                        {
+                          kind: "message" as const,
+                          sequence: 0,
+                          actor: "agent" as const,
+                          content:
+                            "This approval-review history is incomplete and cannot be displayed safely."
+                        }
+                      ]
                     }
-                  ]
-                }
-              : undefined))
-          : undefined);
+                  : undefined))
+              : undefined));
       return {
         id: event.id,
         actor: event.actor,
@@ -513,6 +528,9 @@ const personalEventsData = (payload: Record<string, unknown>) => {
         ...(approvalDecisionDisplay ? { approvalDecisionDisplay } : {}),
         ...(transcriptDisplay ? { transcriptDisplay } : {}),
         ...(toolDisplay ? { toolDisplay } : {}),
+        ...(approvalActivity?.display
+          ? { activityDisplay: approvalActivity.display }
+          : {}),
         metadata: toolDisplay?.toolName
           ? { toolName: toolDisplay.toolName }
           : {}
@@ -878,6 +896,97 @@ export const desktopCodexSetupCommand = (
   componentHealthy(objectValue(status)?.apiToken)
     ? ["repair", "codex"]
     : ["setup", "codex"];
+
+type SetupAiClient = {
+  component: "codex" | "claudeCode" | "pi";
+  id: "codex" | "claude" | "pi";
+  label: "Codex" | "Claude Code" | "Pi";
+  setupArgs: ["setup", "codex" | "claude" | "pi"];
+};
+
+const formatAiClientList = (labels: readonly string[]): string =>
+  labels.length < 2
+    ? (labels[0] ?? "AI Clients")
+    : labels.length === 2
+      ? labels.join(" and ")
+      : `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
+
+export const detectedSetupAiClients = (
+  statusValue: unknown
+): SetupAiClient[] => {
+  const status = objectValue(statusValue);
+  const clients: SetupAiClient[] = [
+    {
+      component: "codex",
+      id: "codex",
+      label: "Codex",
+      setupArgs: ["setup", "codex"]
+    }
+  ];
+  if (objectValue(status?.claudeCode)?.detected === true) {
+    clients.push({
+      component: "claudeCode",
+      id: "claude",
+      label: "Claude Code",
+      setupArgs: ["setup", "claude"]
+    });
+  }
+  if (objectValue(status?.pi)?.detected === true) {
+    clients.push({
+      component: "pi",
+      id: "pi",
+      label: "Pi",
+      setupArgs: ["setup", "pi"]
+    });
+  }
+  return clients;
+};
+
+export const setupIntegrationHealthy = (statusValue: unknown): boolean => {
+  const status = objectValue(statusValue);
+  return (
+    [
+      status?.apiToken,
+      status?.mcpServer,
+      status?.captureHook,
+      status?.lcmSummaryService
+    ].every(componentHealthy) &&
+    detectedSetupAiClients(status).every(({ component }) =>
+      componentHealthy(status?.[component])
+    )
+  );
+};
+
+export const configureDetectedSetupAiClients = async (
+  statusValue: unknown,
+  run: (args: string[]) => Promise<unknown>,
+  onProgress: (message: string) => void
+): Promise<DesktopSetupActionResult> => {
+  const status = objectValue(statusValue);
+  const clients = detectedSetupAiClients(status);
+  for (const client of clients) {
+    if (componentHealthy(status?.[client.component])) continue;
+    onProgress(`Configuring ${client.label} capture and recall…`);
+    const args =
+      client.id === "codex"
+        ? desktopCodexSetupCommand(status)
+        : client.setupArgs;
+    const result = await run(args);
+    if (!resultOk(result)) {
+      return {
+        ok: false,
+        message: resultMessage(
+          result,
+          `${client.label} integration could not be configured.`
+        )
+      };
+    }
+  }
+  return {
+    ok: true,
+    message: `${formatAiClientList(clients.map(({ label }) => label))} integration${clients.length === 1 ? " is" : "s are"} configured.`
+  };
+};
 
 const browserActivationUrlFromResult = (value: unknown): string | null => {
   const activationUrl = activationUrlFromResult(value);
@@ -2373,6 +2482,36 @@ export const createKoedServerManager = ({
     });
   };
 
+  const updatePersonalSessionTitle = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.sessions.update_title" }
+    >["input"]
+  ) => {
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/memory/graph/sessions/${encodeURIComponent(input.sessionId)}/title`,
+          apiOrigin
+        ),
+        init: {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ title: input.title })
+        }
+      }),
+      1 * 1_024 * 1_024
+    );
+    const session = objectValue(payload.session);
+    const metadata = objectValue(session?.metadata);
+    if (!metadata || typeof metadata.threadName !== "string") {
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    }
+    return personalDesktopSessionTitleDataSchema.parse({
+      title: metadata.threadName
+    });
+  };
+
   const personalMemory: PersonalMemoryDesktopHandler = async (value) => {
     const request = personalDesktopRequestSchema.parse(value);
     try {
@@ -2381,7 +2520,9 @@ export const createKoedServerManager = ({
           ? await listPersonalProjects()
           : request.operation === "personal.events.load_page"
             ? await loadPersonalEventPage(request.input)
-            : await assignPersonalSessionProject(request.input);
+            : request.operation === "personal.sessions.assign_project"
+              ? await assignPersonalSessionProject(request.input)
+              : await updatePersonalSessionTitle(request.input);
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,
@@ -2672,13 +2813,8 @@ export const createKoedServerManager = ({
             resolveServerPackageInstallPlan(environment)
           );
           const servicesComplete = setupServicesHealthy(status);
-          const integrationComplete = [
-            status?.apiToken,
-            status?.mcpServer,
-            status?.captureHook,
-            status?.codex,
-            status?.lcmSummaryService
-          ].every(componentHealthy);
+          const detectedAiClients = detectedSetupAiClients(status);
+          const integrationComplete = setupIntegrationHealthy(status);
           const verificationComplete = componentHealthy(
             status?.lastVerification
           );
@@ -2721,9 +2857,10 @@ export const createKoedServerManager = ({
             },
             integration: {
               complete: integrationComplete,
+              detectedAiClients: detectedAiClients.map(({ label }) => label),
               message: integrationComplete
-                ? "Codex integration is configured."
-                : "Codex, MCP, and Capture Hook need to be configured."
+                ? `${formatAiClientList(detectedAiClients.map(({ label }) => label))} integration${detectedAiClients.length === 1 ? " is" : "s are"} configured.`
+                : `Capture and recall need to be configured for ${formatAiClientList(detectedAiClients.map(({ label }) => label))}.`
             },
             verification: {
               complete: verificationComplete,
@@ -2824,15 +2961,16 @@ export const createKoedServerManager = ({
         };
       }
       case "integration": {
-        onProgress({
-          completedBytes: null,
-          message: "Configuring Codex, MCP, and Capture Hook…",
-          totalBytes: null
-        });
         const current = objectValue(await statusWithEnrollmentReconciliation());
-        return setupActionResult(
-          await runJson(desktopCodexSetupCommand(current), 120_000),
-          "Codex integration could not be configured."
+        return configureDetectedSetupAiClients(
+          current,
+          (args) => runJson(args, 120_000),
+          (message) =>
+            onProgress({
+              completedBytes: null,
+              message,
+              totalBytes: null
+            })
         );
       }
       case "verification": {
@@ -2868,6 +3006,19 @@ export const createKoedServerManager = ({
     return result;
   };
 
+  const runOptionalAiClientSetup = async (
+    client: "Claude Code" | "Pi",
+    args: ["setup", "claude" | "pi"]
+  ) => {
+    const result = await runJson(args, 120_000);
+    if (!resultOk(result)) {
+      throw new Error(
+        resultMessage(result, `${client} integration could not be configured.`)
+      );
+    }
+    return result;
+  };
+
   return {
     personalMemory,
     managedConversation,
@@ -2879,6 +3030,12 @@ export const createKoedServerManager = ({
       stop,
       setup_codex: () => runJson(["setup", "codex"], 120_000),
       repair_codex: () => runJson(["repair", "codex"], 120_000),
+      setup_pi: () => runOptionalAiClientSetup("Pi", ["setup", "pi"]),
+      repair_pi: () => runOptionalAiClientSetup("Pi", ["setup", "pi"]),
+      setup_claude: () =>
+        runOptionalAiClientSetup("Claude Code", ["setup", "claude"]),
+      repair_claude: () =>
+        runOptionalAiClientSetup("Claude Code", ["setup", "claude"]),
       runtime_status: () => runRuntimeStatusJson(),
       runtime_install: (args) => runRuntimeInstallJson(args),
       models_status: () => runModelJson(),

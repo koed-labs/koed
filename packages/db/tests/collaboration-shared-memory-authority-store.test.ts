@@ -683,6 +683,56 @@ describeDb("Collaboration Shared Memory authority store", () => {
     ).resolves.toBeNull();
   });
 
+  it("renews an expired exact preview when the backend authorizes it again", async () => {
+    const fixture = await createFixture();
+    await bindFixture(fixture);
+    const remote = previewFor(fixture);
+    await expect(
+      store.persistAuthoritativePreview({
+        identity: fixture.identity,
+        allowedRepresentations: ["memory_events"],
+        preview: remote
+      })
+    ).resolves.not.toBeNull();
+    await pool.query(
+      `update collaboration_shared_memory_previews
+          set expires_at = now() - interval '1 minute'
+        where preview_id = $1`,
+      [remote.previewId]
+    );
+    await expect(
+      store.readAuthoritativePreview({
+        ...fixture.identity,
+        previewHash: remote.previewHash
+      })
+    ).resolves.toBeNull();
+
+    await expect(
+      store.persistAuthoritativePreview({
+        identity: fixture.identity,
+        allowedRepresentations: ["memory_events"],
+        preview: remote
+      })
+    ).resolves.toMatchObject({
+      previewId: remote.previewId,
+      previewHash: remote.previewHash
+    });
+    await expect(
+      store.readAuthoritativePreview({
+        ...fixture.identity,
+        previewHash: remote.previewHash
+      })
+    ).resolves.toMatchObject({ previewId: remote.previewId });
+    await expect(
+      pool.query<{ live: boolean }>(
+        `select expires_at > now() as live
+           from collaboration_shared_memory_previews
+          where preview_id = $1`,
+        [remote.previewId]
+      )
+    ).resolves.toMatchObject({ rows: [{ live: true }] });
+  });
+
   it("binds consent to the exact preview and enforces monotonic idempotent versions", async () => {
     const fixture = await createFixture();
     await bindFixture(fixture);

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 2;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 3;
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
 
@@ -203,7 +203,9 @@ export const personalDesktopProjectThreadSchema = z
     id: identifierSchema,
     name: z.string().max(512),
     sessionId: z.uuid().nullable(),
-    sourceAiClient: z.enum(["codex", "codex-cli", "claude-code"]).nullable(),
+    sourceAiClient: z
+      .enum(["codex", "codex-cli", "claude-code", "pi"])
+      .nullable(),
     projectId: identifierSchema,
     projectName: projectNameSchema,
     projectPath: localProjectPathSchema.nullable(),
@@ -242,6 +244,37 @@ export const personalDesktopConversationEventSchema = z
     approvalDecisionDisplay: approvalDecisionDisplaySchema.optional(),
     transcriptDisplay: approvalReviewTranscriptDisplaySchema.optional(),
     toolDisplay: personalDesktopToolDisplaySchema.optional(),
+    activityDisplay: z
+      .discriminatedUnion("kind", [
+        z
+          .object({
+            kind: z.literal("approval_review"),
+            label: z.literal("Approval activity"),
+            transcript: approvalReviewTranscriptDisplaySchema
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal("approval_decision"),
+            label: z.literal("Approval activity"),
+            decision: approvalDecisionDisplaySchema
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal("approval_status"),
+            label: z.literal("Approval activity"),
+            status: z.enum([
+              "request",
+              "decision",
+              "tool_result",
+              "helper_conversation",
+              "incomplete"
+            ])
+          })
+          .strict()
+      ])
+      .optional(),
     metadata: z
       .object({
         parentSourceComponentId: identifierSchema.optional(),
@@ -328,6 +361,13 @@ export const personalDesktopSessionProjectInputSchema = z.discriminatedUnion(
   ]
 );
 
+export const personalDesktopSessionTitleInputSchema = z
+  .object({
+    sessionId: z.uuid(),
+    title: z.string().trim().min(1).max(120)
+  })
+  .strict();
+
 export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({
@@ -349,6 +389,13 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
       operation: z.literal("personal.sessions.assign_project"),
       input: personalDesktopSessionProjectInputSchema
     })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.update_title"),
+      input: personalDesktopSessionTitleInputSchema
+    })
     .strict()
 ]);
 
@@ -367,6 +414,12 @@ export const personalDesktopEventsDataSchema = z
 export const personalDesktopSessionProjectDataSchema = z
   .object({
     projectId: identifierSchema.nullable()
+  })
+  .strict();
+
+export const personalDesktopSessionTitleDataSchema = z
+  .object({
+    title: z.string().trim().min(1).max(120)
   })
   .strict();
 
@@ -424,7 +477,16 @@ export const personalDesktopResultSchema = z.union([
       data: personalDesktopSessionProjectDataSchema
     })
     .strict(),
-  failedResult("personal.sessions.assign_project")
+  failedResult("personal.sessions.assign_project"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.update_title"),
+      ok: z.literal(true),
+      data: personalDesktopSessionTitleDataSchema
+    })
+    .strict(),
+  failedResult("personal.sessions.update_title")
 ]);
 
 export type PersonalDesktopProjectThread = z.infer<
@@ -454,6 +516,9 @@ export type PersonalDesktopEventPageInput = z.infer<
 >;
 export type PersonalDesktopSessionProjectInput = z.infer<
   typeof personalDesktopSessionProjectInputSchema
+>;
+export type PersonalDesktopSessionTitleInput = z.infer<
+  typeof personalDesktopSessionTitleInputSchema
 >;
 export type PersonalDesktopRequest = z.infer<
   typeof personalDesktopRequestSchema
@@ -533,5 +598,8 @@ export interface PersonalDesktopApi {
   assignSessionProject: (
     input: PersonalDesktopSessionProjectInput
   ) => Promise<{ projectId: string | null }>;
+  updateSessionTitle: (
+    input: PersonalDesktopSessionTitleInput
+  ) => Promise<{ title: string }>;
   subscribe: (listener: (change: PersonalDesktopChange) => void) => () => void;
 }

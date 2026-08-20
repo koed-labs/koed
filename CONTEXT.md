@@ -17,6 +17,15 @@ _Avoid_: Recall, search, evidence retrieval
 A user-owned credential used by an AI-client integration to access Koed.
 _Avoid_: AI key, provider key, password
 
+**Approval Activity**:
+Personal operational history created to request, decide, or report an AI Client
+approval, including trusted approval-review envelopes and helper Conversations.
+It can appear in the owning User's Conversation timeline, but it is not Memory
+and is excluded from Projection, embeddings, LCM, Recall, and semantic Shared
+Memory. Separately authorized Conversation Source Access can expose its exact
+retained source bytes.
+_Avoid_: Memory Event, approval memory, shared approval, ordinary approval text
+
 **Capture Hook**:
 A client-side integration point that sends conversation activity to Koed for capture.
 _Avoid_: MCP server, recall tool, backend poller
@@ -219,6 +228,13 @@ _Avoid_: Workspace, Project, Team, folder
 An access record that allows Team recall of a user-owned memory source within a
 Workspace.
 _Avoid_: Ownership transfer, copy, export
+
+**Pending Share**:
+An owner-authorized, durable sharing operation that is preparing a semantic
+representation. A Pending Share gives the Workspace no access. It becomes a
+Share Grant only after the authorized representation reaches its safe
+visibility boundary.
+_Avoid_: Share Grant, active share, upload, temporary request
 
 **Supported AI Client Integration**:
 An AI-client integration that supports automatic capture through the Transcript Watcher, low-latency signals and completion evidence through a Supported Capture Hook, and recall through Koed memory tools.

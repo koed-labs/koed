@@ -18,6 +18,8 @@ export const statusComponentKeys = [
   "mcpServer",
   "captureHook",
   "codex",
+  "claudeCode",
+  "pi",
   "lcmSummaryService",
   "upstreamBackends",
   "lastVerification"
@@ -74,6 +76,16 @@ export const componentDefinitions = {
     label: "Codex configuration",
     description: "Supported AI Client settings for Koed capture and recall."
   },
+  claudeCode: {
+    label: "Claude Code configuration",
+    description:
+      "Koed MCP and Supported Capture Hook configuration in Claude Code."
+  },
+  pi: {
+    label: "Pi configuration",
+    description:
+      "Koed-owned local package registered in the active global Pi profile."
+  },
   lcmSummaryService: {
     label: "LCM Summary Service",
     description: "Local background summarization service for memory nodes."
@@ -103,6 +115,10 @@ export type StatusCardActionCommand =
   | "package_install"
   | "setup_codex"
   | "repair_codex"
+  | "setup_pi"
+  | "repair_pi"
+  | "setup_claude"
+  | "repair_claude"
   | "runtime_install"
   | "models_install"
   | "doctor"
@@ -291,6 +307,52 @@ export const statusCards = [
     ]
   },
   {
+    id: "piIntegration",
+    title: "Pi Integration",
+    role: "Registers Koed's local package in the active Pi profile for capture and recall.",
+    impact:
+      "Ordinary Pi sessions cannot use Koed memory tools until this package is configured.",
+    componentKeys: ["pi"],
+    primaryAction: {
+      label: "Repair Pi integration",
+      command: "repair_pi",
+      timeoutMs: 120_000,
+      primary: true
+    },
+    secondaryActions: [
+      {
+        label: "Set up Pi integration",
+        command: "setup_pi",
+        timeoutMs: 120_000
+      },
+      { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
+      { label: "Copy diagnostics", command: "copy_diagnostics" }
+    ]
+  },
+  {
+    id: "claudeIntegration",
+    title: "Claude Code Integration",
+    role: "Configures Koed MCP recall and the Supported Capture Hook in Claude Code.",
+    impact:
+      "Claude Code cannot capture Conversations or call Koed memory tools until configured.",
+    componentKeys: ["claudeCode"],
+    primaryAction: {
+      label: "Repair Claude Code integration",
+      command: "repair_claude",
+      timeoutMs: 120_000,
+      primary: true
+    },
+    secondaryActions: [
+      {
+        label: "Set up Claude Code integration",
+        command: "setup_claude",
+        timeoutMs: 120_000
+      },
+      { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
+      { label: "Copy diagnostics", command: "copy_diagnostics" }
+    ]
+  },
+  {
     id: "teamBackend",
     title: "Team Backend",
     role: "Remote Team Backend connection used for Team Workspace memory.",
@@ -350,6 +412,8 @@ const recoveryCardIdByComponent = {
   mcpServer: "aiClientIntegration",
   captureHook: "capturePath",
   codex: "aiClientIntegration",
+  claudeCode: "claudeIntegration",
+  pi: "piIntegration",
   lcmSummaryService: "memoryProcessing",
   upstreamBackends: "teamBackend",
   lastVerification: "memoryProcessing"
@@ -365,6 +429,18 @@ export const recoveryActionForStatusComponent = (
     throw new Error(`Missing Desktop recovery card: ${cardId}`);
   }
   if (state === "not_configured") {
+    if (componentKey === "claudeCode") {
+      const setupAction = card.secondaryActions.find(
+        (action) => action.command === "setup_claude"
+      );
+      if (setupAction) return setupAction;
+    }
+    if (componentKey === "pi") {
+      const setupAction = card.secondaryActions.find(
+        (action) => action.command === "setup_pi"
+      );
+      if (setupAction) return setupAction;
+    }
     const installCommand =
       componentKey === "embeddingService"
         ? "models_install"

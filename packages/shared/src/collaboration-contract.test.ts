@@ -294,6 +294,33 @@ const grant = () => ({
   companionThreadId: ids.thread
 });
 
+const pendingShare = () => ({
+  id: ids.shareGrant,
+  mutationId: ids.mutation,
+  logicalGrantId: ids.logicalThread,
+  consentId: ids.consent,
+  logicalMemoryId: ids.logicalMemory,
+  teamId: ids.team,
+  workspaceId: ids.workspace,
+  representation: "lcm_leaves" as const,
+  allowedRepresentations: ["lcm_leaves"] as const,
+  mode: "continuous" as const,
+  sourceRevision: 1,
+  state: "preparing" as const,
+  stage: "accepted" as const,
+  workspaceAccessState: "active" as const,
+  sourceUpdateState: "preparing" as const,
+  operationVersion: 1,
+  attemptCount: 0,
+  redactedFailureCode: null,
+  lastProgressAt: timestamp,
+  createdAt: timestamp,
+  updatedAt: timestamp,
+  activatedAt: null,
+  revokedAt: null,
+  grantId: null
+});
+
 const snapshot = () => ({
   contractVersion: COLLABORATION_CONTRACT_VERSION,
   snapshotRevision: revision,
@@ -683,6 +710,26 @@ describe("collaboration renderer commands", () => {
     ).toBe(true);
   });
 
+  it("rejects the previous contract and the replaced representation-change result shape", () => {
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        contractVersion: 3,
+        requestId: ids.request,
+        command: "collaboration.load",
+        input: {}
+      }).success
+    ).toBe(false);
+    expect(
+      collaborationCommandResultSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.change_shared_memory_representation",
+        ok: true,
+        data: { grant: grant() }
+      }).success
+    ).toBe(false);
+  });
+
   it("rejects credentials, fragments, unsafe schemes, and unsafe backend URL shapes", () => {
     for (const remoteUrl of [
       "https://user:secret@team.example.test",
@@ -858,6 +905,7 @@ describe("collaboration renderer commands", () => {
           previewRevision: 1,
           previewHash: "b".repeat(64),
           expiresAt: null,
+          candidateSessionId: ids.sharedSession,
           actionGrant: actionGrant()
         }
       },
@@ -889,6 +937,7 @@ describe("collaboration renderer commands", () => {
           previewRevision: 1,
           previewHash: "b".repeat(64),
           expiresAt: null,
+          candidateSessionId: ids.sharedSession,
           actionGrant: actionGrant()
         }
       }
@@ -904,6 +953,22 @@ describe("collaboration renderer commands", () => {
         value.command
       ).toBe(true);
     }
+  });
+
+  it("accepts an explicit Pending Share revoke action", () => {
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.control_pending_share",
+        input: {
+          pendingShareId: ids.shareGrant,
+          mutationId: ids.mutation,
+          expectedOperationVersion: 1,
+          action: "revoke"
+        }
+      }).success
+    ).toBe(true);
   });
 
   it("rejects reusable secrets in scoped high-risk action grants", () => {
@@ -986,7 +1051,8 @@ describe("collaboration renderer commands", () => {
         selectedRepresentation: "memory_events",
         previewRevision: 1,
         previewHash: "b".repeat(64),
-        expiresAt: null
+        expiresAt: null,
+        candidateSessionId: ids.sharedSession
       },
       {
         intent: "collaboration.revoke_shared_memory",
@@ -1013,7 +1079,8 @@ describe("collaboration renderer commands", () => {
         allowedRepresentations: ["lcm_leaves"],
         previewRevision: 1,
         previewHash: "b".repeat(64),
-        expiresAt: null
+        expiresAt: null,
+        candidateSessionId: ids.sharedSession
       }
     ] as const) {
       expect(
@@ -1722,7 +1789,7 @@ describe("collaboration results and realtime", () => {
       },
       {
         command: "collaboration.change_shared_memory_representation",
-        data: { grant: { ...grant(), activeRepresentation: "lcm_leaves" } }
+        data: { pendingShare: pendingShare() }
       }
     ];
 

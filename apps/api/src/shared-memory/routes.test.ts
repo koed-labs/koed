@@ -136,6 +136,7 @@ const createFixture = () => {
     teamId: ids.teamA,
     teamWorkspaceId: ids.workspaceA,
     consentId: ids.consent,
+    displayTitle: "Shared Memory",
     sourceOwnerPolicyId: randomUUID(),
     sourceOwnerPolicyVersion: 1,
     teamPolicyId: randomUUID(),
@@ -220,6 +221,36 @@ const createFixture = () => {
     representation: input.representation,
     previewRevision: 1,
     binding: binding(),
+    manifest: [
+      {
+        sourceId: ids.source,
+        sourceTable:
+          input.representation === "memory_events"
+            ? "memory_events"
+            : input.representation === "curated_assertions"
+              ? "curated_memory_assertions"
+              : "memory_nodes",
+        itemType:
+          input.representation === "lcm_leaves"
+            ? "lcm_leaf"
+            : input.representation === "lcm_rollups"
+              ? "lcm_rollup"
+              : input.representation === "curated_assertions"
+                ? "curated_assertion"
+                : "user_message",
+        sourceCursor: 1,
+        revisionHash: hash,
+        occurredAt: iso,
+        sourceEventId:
+          input.representation === "memory_events" ? ids.source : null,
+        sourceNodeId:
+          input.representation === "lcm_leaves" ||
+          input.representation === "lcm_rollups"
+            ? ids.source
+            : null
+      }
+    ],
+    manifestHash: hash,
     items: [
       {
         itemType:
@@ -352,10 +383,49 @@ const createFixture = () => {
   });
 
   const repository: SharedMemoryRepository = {
+    async createSharedMemoryCandidatePreview() {
+      return null;
+    },
+    async createPendingShare() {
+      throw new SharedMemoryAuthorizationError();
+    },
+    async createPendingRepresentationChange() {
+      throw new SharedMemoryAuthorizationError();
+    },
+    async processPendingShares() {
+      return { claimed: 0, activated: 0, waiting: 0, failed: 0 };
+    },
+    async controlPendingShare() {
+      throw new SharedMemoryAuthorizationError();
+    },
+    async listOwnerShares(_actor, input) {
+      return {
+        entries: [],
+        limit: input.limit,
+        hasMore: false,
+        snapshotAt: iso,
+        next: null
+      };
+    },
+    async getOwnerShare() {
+      return null;
+    },
+    async renameOwnerShare() {
+      throw new SharedMemoryAuthorizationError();
+    },
+    async readOwnerSharePreview() {
+      return null;
+    },
+    async getSharedMemoryCandidatePreviewAdmission() {
+      return null;
+    },
     async getSharedMemoryPreviewAdmission() {
       return null;
     },
     async getSharedMemoryShareReview() {
+      return null;
+    },
+    async getSharedMemoryPendingShareReview() {
       return null;
     },
     async getSharedMemoryRepresentationChangeReview() {
@@ -552,6 +622,7 @@ const createFixture = () => {
       }
       const entry = {
         shareGrantId: ids.grant,
+        title: "Shared Memory",
         logicalMemoryId: ids.logicalMemory,
         ownerUserId: ids.alice,
         activeRepresentation: "memory_events" as const,
@@ -1666,6 +1737,7 @@ describe("Shared Memory HTTP routes", () => {
     expect(body.shareGrants).toHaveLength(1);
     expect(body.shareGrants[0]).toEqual({
       id: fixture.ids.grant,
+      title: "Shared Memory",
       logicalMemoryId: fixture.ids.logicalMemory,
       ownerUserId: fixture.ids.alice,
       activeRepresentation: "memory_events",

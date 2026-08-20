@@ -206,8 +206,24 @@ export {
   personalDesktopResultSchema,
   personalDesktopSessionProjectDataSchema,
   personalDesktopSessionProjectInputSchema,
+  personalDesktopSessionTitleDataSchema,
+  personalDesktopSessionTitleInputSchema,
   personalDesktopToolDisplaySchema
 } from "./personal-desktop-contract.js";
+export {
+  approvalActivityClassificationSchema,
+  approvalActivityDisplaySchema,
+  approvalActivityExclusionReasonSchema,
+  approvalActivityKindSchema,
+  approvalActivityMetadata,
+  classifyApprovalActivity
+} from "./approval-activity.js";
+export type {
+  ApprovalActivityClassification,
+  ApprovalActivityDisplay,
+  ApprovalActivityExclusionReason,
+  ApprovalActivityKind
+} from "./approval-activity.js";
 export type {
   ApprovalDecisionDisplay,
   ApprovalReviewTranscriptDisplay,
@@ -221,7 +237,8 @@ export type {
   PersonalDesktopProjectThread,
   PersonalDesktopRequest,
   PersonalDesktopResult,
-  PersonalDesktopSessionProjectInput
+  PersonalDesktopSessionProjectInput,
+  PersonalDesktopSessionTitleInput
 } from "./personal-desktop-contract.js";
 
 export {
@@ -315,7 +332,12 @@ export {
   sharedMemoryEventSourceKindSchema,
   sharedMemoryRepresentationSchema,
   sharedMemoryGrantSchema,
+  pendingShareSchema,
+  ownedShareSummarySchema,
+  ownedShareItemSchema,
+  conversationSourceAccessSchema,
   sharedMemoryPreviewSchema,
+  sharedMemoryCandidatePreviewSchema,
   sharedMemorySessionSchema,
   sharedMemorySessionReferenceSchema,
   sharedMemorySourceItemSchema,
@@ -335,6 +357,7 @@ export type {
   CollaborationMessage,
   CollaborationMessagePage,
   PersonalMemoryEntry,
+  OwnedShareItem,
   CollaborationMembership,
   CollaborationInvitation,
   CollaborationInvitationPage,
@@ -356,7 +379,10 @@ export type {
   CollaborationWorkspaceAccess,
   SharedMemoryConsent,
   SharedMemoryGrant,
+  PendingShare,
+  ConversationSourceAccess,
   SharedMemoryPreview,
+  SharedMemoryCandidatePreview,
   SharedMemoryRepresentation,
   SharedMemorySession,
   SharedMemorySessionReference,
@@ -518,6 +544,8 @@ export {
   sharedMemoryGrantManagementRequestHash,
   sharedMemoryGrantManagementScopeHash,
   sharedMemoryPreviewActionGrantBinding,
+  sharedMemoryCandidatePreviewActionGrantBinding,
+  sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryRepresentationBundleActionGrantBinding,
   sharedMemoryRepresentationActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,

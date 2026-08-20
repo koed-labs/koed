@@ -210,6 +210,7 @@ const automatedLaunchTestEnvironmentKeys = [
   "CACHE_STORE",
   "CORS_ORIGINS",
   "EMBEDDING_SERVICE_URL",
+  "ELECTRON_RUN_AS_NODE",
   "GRAPH_CACHE_TTL_SECONDS",
   "KOED_ALLOW_PUBLIC_REGISTRATION",
   "KOED_BACKUP_STATUS_PATH",
@@ -248,6 +249,7 @@ const automatedLaunchTestEnvironmentKeys = [
   "RATE_LIMIT_STORE",
   "REDIS_URL",
   "SESSION_SECRET",
+  "SHARED_MEMORY_TEST_DATABASE_URL",
   "WORK_QUEUE_BACKEND",
   "WORKOS_API_BASE_URL",
   "WORKOS_API_KEY",
@@ -341,6 +343,26 @@ export const automatedLaunchTestCommands = [
       "scripts/multi-device-profile-lib.test.mjs",
       "scripts/multi-device-dogfood-lib.test.mjs",
       "scripts/team-saas-launch-validation-lib.test.mjs"
+    ]
+  },
+  {
+    id: "approval-activity-sharing-performance",
+    command: "pnpm",
+    args: ["approval-activity:measure-sharing"]
+  },
+  {
+    id: "shared-memory-workflow-performance",
+    command: "pnpm",
+    args: [
+      "--filter",
+      "@koed/db",
+      "exec",
+      "vitest",
+      "run",
+      "tests/shared-memory-repository.test.ts",
+      "--testNamePattern",
+      "measures candidate, authoritative preview, pending acceptance, and activation",
+      "--disableConsoleIntercept"
     ]
   },
   {

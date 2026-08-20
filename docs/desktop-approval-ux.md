@@ -308,6 +308,18 @@ secret.
 - Denial, cancellation, expiry, stale versions, and authority changes leave
   Desktop in a coherent recoverable state.
 
+## Asynchronous sharing result
+
+`Review source` shows a bounded candidate before synchronization. The one
+meaningful share decision persists a Pending Share and returns immediately;
+progress continues in the background. `Personal > Memory > Shares` is the
+stable owner surface for preparing, needs-attention, active, paused, failed,
+and revoked states. Retry, pause, and resume stay adjacent to the affected item
+and background refresh does not move focus. Workspace access and continuous
+update state are displayed separately. Exact Conversation Source Access remains
+a separate Step-up capability and warns that non-Memory provider records,
+including Approval Activity and tool records, can be exposed.
+
 ## Open Questions
 
 - Is protection from a compromised renderer a requirement for every current

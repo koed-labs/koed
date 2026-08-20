@@ -11,8 +11,9 @@ The supervised Local AI Runtime owns three synthesis flows:
 - LCM Summary: background LCM Summary and captured-session title work.
 - Curated Memory Review: asynchronous source-linked proposal review.
 
-Codex and Claude are supported local providers. Each flow independently selects
-an AI Client instance, model, and supported model options.
+Codex, Claude, and Pi are supported local providers. Each flow independently
+selects AI Client instance, model, and supported model options. Pi model IDs
+retain full underlying provider/model identity.
 
 ## Precedence
 
@@ -36,8 +37,11 @@ Curated Memory Review settings resolve in this order:
 
 `MEMORY_CODEX_APP_SERVER_BINARY` selects the Codex app-server binary.
 `KOED_CLAUDE_CODE_EXECUTABLE` selects a separately installed Claude Code
-executable for Claude-backed flows. Claude execution uses only the pinned
-official TypeScript Claude Agent SDK and local subscription authentication. An
+executable for Claude-backed flows. Claude execution uses only pinned official
+TypeScript Claude Agent SDK and local subscription authentication.
+`KOED_PI_EXECUTABLE` selects separately installed Pi `0.84.2+`. Pi execution
+uses strict-LF JSONL RPC, ephemeral sessions, disabled user/project resources,
+one Koed structured-result bridge, minimal environment, and Pi-managed auth. An
 unavailable provider or model fails visibly; Koed does not cross provider or
 fall back to backend synthesis.
 

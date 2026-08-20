@@ -5,6 +5,10 @@ import {
   recordAuditEventWithClient
 } from "./audit-repository.js";
 import { createAuthSessionRepository } from "./auth-session-repository.js";
+import {
+  approvalConversationItemSql,
+  semanticMemoryEventEligibleSql
+} from "./approval-activity-sql.js";
 import { createCapturedSessionRepository } from "./captured-session-repository.js";
 import { checkDatabase, createDb } from "./connection.js";
 import {
@@ -90,6 +94,7 @@ import type {
   RetrievalMetadata
 } from "@koed/core";
 import {
+  classifyApprovalActivity,
   combineStorageSanitizationCounts,
   DEFAULT_EMBEDDING_QUERY_INSTRUCTION,
   formatEmbeddingRetrievalQuery,
@@ -445,11 +450,16 @@ const conversationSourceRuntime = (
   if (
     explicit === "codex" ||
     explicit === "codex-cli" ||
-    explicit === "claude-code"
+    explicit === "claude-code" ||
+    explicit === "pi"
   ) {
     return explicit;
   }
-  if (sourceKind === "codex-cli" || sourceKind === "claude-code") {
+  if (
+    sourceKind === "codex-cli" ||
+    sourceKind === "claude-code" ||
+    sourceKind === "pi"
+  ) {
     return sourceKind;
   }
   return "codex";
@@ -1240,6 +1250,16 @@ const classifyConversationItemProjection = (
     policyKey: null,
     reason: "not-projectable"
   };
+  const approvalActivity = classifyApprovalActivity({
+    metadata: row.metadata
+  });
+  if (approvalActivity) {
+    return {
+      ...base,
+      policyKey: "approval_activity",
+      reason: approvalActivity.exclusionReason
+    };
+  }
   if (projectionIsIdeClientContext(row)) {
     return { ...base, reason: "ide-client-supporting-context" };
   }
@@ -5923,6 +5943,7 @@ export const createMemorySourceRepository = (
             and pds_session_recall_ready(me.session_id)
               and me.personal_deleted_at is null
               and me.include_in_lcm = true
+              and ${semanticMemoryEventEligibleSql("me")}
               and (
                 not exists (
                   select 1
@@ -6760,6 +6781,15 @@ export const createMemorySourceRepository = (
                 from tool_events te
                 where te.visibility = 'personal'
                   and te.owner_user_id = $1
+                union all
+                select
+                  overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid as id,
+                  ci.source_sequence
+                from conversation_items ci
+                where ci.visibility = 'personal'
+                  and ci.owner_user_id = $1
+                  and ci.personal_deleted_at is null
+                  and ${approvalConversationItemSql("ci")}
               ) cursor_event
               where cursor_event.id = $10::uuid
               limit 1
@@ -7160,6 +7190,98 @@ export const createMemorySourceRepository = (
             )
             and te.visibility = 'personal'
             and te.owner_user_id = $1
+          union all
+          select
+            overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid as id,
+            ci.owner_user_id,
+            null::text as actor,
+            'approval_activity'::text as event_type,
+            case
+              when ci.source_kind = 'codex' then 'codex'::source_runtime
+              else null::source_runtime
+            end as source_runtime,
+            case
+              when ci.source_transport in ('transcript', 'historical_import')
+                then 'transcript'::capture_method
+              else 'api'::capture_method
+            end as capture_method,
+            s.model,
+            coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') as project_id,
+            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
+            coalesce(s.project_override_path, s.automatic_project_path) as project_path,
+            s.id::text as session_id,
+            coalesce(ci.metadata ->> 'parentThreadId', ci.external_thread_id, ci.external_session_id, s.external_session_id, s.id::text) as thread_id,
+            coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
+            ci.event_time as source_event_time,
+            ci.source_sequence,
+            ci.observed_at as captured_at,
+            ci.created_at,
+            coalesce(ci.event_time, ci.observed_at) as order_at,
+            ci.visibility,
+            null::timestamptz as invalidated_at,
+            null::text as invalidation_reason,
+            'Approval activity'::text as content,
+            jsonb_strip_nulls(jsonb_build_object(
+              'sourceTable', 'conversation_items',
+              'activitySourceId', ci.id,
+              'approvalActivity', coalesce(
+                ci.metadata -> 'approvalActivity',
+                jsonb_build_object(
+                  'kind', case
+                    when ci.metadata ? 'approvalReviewTranscriptDisplay'
+                      then 'approval_review_envelope'
+                    else 'approval_helper_conversation'
+                  end,
+                  'exclusionReason', case
+                    when ci.metadata ? 'approvalReviewTranscriptDisplay'
+                      then 'approval_activity:review_envelope'
+                    else 'approval_activity:helper_conversation'
+                  end,
+                  'display', case
+                    when ci.metadata ? 'approvalReviewTranscriptDisplay'
+                      then jsonb_build_object(
+                        'kind', 'approval_review',
+                        'label', 'Approval activity',
+                        'transcript', ci.metadata -> 'approvalReviewTranscriptDisplay'
+                      )
+                    else jsonb_build_object(
+                      'kind', 'approval_status',
+                      'label', 'Approval activity',
+                      'status', 'helper_conversation'
+                    )
+                  end
+                )
+              )
+            )) as metadata
+          from conversation_items ci
+          cross join cursor_order co
+          join sessions s on s.id = ci.session_id
+          where ci.visibility = 'personal'
+            and ci.owner_user_id = $1
+            and ci.personal_deleted_at is null
+            and ${approvalConversationItemSql("ci")}
+            and ($3::visibility_scope is null or ci.visibility = $3::visibility_scope)
+            and (
+              $4::text is null
+              or coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
+              or coalesce(s.project_override_path, s.automatic_project_path) = $4
+            )
+            and ($5::text is null or coalesce(ci.metadata ->> 'parentThreadId', ci.external_thread_id, ci.external_session_id, s.external_session_id, s.id::text) = $5)
+            and ($6::uuid is null or overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid = $6)
+            and ($7::text is null or overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid::text = $7)
+            and (
+              $8::timestamptz is null
+              or coalesce(ci.event_time, ci.observed_at) < $8::timestamptz
+              or (
+                coalesce(ci.event_time, ci.observed_at) = $8::timestamptz
+                and (
+                  (co.source_sequence is null and ci.source_sequence is null and $10::uuid is not null and overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid < $10::uuid)
+                  or (co.source_sequence is not null and ci.source_sequence is not null and ci.source_sequence < co.source_sequence)
+                  or (co.source_sequence is not null and ci.source_sequence = co.source_sequence and $10::uuid is not null and overlay(overlay(md5('approval-activity:' || ci.id::text) placing '5' from 13 for 1) placing 'a' from 17 for 1)::uuid < $10::uuid)
+                  or (co.source_sequence is not null and ci.source_sequence is null)
+                )
+              )
+            )
         )
         select
           ve.*,
@@ -7863,6 +7985,7 @@ export const createMemorySourceRepository = (
           where me.invalidated_at is null
             and pds_session_recall_ready(me.session_id)
             and me.personal_deleted_at is null
+            and ${semanticMemoryEventEligibleSql("me")}
 
           union all
 
@@ -8261,6 +8384,7 @@ export const createMemorySourceRepository = (
             end as text
           from memory_events me
           where me.invalidated_at is null and pds_session_recall_ready(me.session_id) and me.personal_deleted_at is null
+            and ${semanticMemoryEventEligibleSql("me")}
 
           union all
 
@@ -10502,6 +10626,36 @@ export const createMemorySourceRepository = (
                 left join memory_node_sources mns on mns.memory_event_id = me.memory_event_id or mns.message_id = me.message_id
                 left join memory_nodes linked_mn on linked_mn.id = mns.memory_node_id and linked_mn.invalidated_at is null and linked_mn.personal_deleted_at is null
                 where me.invalidated_at is null
+                  and not (
+                    me.memory_event_id is not null
+                    and not (${semanticMemoryEventEligibleSql("ev")})
+                  )
+                  and not (
+                    me.message_id is not null
+                    and exists (
+                      select 1 from conversation_items approval_item
+                      where approval_item.owner_user_id=msg.owner_user_id
+                        and msg.idempotency_key='message:' || coalesce(approval_item.metadata ->> 'canonicalConversationItemKey',approval_item.canonical_item_key,approval_item.logical_source_id,approval_item.id::text)
+                        and ${approvalConversationItemSql("approval_item")}
+                    )
+                  )
+                  and not (
+                    me.memory_node_id is not null
+                    and exists (
+                      select 1 from memory_node_sources approval_node_source
+                      left join memory_events approval_event on approval_event.id=approval_node_source.memory_event_id
+                      left join messages approval_message on approval_message.id=approval_node_source.message_id
+                      where approval_node_source.memory_node_id=me.memory_node_id
+                        and (
+                          not (${semanticMemoryEventEligibleSql("approval_event")})
+                          or exists (
+                            select 1 from conversation_items approval_item
+                            where approval_message.idempotency_key='message:' || coalesce(approval_item.metadata ->> 'canonicalConversationItemKey',approval_item.canonical_item_key,approval_item.logical_source_id,approval_item.id::text)
+                              and ${approvalConversationItemSql("approval_item")}
+                          )
+                        )
+                    )
+                  )
                   and me.embedding_model = $5
                   and me.embedding_dimensions = $6
                   and me.embedding_version = $7
@@ -11295,6 +11449,7 @@ export const createMemorySourceRepository = (
             and coalesce(processing.work_class, 'normal_embedding_lcm') = $3
             and ($5::uuid is null or me.session_id = $5::uuid)
             and me.include_in_lcm = true
+            and ${semanticMemoryEventEligibleSql("me")}
             and (
               not exists (
                 select 1

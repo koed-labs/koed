@@ -1,7 +1,30 @@
 # Running Koed
 
+## Approval Activity remediation
+
+After upgrading an existing database, an Operator can inventory legacy
+approval-derived semantic data without mutation:
+
+```bash
+pnpm --filter @koed/db approval-activity:inventory
+```
+
+The bounded report is stable across repeated runs and counts affected Memory
+Events, embeddings and queued work, LCM derivatives, semantic replicas, and
+snapshot or continuous shares. Ambiguous scopes stop correction and require
+Operator review. After reviewing the inventory, apply the idempotent correction:
+
+```bash
+pnpm --filter @koed/db approval-activity:correct
+```
+
+Correction removes semantic derivatives, schedules eligible rebuild/deletion
+work, and revokes only deterministically affected snapshot shares. It preserves
+the owner Approval Activity timeline and byte-exact Conversation Source
+Artifacts, access grants, exports, and Fork Snapshots.
+
 > [!IMPORTANT]  
-> Only Codex is supported for knowledge capture. More agents to follow!
+> Codex, Claude Code, and Pi are supported AI Client integrations. See client-specific integration guides for setup and limitations.
 
 Koed's server deployment unit is `koed-server` plus dependencies. Internally,
 `koed-server` supervises API, Worker, and the local Transcript Watcher, and connects
@@ -25,15 +48,22 @@ For server/private VPS terminology and migration notes, see
 ## Manual control-plane commands
 
 `pnpm desktop:start` opens Koed Desktop, which auto-starts `koed-server`, runs
-Codex bootstrap when needed, and keeps the startup screen visible until the
+AI Client bootstrap when needed, and keeps the startup screen visible until the
 system is ready.
 
-After a verified setup, Desktop resumes its managed local `koed-server` before
-loading the main window. A fresh or incomplete setup opens the guided setup
-without silently installing runtime or model assets. After explicit User
+Desktop creates and loads its main window before it resumes the managed local
+`koed-server`. Platform secret-provider initialization runs in the background
+startup path after the window exists and before the runtime resumes. A blocked
+or interactive operating-system credential provider therefore cannot leave the
+User with no application window. A fresh or incomplete setup opens the guided
+setup without silently installing runtime or model assets. After explicit User
 confirmation, Desktop checks and runs the package, native runtime, embedding
-model, local services, Codex integration, and final verification stages in
-order. Completed stages are skipped. Only the active stage is shown as running,
+model, local services, AI Client integration, and final verification stages in
+order. Codex remains part of first-run setup. Desktop also detects Claude Code
+and Pi from their executable or global profile files, lists detected clients on
+the setup page, and configures each one automatically. A detected client that
+is installed but unsupported or unauthenticated stops setup with its actionable
+client-specific error. Completed stages are skipped. Only the active stage is shown as running,
 model download progress comes from transferred artifact bytes, and a failure
 stops the workflow with a retry that re-inspects local state. The automatic
 resume wait is bounded so broken local runtime state remains diagnosable from
@@ -487,7 +517,7 @@ docker compose --env-file .env -f examples/server-compose/docker-compose.yml exe
 Do not point normal AI Client integrations directly at this remote/server API.
 Each User's AI Client MCP adapter and Supported Capture Hook should normally use
 that User's local `koed-server`. That server supervises an authenticated Local
-AI Runtime, which hosts the Codex and Claude Transcript Watchers. External runtime mode does not
+AI Runtime, which hosts Codex, Claude, and Pi Transcript Watchers. External runtime mode does not
 run either user-local component. Transcript roots default to
 `CODEX_HOME/sessions` and may be replaced with explicit local roots. Each
 Supported Capture Hook wake completes one bounded, paginated discovery sweep,
@@ -499,7 +529,9 @@ backoff until it consumes terminal evidence. A one-second catch-up tick checks
 only a bounded rotation of known sources and the newest discovery page,
 covering missed Hook and filesystem delivery without continuous full scans.
 Claude capture uses content-free lifecycle signals and reads provider-native
-Conversation Sources from the configured Claude home. The
+Conversation Sources from configured Claude home. Pi capture uses content-free
+extension wake signals plus periodic discovery of persistent Pi JSONL sessions;
+see [Pi integration](pi-integration.md). The
 local `koed-server` then registers this server as an upstream and routes
 approved Team Workspace recall, Share
 Grant, sync/offload, or remote capture-bearing operations through local-edge

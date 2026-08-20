@@ -5,7 +5,8 @@ import { searchDomainSchema } from "./retrieval-schemas.js";
 export const sourceAiClientSchema = z.enum([
   "codex",
   "codex-cli",
-  "claude-code"
+  "claude-code",
+  "pi"
 ]);
 
 export const graphThreadIndexResponseSchema = z.object({

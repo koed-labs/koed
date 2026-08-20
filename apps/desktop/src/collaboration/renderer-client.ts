@@ -7,6 +7,7 @@ import {
   collaborationSnapshotSchema,
   type CollaborationCommandResult,
   type CollaborationConnection,
+  type ConversationSourceAccess,
   type CollaborationDurableSend,
   type CollaborationActionGrantIntent,
   type CollaborationActionGrantReference,
@@ -22,6 +23,7 @@ import {
   type CollaborationSafeError,
   type CollaborationSelection,
   type CollaborationSnapshot,
+  type OwnedShareItem,
   type CollaborationSubscription,
   type CollaborationTeamPerson,
   type CollaborationThread,
@@ -29,7 +31,9 @@ import {
   type CollaborationWorkspace,
   type CollaborationWorkspaceAccess,
   type PersonalMemoryEntry,
+  type PendingShare,
   type SharedMemoryGrant,
+  type SharedMemoryCandidatePreview,
   type SharedMemoryPreview,
   type SharedMemoryRepresentation,
   type SharedMemorySourcePage
@@ -50,6 +54,7 @@ export interface CollaborationRendererBridge {
 
 export type CollaborationClientUpdate = {
   kind: "command" | "realtime" | "connection" | "purge";
+  authoritativeRecovery?: boolean;
   announcement?: string;
   announcementId?: string;
   realtimeUpdate?: Extract<
@@ -272,6 +277,44 @@ export interface CollaborationRendererClient {
   listOwnedSharedMemoryGrants(input: {
     logicalMemoryId: string;
   }): Promise<SharedMemoryGrant[]>;
+  listOwnedShares(input: {
+    cursor: string | null;
+    limit?: number;
+    history?: boolean;
+  }): Promise<{
+    shares: OwnedShareItem[];
+    nextCursor: string | null;
+  }>;
+  getOwnedShare(input: {
+    kind: "pending" | "grant";
+    id: string;
+  }): Promise<OwnedShareItem>;
+  renameOwnedShare(input: {
+    kind: "pending" | "grant";
+    id: string;
+    title: string;
+  }): Promise<OwnedShareItem>;
+  controlPendingShare(input: {
+    pendingShareId: string;
+    expectedOperationVersion: number;
+    action: "retry" | "pause" | "resume" | "revoke";
+  }): Promise<PendingShare>;
+  shareConversationSource(input: {
+    teamId: string;
+    shareGrantId: string;
+    expectedVersion: number;
+    mode: "snapshot" | "continuous";
+  }): Promise<ConversationSourceAccess>;
+  revokeConversationSource(input: {
+    teamId: string;
+    shareGrantId: string;
+    expectedVersion: number;
+    reasonCode: string;
+  }): Promise<ConversationSourceAccess>;
+  previewSharedMemoryCandidate(input: {
+    sessionId: string;
+    representation: SharedMemoryRepresentation;
+  }): Promise<SharedMemoryCandidatePreview>;
   prepareSharedMemorySource(input: {
     sessionId: string;
   }): Promise<PersonalMemoryEntry>;
@@ -290,6 +333,17 @@ export interface CollaborationRendererClient {
     workspaceId: string;
     representation: SharedMemoryRepresentation;
     allowedRepresentations: SharedMemoryRepresentation[];
+    candidate?: {
+      sessionId: string;
+      candidateHash: string;
+      sourceRevision: number;
+      itemCount: number;
+      excludedItemCount: number;
+      manifest: Array<{ sourceId: string; revisionHash: string }>;
+      byteCount: number;
+      mode: "snapshot" | "continuous";
+      expiresAt: string | null;
+    };
   }): Promise<SharedMemoryPreview>;
   loadSharedMemoryPreviewPage(input: {
     previewHash: string;
@@ -308,7 +362,9 @@ export interface CollaborationRendererClient {
     previewRevision: number;
     previewHash: string;
     expiresAt: string | null;
-  }): Promise<SharedMemoryGrant>;
+    title?: string;
+    candidateSessionId?: string;
+  }): Promise<SharedMemoryGrant | PendingShare>;
   revokeSharedMemory(input: {
     mutationId: string;
     teamId: string;
@@ -331,7 +387,8 @@ export interface CollaborationRendererClient {
     previewRevision: number;
     previewHash: string;
     expiresAt: string | null;
-  }): Promise<SharedMemoryGrant>;
+    candidateSessionId: string;
+  }): Promise<PendingShare>;
   dispose(): void;
 }
 
@@ -2266,6 +2323,9 @@ export const createCollaborationRendererClient = (
       case "personal_memory_upserted":
         next = applyPersonalMemoryEntry(next, update.entry);
         break;
+      case "owned_share_status_changed":
+        announcement = `${update.sourceTitle}: ${update.state.replaceAll("_", " ")}`;
+        break;
       case "managed_conversation_upserted":
         break;
       case "navigation_snapshot":
@@ -2969,7 +3029,11 @@ export const createCollaborationRendererClient = (
     if (!recoveryIsCurrent()) return;
     await subscribeScope({ scope: "personal" });
     if (snapshot) {
-      await publish(snapshot, { kind: "command", announcement: "" });
+      await publish(snapshot, {
+        kind: "command",
+        announcement: "",
+        authoritativeRecovery: true
+      });
     }
   };
 
@@ -3728,6 +3792,107 @@ export const createCollaborationRendererClient = (
       }
       return result.data.grants;
     },
+    async listOwnedShares(input) {
+      const result = await command("collaboration.list_owned_shares", {
+        cursor: input.cursor,
+        limit: input.limit ?? 50,
+        history: input.history ?? false
+      });
+      if (!result.ok || result.command !== "collaboration.list_owned_shares") {
+        throw new Error("Unexpected collaboration result.");
+      }
+      return result.data;
+    },
+    async getOwnedShare(input) {
+      const result = await command("collaboration.get_owned_share", input);
+      if (!result.ok || result.command !== "collaboration.get_owned_share") {
+        throw new Error("Unexpected collaboration result.");
+      }
+      return result.data.share;
+    },
+    async renameOwnedShare(input) {
+      const result = await command("collaboration.rename_owned_share", input);
+      if (!result.ok || result.command !== "collaboration.rename_owned_share") {
+        throw new Error("Unexpected collaboration result.");
+      }
+      return result.data.share;
+    },
+    async controlPendingShare(input) {
+      const result = await command("collaboration.control_pending_share", {
+        ...input,
+        mutationId: crypto.randomUUID()
+      });
+      if (
+        !result.ok ||
+        result.command !== "collaboration.control_pending_share"
+      ) {
+        throw new Error("Unexpected collaboration result.");
+      }
+      return result.data.pendingShare;
+    },
+    async shareConversationSource(input) {
+      const commandRequestId = crypto.randomUUID();
+      const mutationId = crypto.randomUUID();
+      const actionGrant = await waitForActionGrant({
+        intent: "collaboration.share_conversation_source",
+        commandRequestId,
+        mutationId,
+        ...input
+      });
+      const result = await runApprovedAction(
+        collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: commandRequestId,
+          command: "collaboration.share_conversation_source",
+          input: { mutationId, ...input, actionGrant }
+        })
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.share_conversation_source"
+      ) {
+        throw new Error("Unexpected collaboration result.");
+      }
+      return result.data.sourceAccess;
+    },
+    async revokeConversationSource(input) {
+      const commandRequestId = crypto.randomUUID();
+      const mutationId = crypto.randomUUID();
+      const actionGrant = await waitForActionGrant({
+        intent: "collaboration.revoke_conversation_source",
+        commandRequestId,
+        mutationId,
+        ...input
+      });
+      const result = await runApprovedAction(
+        collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: commandRequestId,
+          command: "collaboration.revoke_conversation_source",
+          input: { mutationId, ...input, actionGrant }
+        })
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.revoke_conversation_source"
+      ) {
+        throw new Error("Unexpected collaboration result.");
+      }
+      return result.data.sourceAccess;
+    },
+    async previewSharedMemoryCandidate(input) {
+      const result = await command(
+        "collaboration.preview_shared_memory_candidate",
+        input
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.preview_shared_memory_candidate"
+      ) {
+        throw new Error("Unexpected collaboration result.");
+      }
+      return result.data.candidate;
+    },
     async prepareSharedMemorySource({ sessionId }) {
       const result = await command(
         "collaboration.prepare_shared_memory_source",
@@ -3857,7 +4022,9 @@ export const createCollaborationRendererClient = (
       if (!result.ok || result.command !== "collaboration.share_memory") {
         throw new Error("Unexpected collaboration result.");
       }
-      return result.data.grant;
+      return "grant" in result.data
+        ? result.data.grant
+        : result.data.pendingShare;
     },
     async revokeSharedMemory(input) {
       const commandRequestId = crypto.randomUUID();
@@ -3903,7 +4070,7 @@ export const createCollaborationRendererClient = (
       ) {
         throw new Error("Unexpected collaboration result.");
       }
-      return result.data.grant;
+      return result.data.pendingShare;
     },
     dispose() {
       if (disposed) return;

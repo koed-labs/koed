@@ -41,7 +41,8 @@ export const visibilityScope = pgEnum("visibility_scope", ["personal"]);
 export const sourceRuntime = pgEnum("source_runtime", [
   "codex",
   "codex-cli",
-  "claude-code"
+  "claude-code",
+  "pi"
 ]);
 export const captureMethod = pgEnum("capture_method", [
   "transcript",
@@ -202,6 +203,7 @@ export const collaborationEventFamily = pgEnum("collaboration_event_family", [
   "lcm_rollup_available",
   "shared_session_discussion_activity",
   "personal_memory_changed",
+  "pending_share_lifecycle",
   "managed_conversation_changed",
   "access_revoked"
 ]);
@@ -5340,6 +5342,343 @@ export const sharedSourcePreviews = pgTable(
   ]
 );
 
+export const sharedMemoryCandidatePreviews = pgTable(
+  "shared_memory_candidate_previews",
+  {
+    id: id(),
+    previewHash: text("preview_hash").notNull(),
+    previewRevision: integer("preview_revision").notNull().default(1),
+    authoritySource: text("authority_source").notNull(),
+    authorityReferenceId: uuid("authority_reference_id").notNull(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    representation: sharedMemoryRepresentation("representation").notNull(),
+    allowedRepresentations: sharedMemoryRepresentation(
+      "allowed_representations"
+    )
+      .array()
+      .notNull(),
+    mode: sharedMemoryConsentMode("mode").notNull(),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    sourceHash: text("source_hash").notNull(),
+    redactedContentHash: text("redacted_content_hash").notNull(),
+    itemCount: integer("item_count").notNull(),
+    excludedItemCount: integer("excluded_item_count").notNull().default(0),
+    candidateManifest: jsonb("candidate_manifest").notNull(),
+    candidateManifestHash: text("candidate_manifest_hash").notNull(),
+    byteCount: integer("byte_count").notNull(),
+    representationPolicyRevision: integer(
+      "representation_policy_revision"
+    ).notNull(),
+    representationPolicyHash: text("representation_policy_hash").notNull(),
+    contentPolicyVersion: integer("content_policy_version").notNull(),
+    contentPolicyHash: text("content_policy_hash").notNull(),
+    classifierVersion: integer("classifier_version").notNull(),
+    classifierHash: text("classifier_hash").notNull(),
+    shareExpiresAt: timestamp("share_expires_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: now(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReason: text("invalidation_reason")
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "shared_memory_candidate_previews_workspace_team_fk"
+    }).onDelete("restrict"),
+    unique("shared_memory_candidate_previews_hash_unique").on(
+      table.previewHash
+    ),
+    uniqueIndex("shared_memory_candidate_previews_device_authority_unique")
+      .on(table.authorityReferenceId)
+      .where(sql`${table.authoritySource} = 'device_action_grant'`),
+    unique("shared_memory_candidate_previews_binding_unique").on(
+      table.id,
+      table.previewHash,
+      table.previewRevision,
+      table.logicalMemoryId,
+      table.teamId,
+      table.teamWorkspaceId,
+      table.sourceRevision
+    ),
+    index("shared_memory_candidate_previews_owner_idx").on(
+      table.ownerUserId,
+      table.createdAt.desc()
+    ),
+    check(
+      "shared_memory_candidate_previews_values_check",
+      sql`${table.previewRevision} = 1
+        and ${table.authoritySource} in ('browser_session','device_action_grant')
+        and ${table.sourceRevision} >= 0
+        and ${table.itemCount} between 1 and 100
+        and ${table.excludedItemCount} >= 0
+        and jsonb_typeof(${table.candidateManifest}) = 'array'
+        and jsonb_array_length(${table.candidateManifest}) = ${table.itemCount}
+        and ${table.byteCount} between 1 and 262144
+        and ${table.representationPolicyRevision} > 0
+        and ${table.contentPolicyVersion} > 0
+        and ${table.classifierVersion} > 0
+        and ${table.expiresAt} > ${table.createdAt}`
+    ),
+    check(
+      "shared_memory_candidate_previews_hashes_check",
+      sql`length(${table.previewHash}) = 64
+        and length(${table.candidateManifestHash}) = 64
+        and length(${table.sourceHash}) = 64
+        and length(${table.redactedContentHash}) = 64
+        and length(${table.representationPolicyHash}) = 64
+        and length(${table.contentPolicyHash}) = 64
+        and length(${table.classifierHash}) = 64`
+    )
+  ]
+);
+
+export const pendingShareOperations = pgTable(
+  "pending_share_operations",
+  {
+    id: id(),
+    mutationId: uuid("mutation_id").notNull(),
+    requestHash: text("request_hash").notNull(),
+    logicalGrantId: uuid("logical_grant_id").notNull(),
+    consentId: uuid("consent_id").notNull(),
+    authoritySource: text("authority_source").notNull(),
+    authorityReferenceId: uuid("authority_reference_id").notNull(),
+    previewId: uuid("preview_id").notNull(),
+    previewHash: text("preview_hash").notNull(),
+    previewRevision: integer("preview_revision").notNull(),
+    displayTitle: text("display_title"),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    representation: sharedMemoryRepresentation("representation").notNull(),
+    allowedRepresentations: sharedMemoryRepresentation(
+      "allowed_representations"
+    )
+      .array()
+      .notNull(),
+    mode: sharedMemoryConsentMode("mode").notNull(),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    sourceHash: text("source_hash").notNull(),
+    state: text("state").notNull().default("preparing"),
+    stage: text("stage").notNull().default("accepted"),
+    workspaceAccessState: text("workspace_access_state")
+      .notNull()
+      .default("none"),
+    sourceUpdateState: text("source_update_state")
+      .notNull()
+      .default("preparing"),
+    operationVersion: integer("operation_version").notNull().default(1),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    lastControlMutationId: uuid("last_control_mutation_id"),
+    lastControlAction: text("last_control_action"),
+    redactedFailureCode: text("redacted_failure_code"),
+    lastProgressAt: timestamp("last_progress_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    shareExpiresAt: timestamp("share_expires_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    grantId: uuid("grant_id").references(
+      (): AnyPgColumn => teamSessionShareGrants.id,
+      { onDelete: "set null" }
+    ),
+    replacementMutationId: uuid("replacement_mutation_id"),
+    replacementRequestHash: text("replacement_request_hash"),
+    replacementConsentId: uuid("replacement_consent_id"),
+    replacementAuthoritySource: text("replacement_authority_source"),
+    replacementAuthorityReferenceId: uuid("replacement_authority_reference_id"),
+    replacementPreviewId: uuid("replacement_preview_id"),
+    replacementPreviewHash: text("replacement_preview_hash"),
+    replacementPreviewRevision: integer("replacement_preview_revision"),
+    replacementRepresentation: sharedMemoryRepresentation(
+      "replacement_representation"
+    ),
+    replacementAllowedRepresentations: sharedMemoryRepresentation(
+      "replacement_allowed_representations"
+    ).array(),
+    replacementMode: sharedMemoryConsentMode("replacement_mode"),
+    replacementSourceRevision: bigint("replacement_source_revision", {
+      mode: "number"
+    }),
+    replacementSourceHash: text("replacement_source_hash"),
+    replacementExpiresAt: timestamp("replacement_expires_at", {
+      withTimezone: true
+    }),
+    replacementExpectedGrantVersion: integer(
+      "replacement_expected_grant_version"
+    )
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "pending_share_operations_workspace_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.replacementPreviewId,
+        table.replacementPreviewHash,
+        table.replacementPreviewRevision,
+        table.logicalMemoryId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.replacementSourceRevision
+      ],
+      foreignColumns: [
+        sharedMemoryCandidatePreviews.id,
+        sharedMemoryCandidatePreviews.previewHash,
+        sharedMemoryCandidatePreviews.previewRevision,
+        sharedMemoryCandidatePreviews.logicalMemoryId,
+        sharedMemoryCandidatePreviews.teamId,
+        sharedMemoryCandidatePreviews.teamWorkspaceId,
+        sharedMemoryCandidatePreviews.sourceRevision
+      ],
+      name: "pending_share_operations_replacement_preview_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.previewId,
+        table.previewHash,
+        table.previewRevision,
+        table.logicalMemoryId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.sourceRevision
+      ],
+      foreignColumns: [
+        sharedMemoryCandidatePreviews.id,
+        sharedMemoryCandidatePreviews.previewHash,
+        sharedMemoryCandidatePreviews.previewRevision,
+        sharedMemoryCandidatePreviews.logicalMemoryId,
+        sharedMemoryCandidatePreviews.teamId,
+        sharedMemoryCandidatePreviews.teamWorkspaceId,
+        sharedMemoryCandidatePreviews.sourceRevision
+      ],
+      name: "pending_share_operations_preview_fk"
+    }).onDelete("restrict"),
+    unique("pending_share_operations_mutation_unique").on(table.mutationId),
+    unique("pending_share_operations_consent_unique").on(table.consentId),
+    unique("pending_share_operations_logical_grant_unique").on(
+      table.logicalGrantId
+    ),
+    unique("pending_share_operations_control_mutation_unique").on(
+      table.lastControlMutationId
+    ),
+    unique("pending_share_operations_replacement_mutation_unique").on(
+      table.replacementMutationId
+    ),
+    unique("pending_share_operations_replacement_consent_unique").on(
+      table.replacementConsentId
+    ),
+    index("pending_share_operations_owner_activity_idx").on(
+      table.ownerUserId,
+      table.updatedAt.desc(),
+      table.id.desc()
+    ),
+    index("pending_share_operations_work_idx").on(
+      table.state,
+      table.nextAttemptAt,
+      table.id
+    ),
+    check(
+      "pending_share_operations_state_check",
+      sql`${table.state} in ('preparing','needs_attention','failed','activated','revoked')
+        and ${table.stage} in ('accepted','syncing','uploading','processing','activating','complete')
+        and ${table.workspaceAccessState} in ('none','active','revoked')
+        and ${table.sourceUpdateState} in ('preparing','active','paused','failed','stopped')`
+    ),
+    check(
+      "pending_share_operations_values_check",
+      sql`${table.previewRevision} > 0 and ${table.sourceRevision} >= 0
+        and ${table.operationVersion} > 0 and ${table.attemptCount} >= 0
+        and ${table.authoritySource} in ('browser_session','device_action_grant')
+        and ((${table.lastControlMutationId} is null and ${table.lastControlAction} is null)
+          or (${table.lastControlMutationId} is not null and
+              ${table.lastControlAction} in ('retry','pause','resume','revoke')))
+        and length(${table.requestHash}) = 64 and length(${table.previewHash}) = 64
+        and length(${table.sourceHash}) = 64`
+    ),
+    check(
+      "pending_share_operations_replacement_values_check",
+      sql`(${table.replacementMutationId} is null and
+             ${table.replacementRequestHash} is null and
+             ${table.replacementConsentId} is null and
+             ${table.replacementAuthoritySource} is null and
+             ${table.replacementAuthorityReferenceId} is null and
+             ${table.replacementPreviewId} is null and
+             ${table.replacementPreviewHash} is null and
+             ${table.replacementPreviewRevision} is null and
+             ${table.replacementRepresentation} is null and
+             ${table.replacementAllowedRepresentations} is null and
+             ${table.replacementMode} is null and
+             ${table.replacementSourceRevision} is null and
+             ${table.replacementSourceHash} is null and
+             ${table.replacementExpectedGrantVersion} is null)
+        or (${table.replacementMutationId} is not null and
+             length(${table.replacementRequestHash}) = 64 and
+             ${table.replacementConsentId} is not null and
+             ${table.replacementAuthoritySource} in ('browser_session','device_action_grant') and
+             ${table.replacementAuthorityReferenceId} is not null and
+             ${table.replacementPreviewId} is not null and
+             length(${table.replacementPreviewHash}) = 64 and
+             ${table.replacementPreviewRevision} > 0 and
+             ${table.replacementRepresentation} is not null and
+             cardinality(${table.replacementAllowedRepresentations}) > 0 and
+             ${table.replacementMode} is not null and
+             ${table.replacementSourceRevision} >= 0 and
+             length(${table.replacementSourceHash}) = 64 and
+             ${table.replacementExpectedGrantVersion} > 0)`
+    )
+  ]
+);
+
+export const pendingShareOutbox = pgTable(
+  "pending_share_outbox",
+  {
+    id: id(),
+    pendingShareId: uuid("pending_share_id")
+      .notNull()
+      .references(() => pendingShareOperations.id, { onDelete: "cascade" }),
+    state: text("state").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pending_share_outbox_operation_unique").on(table.pendingShareId),
+    index("pending_share_outbox_work_idx").on(
+      table.state,
+      table.availableAt,
+      table.id
+    ),
+    check(
+      "pending_share_outbox_state_check",
+      sql`${table.state} in ('pending','processing','completed','failed') and ${table.attemptCount} >= 0`
+    )
+  ]
+);
+
 export const sourceOwnerRepresentationConsents = pgTable(
   "source_owner_representation_consents",
   {
@@ -5531,7 +5870,6 @@ export const sourceOwnerRepresentationConsents = pgTable(
         and ${table.revokedAt} is null
       ) or (
         ${table.state} = 'revoked'
-        and ${table.activatedAt} is not null
         and ${table.revokedAt} is not null
       ) or (
         ${table.state} = 'expired'
@@ -5562,6 +5900,7 @@ export const teamSessionShareGrants = pgTable(
     sessionId: uuid("session_id").references(() => sessions.id, {
       onDelete: "set null"
     }),
+    displayTitle: text("display_title"),
     teamId: uuid("team_id")
       .notNull()
       .references(() => teams.id, { onDelete: "restrict" }),
@@ -9341,11 +9680,12 @@ export const collaborationSharedMemoryPreviews = pgTable(
       .references(() => collaborationSharedMemoryEnrollments.id, {
         onDelete: "cascade"
       }),
-    syncRelationshipId: uuid("sync_relationship_id")
-      .notNull()
-      .references(() => crossIdentitySyncRelationships.id, {
+    syncRelationshipId: uuid("sync_relationship_id").references(
+      () => crossIdentitySyncRelationships.id,
+      {
         onDelete: "restrict"
-      }),
+      }
+    ),
     previewId: uuid("preview_id").notNull(),
     previewHash: text("preview_hash").notNull(),
     previewRevision: integer("preview_revision").notNull(),
@@ -9361,6 +9701,9 @@ export const collaborationSharedMemoryPreviews = pgTable(
     protectedDto: jsonb("protected_dto")
       .$type<EncryptedPayloadEnvelope>()
       .notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true })
+      .notNull()
+      .default(sql`now() + interval '10 minutes'`),
     createdAt: now()
   },
   (table) => [
@@ -9580,6 +9923,49 @@ export const collaborationSharedMemoryGrants = pgTable(
     check(
       "csm_grants_protected_dto_hash_check",
       sql`length(${table.protectedDtoHash}) = 64`
+    )
+  ]
+);
+
+export const collaborationPendingShareSourceWork = pgTable(
+  "collaboration_pending_share_source_work",
+  {
+    id: id(),
+    enrollmentId: uuid("enrollment_id")
+      .notNull()
+      .references(() => collaborationSharedMemoryEnrollments.id, {
+        onDelete: "cascade"
+      }),
+    pendingShareId: uuid("pending_share_id").notNull(),
+    mutationId: uuid("mutation_id").notNull(),
+    localSessionId: uuid("local_session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "restrict" }),
+    state: text("state").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    redactedFailureCode: text("redacted_failure_code"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("csm_pending_source_work_mutation_unique").on(
+      table.enrollmentId,
+      table.mutationId
+    ),
+    index("csm_pending_source_work_claim_idx").on(
+      table.state,
+      table.availableAt,
+      table.id
+    ),
+    check(
+      "csm_pending_source_work_state_check",
+      sql`${table.state} in ('pending','processing','completed','failed')
+        and ${table.attemptCount} >= 0`
     )
   ]
 );

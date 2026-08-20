@@ -5,6 +5,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
+import type { DesktopApi, KoedServerStatus } from "../../../types.js";
 import { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { PreferencesView } from "./PreferencesView.js";
 
@@ -41,6 +42,7 @@ describe("PreferencesView", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.useRealTimers();
     delete window.koedDesktop;
   });
 
@@ -135,5 +137,149 @@ describe("PreferencesView", () => {
       "do not expose API Token values or remote credentials"
     );
     expect(container.textContent).not.toContain("sk-");
+  });
+
+  it("refreshes a stale startup snapshot when Advanced Diagnostics opens", async () => {
+    vi.useFakeTimers();
+    const healthy = { state: "healthy" as const };
+    const starting = { state: "starting" as const };
+    const base = {
+      ok: true,
+      state: "healthy",
+      serverPackage: healthy,
+      api: { ...healthy, url: "http://127.0.0.1:43300" },
+      database: healthy,
+      workerQueues: healthy,
+      embeddingService: healthy,
+      mcpServer: healthy,
+      captureHook: healthy,
+      codex: { ...healthy, configured: true },
+      claudeCode: { ...healthy, configured: true },
+      pi: { ...healthy, configured: true },
+      lcmSummaryService: healthy
+    } as KoedServerStatus;
+    const stale = {
+      ...base,
+      api: { ...starting, url: "http://127.0.0.1:43300" },
+      database: starting,
+      workerQueues: starting,
+      embeddingService: starting,
+      mcpServer: { state: "needs_attention" as const },
+      lcmSummaryService: { state: "needs_attention" as const }
+    };
+    const invoke = vi
+      .fn<DesktopApi["invoke"]>()
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValueOnce(base);
+    window.koedDesktop = { invoke } as DesktopApi;
+    const statusStore = new DesktopStatusStore();
+    await statusStore.refresh();
+
+    await renderPreferences({ initialSection: "advanced", statusStore });
+
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    await act(async () => vi.advanceTimersByTimeAsync(1_500));
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(3));
+    expect(container.textContent).not.toContain("Starting");
+    expect(container.textContent).not.toContain("Needs Attention");
+    vi.useRealTimers();
+  });
+
+  it("confirms Claude Code user-settings changes before setup", async () => {
+    const component = { state: "healthy" as const };
+    const status = {
+      ok: true,
+      state: "healthy",
+      serverPackage: component,
+      api: { ...component, url: "http://127.0.0.1:3300" },
+      database: component,
+      workerQueues: component,
+      embeddingService: component,
+      mcpServer: component,
+      captureHook: component,
+      codex: { ...component, configured: true },
+      claudeCode: { state: "not_configured", configured: false },
+      pi: { ...component, configured: true },
+      lcmSummaryService: component
+    } as KoedServerStatus;
+    const invoke = vi
+      .fn<DesktopApi["invoke"]>()
+      .mockResolvedValueOnce(status)
+      .mockResolvedValueOnce(status)
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({
+        ...status,
+        claudeCode: { ...component, configured: true }
+      });
+    window.koedDesktop = { invoke } as DesktopApi;
+    const statusStore = new DesktopStatusStore();
+    await statusStore.refresh();
+    await renderPreferences({ initialSection: "advanced", statusStore });
+
+    await clickButton(container, "Set up Claude Code integration");
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog?.textContent).toContain(
+      "add its MCP Server and Supported Capture Hook"
+    );
+    expect(invoke).toHaveBeenCalledTimes(2);
+
+    await clickButton(dialog!, "Set up Claude Code");
+    await vi.waitFor(() =>
+      expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+        "status",
+        "status",
+        "setup_claude",
+        "status"
+      ])
+    );
+  });
+
+  it("confirms the global profile change before setting up Pi", async () => {
+    const component = { state: "healthy" as const };
+    const status = {
+      ok: true,
+      state: "healthy",
+      serverPackage: component,
+      api: { ...component, url: "http://127.0.0.1:3300" },
+      database: component,
+      workerQueues: component,
+      embeddingService: component,
+      mcpServer: component,
+      captureHook: component,
+      codex: { ...component, configured: true },
+      pi: { state: "not_configured", configured: false },
+      lcmSummaryService: component
+    } as KoedServerStatus;
+    const invoke = vi
+      .fn<DesktopApi["invoke"]>()
+      .mockResolvedValueOnce(status)
+      .mockResolvedValueOnce(status)
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({
+        ...status,
+        pi: { ...component, configured: true }
+      });
+    window.koedDesktop = { invoke } as DesktopApi;
+    const statusStore = new DesktopStatusStore();
+    await statusStore.refresh();
+    await renderPreferences({ initialSection: "advanced", statusStore });
+
+    await clickButton(container, "Set up Pi integration");
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog?.textContent).toContain(
+      "register its local package in your active global Pi profile"
+    );
+    expect(invoke).toHaveBeenCalledTimes(2);
+
+    await clickButton(dialog!, "Set up Pi");
+    await vi.waitFor(() =>
+      expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+        "status",
+        "status",
+        "setup_pi",
+        "status"
+      ])
+    );
   });
 });

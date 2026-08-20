@@ -34,7 +34,7 @@ export type Visibility = "personal";
 
 export type CaptureMethod = "transcript" | "mcp" | "web" | "api";
 
-export type SourceRuntime = "codex" | "codex-cli" | "claude-code";
+export type SourceRuntime = "codex" | "codex-cli" | "claude-code" | "pi";
 
 export type SourceAiClient = SourceRuntime;
 
@@ -1819,6 +1819,7 @@ export interface CuratedMemoryProposalInput {
 export interface CuratedMemoryListInput {
   status?: CuratedMemoryAssertionStatus;
   topicId?: string;
+  sessionId?: string;
   includeSources?: boolean;
   limit?: number;
 }

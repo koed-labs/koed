@@ -93,12 +93,13 @@ const brewPrefix = (formula) => run("brew", ["--prefix", formula]);
 
 const copyTree = (source, target) => {
   if (!existsSync(source)) throw new Error(`Missing source path: ${source}`);
+  const resolvedSource = realpathSync(source);
   rmSync(target, { recursive: true, force: true });
   mkdirSync(dirname(target), { recursive: true });
-  cpSync(source, target, {
+  cpSync(resolvedSource, target, {
     recursive: true,
-    dereference: true,
-    preserveTimestamps: true
+    preserveTimestamps: true,
+    verbatimSymlinks: true
   });
 };
 

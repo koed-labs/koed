@@ -195,6 +195,7 @@ try {
       environmentOverrides: {
         API_TOKEN_PEPPER: randomBytes(32).toString("base64url"),
         DATABASE_URL: automatedTestDatabase.databaseUrl,
+        SHARED_MEMORY_TEST_DATABASE_URL: automatedTestDatabase.databaseUrl,
         KOED_TEAM_COLLABORATION_ENABLED: "true",
         NODE_ENV: "test",
         SESSION_SECRET: randomBytes(32).toString("base64url")
