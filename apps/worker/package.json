@@ -6,6 +6,16 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./embedding-workflow": {
+      "types": "./dist/embedding-workflow.d.ts",
+      "import": "./dist/embedding-workflow.js"
+    }
+  },
   "files": [
     "dist/**/*",
     "package.json"

@@ -10,12 +10,16 @@
     "paths": {
       "@koed/core": ["packages/core/src/index.ts"],
       "@koed/db": ["packages/db/src/index.ts"],
+      "@koed/api": ["apps/api/src/server/index.ts"],
       "@koed/mcp-server": ["packages/mcp-server/src/index.ts"],
       "@koed/mcp-server/codex-transcript-parser": [
         "packages/mcp-server/src/codex-transcript-parser.ts"
       ],
       "@koed/mcp-server/claude-transcript-parser": [
         "packages/mcp-server/src/claude-transcript-parser.ts"
+      ],
+      "@koed/mcp-server/runtime-contracts": [
+        "packages/mcp-server/src/runtime-contracts.ts"
       ],
       "@koed/shared": ["packages/shared/src/index.ts"],
       "@koed/shared/collaboration": [
@@ -26,6 +30,9 @@
       ],
       "@koed/shared/secure-upstream-fetch": [
         "packages/shared/src/secure-upstream-fetch.ts"
+      ],
+      "@koed/worker/embedding-workflow": [
+        "apps/worker/src/embedding-workflow.ts"
       ]
     }
   },

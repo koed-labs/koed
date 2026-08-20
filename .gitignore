@@ -18,6 +18,11 @@ coverage/
 .DS_Store
 *.tsbuildinfo
 packages/evals/reports/*.json
+packages/evals/reports/experience-replay/
+.experience-replay/
+**/experience-replay-runs/
+**/frozen-trajectory*.json
+**/sanitization-manifest*.json
 apps/history-browser/*
 !apps/history-browser/Dockerfile
 !apps/history-browser/package.json

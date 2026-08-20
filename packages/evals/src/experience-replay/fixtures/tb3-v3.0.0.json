@@ -1,0 +1,1574 @@
+{
+  "harbor": {
+    "commit": "64afbbcb62165950301e1a6407c729aa26d844ff",
+    "version": "0.21.0"
+  },
+  "schema_version": "koed-terminal-bench-corpus-v2",
+  "task_count": 74,
+  "tasks": [
+    {
+      "agent_timeout_seconds": 18000,
+      "category": "Science",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 25200,
+      "harbor_task_checksum": "sha256:80db366f1307c27eab5b7edf1f996251163afde527d5293bd978f596f3cf8ef5",
+      "name": "terminal-bench/atrx-vep-crispr",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/atrx-vep-crispr",
+      "task_digest": "sha256:3b8eb57602814aa63af12439e3eacb7ad5bee09efb6c6af023768994bf9220b4",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 14400,
+      "category": "ML",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 86400,
+      "harbor_task_checksum": "sha256:88a7d790a389a11d0f34e2e63d00723122e5e7d77d8bf4565ece3715caf31622",
+      "name": "terminal-bench/batched-eval-parity",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/batched-eval-parity",
+      "task_digest": "sha256:7926394b6c448ba8debd1cdd5b0bae777a0e4cbe0f1af608b61a8707f5d957c5",
+      "verifier_timeout_seconds": 900
+    },
+    {
+      "agent_timeout_seconds": 14400,
+      "category": "Science",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 18000,
+      "harbor_task_checksum": "sha256:4484985926dbc737d72bb2840b84eaa9f2b9879c1db34f1827c84e45dabff6d3",
+      "name": "terminal-bench/biped-contact-dynamics",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/biped-contact-dynamics",
+      "task_digest": "sha256:ae2cc175efc37461de142d15b01a02718c7fb7a16f87b2720d0dd666e694cf0a",
+      "verifier_timeout_seconds": 2640
+    },
+    {
+      "agent_timeout_seconds": 1800,
+      "category": "Software",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 5400,
+      "harbor_task_checksum": "sha256:b5c4dddedeb53042fb1a2e317d027800e4872a4d8a77df94f8434e934c8d21e6",
+      "name": "terminal-bench/bun-sourcemap-leak",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/bun-sourcemap-leak",
+      "task_digest": "sha256:ac0b0f77da4e8f6c3904133033ec6d8591eb0d3f18205ab28104ea3cf2a5a07f",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Hardware",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:b174765168928f9f312c1a09eb704e5242c9699e2a473236045c76f55a51eb30",
+      "name": "terminal-bench/cad-model",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/cad-model",
+      "task_digest": "sha256:55103abe25325dfa3717d08ef3d8e02dc8f8bc9adccaed92aab7e94a95b2049a",
+      "verifier_timeout_seconds": 240
+    },
+    {
+      "agent_timeout_seconds": 3600,
+      "category": "Operations",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 9000,
+      "harbor_task_checksum": "sha256:e50a4730698818824ec17759b023884417532332b24b87e775b421698df88f0b",
+      "name": "terminal-bench/cargo-flight-dispatch",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/cargo-flight-dispatch",
+      "task_digest": "sha256:2836dfe6eb2270fcbbfdb119c7cfae8495208a03a7fc691c2efff49bda5b3c61",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 2500,
+      "category": "Software",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:60b2150c58190978991251ad6b8773dd078710aeadbcb522800fab8526f3fccf",
+      "name": "terminal-bench/cli-2ph-simplex",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/cli-2ph-simplex",
+      "task_digest": "sha256:9f41a82565950c380501beb7f8ae33732e4ad526dc4c6ba9b3f37d66a7742a36",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 14400,
+      "category": "Science",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 57600,
+      "harbor_task_checksum": "sha256:566b4624065adb832c537f2afe6d0e8a09c3f053a857b1ebb969ec7e710e6c28",
+      "name": "terminal-bench/coq-block-bound",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/coq-block-bound",
+      "task_digest": "sha256:d2764883159edb22fa85c599dd47879f6e46c7d6c2982cfc448bbc439e5e817e",
+      "verifier_timeout_seconds": 1200
+    },
+    {
+      "agent_timeout_seconds": 18000,
+      "category": "Operations",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 17280,
+      "harbor_task_checksum": "sha256:28b4a8c559100318bdee43602a60327b2a139bd76f8adcc9bdc6965d7c401234",
+      "name": "terminal-bench/ctr-optimization",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/ctr-optimization",
+      "task_digest": "sha256:9267570079b058061b7e6a87cdb30df4f04c5d5af3ce2c37c3da6be425e7c26d",
+      "verifier_timeout_seconds": 180
+    },
+    {
+      "agent_timeout_seconds": 10800,
+      "category": "Software",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 21600,
+      "harbor_task_checksum": "sha256:f091e1180be36b299772a627ee5004727bf948d3248b865663f92228e0b65dee",
+      "name": "terminal-bench/cumulative-layout-shift",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/cumulative-layout-shift",
+      "task_digest": "sha256:834205d9965467c2ed6f4516032658b0393ea0cb29c2442cfa75decf7ce026ff",
+      "verifier_timeout_seconds": 900
+    },
+    {
+      "agent_timeout_seconds": 3600,
+      "category": "Software",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 86400,
+      "harbor_task_checksum": "sha256:efbffdde7cf663c455220f6c1bd90c6834d37e3e6a5f5fb0f54f045e0dd8e359",
+      "name": "terminal-bench/data-anonymization",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/data-anonymization",
+      "task_digest": "sha256:2d463025deb8bcc4c860f8a8e90c799435306e566e6c36af4b0df6d18e10a290",
+      "verifier_timeout_seconds": 7200
+    },
+    {
+      "agent_timeout_seconds": 18000,
+      "category": "Software",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 36000,
+      "harbor_task_checksum": "sha256:55ea813a8d13f48ae82ff7458e178ba9398e998127efc017ed9c8b184c1714b0",
+      "name": "terminal-bench/distributed-dedup",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/distributed-dedup",
+      "task_digest": "sha256:f89d4536b2b884fe972215937f01397d9c6ebe5578499e4b192e67021c50310b",
+      "verifier_timeout_seconds": 1800
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "ML",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 18000,
+      "harbor_task_checksum": "sha256:674b0513a39857eba7bb0cd67fd945d73f2514aab57090e8c709643559fdfcc3",
+      "name": "terminal-bench/embedding-drift-monitor",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/embedding-drift-monitor",
+      "task_digest": "sha256:cc93452e15459e00dcd817867428f4c49cd5a8831213ba4590f1372929cb262e",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 3600,
+      "category": "Operations",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 14400,
+      "harbor_task_checksum": "sha256:a838ac378761f93eabb9947826587129f8e92ab8b893835bcb60cf93d28dc171",
+      "name": "terminal-bench/erp-procurement-planning",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/erp-procurement-planning",
+      "task_digest": "sha256:4be203d7f07954008fcca9869e2e6cc7b0fb6603bebc7e7d0ffe498e7fa2b843",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 14400,
+      "category": "ML",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 50400,
+      "harbor_task_checksum": "sha256:ea8786d0d403ffe67083778a2f6e4c66692dcc9177bbeaf6a37d3054ec797159",
+      "name": "terminal-bench/exam-pdf-eval",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "gpu",
+      "source_path": "tasks/exam-pdf-eval",
+      "task_digest": "sha256:d4f58d8db8098e854bbd2d98b0bcfee6ac14a3a6c69b606db55a8eb1230ff7da",
+      "verifier_timeout_seconds": 900
+    },
+    {
+      "agent_timeout_seconds": 9000,
+      "category": "Operations",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 28800,
+      "harbor_task_checksum": "sha256:65181812fa66cf683cc697166aedd1ca7d36ed9b6498a2de4629a45e0ac17604",
+      "name": "terminal-bench/fin-saccr-rwa",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/fin-saccr-rwa",
+      "task_digest": "sha256:5b2103ac785d4a915207a2535fabf3815fea2c75cf4de01c79747a679facc2ad",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Software",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 10800,
+      "harbor_task_checksum": "sha256:568938f98b11e9cc9d1a3852dd07d8fd7c765afb05a15718f42cc54a31445da6",
+      "name": "terminal-bench/fix-uautomizer-soundness",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/fix-uautomizer-soundness",
+      "task_digest": "sha256:4a0ee1bf87f6d571214101881b0ac031c502fd20142bdf61f78755f58c4515e3",
+      "verifier_timeout_seconds": 4500
+    },
+    {
+      "agent_timeout_seconds": 9000,
+      "category": "Science",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 5400,
+      "harbor_task_checksum": "sha256:ff26129576ca333d477454166b00a7380c043ab29866940108ddbca271462613",
+      "name": "terminal-bench/foodstuff-beta-activity",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/foodstuff-beta-activity",
+      "task_digest": "sha256:62f4c9e1d2c27c3ed174be4691d7d6c2df69f6466a51b266808c63cd111a9787",
+      "verifier_timeout_seconds": 120
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Security",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 10800,
+      "harbor_task_checksum": "sha256:da31e5a584f08af3ab8f204b38ea99084305164ee7524221a74a333ca1273ace",
+      "name": "terminal-bench/formal-crypto",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/formal-crypto",
+      "task_digest": "sha256:3d1bf9aadd4846379f4c2de10ffd21431444d7647ddbc302bd3cb2283051b4c4",
+      "verifier_timeout_seconds": 5400
+    },
+    {
+      "agent_timeout_seconds": 14400,
+      "category": "ML",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 43200,
+      "harbor_task_checksum": "sha256:a803a89ba43e72c7691b69e8473c9e046d2124e4e0e7e0222e72989bee1f9f83",
+      "name": "terminal-bench/fp8-rmsnorm-gemm",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "gpu",
+      "source_path": "tasks/fp8-rmsnorm-gemm",
+      "task_digest": "sha256:b2578e66cf87dfa6b64517c69fc1590a1777fb19f7bdff287f4d985ceedec2bd",
+      "verifier_timeout_seconds": 18000
+    },
+    {
+      "agent_timeout_seconds": 9000,
+      "category": "Hardware",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:487d4143c81ff21892d31e80b8d6dc11100485b7dce0856c136f41c83e60b803",
+      "name": "terminal-bench/freecad-impeller",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/freecad-impeller",
+      "task_digest": "sha256:f1e641af087bf8feb3107355e207654021504cf53f6ec9b5d19f0dd5e54d7f86",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 9000,
+      "category": "Hardware",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 5400,
+      "harbor_task_checksum": "sha256:06fabc892e2cc5816405a4932a37a4a9e3a5bd5bd4cb7b2faa7f0c1a86a89db1",
+      "name": "terminal-bench/freecad-platform-drawing",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/freecad-platform-drawing",
+      "task_digest": "sha256:70603e9566138b4e63165ebc4badcff5a83cbff187c397b78b0ff60073b8ffb4",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 9000,
+      "category": "Hardware",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:73437ec4e7c2da4508ecb1223e11b6c717c5011d80e889390d9497e20f65b7cb",
+      "name": "terminal-bench/freecad-spring-clip",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/freecad-spring-clip",
+      "task_digest": "sha256:4c823616ab5c8cccfc58d828a3d770122cb70b3dadc02a859bce53acf11a22b1",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Operations",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 14400,
+      "harbor_task_checksum": "sha256:a7c466fbcae0509e60e4aea05b5a9dcc9f99f41440f7a7dbc8e9451e365fda58",
+      "name": "terminal-bench/freight-dispatch-shift",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/freight-dispatch-shift",
+      "task_digest": "sha256:b1bb32ad88e1892f33f8beea162cf1de283b3f5f0c6b8de65ce7646e94dc2bcd",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 9000,
+      "category": "Science",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 18000,
+      "harbor_task_checksum": "sha256:a1a4f9a2360396fc29961a2edee35d3359561d77e03800e9e4b57f2d9dc7ec76",
+      "name": "terminal-bench/glycan-ms2-elucidation",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/glycan-ms2-elucidation",
+      "task_digest": "sha256:6d4e3b6d5cf99e84d59b4292cd06f9faf00a2521760b56e3f5e8b5531298c088",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 18000,
+      "category": "ML",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 144000,
+      "harbor_task_checksum": "sha256:2562c5300dfcd54bb6a15dbb698c1070acff59021fb34c0116dfeb0091d6ed7d",
+      "name": "terminal-bench/gpt2-codegolf",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/gpt2-codegolf",
+      "task_digest": "sha256:ea4f8bc8a4672f0c122fd0462381dea7151921b8fc37358d5b3370549a319c1f",
+      "verifier_timeout_seconds": 900
+    },
+    {
+      "agent_timeout_seconds": 9000,
+      "category": "Science",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 14400,
+      "harbor_task_checksum": "sha256:21d25af292fe9d2839a361a0c7b0c81da5ebb80223d3695cd36c663d72836c4e",
+      "name": "terminal-bench/gsea-proteomics",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/gsea-proteomics",
+      "task_digest": "sha256:5dfb0c258b674ee0fea20e16f9996771e082cd4db59ee9408272c31d9397cfa1",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Operations",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 14400,
+      "harbor_task_checksum": "sha256:0fe5982efdbf3ca1443f0659dca7cf7a59d2dddae91b57868866bbc16d39d54d",
+      "name": "terminal-bench/heat-pump-warranty",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/heat-pump-warranty",
+      "task_digest": "sha256:195e39da0c97ea45552d216f04b204d438ec397e1003300be3edc064aa9859b6",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 9000,
+      "category": "Science",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 28800,
+      "harbor_task_checksum": "sha256:876c4c9cf2fdde1019268afc734d58d107d4227921d8c370460f9fe284e004b6",
+      "name": "terminal-bench/hof-topology-interpenetration",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/hof-topology-interpenetration",
+      "task_digest": "sha256:f8307547a260e56572e02e1d876c0b94af44be980aa7028ff1512c787d65e95a",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 3600,
+      "category": "Security",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 2700,
+      "harbor_task_checksum": "sha256:687960ba1fa1ab07c22532c429646714855527baa4857f2c2ffa38c29f81ad8a",
+      "name": "terminal-bench/html-js-filter",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/html-js-filter",
+      "task_digest": "sha256:832a5b309edca4f1a7c728da5f1ca530c2712f20a0b7f1db6d1bb6e3171a8866",
+      "verifier_timeout_seconds": 1800
+    },
+    {
+      "agent_timeout_seconds": 5400,
+      "category": "Security",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 28800,
+      "harbor_task_checksum": "sha256:549041c10f9de0db6da8579032bd884df6d0c089ccbbbd84a5ffbdeeec8b01c7",
+      "name": "terminal-bench/ico-path-patch",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/ico-path-patch",
+      "task_digest": "sha256:0115a4136189b48da79070f9b3004dc4e0dfc1a60725c5acebdd7f380d037d14",
+      "verifier_timeout_seconds": 900
+    },
+    {
+      "agent_timeout_seconds": 14400,
+      "category": "Security",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:3ff4f9c2892327b1f70ecd24c1ddefbb8de0c079f12b36087336ba04b5617a13",
+      "name": "terminal-bench/interleaved-vigenere",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/interleaved-vigenere",
+      "task_digest": "sha256:83a4f0074137ab36629d33f3f4045d62b63b0feb83295ff7cb6636cbedd31bc0",
+      "verifier_timeout_seconds": 900
+    },
+    {
+      "agent_timeout_seconds": 10800,
+      "category": "Operations",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 10800,
+      "harbor_task_checksum": "sha256:78eb2ce8f1a818a1977e82f8d2c917a3a61bd8921141b1f1944fa76db91babec",
+      "name": "terminal-bench/intrastat-meldung",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/intrastat-meldung",
+      "task_digest": "sha256:3385f3ea74661cc01464f0cb1155ec1553b755238a6f9b6293475e124c6edbc8",
+      "verifier_timeout_seconds": 180
+    },
+    {
+      "agent_timeout_seconds": 18000,
+      "category": "ML",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 36000,
+      "harbor_task_checksum": "sha256:7f6bdfaf2c5269d37e6d5afa52cbb117513f212f3ef7d70da73d576471045f09",
+      "name": "terminal-bench/jax-speedrun-gpu",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "gpu",
+      "source_path": "tasks/jax-speedrun-gpu",
+      "task_digest": "sha256:c17111529f4eac64223dace5f734cbcb1f3ad542ec97e65cfdb6c0e7ffe9e98c",
+      "verifier_timeout_seconds": 7200
+    },
+    {
+      "agent_timeout_seconds": 14400,
+      "category": "Science",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 36000,
+      "harbor_task_checksum": "sha256:b9f68ef352266feaa7656527c194284dbf9a342239ec22dc4c23881d5551185a",
+      "name": "terminal-bench/ks-solver-cpp",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/ks-solver-cpp",
+      "task_digest": "sha256:d6e025f4f5b4bfbfb8ea9c1e661f9f2039b68eadf3fefd44ed31017cfd090952",
+      "verifier_timeout_seconds": 180
+    },
+    {
+      "agent_timeout_seconds": 3600,
+      "category": "Software",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 14400,
+      "harbor_task_checksum": "sha256:a9358579835ae2ea24f0dc2326eabc861b0fe0095ca9e7b6f866713783010f0c",
+      "name": "terminal-bench/kv-live-surgery",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "greater_than",
+          "value": 0.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/kv-live-surgery",
+      "task_digest": "sha256:bb58097aee168627e1eea82a50feaf1e021d502fe18e0c24b4d88e5a88a6f53f",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 10800,
+      "category": "Science",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 28800,
+      "harbor_task_checksum": "sha256:c9b80f3a1f9131e726816b15b1282285357185830f9f499c53441448c2e0feb9",
+      "name": "terminal-bench/lake-temp-glm",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/lake-temp-glm",
+      "task_digest": "sha256:8ef0ba42c13ce6ed6454e40389907d8781a681605d07a1fdc48fb5913c46388d",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 3600,
+      "category": "Media",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:bdb01b2d67deafc133da150af4cb7409b9f0f0f65baa22b8a5d4d8501606b599",
+      "name": "terminal-bench/layout-config-recreation",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/layout-config-recreation",
+      "task_digest": "sha256:9beda5ee8b4e0f5605da4940f53525374e837346280e83852d3741df2eef26a8",
+      "verifier_timeout_seconds": 180
+    },
+    {
+      "agent_timeout_seconds": 18000,
+      "category": "Media",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:7229dd7832f0521ea28f0d9b10497c80f03ebe137732ce6390183100f8d03d8b",
+      "name": "terminal-bench/layout-config-recreation2",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/layout-config-recreation2",
+      "task_digest": "sha256:7c2a2904969ad3a80b3199919c3c50bbf35001f70363e4f474153ceab6ce1d8e",
+      "verifier_timeout_seconds": 180
+    },
+    {
+      "agent_timeout_seconds": 14400,
+      "category": "Science",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 36000,
+      "harbor_task_checksum": "sha256:c16d0e6d12d5f0a0e6d89fbab95c0b8b1a83f8b5a29058b6e7215ece138a2372",
+      "name": "terminal-bench/lean-midpoint-proof",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/lean-midpoint-proof",
+      "task_digest": "sha256:80fda7d0f87814d8d3f1e1f6ed485c2431614e3fb05ed2d6590c9061cf28ed19",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 5400,
+      "category": "Operations",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 12600,
+      "harbor_task_checksum": "sha256:201d0e583ce4a99e489486a394da315b18388f4f9873b4c86a5337740158266e",
+      "name": "terminal-bench/legacy-utility-triage",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/legacy-utility-triage",
+      "task_digest": "sha256:bd30b99dfa7121a0931866d177092482554ab9d3835495c15d960d735c097bcf",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Software",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 28800,
+      "harbor_task_checksum": "sha256:d1c176dfd1a09b0c6e8ba9e09c29835fac7f597793503d821bf2e53d96a55141",
+      "name": "terminal-bench/live-database-cutover",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/live-database-cutover",
+      "task_digest": "sha256:dc994181a5c0343a7e7f8ef4cda6b814dca3e48caef8ac00f066646b0132d2fd",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 14400,
+      "category": "ML",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 21600,
+      "harbor_task_checksum": "sha256:5e68587d0bc16ffbc3424f0779fc41a7e1d556a790c7432bd76910de6a4b2520",
+      "name": "terminal-bench/math-eval-grader",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "gpu",
+      "source_path": "tasks/math-eval-grader",
+      "task_digest": "sha256:25d9a4d042a2e4f05e78c7d8372040a6bc2a1ea5f323dfe67542690f2241e345",
+      "verifier_timeout_seconds": 900
+    },
+    {
+      "agent_timeout_seconds": 5400,
+      "category": "Operations",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:28334a9b7badf9b7e78d423b7c8981d121c71bcbf30f8c8c46a6cb47cf34746e",
+      "name": "terminal-bench/medical-claims-processing",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/medical-claims-processing",
+      "task_digest": "sha256:21e9b716812f257927f94c1a5d53bd2565d035f7d538769affbae04fe5e4ba47",
+      "verifier_timeout_seconds": 120
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Security",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:e62aca7f4334222e78bcb5953fdcdb2941907dd59ec57703d187980a1bd8e7bb",
+      "name": "terminal-bench/memcached-backdoor",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/memcached-backdoor",
+      "task_digest": "sha256:b5b87182c9ac70c63d7c6afdaf7334a0262a03295ee9752f15f7ace424a72f6c",
+      "verifier_timeout_seconds": 120
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "ML",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 21600,
+      "harbor_task_checksum": "sha256:1f2bbf950da58b09c6b3ca7028de4876adee8c0372581bad11c4462ca0da0e7d",
+      "name": "terminal-bench/mp-checkpoint-consolidation",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/mp-checkpoint-consolidation",
+      "task_digest": "sha256:e7710fddd852c1ae62e0d0c89acaee3d774a30c3c60658b1be2b0946dbd94d04",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Media",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 3600,
+      "harbor_task_checksum": "sha256:36637e3b5e3a49b7b2ed3dbd4d074d1d955413f0948b7bf372d5f3119c55a047",
+      "name": "terminal-bench/music-harmony",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/music-harmony",
+      "task_digest": "sha256:f5ba5ef9140c164e1c3654425caea7dc0f74423c9632f5e0c9a6dc9001d38f00",
+      "verifier_timeout_seconds": 60
+    },
+    {
+      "agent_timeout_seconds": 14400,
+      "category": "Software",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 14400,
+      "harbor_task_checksum": "sha256:da96092ce86412172936eee7a139664511ff5d7e9ab60b241b29614d33917d4a",
+      "name": "terminal-bench/mvcc-lsm-compaction",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/mvcc-lsm-compaction",
+      "task_digest": "sha256:fdf29c5e7778739cefa3f7a85f4b06acbfdfba329f332512c731b5d879ed446d",
+      "verifier_timeout_seconds": 900
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Software",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 10800,
+      "harbor_task_checksum": "sha256:76cc7fad2bd71b2a6b702257d35ff1c3eb0e00315a01d6efd27f816eb647f3a2",
+      "name": "terminal-bench/nextjs-performance",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/nextjs-performance",
+      "task_digest": "sha256:8dd4222253b1cac21c139e5c11362ad748e3d7d1a1aa423839d18b7133d70db4",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 14400,
+      "category": "Software",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 72000,
+      "harbor_task_checksum": "sha256:b62b0ff6d15a9e605fa421592e626975dd423ba431b688c3a25e85a3d6b09fd0",
+      "name": "terminal-bench/ontology-kg-querying",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/ontology-kg-querying",
+      "task_digest": "sha256:75a12b63f861150a038f095fc2ea06b7cf45ee04b5042413d4c4f20d3da944ad",
+      "verifier_timeout_seconds": 1500
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Software",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:6b93fa8337802953bac4695801e0c3bb4b31632528d1c996a7bec1c9ad7c6df1",
+      "name": "terminal-bench/payments-pipeline-fix",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/payments-pipeline-fix",
+      "task_digest": "sha256:05cbd702e9efc41264e495e6afda5faa34f7672fa4f6faaeaf66106f03af8c6c",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 10800,
+      "category": "Software",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 2700,
+      "harbor_task_checksum": "sha256:4387b9e2fb27d29b96ca6549a3d414957652dc299884c71de5b5652a7413eb71",
+      "name": "terminal-bench/photonic-waveguide-routing",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/photonic-waveguide-routing",
+      "task_digest": "sha256:3fd44f4fbc5b862bc1a0b098d3c1295387134edd238ed6f12f2c98ec13e2dccc",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "ML",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:e76610d408a744805076d540da3f5e6ca5fe40a6b05a353b8b6ccc572b0b0e3d",
+      "name": "terminal-bench/pretrain-shard-corruption",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/pretrain-shard-corruption",
+      "task_digest": "sha256:898642139464d351ccea81a5666dd1d572ed0501df2b40feb7a251841bbd0a4c",
+      "verifier_timeout_seconds": 600
+    },
+    {
+      "agent_timeout_seconds": 3600,
+      "category": "Operations",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 14400,
+      "harbor_task_checksum": "sha256:1d6257a979e636370139f19243f13f562a08926a5fd7fabf12fdbd4983cc2f2b",
+      "name": "terminal-bench/production-planning",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/production-planning",
+      "task_digest": "sha256:3207b248738c9e6d497559b90a2a85d43dddde1caea12a5e17e4871e985fe7de",
+      "verifier_timeout_seconds": 120
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Science",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:c1ba52619237dad6b991a3a1fbfd411c7660bdd9fd8177a3c68bf680b5d85b9b",
+      "name": "terminal-bench/protein-autointerp-disulfide",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/protein-autointerp-disulfide",
+      "task_digest": "sha256:49ed2bef4e2e3f987740d8e5fd0d236078089517a0c3f0e39d59612821287916",
+      "verifier_timeout_seconds": 180
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Software",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 18000,
+      "harbor_task_checksum": "sha256:708a2bf193eecb0803a70591eb17cdffe03e38353f6667eb5464a0325b3526f7",
+      "name": "terminal-bench/react-lead-form",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/react-lead-form",
+      "task_digest": "sha256:6164416e310fb06ba55f5a574f5c4128f36dc7f0ae54cef6d81b47fede74a09c",
+      "verifier_timeout_seconds": 900
+    },
+    {
+      "agent_timeout_seconds": 14400,
+      "category": "Hardware",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 36000,
+      "harbor_task_checksum": "sha256:30a93f6479d06d2e67ddf8a2d81dfa83cbc9464d1d0ef235a0d091266eebf26c",
+      "name": "terminal-bench/retro-console-soc",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/retro-console-soc",
+      "task_digest": "sha256:5707df6b5c777e156896f1edd5137775f297a88c7f191545e83c7b7909889d96",
+      "verifier_timeout_seconds": 1200
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "ML",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 14400,
+      "harbor_task_checksum": "sha256:5492235fa7b5586e10c021950422fe4420266f4a110ac61992c7b9bc107043b4",
+      "name": "terminal-bench/risk-scorer-replay",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/risk-scorer-replay",
+      "task_digest": "sha256:81eda6d9247bd5642feaccabb8eaef055cca8c3e4dab00bceb89aee56645454f",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 9000,
+      "category": "Science",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 10800,
+      "harbor_task_checksum": "sha256:3d55e80cb635988a2522a53227ba44fd240177149e90432e651a96725b66e745",
+      "name": "terminal-bench/roy-polymorph-cn",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/roy-polymorph-cn",
+      "task_digest": "sha256:b481c32720d39a7673a469b12cbea6e318fed750c8928bc5f5d7cbf9874610a1",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 14400,
+      "category": "Software",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 57600,
+      "harbor_task_checksum": "sha256:7a82539f5998b1e1c014c79cc5015f715a4fa2f2fc0225081a26287d4538e011",
+      "name": "terminal-bench/rs-archive-clone",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/rs-archive-clone",
+      "task_digest": "sha256:54a2627f15e22ea58082d6d06cad9ab5c5e0e80c3a93ded915d76db3031384b4",
+      "verifier_timeout_seconds": 1200
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Media",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 28800,
+      "harbor_task_checksum": "sha256:09cd63ab532ebe303864332fbcc25fd85164a89d540589d9def131ad2a65c9a4",
+      "name": "terminal-bench/satb-audio-transcription",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/satb-audio-transcription",
+      "task_digest": "sha256:6c1491daac95ec0dc9e3968668933bef309ff2c5968b385636abf796afa7654d",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Software",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 28800,
+      "harbor_task_checksum": "sha256:8da314bb1b76509856d7d2f61f11d1dd375ce4e8867150947ac15d06e749ae7e",
+      "name": "terminal-bench/session-window-debug",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/session-window-debug",
+      "task_digest": "sha256:638c00fd438a0289ba75f6bc536861831f4a8eab2b85064064038e1bcc91cfbb",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "ML",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:21c14a60b9ac85216691d135e8c206234d0423f715d1c21ce8f825cf1672e285",
+      "name": "terminal-bench/sglang-qwen-burst",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/sglang-qwen-burst",
+      "task_digest": "sha256:405b3837c4b9186e60351db3d376aabd355c5f0a8c60db494ee53ee8a49b7fc8",
+      "verifier_timeout_seconds": 420
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Security",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 10800,
+      "harbor_task_checksum": "sha256:02937805d6f3c0e1e6f01fa583b0709b428fabb04dcb94893509bf8f1c930771",
+      "name": "terminal-bench/shadow-relay",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/shadow-relay",
+      "task_digest": "sha256:a677da5665a8276811f95752ac917de653d970cf2293c8345322b6101768eca0",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 18000,
+      "category": "Science",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 14400,
+      "harbor_task_checksum": "sha256:5aedc31f7fac1f31fdab613d5cca7010a059ab194eccc90b588f4d359827654f",
+      "name": "terminal-bench/sound-change-cascade",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/sound-change-cascade",
+      "task_digest": "sha256:0dbc8345e012bc341060bbd5ef896a3b90ecbb302d99d5a54b047f5e3a7ce8cd",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 28800,
+      "category": "Science",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 216000,
+      "harbor_task_checksum": "sha256:19d2946269482799153ae4737331b7378933e7807a4adfec6e29cc114c4da4cf",
+      "name": "terminal-bench/takens-embedding-lean",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/takens-embedding-lean",
+      "task_digest": "sha256:056774ee95c4d4b6ae1c2ede0a22aa30ecfbb56dcc8837b8d15c27f6f79d4b69",
+      "verifier_timeout_seconds": 1800
+    },
+    {
+      "agent_timeout_seconds": 9000,
+      "category": "Software",
+      "expert_time_quartile": 4,
+      "expert_time_seconds": 57600,
+      "harbor_task_checksum": "sha256:ec92b13b8a46f0e7791f6bfea1ecb94cddf5fa134cd7f593fc2da61e45abcb30",
+      "name": "terminal-bench/telecom-entity-resolution",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/telecom-entity-resolution",
+      "task_digest": "sha256:4d15d983b4a44e15e933dd3b50b9116c27d5a66ff09ece221a7ea4554c24613a",
+      "verifier_timeout_seconds": 1500
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Security",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:dec5411e3c4f2304485c6e4d842a297f93e59395f924746da14423a566d87e5e",
+      "name": "terminal-bench/uefi-bootkit",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/uefi-bootkit",
+      "task_digest": "sha256:97b0d08a63ee8e0115300ee797ae4eb89e9651d37ca93d2b39910c95bdbcddfc",
+      "verifier_timeout_seconds": 700
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Software",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 14400,
+      "harbor_task_checksum": "sha256:ce6aa3758b642b7e12fe215944605cf57eadfef95cb10552610b606e4a3cd4fa",
+      "name": "terminal-bench/vba-userform-port",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/vba-userform-port",
+      "task_digest": "sha256:a75593b08997cf054b3a46163664051513e9c95fbb71249ab0c8512d7b7dc58d",
+      "verifier_timeout_seconds": 900
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Software",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 14400,
+      "harbor_task_checksum": "sha256:5f2c6a3788a5c3629ea300cafa1ec4199da26b1b696333bf04fdf429d637b5c0",
+      "name": "terminal-bench/vf2-speedup-networkx",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/vf2-speedup-networkx",
+      "task_digest": "sha256:ac62ee7aef9d3bdd6b05ac109e145ea85ebde0eb36b85eccb80dc2128625912f",
+      "verifier_timeout_seconds": 900
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "ML",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:7b702b348d5bc5c773281a8b9939938ec6e58136cc3f30997efe7d1ab2c47ade",
+      "name": "terminal-bench/vllm-deepseek-streaming",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/vllm-deepseek-streaming",
+      "task_digest": "sha256:0efffc771f0b2207b6c5193e780fab3d70b2a910b462903a698450ce7a02db5a",
+      "verifier_timeout_seconds": 300
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "ML",
+      "expert_time_quartile": 2,
+      "expert_time_seconds": 7200,
+      "harbor_task_checksum": "sha256:ebf6c08ff0d4a43f604b2395824d6f184f9d60c5689340993a2224665d06fb39",
+      "name": "terminal-bench/vpp-loss-divergence",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/vpp-loss-divergence",
+      "task_digest": "sha256:8d020c581371bffe38aff2c0ff9816d0dd61e35a9baba4cbe1eb14c7e738ce78",
+      "verifier_timeout_seconds": 900
+    },
+    {
+      "agent_timeout_seconds": 7200,
+      "category": "Software",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 21600,
+      "harbor_task_checksum": "sha256:3af87baca1d8ddd4182e689ca01858cfd0c7d22da6389e076fe0857d9d6e3a93",
+      "name": "terminal-bench/wal-recovery-ordering",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/wal-recovery-ordering",
+      "task_digest": "sha256:7d8d20971c4db6fef99952aefbae0655b977c8ce55c3ac91ad656bd022c69543",
+      "verifier_timeout_seconds": 1800
+    },
+    {
+      "agent_timeout_seconds": 18000,
+      "category": "Science",
+      "expert_time_quartile": 3,
+      "expert_time_seconds": 14400,
+      "harbor_task_checksum": "sha256:a6f55415d17ebd16bac7d33902d4e70fe62da6a89d65d9748b191b897cb2239b",
+      "name": "terminal-bench/wdm-design",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/wdm-design",
+      "task_digest": "sha256:fd47ed1d1740d05fb42161a9a58918c2619ee181f686c5a19537fb26ed805183",
+      "verifier_timeout_seconds": 1200
+    }
+  ],
+  "terminal_bench": {
+    "commit": "2b0442c3c583b710ca8da14c8e601b99f2f1f244",
+    "dataset": {
+      "kind": "implicit_git",
+      "path": "tasks",
+      "repo": "harbor-framework/terminal-bench@2b0442c3c583b710ca8da14c8e601b99f2f1f244"
+    },
+    "repository": "https://github.com/harbor-framework/terminal-bench.git",
+    "version": "v3.0.0"
+  }
+}

@@ -22,13 +22,23 @@ import type {
   ConversationItemRecord,
   EffectiveCapturePolicy,
   SourceRuntime,
+  NormalizedImportAttestation,
   Visibility
 } from "./types.js";
+import { NORMALIZED_IMPORT_SOURCE_ADAPTER } from "./types.js";
 
 export interface ConversationItemRepository {
   createConversationItems(
     actor: ActorContext,
     input: { items: ConversationItemInput[] }
+  ): Promise<ConversationItemRecord[]>;
+  /** Production-owned adapter capability. Ordinary ingestion must not call this. */
+  createTrustedNormalizedImport(
+    actor: ActorContext,
+    input: {
+      attestation: NormalizedImportAttestation;
+      items: ConversationItemInput[];
+    }
   ): Promise<ConversationItemRecord[]>;
   releaseConversationProjectionHold(
     actor: ActorContext,
@@ -150,7 +160,9 @@ const SAFE_CONVERSATION_METADATA_KEYS = new Set([
   "sourceChunkIndex",
   "sourceChunkCount",
   "sourceRuntime",
-  "sourceComponentId"
+  "sourceComponentId",
+  "normalizedImportProvenance",
+  "normalizedImportAttestation"
 ]);
 
 export const safeConversationMetadataForEncryptedStorage = (
@@ -851,6 +863,239 @@ const assertManagedCanonicalAdmission = (item: ConversationItemInput): void => {
   }
 };
 
+const NORMALIZED_IMPORT_TRANSCRIPT_TYPES = new Set([
+  "system_message",
+  "user_message",
+  "agent_message",
+  "reasoning_summary",
+  "tool_call",
+  "tool_result"
+]);
+const trustedNormalizedImportItems = new WeakMap<
+  ConversationItemInput,
+  NormalizedImportAttestation
+>();
+
+const normalizedImportFailure = (
+  boundary: "batch" | "item" | "session" = "item"
+): never => {
+  throw Object.assign(
+    new Error(
+      `Normalized import failed exact adapter admission (${boundary} boundary)`
+    ),
+    { statusCode: 400, code: "normalized_import_admission_invalid" }
+  );
+};
+
+const normalizedImportRawPayloadIsExact = (
+  rawJson: unknown,
+  transcriptType: string
+): boolean => {
+  if (!isRecord(rawJson) || rawJson.type !== "normalized_import_item") {
+    return false;
+  }
+  if (Object.keys(rawJson).sort().join(",") !== "payload,type") return false;
+  const payload = rawJson.payload;
+  if (!isRecord(payload) || payload.type !== transcriptType) return false;
+  const allowed = new Set(["type", "content", "toolCall", "sourceCallId"]);
+  if (Object.keys(payload).some((key) => !allowed.has(key))) return false;
+  const content = payload.content;
+  const toolCall = payload.toolCall;
+  if (content !== undefined && typeof content !== "string") return false;
+  if (toolCall !== undefined) {
+    if (
+      !isRecord(toolCall) ||
+      Object.keys(toolCall).sort().join(",") !==
+        "arguments,function_name,tool_call_id" ||
+      !stringField(toolCall, "function_name") ||
+      !stringField(toolCall, "tool_call_id") ||
+      !isRecord(toolCall.arguments)
+    ) {
+      return false;
+    }
+  }
+  if (
+    payload.sourceCallId !== undefined &&
+    typeof payload.sourceCallId !== "string"
+  ) {
+    return false;
+  }
+  return transcriptType === "tool_call"
+    ? toolCall !== undefined && content === undefined
+    : toolCall === undefined && content !== undefined;
+};
+
+const assertNormalizedImportAdmission = (
+  item: ConversationItemInput,
+  attestation?: NormalizedImportAttestation
+): void => {
+  if (
+    item.sourceAdapterVersion !==
+    NORMALIZED_IMPORT_SOURCE_ADAPTER.sourceAdapterVersion
+  ) {
+    return;
+  }
+  const transcriptType = stringField(item.metadata ?? {}, "transcriptType");
+  const provenance = item.metadata?.normalizedImportProvenance;
+  const componentByTranscriptType: Record<string, string> = {
+    system_message: "message",
+    user_message: "message",
+    agent_message: "message",
+    reasoning_summary: "reasoning_summary",
+    tool_call: "tool_call",
+    tool_result: "tool_result"
+  };
+  if (!attestation || !transcriptType || !isRecord(provenance)) {
+    normalizedImportFailure("item");
+  }
+  const trustedAttestation = attestation as NormalizedImportAttestation;
+  const trustedTranscriptType = transcriptType as string;
+  const trustedProvenance = provenance as Record<string, unknown>;
+  const exactProvenanceKeys = [
+    "atifIdentity",
+    "normalizerAdapter",
+    "normalizerAdapterVersion",
+    "sanitizationManifestHash",
+    "sourceAttemptId",
+    "sourceFormat",
+    "sourceProducer",
+    "sourceSchemaVersion",
+    "stepId",
+    "taskDigest"
+  ];
+  const sequence = item.sourceSequence;
+  const atifIdentity = stringField(trustedProvenance, "atifIdentity");
+  const stableItemId =
+    sequence !== undefined && atifIdentity
+      ? `${NORMALIZED_IMPORT_SOURCE_ADAPTER.normalizerAdapter}:${NORMALIZED_IMPORT_SOURCE_ADAPTER.normalizerAdapterVersion}:${createHash(
+          "sha256"
+        )
+          .update(
+            JSON.stringify({
+              atifIdentity,
+              sequence,
+              sourceAttemptId: trustedAttestation.sourceAttemptId,
+              taskDigest: trustedAttestation.taskDigest
+            })
+          )
+          .digest("hex")}`
+      : null;
+  const externalTurnId =
+    sequence !== undefined
+      ? `attempt:${createHash("sha256").update(trustedAttestation.sourceAttemptId).digest("hex").slice(0, 32)}:step:${stringField(trustedProvenance, "stepId")}`
+      : null;
+  const expectedActor: Record<string, string> = {
+    system_message: "system",
+    user_message: "user",
+    agent_message: "agent",
+    reasoning_summary: "agent",
+    tool_call: "tool",
+    tool_result: "tool"
+  };
+  const rawPayload =
+    isRecord(item.rawJson) && isRecord(item.rawJson.payload)
+      ? item.rawJson.payload
+      : null;
+  const expectedRawText =
+    rawPayload && typeof rawPayload.content === "string"
+      ? rawPayload.content
+      : rawPayload && isRecord(rawPayload.toolCall)
+        ? `Tool call: ${String(rawPayload.toolCall.function_name)}\n\nInput:\n${JSON.stringify(rawPayload.toolCall.arguments)}`
+        : undefined;
+  const expectedCanonicalItemKey =
+    item.externalThreadId &&
+    item.externalTurnId &&
+    item.canonicalStableItemId &&
+    item.observationComponent
+      ? codexCanonicalConversationItemKey({
+          externalThreadId: item.externalThreadId,
+          externalTurnId: item.externalTurnId,
+          stableItemId: item.canonicalStableItemId,
+          component: item.observationComponent
+        })
+      : null;
+  const rawSourceCallId = rawPayload
+    ? stringField(rawPayload, "sourceCallId")
+    : null;
+  const rawToolCall = rawPayload?.toolCall;
+  const rawToolCallId = isRecord(rawToolCall)
+    ? stringField(rawToolCall, "tool_call_id")
+    : null;
+  if (
+    item.sourceKind !== NORMALIZED_IMPORT_SOURCE_ADAPTER.sourceKind ||
+    item.sourceTransport !== NORMALIZED_IMPORT_SOURCE_ADAPTER.sourceTransport ||
+    item.sourceRecordType !==
+      NORMALIZED_IMPORT_SOURCE_ADAPTER.sourceRecordType ||
+    !NORMALIZED_IMPORT_TRANSCRIPT_TYPES.has(trustedTranscriptType) ||
+    item.sourceEventType !== trustedTranscriptType ||
+    item.observationOnly ||
+    Object.keys(trustedProvenance).sort().join(",") !==
+      exactProvenanceKeys.join(",") ||
+    stringField(trustedProvenance, "sourceFormat") !==
+      NORMALIZED_IMPORT_SOURCE_ADAPTER.sourceFormat ||
+    stringField(trustedProvenance, "sourceSchemaVersion") !==
+      NORMALIZED_IMPORT_SOURCE_ADAPTER.sourceSchemaVersion ||
+    stringField(trustedProvenance, "sourceProducer") !==
+      NORMALIZED_IMPORT_SOURCE_ADAPTER.sourceProducer ||
+    stringField(trustedProvenance, "normalizerAdapter") !==
+      NORMALIZED_IMPORT_SOURCE_ADAPTER.normalizerAdapter ||
+    stringField(trustedProvenance, "normalizerAdapterVersion") !==
+      NORMALIZED_IMPORT_SOURCE_ADAPTER.normalizerAdapterVersion ||
+    stringField(trustedProvenance, "taskDigest") !==
+      trustedAttestation.taskDigest ||
+    stringField(trustedProvenance, "sourceAttemptId") !==
+      trustedAttestation.sourceAttemptId ||
+    stringField(trustedProvenance, "sanitizationManifestHash") !==
+      trustedAttestation.sanitizationManifestHash ||
+    !/^sha256:[a-f0-9]{64}$/.test(
+      trustedAttestation.sanitizationManifestHash
+    ) ||
+    item.sessionId !== trustedAttestation.sessionId ||
+    item.externalSessionId !== trustedAttestation.externalThreadId ||
+    item.externalThreadId !== trustedAttestation.externalThreadId ||
+    item.externalTurnId !== externalTurnId ||
+    item.externalItemId !== stableItemId ||
+    item.canonicalStableItemId !== stableItemId ||
+    !item.canonicalItemKey ||
+    sequence === undefined ||
+    item.metadata?.transcriptIndex !== sequence ||
+    item.metadata?.transcriptAssignedTurnId !== externalTurnId ||
+    canonicalConversationActor(item) !== expectedActor[trustedTranscriptType] ||
+    (trustedTranscriptType === "tool_call"
+      ? item.parentExternalItemId !== undefined ||
+        !rawToolCallId ||
+        rawSourceCallId !== null ||
+        item.metadata?.toolCallId !== rawToolCallId
+      : trustedTranscriptType === "tool_result"
+        ? !rawSourceCallId ||
+          item.parentExternalItemId !== rawSourceCallId ||
+          item.metadata?.toolCallId !== rawSourceCallId
+        : item.parentExternalItemId !== undefined ||
+          rawSourceCallId !== null) ||
+    !normalizedImportRawPayloadIsExact(item.rawJson, trustedTranscriptType) ||
+    item.rawText !== expectedRawText ||
+    item.sourceHash !==
+      `sha256:${createHash("sha256")
+        .update(
+          JSON.stringify({
+            externalThreadId: trustedAttestation.externalThreadId,
+            stableItemId,
+            rawJson: item.rawJson
+          })
+        )
+        .digest("hex")}` ||
+    item.idempotencyKey !==
+      `normalized-import:${createHash("sha256")
+        .update(stableItemId ?? "")
+        .digest("hex")}` ||
+    item.observationComponent !==
+      componentByTranscriptType[trustedTranscriptType] ||
+    item.canonicalItemKey !== expectedCanonicalItemKey
+  ) {
+    normalizedImportFailure("item");
+  }
+};
+
 const assertManagedTranscriptTerminal = (
   item: ConversationItemInput,
   session: ConversationItemSessionRow | null
@@ -1205,6 +1450,32 @@ const withAuthoritativeSessionMetadata = (
   return { ...item, metadata };
 };
 
+const assertNormalizedImportSessionAttestation = (
+  item: ConversationItemInput,
+  session: ConversationItemSessionRow | null,
+  attestation?: NormalizedImportAttestation
+): void => {
+  if (
+    item.sourceAdapterVersion !==
+    NORMALIZED_IMPORT_SOURCE_ADAPTER.sourceAdapterVersion
+  ) {
+    return;
+  }
+  const authoritativeProjectId =
+    session?.project_override_id ??
+    session?.automatic_project_id ??
+    session?.cwd;
+  if (
+    !attestation ||
+    session?.id !== attestation.sessionId ||
+    authoritativeProjectId !== attestation.projectId ||
+    !isRecord(item.metadata?.normalizedImportAttestation) ||
+    item.metadata.normalizedImportAttestation.ownerUserId !== undefined
+  ) {
+    normalizedImportFailure("session");
+  }
+};
+
 const ensureConversationItemTurn = async (
   pool: pg.Pool | pg.PoolClient,
   input: {
@@ -1545,6 +1816,41 @@ export const createConversationItemRepository = (
   pool: pg.Pool,
   options: ConversationItemRepositoryOptions = {}
 ): ConversationItemRepository => ({
+  async createTrustedNormalizedImport(actor, input) {
+    if (
+      input.items.length === 0 ||
+      input.items.length > 10_000 ||
+      input.attestation.sequenceStart !== 0
+    ) {
+      normalizedImportFailure("batch");
+    }
+    const items = input.items.map((item, index) => {
+      if (item.sourceSequence !== input.attestation.sequenceStart + index) {
+        normalizedImportFailure("batch");
+      }
+      const trustedItem: ConversationItemInput = {
+        ...item,
+        metadata: {
+          ...(item.metadata ?? {}),
+          projectId: input.attestation.projectId,
+          normalizedImportAttestation: {
+            sessionId: input.attestation.sessionId,
+            projectId: input.attestation.projectId,
+            externalThreadId: input.attestation.externalThreadId,
+            sanitizationManifestHash:
+              input.attestation.sanitizationManifestHash,
+            projectionDispositionVersion:
+              NORMALIZED_IMPORT_SOURCE_ADAPTER.projectionDispositionVersion,
+            projectionPolicyKey: item.sourceEventType
+          }
+        }
+      };
+      trustedNormalizedImportItems.set(trustedItem, input.attestation);
+      return trustedItem;
+    });
+    return this.createConversationItems(actor, { items });
+  },
+
   async findConversationItemByStableIdentity(actor, input) {
     const result = await pool.query<ConversationItemRow>(
       `
@@ -1572,10 +1878,16 @@ export const createConversationItemRepository = (
   async createConversationItems(actor, input) {
     const records: ConversationItemRecord[] = [];
     for (const inputItem of input.items) {
+      const normalizedImportAttestation =
+        trustedNormalizedImportItems.get(inputItem);
       const sanitizedItem = withValidatedTransportChunkIdentity(
         sanitizeConversationItemForStorage(inputItem)
       );
       assertManagedCanonicalAdmission(sanitizedItem);
+      assertNormalizedImportAdmission(
+        sanitizedItem,
+        normalizedImportAttestation
+      );
       assertCaptureHookTurnBoundary(sanitizedItem);
       const sourceIdempotencyKey = sanitizedItem.idempotencyKey;
       let item = withCanonicalConversationIdentity({
@@ -1625,8 +1937,19 @@ export const createConversationItemRepository = (
           item,
           visibility
         });
+        assertNormalizedImportSessionAttestation(
+          item,
+          verifiedSession,
+          normalizedImportAttestation
+        );
         assertManagedTranscriptTerminal(item, verifiedSession);
         item = withAuthoritativeSessionMetadata(item, verifiedSession);
+        if (
+          normalizedImportAttestation &&
+          isRecord(item.metadata?.normalizedImportAttestation)
+        ) {
+          item.metadata.normalizedImportAttestation.ownerUserId = actor.userId;
+        }
         const metadataForStorage = suppressPlaintextRaw
           ? safeConversationMetadataForEncryptedStorage(
               item.metadata ?? {},

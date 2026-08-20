@@ -8,6 +8,8 @@
   },
   "include": ["src/**/*.ts"],
   "references": [
+    { "path": "../../apps/api" },
+    { "path": "../../apps/worker" },
     { "path": "../core" },
     { "path": "../db" },
     { "path": "../mcp-server" }

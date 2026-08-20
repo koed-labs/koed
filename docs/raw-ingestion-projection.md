@@ -103,6 +103,32 @@ frontiers.
 
 ## Current Codex Adapters
 
+Sanitized AI Client-visible records may enter only through the production-owned
+normalized-import capability. The ordinary API-token conversation-item route
+does not admit caller-asserted normalized provenance. The internal capability
+uses the versioned `koed-normalized-import-v1` adapter with
+`sourceTransport=normalized_import`; this identity is distinct from native
+`codex-transcript-v1` JSONL.
+
+Admission pins the exact ATIF producer, schema, and normalizer versions and the
+successful sanitization-manifest hash. It recomputes source identity, turn
+identity, source hash, idempotency key, component, and canonical item key;
+requires a contiguous sequence; and validates the actor, transcript
+classification, and strict normalized raw shape. The repository binds the
+authenticated owner and verifies the Captured Session, source thread, and
+authoritative Project before persisting an import attestation. Unknown
+classifications, caller-created provenance, sequence gaps, altered raw fields,
+or identity mismatches fail closed.
+
+Projection resolves the six admitted normalized classifications (system, user,
+agent, reasoning summary, tool call, and tool result) through the corresponding
+`codex-transcript-v1` policy rows. The stored attestation names that projection
+policy contract, while the resulting Memory Event records remain authoritative
+for display, embedding, and LCM disposition. This preserves truthful source
+provenance without direct database seeding or pretending normalized records
+were native Codex transcript bytes. Capture Policy and Personal Memory
+ownership remain enforced at the common repository boundary.
+
 The Codex Transcript Watcher, managed transcript ingestion, and historical
 import share `sourceAdapterVersion=codex-transcript-v1`. Exact, complete JSONL
 bytes are first appended to an owner-scoped Conversation Source Journal. Live

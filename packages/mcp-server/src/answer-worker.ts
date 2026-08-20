@@ -49,7 +49,7 @@ import {
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 120_000;
-export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-worker-v4";
+export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-worker-v9";
 export const MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION = "memory-answer-v1";
 const MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE = "koed_memory";
 

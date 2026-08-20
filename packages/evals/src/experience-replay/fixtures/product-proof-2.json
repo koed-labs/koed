@@ -1,0 +1,51 @@
+{
+  "corpus_schema_version": "koed-terminal-bench-corpus-v2",
+  "donor_task": "terminal-bench/photonic-waveguide-routing",
+  "schema_version": "koed-terminal-bench-product-proof-v2",
+  "target_task": "terminal-bench/html-js-filter",
+  "task_count": 2,
+  "tasks": [
+    {
+      "agent_timeout_seconds": 3600,
+      "category": "Security",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 2700,
+      "harbor_task_checksum": "sha256:687960ba1fa1ab07c22532c429646714855527baa4857f2c2ffa38c29f81ad8a",
+      "name": "terminal-bench/html-js-filter",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/html-js-filter",
+      "task_digest": "sha256:832a5b309edca4f1a7c728da5f1ca530c2712f20a0b7f1db6d1bb6e3171a8866",
+      "verifier_timeout_seconds": 1800
+    },
+    {
+      "agent_timeout_seconds": 10800,
+      "category": "Software",
+      "expert_time_quartile": 1,
+      "expert_time_seconds": 2700,
+      "harbor_task_checksum": "sha256:4387b9e2fb27d29b96ca6549a3d414957652dc299884c71de5b5652a7413eb71",
+      "name": "terminal-bench/photonic-waveguide-routing",
+      "primary_reward": {
+        "field": "reward",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "success": {
+          "operator": "equals",
+          "value": 1.0
+        }
+      },
+      "resource_class": "cpu",
+      "source_path": "tasks/photonic-waveguide-routing",
+      "task_digest": "sha256:3fd44f4fbc5b862bc1a0b098d3c1295387134edd238ed6f12f2c98ec13e2dccc",
+      "verifier_timeout_seconds": 300
+    }
+  ]
+}

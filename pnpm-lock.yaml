@@ -258,6 +258,12 @@ importers:
       '@koed/shared':
         specifier: workspace:*
         version: link:../shared
+      '@koed/worker':
+        specifier: workspace:*
+        version: link:../../apps/worker
+      '@modelcontextprotocol/client':
+        specifier: 2.0.0
+        version: 2.0.0
       '@modelcontextprotocol/server':
         specifier: 2.0.0
         version: 2.0.0
@@ -267,9 +273,16 @@ importers:
       ioredis:
         specifier: ^5.10.1
         version: 5.10.1
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.15.6
+        version: 8.20.0
 
   packages/koed: {}
 
@@ -2090,6 +2103,7 @@ packages:
   cron-parser@4.9.0:
     resolution: {integrity: sha512-p0SaNjrHOnQeR8/VnfGbmg9te2kfyYSQ7Sc/j/6DtPL3JQvKxmjO9TSjNFpujqV3vEYYBvNNvXSxzyksBWAx1Q==}
     engines: {node: '>=12.0.0'}
+    deprecated: v4 is no longer maintained, upgrade to v5
 
   cross-dirname@0.1.0:
     resolution: {integrity: sha512-+R08/oI0nl3vfPcqftZRpytksBXDzOUveBq/NBVx0sUp1axwzPQrKinNx5yd5sxPu8j1wIy8AfnVQ+5eFdha6Q==}
