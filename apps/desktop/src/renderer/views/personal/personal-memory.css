@@ -153,20 +153,21 @@
 .personal-ai-client-mark {
   background: color-mix(in oklab, var(--muted-foreground) 10%, transparent);
   color: var(--muted-foreground);
-  font-size: 0.82rem;
-  font-weight: 750;
-  letter-spacing: -0.06em;
 }
 
 .personal-ai-client-mark[data-client="claude"] {
   background: color-mix(in oklab, #d97745 13%, transparent);
   color: color-mix(in oklab, #d97745 78%, var(--foreground));
-  font-size: 1.05rem;
 }
 
 .personal-ai-client-mark[data-client="codex"] {
   background: color-mix(in oklab, #168f70 11%, transparent);
   color: color-mix(in oklab, #168f70 72%, var(--foreground));
+}
+
+.personal-ai-client-mark[data-client="pi"] {
+  background: color-mix(in oklab, #6366f1 13%, transparent);
+  color: color-mix(in oklab, #6366f1 78%, var(--foreground));
 }
 
 .personal-ai-client-mark svg {
