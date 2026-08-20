@@ -784,14 +784,11 @@ describe("PersonalMemoryWorkspace", () => {
       );
     });
     await vi.waitFor(() => expect(container.textContent).toContain("New"));
-    await act(async () => {
-      const selector = container.querySelector<HTMLSelectElement>(
-        '[aria-label="Managed Conversation execution owner"]'
-      );
-      if (selector) {
-        selector.value = "codex.default";
-        selector.dispatchEvent(new Event("change", { bubbles: true }));
-      }
+    await vi.waitFor(() => {
+      const newButton = [
+        ...container.querySelectorAll<HTMLButtonElement>("button")
+      ].find((button) => button.textContent === "New");
+      expect(newButton?.disabled).toBe(false);
     });
     await act(async () => {
       [...container.querySelectorAll<HTMLButtonElement>("button")]

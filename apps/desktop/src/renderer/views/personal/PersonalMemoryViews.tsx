@@ -159,21 +159,17 @@ function CodexSourceLogo() {
   );
 }
 
-// Pixel-grid "Pi" wordmark, matching Pi's own blocky logo style. Each
-// rectangle below is one glyph block on a 4.4x3.4 grid: a "P" (blocks 1-5)
-// followed by an "i" (blocks 6-7).
+// Pi's own logo mark, scaled from its 800x800 source viewBox to this
+// component's shared 24x24 badge viewBox (scale factor 0.03).
 function PiSourceLogo() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
       <path
-        d="M0.1,3.5h13.6v3.4h-13.6Z
-           M0.1,6.9h3.4v3.4h-3.4Z
-           M10.3,6.9h3.4v3.4h-3.4Z
-           M0.1,10.3h13.6v3.4h-13.6Z
-           M0.1,13.7h3.4v6.8h-3.4Z
-           M17.1,3.5h6.8v3.4h-6.8Z
-           M17.1,10.3h6.8v10.2h-6.8Z"
+        fillRule="evenodd"
+        d="M4.959 4.959H15.521V12H12V15.521H8.480V19.042H4.959Z
+           M8.480 8.480V12H12V8.480Z"
       />
+      <path d="M15.521 12H19.042V19.042H15.521Z" />
     </svg>
   );
 }
@@ -184,6 +180,29 @@ const aiClientSourceLogos: Record<"claude" | "codex" | "pi", () => ReactNode> =
     codex: CodexSourceLogo,
     pi: PiSourceLogo
   };
+
+function AiClientMark({
+  ariaLabel,
+  id,
+  title
+}: {
+  ariaLabel: string;
+  id: "claude" | "codex" | "pi";
+  title: string;
+}) {
+  const Logo = aiClientSourceLogos[id];
+  return (
+    <span
+      aria-label={ariaLabel}
+      className="personal-memory-mark personal-ai-client-mark"
+      data-client={id}
+      role="img"
+      title={title}
+    >
+      <Logo />
+    </span>
+  );
+}
 
 function AiClientSourceMark({
   source
@@ -198,17 +217,12 @@ function AiClientSourceMark({
       </span>
     );
   }
-  const Logo = aiClientSourceLogos[identity.id];
   return (
-    <span
-      aria-label={`Captured with ${identity.label}`}
-      className="personal-memory-mark personal-ai-client-mark"
-      data-client={identity.id}
-      role="img"
+    <AiClientMark
+      ariaLabel={`Captured with ${identity.label}`}
+      id={identity.id}
       title={identity.label}
-    >
-      <Logo />
-    </span>
+    />
   );
 }
 
@@ -455,6 +469,104 @@ const unavailableManagedCapability = (): ManagedConversationCapability => ({
   readiness: "not_ready"
 });
 
+function NewConversationButton({
+  disabled,
+  managedConversationOwner,
+  managedConversationOwners,
+  onManagedConversationOwnerChange,
+  onStart,
+  starting
+}: {
+  disabled: boolean;
+  managedConversationOwner?: ManagedConversationOwner;
+  managedConversationOwners?: ManagedConversationOwner[];
+  onManagedConversationOwnerChange?: (instanceId: string) => void;
+  onStart: () => void;
+  starting: boolean;
+}) {
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  const owners = managedConversationOwners ?? [];
+  const pickerDisabled = disabled || !owners.some((owner) => owner.ready);
+  return (
+    <div className="personal-new-conversation-group">
+      <button
+        className="personal-new-conversation"
+        disabled={disabled || !managedConversationOwner?.ready || starting}
+        onClick={onStart}
+        type="button"
+      >
+        {starting ? <LoaderCircle aria-hidden="true" /> : null}
+        {starting ? "Starting Conversation…" : "New"}
+      </button>
+      {pickerDisabled ? (
+        <button
+          aria-label="No AI Client available for a new session"
+          className="personal-new-conversation-owner-picker"
+          disabled
+          type="button"
+        >
+          <ChevronDown aria-hidden="true" />
+        </button>
+      ) : (
+        <details
+          className="personal-new-conversation-owner-picker"
+          ref={detailsRef}
+        >
+          <summary
+            aria-label={
+              managedConversationOwner
+                ? `New session AI Client: ${managedConversationOwner.displayName}. Change AI Client.`
+                : "Choose the AI Client for new sessions"
+            }
+          >
+            {managedConversationOwner ? (
+              <AiClientMark
+                ariaLabel={managedConversationOwner.displayName}
+                id={managedConversationOwner.aiClientDriverId}
+                title={managedConversationOwner.displayName}
+              />
+            ) : null}
+            <ChevronDown aria-hidden="true" />
+          </summary>
+          <ul aria-label="Available AI Clients" role="menu">
+            {owners.map((owner) => (
+              <li key={owner.aiClientInstanceId} role="none">
+                <button
+                  aria-checked={
+                    owner.aiClientInstanceId ===
+                    managedConversationOwner?.aiClientInstanceId
+                  }
+                  className="personal-new-conversation-owner-option"
+                  disabled={!owner.ready}
+                  onClick={() => {
+                    onManagedConversationOwnerChange?.(
+                      owner.aiClientInstanceId
+                    );
+                    if (detailsRef.current) detailsRef.current.open = false;
+                  }}
+                  role="menuitemradio"
+                  type="button"
+                >
+                  <AiClientMark
+                    ariaLabel={
+                      owner.ready
+                        ? owner.displayName
+                        : `${owner.displayName} (unavailable)`
+                    }
+                    id={owner.aiClientDriverId}
+                    title={owner.displayName}
+                  />
+                  <span>{owner.displayName}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function ProjectDetail({
   error,
   loading,
@@ -596,7 +708,7 @@ function ProjectDetail({
         <span className="personal-project-monogram" aria-hidden="true">
           {Array.from(project.name)[0]?.toLocaleUpperCase() ?? "P"}
         </span>
-        <div>
+        <div className="personal-project-detail-heading">
           <h2 data-personal-route-focus="project" tabIndex={-1}>
             {project.name}
           </h2>
@@ -605,15 +717,11 @@ function ProjectDetail({
             sessionCount={project.threads.length}
           />
         </div>
-        <button
-          className="personal-new-conversation"
-          disabled={
-            !managedConversations ||
-            !project.path ||
-            !managedConversationOwner?.ready ||
-            startState.status === "starting"
-          }
-          onClick={() => {
+        <NewConversationButton
+          managedConversationOwner={managedConversationOwner}
+          managedConversationOwners={managedConversationOwners}
+          onManagedConversationOwnerChange={onManagedConversationOwnerChange}
+          onStart={() => {
             if (!managedConversations || !managedConversationOwner) return;
             setStartState({
               status: "starting",
@@ -651,42 +759,16 @@ function ProjectDetail({
                 });
               });
           }}
-          type="button"
-        >
-          {startState.status === "starting" ? (
-            <LoaderCircle aria-hidden="true" />
-          ) : null}
-          {startState.status === "starting" ? "Starting Conversation…" : "New"}
-        </button>
+          starting={startState.status === "starting"}
+          disabled={
+            !managedConversations || !project.path || !managedAiReadModel
+          }
+        />
       </header>
       {managedAiLoadError ? (
         <p className="personal-managed-error" role="alert">
           AI Client discovery unavailable: {managedAiLoadError}
         </p>
-      ) : null}
-      {managedAiReadModel ? (
-        <label className="personal-managed-owner-selector">
-          Execution owner
-          <select
-            aria-label="Managed Conversation execution owner"
-            value={managedConversationOwner?.aiClientInstanceId ?? ""}
-            onChange={(event) =>
-              onManagedConversationOwnerChange?.(event.target.value)
-            }
-          >
-            <option value="">Choose AI Client owner…</option>
-            {(managedConversationOwners ?? []).map((owner) => (
-              <option
-                disabled={!owner.ready}
-                key={owner.aiClientInstanceId}
-                value={owner.aiClientInstanceId}
-              >
-                {owner.displayName} · {owner.aiClientDriverId}
-                {!owner.ready ? " · unavailable" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
       ) : null}
       {startState.message ? (
         <p
@@ -1736,6 +1818,17 @@ export function PersonalMemoryWorkspace({
   const managedConversationOwner = managedConversationOwners.find(
     (owner) => owner.aiClientInstanceId === selectedManagedOwner
   );
+  useEffect(() => {
+    if (managedConversationOwners.length === 0) return;
+    setSelectedManagedOwner((current) => {
+      const currentOwner = managedConversationOwners.find(
+        (owner) => owner.aiClientInstanceId === current
+      );
+      if (currentOwner?.ready) return current;
+      const fallback = managedConversationOwners.find((owner) => owner.ready);
+      return fallback ? fallback.aiClientInstanceId : current;
+    });
+  }, [managedConversationOwners]);
   const projects = useMemo(
     () =>
       snapshot.projectOrder.flatMap((id) => {
