@@ -227,9 +227,7 @@ describe("Claude AI Client migration", () => {
 
 describe("Personal Note Share Grant migrations", () => {
   it("backfills existing grants as Captured Session sources and constrains both source shapes", async () => {
-    const migrationSql = await readDrizzleFile(
-      "0033_personal_note_sharing.sql"
-    );
+    const migrationSql = await readDrizzleFile("0034_broken_morlocks.sql");
 
     expect(migrationSql).toContain("ENUM('captured_session', 'personal_note')");
     expect(migrationSql).toContain(
@@ -247,9 +245,7 @@ describe("Personal Note Share Grant migrations", () => {
   });
 
   it("preserves historical source work and fails ambiguous in-flight work for re-review", async () => {
-    const migrationSql = await readDrizzleFile(
-      "0033_personal_note_sharing.sql"
-    );
+    const migrationSql = await readDrizzleFile("0034_broken_morlocks.sql");
     const addNullable = migrationSql.indexOf(
       'ADD COLUMN "logical_memory_id" uuid;'
     );
@@ -267,9 +263,7 @@ describe("Personal Note Share Grant migrations", () => {
   });
 
   it("does not constrain cross-deployment source identities to local rows", async () => {
-    const migrationSql = await readDrizzleFile(
-      "0033_personal_note_sharing.sql"
-    );
+    const migrationSql = await readDrizzleFile("0034_broken_morlocks.sql");
 
     expect(migrationSql).toContain(
       'ALTER TABLE "shared_source_artifacts" ADD COLUMN "source_memory_event_id" uuid'
