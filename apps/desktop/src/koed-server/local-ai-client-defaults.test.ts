@@ -81,6 +81,10 @@ describe("Local AI Client runtime defaults", () => {
         },
         "curated_memory_review"
       ).assignment
-    ).toMatchObject({ provider: "claude", model: "haiku", reasoning_effort: "low" });
+    ).toMatchObject({
+      provider: "claude",
+      model: "haiku",
+      reasoning_effort: "low"
+    });
   });
 });

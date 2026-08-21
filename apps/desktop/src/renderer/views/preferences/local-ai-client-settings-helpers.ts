@@ -100,7 +100,8 @@ export const assignmentStatusFor = (
   }
   if (!selectedModel)
     return { available: false, text: `missing model ${draft.model}` };
-  const modelHasNoReasoningEfforts = selectedModel.reasoningEfforts.length === 0;
+  const modelHasNoReasoningEfforts =
+    selectedModel.reasoningEfforts.length === 0;
   const reasoningEffortValid = modelHasNoReasoningEfforts
     ? draft.reasoning_effort === "none"
     : selectedModel.reasoningEfforts.includes(draft.reasoning_effort);
