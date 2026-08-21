@@ -66,6 +66,28 @@ export const boundedMap = async (values, concurrency, map) => {
   return results;
 };
 
+const parseMissingLinuxDependencies = (output) =>
+  output
+    .split("\n")
+    .map((line) => line.trim())
+    .flatMap((line) => {
+      const match = line.match(/^(\S+)\s+=>\s+not found$/i);
+      return match?.[1] ? [match[1]] : [];
+    });
+
+export const linuxLoaderIssues = ({ file, output, runtimeRoot }) => {
+  const cudaRoot = resolve(runtimeRoot, "llama.cpp", "cuda");
+  const normalizedFile = resolve(file);
+  const isCudaPayload =
+    normalizedFile === cudaRoot || normalizedFile.startsWith(`${cudaRoot}/`);
+
+  return parseMissingLinuxDependencies(output).flatMap((dependency) =>
+    dependency === "libcuda.so.1" && isCudaPayload
+      ? []
+      : [`unresolved loader dependency: ${dependency}`]
+  );
+};
+
 const parseMacDependencies = (output) =>
   output
     .split("\n")

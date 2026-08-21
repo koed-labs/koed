@@ -453,7 +453,7 @@ jobs:
       - build
     if: needs.changes.outputs.run_linux_native == 'true'
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
@@ -477,10 +477,19 @@ jobs:
       - name: Build koed-server CLI
         run: pnpm --filter @koed/koed-server build
 
+      - name: Restore verified Linux native runtime payload
+        id: native-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-native-runtime-cache/linux-x64/koed-runtime
+          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime/loader-validation-lib.mjs', 'scripts/native-runtime/validate-runtime.mjs', 'scripts/native-runtime-copy.mjs') }}
+
       - name: Install native runtime build dependencies
+        if: steps.native-cache.outputs.cache-hit != 'true'
         run: sudo apt-get update && sudo apt-get install -y build-essential bison flex libssl-dev curl ca-certificates
 
       - name: Install pinned CUDA build toolkit
+        if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           curl --fail --location --retry 3 \
             --output "${RUNNER_TEMP}/cuda-keyring.deb" \
@@ -493,13 +502,42 @@ jobs:
           echo "CUDA_HOME=/usr/local/cuda-12.4" >> "${GITHUB_ENV}"
           echo "CUDACXX=/usr/local/cuda-12.4/bin/nvcc" >> "${GITHUB_ENV}"
 
-      - name: Build native runtime artifact
+      - name: Cold-build native runtime payload
+        if: steps.native-cache.outputs.cache-hit != 'true'
         env:
-          KOED_NATIVE_RUNTIME_VERSION: ${{ github.sha }}
-        run: pnpm native-runtime:build:linux-x64 -- --json
+          KOED_NATIVE_RUNTIME_VERSION: cache-seed
+        run: |
+          pnpm native-runtime:build:linux-x64 -- --out-dir "${RUNNER_TEMP}/koed-native-runtime-cache-build" --json
+          mkdir -p "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64"
+          cp -a "${RUNNER_TEMP}/koed-native-runtime-cache-build/koed-runtime" "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime"
 
-      - name: Validate native runtime artifact
+      - name: Validate native runtime payload before use or save
+        run: pnpm native-runtime:validate -- --runtime-root "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --platform linux --json
+
+      - name: Save verified Linux native runtime payload
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-native-runtime-cache/linux-x64/koed-runtime
+          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime/loader-validation-lib.mjs', 'scripts/native-runtime/validate-runtime.mjs', 'scripts/native-runtime-copy.mjs') }}
+
+      - name: Package native runtime artifact
+        run: pnpm native-runtime:build:linux-x64 -- --source-dir "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --version "${GITHUB_SHA}" --json
+
+      - name: Validate packaged native runtime artifact
         run: pnpm native-runtime:validate -- --runtime-root dist/native-runtime/linux-x64/koed-runtime --platform linux --json
+
+      - name: Upload verified Linux native runtime artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-native-runtime-linux-x64-${{ github.sha }}
+          path: |
+            dist/native-runtime/linux-x64/*.tar.gz
+            dist/native-runtime/linux-x64/*.sha256
+            dist/native-runtime/linux-x64/provenance.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
 
   ci-required:
     name: CI required

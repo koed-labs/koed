@@ -58,6 +58,24 @@ the verified payload without changing the established
 provides a separate, digest-pinned CUDA override requiring the NVIDIA Container
 Toolkit.
 
+Git stores the pinned source recipe, upstream checksums, build scripts, and
+validation policy, not generated native binaries. A trusted default-branch
+workflow cold-builds the Linux CUDA payload only when its content-addressed
+recipe key is absent, validates it before cache publication, and preserves the
+completed runtime tree. Normal pull-request CI skips that work unless explicitly
+requested. Release jobs require the validated cache, repackage it with the
+product version, generate a SHA-256 sidecar and provenance manifest, and publish
+the immutable archive as a GitHub Release asset. They fail rather than silently
+performing a long cold build when the expected cache is missing.
+Explicit pull-request proof runs may save a branch-scoped cache for repeat
+validation, but that cache is not release-authoritative and cannot replace the
+default-branch cache.
+
+The CUDA payload bundles redistributable CUDA runtime libraries. `libcuda.so.1`
+is supplied by the installed NVIDIA host driver and must remain external.
+Artifact validation permits that exact unresolved dependency only inside the
+CUDA payload and rejects every other unresolved loader dependency.
+
 ## Consequences
 
 - Accelerator selection is derived from executable capability and successful
@@ -68,6 +86,9 @@ Toolkit.
   observable.
 - CUDA release artifacts are larger because required redistributable runtime
   libraries travel with the native payload.
+- A changed source revision, CUDA version, build script, or validation policy
+  intentionally invalidates the Linux runtime cache and incurs one trusted cold
+  build before release.
 - Apple Metal release validation requires Apple Silicon hardware. Non-macOS CI
   can validate policy and manifest contracts but cannot claim hardware proof.
 

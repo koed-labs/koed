@@ -26,6 +26,10 @@ test("CPU and CUDA Compose paths remain explicit and independent", () => {
 
 test("Linux native artifact CI installs and requires the pinned CUDA toolkit", () => {
   const workflow = read(".github/workflows/ci.yml");
+  const cacheWorkflow = read(
+    ".github/workflows/native-runtime-linux-cache.yml"
+  );
+  const releaseWorkflow = read(".github/workflows/release.yml");
   const linuxJob = workflow
     .split("  native-runtime-linux-x64:")[1]
     .split("  ci-required:")[0];
@@ -34,6 +38,29 @@ test("Linux native artifact CI installs and requires the pinned CUDA toolkit", (
   assert.match(linuxJob, /cuda-toolkit-12-4/);
   assert.match(linuxJob, /CUDA_HOME=\/usr\/local\/cuda-12\.4/);
   assert.match(linuxJob, /sha256sum --check --strict/);
+  assert.match(linuxJob, /actions\/cache\/restore@/);
+  assert.match(linuxJob, /actions\/cache\/save@/);
+  assert.match(linuxJob, /steps\.native-cache\.outputs\.cache-hit != 'true'/);
+  assert.match(linuxJob, /Upload verified Linux native runtime artifact/);
+  assert.match(cacheWorkflow, /runs-on: ubuntu-22\.04/);
+  assert.match(cacheWorkflow, /branches:\n\s+- main/);
+  assert.match(
+    cacheWorkflow,
+    /Validate native runtime payload before use or save/
+  );
+  assert.match(cacheWorkflow, /Save verified Linux native runtime payload/);
+  assert.match(
+    releaseWorkflow,
+    /Require prebuilt verified native runtime payload/
+  );
+  assert.match(
+    releaseWorkflow,
+    /koed-native-runtime-linux-x64-\$\{\{ needs\.release\.outputs\.version \}\}\.provenance\.json/
+  );
+  const releaseJob = releaseWorkflow
+    .split("  native-runtime-linux-x64-release-assets:")[1]
+    .split("  unsigned-desktop-release-assets:")[0];
+  assert.doesNotMatch(releaseJob, /cuda-toolkit|Cold-build/);
   assert.match(
     buildScript,
     /Pinned CUDA runtime is required for the Linux x64 artifact/

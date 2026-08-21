@@ -729,6 +729,11 @@ The redistributable native Linux CUDA payload is built with pinned CUDA Toolkit
 12.4 and requires NVIDIA Linux driver 550.54.14 or newer. Runtime compatibility
 is still established by the packaged launcher and `llama-server --list-devices`;
 the version floor alone never asserts that a device is usable.
+Generated CUDA binaries are not committed to Git. The optional Linux native CI
+job and trusted default-branch cache workflow build on GitHub-hosted Ubuntu
+22.04 only when the content-addressed pinned recipe is missing. Releases consume
+the validated cache and publish a versioned archive, SHA-256 sidecar, and
+provenance manifest; ordinary CI and local setup do not compile CUDA.
 
 - `EMBEDDING_SERVICE_HEALTH_TIMEOUT_MS`: timeout for API/worker embedding service health probes used by status and access-check routes. Default `1000`.
 - `EMBEDDING_QUERY_INSTRUCTION_ENABLED`: whether semantic recall query embeddings use the Qwen-style `Instruct: ...\nQuery: ...` wrapper. Default `true` for Qwen3 embedding models. Set `false` to compare retrieval or benchmark behavior without query instructions. Stored Memory Event, Memory Node, message, and other source embeddings are not prefixed.
