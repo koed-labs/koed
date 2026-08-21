@@ -91,8 +91,9 @@ The `changeset-release/main` pull request, weekly schedule, and manual `full` or
 `.github/workflows/native-runtime-linux-cache.yml` is the trusted Linux cache
 writer. It runs on the default branch when the pinned source recipe or relevant
 build/validation code changes, refreshes the cache on a bounded schedule, and
-may be dispatched manually. Ordinary CI and local setup never compile CUDA
-automatically.
+may be dispatched manually. The cache key covers payload-producing inputs;
+validation-only changes revalidate the existing payload without recompiling it.
+Ordinary CI and local setup never compile CUDA automatically.
 
 The release workflow independently rebuilds the macOS native runtime and Desktop package from the exact merged release commit. For Linux x64 it requires the matching validated native payload cache, regenerates versioned provenance and checksums without recompilation, and publishes the native archive as a separate GitHub Release asset. The draft release is published only after the complete required asset set is present. See `docs/ci-validation.md` for the complete tier policy and `docs/desktop-internal-artifacts.md` for release artifact install/open, Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
 

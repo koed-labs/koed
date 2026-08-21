@@ -86,9 +86,10 @@ CUDA payload and rejects every other unresolved loader dependency.
   observable.
 - CUDA release artifacts are larger because required redistributable runtime
   libraries travel with the native payload.
-- A changed source revision, CUDA version, build script, or validation policy
-  intentionally invalidates the Linux runtime cache and incurs one trusted cold
-  build before release.
+- A changed source revision, CUDA version, or payload-producing build script
+  invalidates the Linux runtime cache and incurs one trusted cold build before
+  release. Validation-policy changes reuse but fully revalidate that immutable
+  payload.
 - Apple Metal release validation requires Apple Silicon hardware. Non-macOS CI
   can validate policy and manifest contracts but cannot claim hardware proof.
 

@@ -60,6 +60,10 @@ test("Linux native artifact CI installs and requires the pinned CUDA toolkit", (
   const releaseJob = releaseWorkflow
     .split("  native-runtime-linux-x64-release-assets:")[1]
     .split("  unsigned-desktop-release-assets:")[0];
+  assert.doesNotMatch(
+    `${linuxJob}\n${cacheWorkflow}\n${releaseJob}`,
+    /key:[^\n]*(?:loader-validation|validate-runtime)/
+  );
   assert.doesNotMatch(releaseJob, /cuda-toolkit|Cold-build/);
   assert.match(
     buildScript,

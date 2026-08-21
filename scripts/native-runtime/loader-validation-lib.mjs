@@ -88,6 +88,32 @@ export const linuxLoaderIssues = ({ file, output, runtimeRoot }) => {
   );
 };
 
+export const linuxLoaderEnvironment = ({
+  file,
+  runtimeRoot,
+  environment = process.env
+}) => {
+  const normalizedFile = resolve(file);
+  const postgresRoot = resolve(runtimeRoot, "postgres");
+  const llamaRoot = resolve(runtimeRoot, "llama.cpp");
+  const libraryDirectories = [];
+
+  if (normalizedFile.startsWith(`${postgresRoot}/`)) {
+    libraryDirectories.push(resolve(postgresRoot, "lib"));
+  } else if (normalizedFile.startsWith(`${llamaRoot}/`)) {
+    libraryDirectories.push(dirname(normalizedFile));
+  }
+
+  const existing = environment.LD_LIBRARY_PATH?.trim();
+  if (existing) libraryDirectories.push(existing);
+  return {
+    ...environment,
+    ...(libraryDirectories.length > 0
+      ? { LD_LIBRARY_PATH: libraryDirectories.join(":") }
+      : {})
+  };
+};
+
 const parseMacDependencies = (output) =>
   output
     .split("\n")

@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   boundedMap,
   collectPlatformBinaries,
+  linuxLoaderEnvironment,
   linuxLoaderIssues,
   macLoaderIssues
 } from "./loader-validation-lib.mjs";
@@ -97,6 +98,33 @@ libcublas.so.12 => not found`,
       runtimeRoot
     }),
     ["unresolved loader dependency: libcuda.so.1"]
+  );
+});
+
+test("resolves Linux libraries only through their packaged runtime directories", () => {
+  assert.deepEqual(
+    linuxLoaderEnvironment({
+      file: `${runtimeRoot}/postgres/lib/libecpg.so.6`,
+      runtimeRoot,
+      environment: { LD_LIBRARY_PATH: "/existing" }
+    }).LD_LIBRARY_PATH,
+    `${runtimeRoot}/postgres/lib:/existing`
+  );
+  assert.deepEqual(
+    linuxLoaderEnvironment({
+      file: `${runtimeRoot}/llama.cpp/cuda/libggml-cuda.so`,
+      runtimeRoot,
+      environment: {}
+    }).LD_LIBRARY_PATH,
+    `${runtimeRoot}/llama.cpp/cuda`
+  );
+  assert.equal(
+    linuxLoaderEnvironment({
+      file: "/outside/libunexpected.so",
+      runtimeRoot,
+      environment: {}
+    }).LD_LIBRARY_PATH,
+    undefined
   );
 });
 
