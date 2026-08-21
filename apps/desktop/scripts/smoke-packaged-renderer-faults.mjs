@@ -310,7 +310,15 @@ export const smokePackagedRendererFaults = async ({
       "owner-wide Shares surface"
     );
     await evaluate(
-      `(() => { const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Modify'); button?.focus(); button?.click(); })()`
+      `(() => { const card = [...document.querySelectorAll('.collab-share-row')].find((item) => item.textContent?.includes('Packaged asynchronous sharing')); card?.focus(); card?.click(); })()`
+    );
+    await waitFor(
+      evaluate,
+      `document.querySelector('.collab-share-detail-workspace')?.textContent?.includes('Packaged asynchronous sharing')`,
+      "continuous Share selection"
+    );
+    await evaluate(
+      `(() => { const button = document.querySelector('.collab-share-detail-workspace .collab-share-modify-button'); button?.focus(); button?.click(); })()`
     );
     await waitFor(
       evaluate,
