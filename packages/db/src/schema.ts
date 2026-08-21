@@ -24,7 +24,8 @@ import {
 import type {
   CollaborationApprovalReview,
   EncryptedPayloadEnvelope,
-  ManagedConversationTargetReadinessEvidence
+  ManagedConversationTargetReadinessEvidence,
+  PrivacyLabelPolicy
 } from "@koed/shared";
 
 const id = () =>
@@ -197,7 +198,7 @@ export const collaborationEventFamily = pgEnum("collaboration_event_family", [
   "message_created",
   "receipt_state_updated",
   "share_grant_lifecycle",
-  "representation_changed",
+  "fidelity_changed",
   "memory_event_available",
   "lcm_leaf_available",
   "lcm_rollup_available",
@@ -1869,6 +1870,82 @@ export const memoryNodes = pgTable(
   ]
 );
 
+export const lcmSummaryWorkClaims = pgTable(
+  "lcm_summary_work_claims",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    memoryNodeId: uuid("memory_node_id")
+      .notNull()
+      .references(() => memoryNodes.id, { onDelete: "cascade" }),
+    workIdentity: text("work_identity").notNull(),
+    inputRevisionHash: text("input_revision_hash").notNull(),
+    compatibilityContractHash: text("compatibility_contract_hash").notNull(),
+    claimantId: text("claimant_id").notNull(),
+    pdsClaimantDeviceId: text("pds_claimant_device_id"),
+    pdsClaimGeneration: text("pds_claim_generation"),
+    claimGeneration: bigint("claim_generation", { mode: "number" })
+      .notNull()
+      .default(1),
+    claimToken: uuid("claim_token").notNull().defaultRandom(),
+    state: text("state").notNull().default("active"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("lcm_summary_work_claim_identity_unique").on(
+      table.ownerUserId,
+      table.workIdentity
+    ),
+    index("lcm_summary_work_claim_active_idx")
+      .on(table.ownerUserId, table.state, table.expiresAt)
+      .where(sql`${table.state} = 'active'`),
+    index("lcm_summary_work_claim_node_idx").on(
+      table.memoryNodeId,
+      table.claimGeneration
+    ),
+    check(
+      "lcm_summary_work_claim_hash_check",
+      sql`${table.workIdentity} ~ '^([0-9a-f]{64}|[A-Za-z0-9_-]{43})$'
+        and ${table.inputRevisionHash} ~ '^[0-9a-f]{64}$'
+        and ${table.compatibilityContractHash} ~ '^([0-9a-f]{64}|[A-Za-z0-9_-]{43})$'`
+    ),
+    check(
+      "lcm_summary_work_claim_claimant_check",
+      sql`length(trim(${table.claimantId})) between 1 and 200`
+    ),
+    check(
+      "lcm_summary_work_claim_pds_fence_check",
+      sql`(${table.pdsClaimantDeviceId} is null and ${table.pdsClaimGeneration} is null)
+        or (length(trim(${table.pdsClaimantDeviceId})) between 1 and 200
+          and ${table.pdsClaimGeneration} ~ '^(0|[1-9][0-9]*)$')`
+    ),
+    check(
+      "lcm_summary_work_claim_generation_check",
+      sql`${table.claimGeneration} > 0`
+    ),
+    check(
+      "lcm_summary_work_claim_state_check",
+      sql`${table.state} in ('active','completed','released')`
+    ),
+    check(
+      "lcm_summary_work_claim_completion_check",
+      sql`(${table.state} = 'completed' and ${table.completedAt} is not null)
+        or (${table.state} <> 'completed' and ${table.completedAt} is null)`
+    )
+  ]
+);
+
 export const memoryNodeSources = pgTable(
   "memory_node_sources",
   {
@@ -2221,6 +2298,8 @@ export const memoryEmbeddings = pgTable(
     sourceChunkCount: integer("source_chunk_count").notNull().default(1),
     inputTokenCount: integer("input_token_count"),
     sourceText: text("source_text"),
+    embeddingSourceContentHash: text("embedding_source_content_hash").notNull(),
+    embeddingInputHash: text("embedding_input_hash").notNull(),
     queryableVectorStrategy: text("queryable_vector_strategy")
       .notNull()
       .default("trusted_backend_pgvector_v1"),
@@ -2677,7 +2756,11 @@ export const encryptedFieldPayloads = pgTable(
         'memory_questions',
         'memory_replica_revisions',
         'messages',
+        'privacy_classification_results',
+        'privacy_sanitized_source_artifacts',
+        'privacy_sanitized_source_chunks',
         'shared_source_artifacts',
+        'shared_source_semantic_previews',
         'shared_source_previews',
         'team_workspaces',
         'team_memory_representations',
@@ -2751,6 +2834,7 @@ export const encryptedFieldBackfillRuns = pgTable(
         'memory_replica_revisions',
         'messages',
         'shared_source_artifacts',
+        'shared_source_semantic_previews',
         'shared_source_previews',
         'team_memory_representations',
         'tool_events'
@@ -2776,6 +2860,514 @@ export const encryptedFieldBackfillRuns = pgTable(
         and ${table.processedRows} >= 0
         and ${table.encryptedRows} >= 0
         and ${table.failedRows} >= 0`
+    )
+  ]
+);
+
+export const privacyClassifierGenerations = pgTable(
+  "privacy_classifier_generations",
+  {
+    id: id(),
+    version: integer("version").notNull(),
+    classifierHash: text("classifier_hash").notNull(),
+    modelKey: text("model_key").notNull(),
+    modelRevision: text("model_revision").notNull(),
+    artifactSha256: text("artifact_sha256").notNull(),
+    tokenizerSha256: text("tokenizer_sha256").notNull(),
+    decoderSha256: text("decoder_sha256").notNull(),
+    calibrationSha256: text("calibration_sha256").notNull(),
+    deterministicDetectorVersion: text(
+      "deterministic_detector_version"
+    ).notNull(),
+    inputContractVersion: text("input_contract_version").notNull(),
+    status: text("status").notNull().default("staged"),
+    createdAt: now(),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReasonCode: text("revocation_reason_code")
+  },
+  (table) => [
+    unique("privacy_classifier_generations_version_unique").on(table.version),
+    unique("privacy_classifier_generations_hash_unique").on(
+      table.classifierHash
+    ),
+    unique("privacy_classifier_generations_id_hash_unique").on(
+      table.id,
+      table.classifierHash
+    ),
+    uniqueIndex("privacy_classifier_generations_one_active_unique")
+      .on(table.status)
+      .where(sql`${table.status} = 'active'`),
+    check(
+      "privacy_classifier_generations_version_check",
+      sql`${table.version} > 0`
+    ),
+    check(
+      "privacy_classifier_generations_hashes_check",
+      sql`${table.classifierHash} ~ '^[0-9a-f]{64}$'
+        and ${table.artifactSha256} ~ '^[0-9a-f]{64}$'
+        and ${table.tokenizerSha256} ~ '^[0-9a-f]{64}$'
+        and ${table.decoderSha256} ~ '^[0-9a-f]{64}$'
+        and ${table.calibrationSha256} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "privacy_classifier_generations_components_check",
+      sql`length(trim(${table.modelKey})) > 0
+        and length(trim(${table.modelRevision})) > 0
+        and length(trim(${table.deterministicDetectorVersion})) > 0
+        and length(trim(${table.inputContractVersion})) > 0`
+    ),
+    check(
+      "privacy_classifier_generations_status_check",
+      sql`${table.status} in ('staged','active','retired','revoked')`
+    ),
+    check(
+      "privacy_classifier_generations_lifecycle_check",
+      sql`(
+          ${table.status} = 'staged'
+          and ${table.activatedAt} is null
+          and ${table.retiredAt} is null
+          and ${table.revokedAt} is null
+          and ${table.revocationReasonCode} is null
+        ) or (
+          ${table.status} = 'active'
+          and ${table.activatedAt} is not null
+          and ${table.retiredAt} is null
+          and ${table.revokedAt} is null
+          and ${table.revocationReasonCode} is null
+        ) or (
+          ${table.status} = 'retired'
+          and ${table.activatedAt} is not null
+          and ${table.retiredAt} is not null
+          and ${table.revokedAt} is null
+          and ${table.revocationReasonCode} is null
+        ) or (
+          ${table.status} = 'revoked'
+          and ${table.revokedAt} is not null
+          and length(trim(${table.revocationReasonCode})) > 0
+        )`
+    )
+  ]
+);
+
+export const privacyContentPolicies = pgTable(
+  "privacy_content_policies",
+  {
+    id: id(),
+    policyId: uuid("policy_id").notNull(),
+    version: integer("version").notNull(),
+    scope: text("scope").notNull(),
+    deploymentIdentityId: uuid("deployment_identity_id")
+      .notNull()
+      .references((): AnyPgColumn => deploymentIdentities.id, {
+        onDelete: "restrict"
+      }),
+    sourceOwnerUserId: uuid("source_owner_user_id").references(() => users.id, {
+      onDelete: "restrict"
+    }),
+    teamId: uuid("team_id").references(() => teams.id, {
+      onDelete: "restrict"
+    }),
+    teamWorkspaceId: uuid("team_workspace_id"),
+    labels: jsonb("labels").$type<PrivacyLabelPolicy>().notNull(),
+    replacementContractVersion: text("replacement_contract_version").notNull(),
+    policyHash: text("policy_hash").notNull(),
+    status: text("status").notNull().default("active"),
+    effectiveAt: timestamp("effective_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: now(),
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReasonCode: text("revocation_reason_code")
+  },
+  (table) => [
+    unique("privacy_content_policies_id_version_unique").on(
+      table.policyId,
+      table.version
+    ),
+    unique("privacy_content_policies_id_version_hash_unique").on(
+      table.policyId,
+      table.version,
+      table.policyHash
+    ),
+    uniqueIndex("privacy_content_policies_subject_version_unique").on(
+      table.deploymentIdentityId,
+      table.scope,
+      sql`coalesce(${table.sourceOwnerUserId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+      sql`coalesce(${table.teamId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+      sql`coalesce(${table.teamWorkspaceId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+      table.version
+    ),
+    uniqueIndex("privacy_content_policies_subject_active_unique")
+      .on(
+        table.deploymentIdentityId,
+        table.scope,
+        sql`coalesce(${table.sourceOwnerUserId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+        sql`coalesce(${table.teamId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+        sql`coalesce(${table.teamWorkspaceId}, '00000000-0000-0000-0000-000000000000'::uuid)`
+      )
+      .where(sql`${table.status} = 'active'`),
+    index("privacy_content_policies_resolution_idx").on(
+      table.deploymentIdentityId,
+      table.sourceOwnerUserId,
+      table.teamId,
+      table.teamWorkspaceId,
+      table.effectiveAt.desc()
+    ),
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId]
+    }),
+    check(
+      "privacy_content_policies_scope_check",
+      sql`(
+          ${table.scope} = 'deployment'
+          and ${table.sourceOwnerUserId} is null
+          and ${table.teamId} is null
+          and ${table.teamWorkspaceId} is null
+        ) or (
+          ${table.scope} = 'source_owner'
+          and ${table.sourceOwnerUserId} is not null
+          and ${table.teamId} is null
+          and ${table.teamWorkspaceId} is null
+        ) or (
+          ${table.scope} = 'team'
+          and ${table.sourceOwnerUserId} is null
+          and ${table.teamId} is not null
+          and ${table.teamWorkspaceId} is null
+        ) or (
+          ${table.scope} = 'workspace'
+          and ${table.sourceOwnerUserId} is null
+          and ${table.teamId} is not null
+          and ${table.teamWorkspaceId} is not null
+        )`
+    ),
+    check(
+      "privacy_content_policies_labels_check",
+      sql`jsonb_typeof(${table.labels}) = 'object'
+        and ${table.labels} ?& array[
+          'account_number','private_address','private_email','private_person',
+          'private_phone','private_url','private_date','secret'
+        ]
+        and ${table.labels} - array[
+          'account_number','private_address','private_email','private_person',
+          'private_phone','private_url','private_date','secret'
+        ] = '{}'::jsonb
+        and jsonb_typeof(${table.labels}->'account_number') = 'boolean'
+        and jsonb_typeof(${table.labels}->'private_address') = 'boolean'
+        and jsonb_typeof(${table.labels}->'private_email') = 'boolean'
+        and jsonb_typeof(${table.labels}->'private_person') = 'boolean'
+        and jsonb_typeof(${table.labels}->'private_phone') = 'boolean'
+        and jsonb_typeof(${table.labels}->'private_url') = 'boolean'
+        and jsonb_typeof(${table.labels}->'private_date') = 'boolean'
+        and jsonb_typeof(${table.labels}->'secret') = 'boolean'`
+    ),
+    check(
+      "privacy_content_policies_hash_check",
+      sql`${table.policyHash} ~ '^[0-9a-f]{64}$' and ${table.version} > 0`
+    ),
+    check(
+      "privacy_content_policies_status_check",
+      sql`${table.status} in ('active','superseded','revoked')`
+    ),
+    check(
+      "privacy_content_policies_lifecycle_check",
+      sql`(
+          ${table.status} = 'active'
+          and ${table.supersededAt} is null
+          and ${table.revokedAt} is null
+          and ${table.revocationReasonCode} is null
+        ) or (
+          ${table.status} = 'superseded'
+          and ${table.supersededAt} is not null
+          and ${table.revokedAt} is null
+          and ${table.revocationReasonCode} is null
+        ) or (
+          ${table.status} = 'revoked'
+          and ${table.revokedAt} is not null
+          and length(trim(${table.revocationReasonCode})) > 0
+        )`
+    )
+  ]
+);
+
+export const privacyClassificationResults = pgTable(
+  "privacy_classification_results",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    classifierGenerationId: uuid("classifier_generation_id").notNull(),
+    classifierHash: text("classifier_hash").notNull(),
+    ownerContentFingerprint: text("owner_content_fingerprint").notNull(),
+    inputByteLength: integer("input_byte_length").notNull(),
+    payloadBindingHash: text("payload_binding_hash"),
+    spanCount: integer("span_count"),
+    status: text("status").notNull().default("pending"),
+    failureCode: text("failure_code"),
+    createdAt: now(),
+    readyAt: timestamp("ready_at", { withTimezone: true }),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReasonCode: text("invalidation_reason_code")
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.classifierGenerationId, table.classifierHash],
+      foreignColumns: [
+        privacyClassifierGenerations.id,
+        privacyClassifierGenerations.classifierHash
+      ]
+    }).onDelete("restrict"),
+    uniqueIndex("privacy_classification_results_cache_unique")
+      .on(
+        table.ownerUserId,
+        table.classifierGenerationId,
+        table.ownerContentFingerprint
+      )
+      .where(sql`${table.invalidatedAt} is null`),
+    index("privacy_classification_results_owner_status_idx").on(
+      table.ownerUserId,
+      table.status,
+      table.createdAt.desc()
+    ),
+    check(
+      "privacy_classification_results_hashes_check",
+      sql`${table.classifierHash} ~ '^[0-9a-f]{64}$'
+        and ${table.ownerContentFingerprint} ~ '^[0-9a-f]{64}$'
+        and (${table.payloadBindingHash} is null or ${table.payloadBindingHash} ~ '^[0-9a-f]{64}$')`
+    ),
+    check(
+      "privacy_classification_results_counts_check",
+      sql`${table.inputByteLength} >= 0
+        and (${table.spanCount} is null or ${table.spanCount} >= 0)`
+    ),
+    check(
+      "privacy_classification_results_status_check",
+      sql`${table.status} in ('pending','ready','failed','invalidated')`
+    ),
+    check(
+      "privacy_classification_results_lifecycle_check",
+      sql`(
+          ${table.status} = 'pending'
+          and ${table.payloadBindingHash} is null
+          and ${table.spanCount} is null
+          and ${table.failureCode} is null
+          and ${table.readyAt} is null
+          and ${table.invalidatedAt} is null
+          and ${table.invalidationReasonCode} is null
+        ) or (
+          ${table.status} = 'ready'
+          and ${table.payloadBindingHash} is not null
+          and ${table.spanCount} is not null
+          and ${table.failureCode} is null
+          and ${table.readyAt} is not null
+          and ${table.invalidatedAt} is null
+          and ${table.invalidationReasonCode} is null
+        ) or (
+          ${table.status} = 'failed'
+          and ${table.payloadBindingHash} is null
+          and ${table.spanCount} is null
+          and length(trim(${table.failureCode})) > 0
+          and ${table.readyAt} is null
+          and ${table.invalidatedAt} is not null
+          and ${table.invalidationReasonCode} is not null
+        ) or (
+          ${table.status} = 'invalidated'
+          and ${table.invalidatedAt} is not null
+          and length(trim(${table.invalidationReasonCode})) > 0
+        )`
+    )
+  ]
+);
+
+export const privacySanitizedSourceArtifacts = pgTable(
+  "privacy_sanitized_source_artifacts",
+  {
+    id: id(),
+    shareGrantId: uuid("share_grant_id")
+      .notNull()
+      .references((): AnyPgColumn => teamSessionShareGrants.id, {
+        onDelete: "cascade"
+      }),
+    sourceArtifactId: uuid("source_artifact_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    classifierGenerationId: uuid("classifier_generation_id").notNull(),
+    classifierHash: text("classifier_hash").notNull(),
+    effectivePolicyHash: text("effective_policy_hash").notNull(),
+    sourceFrontierHash: text("source_frontier_hash").notNull(),
+    sourceFrontierCursor: bigint("source_frontier_cursor", {
+      mode: "number"
+    }).notNull(),
+    sourceSegmentCount: integer("source_segment_count").notNull(),
+    sourceClosureHash: text("source_closure_hash"),
+    ownerManifestFingerprint: text("owner_manifest_fingerprint").notNull(),
+    metadataBindingHash: text("metadata_binding_hash"),
+    artifactBindingHash: text("artifact_binding_hash"),
+    chunkCount: integer("chunk_count").notNull().default(0),
+    sanitizedByteCount: bigint("sanitized_byte_count", {
+      mode: "number"
+    })
+      .notNull()
+      .default(0),
+    format: text("format").notNull(),
+    formatVersion: integer("format_version").notNull(),
+    status: text("status").notNull().default("pending"),
+    failureCode: text("failure_code"),
+    createdAt: now(),
+    readyAt: timestamp("ready_at", { withTimezone: true }),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReasonCode: text("invalidation_reason_code")
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.sourceArtifactId, table.ownerUserId],
+      foreignColumns: [
+        conversationSourceArtifacts.id,
+        conversationSourceArtifacts.ownerUserId
+      ]
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId]
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.classifierGenerationId, table.classifierHash],
+      foreignColumns: [
+        privacyClassifierGenerations.id,
+        privacyClassifierGenerations.classifierHash
+      ]
+    }).onDelete("restrict"),
+    uniqueIndex("privacy_sanitized_source_artifacts_active_unique")
+      .on(
+        table.shareGrantId,
+        table.sourceArtifactId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.classifierGenerationId,
+        table.effectivePolicyHash,
+        table.sourceFrontierHash
+      )
+      .where(sql`${table.invalidatedAt} is null`),
+    index("privacy_sanitized_source_artifacts_team_status_idx").on(
+      table.teamId,
+      table.teamWorkspaceId,
+      table.status,
+      table.createdAt.desc()
+    ),
+    index("privacy_sanitized_source_artifacts_grant_status_idx").on(
+      table.shareGrantId,
+      table.status,
+      table.createdAt.desc()
+    ),
+    check(
+      "privacy_sanitized_source_artifacts_hashes_check",
+      sql`${table.classifierHash} ~ '^[0-9a-f]{64}$'
+        and ${table.effectivePolicyHash} ~ '^[0-9a-f]{64}$'
+        and ${table.sourceFrontierHash} ~ '^[0-9a-f]{64}$'
+        and (${table.sourceClosureHash} is null or ${table.sourceClosureHash} ~ '^[0-9a-f]{64}$')
+        and ${table.ownerManifestFingerprint} ~ '^[0-9a-f]{64}$'
+        and (${table.metadataBindingHash} is null or ${table.metadataBindingHash} ~ '^[0-9a-f]{64}$')
+        and (${table.artifactBindingHash} is null or ${table.artifactBindingHash} ~ '^[0-9a-f]{64}$')`
+    ),
+    check(
+      "privacy_sanitized_source_artifacts_counts_check",
+      sql`${table.chunkCount} >= 0
+        and ${table.sanitizedByteCount} >= 0
+        and ${table.sourceFrontierCursor} >= 0
+        and ${table.sourceSegmentCount} >= 0
+        and ${table.formatVersion} > 0
+        and length(trim(${table.format})) > 0`
+    ),
+    check(
+      "privacy_sanitized_source_artifacts_status_check",
+      sql`${table.status} in ('pending','ready','failed','invalidated')`
+    ),
+    check(
+      "privacy_sanitized_source_artifacts_lifecycle_check",
+      sql`(
+          ${table.status} = 'pending'
+          and ${table.metadataBindingHash} is null
+          and ${table.artifactBindingHash} is null
+          and ${table.failureCode} is null
+          and ${table.readyAt} is null
+          and ${table.invalidatedAt} is null
+        ) or (
+          ${table.status} = 'ready'
+          and ${table.metadataBindingHash} is not null
+          and ${table.artifactBindingHash} is not null
+          and ${table.failureCode} is null
+          and ${table.readyAt} is not null
+          and ${table.invalidatedAt} is null
+        ) or (
+          ${table.status} = 'failed'
+          and length(trim(${table.failureCode})) > 0
+          and ${table.invalidatedAt} is not null
+          and length(trim(${table.invalidationReasonCode})) > 0
+        ) or (
+          ${table.status} = 'invalidated'
+          and ${table.invalidatedAt} is not null
+          and length(trim(${table.invalidationReasonCode})) > 0
+        )`
+    )
+  ]
+);
+
+export const privacySanitizedSourceChunks = pgTable(
+  "privacy_sanitized_source_chunks",
+  {
+    id: id(),
+    artifactId: uuid("artifact_id")
+      .notNull()
+      .references(() => privacySanitizedSourceArtifacts.id, {
+        onDelete: "cascade"
+      }),
+    classificationResultId: uuid("classification_result_id")
+      .notNull()
+      .references(() => privacyClassificationResults.id, {
+        onDelete: "restrict"
+      }),
+    chunkIndex: integer("chunk_index").notNull(),
+    sourceStartByte: bigint("source_start_byte", { mode: "number" }).notNull(),
+    sourceEndByte: bigint("source_end_byte", { mode: "number" }).notNull(),
+    sanitizedByteLength: integer("sanitized_byte_length").notNull(),
+    ownerChunkFingerprint: text("owner_chunk_fingerprint").notNull(),
+    payloadBindingHash: text("payload_binding_hash").notNull(),
+    createdAt: now(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReasonCode: text("invalidation_reason_code")
+  },
+  (table) => [
+    unique("privacy_sanitized_source_chunks_artifact_index_unique").on(
+      table.artifactId,
+      table.chunkIndex
+    ),
+    unique("privacy_sanitized_source_chunks_artifact_fingerprint_unique").on(
+      table.artifactId,
+      table.ownerChunkFingerprint
+    ),
+    check(
+      "privacy_sanitized_source_chunks_offsets_check",
+      sql`${table.chunkIndex} >= 0
+        and ${table.sourceStartByte} >= 0
+        and ${table.sourceEndByte} > ${table.sourceStartByte}
+        and ${table.sanitizedByteLength} >= 0`
+    ),
+    check(
+      "privacy_sanitized_source_chunks_hashes_check",
+      sql`${table.ownerChunkFingerprint} ~ '^[0-9a-f]{64}$'
+        and ${table.payloadBindingHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "privacy_sanitized_source_chunks_lifecycle_check",
+      sql`(${table.invalidatedAt} is null and ${table.invalidationReasonCode} is null)
+        or (${table.invalidatedAt} is not null and length(trim(${table.invalidationReasonCode})) > 0)`
     )
   ]
 );
@@ -4923,11 +5515,10 @@ export const sourceOwnerRepresentationPolicies = pgTable(
       }),
     sourceOwnerPrincipalId: uuid("source_owner_principal_id").notNull(),
     version: integer("version").notNull(),
-    allowedRepresentations: sharedMemoryRepresentation(
-      "allowed_representations"
-    )
-      .array()
-      .notNull(),
+    maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
+    includeCuratedMemory: boolean("include_curated_memory")
+      .notNull()
+      .default(false),
     policyHash: text("policy_hash").notNull(),
     createdByUserId: uuid("created_by_user_id").references(() => users.id, {
       onDelete: "set null"
@@ -4960,14 +5551,8 @@ export const sourceOwnerRepresentationPolicies = pgTable(
       sql`${table.version} > 0`
     ),
     check(
-      "source_owner_representation_policies_allowed_set_check",
-      sql`cardinality(${table.allowedRepresentations}) between 1 and 4
-        and array_position(${table.allowedRepresentations}, null) is null
-        and cardinality(${table.allowedRepresentations}) =
-          (case when 'memory_events' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
-          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
-          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
-          + (case when 'curated_assertions' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)`
+      "source_owner_representation_policies_fidelity_check",
+      sql`${table.maximumFidelity} in ('memory_events','lcm_leaves','lcm_rollups')`
     ),
     check(
       "source_owner_representation_policies_hash_check",
@@ -4989,11 +5574,10 @@ export const teamRepresentationPolicies = pgTable(
       .notNull()
       .references(() => teams.id, { onDelete: "restrict" }),
     version: integer("version").notNull(),
-    allowedRepresentations: sharedMemoryRepresentation(
-      "allowed_representations"
-    )
-      .array()
-      .notNull(),
+    maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
+    includeCuratedMemory: boolean("include_curated_memory")
+      .notNull()
+      .default(false),
     policyHash: text("policy_hash").notNull(),
     createdByUserId: uuid("created_by_user_id").references(() => users.id, {
       onDelete: "set null"
@@ -5024,14 +5608,8 @@ export const teamRepresentationPolicies = pgTable(
       sql`${table.version} > 0`
     ),
     check(
-      "team_representation_policies_allowed_set_check",
-      sql`cardinality(${table.allowedRepresentations}) between 1 and 4
-        and array_position(${table.allowedRepresentations}, null) is null
-        and cardinality(${table.allowedRepresentations}) =
-          (case when 'memory_events' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
-          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
-          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
-          + (case when 'curated_assertions' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)`
+      "team_representation_policies_fidelity_check",
+      sql`${table.maximumFidelity} in ('memory_events','lcm_leaves','lcm_rollups')`
     ),
     check(
       "team_representation_policies_hash_check",
@@ -5054,11 +5632,10 @@ export const workspaceRepresentationPolicies = pgTable(
       .references(() => teams.id, { onDelete: "restrict" }),
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
     version: integer("version").notNull(),
-    allowedRepresentations: sharedMemoryRepresentation(
-      "allowed_representations"
-    )
-      .array()
-      .notNull(),
+    maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
+    includeCuratedMemory: boolean("include_curated_memory")
+      .notNull()
+      .default(false),
     policyHash: text("policy_hash").notNull(),
     createdByUserId: uuid("created_by_user_id").references(() => users.id, {
       onDelete: "set null"
@@ -5095,14 +5672,8 @@ export const workspaceRepresentationPolicies = pgTable(
       sql`${table.version} > 0`
     ),
     check(
-      "workspace_representation_policies_allowed_set_check",
-      sql`cardinality(${table.allowedRepresentations}) between 1 and 4
-        and array_position(${table.allowedRepresentations}, null) is null
-        and cardinality(${table.allowedRepresentations}) =
-          (case when 'memory_events' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
-          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
-          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
-          + (case when 'curated_assertions' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)`
+      "workspace_representation_policies_fidelity_check",
+      sql`${table.maximumFidelity} in ('memory_events','lcm_leaves','lcm_rollups')`
     ),
     check(
       "workspace_representation_policies_hash_check",
@@ -5152,7 +5723,11 @@ export const sharedSourceArtifacts = pgTable(
     sourceHash: text("source_hash").notNull(),
     manifestHash: text("manifest_hash").notNull(),
     artifactHash: text("artifact_hash").notNull(),
-    redactedContentHash: text("redacted_content_hash").notNull(),
+    sourceContentHash: text("source_content_hash").notNull(),
+    maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
+    includeCuratedMemory: boolean("include_curated_memory")
+      .notNull()
+      .default(false),
     sourceOwnerPolicyId: uuid("source_owner_policy_id").notNull(),
     sourceOwnerPolicyVersion: integer("source_owner_policy_version").notNull(),
     teamPolicyId: uuid("team_policy_id").notNull(),
@@ -5258,7 +5833,7 @@ export const sharedSourceArtifacts = pgTable(
       sql`length(${table.sourceHash}) = 64
         and length(${table.manifestHash}) = 64
         and length(${table.artifactHash}) = 64
-        and length(${table.redactedContentHash}) = 64
+        and length(${table.sourceContentHash}) = 64
         and length(${table.representationPolicyHash}) = 64
         and length(${table.contentPolicyHash}) = 64
         and length(${table.classifierHash}) = 64
@@ -5304,7 +5879,7 @@ export const sharedSourcePreviews = pgTable(
     previewHash: text("preview_hash").notNull(),
     sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
     sourceHash: text("source_hash").notNull(),
-    redactedContentHash: text("redacted_content_hash").notNull(),
+    sourceContentHash: text("source_content_hash").notNull(),
     createdAt: now(),
     invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
     invalidationReason: text("invalidation_reason")
@@ -5343,7 +5918,217 @@ export const sharedSourcePreviews = pgTable(
       "shared_source_previews_hash_check",
       sql`length(${table.previewHash}) = 64
         and length(${table.sourceHash}) = 64
-        and length(${table.redactedContentHash}) = 64`
+        and length(${table.sourceContentHash}) = 64`
+    )
+  ]
+);
+
+export const sharedSourceSemanticPreviews = pgTable(
+  "shared_source_semantic_previews",
+  {
+    id: id(),
+    sourcePreviewId: uuid("source_preview_id")
+      .notNull()
+      .references(() => sharedSourcePreviews.id, { onDelete: "restrict" }),
+    sourceArtifactId: uuid("source_artifact_id")
+      .notNull()
+      .references(() => sharedSourceArtifacts.id, { onDelete: "restrict" }),
+    sourcePreviewRevision: integer("source_preview_revision").notNull(),
+    sourcePreviewHash: text("source_preview_hash").notNull(),
+    sourceArtifactHash: text("source_artifact_hash").notNull(),
+    sourceManifestHash: text("source_manifest_hash").notNull(),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    sourceHash: text("source_hash").notNull(),
+    logicalMemoryId: uuid("logical_memory_id")
+      .notNull()
+      .references((): AnyPgColumn => logicalMemories.id, {
+        onDelete: "restrict"
+      }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    ownerPrincipalId: uuid("owner_principal_id").notNull(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "restrict" }),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    representation: sharedMemoryRepresentation("representation").notNull(),
+    classificationResultId: uuid("classification_result_id").references(
+      () => privacyClassificationResults.id,
+      { onDelete: "restrict" }
+    ),
+    classificationPayloadBindingHash: text(
+      "classification_payload_binding_hash"
+    ),
+    classifierGenerationId: uuid("classifier_generation_id").notNull(),
+    classifierVersion: integer("classifier_version").notNull(),
+    classifierHash: text("classifier_hash").notNull(),
+    effectivePrivacyPolicyHash: text("effective_privacy_policy_hash").notNull(),
+    sourceItemIdentityHash: text("source_item_identity_hash"),
+    sourceItemCount: integer("source_item_count"),
+    sanitizedContentHash: text("sanitized_content_hash"),
+    payloadBindingHash: text("payload_binding_hash"),
+    status: text("status").notNull().default("pending"),
+    failureCode: text("failure_code"),
+    lastErrorClass: text("last_error_class"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    readyAt: timestamp("ready_at", { withTimezone: true }),
+    failedAt: timestamp("failed_at", { withTimezone: true }),
+    staleAt: timestamp("stale_at", { withTimezone: true }),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReasonCode: text("invalidation_reason_code")
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "shared_source_semantic_previews_workspace_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.classifierGenerationId, table.classifierHash],
+      foreignColumns: [
+        privacyClassifierGenerations.id,
+        privacyClassifierGenerations.classifierHash
+      ],
+      name: "shared_source_semantic_previews_classifier_fk"
+    }).onDelete("restrict"),
+    uniqueIndex("shared_source_semantic_previews_derivation_unique").on(
+      table.sourcePreviewId,
+      table.classifierGenerationId,
+      table.effectivePrivacyPolicyHash
+    ),
+    unique("shared_source_semantic_previews_scope_unique").on(
+      table.id,
+      table.sourcePreviewId,
+      table.sourceArtifactId,
+      table.logicalMemoryId,
+      table.teamId,
+      table.teamWorkspaceId,
+      table.representation,
+      table.sourceRevision
+    ),
+    index("shared_source_semantic_previews_pending_idx").on(
+      table.status,
+      table.nextAttemptAt,
+      table.id
+    ),
+    index("shared_source_semantic_previews_source_idx").on(
+      table.sourcePreviewId,
+      table.status,
+      table.createdAt.desc()
+    ),
+    index("shared_source_semantic_previews_scope_idx").on(
+      table.teamId,
+      table.teamWorkspaceId,
+      table.status,
+      table.createdAt.desc()
+    ),
+    check(
+      "shared_source_semantic_previews_revision_check",
+      sql`${table.sourcePreviewRevision} > 0
+        and ${table.sourceRevision} >= 0
+        and ${table.classifierVersion} > 0`
+    ),
+    check(
+      "shared_source_semantic_previews_hash_check",
+      sql`${table.sourcePreviewHash} ~ '^[0-9a-f]{64}$'
+        and ${table.sourceArtifactHash} ~ '^[0-9a-f]{64}$'
+        and ${table.sourceManifestHash} ~ '^[0-9a-f]{64}$'
+        and ${table.sourceHash} ~ '^[0-9a-f]{64}$'
+        and ${table.classifierHash} ~ '^[0-9a-f]{64}$'
+        and ${table.effectivePrivacyPolicyHash} ~ '^[0-9a-f]{64}$'
+        and (${table.classificationPayloadBindingHash} is null
+          or ${table.classificationPayloadBindingHash} ~ '^[0-9a-f]{64}$')
+        and (${table.sourceItemIdentityHash} is null
+          or ${table.sourceItemIdentityHash} ~ '^[0-9a-f]{64}$')
+        and (${table.sanitizedContentHash} is null
+          or ${table.sanitizedContentHash} ~ '^[0-9a-f]{64}$')
+        and (${table.payloadBindingHash} is null
+          or ${table.payloadBindingHash} ~ '^[0-9a-f]{64}$')`
+    ),
+    check(
+      "shared_source_semantic_previews_status_check",
+      sql`${table.status} in ('pending','ready','failed','stale','invalidated')`
+    ),
+    check(
+      "shared_source_semantic_previews_item_count_check",
+      sql`${table.sourceItemCount} is null or ${table.sourceItemCount} between 1 and 2048`
+    ),
+    check(
+      "shared_source_semantic_previews_retry_check",
+      sql`${table.attemptCount} >= 0
+        and ((${table.attemptCount} = 0 and ${table.nextAttemptAt} is null
+              and ${table.lastErrorClass} is null)
+          or (${table.attemptCount} > 0 and ${table.status} = 'pending'
+              and ${table.nextAttemptAt} is not null
+              and length(trim(${table.lastErrorClass})) > 0))`
+    ),
+    check(
+      "shared_source_semantic_previews_lifecycle_check",
+      sql`(
+          ${table.status} = 'pending'
+          and ${table.classificationResultId} is null
+          and ${table.classificationPayloadBindingHash} is null
+          and ${table.sourceItemIdentityHash} is null
+          and ${table.sourceItemCount} is null
+          and ${table.sanitizedContentHash} is null
+          and ${table.payloadBindingHash} is null
+          and ${table.failureCode} is null
+          and ${table.readyAt} is null
+          and ${table.failedAt} is null
+          and ${table.staleAt} is null
+          and ${table.invalidatedAt} is null
+          and ${table.invalidationReasonCode} is null
+        ) or (
+          ${table.status} = 'ready'
+          and ${table.classificationResultId} is not null
+          and ${table.classificationPayloadBindingHash} is not null
+          and ${table.sourceItemIdentityHash} is not null
+          and ${table.sourceItemCount} is not null
+          and ${table.sanitizedContentHash} is not null
+          and ${table.payloadBindingHash} is not null
+          and ${table.failureCode} is null
+          and ${table.readyAt} is not null
+          and ${table.failedAt} is null
+          and ${table.staleAt} is null
+          and ${table.invalidatedAt} is null
+          and ${table.invalidationReasonCode} is null
+        ) or (
+          ${table.status} = 'failed'
+          and ${table.classificationResultId} is null
+          and ${table.classificationPayloadBindingHash} is null
+          and ${table.sourceItemIdentityHash} is not null
+          and ${table.sourceItemCount} is not null
+          and ${table.sanitizedContentHash} is null
+          and ${table.payloadBindingHash} is null
+          and length(trim(${table.failureCode})) > 0
+          and ${table.readyAt} is null
+          and ${table.failedAt} is not null
+          and ${table.staleAt} is null
+          and ${table.invalidatedAt} is null
+          and ${table.invalidationReasonCode} is null
+        ) or (
+          ${table.status} = 'stale'
+          and ${table.classificationResultId} is not null
+          and ${table.classificationPayloadBindingHash} is not null
+          and ${table.sourceItemIdentityHash} is not null
+          and ${table.sourceItemCount} is not null
+          and ${table.sanitizedContentHash} is not null
+          and ${table.payloadBindingHash} is not null
+          and ${table.failureCode} is null
+          and ${table.readyAt} is not null
+          and ${table.failedAt} is null
+          and ${table.staleAt} is not null
+          and ${table.invalidatedAt} is null
+          and length(trim(${table.invalidationReasonCode})) > 0
+        ) or (
+          ${table.status} = 'invalidated'
+          and ${table.invalidatedAt} is not null
+          and length(trim(${table.invalidationReasonCode})) > 0
+        )`
     )
   ]
 );
@@ -5365,11 +6150,8 @@ export const sharedMemoryCandidatePreviews = pgTable(
       .references(() => teams.id, { onDelete: "restrict" }),
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
     representation: sharedMemoryRepresentation("representation").notNull(),
-    allowedRepresentations: sharedMemoryRepresentation(
-      "allowed_representations"
-    )
-      .array()
-      .notNull(),
+    maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
+    includeCuratedMemory: boolean("include_curated_memory").notNull(),
     mode: sharedMemoryConsentMode("mode").notNull(),
     sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
     sourceHash: text("source_hash").notNull(),
@@ -5469,11 +6251,8 @@ export const pendingShareOperations = pgTable(
       .references(() => teams.id, { onDelete: "restrict" }),
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
     representation: sharedMemoryRepresentation("representation").notNull(),
-    allowedRepresentations: sharedMemoryRepresentation(
-      "allowed_representations"
-    )
-      .array()
-      .notNull(),
+    maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
+    includeCuratedMemory: boolean("include_curated_memory").notNull(),
     mode: sharedMemoryConsentMode("mode").notNull(),
     sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
     sourceHash: text("source_hash").notNull(),
@@ -5516,9 +6295,12 @@ export const pendingShareOperations = pgTable(
     replacementRepresentation: sharedMemoryRepresentation(
       "replacement_representation"
     ),
-    replacementAllowedRepresentations: sharedMemoryRepresentation(
-      "replacement_allowed_representations"
-    ).array(),
+    replacementMaximumFidelity: sharedMemoryRepresentation(
+      "replacement_maximum_fidelity"
+    ),
+    replacementIncludeCuratedMemory: boolean(
+      "replacement_include_curated_memory"
+    ),
     replacementMode: sharedMemoryConsentMode("replacement_mode"),
     replacementSourceRevision: bigint("replacement_source_revision", {
       mode: "number"
@@ -5606,7 +6388,7 @@ export const pendingShareOperations = pgTable(
     check(
       "pending_share_operations_state_check",
       sql`${table.state} in ('preparing','needs_attention','failed','activated','revoked')
-        and ${table.stage} in ('accepted','syncing','uploading','processing','activating','complete')
+        and ${table.stage} in ('accepted','syncing','uploading','processing','activating','privacy_filtering','complete')
         and ${table.workspaceAccessState} in ('none','active','revoked')
         and ${table.sourceUpdateState} in ('preparing','active','paused','failed','stopped')`
     ),
@@ -5632,7 +6414,8 @@ export const pendingShareOperations = pgTable(
              ${table.replacementPreviewHash} is null and
              ${table.replacementPreviewRevision} is null and
              ${table.replacementRepresentation} is null and
-             ${table.replacementAllowedRepresentations} is null and
+             ${table.replacementMaximumFidelity} is null and
+             ${table.replacementIncludeCuratedMemory} is null and
              ${table.replacementMode} is null and
              ${table.replacementSourceRevision} is null and
              ${table.replacementSourceHash} is null and
@@ -5646,7 +6429,8 @@ export const pendingShareOperations = pgTable(
              length(${table.replacementPreviewHash}) = 64 and
              ${table.replacementPreviewRevision} > 0 and
              ${table.replacementRepresentation} is not null and
-             cardinality(${table.replacementAllowedRepresentations}) > 0 and
+             ${table.replacementMaximumFidelity} is not null and
+             ${table.replacementIncludeCuratedMemory} is not null and
              ${table.replacementMode} is not null and
              ${table.replacementSourceRevision} >= 0 and
              length(${table.replacementSourceHash}) = 64 and
@@ -5713,14 +6497,10 @@ export const sourceOwnerRepresentationConsents = pgTable(
     mode: sharedMemoryConsentMode("mode").notNull(),
     state: sharedMemoryConsentState("state").notNull().default("pending"),
     consentVersion: integer("consent_version").notNull().default(1),
-    allowedRepresentations: sharedMemoryRepresentation(
-      "allowed_representations"
-    )
-      .array()
-      .notNull(),
-    selectedRepresentation: sharedMemoryRepresentation(
-      "selected_representation"
-    ).notNull(),
+    maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
+    includeCuratedMemory: boolean("include_curated_memory")
+      .notNull()
+      .default(false),
     previewId: uuid("preview_id")
       .notNull()
       .references(() => sharedSourcePreviews.id, {
@@ -5736,15 +6516,13 @@ export const sourceOwnerRepresentationConsents = pgTable(
       }
     ),
     sourceHash: text("source_hash").notNull(),
-    representationPolicyRevision: integer(
-      "representation_policy_revision"
-    ).notNull(),
-    representationPolicyHash: text("representation_policy_hash").notNull(),
+    fidelityPolicyRevision: integer("fidelity_policy_revision").notNull(),
+    fidelityPolicyHash: text("fidelity_policy_hash").notNull(),
     contentPolicyVersion: integer("content_policy_version").notNull(),
     contentPolicyHash: text("content_policy_hash").notNull(),
     classifierVersion: integer("classifier_version").notNull(),
     classifierHash: text("classifier_hash").notNull(),
-    redactedContentHash: text("redacted_content_hash").notNull(),
+    sourceContentHash: text("source_content_hash").notNull(),
     createdAt: now(),
     updatedAt: updatedNow(),
     activatedAt: timestamp("activated_at", { withTimezone: true }),
@@ -5825,7 +6603,7 @@ export const sourceOwnerRepresentationConsents = pgTable(
       "source_owner_consents_revision_check",
       sql`${table.previewRevision} > 0
         and ${table.sourceRevision} >= 0
-        and ${table.representationPolicyRevision} > 0
+        and ${table.fidelityPolicyRevision} > 0
         and ${table.contentPolicyVersion} > 0
         and ${table.classifierVersion} > 0
         and ${table.sourceOwnerPolicyVersion} > 0
@@ -5836,21 +6614,14 @@ export const sourceOwnerRepresentationConsents = pgTable(
       "source_owner_consents_hash_check",
       sql`length(${table.previewHash}) = 64
         and length(${table.sourceHash}) = 64
-        and length(${table.representationPolicyHash}) = 64
+        and length(${table.fidelityPolicyHash}) = 64
         and length(${table.contentPolicyHash}) = 64
         and length(${table.classifierHash}) = 64
-        and length(${table.redactedContentHash}) = 64`
+        and length(${table.sourceContentHash}) = 64`
     ),
     check(
-      "source_owner_consents_allowed_set_check",
-      sql`cardinality(${table.allowedRepresentations}) between 1 and 4
-        and array_position(${table.allowedRepresentations}, null) is null
-        and ${table.selectedRepresentation}::text = any(${table.allowedRepresentations}::text[])
-        and cardinality(${table.allowedRepresentations}) =
-          (case when 'memory_events' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
-          + (case when 'lcm_leaves' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
-          + (case when 'lcm_rollups' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)
-          + (case when 'curated_assertions' = any(${table.allowedRepresentations}::text[]) then 1 else 0 end)`
+      "source_owner_consents_fidelity_check",
+      sql`${table.maximumFidelity} in ('memory_events','lcm_leaves','lcm_rollups')`
     ),
     check(
       "source_owner_consents_mode_check",
@@ -5918,11 +6689,9 @@ export const teamSessionShareGrants = pgTable(
     teamPolicyVersion: integer("team_policy_version"),
     workspacePolicyId: uuid("workspace_policy_id"),
     workspacePolicyVersion: integer("workspace_policy_version"),
-    ownerAllowedRepresentations: sharedMemoryRepresentation(
-      "owner_allowed_representations"
-    ).array(),
-    activeRepresentation: sharedMemoryRepresentation("active_representation"),
-    representationPolicyRevision: integer("representation_policy_revision"),
+    maximumFidelity: sharedMemoryRepresentation("maximum_fidelity"),
+    includeCuratedMemory: boolean("include_curated_memory"),
+    fidelityPolicyRevision: integer("fidelity_policy_revision"),
     contentPolicyVersion: integer("content_policy_version"),
     classifierVersion: integer("classifier_version"),
     sourceRevision: bigint("source_revision", { mode: "number" }),
@@ -6077,19 +6846,13 @@ export const teamSessionShareGrants = pgTable(
         and length(trim(${table.creatorAuthority})) > 0`
     ),
     check(
-      "team_session_share_grants_representation_check",
-      sql`${table.ownerAllowedRepresentations} is not null
-        and cardinality(${table.ownerAllowedRepresentations}) > 0
-        and ${table.representationPolicyRevision} > 0
+      "team_session_share_grants_fidelity_check",
+      sql`${table.maximumFidelity} in ('memory_events','lcm_leaves','lcm_rollups')
+        and ${table.includeCuratedMemory} is not null
+        and ${table.fidelityPolicyRevision} > 0
         and ${table.contentPolicyVersion} > 0
         and ${table.classifierVersion} > 0
-        and ${table.sourceRevision} >= 0
-        and (
-          (${table.lifecycle} = 'active'
-            and ${table.activeRepresentation} is not null
-            and ${table.activeRepresentation} = any(${table.ownerAllowedRepresentations}))
-          or ${table.lifecycle} <> 'active'
-        )`
+        and ${table.sourceRevision} >= 0`
     ),
     check(
       "team_session_share_grants_version_check",
@@ -6227,6 +6990,18 @@ export const teamMemoryRepresentations = pgTable(
       .references(() => sharedSourceArtifacts.id, {
         onDelete: "restrict"
       }),
+    sanitizedSourcePreviewId: uuid("sanitized_source_preview_id")
+      .notNull()
+      .references(() => sharedSourceSemanticPreviews.id, {
+        onDelete: "restrict"
+      }),
+    privacyClassifierGenerationId: uuid(
+      "privacy_classifier_generation_id"
+    ).notNull(),
+    privacyClassifierHash: text("privacy_classifier_hash").notNull(),
+    effectivePrivacyPolicyHash: text("effective_privacy_policy_hash").notNull(),
+    sourceManifestHash: text("source_manifest_hash").notNull(),
+    sanitizedContentHash: text("sanitized_content_hash").notNull(),
     teamId: uuid("team_id").notNull(),
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
     logicalMemoryId: uuid("logical_memory_id").notNull(),
@@ -6240,9 +7015,7 @@ export const teamMemoryRepresentations = pgTable(
     teamPolicyVersion: integer("team_policy_version").notNull(),
     workspacePolicyId: uuid("workspace_policy_id").notNull(),
     workspacePolicyVersion: integer("workspace_policy_version").notNull(),
-    representationPolicyRevision: integer(
-      "representation_policy_revision"
-    ).notNull(),
+    fidelityPolicyRevision: integer("fidelity_policy_revision").notNull(),
     contentPolicyVersion: integer("content_policy_version").notNull(),
     classifierVersion: integer("classifier_version").notNull(),
     recordVersion: integer("record_version").notNull().default(1),
@@ -6263,6 +7036,40 @@ export const teamMemoryRepresentations = pgTable(
     purgeCompletedAt: timestamp("purge_completed_at", { withTimezone: true })
   },
   (table) => [
+    foreignKey({
+      columns: [
+        table.privacyClassifierGenerationId,
+        table.privacyClassifierHash
+      ],
+      foreignColumns: [
+        privacyClassifierGenerations.id,
+        privacyClassifierGenerations.classifierHash
+      ],
+      name: "team_memory_representations_privacy_classifier_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        table.sanitizedSourcePreviewId,
+        table.sourcePreviewId,
+        table.sourceArtifactId,
+        table.logicalMemoryId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.representation,
+        table.sourceRevision
+      ],
+      foreignColumns: [
+        sharedSourceSemanticPreviews.id,
+        sharedSourceSemanticPreviews.sourcePreviewId,
+        sharedSourceSemanticPreviews.sourceArtifactId,
+        sharedSourceSemanticPreviews.logicalMemoryId,
+        sharedSourceSemanticPreviews.teamId,
+        sharedSourceSemanticPreviews.teamWorkspaceId,
+        sharedSourceSemanticPreviews.representation,
+        sharedSourceSemanticPreviews.sourceRevision
+      ],
+      name: "team_memory_representations_sanitized_preview_scope_fk"
+    }).onDelete("restrict"),
     foreignKey({
       columns: [
         table.shareGrantId,
@@ -6329,9 +7136,10 @@ export const teamMemoryRepresentations = pgTable(
       table.shareGrantId,
       table.representation,
       table.sourceRevision,
-      table.representationPolicyRevision,
+      table.fidelityPolicyRevision,
       table.contentPolicyVersion,
-      table.classifierVersion
+      table.classifierVersion,
+      table.sanitizedSourcePreviewId
     ),
     unique("team_memory_representations_scope_unique").on(
       table.id,
@@ -6361,7 +7169,7 @@ export const teamMemoryRepresentations = pgTable(
         and ${table.sourceOwnerPolicyVersion} > 0
         and ${table.teamPolicyVersion} > 0
         and ${table.workspacePolicyVersion} > 0
-        and ${table.representationPolicyRevision} > 0
+        and ${table.fidelityPolicyRevision} > 0
         and ${table.contentPolicyVersion} > 0
         and ${table.classifierVersion} > 0
         and ${table.chunkCount} >= 0`
@@ -6369,7 +7177,11 @@ export const teamMemoryRepresentations = pgTable(
     check(
       "team_memory_representations_hash_check",
       sql`length(${table.sourceRevisionHash}) = 64
-        and length(${table.provenanceHash}) = 64`
+        and length(${table.provenanceHash}) = 64
+        and ${table.privacyClassifierHash} ~ '^[0-9a-f]{64}$'
+        and ${table.effectivePrivacyPolicyHash} ~ '^[0-9a-f]{64}$'
+        and ${table.sourceManifestHash} ~ '^[0-9a-f]{64}$'
+        and ${table.sanitizedContentHash} ~ '^[0-9a-f]{64}$'`
     ),
     check(
       "team_memory_representations_lifecycle_check",
@@ -6523,6 +7335,7 @@ export const teamMemorySemanticItems = pgTable(
     embeddedAt: timestamp("embedded_at", { withTimezone: true }),
     lastErrorClass: text("last_error_class"),
     attemptCount: integer("attempt_count").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
     createdAt: now(),
     updatedAt: updatedNow()
   },
@@ -6550,7 +7363,7 @@ export const teamMemorySemanticItems = pgTable(
     ),
     index("team_memory_semantic_items_pending_idx").on(
       table.embeddingState,
-      table.updatedAt,
+      table.nextAttemptAt,
       table.id
     ),
     index("team_memory_semantic_items_workspace_idx").on(
@@ -6579,6 +7392,7 @@ export const teamMemorySemanticItems = pgTable(
     check(
       "team_memory_semantic_items_embedding_check",
       sql`${table.embeddingState} in ('pending','processing','embedded','failed')
+        and ${table.attemptCount} >= 0
         and (${table.embeddingDimensions} is null or ${table.embeddingDimensions} in (384,1024,1536,3072))
         and (
           (${table.embeddingState} = 'embedded'
@@ -6588,7 +7402,10 @@ export const teamMemorySemanticItems = pgTable(
             and ${table.embeddingInputHash} is not null
             and ${table.embeddedAt} is not null)
           or (${table.embeddingState} <> 'embedded' and ${table.embeddedAt} is null)
-        )`
+        )
+        and ((${table.embeddingState} = 'failed' and ${table.nextAttemptAt} is not null
+              and length(trim(${table.lastErrorClass})) > 0)
+          or (${table.embeddingState} <> 'failed' and ${table.nextAttemptAt} is null))`
     )
   ]
 );
@@ -9699,9 +10516,11 @@ export const collaborationSharedMemoryPreviews = pgTable(
     teamId: uuid("team_id").notNull(),
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
     representation: sharedMemoryRepresentation("representation").notNull(),
+    maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
+    includeCuratedMemory: boolean("include_curated_memory").notNull(),
     sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
     sourceHash: text("source_hash").notNull(),
-    redactedContentHash: text("redacted_content_hash").notNull(),
+    sourceContentHash: text("source_content_hash").notNull(),
     itemCount: integer("item_count").notNull(),
     protectedDtoHash: text("protected_dto_hash").notNull(),
     protectedDto: jsonb("protected_dto")
@@ -9729,6 +10548,8 @@ export const collaborationSharedMemoryPreviews = pgTable(
       table.logicalMemoryId,
       table.teamId,
       table.teamWorkspaceId,
+      table.maximumFidelity,
+      table.includeCuratedMemory,
       table.sourceRevision
     ),
     index("csm_previews_owner_hash_idx").on(
@@ -9740,10 +10561,14 @@ export const collaborationSharedMemoryPreviews = pgTable(
       sql`${table.previewRevision} > 0 and ${table.sourceRevision} >= 0 and ${table.itemCount} > 0`
     ),
     check(
+      "csm_previews_fidelity_check",
+      sql`${table.maximumFidelity} in ('memory_events','lcm_leaves','lcm_rollups')`
+    ),
+    check(
       "csm_previews_hashes_check",
       sql`length(${table.previewHash}) = 64
         and length(${table.sourceHash}) = 64
-        and length(${table.redactedContentHash}) = 64
+        and length(${table.sourceContentHash}) = 64
         and length(${table.protectedDtoHash}) = 64`
     )
   ]
@@ -9766,6 +10591,8 @@ export const collaborationSharedMemoryConsents = pgTable(
     logicalMemoryId: uuid("logical_memory_id").notNull(),
     teamId: uuid("team_id").notNull(),
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
+    includeCuratedMemory: boolean("include_curated_memory").notNull(),
     sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
     protectedDtoHash: text("protected_dto_hash").notNull(),
     protectedDto: jsonb("protected_dto")
@@ -9798,6 +10625,8 @@ export const collaborationSharedMemoryConsents = pgTable(
         table.logicalMemoryId,
         table.teamId,
         table.teamWorkspaceId,
+        table.maximumFidelity,
+        table.includeCuratedMemory,
         table.sourceRevision
       ],
       foreignColumns: [
@@ -9808,6 +10637,8 @@ export const collaborationSharedMemoryConsents = pgTable(
         collaborationSharedMemoryPreviews.logicalMemoryId,
         collaborationSharedMemoryPreviews.teamId,
         collaborationSharedMemoryPreviews.teamWorkspaceId,
+        collaborationSharedMemoryPreviews.maximumFidelity,
+        collaborationSharedMemoryPreviews.includeCuratedMemory,
         collaborationSharedMemoryPreviews.sourceRevision
       ],
       name: "csm_consents_preview_binding_fk"
@@ -9815,6 +10646,10 @@ export const collaborationSharedMemoryConsents = pgTable(
     check(
       "csm_consents_version_revision_check",
       sql`${table.consentVersion} > 0 and ${table.previewRevision} > 0 and ${table.sourceRevision} >= 0`
+    ),
+    check(
+      "csm_consents_fidelity_check",
+      sql`${table.maximumFidelity} in ('memory_events','lcm_leaves','lcm_rollups')`
     ),
     check(
       "csm_consents_hashes_check",
@@ -9878,7 +10713,8 @@ export const collaborationSharedMemoryGrants = pgTable(
     consentId: uuid("consent_id").notNull(),
     teamId: uuid("team_id").notNull(),
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
-    activeRepresentation: sharedMemoryRepresentation("active_representation"),
+    maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
+    includeCuratedMemory: boolean("include_curated_memory").notNull(),
     sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
     grantVersion: integer("grant_version").notNull(),
     lifecycle: shareGrantLifecycle("lifecycle").notNull(),
@@ -9925,6 +10761,10 @@ export const collaborationSharedMemoryGrants = pgTable(
     check(
       "csm_grants_version_revision_check",
       sql`${table.grantVersion} > 0 and ${table.sourceRevision} >= 0`
+    ),
+    check(
+      "csm_grants_fidelity_check",
+      sql`${table.maximumFidelity} in ('memory_events','lcm_leaves','lcm_rollups')`
     ),
     check(
       "csm_grants_protected_dto_hash_check",
@@ -10912,6 +11752,56 @@ export const pdsSemanticWorkClaims = pgTable(
     check(
       "pds_semantic_work_claim_generation_check",
       sql`${table.claimGeneration} ~ '^(0|[1-9][0-9]*)$' and ${table.expiresAt} > ${table.claimedAt}`
+    )
+  ]
+);
+
+export const pdsLcmWorkIntents = pgTable(
+  "pds_lcm_work_intents",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    memoryNodeId: uuid("memory_node_id")
+      .notNull()
+      .references(() => memoryNodes.id, { onDelete: "cascade" }),
+    workIdentity: text("work_identity").notNull(),
+    workClass: text("work_class").notNull(),
+    compatibilityContractHash: text("compatibility_contract_hash").notNull(),
+    compatibilityContractJson: jsonb("compatibility_contract_json")
+      .notNull()
+      .$type<Record<string, unknown>>(),
+    inputRevisionHash: text("input_revision_hash").notNull(),
+    state: text("state").notNull().default("pending"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pds_lcm_work_intent_identity_unique").on(
+      table.groupId,
+      table.workIdentity
+    ),
+    unique("pds_lcm_work_intent_node_contract_unique").on(
+      table.memoryNodeId,
+      table.compatibilityContractHash,
+      table.inputRevisionHash
+    ),
+    index("pds_lcm_work_intent_pending_idx").on(
+      table.groupId,
+      table.state,
+      table.updatedAt
+    ),
+    check(
+      "pds_lcm_work_intent_class_check",
+      sql`${table.workClass} in ('lcm_leaf','lcm_rollup')`
+    ),
+    check(
+      "pds_lcm_work_intent_state_check",
+      sql`${table.state} in ('pending','claimed','completed','superseded')`
     )
   ]
 );

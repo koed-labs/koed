@@ -9,12 +9,14 @@ import {
   createDbPool,
   createEmbeddingCapacityRepository,
   createMemorySourceRepository,
+  createPrivacyClassificationRepository,
   createRetentionLifecycleRepository,
   databaseErrorCode,
   runDbMigrations,
   type CollaborationRepository,
   type EmbeddingCapacityRepository,
   type MemorySourceRepository,
+  type PrivacyClassificationRepository,
   type RetentionLifecycleRepository
 } from "@koed/db";
 import {
@@ -79,6 +81,7 @@ import {
   crossIdentitySyncDeterministicUuid,
   createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
   createTeamMemoryEnvelopeEncryptionProviderFromEnvironment,
+  derivePrivacyFingerprintKey,
   inspectDeviceIdentityAtKoedHome,
   reconcileDeviceIdentityDeployment,
   embeddingDispatchKey,
@@ -90,6 +93,7 @@ import {
   memoryEmbedQueueName,
   requestKoedLocalWork,
   readLocalEdgeUpstreamEnrollmentBinding,
+  resolveApiDataEncryptionKeyFromEnv,
   resolveSupportedEmbeddingModelConfig
 } from "@koed/shared";
 import { createHistoricalRawAdmission } from "../memory/historical-raw-admission.js";
@@ -159,6 +163,7 @@ export interface BuildServerOptions {
   retentionRepository?: RetentionLifecycleRepository;
   embeddingCapacityRepository?: EmbeddingCapacityRepository;
   historicalImportAdmission?: ApiRouteContext["historicalImport"]["admission"];
+  privacyClassificationRepository?: PrivacyClassificationRepository;
   /** Test-only queue factory injection. Production uses createMemoryJobQueue. */
   memoryJobQueueFactory?: typeof createMemoryJobQueue;
   runMemoryJobsInlineForTests?: boolean;
@@ -169,6 +174,8 @@ export interface BuildServerOptions {
   /** Test/deployment injection for trusted internal service requests. */
   internalServiceFetch?: typeof fetch;
   fetch?: typeof fetch;
+  /** Test-only trusted service transport injection. Production uses global fetch. */
+  trustedServiceFetch?: typeof fetch;
   resolveUpstreamAuthorization?: ApiRouteContext["localEdge"]["resolveUpstreamAuthorization"];
   resolveUpstreamEnrollmentBinding?: ApiRouteContext["localEdge"]["resolveUpstreamEnrollmentBinding"];
   remoteOperationsAllowed?: ApiRouteContext["localEdge"]["remoteOperationsAllowed"];
@@ -313,6 +320,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const teamEnvelopeEncryptionProvider =
     options.teamEnvelopeEncryptionProvider ??
     createTeamMemoryEnvelopeEncryptionProviderFromEnvironment();
+  const privacyFingerprintRoot = resolveApiDataEncryptionKeyFromEnv();
+  const privacyClassificationRepository =
+    options.privacyClassificationRepository ??
+    (pool && privacyFingerprintRoot
+      ? createPrivacyClassificationRepository(pool, {
+          fingerprintKey: derivePrivacyFingerprintKey(privacyFingerprintRoot)
+        })
+      : null);
   if (
     envelopeEncryptionProvider &&
     ownerPrivateReplicaEnvelopeEncryptionProvider &&
@@ -346,7 +361,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const collaborationRepository =
     options.collaborationRepository ??
     (pool && envelopeEncryptionProvider
-      ? createCollaborationRepository(pool, { envelopeEncryptionProvider })
+      ? createCollaborationRepository(pool, {
+          envelopeEncryptionProvider,
+          teamEnvelopeEncryptionProvider
+        })
       : null);
   const retentionRepository =
     options.retentionRepository ??
@@ -729,6 +747,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         )
       });
   const localEdgeFetch = options.fetch ?? localEdgeSecureFetch!;
+  const trustedServiceFetch =
+    options.trustedServiceFetch ?? options.fetch ?? globalThis.fetch;
   const localEdgeResolveUpstreamAuthorization =
     options.resolveUpstreamAuthorization ??
     createDefaultResolveUpstreamAuthorization(config.koedHome);
@@ -932,6 +952,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     },
     managedConversations: {
       commandWakePool: pool
+    },
+    trustedServices: {
+      fetch: trustedServiceFetch
     },
     localEdge: {
       upstreamBackendsPath: localEdgeUpstreamBackendsPath,
@@ -1177,7 +1200,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   teamConversationSourceService = createTeamConversationSourceService({
     app,
     context: routeContext,
-    pool
+    pool,
+    privacyRepository: privacyClassificationRepository,
+    teamEncryptionProvider: teamEnvelopeEncryptionProvider
   });
   registerRetentionRoutes(app, {
     requireRetentionRepository,

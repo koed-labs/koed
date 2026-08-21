@@ -107,6 +107,35 @@ describe("collaboration receipt migration", () => {
   });
 });
 
+describe("selective PII migration boundary", () => {
+  it("requires an explicit alpha Team-sharing reset and translates durable fidelity events", async () => {
+    const journalText = await readDrizzleFile("meta/_journal.json");
+    const journal = JSON.parse(journalText) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+    const migrationTag = journal.entries.at(-1)?.tag;
+    expect(migrationTag).toMatch(/^0034_/);
+    const migrationSql = await readDrizzleFile(`${migrationTag}.sql`);
+    const resetBoundary = migrationSql.indexOf(
+      "Migration 0034 requires a disposable-alpha Team sharing reset"
+    );
+    const firstRequiredColumn = migrationSql.indexOf(
+      'ADD COLUMN "maximum_fidelity" "shared_memory_representation" NOT NULL'
+    );
+    const eventTranslation = migrationSql.indexOf(
+      "SET \"family\" = 'fidelity_changed'"
+    );
+    const eventEnumRecast = migrationSql.indexOf(
+      'ALTER COLUMN "family" SET DATA TYPE "public"."collaboration_event_family"'
+    );
+
+    expect(resetBoundary).toBeGreaterThan(-1);
+    expect(firstRequiredColumn).toBeGreaterThan(resetBoundary);
+    expect(eventTranslation).toBeGreaterThan(-1);
+    expect(eventEnumRecast).toBeGreaterThan(eventTranslation);
+  });
+});
+
 describe("Pi AI Client migration", () => {
   it("adds Pi to the persisted source runtime enum idempotently", async () => {
     const [journalText, migrationSql] = await Promise.all([

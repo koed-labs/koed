@@ -5,9 +5,11 @@ import {
 } from "@koed/core";
 import type { ApiRouteContext } from "../server/context.js";
 import {
-  lcmPendingSummariesQuerySchema,
+  lcmSummaryClaimParamsSchema,
+  lcmSummaryClaimRequestSchema,
   nodeIdParamsSchema,
   pendingSessionTitlesQuerySchema,
+  renewLcmSummaryClaimSchema,
   sessionIdParamsSchema,
   submitSessionTitleSchema,
   submitLcmSummarySchema
@@ -84,25 +86,46 @@ export const registerLcmRoutes = (
     }
   );
 
-  app.get(
-    "/v1/memory/lcm/summaries/pending",
-    { preHandler: memoryRecallRateLimit },
+  app.post(
+    "/v1/memory/lcm/summary-claims",
+    { preHandler: memoryWriteRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
-      const query = lcmPendingSummariesQuerySchema.parse(request.query);
-      const nodes = await repo.listLcmNodesNeedingSummaries(
+      const input = lcmSummaryClaimRequestSchema.parse(request.body);
+      const claims = await repo.claimLcmNodesForSummarization(
         { userId: user.id },
-        { limit: query.limit }
+        input
       );
 
       return {
-        nodes,
-        count: nodes.length,
+        claims,
+        count: claims.length,
         localOnly: true,
         instructions:
-          "Run LCM summarisation locally through the user's selected AI Client, then submit each summary back to /v1/memory/lcm/summaries/{nodeId}. Backend workers do not call LLMs for LCM summaries."
+          "Run each claimed LCM summarisation locally through the user's selected AI Client, renew its lease while working, and submit it to /v1/memory/lcm/summaries/{nodeId} with the claim fence. Backend workers do not call LLMs for LCM summaries."
       };
+    }
+  );
+
+  app.put(
+    "/v1/memory/lcm/summary-claims/:claimId/renew",
+    { preHandler: memoryWriteRateLimit },
+    async (request, reply) => {
+      const repo = requireRepository();
+      const user = await authenticateApiToken(request);
+      const params = lcmSummaryClaimParamsSchema.parse(request.params);
+      const input = renewLcmSummaryClaimSchema.parse(request.body);
+      const renewed = await repo.renewLcmSummaryWorkClaim(
+        { userId: user.id },
+        { claimId: params.claimId, ...input }
+      );
+      return renewed
+        ? renewed
+        : reply.status(409).send({
+            error: "LCM summary claim is no longer active",
+            code: "claim_lost"
+          });
     }
   );
 
@@ -138,15 +161,40 @@ export const registerLcmRoutes = (
         });
       }
 
-      await repo.updateLcmNodeSummary({
-        nodeId: params.nodeId,
-        summaryText: input.summaryText,
-        summaryModel: input.summaryModel,
-        summaryPromptVersion: input.summaryPromptVersion,
-        summaryTokenEstimate: input.summaryTokenEstimate,
-        summaryStructuredJson: input.summaryStructuredJson,
-        summaryStructuredSchemaVersion: input.summaryStructuredSchemaVersion
-      });
+      try {
+        await repo.updateLcmNodeSummary({
+          nodeId: params.nodeId,
+          summaryText: input.summaryText,
+          summaryModel: input.summaryModel,
+          summaryPromptVersion: input.summaryPromptVersion,
+          summaryTokenEstimate: input.summaryTokenEstimate,
+          summaryStructuredJson: input.summaryStructuredJson,
+          summaryStructuredSchemaVersion: input.summaryStructuredSchemaVersion,
+          claim: {
+            ownerUserId: user.id,
+            claimId: input.claimId,
+            claimToken: input.claimToken,
+            claimGeneration: input.claimGeneration,
+            inputRevisionHash: input.inputRevisionHash,
+            compatibilityContractHash: input.compatibilityContractHash
+          }
+        });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.name === "LcmSummaryClaimLostError" ||
+            error.name === "LcmSummaryInputStaleError")
+        ) {
+          return reply.status(409).send({
+            error: error.message,
+            code:
+              error.name === "LcmSummaryInputStaleError"
+                ? "stale_lcm_input"
+                : "claim_lost"
+          });
+        }
+        throw error;
+      }
       const embeddable = await repo.getEmbeddableSource(
         "memory_node",
         params.nodeId

@@ -2483,6 +2483,17 @@ const cleanupTeamVectors = async (
   client: PoolClient,
   teamId: string
 ): Promise<CleanupResult> => {
+  const removedTeamSemanticVectors: number[] = [];
+  for (const dimensions of [384, 1024, 1536, 3072] as const) {
+    const removed = await client.query(
+      `delete from team_memory_semantic_vectors_${dimensions}
+        where semantic_item_id in (
+          select id from team_memory_semantic_items where team_id = $1
+        )`,
+      [teamId]
+    );
+    removedTeamSemanticVectors.push(removed.rowCount ?? 0);
+  }
   const removed384 = await client.query(
     `delete from memory_embeddings_384
         where memory_embedding_id in (
@@ -2529,6 +2540,7 @@ const cleanupTeamVectors = async (
   );
   return {
     removedRecordCount:
+      removedTeamSemanticVectors.reduce((total, count) => total + count, 0) +
       (removed384.rowCount ?? 0) +
       (removed1024.rowCount ?? 0) +
       (removed1536.rowCount ?? 0) +
@@ -2542,6 +2554,10 @@ const cleanupTeamSearchIndex = async (
   teamId: string,
   observedAt: Date
 ): Promise<CleanupResult> => {
+  const semanticItems = await client.query(
+    `delete from team_memory_semantic_items where team_id = $1`,
+    [teamId]
+  );
   const representations = await client.query(
     `update team_memory_representations
           set state = 'purged',
@@ -2556,7 +2572,6 @@ const cleanupTeamSearchIndex = async (
   const shareGrants = await client.query(
     `update team_session_share_grants
           set lifecycle = 'purged',
-              active_representation = null,
               tombstoned_at = coalesce(tombstoned_at, $2),
               purge_completed_at = $2,
               updated_at = $2
@@ -2566,7 +2581,9 @@ const cleanupTeamSearchIndex = async (
   );
   return {
     removedRecordCount:
-      (representations.rowCount ?? 0) + (shareGrants.rowCount ?? 0),
+      (semanticItems.rowCount ?? 0) +
+      (representations.rowCount ?? 0) +
+      (shareGrants.rowCount ?? 0),
     removedByteCount: 0
   };
 };
@@ -2611,6 +2628,11 @@ const cleanupTeamDatabaseRows = async (
           where team_id = $1
           returning 1
        ),
+       deleted_sanitized_source_artifacts as (
+         delete from privacy_sanitized_source_artifacts
+          where team_id = $1
+          returning 1
+       ),
        updated_workspaces as (
          update team_workspaces
             set lifecycle = 'purged',
@@ -2627,6 +2649,8 @@ const cleanupTeamDatabaseRows = async (
        (select count(*) from deleted_audience_members)::bigint as audience_members,
        (select count(*) from deleted_audiences)::bigint as audiences,
        (select count(*) from deleted_threads)::bigint as threads,
+       (select count(*) from deleted_sanitized_source_artifacts)::bigint
+         as sanitized_source_artifacts,
        (select count(*) from updated_workspaces)::bigint as workspaces`,
     [teamId, observedAt]
   );
@@ -2638,6 +2662,7 @@ const cleanupTeamDatabaseRows = async (
       sumCount(result.rows, "audience_members") +
       sumCount(result.rows, "audiences") +
       sumCount(result.rows, "threads") +
+      sumCount(result.rows, "sanitized_source_artifacts") +
       sumCount(result.rows, "workspaces"),
     removedByteCount: 0
   };
@@ -3336,9 +3361,30 @@ const cleanupShareGrantEncryptedPayloads = async (
         where thread_id in (select id from target_threads)
      ),
      target_representations as materialized (
-       select id from team_memory_representations
+       select id, sanitized_source_preview_id
+         from team_memory_representations
         where share_grant_id = $1
           and team_id = $2 and team_workspace_id = $3
+     ),
+     target_semantic_previews as materialized (
+       select distinct target.sanitized_source_preview_id as id
+         from target_representations target
+        where not exists (
+          select 1
+            from team_memory_representations retained
+           where retained.sanitized_source_preview_id = target.sanitized_source_preview_id
+             and retained.share_grant_id <> $1
+             and retained.state <> 'purged'
+        )
+     ),
+     target_sanitized_artifacts as materialized (
+       select id from privacy_sanitized_source_artifacts
+        where share_grant_id = $1
+          and team_id = $2 and team_workspace_id = $3
+     ),
+     target_sanitized_chunks as materialized (
+       select id from privacy_sanitized_source_chunks
+        where artifact_id in (select id from target_sanitized_artifacts)
      ),
      deleted_chunks as (
        delete from team_memory_representation_chunks
@@ -3359,6 +3405,12 @@ const cleanupShareGrantEncryptedPayloads = async (
               and source_id in (select id from target_messages))
             or (source_table = 'team_memory_representations'
               and source_id in (select id from target_representations))
+            or (source_table = 'shared_source_semantic_previews'
+              and source_id in (select id from target_semantic_previews))
+            or (source_table = 'privacy_sanitized_source_artifacts'
+              and source_id in (select id from target_sanitized_artifacts))
+            or (source_table = 'privacy_sanitized_source_chunks'
+              and source_id in (select id from target_sanitized_chunks))
           )
         returning length(ciphertext)::bigint + length(nonce)::bigint
           + length(tag)::bigint + length(wrapped_dek::text)::bigint
@@ -3375,6 +3427,48 @@ const cleanupShareGrantEncryptedPayloads = async (
   return {
     removedRecordCount: numberFromDb(result.rows[0]?.removed_count ?? 0),
     removedByteCount: numberFromDb(result.rows[0]?.removed_bytes ?? 0)
+  };
+};
+
+const cleanupShareGrantVectors = async (
+  client: PoolClient,
+  target: Extract<RetentionDecisionTarget, { kind: "share_grant" }>
+): Promise<CleanupResult> => {
+  const removedCounts: number[] = [];
+  for (const dimensions of [384, 1024, 1536, 3072] as const) {
+    const removed = await client.query(
+      `delete from team_memory_semantic_vectors_${dimensions}
+        where semantic_item_id in (
+          select id from team_memory_semantic_items
+           where share_grant_id = $1
+             and team_id = $2 and team_workspace_id = $3
+        )`,
+      [target.shareGrantId, target.teamId, target.teamWorkspaceId]
+    );
+    removedCounts.push(removed.rowCount ?? 0);
+  }
+  return {
+    removedRecordCount: removedCounts.reduce(
+      (total, count) => total + count,
+      0
+    ),
+    removedByteCount: 0
+  };
+};
+
+const cleanupShareGrantSearchIndex = async (
+  client: PoolClient,
+  target: Extract<RetentionDecisionTarget, { kind: "share_grant" }>
+): Promise<CleanupResult> => {
+  const removed = await client.query(
+    `delete from team_memory_semantic_items
+      where share_grant_id = $1
+        and team_id = $2 and team_workspace_id = $3`,
+    [target.shareGrantId, target.teamId, target.teamWorkspaceId]
+  );
+  return {
+    removedRecordCount: removed.rowCount ?? 0,
+    removedByteCount: 0
   };
 };
 
@@ -3406,6 +3500,31 @@ const cleanupShareGrantWrappedKeys = async (
                select 1 from team_memory_representations representation
                 where representation.id = payload.source_id
                   and representation.share_grant_id = $1
+             ))
+             or (payload.source_table = 'shared_source_semantic_previews' and exists (
+               select 1
+                 from team_memory_representations representation
+                where representation.sanitized_source_preview_id = payload.source_id
+                  and representation.share_grant_id = $1
+                  and not exists (
+                    select 1
+                      from team_memory_representations retained
+                     where retained.sanitized_source_preview_id = payload.source_id
+                       and retained.share_grant_id <> $1
+                       and retained.state <> 'purged'
+                  )
+             ))
+             or (payload.source_table = 'privacy_sanitized_source_artifacts' and exists (
+               select 1 from privacy_sanitized_source_artifacts artifact
+                where artifact.id = payload.source_id
+                  and artifact.share_grant_id = $1
+             ))
+             or (payload.source_table = 'privacy_sanitized_source_chunks' and exists (
+               select 1 from privacy_sanitized_source_chunks chunk
+               join privacy_sanitized_source_artifacts artifact
+                 on artifact.id = chunk.artifact_id
+                where chunk.id = payload.source_id
+                  and artifact.share_grant_id = $1
              ))
            ))
      )::bigint as remaining_count`,
@@ -3472,9 +3591,16 @@ const cleanupShareGrantDatabaseRows = async (
       returning id`,
     [target.shareGrantId, target.teamId, target.teamWorkspaceId, observedAt]
   );
+  const sanitizedArtifacts = await client.query(
+    `delete from privacy_sanitized_source_artifacts
+      where share_grant_id = $1
+        and team_id = $2 and team_workspace_id = $3
+      returning id`,
+    [target.shareGrantId, target.teamId, target.teamWorkspaceId]
+  );
   const grants = await client.query(
     `update team_session_share_grants
-        set lifecycle = 'purged', active_representation = null,
+        set lifecycle = 'purged',
             active_retention_decision_id = null, active_purge_job_id = null,
             tombstoned_at = coalesce(tombstoned_at, $4),
             purge_completed_at = $4, updated_at = $4
@@ -3488,6 +3614,7 @@ const cleanupShareGrantDatabaseRows = async (
       counts.reduce((total, count) => total + count, 0) +
       (threads.rowCount ?? 0) +
       (representations.rowCount ?? 0) +
+      (sanitizedArtifacts.rowCount ?? 0) +
       (grants.rowCount ?? 0),
     removedByteCount: 0
   };
@@ -3517,11 +3644,14 @@ const cleanupShareGrantArtifact = async (
         ))
       };
     case "vector":
+      return {
+        state: "verified",
+        ...(await cleanupShareGrantVectors(client, input.target))
+      };
     case "search_index":
       return {
-        state: "not_applicable",
-        removedRecordCount: 0,
-        removedByteCount: 0
+        state: "verified",
+        ...(await cleanupShareGrantSearchIndex(client, input.target))
       };
     case "encrypted_payload":
       return {

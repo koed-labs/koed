@@ -148,13 +148,34 @@ test("renders shared memory config outside app sections", () => {
   );
 });
 
+test("preserves explicitly shared Team Memory encryption names", () => {
+  const entries = parseAppEnvExample(
+    [
+      "# @root TEAM_MEMORY_DATA_ENCRYPTION_KEY",
+      "TEAM_MEMORY_DATA_ENCRYPTION_KEY=replace_with_generated_32_byte_base64_key",
+      "# @root TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER",
+      "TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER="
+    ].join("\n"),
+    { label: "API", prefix: "API" }
+  );
+
+  assert.deepEqual(
+    entries.map(({ rootKey }) => rootKey),
+    [
+      "TEAM_MEMORY_DATA_ENCRYPTION_KEY",
+      "TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER"
+    ]
+  );
+});
+
 test("sync output is deterministic", () => {
   const root = tempRoot();
   fs.mkdirSync(path.join(root, "apps/api"), { recursive: true });
   fs.mkdirSync(path.join(root, "apps/worker"), { recursive: true });
   fs.mkdirSync(path.join(root, "apps/embedding-service"), { recursive: true });
+  fs.mkdirSync(path.join(root, "apps/privacy-service"), { recursive: true });
 
-  for (const app of ["api", "worker", "embedding-service"]) {
+  for (const app of ["api", "worker", "embedding-service", "privacy-service"]) {
     fs.writeFileSync(
       path.join(root, `apps/${app}/.env.example`),
       "PORT=3300\n# @root omit\nLOCAL_ONLY=1\n"

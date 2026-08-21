@@ -1447,14 +1447,18 @@ describeDb("journal-backed historical import repository", () => {
       { userId: owner.id },
       source!.id
     );
+    const baselineQueueAhead =
+      initialStatus?.embeddingQueueAheadEstimatedTokenCount ?? 0;
     expect(initialStatus).toMatchObject({
       embeddingEligibleEstimatedTokenCount: eligibleEstimatedTokens,
       embeddedMeasuredTokenCount: 3_750,
       pendingEmbeddingEstimatedTokenCount: pendingEstimatedTokens,
-      embeddingQueueAheadEstimatedTokenCount: 0,
-      embeddingEtaLowerSeconds: Math.ceil(pendingEstimatedTokens / 1_000),
+      embeddingQueueAheadEstimatedTokenCount: baselineQueueAhead,
+      embeddingEtaLowerSeconds: Math.ceil(
+        (pendingEstimatedTokens + baselineQueueAhead) / 1_000
+      ),
       embeddingEtaUpperSeconds: Math.ceil(
-        pendingEstimatedTokens / (1_000 * 0.6)
+        (pendingEstimatedTokens + baselineQueueAhead) / (1_000 * 0.6)
       ),
       embeddingEtaConfidence: "medium"
     });
@@ -1485,10 +1489,13 @@ describeDb("journal-backed historical import repository", () => {
       source!.id
     );
     expect(queuedStatus?.embeddingQueueAheadEstimatedTokenCount).toBe(
-      liveEventTokenCount
+      baselineQueueAhead + liveEventTokenCount
     );
     expect(queuedStatus?.embeddingEtaLowerSeconds).toBe(
-      Math.ceil((pendingEstimatedTokens + liveEventTokenCount) / 1_000)
+      Math.ceil(
+        (pendingEstimatedTokens + baselineQueueAhead + liveEventTokenCount) /
+          1_000
+      )
     );
 
     const liveEmbeddable = await repo.getEmbeddableSource(
@@ -1518,8 +1525,10 @@ describeDb("journal-backed historical import repository", () => {
     await expect(
       repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
     ).resolves.toMatchObject({
-      embeddingQueueAheadEstimatedTokenCount: 0,
-      embeddingEtaLowerSeconds: Math.ceil(pendingEstimatedTokens / 1_000)
+      embeddingQueueAheadEstimatedTokenCount: baselineQueueAhead,
+      embeddingEtaLowerSeconds: Math.ceil(
+        (pendingEstimatedTokens + baselineQueueAhead) / 1_000
+      )
     });
 
     await pool.query(
@@ -1529,7 +1538,7 @@ describeDb("journal-backed historical import repository", () => {
     await expect(
       repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
     ).resolves.toMatchObject({
-      embeddingQueueAheadEstimatedTokenCount: 0,
+      embeddingQueueAheadEstimatedTokenCount: baselineQueueAhead,
       embeddingEtaConfidence: "conservative"
     });
 

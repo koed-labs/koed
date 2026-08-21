@@ -250,11 +250,13 @@ describeDb("Collaboration Shared Memory authority store", () => {
     teamId: fixture.teamId,
     teamWorkspaceId: fixture.workspaceId,
     representation: "memory_events",
+    maximumFidelity: "memory_events",
+    includeCuratedMemory: false,
     binding: {
       sourceRevision: 7,
       sourceHash: hash("b"),
-      representationPolicyRevision: 3,
-      representationPolicyHash: hash("c"),
+      fidelityPolicyRevision: 3,
+      fidelityPolicyHash: hash("c"),
       contentPolicyVersion: 4,
       contentPolicyHash: hash("d"),
       classifierVersion: 5,
@@ -271,7 +273,7 @@ describeDb("Collaboration Shared Memory authority store", () => {
         content: { text: "protected exact preview body" }
       }
     ],
-    redactedContentHash: hash("f"),
+    sourceContentHash: hash("f"),
     sourceRevision: 7,
     sourceHash: hash("b"),
     createdAt: timestamp,
@@ -294,8 +296,8 @@ describeDb("Collaboration Shared Memory authority store", () => {
     mode: "continuous",
     state: "active",
     consentVersion: 1,
-    allowedRepresentations: ["memory_events"],
-    selectedRepresentation: "memory_events",
+    maximumFidelity: "memory_events",
+    includeCuratedMemory: false,
     previewRevision: preview.previewRevision,
     previewHash: preview.previewHash,
     sourceRevision: 7,
@@ -320,9 +322,9 @@ describeDb("Collaboration Shared Memory authority store", () => {
       teamId: fixture.teamId,
       teamWorkspaceId: fixture.workspaceId,
       consentId,
-      ownerAllowedRepresentations: ["memory_events"],
-      activeRepresentation: "memory_events",
-      representationPolicyRevision: 3,
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      fidelityPolicyRevision: 3,
       sourceRevision: 7,
       grantVersion: 1,
       lifecycle: "active",
@@ -350,7 +352,6 @@ describeDb("Collaboration Shared Memory authority store", () => {
     const remotePreview = previewFor(fixture);
     const preview = await store.persistAuthoritativePreview({
       identity: fixture.identity,
-      allowedRepresentations: ["memory_events"],
       preview: remotePreview
     });
     expect(preview).not.toBeNull();
@@ -383,6 +384,50 @@ describeDb("Collaboration Shared Memory authority store", () => {
       "collaboration_shared_memory_enrollments",
       "collaboration_shared_memory_grants",
       "collaboration_shared_memory_previews"
+    ]);
+    const columns = await pool.query<{
+      column_name: string;
+      table_name: string;
+    }>(
+      `select table_name, column_name
+         from information_schema.columns
+        where table_schema = current_schema()
+          and table_name in (
+            'collaboration_shared_memory_previews',
+            'collaboration_shared_memory_consents',
+            'collaboration_shared_memory_grants'
+          )
+          and column_name in (
+            'maximum_fidelity', 'include_curated_memory',
+            'active_representation'
+          )
+        order by table_name, column_name`
+    );
+    expect(columns.rows).toEqual([
+      {
+        table_name: "collaboration_shared_memory_consents",
+        column_name: "include_curated_memory"
+      },
+      {
+        table_name: "collaboration_shared_memory_consents",
+        column_name: "maximum_fidelity"
+      },
+      {
+        table_name: "collaboration_shared_memory_grants",
+        column_name: "include_curated_memory"
+      },
+      {
+        table_name: "collaboration_shared_memory_grants",
+        column_name: "maximum_fidelity"
+      },
+      {
+        table_name: "collaboration_shared_memory_previews",
+        column_name: "include_curated_memory"
+      },
+      {
+        table_name: "collaboration_shared_memory_previews",
+        column_name: "maximum_fidelity"
+      }
     ]);
   });
 
@@ -489,7 +534,6 @@ describeDb("Collaboration Shared Memory authority store", () => {
     expect(
       await store.persistAuthoritativePreview({
         identity: fixture.identity,
-        allowedRepresentations: ["memory_events"],
         preview: remote
       })
     ).not.toBeNull();
@@ -572,12 +616,35 @@ describeDb("Collaboration Shared Memory authority store", () => {
       Array.from({ length: 6 }, () =>
         store.persistAuthoritativePreview({
           identity: fixture.identity,
-          allowedRepresentations: ["memory_events"],
           preview: remote
         })
       )
     );
     expect(attempts.every((value) => value?.previewRevision === 1)).toBe(true);
+    await expect(
+      store.persistAuthoritativePreview({
+        identity: fixture.identity,
+        preview: {
+          ...remote,
+          previewId: randomUUID(),
+          previewHash: hash("6"),
+          representation: "curated_assertions",
+          includeCuratedMemory: false
+        }
+      })
+    ).resolves.toBeNull();
+    await expect(
+      store.persistAuthoritativePreview({
+        identity: fixture.identity,
+        preview: {
+          ...remote,
+          previewId: randomUUID(),
+          previewHash: hash("7"),
+          representation: "memory_events",
+          maximumFidelity: "lcm_rollups"
+        }
+      })
+    ).resolves.toBeNull();
     expect(
       await pool.query(
         "select 1 from collaboration_shared_memory_previews where preview_id = $1",
@@ -591,7 +658,6 @@ describeDb("Collaboration Shared Memory authority store", () => {
     await expect(
       driftedRevisionStore.persistAuthoritativePreview({
         identity: fixture.identity,
-        allowedRepresentations: ["memory_events"],
         preview: { ...remote, previewRevision: 99 }
       })
     ).resolves.toBeNull();
@@ -604,24 +670,22 @@ describeDb("Collaboration Shared Memory authority store", () => {
     await expect(
       store.persistAuthoritativePreview({
         identity: fixture.identity,
-        allowedRepresentations: ["memory_events"],
         preview: secondRemote
       })
     ).resolves.toMatchObject({ previewRevision: 2 });
     const sameRevisionRemote = previewFor(fixture, {
       previewId: randomUUID(),
       previewHash: hash("3"),
-      redactedContentHash: hash("4"),
+      sourceContentHash: hash("4"),
       binding: {
         ...remote.binding,
-        representationPolicyRevision: 4,
-        representationPolicyHash: hash("5")
+        fidelityPolicyRevision: 4,
+        fidelityPolicyHash: hash("5")
       }
     });
     await expect(
       store.persistAuthoritativePreview({
         identity: fixture.identity,
-        allowedRepresentations: ["memory_events"],
         preview: sameRevisionRemote
       })
     ).resolves.toMatchObject({
@@ -631,14 +695,12 @@ describeDb("Collaboration Shared Memory authority store", () => {
     await expect(
       store.persistAuthoritativePreview({
         identity: fixture.identity,
-        allowedRepresentations: ["memory_events"],
         preview: { ...remote, previewHash: hash("2") }
       })
     ).resolves.toBeNull();
     await expect(
       store.persistAuthoritativePreview({
         identity: fixture.identity,
-        allowedRepresentations: ["memory_events"],
         preview: { ...remote, previewId: randomUUID() }
       })
     ).resolves.toBeNull();
@@ -690,7 +752,6 @@ describeDb("Collaboration Shared Memory authority store", () => {
     await expect(
       store.persistAuthoritativePreview({
         identity: fixture.identity,
-        allowedRepresentations: ["memory_events"],
         preview: remote
       })
     ).resolves.not.toBeNull();
@@ -710,7 +771,6 @@ describeDb("Collaboration Shared Memory authority store", () => {
     await expect(
       store.persistAuthoritativePreview({
         identity: fixture.identity,
-        allowedRepresentations: ["memory_events"],
         preview: remote
       })
     ).resolves.toMatchObject({
@@ -846,7 +906,8 @@ describeDb("Collaboration Shared Memory authority store", () => {
       logicalMemoryId: fixture.logicalMemoryId,
       teamId: fixture.teamId,
       workspaceId: fixture.workspaceId,
-      representation: "memory_events"
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false
     });
     await expect(
       store.readSharedSessionBinding({
@@ -892,7 +953,6 @@ describeDb("Collaboration Shared Memory authority store", () => {
       ...versionTwo,
       grantVersion: 3,
       lifecycle: "revoked",
-      activeRepresentation: null,
       updatedAt: "2026-07-17T09:03:00.000Z",
       revokedAt: "2026-07-17T09:03:00.000Z"
     });
@@ -1060,8 +1120,7 @@ describeDb("Collaboration Shared Memory authority store", () => {
         grant: {
           ...refreshed,
           sourceRevision: 12,
-          representationPolicyRevision:
-            refreshed.representationPolicyRevision + 1,
+          fidelityPolicyRevision: refreshed.fidelityPolicyRevision + 1,
           updatedAt: "2026-07-17T09:12:00.000Z"
         },
         prior: second,
@@ -1116,7 +1175,6 @@ describeDb("Collaboration Shared Memory authority store", () => {
       ...snapshot,
       grantVersion: 5,
       lifecycle: "revoked",
-      activeRepresentation: null,
       updatedAt: "2026-07-17T09:05:00.000Z",
       revokedAt: "2026-07-17T09:05:00.000Z"
     });
@@ -1172,7 +1230,6 @@ describeDb("Collaboration Shared Memory authority store", () => {
     await expect(
       unavailableStore.persistAuthoritativePreview({
         identity: fixture.identity,
-        allowedRepresentations: ["memory_events"],
         preview: remote
       })
     ).rejects.toThrow("encryption unavailable");
@@ -1182,7 +1239,6 @@ describeDb("Collaboration Shared Memory authority store", () => {
 
     const persisted = await store.persistAuthoritativePreview({
       identity: fixture.identity,
-      allowedRepresentations: ["memory_events"],
       preview: remote
     });
     expect(persisted).not.toBeNull();
@@ -1282,7 +1338,6 @@ describeDb("Collaboration Shared Memory authority store", () => {
     expect(
       await store.persistAuthoritativePreview({
         identity: fixture.identity,
-        allowedRepresentations: ["memory_events"],
         preview: remote
       })
     ).not.toBeNull();

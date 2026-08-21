@@ -419,7 +419,7 @@ const candidateManifestFor = (representation: SharedMemoryRepresentation) => [
 const sharedSession = (
   id: string,
   title: string,
-  representation: SharedMemoryRepresentation,
+  maximumFidelity: Exclude<SharedMemoryRepresentation, "curated_assertions">,
   sourceState: SharedMemorySession["sourceState"] = "ready"
 ): SharedMemorySession => ({
   id,
@@ -430,8 +430,8 @@ const sharedSession = (
   owner: participant(remoteMark),
   title,
   latestActivityAt: at,
-  representation,
-  representationState: "current",
+  maximumFidelity,
+  includeCuratedMemory: false,
   liveState: "live",
   sourceState,
   sourceRevision: revision,
@@ -633,8 +633,8 @@ const viewFor = (
           hasOlder: true,
           hasNewer: false,
           sharedSessionId: session.id,
-          representation: session.representation,
-          items: [sourceItem(session.representation)]
+          representation: session.maximumFidelity,
+          items: [sourceItem(session.maximumFidelity)]
         },
         companion: {
           thread: discussion(),
@@ -1032,13 +1032,14 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       teamId: input.teamId,
       workspaceId: input.workspaceId,
       representation: input.representation,
-      allowedRepresentations: input.allowedRepresentations,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       previewRevision: 1,
       sourceRevision: 12,
       policyRevision: 1,
       contentPolicyVersion: 1,
       classifierVersion: 1,
-      redactedContentHash: "a".repeat(64),
+      sourceContentHash: "a".repeat(64),
       previewHash: "b".repeat(64),
       itemCount: 1,
       items: [sourceItem(input.representation)],
@@ -1057,9 +1058,9 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       teamId: input.teamId,
       workspaceId: input.workspaceId,
       consentId: input.consentId,
-      ownerAllowedRepresentations: ["memory_events" as const],
-      activeRepresentation: "memory_events" as const,
-      representationPolicyRevision: 1,
+      maximumFidelity: "memory_events" as const,
+      includeCuratedMemory: false,
+      fidelityPolicyRevision: 1,
       sourceRevision: 12,
       grantVersion: 1,
       lifecycle: "active" as const,
@@ -1073,7 +1074,7 @@ const createClient = (initial = baseSnapshot()): MockClient => {
         "Shared Memory owner flow is not configured in this fixture"
       );
     }),
-    changeSharedMemoryRepresentation: vi.fn(async () => {
+    changeSharedMemoryFidelity: vi.fn(async () => {
       throw new Error(
         "Shared Memory owner flow is not configured in this fixture"
       );
@@ -1350,7 +1351,8 @@ describe("CollaborationApp", () => {
         teamId: ids.team,
         workspaceId: ids.workspace,
         representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         mode: "continuous",
         sourceRevision: 12,
         state: "preparing",
@@ -1440,7 +1442,8 @@ describe("CollaborationApp", () => {
         teamId: ids.team,
         workspaceId: ids.workspace,
         representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         mode: "continuous",
         sourceRevision: 12,
         state: "activated",
@@ -1494,13 +1497,9 @@ describe("CollaborationApp", () => {
       teamId: pending.pendingShare.teamId,
       workspaceId: pending.pendingShare.workspaceId,
       consentId: pending.pendingShare.consentId,
-      ownerAllowedRepresentations: [
-        "memory_events",
-        "lcm_leaves",
-        "lcm_rollups"
-      ],
-      activeRepresentation: "memory_events",
-      representationPolicyRevision: 1,
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      fidelityPolicyRevision: 1,
       sourceRevision: 12,
       grantVersion: 2,
       lifecycle: "active",
@@ -1512,7 +1511,8 @@ describe("CollaborationApp", () => {
     const replacement: PendingShare = {
       ...pending.pendingShare,
       representation: "lcm_leaves",
-      allowedRepresentations: ["lcm_leaves"],
+      maximumFidelity: "lcm_leaves",
+      includeCuratedMemory: false,
       state: "preparing",
       stage: "syncing",
       operationVersion: pending.pendingShare.operationVersion + 1
@@ -1527,9 +1527,7 @@ describe("CollaborationApp", () => {
     vi.mocked(client.controlPendingShare).mockResolvedValue(
       paused.pendingShare
     );
-    vi.mocked(client.changeSharedMemoryRepresentation).mockResolvedValue(
-      replacement
-    );
+    vi.mocked(client.changeSharedMemoryFidelity).mockResolvedValue(replacement);
     const personalMemoryApi: PersonalDesktopApi = {
       assignSessionProject: vi.fn(async () => ({ projectId: null })),
       listProjects: vi.fn(async () => []),
@@ -1663,7 +1661,7 @@ describe("CollaborationApp", () => {
       )
     ).toBeNull();
     const leaves = document.body.querySelector<HTMLInputElement>(
-      '.collab-change-detail-modal input[aria-label="LCM Leaves"]'
+      '.collab-change-detail-modal input[aria-label="Up to LCM Leaves"]'
     );
     expect(leaves).not.toBeNull();
     await act(async () => leaves!.click());
@@ -1679,11 +1677,12 @@ describe("CollaborationApp", () => {
     ).toBeNull();
     await click(container, "Apply change");
     await vi.waitFor(() =>
-      expect(client.changeSharedMemoryRepresentation).toHaveBeenCalledWith(
+      expect(client.changeSharedMemoryFidelity).toHaveBeenCalledWith(
         expect.objectContaining({
           candidateSessionId: snapshot.navigation.personal.memory[0]!.id,
           mode: "continuous",
-          representation: "lcm_leaves",
+          maximumFidelity: "lcm_leaves",
+          includeCuratedMemory: false,
           shareGrantId: grant.id,
           teamId: ids.team,
           workspaceId: ids.workspace
@@ -1734,9 +1733,9 @@ describe("CollaborationApp", () => {
       teamId: ids.team,
       workspaceId: ids.workspace,
       consentId: uuid(623),
-      ownerAllowedRepresentations: ["memory_events"],
-      activeRepresentation: "memory_events",
-      representationPolicyRevision: 1,
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      fidelityPolicyRevision: 1,
       sourceRevision: 12,
       grantVersion: 1,
       lifecycle: "active",
@@ -2067,7 +2066,8 @@ describe("CollaborationApp", () => {
         teamId: ids.team,
         workspaceId: ids.workspace,
         representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         mode: "continuous",
         sourceRevision: 12,
         state: "failed",
@@ -3297,7 +3297,8 @@ describe("CollaborationApp", () => {
         teamId: ids.team,
         workspaceId: ids.workspace,
         representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         mode: "continuous",
         sourceRevision: 12,
         state: "activated",
@@ -3541,7 +3542,7 @@ pnpm test
     }
     const curatedSession = {
       ...selected.view.session,
-      representation: "curated_assertions" as const
+      includeCuratedMemory: true
     };
     const curatedSnapshot = collaborationSnapshotSchema.parse({
       ...selected,
@@ -4049,13 +4050,14 @@ pnpm test
         teamId: ids.team,
         workspaceId: ids.workspace,
         representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         previewRevision: 1,
         sourceRevision: 2,
         policyRevision: 1,
         contentPolicyVersion: 1,
         classifierVersion: 1,
-        redactedContentHash: "a".repeat(64),
+        sourceContentHash: "a".repeat(64),
         previewHash: "b".repeat(64),
         itemCount: 1,
         items: [sourceItem("memory_events")],
@@ -4103,13 +4105,14 @@ pnpm test
         teamId: ids.team,
         workspaceId: ids.workspace,
         representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         previewRevision: 2,
         sourceRevision: 2,
         policyRevision: 1,
         contentPolicyVersion: 1,
         classifierVersion: 1,
-        redactedContentHash: "a".repeat(64),
+        sourceContentHash: "a".repeat(64),
         previewHash: "d".repeat(64),
         itemCount: 1,
         items: [sourceItem("memory_events")],

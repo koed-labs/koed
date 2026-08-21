@@ -52,6 +52,7 @@ const createPackageRoot = () => {
     "api/dist/browser-approval/assets/index-abc12345.css",
     "worker/dist/index.js",
     "embedding-service/dist/index.js",
+    "privacy-service/dist/index.js",
     "mcp-server/dist/cli.js",
     "mcp-server/dist/capture-hook.js",
     "api/node_modules/@koed/db/dist/index.js",

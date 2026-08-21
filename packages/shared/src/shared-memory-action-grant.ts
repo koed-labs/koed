@@ -2,14 +2,13 @@ import {
   highRiskActionGrantCanonicalHash,
   HIGH_RISK_ACTION_GRANT_HASH_DOMAINS
 } from "./high-risk-action-grant-hash.js";
+import type { SharedMemoryFidelityCeiling } from "./shared-memory-fidelity.js";
 
 export const SHARED_MEMORY_AUTHORITY_ACTION =
   "workspace.memory.share_owned" as const;
 
 export type SharedMemoryRepresentation =
-  | "memory_events"
-  | "lcm_leaves"
-  | "lcm_rollups"
+  | SharedMemoryFidelityCeiling
   | "curated_assertions";
 
 export interface SharedMemoryActionGrantBinding {
@@ -63,10 +62,6 @@ const withHashes = (
   requestHash: sharedMemoryGrantManagementRequestHash(input)
 });
 
-const allowedSetScope = (
-  allowedRepresentations: readonly SharedMemoryRepresentation[]
-): string => [...allowedRepresentations].sort().join(":");
-
 export const sharedMemoryPreviewActionGrantBinding = (input: {
   referenceId: string;
   logicalMemoryId: string;
@@ -74,11 +69,12 @@ export const sharedMemoryPreviewActionGrantBinding = (input: {
   teamId: string;
   teamWorkspaceId: string;
   representation: SharedMemoryRepresentation;
-  allowedRepresentations: SharedMemoryRepresentation[];
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
-    action: `shared_memory.preview.${input.representation}.${allowedSetScope(input.allowedRepresentations)}`,
+    action: `shared_memory.preview.${input.representation}.max_${input.maximumFidelity}.curated_${input.includeCuratedMemory}`,
     teamId: input.teamId,
     targetId: input.remoteReplicaId,
     method: "POST",
@@ -89,7 +85,8 @@ export const sharedMemoryPreviewActionGrantBinding = (input: {
       teamId: input.teamId,
       teamWorkspaceId: input.teamWorkspaceId,
       representation: input.representation,
-      allowedRepresentations: input.allowedRepresentations,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       authority: authorityBody(input.referenceId)
     }
   });
@@ -106,13 +103,14 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
   teamId: string;
   teamWorkspaceId: string;
   representation: SharedMemoryRepresentation;
-  allowedRepresentations: SharedMemoryRepresentation[];
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
   mode: "snapshot" | "continuous";
   expiresAt?: string | null;
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
-    action: `shared_memory.candidate_preview.${input.representation}.${allowedSetScope(input.allowedRepresentations)}`,
+    action: `shared_memory.candidate_preview.${input.representation}.max_${input.maximumFidelity}.curated_${input.includeCuratedMemory}`,
     teamId: input.teamId,
     targetId: input.logicalMemoryId,
     method: "POST",
@@ -128,7 +126,8 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
       teamId: input.teamId,
       teamWorkspaceId: input.teamWorkspaceId,
       representation: input.representation,
-      allowedRepresentations: input.allowedRepresentations,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       mode: input.mode,
       expiresAt: input.expiresAt ?? null,
       authority: authorityBody(input.referenceId)
@@ -143,8 +142,8 @@ export const sharedMemoryConsentActionGrantBinding = (input: {
   teamWorkspaceId: string;
   previewId: string;
   mode: "snapshot" | "continuous";
-  allowedRepresentations: SharedMemoryRepresentation[];
-  selectedRepresentation: SharedMemoryRepresentation;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
   previewRevision: number;
   previewHash: string;
   expiresAt?: string | null;
@@ -165,8 +164,8 @@ export const sharedMemoryConsentActionGrantBinding = (input: {
       },
       previewRevision: input.previewRevision,
       mode: input.mode,
-      allowedRepresentations: input.allowedRepresentations,
-      selectedRepresentation: input.selectedRepresentation,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       expiresAt: input.expiresAt,
       authority: authorityBody(input.referenceId)
     }
@@ -211,8 +210,8 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
   previewRevision: number;
   previewHash: string;
   mode: "snapshot" | "continuous";
-  allowedRepresentations: SharedMemoryRepresentation[];
-  selectedRepresentation: SharedMemoryRepresentation;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
   expiresAt?: string | null;
   title?: string;
 }): SharedMemoryActionGrantBinding =>
@@ -236,8 +235,8 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
       },
       previewRevision: input.previewRevision,
       mode: input.mode,
-      allowedRepresentations: input.allowedRepresentations,
-      selectedRepresentation: input.selectedRepresentation,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       expiresAt: input.expiresAt ?? null,
       ...(input.title ? { title: input.title } : {}),
       authority: authorityBody(input.referenceId)
@@ -256,8 +255,8 @@ export const sharedMemoryShareBundleActionGrantBinding = (input: {
   previewRevision: number;
   previewHash: string;
   mode: "snapshot" | "continuous";
-  allowedRepresentations: SharedMemoryRepresentation[];
-  selectedRepresentation: SharedMemoryRepresentation;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
   expiresAt?: string | null;
   title?: string;
 }): SharedMemoryActionGrantBinding =>
@@ -281,8 +280,8 @@ export const sharedMemoryShareBundleActionGrantBinding = (input: {
       },
       previewRevision: input.previewRevision,
       mode: input.mode,
-      allowedRepresentations: input.allowedRepresentations,
-      selectedRepresentation: input.selectedRepresentation,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       expiresAt: input.expiresAt ?? null,
       ...(input.title ? { title: input.title } : {}),
       authority: authorityBody(input.referenceId)
@@ -363,35 +362,37 @@ export const sharedMemoryTranscriptRevokeActionGrantBinding = (input: {
     }
   });
 
-export const sharedMemoryRepresentationActionGrantBinding = (input: {
+export const sharedMemoryFidelityActionGrantBinding = (input: {
   referenceId: string;
   mutationId: string;
   teamId: string;
   teamWorkspaceId: string;
   shareGrantId: string;
   consentId: string;
-  representation: SharedMemoryRepresentation;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
   expectedGrantVersion: number;
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
-    action: `shared_memory.change_representation.${input.teamWorkspaceId}.${input.representation}`,
+    action: `shared_memory.change_fidelity.${input.teamWorkspaceId}.${input.maximumFidelity}.curated_${input.includeCuratedMemory}`,
     teamId: input.teamId,
     targetId: input.shareGrantId,
     method: "PUT",
-    path: `/v1/shared-memory/share-grants/${input.shareGrantId}/representation`,
+    path: `/v1/shared-memory/share-grants/${input.shareGrantId}/fidelity`,
     body: {
       mutationId: input.mutationId,
       teamId: input.teamId,
       teamWorkspaceId: input.teamWorkspaceId,
       consentId: input.consentId,
-      representation: input.representation,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       expectedGrantVersion: input.expectedGrantVersion,
       authority: authorityBody(input.referenceId)
     }
   });
 
-export const sharedMemoryRepresentationBundleActionGrantBinding = (input: {
+export const sharedMemoryFidelityBundleActionGrantBinding = (input: {
   referenceId: string;
   mutationId: string;
   consentId: string;
@@ -403,18 +404,18 @@ export const sharedMemoryRepresentationBundleActionGrantBinding = (input: {
   previewRevision: number;
   previewHash: string;
   mode: "snapshot" | "continuous";
-  allowedRepresentations: SharedMemoryRepresentation[];
-  representation: SharedMemoryRepresentation;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
   expectedGrantVersion: number;
   expiresAt?: string | null;
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
-    action: `shared_memory.change_representation.${input.teamWorkspaceId}.${input.representation}`,
+    action: `shared_memory.change_fidelity.${input.teamWorkspaceId}.${input.maximumFidelity}.curated_${input.includeCuratedMemory}`,
     teamId: input.teamId,
     targetId: input.shareGrantId,
     method: "PUT",
-    path: `/v1/shared-memory/share-grants/${input.shareGrantId}/representation-bundle`,
+    path: `/v1/shared-memory/share-grants/${input.shareGrantId}/fidelity-bundle`,
     body: {
       mutationId: input.mutationId,
       consentId: input.consentId,
@@ -427,8 +428,8 @@ export const sharedMemoryRepresentationBundleActionGrantBinding = (input: {
       },
       previewRevision: input.previewRevision,
       mode: input.mode,
-      allowedRepresentations: input.allowedRepresentations,
-      representation: input.representation,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       expectedGrantVersion: input.expectedGrantVersion,
       expiresAt: input.expiresAt ?? null,
       authority: authorityBody(input.referenceId)

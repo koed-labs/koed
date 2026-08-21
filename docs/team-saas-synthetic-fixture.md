@@ -83,6 +83,14 @@ comments, shared chat, or committed config. The command profile guard rejects
 shared deployment profiles; do not bypass it or seed the fixture into shared,
 staging, or production environments with a normal shared `API_TOKEN_PEPPER`.
 
+Seed, validate, reset, API, and Worker processes must resolve the same
+application and Team encryption-provider lineage. In a supervised deployment,
+use its generated runtime provider configuration for fixture commands. Do not
+seed through bootstrap shell keys and then ask supervised processes using a
+different generated key lineage to decrypt or embed those rows; the resulting
+key-ID mismatch is an invalid fixture setup, not a recoverable row or product
+fallback.
+
 ## Team
 
 | Person | Fixture email           | Team state         | Purpose                                               |
@@ -97,11 +105,11 @@ staging, or production environments with a normal shared `API_TOKEN_PEPPER`.
 
 ## Workspaces
 
-| Workspace                   | Project path                                | Access model                                                                               |
-| --------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Electron Team App           | `/fixture/koed/electron-team-app`           | Alice, Bob, and David can write. Bob may share his owned Memory. Carol and Erin can read.  |
-| Cloud Memory Platform       | `/fixture/koed/cloud-memory-platform`       | Alice, Carol, and David can write. Bob has been removed and has disabled Workspace access. |
-| Managed Knowledge Ingestion | `/fixture/koed/managed-knowledge-ingestion` | Alice, Carol, and David can write. Bob and Erin can read.                                  |
+| Workspace                   | Project path                                | Access model                                                                                                                       |
+| --------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Electron Team App           | `/fixture/koed/electron-team-app`           | Alice, Bob, and David can write. Bob and David may share owned Memory. Carol and Erin can read.                                    |
+| Cloud Memory Platform       | `/fixture/koed/cloud-memory-platform`       | Alice, Carol, and David can write. Alice and Carol may share owned Memory. Bob has been removed and has disabled Workspace access. |
+| Managed Knowledge Ingestion | `/fixture/koed/managed-knowledge-ingestion` | Alice, Carol, and David can write and may share owned Memory. Bob and Erin can read.                                               |
 
 ## Memory Truth Sheet
 
@@ -175,20 +183,23 @@ ordinary Workspace write access as sharing authority.
 
 Conversation Source Access is an independent capability. Most active Shared
 Memory grants deliberately have no source grant. The fixture adds only these
-three deterministic, origin-signed, encrypted exact-source cases:
+three deterministic, origin-signed, encrypted owner-source cases:
 
-| Source                      | Shared Memory                | Mode                  | Expected behavior                                                                                                                                           |
-| --------------------------- | ---------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Timeline continuous source  | Workspace Memory Timeline UX | `continuous`          | Authorized Electron Workspace readers decrypt both current segments and may follow later generations.                                                       |
-| Agent rooms snapshot source | Agent Collaboration Rooms    | `snapshot`            | Authorized readers decrypt only segment 0; the later stored segment remains outside the grant. Segment 0 ends at a completed turn and supports fork export. |
-| Revoked experiment source   | Revoked Electron Experiment  | `continuous`, revoked | No Team reader can list or decrypt the source.                                                                                                              |
+| Source                      | Shared Memory                | Mode                  | Expected behavior                                                                                                                                                                                                                                     |
+| --------------------------- | ---------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Timeline continuous source  | Workspace Memory Timeline UX | `continuous`          | The owner retains exact encrypted source bytes. Authorized Electron Workspace readers receive a policy-bound sanitized derivative and may follow later sanitized generations. Its synthetic email and API-key canary must never appear in Team reads. |
+| Agent rooms snapshot source | Agent Collaboration Rooms    | `snapshot`            | The owner retains both exact segments. Authorized readers receive only a sanitized derivative of segment 0; the later stored segment remains outside the grant. Segment 0 ends at a completed turn and supports sanitized fork export.                |
+| Revoked experiment source   | Revoked Electron Experiment  | `continuous`, revoked | No Team reader can list or decrypt a sanitized source derivative. The owner's exact source remains Personal.                                                                                                                                          |
 
-Fixture validation decrypts the exact JSONL bytes, checks the snapshot and
-continuous bounds through the production repository, proves the revoked grant
-is denied, and verifies deterministic grant/revocation audit events. The
-automated launch gate also runs the source routes for browser-session and
-device-credential authorization, Personal API Token denial, fork export, SSE
-authorization loss, consent expiry, cursor binding, and integrity failures.
+Fixture validation decrypts the exact owner-private JSONL bytes, checks the
+snapshot and continuous bounds through the production repository, proves the
+revoked grant is denied, and verifies deterministic grant/revocation audit
+events. A running Privacy Filter Service and Worker materialize the sanitized
+Team source derivative; Team route tests require typed placeholders and reject
+the original synthetic canary. The automated launch gate also runs the source
+routes for browser-session and device-credential authorization, Personal API
+Token denial, sanitized fork export, SSE authorization loss, consent expiry,
+cursor binding, and integrity failures.
 
 ## Agent Testing Playbook
 

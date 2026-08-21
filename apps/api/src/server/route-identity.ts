@@ -1030,11 +1030,18 @@ export const routeIdentityContracts = [
     "Submit local captured-session title."
   ),
   route(
-    "GET",
-    "/v1/memory/lcm/summaries/pending",
+    "POST",
+    "/v1/memory/lcm/summary-claims",
     "api_token",
     "local_synthesis",
-    "Local LCM Summary work queue."
+    "Claim fenced local LCM Summary work."
+  ),
+  route(
+    "PUT",
+    "/v1/memory/lcm/summary-claims/{claimId}/renew",
+    "api_token",
+    "local_synthesis",
+    "Renew a fenced local LCM Summary work claim."
   ),
   route(
     "POST",
@@ -1587,10 +1594,20 @@ export const routeIdentityContracts = [
   ),
   route(
     "PUT",
-    "/v1/shared-memory/share-grants/{shareGrantId}/representation",
+    "/v1/shared-memory/share-grants/{shareGrantId}/fidelity-bundle",
     "session_or_device_credential",
     "shared_memory",
-    "Select a Share Grant representation.",
+    "Atomically update source-owner consent and Share Grant fidelity.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PUT",
+    "/v1/shared-memory/share-grants/{shareGrantId}/fidelity",
+    "session_or_device_credential",
+    "shared_memory",
+    "Select a Share Grant fidelity ceiling.",
     "request_time_shared_memory_owner",
     "implemented",
     teamDeploymentModes
@@ -1958,6 +1975,26 @@ export const routeIdentityContracts = [
     "none",
     "implemented",
     remoteEnrollmentDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/personal-semantic-artifacts/resolve",
+    "device_credential",
+    "personal_memory",
+    "Return a recipient-encrypted compatible Personal embedding artifact to its enrolled source replica.",
+    "none",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/personal-semantic-artifacts/import",
+    "api_token",
+    "personal_memory",
+    "Resolve and import the hosted Personal embedding artifact selected by explicit source-replication policy.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
   ),
   route(
     "GET",

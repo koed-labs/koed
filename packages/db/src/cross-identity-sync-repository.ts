@@ -4506,7 +4506,7 @@ export const createCrossIdentitySyncRepository = (
           );
           for (const grant of affectedGrants.rows) {
             await appendCollaborationOutboxEventWithClient(client, {
-              family: "representation_changed",
+              family: "fidelity_changed",
               scope: "team",
               personalOwnerUserId: null,
               teamId: String(grant.team_id),

@@ -7,6 +7,7 @@ Related decisions:
 - [0012 Symmetric Replicated Personal Memory](./0012-symmetric-replicated-personal-memory.md)
 - [0019 Same-Network Personal Device Enrollment](./0019-same-network-personal-device-enrollment.md)
 - [0021 Portable Semantic Work Ownership](./0021-portable-semantic-work-ownership.md)
+- [0030 Personal Semantic Work Is Computed Once And Replicated](./0030-single-personal-semantic-computation.md)
 - [Personal Device Sync Protocol V1](../personal-device-sync-protocol.md)
 
 ## Context
@@ -108,19 +109,23 @@ never become an irrevocable Personal replica through PDS.
 
 The reuse rule is the same in both supported topologies:
 
-- With a remote `koed-server`, canonical source is processed at that remote
-  backend. Memory Events, embeddings, and other compatible derived artifacts
-  are created once in the authoritative server-side materialization and reused
-  by every connected device.
+- With an owner-authorized remote `koed-server`, canonical source is processed
+  there and, while Hosted Personal Source Replication is explicitly enabled,
+  the remote backend owns compatible embedding work rather than merely being a
+  preferred claimant.
+  Accepted Personal embeddings and LCM artifacts are downloaded and reused by
+  every authorized device. LCM synthesis still runs through one claimed Local
+  AI Runtime, not a backend LLM.
 - Without a remote backend, each device has a local materialization. PDS moves
   canonical source and explicitly allowlisted compatible artifacts so another
   device can reuse completed Projection and embedding work instead of repeating
   it.
 
-This does not make raw database replication the protocol. Remote-backed devices
-share one authoritative materialization; local PDS devices exchange immutable,
-signed, encrypted source and artifact records under the registry and
-compatibility rules in this ADR.
+This does not make raw database replication the protocol. PDS exchanges
+immutable, signed, encrypted source and artifact records. The direct hosted
+path uses its separately authenticated, recipient-encrypted package contract;
+an enrolled device signs an artifact only if it later serves that verified
+result through PDS. Both transports follow the semantic-work rules in ADR 0030.
 
 ## Consequences
 

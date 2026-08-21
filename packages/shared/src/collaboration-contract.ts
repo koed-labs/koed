@@ -13,6 +13,10 @@ import {
   approvalDecisionDisplaySchema,
   personalDesktopToolDisplaySchema
 } from "./personal-desktop-contract.js";
+import {
+  sharedMemoryCeilingAuthorizes,
+  sharedMemoryFidelityCeilings
+} from "./shared-memory-fidelity.js";
 import { aiClientIdentifierPattern } from "./ai-client-contract.js";
 
 export const COLLABORATION_CONTRACT_VERSION = 4;
@@ -962,25 +966,14 @@ export const collaborationMessagePageSchema = z
     }
   });
 
+export const sharedMemoryFidelityCeilingSchema = z.enum(
+  sharedMemoryFidelityCeilings
+);
+
 export const sharedMemoryRepresentationSchema = z.enum([
-  "memory_events",
-  "lcm_leaves",
-  "lcm_rollups",
+  ...sharedMemoryFidelityCeilings,
   "curated_assertions"
 ]);
-
-const distinctSharedMemoryRepresentationsSchema = z
-  .array(sharedMemoryRepresentationSchema)
-  .min(1)
-  .max(4)
-  .superRefine((values, context) => {
-    if (new Set(values).size !== values.length) {
-      context.addIssue({
-        code: "custom",
-        message: "Shared Memory representations must be distinct"
-      });
-    }
-  });
 
 export const sharedMemoryEventSourceKindSchema = z.enum([
   "user_message",
@@ -1085,8 +1078,8 @@ export const sharedMemorySessionSchema = z
     owner: participantSchema,
     title: collaborationNameSchema,
     latestActivityAt: collaborationTimestampSchema,
-    representation: sharedMemoryRepresentationSchema,
-    representationState: z.enum(["current", "stale", "pending", "unavailable"]),
+    maximumFidelity: sharedMemoryFidelityCeilingSchema,
+    includeCuratedMemory: z.boolean(),
     liveState: z.enum(["live", "reconnecting", "ended"]),
     sourceState: z.enum([
       "ready",
@@ -1626,7 +1619,8 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       representation: sharedMemoryRepresentationSchema,
-      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
+      maximumFidelity: sharedMemoryFidelityCeilingSchema,
+      includeCuratedMemory: z.boolean(),
       candidate: z
         .object({
           sessionId: z.uuid(),
@@ -1658,8 +1652,8 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       mode: z.enum(["snapshot", "continuous"]),
-      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
-      selectedRepresentation: sharedMemoryRepresentationSchema,
+      maximumFidelity: sharedMemoryFidelityCeilingSchema,
+      includeCuratedMemory: z.boolean(),
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
@@ -1696,17 +1690,17 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
         .max(120)
         .regex(/^[A-Za-z][A-Za-z0-9_.-]{0,119}$/)
     }),
-    actionGrantIntent("collaboration.change_shared_memory_representation", {
+    actionGrantIntent("collaboration.change_shared_memory_fidelity", {
       mutationId: z.uuid(),
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       shareGrantId: z.uuid(),
       consentId: z.uuid(),
-      representation: sharedMemoryRepresentationSchema,
+      maximumFidelity: sharedMemoryFidelityCeilingSchema,
+      includeCuratedMemory: z.boolean(),
       expectedGrantVersion: positiveVersionSchema,
       mode: z.enum(["snapshot", "continuous"]),
-      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
@@ -1972,13 +1966,14 @@ export const sharedMemoryPreviewSchema = z
     teamId: z.uuid(),
     workspaceId: z.uuid(),
     representation: sharedMemoryRepresentationSchema,
-    allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
+    maximumFidelity: sharedMemoryFidelityCeilingSchema,
+    includeCuratedMemory: z.boolean(),
     previewRevision: positiveVersionSchema,
     sourceRevision: nonNegativeSequenceSchema,
     policyRevision: positiveVersionSchema,
     contentPolicyVersion: positiveVersionSchema,
     classifierVersion: positiveVersionSchema,
-    redactedContentHash: sha256Schema,
+    sourceContentHash: sha256Schema,
     previewHash: sha256Schema,
     itemCount: z.number().int().safe().min(1),
     items: z
@@ -1988,11 +1983,18 @@ export const sharedMemoryPreviewSchema = z
   })
   .strict()
   .superRefine((preview, context) => {
-    if (!preview.allowedRepresentations.includes(preview.representation)) {
+    if (
+      !sharedMemoryCeilingAuthorizes(
+        preview.maximumFidelity,
+        preview.representation,
+        preview.includeCuratedMemory
+      )
+    ) {
       context.addIssue({
         code: "custom",
-        path: ["allowedRepresentations"],
-        message: "Preview representation must be owner-authorized"
+        path: ["representation"],
+        message:
+          "Preview representation must be authorized by the fidelity consent"
       });
     }
     if (
@@ -2064,8 +2066,8 @@ export const sharedMemoryConsentSchema = z
     mode: z.enum(["snapshot", "continuous"]),
     state: z.enum(["pending", "active", "paused", "revoked", "expired"]),
     version: positiveVersionSchema,
-    allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
-    selectedRepresentation: sharedMemoryRepresentationSchema,
+    maximumFidelity: sharedMemoryFidelityCeilingSchema,
+    includeCuratedMemory: z.boolean(),
     previewRevision: positiveVersionSchema,
     previewHash: sha256Schema,
     sourceRevision: nonNegativeSequenceSchema,
@@ -2074,18 +2076,7 @@ export const sharedMemoryConsentSchema = z
     activatedAt: collaborationTimestampSchema.nullable(),
     revokedAt: collaborationTimestampSchema.nullable()
   })
-  .strict()
-  .superRefine((consent, context) => {
-    if (
-      !consent.allowedRepresentations.includes(consent.selectedRepresentation)
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["selectedRepresentation"],
-        message: "Selected representation must be consented"
-      });
-    }
-  });
+  .strict();
 
 export const sharedMemoryGrantSchema = z
   .object({
@@ -2096,9 +2087,9 @@ export const sharedMemoryGrantSchema = z
     teamId: z.uuid(),
     workspaceId: z.uuid(),
     consentId: z.uuid(),
-    ownerAllowedRepresentations: distinctSharedMemoryRepresentationsSchema,
-    activeRepresentation: sharedMemoryRepresentationSchema.nullable(),
-    representationPolicyRevision: positiveVersionSchema,
+    maximumFidelity: sharedMemoryFidelityCeilingSchema,
+    includeCuratedMemory: z.boolean(),
+    fidelityPolicyRevision: positiveVersionSchema,
     sourceRevision: nonNegativeSequenceSchema,
     grantVersion: positiveVersionSchema,
     lifecycle: z.enum([
@@ -2126,7 +2117,8 @@ export const pendingShareSchema = z
     teamId: z.uuid(),
     workspaceId: z.uuid(),
     representation: sharedMemoryRepresentationSchema,
-    allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
+    maximumFidelity: sharedMemoryFidelityCeilingSchema,
+    includeCuratedMemory: z.boolean(),
     mode: z.enum(["snapshot", "continuous"]),
     sourceRevision: nonNegativeSequenceSchema,
     state: z.enum([
@@ -2504,7 +2496,8 @@ export const collaborationRendererCommandSchema = z
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       representation: sharedMemoryRepresentationSchema,
-      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
+      maximumFidelity: sharedMemoryFidelityCeilingSchema,
+      includeCuratedMemory: z.boolean(),
       candidate: z
         .object({
           sessionId: z.uuid(),
@@ -2542,8 +2535,8 @@ export const collaborationRendererCommandSchema = z
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       mode: z.enum(["snapshot", "continuous"]),
-      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
-      selectedRepresentation: sharedMemoryRepresentationSchema,
+      maximumFidelity: sharedMemoryFidelityCeilingSchema,
+      includeCuratedMemory: z.boolean(),
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
@@ -2564,17 +2557,17 @@ export const collaborationRendererCommandSchema = z
         .regex(/^[A-Za-z0-9_.:-]+$/),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
-    command("collaboration.change_shared_memory_representation", {
+    command("collaboration.change_shared_memory_fidelity", {
       mutationId: z.uuid(),
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       shareGrantId: z.uuid(),
       consentId: z.uuid(),
-      representation: sharedMemoryRepresentationSchema,
+      maximumFidelity: sharedMemoryFidelityCeilingSchema,
+      includeCuratedMemory: z.boolean(),
       expectedGrantVersion: positiveVersionSchema,
       mode: z.enum(["snapshot", "continuous"]),
-      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
@@ -2603,14 +2596,17 @@ export const collaborationRendererCommandSchema = z
   .superRefine((rendererCommand, context) => {
     if (
       rendererCommand.command === "collaboration.preview_shared_memory" &&
-      !rendererCommand.input.allowedRepresentations.includes(
-        rendererCommand.input.representation
+      !sharedMemoryCeilingAuthorizes(
+        rendererCommand.input.maximumFidelity,
+        rendererCommand.input.representation,
+        rendererCommand.input.includeCuratedMemory
       )
     ) {
       context.addIssue({
         code: "custom",
         path: ["input", "representation"],
-        message: "Preview representation must be owner-authorized"
+        message:
+          "Preview representation must be authorized by the fidelity consent"
       });
     }
   });
@@ -2749,7 +2745,7 @@ const commandNameSchema = z.enum([
   "collaboration.load_shared_memory_preview_page",
   "collaboration.share_memory",
   "collaboration.revoke_shared_memory",
-  "collaboration.change_shared_memory_representation",
+  "collaboration.change_shared_memory_fidelity",
   "collaboration.subscribe",
   "collaboration.unsubscribe",
   "collaboration.acknowledge_delivery"
@@ -2956,7 +2952,7 @@ export const collaborationCommandResultSchema = z.union([
     z.object({ grant: sharedMemoryGrantSchema }).strict()
   ),
   successResult(
-    "collaboration.change_shared_memory_representation",
+    "collaboration.change_shared_memory_fidelity",
     z.object({ pendingShare: pendingShareSchema }).strict()
   ),
   successResult(
@@ -3149,7 +3145,7 @@ export const collaborationRealtimeEventFamilySchema = z.enum([
   "message_created",
   "receipt_state_updated",
   "share_grant_lifecycle",
-  "representation_changed",
+  "fidelity_changed",
   "memory_event_available",
   "lcm_leaf_available",
   "lcm_rollup_available",
@@ -3295,7 +3291,7 @@ const realtimeUpdateDeliverySchema = z
         "shared_session_upserted",
         "shared_session_removed"
       ]),
-      representation_changed: new Set([
+      fidelity_changed: new Set([
         "shared_session_upserted",
         "shared_session_removed"
       ]),
@@ -3528,6 +3524,9 @@ export type CollaborationReadState = z.infer<
 >;
 export type CollaborationMessagePage = z.infer<
   typeof collaborationMessagePageSchema
+>;
+export type SharedMemoryFidelityCeiling = z.infer<
+  typeof sharedMemoryFidelityCeilingSchema
 >;
 export type SharedMemoryRepresentation = z.infer<
   typeof sharedMemoryRepresentationSchema

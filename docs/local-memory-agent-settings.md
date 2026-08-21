@@ -17,7 +17,9 @@ selects AI Client instance, model, and supported model options. Pi model IDs
 retain full underlying provider/model identity. Capability publication probes only
 instances explicitly listed in `KOED_AI_CLIENT_INSTANCE_REGISTRY`; an empty or
 missing registry publishes zero instances. Setup is responsible for registering
-provider defaults. Desktop reads persisted settings and latest current or stale
+provider defaults. Flow assignments use each AI Client's executable model ID;
+qualified provider/model IDs remain required for Pi, while Codex and Claude use
+the native IDs reported by their runtimes. Desktop reads persisted settings and latest current or stale
 capability snapshots immediately, then asks the authorized Local AI Runtime to
 refresh capabilities asynchronously with a bounded timeout.
 

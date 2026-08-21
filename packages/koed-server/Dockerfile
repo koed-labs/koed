@@ -2,6 +2,8 @@ FROM node:22-bookworm-slim
 
 WORKDIR /app
 
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
   && install -d -m 0755 /etc/apt/keyrings \
@@ -24,6 +26,7 @@ RUN pnpm install --frozen-lockfile \
   && pnpm --filter @koed/api build \
   && pnpm --filter @koed/mcp-server build \
   && pnpm --filter @koed/worker build \
+  && pnpm --filter @koed/privacy-service build \
   && pnpm --filter @koed/koed-server build
 
 ENV KOED_HOME=/data/koed

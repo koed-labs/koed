@@ -49,9 +49,10 @@ for the test run, and child processes run with `NODE_ENV=test`.
 Profile-specific tests configure and verify their intended profile explicitly.
 
 The Conversation Source Access gate starts with deterministic fixture rows for
-independent source grants, encrypted exact reads, snapshot and continuous
-boundaries, revocation, and audit events. Its focused API suite then covers
-Personal API Token denial, completed-turn fork export, credential-bound SSE
+independent source grants, exact owner-private source, sanitized Team reads,
+snapshot and continuous boundaries, revocation, and audit events. Its focused
+API suite then covers Privacy Filter fail-closed behavior, Personal API Token
+denial, sanitized completed-turn fork export, credential-bound SSE
 reauthorization, idle consent expiry, and authorization-loss closure.
 
 Repository tests never run against the fixture database because they truncate

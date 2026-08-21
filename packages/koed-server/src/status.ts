@@ -11,6 +11,7 @@ import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import { parseCodexOwnershipBlock } from "./codex-ownership-marker.js";
 import { collectLocalEmbeddingRuntimeStatus } from "./local-embedding-runtime.js";
+import { collectLocalPrivacyRuntimeStatus } from "./local-privacy-runtime.js";
 import { collectLocalPostgresRuntimeStatus } from "./local-postgres-runtime.js";
 import {
   ensureKoedHome,
@@ -44,6 +45,7 @@ import {
   documentDefault,
   environmentDefaultFor,
   localAiClientFlowKeys,
+  resolveTeamCollaborationEnabled,
   type AiClientCapabilityDescriptor,
   type LocalAiClientDefault,
   type LocalAiClientFlowKey,
@@ -452,10 +454,11 @@ export const inspectClaudeCode = (
 
 const fetchJson = async <T>(
   url: string,
-  fetcher: typeof fetch
+  fetcher: typeof fetch,
+  init?: RequestInit
 ): Promise<{ ok: boolean; status: number; body: T | null; error?: string }> => {
   try {
-    const response = await fetcher(url);
+    const response = await fetcher(url, init);
     const text = await response.text();
     return {
       ok: response.ok,
@@ -470,6 +473,53 @@ const fetchJson = async <T>(
       error: error instanceof Error ? error.message : String(error)
     };
   }
+};
+
+const inspectExternalPrivacyService = async (
+  baseUrl: string,
+  token: string,
+  fetcher: typeof fetch
+): Promise<KoedServerComponentStatus> => {
+  let healthUrl: string;
+  try {
+    const url = new URL(baseUrl);
+    if (
+      url.username ||
+      url.password ||
+      !["http:", "https:"].includes(url.protocol)
+    ) {
+      throw new Error("invalid URL");
+    }
+    healthUrl = new URL("/health", url).toString();
+  } catch {
+    return needsAttention(
+      "External Privacy Filter Service URL is invalid.",
+      "Configure a credential-free HTTP(S) PRIVACY_SERVICE_URL."
+    );
+  }
+  const response = await fetchJson<{
+    status?: string;
+    runtime?: Record<string, unknown>;
+  }>(healthUrl, fetcher);
+  let runtime = response.body?.runtime;
+  if (response.ok && response.body?.status === "ok") {
+    const diagnostics = await fetchJson<Record<string, unknown>>(
+      new URL("/v1/runtime/status", healthUrl).toString(),
+      fetcher,
+      { headers: { "x-koed-privacy-token": token } }
+    );
+    if (diagnostics.ok && diagnostics.body) runtime = diagnostics.body;
+  }
+  return response.ok && response.body?.status === "ok"
+    ? healthy("External Privacy Filter Service is ready.", {
+        healthUrl,
+        ...(runtime ? { privacyFilterRuntime: runtime } : {})
+      })
+    : needsAttention(
+        "External Privacy Filter Service is not ready.",
+        "Check the Operator-managed Privacy Filter Service and its pinned model assets.",
+        { healthUrl, httpStatus: response.status }
+      );
 };
 
 interface ApiReadyPayload {
@@ -647,6 +697,9 @@ const koedServerConfigEnvironment = (
   KOED_EXTERNAL_EMBEDDING_SERVICE_URL:
     environment.KOED_EXTERNAL_EMBEDDING_SERVICE_URL ??
     repoEnv.KOED_EXTERNAL_EMBEDDING_SERVICE_URL,
+  KOED_EXTERNAL_PRIVACY_SERVICE_URL:
+    environment.KOED_EXTERNAL_PRIVACY_SERVICE_URL ??
+    repoEnv.KOED_EXTERNAL_PRIVACY_SERVICE_URL,
   MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED:
     environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED ??
     repoEnv.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED,
@@ -2133,6 +2186,43 @@ export const collectKoedServerStatus = async (
           fetch: deps.fetch
         })
       : apiReady.embeddingService;
+  const externalPrivacyServiceUrl =
+    serverConfig.external?.privacyServiceUrl ??
+    serviceEnvironment.PRIVACY_SERVICE_URL;
+  const privacyControlToken =
+    serviceEnvironment.PRIVACY_RUNTIME_CONTROL_TOKEN?.trim();
+  const teamCollaborationEnabled = resolveTeamCollaborationEnabled({
+    ...repoEnv,
+    ...runtimeEnvironment
+  });
+  const privacyStatus = !teamCollaborationEnabled
+    ? healthy(
+        "Team collaboration is disabled; Privacy Filter is not required.",
+        {
+          required: false
+        }
+      )
+    : useBundledLocalDependencies
+      ? await collectLocalPrivacyRuntimeStatus(paths, serviceEnvironment, {
+          existsSync: deps.existsSync,
+          fetch: deps.fetch
+        })
+      : !serviceEnvironment.PRIVACY_SERVICE_TOKEN?.trim() ||
+          !privacyControlToken
+        ? notConfigured(
+            "Privacy Filter Service token is not configured.",
+            "Set PRIVACY_SERVICE_TOKEN and PRIVACY_RUNTIME_CONTROL_TOKEN to the credentials configured on the Operator-managed service."
+          )
+        : externalPrivacyServiceUrl
+          ? await inspectExternalPrivacyService(
+              externalPrivacyServiceUrl,
+              privacyControlToken,
+              deps.fetch
+            )
+          : notConfigured(
+              "External Privacy Filter Service URL is not configured.",
+              "Set external.privacyServiceUrl in KOED_HOME/config/server.json or set PRIVACY_SERVICE_URL."
+            );
   const queueDependency =
     queueBackend === "local"
       ? localQueueStatus
@@ -2171,6 +2261,7 @@ export const collectKoedServerStatus = async (
     redis: redisStatus,
     workerQueues,
     embeddingService: embeddingStatus,
+    privacyService: privacyStatus,
     localAiRuntime,
     apiToken,
     mcpServer
@@ -2211,6 +2302,7 @@ export const collectKoedServerStatus = async (
     redis: redisStatus,
     workerQueues,
     embeddingService: embeddingStatus,
+    privacyService: privacyStatus,
     localAiRuntime,
     apiToken,
     mcpServer,
@@ -2248,6 +2340,7 @@ export const collectKoedServerDoctor = async (
     ["redis", "Redis", status.redis],
     ["workerQueues", "Redis/queues", status.workerQueues],
     ["embeddingService", "Embedding Service", status.embeddingService],
+    ["privacyService", "Privacy Filter Service", status.privacyService],
     ["localAiRuntime", "Local AI Runtime", status.localAiRuntime],
     ["apiToken", "Local credential/API Token", status.apiToken],
     ["mcpServer", "MCP Server", status.mcpServer],

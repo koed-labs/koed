@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 import type {
-  ConversationSourceSegmentRecord,
+  DecryptedPrivacySanitizedSourceChunk,
   DeviceCredentialAuthContext,
-  TeamConversationSourceAccessRecord,
-  TeamConversationSourceManifestRecord
+  PrivacyClassificationRepository,
+  PrivacySanitizedSourceChunkRecord,
+  PrivacySanitizedSourceManifest,
+  TeamConversationSourceAccessRecord
 } from "@koed/db";
+import type { EnvelopeEncryptionProvider } from "@koed/shared";
 import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -12,8 +15,6 @@ import {
   openOpaqueCursor,
   sealOpaqueCursor
 } from "../local-edge/opaque-cursor.js";
-import { readConversationSourceSegmentBytes } from "../memory/conversation-source-journal-routes.js";
-import { createFilesystemConversationSourceStorage } from "../memory/conversation-source-storage.js";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   teamConversationSourceForkSnapshotBodySchema,
@@ -56,13 +57,11 @@ const cursorSchema = z
     version: z.literal(1),
     viewerHash: z.string().regex(/^[a-f0-9]{64}$/),
     shareGrantId: z.uuid(),
-    sourceGenerationId: z.uuid(),
-    componentPositions: z
-      .record(
-        z.string().regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/),
-        z.number().int().min(-1)
-      )
-      .refine((value) => Object.keys(value).length <= 64),
+    sourceArtifactId: z.uuid(),
+    segmentIndex: z.number().int().min(-1),
+    sourceEndByte: z.number().int().min(0),
+    classifierHash: z.string().regex(/^[a-f0-9]{64}$/),
+    effectivePolicyHash: z.string().regex(/^[a-f0-9]{64}$/),
     expiresAt: z.number().int().positive()
   })
   .strict();
@@ -70,47 +69,19 @@ const cursorSchema = z
 const viewerHash = (userId: string): string =>
   sha256(`koed:team-conversation-source-viewer:v1\n${userId}`);
 
-const safeSegment = (segment: ConversationSourceSegmentRecord) => ({
+const safeSegment = (segment: PrivacySanitizedSourceChunkRecord) => ({
   id: segment.id,
   artifactId: segment.artifactId,
-  segmentIndex: segment.segmentIndex,
-  sourceStartOffset: segment.sourceStartOffset,
-  sourceEndOffset: segment.sourceEndOffset,
-  sourceStartLine: segment.sourceStartLine,
-  sourceEndLine: segment.sourceEndLine,
-  plaintextDigest: segment.plaintextDigest,
-  plaintextSize: segment.plaintextSize,
-  manifestDigest: segment.manifestDigest,
-  previousContentDigest: segment.previousContentDigest,
-  contentDigest: segment.contentDigest,
-  sealedAt: segment.sealedAt
-});
-
-const safeArtifact = (
-  artifact: TeamConversationSourceAccessRecord["artifact"]
-) => ({
-  id: artifact.id,
-  logicalSourceId: artifact.logicalSourceId,
-  sourceGenerationId: artifact.sourceGenerationId,
-  sourceComponentId: artifact.sourceComponentId,
-  sourceComponentRole: artifact.sourceComponentRole,
-  parentSourceComponentId: artifact.parentSourceComponentId,
-  contentFraming: artifact.contentFraming,
-  sourceKind: artifact.sourceKind,
-  sourceRuntime: artifact.sourceRuntime,
-  artifactFormat: artifact.artifactFormat,
-  artifactFormatVersion: artifact.artifactFormatVersion,
-  lifecycle: artifact.lifecycle,
-  currentJournalSequence: artifact.currentJournalSequence,
-  closureHash: artifact.closureHash,
-  sourceSetClosureHash: artifact.sourceSetClosureHash,
-  finalizedAt: artifact.finalizedAt,
-  sourceSetFinalizedAt: artifact.sourceSetFinalizedAt
+  segmentIndex: segment.chunkIndex,
+  sourceStartByte: segment.sourceStartByte,
+  sourceEndByte: segment.sourceEndByte,
+  sanitizedByteLength: segment.sanitizedByteLength
 });
 
 const safeManifest = (
-  access: TeamConversationSourceManifestRecord,
-  segments: ConversationSourceSegmentRecord[]
+  access: TeamConversationSourceAccessRecord,
+  manifest: PrivacySanitizedSourceManifest,
+  segments: PrivacySanitizedSourceChunkRecord[]
 ) => ({
   transcriptAccess: {
     shareGrantId: access.grant.shareGrantId,
@@ -124,36 +95,51 @@ const safeManifest = (
     lifecycle: access.grant.lifecycle
   },
   artifact: {
-    ...safeArtifact(access.artifact),
-    journalStartOffset: access.artifact.journalStartOffset,
-    journalStartLine: access.artifact.journalStartLine,
-    providerCursorOffset: access.artifact.providerCursorOffset,
-    providerCursorLine: access.artifact.providerCursorLine,
-    createdAt: access.artifact.createdAt,
-    updatedAt: access.artifact.updatedAt
+    id: manifest.record.id,
+    format: manifest.record.format,
+    formatVersion: manifest.record.formatVersion,
+    classifierHash: manifest.record.classifierHash,
+    effectivePolicyHash: manifest.record.effectivePolicyHash,
+    sourceFrontierHash: manifest.record.sourceFrontierHash,
+    sourceFrontierCursor: manifest.record.sourceFrontierCursor,
+    sourceSegmentCount: manifest.record.sourceSegmentCount,
+    chunkCount: manifest.record.chunkCount,
+    sanitizedByteCount: manifest.record.sanitizedByteCount,
+    readyAt: manifest.record.readyAt
   },
-  components: access.components.map(safeArtifact),
-  selectedComponent: safeArtifact(access.selectedComponent),
   segments: segments.map(safeSegment)
 });
 
-const readVerifiedSourceSegment = async (
-  context: ApiRouteContext,
-  storage: ReturnType<typeof createFilesystemConversationSourceStorage>,
-  segment: ConversationSourceSegmentRecord
-): Promise<Uint8Array> => {
+const isCompletedTurnBoundary = (bytes: Uint8Array): boolean => {
+  const lines = Buffer.from(bytes)
+    .toString("utf8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return false;
   try {
-    return await readConversationSourceSegmentBytes(context, storage, segment);
-  } catch (error) {
+    const records = lines.map((line) => JSON.parse(line) as unknown);
     if (
-      typeof error === "object" &&
-      error !== null &&
-      "statusCode" in error &&
-      error.statusCode === 503
+      records.some(
+        (record) =>
+          !record || typeof record !== "object" || Array.isArray(record)
+      )
     ) {
-      throw error;
+      return false;
     }
-    throw conflict("Conversation Source segment integrity check failed");
+    const record = records.at(-1) as Record<string, unknown>;
+    if (record.method === "turn/completed") return true;
+    const payload = record.payload;
+    const payloadType =
+      payload && typeof payload === "object" && !Array.isArray(payload)
+        ? (payload as Record<string, unknown>).type
+        : null;
+    return Boolean(
+      record.type === "event_msg" &&
+      typeof payloadType === "string" &&
+      ["task_complete", "turn_aborted"].includes(payloadType)
+    );
+  } catch {
+    return false;
   }
 };
 
@@ -179,10 +165,12 @@ type StreamClient = {
   teamWorkspaceId: string;
   ownerUserId: string;
   sourceGrantId: string;
-  mode: "snapshot" | "continuous";
-  logicalSourceId: string;
-  sourceGenerationId: string;
-  componentPositions: Record<string, number>;
+  artifactId: string;
+  sourceArtifactId: string;
+  classifierHash: string;
+  effectivePolicyHash: string;
+  segmentIndex: number;
+  sourceEndByte: number;
   closed: boolean;
   flushing: boolean;
   pending: boolean;
@@ -233,12 +221,11 @@ export const createTeamConversationSourceService = (options: {
   app: FastifyInstance;
   context: ApiRouteContext;
   pool: ListenPool | null;
+  privacyRepository: PrivacyClassificationRepository | null;
+  teamEncryptionProvider?: EnvelopeEncryptionProvider;
   authorizationRecheckMs?: number;
 }) => {
   const { app, context, pool } = options;
-  const storage = createFilesystemConversationSourceStorage(
-    context.config.koedHome
-  );
   const cursorSecret = context.config.collaborationRealtime.cursorSecret;
   const clients = new Map<string, StreamClient>();
   let listener: ListenClient | null = null;
@@ -254,6 +241,49 @@ export const createTeamConversationSourceService = (options: {
     ),
     STREAM_MAX_AUTHORIZATION_RECHECK_MS
   );
+
+  const requirePrivacyBoundary = (): {
+    repository: PrivacyClassificationRepository;
+    provider: EnvelopeEncryptionProvider;
+  } => {
+    if (!options.privacyRepository || !options.teamEncryptionProvider) {
+      throw Object.assign(
+        new Error("Sanitized Team Conversation source is unavailable"),
+        { statusCode: 503 }
+      );
+    }
+    return {
+      repository: options.privacyRepository,
+      provider: options.teamEncryptionProvider
+    };
+  };
+
+  const readSanitizedManifest = async (
+    viewerId: string,
+    shareGrantId: string
+  ): Promise<PrivacySanitizedSourceManifest | null> => {
+    const privacy = requirePrivacyBoundary();
+    return privacy.repository.readLatestSanitizedSourceManifestByGrant({
+      actor: { userId: viewerId },
+      shareGrantId
+    });
+  };
+
+  const readSanitizedChunk = async (input: {
+    viewerId: string;
+    shareGrantId: string;
+    sanitizedArtifactId: string;
+    chunkId: string;
+  }): Promise<DecryptedPrivacySanitizedSourceChunk | null> => {
+    const privacy = requirePrivacyBoundary();
+    return privacy.repository.readSanitizedSourceChunkByGrant({
+      actor: { userId: input.viewerId },
+      provider: privacy.provider,
+      shareGrantId: input.shareGrantId,
+      sanitizedArtifactId: input.sanitizedArtifactId,
+      chunkId: input.chunkId
+    });
+  };
 
   const authenticateViewer = async (
     request: FastifyRequest
@@ -414,67 +444,64 @@ export const createTeamConversationSourceService = (options: {
           await closeForAuthorizationLoss(client);
           return;
         }
-        if (access.artifact.sourceGenerationId !== client.sourceGenerationId) {
+        const manifest = await readSanitizedManifest(
+          client.viewer.id,
+          client.shareGrantId
+        );
+        if (!manifest) {
+          await closeForAuthorizationLoss(client);
+          return;
+        }
+        const sameGeneration =
+          manifest.record.sourceArtifactId === client.sourceArtifactId &&
+          manifest.record.classifierHash === client.classifierHash &&
+          manifest.record.effectivePolicyHash === client.effectivePolicyHash;
+        if (!sameGeneration) {
           await writeSse(client, "generation_changed", {
-            previousSourceGenerationId: client.sourceGenerationId,
-            sourceGenerationId: access.artifact.sourceGenerationId
+            previousArtifactId: client.artifactId,
+            artifactId: manifest.record.id,
+            resumedAfterSourceByte: 0
           });
-          client.logicalSourceId = access.artifact.logicalSourceId;
-          client.sourceGenerationId = access.artifact.sourceGenerationId;
-          client.componentPositions = {};
+          client.segmentIndex = -1;
+          client.sourceEndByte = 0;
         }
-        for (const component of access.components) {
-          const afterSegmentIndex =
-            client.componentPositions[component.sourceComponentId] ?? -1;
-          const page = await context
-            .requireRepository()
-            .getTeamConversationSourceManifest(
-              { userId: client.viewer.id },
-              {
-                shareGrantId: client.shareGrantId,
-                sourceComponentId: component.sourceComponentId,
-                afterSegmentIndex,
-                limit: 100,
-                recordAudit: false
-              }
-            );
-          if (
-            !page ||
-            page.artifact.sourceGenerationId !== client.sourceGenerationId ||
-            page.selectedComponent.id !== component.id
-          ) {
-            await closeForAuthorizationLoss(client);
-            return;
-          }
-          for (const segment of page.segments) {
-            client.componentPositions[component.sourceComponentId] =
-              segment.segmentIndex;
-            const cursor = sealOpaqueCursor({
-              secret: cursorSecret!,
-              prefix: cursorPrefix,
-              domain: cursorDomain,
-              payload: {
-                version: 1,
-                viewerHash: viewerHash(client.viewer.id),
-                shareGrantId: client.shareGrantId,
-                sourceGenerationId: client.sourceGenerationId,
-                componentPositions: client.componentPositions,
-                expiresAt: Date.now() + STREAM_CURSOR_TTL_MS
-              }
-            });
-            await writeSse(
-              client,
-              "segment_available",
-              {
-                cursor,
-                sourceComponentId: component.sourceComponentId,
-                segment: safeSegment(segment)
-              },
-              cursor
-            );
-          }
-          if (page.segments.length === 100) client.pending = true;
+        client.artifactId = manifest.record.id;
+        client.sourceArtifactId = manifest.record.sourceArtifactId;
+        client.classifierHash = manifest.record.classifierHash;
+        client.effectivePolicyHash = manifest.record.effectivePolicyHash;
+        const page = manifest.chunks
+          .filter((chunk) => chunk.sourceEndByte > client.sourceEndByte)
+          .slice(0, 100);
+        for (const segment of page) {
+          const cursor = sealOpaqueCursor({
+            secret: cursorSecret!,
+            prefix: cursorPrefix,
+            domain: cursorDomain,
+            payload: {
+              version: 1,
+              viewerHash: viewerHash(client.viewer.id),
+              shareGrantId: client.shareGrantId,
+              sourceArtifactId: client.sourceArtifactId,
+              segmentIndex: segment.chunkIndex,
+              sourceEndByte: segment.sourceEndByte,
+              classifierHash: client.classifierHash,
+              effectivePolicyHash: client.effectivePolicyHash,
+              expiresAt: Date.now() + STREAM_CURSOR_TTL_MS
+            }
+          });
+          await writeSse(
+            client,
+            "segment_available",
+            {
+              cursor,
+              segment: safeSegment(segment)
+            },
+            cursor
+          );
+          client.segmentIndex = segment.chunkIndex;
+          client.sourceEndByte = segment.sourceEndByte;
         }
+        if (page.length === 100) client.pending = true;
       } while (client.pending && !client.closed);
     } catch {
       closeClient(client, "backpressure");
@@ -488,21 +515,6 @@ export const createTeamConversationSourceService = (options: {
       if (!shareGrantId || client.shareGrantId === shareGrantId) {
         void flush(client);
       }
-    }
-  };
-
-  const wakeSourceClients = (input: {
-    logicalSourceId?: string;
-    sourceGenerationId?: string;
-  }): void => {
-    if (!input.logicalSourceId && !input.sourceGenerationId) return;
-    for (const client of clients.values()) {
-      const sameGeneration =
-        input.sourceGenerationId === client.sourceGenerationId;
-      const continuousSuccessor =
-        client.mode === "continuous" &&
-        input.logicalSourceId === client.logicalSourceId;
-      if (sameGeneration || continuousSuccessor) void flush(client);
     }
   };
 
@@ -526,7 +538,6 @@ export const createTeamConversationSourceService = (options: {
           next.release();
           return;
         }
-        await next.query("listen koed_conversation_source_replication");
         await next.query("listen koed_team_conversation_source");
         await next.query("listen koed_collaboration_realtime");
         if (closed) {
@@ -536,27 +547,6 @@ export const createTeamConversationSourceService = (options: {
         }
         const activeListener = next;
         activeListener.on("notification", (message) => {
-          if (message.channel === "koed_conversation_source_replication") {
-            try {
-              const payload = JSON.parse(message.payload ?? "{}") as {
-                logicalSourceId?: unknown;
-                sourceGenerationId?: unknown;
-              };
-              wakeSourceClients({
-                logicalSourceId:
-                  typeof payload.logicalSourceId === "string"
-                    ? payload.logicalSourceId
-                    : undefined,
-                sourceGenerationId:
-                  typeof payload.sourceGenerationId === "string"
-                    ? payload.sourceGenerationId
-                    : undefined
-              });
-            } catch {
-              // Identity-less replication work cannot be routed to a source stream.
-            }
-            return;
-          }
           if (message.channel === "koed_team_conversation_source") {
             try {
               const payload = JSON.parse(message.payload ?? "{}") as {
@@ -622,13 +612,13 @@ export const createTeamConversationSourceService = (options: {
       const query = teamConversationSourceManifestQuerySchema.parse(
         request.query
       );
-      const manifest = await context
+      const access = await context
         .requireRepository()
-        .getTeamConversationSourceManifest(
+        .getTeamConversationSourceAccess(
           { userId: viewer.id },
-          { shareGrantId: params.shareGrantId, ...query }
+          { shareGrantId: params.shareGrantId }
         );
-      if (!manifest) {
+      if (!access) {
         await auditDenied({
           viewerId: viewer.id,
           shareGrantId: params.shareGrantId,
@@ -636,7 +626,23 @@ export const createTeamConversationSourceService = (options: {
         });
         throw notFound();
       }
-      return safeManifest(manifest, manifest.segments);
+      const manifest = await readSanitizedManifest(
+        viewer.id,
+        params.shareGrantId
+      );
+      if (!manifest) {
+        throw Object.assign(
+          new Error("Sanitized Team Conversation source is not ready"),
+          { statusCode: 503 }
+        );
+      }
+      if (manifest.record.sourceArtifactId !== access.artifact.id) {
+        throw conflict("Conversation Source changed before manifest read");
+      }
+      const segments = manifest.chunks
+        .filter((chunk) => chunk.chunkIndex > query.afterSegmentIndex)
+        .slice(0, query.limit);
+      return safeManifest(access, manifest, segments);
     }
   );
 
@@ -650,7 +656,10 @@ export const createTeamConversationSourceService = (options: {
       );
       const access = await context
         .requireRepository()
-        .getTeamConversationSourceSegment({ userId: viewer.id }, params);
+        .getTeamConversationSourceAccess(
+          { userId: viewer.id },
+          { shareGrantId: params.shareGrantId }
+        );
       if (!access) {
         await auditDenied({
           viewerId: viewer.id,
@@ -659,11 +668,25 @@ export const createTeamConversationSourceService = (options: {
         });
         throw notFound();
       }
-      const bytes = await readVerifiedSourceSegment(
-        context,
-        storage,
-        access.segment
+      const manifest = await readSanitizedManifest(
+        viewer.id,
+        params.shareGrantId
       );
+      if (!manifest) {
+        throw Object.assign(
+          new Error("Sanitized Team Conversation source is not ready"),
+          { statusCode: 503 }
+        );
+      }
+      const sanitized = await readSanitizedChunk({
+        viewerId: viewer.id,
+        shareGrantId: params.shareGrantId,
+        sanitizedArtifactId: manifest.record.id,
+        chunkId: params.segmentId
+      });
+      if (!sanitized) throw notFound();
+      const bytes = Buffer.from(sanitized.chunk.text, "utf8");
+      const contentDigest = sha256(bytes);
       await context.requireRepository().recordAuditEvent({
         actorUserId: viewer.id,
         ownerUserId: access.grant.ownerUserId,
@@ -675,16 +698,24 @@ export const createTeamConversationSourceService = (options: {
           teamId: access.grant.teamId,
           teamWorkspaceId: access.grant.teamWorkspaceId,
           shareGrantId: access.grant.shareGrantId,
-          segmentIndex: access.segment.segmentIndex,
+          segmentIndex: sanitized.chunk.record.chunkIndex,
           byteCount: bytes.byteLength,
-          contentDigest: access.segment.contentDigest
+          contentDigest
         }
       });
       return reply
         .header("cache-control", "no-store")
         .header("content-type", "application/x-ndjson")
-        .header("x-koed-content-digest", access.segment.contentDigest)
-        .send(Buffer.from(bytes));
+        .header("x-koed-content-digest", contentDigest)
+        .header(
+          "x-koed-privacy-classifier-hash",
+          manifest.record.classifierHash
+        )
+        .header(
+          "x-koed-privacy-policy-hash",
+          manifest.record.effectivePolicyHash
+        )
+        .send(bytes);
     }
   );
 
@@ -726,125 +757,60 @@ export const createTeamConversationSourceService = (options: {
         throw conflict("Conversation Source generation changed before export");
       }
       if (
-        first.components.some(
-          (component) =>
-            component.lifecycle !== "finalized" ||
-            component.journalStartOffset !== 0 ||
-            component.journalStartLine !== 0
-        )
+        first.artifact.journalStartOffset !== 0 ||
+        first.artifact.journalStartLine !== 0
       ) {
-        throw conflict("Fork snapshot requires a complete verified source set");
+        throw conflict(
+          "Fork snapshot requires a complete Conversation Source Artifact"
+        );
       }
-      const packagedComponents: Array<{
-        artifact: ReturnType<typeof safeArtifact>;
-        verification: {
-          closureManifest: Record<string, unknown>;
-          closureSignature: string;
-          originKeyId: string;
-          originPublicKey: string;
-        };
-        segments: Array<ReturnType<typeof safeSegment> & { bytes: string }>;
-      }> = [];
+      const manifest = await readSanitizedManifest(
+        viewer.id,
+        params.shareGrantId
+      );
+      if (!manifest) {
+        throw Object.assign(
+          new Error("Sanitized Team Conversation source is not ready"),
+          { statusCode: 503 }
+        );
+      }
+      if (manifest.record.sourceArtifactId !== first.artifact.id) {
+        throw conflict("Conversation Source changed before export");
+      }
+      const segments = manifest.chunks;
+      if (segments.length > FORK_SNAPSHOT_MAX_SEGMENTS) {
+        throw conflict("Fork snapshot exceeds the segment limit");
+      }
+      if (
+        segments.length === 0 ||
+        segments.at(-1)?.chunkIndex !== manifest.record.chunkCount - 1 ||
+        segments[0]?.chunkIndex !== 0 ||
+        segments.some((segment, index) => segment.chunkIndex !== index)
+      ) {
+        throw conflict("Fork snapshot source range is incomplete");
+      }
+      const chunks: Buffer[] = [];
       let totalBytes = 0;
-      let totalSegments = 0;
-      for (const component of first.components) {
-        const segments: ConversationSourceSegmentRecord[] = [];
-        let afterSegmentIndex = -1;
-        while (afterSegmentIndex < component.currentJournalSequence) {
-          const page = await context
-            .requireRepository()
-            .getTeamConversationSourceManifest(
-              { userId: viewer.id },
-              {
-                shareGrantId: params.shareGrantId,
-                sourceComponentId: component.sourceComponentId,
-                afterSegmentIndex,
-                limit: Math.min(
-                  100,
-                  component.currentJournalSequence - afterSegmentIndex
-                ),
-                recordAudit: false
-              }
-            );
-          if (
-            !page ||
-            page.artifact.sourceGenerationId !==
-              first.artifact.sourceGenerationId ||
-            page.selectedComponent.id !== component.id ||
-            page.segments.length === 0
-          ) {
-            throw notFound();
-          }
-          segments.push(...page.segments);
-          afterSegmentIndex = page.segments.at(-1)!.segmentIndex;
-          totalSegments += page.segments.length;
-          if (totalSegments > FORK_SNAPSHOT_MAX_SEGMENTS) {
-            throw conflict("Fork snapshot exceeds the segment limit");
-          }
-        }
-        if (
-          segments.at(-1)?.segmentIndex !== component.currentJournalSequence ||
-          segments[0]?.sourceStartOffset !== 0
-        ) {
-          throw conflict("Fork snapshot source range is incomplete");
-        }
-        let priorDigest: string | null = null;
-        let priorOffset = 0;
-        const packagedSegments = [];
-        for (const segment of segments) {
-          if (
-            segment.sourceStartOffset !== priorOffset ||
-            segment.previousContentDigest !== priorDigest
-          ) {
-            throw conflict("Fork snapshot source chain is invalid");
-          }
-          const bytes = await readVerifiedSourceSegment(
-            context,
-            storage,
-            segment
-          );
-          totalBytes += bytes.byteLength;
-          if (totalBytes > FORK_SNAPSHOT_MAX_BYTES) {
-            throw conflict("Fork snapshot exceeds the byte limit");
-          }
-          packagedSegments.push({
-            ...safeSegment(segment),
-            bytes: Buffer.from(bytes).toString("base64url")
-          });
-          priorDigest = segment.contentDigest;
-          priorOffset = segment.sourceEndOffset;
-        }
-        if (!component.closureManifest || !component.closureSignature) {
-          throw conflict("Fork snapshot component closure is unavailable");
-        }
-        packagedComponents.push({
-          artifact: safeArtifact(component),
-          verification: {
-            closureManifest: component.closureManifest,
-            closureSignature: component.closureSignature,
-            originKeyId: component.originKeyId,
-            originPublicKey: component.originPublicKey
-          },
-          segments: packagedSegments
+      for (const segment of segments) {
+        const sanitized = await readSanitizedChunk({
+          viewerId: viewer.id,
+          shareGrantId: params.shareGrantId,
+          sanitizedArtifactId: manifest.record.id,
+          chunkId: segment.id
         });
+        if (!sanitized) throw notFound();
+        const bytes = Buffer.from(sanitized.chunk.text, "utf8");
+        totalBytes += bytes.byteLength;
+        if (totalBytes > FORK_SNAPSHOT_MAX_BYTES) {
+          throw conflict("Fork snapshot exceeds the byte limit");
+        }
+        chunks.push(bytes);
       }
-      const packageBody = {
-        protocol: "koed/team-conversation-source-snapshot/v1",
-        parent: {
-          sessionId: first.grant.sessionId,
-          shareGrantId: first.grant.shareGrantId,
-          logicalSourceId: first.artifact.logicalSourceId,
-          sourceGenerationId: first.artifact.sourceGenerationId
-        },
-        sourceSetVerification: {
-          closureHash: first.artifact.sourceSetClosureHash,
-          closureManifest: first.artifact.sourceSetClosureManifest,
-          closureSignature: first.artifact.sourceSetClosureSignature
-        },
-        components: packagedComponents
-      };
-      const serialized = JSON.stringify(packageBody);
-      const snapshotDigest = sha256(serialized);
+      const snapshot = Buffer.concat(chunks);
+      if (!isCompletedTurnBoundary(snapshot)) {
+        throw conflict("Fork snapshot must end at a completed turn boundary");
+      }
+      const snapshotDigest = sha256(snapshot);
       await context.requireRepository().recordAuditEvent({
         actorUserId: viewer.id,
         ownerUserId: first.grant.ownerUserId,
@@ -857,26 +823,32 @@ export const createTeamConversationSourceService = (options: {
           teamWorkspaceId: first.grant.teamWorkspaceId,
           shareGrantId: first.grant.shareGrantId,
           parentSessionId: first.grant.sessionId,
-          parentSourceGenerationId: first.artifact.sourceGenerationId,
-          componentCount: packagedComponents.length,
-          segmentCount: totalSegments,
-          byteCount: totalBytes,
+          parentSanitizedArtifactId: manifest.record.id,
+          throughSegmentIndex: segments.at(-1)?.chunkIndex ?? -1,
+          sourceEndByte: segments.at(-1)?.sourceEndByte ?? 0,
+          byteCount: snapshot.byteLength,
           snapshotDigest
         }
       });
       return reply
         .header("cache-control", "no-store")
-        .header(
-          "content-type",
-          "application/vnd.koed.conversation-source-snapshot+json"
-        )
+        .header("content-type", "application/x-ndjson")
         .header("x-koed-parent-session-id", first.grant.sessionId)
+        .header("x-koed-parent-sanitized-artifact-id", manifest.record.id)
         .header(
-          "x-koed-parent-source-generation-id",
-          first.artifact.sourceGenerationId
+          "x-koed-parent-segment-index",
+          segments.at(-1)?.chunkIndex ?? -1
         )
         .header("x-koed-snapshot-digest", snapshotDigest)
-        .send(serialized);
+        .header(
+          "x-koed-privacy-classifier-hash",
+          manifest.record.classifierHash
+        )
+        .header(
+          "x-koed-privacy-policy-hash",
+          manifest.record.effectivePolicyHash
+        )
+        .send(snapshot);
     }
   );
 
@@ -910,6 +882,16 @@ export const createTeamConversationSourceService = (options: {
         });
         throw notFound();
       }
+      const manifest = await readSanitizedManifest(
+        viewer.id,
+        params.shareGrantId
+      );
+      if (!manifest) {
+        throw Object.assign(
+          new Error("Sanitized Team Conversation source is not ready"),
+          { statusCode: 503 }
+        );
+      }
       if (clients.size >= STREAM_MAX_CLIENTS) {
         throw Object.assign(new Error("Too many source stream clients"), {
           statusCode: 503
@@ -923,7 +905,8 @@ export const createTeamConversationSourceService = (options: {
           statusCode: 429
         });
       }
-      let componentPositions: Record<string, number> = {};
+      let segmentIndex = -1;
+      let sourceEndByte = 0;
       const lastEventIdHeader = request.headers["last-event-id"];
       const lastEventId = Array.isArray(lastEventIdHeader)
         ? lastEventIdHeader[0]
@@ -952,10 +935,23 @@ export const createTeamConversationSourceService = (options: {
             statusCode: 410
           });
         }
-        componentPositions =
-          parsed.data.sourceGenerationId === access.artifact.sourceGenerationId
-            ? parsed.data.componentPositions
-            : {};
+        const sameGeneration =
+          parsed.data.sourceArtifactId === manifest.record.sourceArtifactId &&
+          parsed.data.classifierHash === manifest.record.classifierHash &&
+          parsed.data.effectivePolicyHash ===
+            manifest.record.effectivePolicyHash;
+        if (
+          sameGeneration &&
+          parsed.data.sourceEndByte > manifest.record.sourceFrontierCursor
+        ) {
+          throw Object.assign(new Error("Source stream cursor is invalid"), {
+            statusCode: 400
+          });
+        }
+        if (sameGeneration) {
+          segmentIndex = parsed.data.segmentIndex;
+          sourceEndByte = parsed.data.sourceEndByte;
+        }
       }
       await context.requireRepository().recordAuditEvent({
         actorUserId: viewer.id,
@@ -968,8 +964,7 @@ export const createTeamConversationSourceService = (options: {
           teamId: access.grant.teamId,
           teamWorkspaceId: access.grant.teamWorkspaceId,
           shareGrantId: access.grant.shareGrantId,
-          sourceGenerationId: access.artifact.sourceGenerationId,
-          componentCount: access.components.length
+          sanitizedArtifactId: manifest.record.id
         }
       });
       reply.hijack();
@@ -989,10 +984,12 @@ export const createTeamConversationSourceService = (options: {
         teamWorkspaceId: access.grant.teamWorkspaceId,
         ownerUserId: access.grant.ownerUserId,
         sourceGrantId: access.grant.id,
-        mode: access.grant.mode,
-        logicalSourceId: access.artifact.logicalSourceId,
-        sourceGenerationId: access.artifact.sourceGenerationId,
-        componentPositions,
+        artifactId: manifest.record.id,
+        sourceArtifactId: manifest.record.sourceArtifactId,
+        classifierHash: manifest.record.classifierHash,
+        effectivePolicyHash: manifest.record.effectivePolicyHash,
+        segmentIndex,
+        sourceEndByte,
         closed: false,
         flushing: false,
         pending: false,
@@ -1008,12 +1005,9 @@ export const createTeamConversationSourceService = (options: {
       request.raw.once("close", () => closeClient(client, "server_shutdown"));
       await writeSse(client, "ready", {
         shareGrantId: params.shareGrantId,
-        sourceGenerationId: access.artifact.sourceGenerationId,
-        components: access.components.map((component) => ({
-          sourceComponentId: component.sourceComponentId,
-          afterSegmentIndex:
-            componentPositions[component.sourceComponentId] ?? -1
-        }))
+        artifactId: manifest.record.id,
+        afterSegmentIndex: segmentIndex,
+        afterSourceByte: sourceEndByte
       });
       await flush(client);
       if (!client.closed) {

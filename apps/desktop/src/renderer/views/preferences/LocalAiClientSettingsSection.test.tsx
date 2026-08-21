@@ -49,10 +49,11 @@ const response = (): LocalAiClientResponse => ({
         healthState: "healthy",
         models: [
           {
+            id: "gpt-5.6-luna",
             displayName: "Luna",
             provider: "openai",
             model: "gpt-5.6-luna",
-            fullId: "gpt-5.6-luna",
+            fullId: "openai/gpt-5.6-luna",
             reasoningEfforts: ["low", "high"]
           }
         ],
@@ -67,6 +68,7 @@ const response = (): LocalAiClientResponse => ({
         healthState: "healthy",
         models: [
           {
+            id: "sonnet",
             displayName: "Sonnet",
             provider: "anthropic",
             model: "sonnet",
@@ -85,6 +87,7 @@ const response = (): LocalAiClientResponse => ({
         healthState: "healthy",
         models: [
           {
+            id: "openai/gpt-5",
             displayName: "GPT 5",
             provider: "openai",
             model: "gpt-5",
@@ -175,6 +178,14 @@ describe("Local AI Client settings selectors", () => {
     expect(container.textContent).toContain("openai/gpt-5");
     expect(container.textContent).toContain("GPT 5 (openai/gpt-5)");
     expect(container.textContent).toContain("stale capability snapshot");
+    expect(
+      container.querySelector("#lcm_summary-status")?.textContent
+    ).toContain("ready");
+    expect(
+      container.querySelector<HTMLSelectElement>(
+        'select[aria-label="LCM Summary model"]'
+      )?.value
+    ).toBe("codex.default\u0000gpt-5.6-luna");
     expect(container.textContent).not.toContain("Manual Memory Answer");
     expect(container.querySelectorAll("select").length).toBeGreaterThan(0);
     expect(
@@ -225,6 +236,43 @@ describe("Local AI Client settings selectors", () => {
       "lcm_summary-status"
     );
     expect(modelSelect?.tagName).toBe("SELECT");
+  });
+
+  it("keeps qualified legacy assignments selected through their native executable ID", async () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    const legacy = response();
+    legacy.readModel.settings.push({
+      flowKey: "lcm_summary",
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      model: "openai/gpt-5.6-luna",
+      reasoningEffort: "low",
+      timeoutMs: 120_000,
+      maxAttempts: 2,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    });
+    const api = {
+      list: vi.fn(async () => legacy),
+      refresh: vi.fn(async () => legacy),
+      set: vi.fn(async () => legacy),
+      reset: vi.fn(async () => legacy)
+    };
+    root = createRoot(container);
+    await act(async () =>
+      root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
+    );
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector("#lcm_summary-status")?.textContent
+      ).toContain("ready")
+    );
+    expect(
+      container.querySelector<HTMLSelectElement>(
+        'select[aria-label="LCM Summary model"]'
+      )?.value
+    ).toBe("codex.default\u0000gpt-5.6-luna");
   });
 
   it("keeps newer refresh results over older save responses and guards same-flow saves", async () => {

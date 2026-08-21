@@ -4,8 +4,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Client } from "../packages/mcp-server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js";
-import { StdioClientTransport } from "../packages/mcp-server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js";
+import { Client } from "../packages/mcp-server/node_modules/@modelcontextprotocol/client/dist/index.mjs";
+import { StdioClientTransport } from "../packages/mcp-server/node_modules/@modelcontextprotocol/client/dist/stdio.mjs";
 import {
   assertMemoryAnswerDetailModes,
   parseToolJson

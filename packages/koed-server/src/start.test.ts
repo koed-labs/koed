@@ -17,7 +17,15 @@ import {
   readDesktopLocalCredentialAuthorization,
   storeDesktopLocalCredential
 } from "@koed/shared";
-import { afterEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi
+} from "vitest";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   provisionDesktopApiToken,
@@ -28,6 +36,46 @@ import {
 } from "./start.js";
 import { acquireKoedServerSupervisorLock } from "./supervisor-lock.js";
 import type { KoedServerStatus } from "./types.js";
+
+vi.mock("./local-privacy-runtime.js", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("./local-privacy-runtime.js")>();
+  return {
+    ...original,
+    startLocalPrivacyRuntime: async (
+      _paths: unknown,
+      environment: NodeJS.ProcessEnv
+    ) => ({
+      ok: true,
+      env: environment,
+      process: child(45),
+      status: {
+        runtime: "native-privacy",
+        state: "starting",
+        message: "Privacy Filter Service is starting."
+      }
+    })
+  };
+});
+
+const originalPrivacyUrl = process.env.PRIVACY_SERVICE_URL;
+const originalPrivacyToken = process.env.PRIVACY_SERVICE_TOKEN;
+const originalPrivacyControlToken = process.env.PRIVACY_RUNTIME_CONTROL_TOKEN;
+beforeAll(() => {
+  process.env.PRIVACY_SERVICE_URL = "http://operator-privacy:8092";
+  process.env.PRIVACY_SERVICE_TOKEN = "test-privacy-token";
+  process.env.PRIVACY_RUNTIME_CONTROL_TOKEN = "test-privacy-control-token";
+});
+afterAll(() => {
+  if (originalPrivacyUrl === undefined) delete process.env.PRIVACY_SERVICE_URL;
+  else process.env.PRIVACY_SERVICE_URL = originalPrivacyUrl;
+  if (originalPrivacyToken === undefined)
+    delete process.env.PRIVACY_SERVICE_TOKEN;
+  else process.env.PRIVACY_SERVICE_TOKEN = originalPrivacyToken;
+  if (originalPrivacyControlToken === undefined)
+    delete process.env.PRIVACY_RUNTIME_CONTROL_TOKEN;
+  else process.env.PRIVACY_RUNTIME_CONTROL_TOKEN = originalPrivacyControlToken;
+});
 
 const temps: string[] = [];
 const tempDir = () => {
@@ -58,6 +106,7 @@ const healthyStatus = (root: string): KoedServerStatus => ({
   redis: { state: "healthy" },
   workerQueues: { state: "healthy" },
   embeddingService: { state: "healthy" },
+  privacyService: { state: "healthy" },
   localAiRuntime: { state: "healthy" },
   apiToken: { state: "healthy", configured: true },
   mcpServer: { state: "healthy" },
@@ -96,6 +145,7 @@ const createPackagedAppRuntime = (root: string) => {
     "koed-runtime/api/dist/index.js",
     "koed-runtime/worker/dist/index.js",
     "koed-runtime/embedding-service/dist/index.js",
+    "koed-runtime/privacy-service/dist/index.js",
     "koed-runtime/mcp-server/dist/cli.js",
     "koed-runtime/mcp-server/dist/local-runtime-cli.js",
     "koed-runtime/mcp-server/dist/capture-hook.js",
@@ -811,6 +861,19 @@ describe("start supervisor", () => {
         entry.args.some((arg) => arg.endsWith("apps/api/dist/index.js"))
       )?.env?.COOKIE_SECURE
     ).toBe("true");
+    expect(
+      spawned
+        .filter((entry) =>
+          entry.args.some(
+            (arg) =>
+              arg.endsWith("apps/api/dist/index.js") ||
+              arg.endsWith("apps/worker/dist/index.js")
+          )
+        )
+        .every(
+          (entry) => entry.env?.PRIVACY_RUNTIME_CONTROL_TOKEN === undefined
+        )
+    ).toBe(true);
   });
 
   it("starts bundled-local native Postgres and Embedding Service without Docker", async () => {
@@ -849,6 +912,7 @@ describe("start supervisor", () => {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
         KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_TEAM_COLLABORATION_ENABLED: "true",
         MEMORY_API_TOKEN: "test-runtime-token",
         POSTGRES_HOST_PORT: "25432",
         EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: "18081",
@@ -889,7 +953,7 @@ describe("start supervisor", () => {
       resolve(resources.pgBin, "pg_ctl")
     );
     expect(commands.map((command) => command.args.join(" "))).toContain(
-      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/mcp-server build"
+      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/privacy-service --filter @koed/mcp-server build"
     );
     const buildEnv = commands.find((command) =>
       command.args.includes("@koed/embedding-service")
@@ -920,6 +984,7 @@ describe("start supervisor", () => {
     expect(runtime?.services).toEqual([
       "postgres-native",
       "embedding-service-native",
+      "privacy-service-native",
       "api",
       "worker",
       "local-ai-runtime"
@@ -1049,6 +1114,7 @@ describe("start supervisor", () => {
       api: "23300",
       postgres: "25432",
       embedding: "23800",
+      privacy: "48092",
       llamaEmbedding: "28080",
       llamaReranker: "29080"
     });
@@ -1493,6 +1559,10 @@ describe("start supervisor", () => {
         DATABASE_URL: "postgres://operator/db",
         REDIS_URL: "redis://operator:6379",
         EMBEDDING_SERVICE_URL: "http://operator:8000",
+        KOED_TEAM_COLLABORATION_ENABLED: "false",
+        PRIVACY_SERVICE_URL: "",
+        PRIVACY_SERVICE_TOKEN: "",
+        PRIVACY_RUNTIME_CONTROL_TOKEN: "",
         MEMORY_API_TOKEN: "test-runtime-token"
       },
       timeoutMs: 1,
@@ -1695,7 +1765,7 @@ describe("start supervisor", () => {
 
     expect(commands.map((command) => command.args.join(" "))).toEqual([
       resolve(root, "scripts/setup-env.mjs"),
-      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/mcp-server build"
+      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/privacy-service --filter @koed/mcp-server build"
     ]);
     expect(commands.some((command) => command.command === "docker")).toBe(
       false

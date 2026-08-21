@@ -78,6 +78,17 @@ export interface PdsLocalSyncStatus {
   outbox: Record<string, number>;
   inbox: Record<string, number>;
   replicas: Record<string, number>;
+  semanticWork: {
+    authorityTier: "hosted_personal" | "personal_device_group";
+    claims: {
+      active: number;
+      completed: number;
+      expired: number;
+      nearestExpirySeconds: number | null;
+    };
+    lcmIntents: Record<string, number>;
+    acceptedArtifacts: number;
+  };
 }
 
 const asRecord = (value: unknown): Record<string, unknown> =>
@@ -1267,7 +1278,16 @@ export const createPersonalDeviceSyncLocalRepository = (
     );
     const row = group.rows[0];
     if (!row) return null;
-    const [outbox, inbox, replicas, heartbeat] = await Promise.all([
+    const [
+      outbox,
+      inbox,
+      replicas,
+      heartbeat,
+      semanticClaims,
+      lcmIntents,
+      acceptedArtifacts,
+      sourceReplicationPolicy
+    ] = await Promise.all([
       pool.query<{ state: string; count: string }>(
         `select o.state,count(*)::text from pds_outbox_entries o
          join pds_session_closures c on c.id=o.closure_id
@@ -1285,18 +1305,70 @@ export const createPersonalDeviceSyncLocalRepository = (
       pool.query(
         "select 1 from pds_worker_heartbeats where group_id=$1 and heartbeat_at>now()-interval '2 minutes' limit 1",
         [row.id]
+      ),
+      pool.query<{
+        active: string;
+        completed: string;
+        expired: string;
+        nearest_expiry_seconds: string | null;
+      }>(
+        `select
+           count(*) filter (where state='active' and expires_at>now())::text as active,
+           count(*) filter (where state='completed')::text as completed,
+           count(*) filter (where state='active' and expires_at<=now())::text as expired,
+           ceil(extract(epoch from
+             min(expires_at) filter (where state='active' and expires_at>now())
+             - now()))::text as nearest_expiry_seconds
+         from pds_semantic_work_claims
+         where group_id=$1`,
+        [row.id]
+      ),
+      pool.query<{ state: string; count: string }>(
+        "select state,count(*)::text from pds_lcm_work_intents where group_id=$1 group by state",
+        [row.id]
+      ),
+      pool.query<{ count: string }>(
+        `select count(*)::text as count from pds_portable_artifacts
+         where group_id=$1 and semantic_claim_completed_at is not null
+           and state not in ('quarantined','revoked')`,
+        [row.id]
+      ),
+      pool.query<{ enabled: boolean; mode: string }>(
+        `select enabled,mode from personal_source_replication_policies
+         where owner_user_id=$1`,
+        [input.userId]
       )
     ]);
     const counts = (rows: Array<{ state: string; count: string }>) =>
       Object.fromEntries(rows.map((item) => [item.state, Number(item.count)]));
     const outboxCounts = counts(outbox.rows);
+    const claims = semanticClaims.rows[0]!;
+    const nearestExpirySeconds = claims.nearest_expiry_seconds;
     return {
       enabled: row.enabled,
       paused: row.publication_paused,
       workerReady: Boolean(heartbeat.rowCount),
       outbox: outboxCounts,
       inbox: counts(inbox.rows),
-      replicas: counts(replicas.rows)
+      replicas: counts(replicas.rows),
+      semanticWork: {
+        authorityTier:
+          sourceReplicationPolicy.rows[0]?.enabled &&
+          sourceReplicationPolicy.rows[0]?.mode === "hosted_personal"
+            ? "hosted_personal"
+            : "personal_device_group",
+        claims: {
+          active: Number(claims.active),
+          completed: Number(claims.completed),
+          expired: Number(claims.expired),
+          nearestExpirySeconds:
+            nearestExpirySeconds === null
+              ? null
+              : Math.max(0, Number(nearestExpirySeconds))
+        },
+        lcmIntents: counts(lcmIntents.rows),
+        acceptedArtifacts: Number(acceptedArtifacts.rows[0]?.count ?? 0)
+      }
     };
   }
 });

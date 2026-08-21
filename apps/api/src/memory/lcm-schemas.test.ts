@@ -13,7 +13,12 @@ const validSubmission = () => ({
     summary_text: "Use scoped device credentials.",
     lexical_anchors: ["scoped device credentials"]
   },
-  summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
+  summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  claimId: "00000000-0000-4000-8000-0000000000c1",
+  claimToken: "00000000-0000-4000-8000-0000000000c2",
+  claimGeneration: 1,
+  inputRevisionHash: "1".repeat(64),
+  compatibilityContractHash: "2".repeat(64)
 });
 
 describe("LCM summary submission schema", () => {

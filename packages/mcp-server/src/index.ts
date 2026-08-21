@@ -961,17 +961,20 @@ export class MemoryApiClient {
     );
   }
 
-  async listPendingLcmSummaries(
-    input: Record<string, unknown> = {}
+  async claimLcmSummaries(
+    input: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
-    const params = new URLSearchParams();
-    if (typeof input.limit === "string" || typeof input.limit === "number") {
-      params.set("limit", String(input.limit));
-    }
-    const query = params.toString();
+    return this.request("POST", "/v1/memory/lcm/summary-claims", input);
+  }
+
+  async renewLcmSummaryClaim(
+    claimId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
     return this.request(
-      "GET",
-      `/v1/memory/lcm/summaries/pending${query ? `?${query}` : ""}`
+      "PUT",
+      `/v1/memory/lcm/summary-claims/${encodeURIComponent(claimId)}/renew`,
+      input
     );
   }
 

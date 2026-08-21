@@ -205,6 +205,8 @@ test("automated launch tests remove inherited deployment secrets and profiles", 
     KOED_MANAGED_CLOUD_RELEASE_STAGE: "paid",
     KOED_TEAM_COLLABORATION_ENABLED: "true",
     NODE_ENV: "production",
+    API_COOKIE_SECURE: "false",
+    COOKIE_SECURE: "false",
     API_ENVELOPE_ENCRYPTION_PROVIDER: "local_test_key",
     API_DATA_ENCRYPTION_KEY: "do-not-inherit",
     MANAGED_KMS_AUTH_TOKEN: "do-not-inherit",
@@ -229,6 +231,8 @@ test("automated launch tests remove inherited deployment secrets and profiles", 
   assert.equal(child.KOED_DEPLOYMENT_PROFILE, undefined);
   assert.equal(child.KOED_MANAGED_CLOUD_RELEASE_STAGE, undefined);
   assert.equal(child.KOED_TEAM_COLLABORATION_ENABLED, undefined);
+  assert.equal(child.API_COOKIE_SECURE, undefined);
+  assert.equal(child.COOKIE_SECURE, undefined);
   assert.equal(child.API_ENVELOPE_ENCRYPTION_PROVIDER, undefined);
   assert.equal(child.API_DATA_ENCRYPTION_KEY, undefined);
   assert.equal(child.MANAGED_KMS_AUTH_TOKEN, undefined);
@@ -495,6 +499,7 @@ test("launch validation report separates automated and manual gates", () => {
   );
   assert.match(report, /Encrypted Team fixture cases prove/);
   assert.match(report, /Independent Conversation Source Access grants/);
+  assert.match(report, /exact owner-private source, sanitized Team reads/);
   assert.match(report, /Capability discovery and diagnostics/);
   assert.match(report, /without refresh or polling/);
   assert.match(report, /Any failed launch blocker/);

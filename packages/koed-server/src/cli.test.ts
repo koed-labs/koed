@@ -38,6 +38,7 @@ const status: KoedServerStatus = {
   redis: { state: "healthy" },
   workerQueues: { state: "healthy" },
   embeddingService: { state: "healthy" },
+  privacyService: { state: "healthy" },
   localAiRuntime: { state: "healthy" },
   apiToken: { state: "healthy", configured: true },
   mcpServer: { state: "healthy" },

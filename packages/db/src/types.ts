@@ -3,7 +3,11 @@ import type {
   MemoryActor,
   MemoryEngineRepository
 } from "@koed/core";
-import type { KoedWorkClass } from "@koed/shared";
+import type {
+  KoedWorkClass,
+  PdsEmbeddingContractV1,
+  PdsLcmNodeContractV1
+} from "@koed/shared";
 import type { CapturedSessionRepository } from "./captured-session-repository.js";
 import type { PersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
 import type { PersonalDeviceArtifactRepository } from "./personal-device-artifact-repository.js";
@@ -1223,6 +1227,17 @@ export interface LcmNodeForSummarization {
   lcmAlgorithmVersion: string | null;
 }
 
+export interface LcmSummaryWorkClaim {
+  claimId: string;
+  claimToken: string;
+  claimGeneration: number;
+  workIdentity: string;
+  inputRevisionHash: string;
+  compatibilityContractHash: string;
+  leaseExpiresAt: string;
+  node: LcmNodeForSummarization;
+}
+
 export type EmbeddableSourceType =
   | "memory_node"
   | "memory_event"
@@ -1236,8 +1251,18 @@ export interface EmbeddableSourceRecord {
   visibility: Visibility;
   text: string;
   sourceHash: string;
+  sourceRevision?: string;
   workClass?: KoedWorkClass;
   reconciliationJobId?: string;
+}
+
+export interface PersonalEmbeddingArtifactChunk {
+  chunkIndex: number;
+  chunkCount: number;
+  inputTokenCount: number;
+  sourceText: string;
+  embeddingInputHash: string;
+  vector: number[];
 }
 
 export interface LocalEmbeddingStatus {
@@ -2563,6 +2588,28 @@ export interface MemorySourceRepository
     actor: ActorContext,
     input?: { limit?: number }
   ): Promise<LcmNodeForSummarization[]>;
+  claimLcmNodesForSummarization(
+    actor: ActorContext,
+    input: {
+      claimantId: string;
+      compatibilityContractHash: string;
+      pdsContracts?: {
+        leaf: PdsLcmNodeContractV1;
+        rollup: PdsLcmNodeContractV1;
+      };
+      leaseMs: number;
+      limit?: number;
+    }
+  ): Promise<LcmSummaryWorkClaim[]>;
+  renewLcmSummaryWorkClaim(
+    actor: ActorContext,
+    input: {
+      claimId: string;
+      claimToken: string;
+      claimGeneration: number;
+      leaseMs: number;
+    }
+  ): Promise<{ leaseExpiresAt: string } | null>;
   getVisibleLcmNodeForSummarization(
     actor: ActorContext,
     nodeId: string
@@ -2575,6 +2622,14 @@ export interface MemorySourceRepository
     summaryTokenEstimate: number;
     summaryStructuredJson?: Record<string, unknown>;
     summaryStructuredSchemaVersion?: string;
+    claim?: {
+      ownerUserId: string;
+      claimId: string;
+      claimToken: string;
+      claimGeneration: number;
+      inputRevisionHash: string;
+      compatibilityContractHash: string;
+    };
   }): Promise<void>;
   upsertSourceEmbedding(input: {
     source: EmbeddableSourceRecord;
@@ -2594,6 +2649,11 @@ export interface MemorySourceRepository
   }): Promise<{ id: string; inserted: boolean }>;
   replaceSourceEmbeddings(input: {
     source: EmbeddableSourceRecord;
+    hostedPersonalAuthority?: {
+      ownerUserId: string;
+      targetUpstreamId: string;
+      policyUpdatedAt: string;
+    };
     model: string;
     modelArtifactHash: string;
     dimensions: number;
@@ -2610,4 +2670,12 @@ export interface MemorySourceRepository
       sourceText: string;
     }>;
   }): Promise<{ ids: string[]; inserted: boolean }>;
+  resolvePersonalEmbeddingArtifact(
+    actor: ActorContext,
+    input: {
+      sourceType: EmbeddableSourceType;
+      sourceContentHash: string;
+      contract: PdsEmbeddingContractV1;
+    }
+  ): Promise<{ chunks: PersonalEmbeddingArtifactChunk[] } | null>;
 }

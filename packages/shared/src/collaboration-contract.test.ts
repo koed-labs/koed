@@ -261,13 +261,14 @@ const preview = () => ({
   teamId: ids.team,
   workspaceId: ids.workspace,
   representation: "memory_events" as const,
-  allowedRepresentations: ["memory_events", "lcm_leaves"] as const,
+  maximumFidelity: "memory_events" as const,
+  includeCuratedMemory: false,
   previewRevision: 1,
   sourceRevision: 1,
   policyRevision: 1,
   contentPolicyVersion: 1,
   classifierVersion: 1,
-  redactedContentHash: "a".repeat(64),
+  sourceContentHash: "a".repeat(64),
   previewHash: "b".repeat(64),
   itemCount: 1,
   items: [previewItem()],
@@ -282,9 +283,9 @@ const grant = () => ({
   teamId: ids.team,
   workspaceId: ids.workspace,
   consentId: ids.consent,
-  ownerAllowedRepresentations: ["memory_events", "lcm_leaves"] as const,
-  activeRepresentation: "memory_events" as const,
-  representationPolicyRevision: 1,
+  maximumFidelity: "memory_events" as const,
+  includeCuratedMemory: false,
+  fidelityPolicyRevision: 1,
   sourceRevision: 1,
   grantVersion: 1,
   lifecycle: "active" as const,
@@ -303,7 +304,8 @@ const pendingShare = () => ({
   teamId: ids.team,
   workspaceId: ids.workspace,
   representation: "lcm_leaves" as const,
-  allowedRepresentations: ["lcm_leaves"] as const,
+  maximumFidelity: "lcm_leaves" as const,
+  includeCuratedMemory: false,
   mode: "continuous" as const,
   sourceRevision: 1,
   state: "preparing" as const,
@@ -878,7 +880,8 @@ describe("collaboration renderer commands", () => {
           teamId: ids.team,
           workspaceId: ids.workspace,
           representation: "memory_events",
-          allowedRepresentations: ["memory_events", "lcm_leaves"],
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
           actionGrant: actionGrant()
         }
       },
@@ -900,8 +903,8 @@ describe("collaboration renderer commands", () => {
           workspaceId: ids.workspace,
           consentId: ids.consent,
           mode: "continuous",
-          allowedRepresentations: ["memory_events", "lcm_leaves"],
-          selectedRepresentation: "memory_events",
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
           previewRevision: 1,
           previewHash: "b".repeat(64),
           expiresAt: null,
@@ -922,7 +925,7 @@ describe("collaboration renderer commands", () => {
         }
       },
       {
-        command: "collaboration.change_shared_memory_representation",
+        command: "collaboration.change_shared_memory_fidelity",
         input: {
           mutationId: ids.mutation,
           logicalMemoryId: ids.logicalMemory,
@@ -930,10 +933,10 @@ describe("collaboration renderer commands", () => {
           workspaceId: ids.workspace,
           shareGrantId: ids.shareGrant,
           consentId: ids.consent,
-          representation: "lcm_leaves",
+          maximumFidelity: "lcm_leaves",
+          includeCuratedMemory: true,
           expectedGrantVersion: 1,
           mode: "continuous",
-          allowedRepresentations: ["lcm_leaves"],
           previewRevision: 1,
           previewHash: "b".repeat(64),
           expiresAt: null,
@@ -1035,7 +1038,8 @@ describe("collaboration renderer commands", () => {
         teamId: ids.team,
         workspaceId: ids.workspace,
         representation: "memory_events",
-        allowedRepresentations: ["memory_events", "lcm_leaves"]
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false
       },
       {
         intent: "collaboration.share_memory",
@@ -1047,8 +1051,8 @@ describe("collaboration renderer commands", () => {
         workspaceId: ids.workspace,
         consentId: ids.consent,
         mode: "continuous",
-        allowedRepresentations: ["memory_events", "lcm_leaves"],
-        selectedRepresentation: "memory_events",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         previewRevision: 1,
         previewHash: "b".repeat(64),
         expiresAt: null,
@@ -1065,7 +1069,7 @@ describe("collaboration renderer commands", () => {
         reasonCode: "owner_revoked"
       },
       {
-        intent: "collaboration.change_shared_memory_representation",
+        intent: "collaboration.change_shared_memory_fidelity",
         commandRequestId: ids.mutation,
         mutationId: ids.mutation,
         logicalMemoryId: ids.logicalMemory,
@@ -1073,10 +1077,10 @@ describe("collaboration renderer commands", () => {
         workspaceId: ids.workspace,
         shareGrantId: ids.shareGrant,
         consentId: ids.consent,
-        representation: "lcm_leaves",
+        maximumFidelity: "lcm_leaves",
+        includeCuratedMemory: true,
         expectedGrantVersion: 1,
         mode: "continuous",
-        allowedRepresentations: ["lcm_leaves"],
         previewRevision: 1,
         previewHash: "b".repeat(64),
         expiresAt: null,
@@ -1122,7 +1126,8 @@ describe("collaboration renderer commands", () => {
             workspaceId: ids.workspace,
             logicalMemoryId: ids.logicalMemory,
             representation: "memory_events",
-            allowedRepresentations: ["memory_events"],
+            maximumFidelity: "memory_events",
+            includeCuratedMemory: false,
             method: "POST",
             path: "/v1/private",
             body: { unsafe: true }
@@ -1166,22 +1171,24 @@ describe("collaboration renderer commands", () => {
     }
   );
 
-  it("rejects duplicate or non-consented Shared Memory representations", () => {
+  it("authorizes preview layers cumulatively and gates Curated Memory separately", () => {
     for (const input of [
       {
         logicalMemoryId: ids.logicalMemory,
         teamId: ids.team,
         workspaceId: ids.workspace,
         representation: "memory_events",
-        allowedRepresentations: ["lcm_leaves"],
+        maximumFidelity: "lcm_leaves",
+        includeCuratedMemory: false,
         actionGrant: actionGrant()
       },
       {
         logicalMemoryId: ids.logicalMemory,
         teamId: ids.team,
         workspaceId: ids.workspace,
-        representation: "memory_events",
-        allowedRepresentations: ["memory_events", "memory_events"],
+        representation: "curated_assertions",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         actionGrant: actionGrant()
       }
     ]) {
@@ -1194,6 +1201,84 @@ describe("collaboration renderer commands", () => {
         }).success
       ).toBe(false);
     }
+
+    for (const input of [
+      {
+        representation: "lcm_rollups",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false
+      },
+      {
+        representation: "curated_assertions",
+        maximumFidelity: "lcm_rollups",
+        includeCuratedMemory: true
+      }
+    ]) {
+      expect(
+        collaborationRendererCommandSchema.safeParse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: ids.request,
+          command: "collaboration.preview_shared_memory",
+          input: {
+            logicalMemoryId: ids.logicalMemory,
+            teamId: ids.team,
+            workspaceId: ids.workspace,
+            ...input,
+            actionGrant: actionGrant()
+          }
+        }).success
+      ).toBe(true);
+    }
+  });
+
+  it("rejects retired selected and allowed representation aliases", () => {
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.share_memory",
+        input: {
+          mutationId: ids.mutation,
+          logicalGrantId: ids.logicalThread,
+          consentId: ids.consent,
+          logicalMemoryId: ids.logicalMemory,
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          mode: "continuous",
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          allowedRepresentations: ["memory_events"],
+          selectedRepresentation: "memory_events",
+          previewRevision: 1,
+          previewHash: "b".repeat(64),
+          expiresAt: null,
+          actionGrant: actionGrant()
+        }
+      }).success
+    ).toBe(false);
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.change_shared_memory_representation",
+        input: {
+          mutationId: ids.mutation,
+          logicalMemoryId: ids.logicalMemory,
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          shareGrantId: ids.shareGrant,
+          consentId: ids.consent,
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          expectedGrantVersion: 1,
+          mode: "continuous",
+          previewRevision: 1,
+          previewHash: "b".repeat(64),
+          expiresAt: null,
+          actionGrant: actionGrant()
+        }
+      }).success
+    ).toBe(false);
   });
 
   it("rejects duplicate group-DM participants and malformed IDs", () => {
@@ -1782,14 +1867,15 @@ describe("collaboration results and realtime", () => {
           grant: {
             ...grant(),
             lifecycle: "revoked",
-            activeRepresentation: null,
             revokedAt: timestamp
           }
         }
       },
       {
-        command: "collaboration.change_shared_memory_representation",
-        data: { pendingShare: pendingShare() }
+        command: "collaboration.change_shared_memory_fidelity",
+        data: {
+          pendingShare: pendingShare()
+        }
       }
     ];
 

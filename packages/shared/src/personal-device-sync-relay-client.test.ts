@@ -149,4 +149,53 @@ describe("PDS relay URL boundary", () => {
       new Headers(requestedInit?.headers).get("x-pds-relay-proof")
     ).toEqual(expect.any(String));
   });
+
+  it("renews the exact semantic work generation through a signed request", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const privateJwk = keys.privateKey.export({ format: "jwk" });
+    const publicJwk = keys.publicKey.export({ format: "jwk" });
+    const workIdentity = Buffer.alloc(32, 5).toString("base64url");
+    const expiresAt = new Date("2026-07-29T00:05:00.000Z").toISOString();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          claim: { workIdentity, claimGeneration: "7", expiresAt }
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+    const client = new PdsRelayClient({
+      baseUrl: "http://192.168.1.2:3310",
+      identity: {
+        certificate: "{}",
+        deviceId: "AAAAAAAAAAAAAAAAAAAAAA",
+        signingKeyId: "AQEBAQEBAQEBAQEBAQEBAQ",
+        signingPublicKey: publicJwk.x!,
+        signingPrivateSeed: privateJwk.d!
+      },
+      fetch: fetcher
+    });
+
+    await expect(
+      client.renewSemanticWorkClaim({
+        workIdentity,
+        claimGeneration: "7",
+        leaseSeconds: 120
+      })
+    ).resolves.toEqual({ workIdentity, claimGeneration: "7", expiresAt });
+
+    const [requestedUrl, requestedInit] = fetcher.mock.calls[0]!;
+    expect(requestedUrl).toBe(
+      "http://192.168.1.2:3310/v1/personal-device-sync/relay/semantic-work/claims/renew"
+    );
+    expect(requestedInit?.method).toBe("POST");
+    expect(JSON.parse(String(requestedInit?.body))).toEqual({
+      claimGeneration: "7",
+      leaseSeconds: "120",
+      workIdentity
+    });
+    expect(
+      new Headers(requestedInit?.headers).get("x-pds-relay-proof")
+    ).toEqual(expect.any(String));
+  });
 });

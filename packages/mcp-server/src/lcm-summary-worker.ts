@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -93,6 +93,17 @@ export interface LcmSummaryNode {
   sourceTokenEstimate: number | null;
 }
 
+interface LcmSummaryClaim {
+  claimId: string;
+  claimToken: string;
+  claimGeneration: number;
+  workIdentity: string;
+  inputRevisionHash: string;
+  compatibilityContractHash: string;
+  leaseExpiresAt: string;
+  node: LcmSummaryNode;
+}
+
 export interface LcmSummaryResult {
   nodeId: string;
   kind: "leaf" | "rollup";
@@ -145,6 +156,56 @@ export type LcmSummaryRunner = (
 
 const hash = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+const LCM_SUMMARY_CLAIMANT_ID = `mcp-lcm:${os.hostname()}:${process.pid}:${randomUUID()}`;
+
+const lcmSummaryCompatibilityContractHash = (
+  config: LcmSummaryWorkerConfig
+): string =>
+  hash({
+    protocol: "lcm-summary-claim/v1",
+    provider: config.provider,
+    model: config.model,
+    reasoningEffort: config.reasoningEffort,
+    structuredSummarySchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+    prompts: Object.fromEntries(
+      lcmSummaryPromptIds.map((promptId) => {
+        const prompt = loadPrompt(promptId, { env: config.env });
+        return [promptId, prompt.version];
+      })
+    )
+  });
+
+const pdsLcmSummaryContracts = (config: LcmSummaryWorkerConfig) => ({
+  leaf: {
+    artifactClass: "lcm_node/v1" as const,
+    nodeKind: "leaf" as const,
+    lcmAlgorithmVersion: "depth0-source-items-v1",
+    summaryPromptVersion: loadPrompt("lcm-summary-leaf", {
+      env: config.env
+    }).version,
+    summaryModel: config.model,
+    structuredOutputSchema: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+    sourceSelectionPolicy: "depth0-source-items-v1"
+  },
+  rollup: {
+    artifactClass: "lcm_node/v1" as const,
+    nodeKind: "rollup" as const,
+    lcmAlgorithmVersion: "depth1-child-rollup-v1",
+    summaryPromptVersion: loadPrompt("lcm-summary-rollup", {
+      env: config.env
+    }).version,
+    summaryModel: config.model,
+    structuredOutputSchema: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+    sourceSelectionPolicy: "depth1-child-rollup-v1"
+  }
+});
+
+const lcmSummaryClaimLeaseMs = (config: LcmSummaryWorkerConfig): number =>
+  Math.min(
+    3_600_000,
+    Math.max(300_000, config.timeoutMs * config.maxAttempts * 4)
+  );
 
 const resolveEnvValue = (
   env: NodeJS.ProcessEnv,
@@ -986,8 +1047,10 @@ const reduceShardSummaries = async (
     promptTokenSum: number;
     maxPromptTokens: number;
     promptCallCount: number;
-  }
+  },
+  assertClaimActive: () => void
 ): Promise<VersionedLcmSummaryPromptResult> => {
+  assertClaimActive();
   if (shardSummaries.length === 1) {
     return shardSummaries[0]!;
   }
@@ -1011,6 +1074,7 @@ const reduceShardSummaries = async (
   const nextSummaries: VersionedLcmSummaryPromptResult[] = [];
 
   for (const prompt of reducePrompts) {
+    assertClaimActive();
     const tokens = promptTokens(prompt.text, config);
     stats.promptTokenSum += tokens;
     stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
@@ -1029,6 +1093,7 @@ const reduceShardSummaries = async (
         stats.promptCallCount += 1;
       }
     );
+    assertClaimActive();
     nextSummaries.push(result);
   }
 
@@ -1044,8 +1109,48 @@ const reduceShardSummaries = async (
     config,
     runner,
     promptResults,
-    stats
+    stats,
+    assertClaimActive
   );
+};
+
+const startLcmSummaryClaimHeartbeat = (
+  client: MemoryApiClient,
+  claim: LcmSummaryClaim,
+  leaseMs: number
+): { assertActive: () => void; stop: () => void } => {
+  let failure: Error | null = null;
+  let renewing = false;
+  const intervalMs = Math.max(10_000, Math.min(30_000, leaseMs / 3));
+  const timer = setInterval(() => {
+    if (renewing || failure) return;
+    renewing = true;
+    void client
+      .renewLcmSummaryClaim(claim.claimId, {
+        claimToken: claim.claimToken,
+        claimGeneration: claim.claimGeneration,
+        leaseMs
+      })
+      .catch((error) => {
+        failure =
+          error instanceof Error
+            ? error
+            : new Error("LCM summary claim renewal failed");
+      })
+      .finally(() => {
+        renewing = false;
+      });
+  }, intervalMs);
+  timer.unref();
+
+  return {
+    assertActive: () => {
+      if (failure) {
+        throw new Error(`LCM summary claim lost: ${failure.message}`);
+      }
+    },
+    stop: () => clearInterval(timer)
+  };
 };
 
 export const executeLcmSummaryNode = async (
@@ -1060,12 +1165,14 @@ export const executeLcmSummaryNode = async (
     promptTokenSum: 0,
     maxPromptTokens: 0,
     promptCallCount: 0
-  }
+  },
+  assertClaimActive: () => void = () => undefined
 ): Promise<LcmSummaryNodeExecution> => {
   const prompts = buildSummaryPrompts(node, config);
   const promptResults: VersionedLcmSummaryPromptResult[] = [];
   const shardSummaries: VersionedLcmSummaryPromptResult[] = [];
   for (const entry of prompts) {
+    assertClaimActive();
     const tokens = promptTokens(entry.prompt, config);
     stats.promptTokenSum += tokens;
     stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
@@ -1084,6 +1191,7 @@ export const executeLcmSummaryNode = async (
         stats.promptCallCount += 1;
       }
     );
+    assertClaimActive();
     shardSummaries.push(result);
   }
   const result =
@@ -1095,8 +1203,10 @@ export const executeLcmSummaryNode = async (
           config,
           runner,
           promptResults,
-          stats
+          stats,
+          assertClaimActive
         );
+  assertClaimActive();
   return {
     result,
     promptResults,
@@ -1108,18 +1218,30 @@ export const executeLcmSummaryNode = async (
 
 const summarizeNode = async (
   client: MemoryApiClient,
-  node: LcmSummaryNode,
+  claim: LcmSummaryClaim,
   config: LcmSummaryWorkerConfig,
   runner: LcmSummaryRunner
 ): Promise<LcmSummaryResult> => {
+  const node = claim.node;
   const stats = {
     promptTokenSum: 0,
     maxPromptTokens: 0,
     promptCallCount: 0
   };
+  const lease = startLcmSummaryClaimHeartbeat(
+    client,
+    claim,
+    lcmSummaryClaimLeaseMs(config)
+  );
 
   try {
-    const execution = await executeLcmSummaryNode(node, config, runner, stats);
+    const execution = await executeLcmSummaryNode(
+      node,
+      config,
+      runner,
+      stats,
+      lease.assertActive
+    );
     const { result, promptResults } = execution;
     const summaryText = result.text.trim();
     const summaryTokens = countTokensForModel(summaryText, {
@@ -1141,13 +1263,19 @@ const summarizeNode = async (
         );
       }
     }
+    lease.assertActive();
     await client.submitLcmSummary(node.id, {
       summaryText,
       summaryModel: result.model,
       summaryPromptVersion: result.promptVersion,
       summaryTokenEstimate: summaryTokens.tokens,
       summaryStructuredJson: result.structuredSummary,
-      summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
+      summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+      claimId: claim.claimId,
+      claimToken: claim.claimToken,
+      claimGeneration: claim.claimGeneration,
+      inputRevisionHash: claim.inputRevisionHash,
+      compatibilityContractHash: claim.compatibilityContractHash
     });
     return {
       nodeId: node.id,
@@ -1171,6 +1299,8 @@ const summarizeNode = async (
       promptCallCount: stats.promptCallCount,
       error: error instanceof Error ? error.message : String(error)
     };
+  } finally {
+    lease.stop();
   }
 };
 
@@ -1237,26 +1367,38 @@ export const summarizePendingLcmNodes = async (
   }
 
   const results: LcmSummaryResult[] = [];
+  const compatibilityContractHash = lcmSummaryCompatibilityContractHash(config);
+  const leaseMs = lcmSummaryClaimLeaseMs(config);
 
   try {
     while (results.length < requestedLimit) {
-      const pending = (await client.listPendingLcmSummaries({
-        limit: requestedLimit - results.length
-      })) as { nodes?: LcmSummaryNode[] };
-      const nodes = pending.nodes ?? [];
-      if (nodes.length === 0) {
+      const claimed = (await client.claimLcmSummaries({
+        limit: requestedLimit - results.length,
+        claimantId: LCM_SUMMARY_CLAIMANT_ID,
+        compatibilityContractHash,
+        pdsContracts: pdsLcmSummaryContracts(config),
+        leaseMs
+      })) as { claims?: LcmSummaryClaim[] };
+      const claims = claimed.claims ?? [];
+      if (claims.length === 0) {
         break;
       }
 
-      const nextDepth = Math.min(...nodes.map((node) => node.depth));
-      const depthNodes = nodes.filter((node) => node.depth === nextDepth);
-      const depthResults = await runWithConcurrency(
-        depthNodes,
-        config.concurrency,
-        (node) => summarizeNode(client, node, config, runner)
-      );
-      results.push(...depthResults);
-      if (depthResults.every((result) => !result.submitted)) {
+      let submittedInBatch = false;
+      const depths = [
+        ...new Set(claims.map(({ node }) => node.depth).sort((a, b) => a - b))
+      ];
+      for (const depth of depths) {
+        const depthClaims = claims.filter(({ node }) => node.depth === depth);
+        const depthResults = await runWithConcurrency(
+          depthClaims,
+          config.concurrency,
+          (claim) => summarizeNode(client, claim, config, runner)
+        );
+        results.push(...depthResults);
+        submittedInBatch ||= depthResults.some((result) => result.submitted);
+      }
+      if (!submittedInBatch) {
         break;
       }
     }

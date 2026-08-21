@@ -8,6 +8,7 @@ Related decisions:
 - [0004 Team Memory uses user-owned Share Grants and Workspaces](./0004-team-memory-workspaces.md)
 - [0009 Commercial SaaS encryption and key management](./0009-commercial-saas-encryption-key-management.md)
 - [0010 Managed SaaS queryable vectors](./0010-managed-saas-queryable-vectors.md)
+- [0029 Selective PII Team representations](./0029-selective-pii-team-representations.md)
 
 ## Context
 
@@ -101,6 +102,14 @@ Validated anchors are encrypted with their LCM Summary and included in a
 separate section of that node's embedding input. They improve semantic
 retrieval of identifiers without becoming a standalone lexical index.
 
+Personal anchors and evidence remain full fidelity and owner-only. Before Team
+materialization, LCM titles, summary text, anchors, Memory Events, Curated
+Memory fields, and expansion material are classified independently and replaced
+according to the effective versioned eight-label content policy. Fully replaced
+anchors are omitted from Team embedding composition. Team exact checks,
+reranking, evidence, citations, and expansion use only the sanitized Team form;
+they never fall back to a Personal anchor or Personal source item.
+
 Internal candidates use chunk-aware identity and retain source lineage, node
 ancestry, generation, time, visibility, and retrieval-stage provenance.
 Candidates found by multiple searches are fused with reciprocal-rank fusion
@@ -116,10 +125,15 @@ truncated to at most 32,768 UTF-8 bytes. Ordinary logs and diagnostics retain
 only redacted identifiers, counts, durations, statuses, and error classes.
 
 The same controller and worker flow serves Personal and Team recall. Team
-Membership, Workspace Access, Share Grants, active representation, lifecycle,
-retention, and source-capture policy are enforced before candidate admission,
-decryption, narrowed checks, reranking, expansion, or synthesis input. Live
-view permission does not imply durable Memory recall permission.
+Membership, Workspace Access, Share Grants, the maximum-fidelity ceiling and
+each current sanitized representation, lifecycle, retention, classifier and
+content-policy bindings, and source-capture policy are enforced before
+candidate admission, decryption, narrowed checks, reranking, expansion, or
+synthesis input. `memory_events` authorizes complete Memory Events, leaves, and
+rollups; `lcm_leaves` authorizes complete leaves and rollups; and `lcm_rollups`
+authorizes rollups only. Conversation Source Access and consent-bound Curated
+Memory remain separate. Live view permission does not imply durable Memory
+recall permission.
 
 ## Evaluation
 

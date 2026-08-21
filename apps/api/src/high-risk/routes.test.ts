@@ -268,8 +268,10 @@ const buildServer = async (overrides?: {
       workspace: { id: input.teamWorkspaceId, name: "Product" },
       remoteReplicaId: input.remoteReplicaId,
       representation: input.representation,
-      requestedAllowedRepresentations: input.allowedRepresentations,
-      effectivePolicyIntersection: input.allowedRepresentations,
+      requestedMaximumFidelity: input.maximumFidelity,
+      requestedIncludeCuratedMemory: input.includeCuratedMemory,
+      effectiveMaximumFidelity: input.maximumFidelity,
+      effectiveIncludeCuratedMemory: input.includeCuratedMemory,
       sourceOwnerPolicyWillChange: false
     })),
     getSharedMemoryShareReview: vi.fn(async (_actor, input) => ({
@@ -285,10 +287,11 @@ const buildServer = async (overrides?: {
         previewHash: input.preview.previewHash,
         previewRevision: input.previewRevision,
         remoteReplicaId: ids.target,
-        representation: input.selectedRepresentation,
+        representation: input.maximumFidelity,
         sourceRevision: 1
       },
-      effectivePolicyIntersection: input.allowedRepresentations,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       sourceOwnerPolicyWillActivate: false,
       sourceOwnerPolicyWillReplace: false
     })),
@@ -322,10 +325,11 @@ const buildServer = async (overrides?: {
         id: input.shareGrantId,
         grantVersion: input.expectedGrantVersion,
         lifecycle: "active" as const,
-        activeRepresentation: "lcm_rollups" as const
+        maximumFidelity: "lcm_rollups" as const,
+        includeCuratedMemory: false
       }
     })),
-    getSharedMemoryRepresentationChangeReview: vi.fn(async (_actor, input) => ({
+    getSharedMemoryFidelityChangeReview: vi.fn(async (_actor, input) => ({
       source: {
         logicalMemoryId: input.logicalMemoryId,
         title: "Captured Session",
@@ -338,10 +342,11 @@ const buildServer = async (overrides?: {
         previewHash: input.preview.previewHash,
         previewRevision: input.previewRevision,
         remoteReplicaId: ids.target,
-        representation: input.representation,
+        representation: input.maximumFidelity,
         sourceRevision: 1
       },
-      effectivePolicyIntersection: input.allowedRepresentations,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       sourceOwnerPolicyWillActivate: false,
       sourceOwnerPolicyWillReplace: false,
       grant: {
@@ -351,7 +356,8 @@ const buildServer = async (overrides?: {
         teamWorkspaceId: input.teamWorkspaceId,
         grantVersion: input.expectedGrantVersion,
         lifecycle: "active" as const,
-        activeRepresentation: "lcm_rollups" as const
+        maximumFidelity: "lcm_rollups" as const,
+        includeCuratedMemory: false
       },
       willReactivate: false
     })),
@@ -993,7 +999,7 @@ describe("high-risk action grant routes", () => {
           ...binding,
           operationFamily: "share_grant_management",
           action:
-            "shared_memory.preview.memory_events.lcm_leaves:memory_events",
+            "shared_memory.preview.memory_events.max_memory_events.curated_false",
           targetId: ids.target
         }))
       },
@@ -1014,7 +1020,8 @@ describe("high-risk action grant routes", () => {
           teamId: ids.team,
           teamWorkspaceId: ids.target,
           representation: "memory_events",
-          allowedRepresentations: ["memory_events", "lcm_leaves"]
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false
         }
       }
     });
@@ -1059,14 +1066,16 @@ describe("high-risk action grant routes", () => {
       teamId: ids.team,
       teamWorkspaceId: ids.target,
       representation: "memory_events",
-      allowedRepresentations: ["memory_events", "lcm_leaves"]
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false
     });
     expect(
       (sharedFixture.repository.createActionGrant as ReturnType<typeof vi.fn>)
         .mock.calls[0]?.[0]
     ).toMatchObject({
       operationFamily: "share_grant_management",
-      action: "shared_memory.preview.memory_events.lcm_leaves:memory_events",
+      action:
+        "shared_memory.preview.memory_events.max_memory_events.curated_false",
       teamId: ids.team,
       targetId: ids.target,
       scopeHash: expectedSharedBinding.scopeHash,
@@ -1094,7 +1103,8 @@ describe("high-risk action grant routes", () => {
           teamId: ids.team,
           teamWorkspaceId: ids.target,
           representation: "memory_events",
-          allowedRepresentations: ["memory_events"]
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false
         }
       }
     });
@@ -1121,10 +1131,11 @@ describe("high-risk action grant routes", () => {
             previewHash: input.preview.previewHash,
             previewRevision: input.previewRevision,
             remoteReplicaId: ids.target,
-            representation: input.selectedRepresentation,
+            representation: input.maximumFidelity,
             sourceRevision: 1
           },
-          effectivePolicyIntersection: input.allowedRepresentations,
+          maximumFidelity: input.maximumFidelity,
+          includeCuratedMemory: input.includeCuratedMemory,
           sourceOwnerPolicyWillActivate: false,
           sourceOwnerPolicyWillReplace: false
         }))
@@ -1149,8 +1160,8 @@ describe("high-risk action grant routes", () => {
           consentId: randomUUID(),
           previewId: randomUUID(),
           mode: "snapshot",
-          allowedRepresentations: ["lcm_rollups"],
-          selectedRepresentation: "lcm_rollups",
+          maximumFidelity: "lcm_rollups",
+          includeCuratedMemory: false,
           previewRevision: 1,
           previewHash: "b".repeat(64),
           expiresAt: null

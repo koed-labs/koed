@@ -105,6 +105,9 @@ export interface ApiRouteContext {
       }>;
     } | null;
   };
+  trustedServices: {
+    fetch: typeof fetch;
+  };
   localEdge: {
     upstreamBackendsPath: string;
     remoteOperationsAllowed(): boolean;

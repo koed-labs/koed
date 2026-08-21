@@ -3,6 +3,42 @@ import { describe, expect, it } from "vitest";
 import { readLocalAiClientReadModel } from "./local-ai-client-read-model.js";
 
 describe("local AI Client read model", () => {
+  it("retains the executable model ID separately from its qualified label ID", () => {
+    const model = readLocalAiClientReadModel(
+      {
+        instances: [],
+        capabilitySnapshots: [
+          {
+            instanceId: "codex.default",
+            authenticationState: "authenticated",
+            healthState: "healthy",
+            models: [
+              {
+                id: "gpt-5.6-luna",
+                provider: "openai",
+                model: "gpt-5.6-luna",
+                fullId: "openai/gpt-5.6-luna",
+                supportedReasoningEfforts: ["low"]
+              }
+            ],
+            capabilities: {},
+            observedAt: "",
+            expiresAt: "",
+            stale: true
+          }
+        ],
+        settings: [],
+        defaults: {}
+      },
+      {}
+    );
+
+    expect(model.capabilitySnapshots[0]?.models[0]).toMatchObject({
+      id: "gpt-5.6-luna",
+      fullId: "openai/gpt-5.6-luna"
+    });
+  });
+
   it("reads per-instance lifecycle capability descriptors and expiry", () => {
     const model = readLocalAiClientReadModel(
       {

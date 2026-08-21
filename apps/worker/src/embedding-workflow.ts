@@ -49,6 +49,7 @@ export interface EmbeddingWorkflow {
     embedded: number;
     failed: number;
   }>;
+  getNextSharedMemorySemanticEmbeddingRetryAt(): Promise<string | null>;
 }
 
 export type EmbeddingWorkflowEnv = Pick<
@@ -66,6 +67,8 @@ export type EmbeddingWorkflowEnv = Pick<
   | "embeddingMaxTextChars"
   | "embeddingMaxRequestChars"
   | "embeddingRequestTimeoutMs"
+  | "managedConversationApiUrl"
+  | "managedConversationApiToken"
 >;
 
 interface EmbeddingWorkflowConfig {
@@ -214,6 +217,26 @@ class EmbeddingTransportError extends Error {
   }
 }
 
+class HostedSemanticAuthorityPendingError extends Error {
+  readonly transient = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "HostedSemanticAuthorityPendingError";
+  }
+}
+
+class HostedSemanticAuthorityConfigurationError extends Error {
+  readonly transient = false;
+
+  constructor() {
+    super(
+      "Hosted Personal embedding authority requires the local API bridge configuration"
+    );
+    this.name = "HostedSemanticAuthorityConfigurationError";
+  }
+}
+
 const splitEmbeddingText = (
   text: string,
   maxCharacters: number
@@ -337,6 +360,85 @@ export const createEmbeddingWorkflow = (
     bodyTimeout: config.env.embeddingRequestTimeoutMs
   });
 
+  const resolveHostedPersonalEmbedding = async (
+    source: EmbeddableSourceRecord
+  ): Promise<"local_authority" | "imported"> => {
+    if (!source.ownerUserId) return "local_authority";
+    const repository = config.repository();
+    const resolvePolicy = repository.getPersonalSourceReplicationPolicy;
+    if (typeof resolvePolicy !== "function") {
+      return "local_authority";
+    }
+    const policy = await resolvePolicy.call(repository, {
+      userId: source.ownerUserId
+    });
+    if (
+      !policy?.enabled ||
+      policy.mode !== "hosted_personal" ||
+      !policy.targetUpstreamId
+    ) {
+      return "local_authority";
+    }
+    if (
+      !config.env.managedConversationApiUrl ||
+      !config.env.managedConversationApiToken
+    ) {
+      throw new HostedSemanticAuthorityConfigurationError();
+    }
+    const { response, payload } = await fetchBoundedJsonObject(
+      fetchFn,
+      new URL(
+        "/v1/personal-semantic-artifacts/import",
+        config.env.managedConversationApiUrl
+      ),
+      {
+        method: "POST",
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${config.env.managedConversationApiToken}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          sourceType: source.sourceType,
+          sourceId: source.sourceId,
+          contract: {
+            artifactClass: "memory_embedding/v1",
+            modelKey: config.env.embeddingVersion,
+            modelArtifactHash: config.env.embeddingModelArtifactHash,
+            dimensions: String(config.env.embeddingDimensions),
+            tokenizer: config.env.embeddingTokenizer,
+            inputTransform: config.env.embeddingInputTransform,
+            pooling: config.env.embeddingPooling,
+            normalization: config.env.embeddingNormalization,
+            embeddingVersion: config.env.embeddingVersion
+          }
+        })
+      },
+      {
+        timeoutMs: config.env.embeddingRequestTimeoutMs,
+        maxBytes: 1024 * 1024,
+        readErrorBody: true
+      }
+    );
+    if (!response.ok) {
+      throw new HostedSemanticAuthorityPendingError(
+        `Hosted Personal embedding authority returned HTTP ${response.status}`
+      );
+    }
+    if (payload.state === "imported") return "imported";
+    if (payload.state === "local_authority") return "local_authority";
+    if (
+      payload.state === "hosted_pending" ||
+      payload.state === "hosted_unavailable"
+    ) {
+      throw new HostedSemanticAuthorityPendingError(
+        "Hosted Personal embedding artifact is not available yet"
+      );
+    }
+    throw new Error("Personal semantic authority response is invalid");
+  };
+
   const storeEmbeddings = async (sources: EmbeddableSourceRecord[]) => {
     const maxSegmentCharacters = Math.min(
       config.env.embeddingMaxTextChars,
@@ -454,6 +556,9 @@ export const createEmbeddingWorkflow = (
     if (!source) {
       return null;
     }
+    if ((await resolveHostedPersonalEmbedding(source)) === "imported") {
+      return null;
+    }
     const currentChunkCount = await config
       .repository()
       .getCurrentSourceEmbeddingChunkCount({
@@ -474,6 +579,8 @@ export const createEmbeddingWorkflow = (
   };
 
   return {
+    getNextSharedMemorySemanticEmbeddingRetryAt: () =>
+      config.repository().getNextSharedMemorySemanticEmbeddingRetryAt(),
     async reconcileSharedMemorySemanticItems(input = {}) {
       const embeddedBySemanticItem = new Map<
         string,
@@ -502,10 +609,22 @@ export const createEmbeddingWorkflow = (
             normalization: config.env.embeddingNormalization
           }),
           duringAuthorizedLease: async (leasedSources) => {
+            const inferenceSources = leasedSources.filter(
+              (source) => source.personalEmbeddingReuse === null
+            );
+            if (inferenceSources.length === 0) return;
+            const uniqueInferenceSources = [
+              ...new Map(
+                inferenceSources.map((source) => [
+                  source.computationReuseKey,
+                  source
+                ])
+              ).values()
+            ];
             let embedded: EmbeddingResponse | null = null;
             try {
               embedded = await embedTexts(
-                leasedSources.map((source) => source.text),
+                uniqueInferenceSources.map((source) => source.text),
                 { env: config.env, fetchFn, dispatcher }
               );
             } catch {
@@ -514,10 +633,10 @@ export const createEmbeddingWorkflow = (
             }
             for (
               let inputIndex = 0;
-              inputIndex < leasedSources.length;
+              inputIndex < uniqueInferenceSources.length;
               inputIndex += 1
             ) {
-              const source = leasedSources[inputIndex]!;
+              const source = uniqueInferenceSources[inputIndex]!;
               try {
                 const isolated =
                   embedded ??
@@ -536,16 +655,36 @@ export const createEmbeddingWorkflow = (
                     "embedding service returned no Team semantic chunks"
                   );
                 }
-                embeddedBySemanticItem.set(source.semanticItemId, {
+                const result = {
                   model: isolated.model,
                   dimensions: isolated.dimensions,
                   vector: aggregateEmbeddingChunks(chunks)
-                });
+                };
+                for (const equivalent of inferenceSources) {
+                  if (
+                    equivalent.computationReuseKey ===
+                    source.computationReuseKey
+                  ) {
+                    embeddedBySemanticItem.set(
+                      equivalent.semanticItemId,
+                      result
+                    );
+                  }
+                }
               } catch (error) {
-                embeddingErrorBySemanticItem.set(
-                  source.semanticItemId,
-                  error instanceof Error ? error.name : "UnknownEmbeddingError"
-                );
+                for (const equivalent of inferenceSources) {
+                  if (
+                    equivalent.computationReuseKey ===
+                    source.computationReuseKey
+                  ) {
+                    embeddingErrorBySemanticItem.set(
+                      equivalent.semanticItemId,
+                      error instanceof Error
+                        ? error.name
+                        : "UnknownEmbeddingError"
+                    );
+                  }
+                }
               }
             }
           }
@@ -558,6 +697,24 @@ export const createEmbeddingWorkflow = (
       for (let inputIndex = 0; inputIndex < sources.length; inputIndex += 1) {
         const source = sources[inputIndex]!;
         try {
+          if (source.personalEmbeddingReuse) {
+            const reused = await config
+              .repository()
+              .reusePersonalSharedMemorySemanticEmbedding({
+                semanticItemId: source.semanticItemId,
+                contentHash: source.contentHash,
+                ...source.personalEmbeddingReuse
+              });
+            if (!reused) {
+              const error = new Error(
+                "Personal embedding reuse lost its authorization binding"
+              );
+              error.name = "SharedMemoryPersonalEmbeddingReuseConflict";
+              throw error;
+            }
+            storedCount += 1;
+            continue;
+          }
           const isolated = embeddedBySemanticItem.get(source.semanticItemId);
           if (!isolated) {
             const error = new Error(
@@ -670,6 +827,26 @@ export const createEmbeddingWorkflow = (
           dimensions: config.env.embeddingDimensions,
           inserted: false,
           chunks: currentChunkCount
+        };
+      }
+      if ((await resolveHostedPersonalEmbedding(source)) === "imported") {
+        const importedChunkCount = await config
+          .repository()
+          .getCurrentSourceEmbeddingChunkCount({
+            source,
+            model: config.env.embeddingVersion,
+            dimensions: config.env.embeddingDimensions,
+            version: config.env.embeddingVersion
+          });
+        if (importedChunkCount === null) {
+          throw new Error(
+            "Hosted Personal embedding import did not create a complete vector set"
+          );
+        }
+        return {
+          dimensions: config.env.embeddingDimensions,
+          inserted: true,
+          chunks: importedChunkCount
         };
       }
       const stored = await storeEmbedding(source);

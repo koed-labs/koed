@@ -25,6 +25,15 @@ Memory and evidence fields in commercial/team deployments. It will treat
 embeddings as sensitive data. It will keep only the minimum derived queryable
 search representation needed for recall inside the trusted backend boundary.
 
+Exact Personal Conversation Source, Personal Memory Events, LCM Summaries,
+lexical anchors, and Personal embeddings remain unchanged and owner-only.
+Decryptable Team boundaries receive only sanitized derived Conversation Source
+Artifacts and semantic representations. The pinned contextual classifier is a
+best-effort exposure-reduction layer, combined with deterministic structured
+secret detection; it is not an anonymization or complete secret-detection
+guarantee. Classification or encryption failure blocks Team materialization
+without blocking Personal capture, Projection, LCM, embedding, or Recall.
+
 Koed will not claim end-to-end encryption for Team SaaS launch.
 
 ### Launch Modes
@@ -129,7 +138,9 @@ Every encrypted payload must record:
 | WorkOS/AuthKit API keys and provider secrets                      | Deployment secret manager or KMS-backed secret storage only.                                                       | Never expose to Explorer, MCP Server, Capture Hook config, upstream registry, logs, diagnostics, or support bundles.              |
 | Database/provider/KMS credentials                                 | Deployment secret manager only, redacted everywhere.                                                               | These are control-plane secrets, not product data.                                                                                |
 | Raw source rows and transcript-derived conversation items         | Application-layer encrypted text/payload fields.                                                                   | Projection and reprocessing decrypt only after internal authorization and job-boundary checks.                                    |
+| Sanitized Team Conversation Source Artifacts                      | Grant-scoped envelope-encrypted sanitized generations; exact Personal source remains owner-only.                   | Artifact provenance binds source frontier, classifier generation, effective content policy, and sanitized digest.                 |
 | Messages, tool events, Memory Events, Memory Nodes, LCM Summaries | Application-layer encrypted human-readable fields.                                                                 | Retrieval workers decrypt inside the trusted backend boundary after candidate authorization.                                      |
+| Privacy classification results                                    | Content-addressed envelope-encrypted labels, validated offsets, and bounded decoder evidence.                      | Unencrypted routing rows contain hashes, versions, counts, state, and timestamps, never detected plaintext.                       |
 | Canonical embeddings                                              | Encrypted as sensitive payloads where stored for portability, rebuild, support, or export.                         | Embeddings can leak semantic information and must be treated as customer data.                                                    |
 | Queryable vectors                                                 | Tenant-scoped transformed or otherwise search-boundary-limited representation by default for managed SaaS.         | This is not zero-knowledge. It is the minimum searchable representation for pgvector until stronger private search is proven.     |
 | LCM lexical anchors                                               | Envelope-encrypted with each LCM Summary and included in that summary's queryable-vector input.                    | Anchors are exact-grounded synthesis output, not a standalone index; exact checks occur only over authorized semantic candidates. |
@@ -169,6 +180,9 @@ not supply the encryption boundary or decide Memory authorization.
   Object-class or row-family DEKs can be used below that when it improves
   rotation and blast-radius control.
 - Rewrap DEKs when root KMS keys rotate.
+- Rewrap DEKs for encrypted privacy-classification results, sanitized source
+  artifacts, Team semantic representations, and encrypted canonical embedding
+  artifacts under the same scoped rotation rules.
 - Re-encrypt payload bytes asynchronously only when DEKs rotate or compromise
   is suspected.
 - Key metadata must allow old payloads to decrypt during rotation.
@@ -181,6 +195,10 @@ not supply the encryption boundary or decide Memory authorization.
   payload readability.
 - Backup retention and key retention must be aligned so retained backups remain
   restorable until their retention window ends.
+- Retention and hard purge must remove grant-scoped sanitized artifacts,
+  classification ciphertext, Team vectors, caches, jobs, and wrapped keys
+  without deleting the owner's canonical Personal originals or unrelated
+  grants.
 - Lost Operator-managed local keys mean encrypted payloads may be unrecoverable;
   Koed should report that honestly.
 
@@ -239,6 +257,8 @@ Koed must not claim:
 - that local/private `local_test_key` is equivalent to managed KMS;
 - that deleting local copies reduces cloud data unless sync/offload and
   retention policy say so explicitly.
+- that privacy classification guarantees anonymization, compliance, or complete
+  detection of credentials and private identifiers.
 
 ## Follow-Up Implementation Tickets
 

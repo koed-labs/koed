@@ -1,7 +1,7 @@
 import {
   aiClientIdentifierPattern,
   aiClientInstanceIdMaxLength
-} from "@koed/shared";
+} from "@koed/shared/ai-client-contract";
 
 export const managedConversationCommandChannel =
   "koed:managed-conversation:command";

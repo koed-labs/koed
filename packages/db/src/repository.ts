@@ -78,9 +78,11 @@ import {
   countTokensForModel,
   estimateTokens,
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  lcmLexicalAnchorGroundingPayloads,
   normalizeStoredLcmSummary,
   structuredLcmSummarySchema,
   tokenCounterIdentity,
+  validateLcmLexicalAnchors,
   type LcmSourceItem
 } from "@koed/core";
 import type {
@@ -96,6 +98,7 @@ import type {
 import {
   classifyApprovalActivity,
   combineStorageSanitizationCounts,
+  canonicalizePdsJson,
   DEFAULT_EMBEDDING_QUERY_INSTRUCTION,
   formatEmbeddingRetrievalQuery,
   metadataWithStorageSanitization,
@@ -124,6 +127,7 @@ import type {
   LcmGraphProjectThreads,
   LcmGraphThread,
   LcmNodeForSummarization,
+  LcmSummaryWorkClaim,
   MemorySourceRepository,
   SemanticMemoryRebuildResult,
   SourceAiClient,
@@ -2075,12 +2079,34 @@ const assertCurrentEmbeddingSourceRevision = async (
     sourceType: EmbeddableSourceType;
     sourceId: string;
     sourceHash: string;
-  }
+    sourceRevision?: string;
+  },
+  options: { requirePortableRevision?: boolean } = {}
 ): Promise<void> => {
-  if (
-    source.sourceType !== "memory_node" &&
-    source.sourceType !== "curated_memory"
-  ) {
+  if (source.sourceType === "memory_event" || source.sourceType === "message") {
+    if (!options.requirePortableRevision) return;
+    const current = await client.query<{
+      source_hash: string | null;
+      updated_at: Date | null;
+    }>(
+      source.sourceType === "memory_event"
+        ? `select source_hash, updated_at from memory_events where id=$1 and invalidated_at is null and personal_deleted_at is null for share`
+        : `select source_hash, null::timestamptz as updated_at from messages where id=$1 and invalidated_at is null for share`,
+      [source.sourceId]
+    );
+    const row = current.rows[0];
+    const revisionMatches =
+      row?.source_hash !== null && row?.source_hash !== undefined
+        ? row.source_hash === source.sourceHash
+        : Boolean(
+            source.sourceRevision &&
+            row?.updated_at?.toISOString() === source.sourceRevision
+          );
+    if (!revisionMatches) {
+      throw new Error(
+        `${source.sourceType === "memory_event" ? "Memory Event" : "Message"} embedding source changed after embedding work began`
+      );
+    }
     return;
   }
   if (source.sourceType === "curated_memory") {
@@ -3851,6 +3877,37 @@ const mapLcmNodeForSummarization = async (
   };
 };
 
+const lcmSummaryInputRevisionHash = (node: LcmNodeForSummarization): string =>
+  createHash("sha256")
+    .update(
+      JSON.stringify({
+        kind: node.kind,
+        depth: node.depth,
+        sourceItems: node.sourceItems,
+        lcmAlgorithmVersion: node.lcmAlgorithmVersion
+      })
+    )
+    .digest("hex");
+
+const lcmSummaryWorkIdentity = (
+  inputRevisionHash: string,
+  compatibilityContractHash: string
+): string =>
+  createHash("sha256")
+    .update(
+      JSON.stringify({
+        workClass: "lcm_summary",
+        inputRevisionHash,
+        compatibilityContractHash
+      })
+    )
+    .digest("hex");
+
+const lcmClaimError = (
+  name: "LcmSummaryClaimLostError" | "LcmSummaryInputStaleError",
+  message: string
+): Error => Object.assign(new Error(message), { name });
+
 export const createMemorySourceRepository = (
   pool: pg.Pool,
   options: MemorySourceRepositoryOptions = {}
@@ -3983,7 +4040,8 @@ export const createMemorySourceRepository = (
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
     ...createCollaborationRepository(pool, {
-      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+      teamEnvelopeEncryptionProvider: options.teamEnvelopeEncryptionProvider
     }),
     ...sharedMemoryRepository,
     ...createTeamConversationSourceRepository(pool),
@@ -7916,6 +7974,7 @@ export const createMemorySourceRepository = (
         owner_user_id: string | null;
         visibility: Visibility;
         source_hash: string | null;
+        source_revision: Date | null;
         text: string | null;
         summary_structured_json: unknown;
         summary_model: string | null;
@@ -7935,6 +7994,7 @@ export const createMemorySourceRepository = (
                 || mn.summary_embedding_revision::text,
               'sha256'
             ), 'hex') as source_hash,
+            mn.updated_at as source_revision,
             mn.summary_structured_json,
             mn.summary_model,
             mn.work_class,
@@ -7959,6 +8019,7 @@ export const createMemorySourceRepository = (
             me.owner_user_id,
             me.visibility,
             me.source_hash,
+            me.updated_at as source_revision,
             null::jsonb as summary_structured_json,
             null::text as summary_model,
             coalesce(
@@ -7999,6 +8060,7 @@ export const createMemorySourceRepository = (
               extract(epoch from greatest(cma.updated_at, coalesce(cmt.updated_at, cma.updated_at)))::text,
               'sha256'
             ), 'hex') as source_hash,
+            greatest(cma.updated_at, coalesce(cmt.updated_at, cma.updated_at)) as source_revision,
             null::jsonb as summary_structured_json,
             null::text as summary_model,
             'normal_embedding_lcm'::text as work_class,
@@ -8019,7 +8081,7 @@ export const createMemorySourceRepository = (
             and ${activeCuratedMemoryEvidencePredicate("cma")}
         )
         select source_type, source_id, owner_user_id, visibility, source_hash,
-          text, summary_structured_json, summary_model, work_class,
+          source_revision, text, summary_structured_json, summary_model, work_class,
           reconciliation_job_id
         from sources s
         where (
@@ -8320,6 +8382,9 @@ export const createMemorySourceRepository = (
           sourceHash:
             row.source_hash ??
             sourceHash(row.source_type, row.source_id, row.text!),
+          ...(row.source_revision
+            ? { sourceRevision: row.source_revision.toISOString() }
+            : {}),
           workClass: row.work_class,
           ...(row.reconciliation_job_id
             ? { reconciliationJobId: row.reconciliation_job_id }
@@ -8334,6 +8399,7 @@ export const createMemorySourceRepository = (
         owner_user_id: string | null;
         visibility: Visibility;
         source_hash: string | null;
+        source_revision: Date | null;
         text: string | null;
         summary_structured_json: unknown;
         summary_model: string | null;
@@ -8351,6 +8417,7 @@ export const createMemorySourceRepository = (
                 || mn.summary_embedding_revision::text,
               'sha256'
             ), 'hex') as source_hash,
+            mn.updated_at as source_revision,
             mn.summary_structured_json,
             mn.summary_model,
             case
@@ -8371,6 +8438,7 @@ export const createMemorySourceRepository = (
             me.owner_user_id,
             me.visibility,
             me.source_hash,
+            me.updated_at as source_revision,
             null::jsonb as summary_structured_json,
             null::text as summary_model,
             case
@@ -8398,6 +8466,7 @@ export const createMemorySourceRepository = (
               extract(epoch from greatest(cma.updated_at, coalesce(cmt.updated_at, cma.updated_at)))::text,
               'sha256'
             ), 'hex') as source_hash,
+            greatest(cma.updated_at, coalesce(cmt.updated_at, cma.updated_at)) as source_revision,
             null::jsonb as summary_structured_json,
             null::text as summary_model,
             btrim(concat_ws(E'\n',
@@ -8414,7 +8483,7 @@ export const createMemorySourceRepository = (
             and ${activeCuratedMemoryEvidencePredicate("cma")}
         )
         select source_type, source_id, owner_user_id, visibility, source_hash,
-          text, summary_structured_json, summary_model
+          source_revision, text, summary_structured_json, summary_model
         from sources
         where source_type = $1
           and source_id = $2
@@ -8480,7 +8549,10 @@ export const createMemorySourceRepository = (
           text,
           sourceHash:
             rawRow.source_hash ??
-            sourceHash(rawRow.source_type, rawRow.source_id, text)
+            sourceHash(rawRow.source_type, rawRow.source_id, text),
+          ...(rawRow.source_revision
+            ? { sourceRevision: rawRow.source_revision.toISOString() }
+            : {})
         };
       }
       if (
@@ -8599,7 +8671,10 @@ export const createMemorySourceRepository = (
             text: row.text,
             sourceHash:
               row.source_hash ??
-              sourceHash(row.source_type, row.source_id, row.text)
+              sourceHash(row.source_type, row.source_id, row.text),
+            ...(row.source_revision
+              ? { sourceRevision: row.source_revision.toISOString() }
+              : {})
           }
         : null;
     },
@@ -8640,6 +8715,119 @@ export const createMemorySourceRepository = (
         ]
       );
       return result.rows[0]?.chunk_count ?? null;
+    },
+
+    async resolvePersonalEmbeddingArtifact(actor, input) {
+      const dimensions = Number(input.contract.dimensions);
+      const embeddingTable = embeddingTableForDimensions(dimensions);
+      const rows = await pool.query<{
+        id: string;
+        source_chunk_index: number;
+        source_chunk_count: number;
+        input_token_count: number | null;
+        source_text: string | null;
+        embedding_input_hash: string;
+        vector_text: string;
+      }>(
+        `select distinct on (me.source_chunk_index)
+                me.id, me.source_chunk_index, me.source_chunk_count,
+                me.input_token_count, me.source_text,
+                me.embedding_input_hash,
+                v.embedding::text as vector_text
+           from memory_embeddings me
+           join ${embeddingTable} v on v.memory_embedding_id = me.id
+          where me.owner_user_id = $1
+            and me.visibility = 'personal'
+            and me.invalidated_at is null
+            and me.personal_deleted_at is null
+            and me.embedding_source_content_hash = $2
+            and me.embedding_model = $3
+            and me.embedding_dimensions = $4
+            and me.embedding_version = $5
+            and me.model_artifact_hash = $6
+            and me.tokenizer = $7
+            and me.input_transform = $8
+            and me.pooling = $9
+            and me.normalization = $10
+            and (
+              ($11 = 'memory_node' and me.memory_node_id is not null)
+              or ($11 = 'memory_event' and me.memory_event_id is not null)
+              or ($11 = 'message' and me.message_id is not null)
+              or ($11 = 'curated_memory' and me.curated_memory_assertion_id is not null)
+            )
+          order by me.source_chunk_index, me.created_at, me.id`,
+        [
+          actor.userId,
+          input.sourceContentHash,
+          input.contract.modelKey,
+          dimensions,
+          input.contract.embeddingVersion,
+          input.contract.modelArtifactHash,
+          input.contract.tokenizer,
+          input.contract.inputTransform,
+          input.contract.pooling,
+          input.contract.normalization,
+          input.sourceType
+        ]
+      );
+      const expectedCount = rows.rows[0]?.source_chunk_count ?? 0;
+      if (
+        expectedCount < 1 ||
+        rows.rows.length !== expectedCount ||
+        rows.rows.some(
+          (row, index) =>
+            row.source_chunk_count !== expectedCount ||
+            row.source_chunk_index !== index
+        )
+      ) {
+        return null;
+      }
+      const chunks = await Promise.all(
+        rows.rows.map(async (row) => {
+          let sourceText = row.source_text;
+          if (sourceText === ENCRYPTED_EMBEDDING_SOURCE_TEXT) {
+            if (!options.envelopeEncryptionProvider) {
+              throw new Error(
+                "Personal embedding artifact cannot be decrypted"
+              );
+            }
+            const plaintext = await decryptAuthorizedEncryptedFieldPayload(
+              pool,
+              options.envelopeEncryptionProvider,
+              {
+                ownerUserId: actor.userId,
+                sourceTable: "memory_embeddings",
+                sourceId: row.id,
+                sourceColumn: "source_text"
+              }
+            );
+            sourceText = typeof plaintext === "string" ? plaintext : null;
+          }
+          const vector = JSON.parse(row.vector_text) as unknown;
+          if (
+            !sourceText ||
+            createHash("sha256")
+              .update(sourceText, "utf8")
+              .digest("base64url") !== row.embedding_input_hash ||
+            !Array.isArray(vector) ||
+            vector.length !== dimensions ||
+            vector.some(
+              (value) => typeof value !== "number" || !Number.isFinite(value)
+            )
+          ) {
+            throw new Error("Personal embedding artifact is invalid");
+          }
+          return {
+            chunkIndex: row.source_chunk_index,
+            chunkCount: row.source_chunk_count,
+            inputTokenCount: row.input_token_count ?? 0,
+            sourceText,
+            embeddingInputHash: row.embedding_input_hash,
+            vector: vector as number[]
+          };
+        })
+      );
+      return { chunks };
     },
 
     async getRetrievalArenaIndexProof(input) {
@@ -8888,6 +9076,272 @@ export const createMemorySourceRepository = (
       return candidates;
     },
 
+    async claimLcmNodesForSummarization(actor, input) {
+      const limit = Math.min(Math.max(input.limit ?? 10, 1), 50);
+      const leaseMs = Math.min(Math.max(input.leaseMs, 30_000), 3_600_000);
+      const candidates = await this.listLcmNodesNeedingSummaries(actor, {
+        limit: Math.min(limit * 4, 50)
+      });
+      const claims: LcmSummaryWorkClaim[] = [];
+
+      for (const node of candidates) {
+        if (claims.length >= limit) break;
+        const inputRevisionHash = lcmSummaryInputRevisionHash(node);
+        let compatibilityContractHash = input.compatibilityContractHash;
+        let workIdentity = lcmSummaryWorkIdentity(
+          inputRevisionHash,
+          compatibilityContractHash
+        );
+        let pdsAuthority:
+          | {
+              claimantDeviceId: string;
+              claimGeneration: string;
+            }
+          | undefined;
+        const pdsContract = input.pdsContracts?.[node.kind];
+        if (
+          pdsContract &&
+          pdsContract.nodeKind === node.kind &&
+          pdsContract.lcmAlgorithmVersion === node.lcmAlgorithmVersion &&
+          pdsContract.sourceSelectionPolicy === node.lcmAlgorithmVersion
+        ) {
+          const topology = await pool.query<{
+            group_db_id: string;
+            logical_source_id: string;
+            source_order: number;
+          }>(
+            node.kind === "leaf"
+              ? `select mapping.group_id as group_db_id,
+                        mapping.logical_event_id as logical_source_id,
+                        source.source_order
+                   from memory_node_sources source
+                   join pds_memory_event_mappings mapping
+                     on mapping.memory_event_id=source.memory_event_id
+                  where source.memory_node_id=$1
+                  order by source.source_order`
+              : `select mapping.group_id as group_db_id,
+                        mapping.logical_node_id as logical_source_id,
+                        child.child_order as source_order
+                   from memory_node_children child
+                   join pds_lcm_node_mappings mapping
+                     on mapping.memory_node_id=child.child_memory_node_id
+                  where child.parent_memory_node_id=$1
+                  order by child.child_order`,
+            [node.id]
+          );
+          const groupIds = new Set(topology.rows.map((row) => row.group_db_id));
+          if (
+            topology.rows.length === node.sourceItems.length &&
+            groupIds.size === 1
+          ) {
+            compatibilityContractHash =
+              pdsArtifactCompatibilityHash(pdsContract);
+            workIdentity = createHash("sha256")
+              .update(
+                canonicalizePdsJson({
+                  artifactClass: "lcm_node/v1",
+                  nodeKind: node.kind,
+                  orderedSourceIds: topology.rows.map(
+                    (row) => row.logical_source_id
+                  ),
+                  compatibilityContractHash,
+                  correctedRevision: "0"
+                })
+              )
+              .digest("base64url");
+            const groupDbId = topology.rows[0]!.group_db_id;
+            await pool.query(
+              `update pds_lcm_work_intents
+                  set state='superseded',updated_at=now()
+                where group_id=$1 and memory_node_id=$2
+                  and work_identity<>$3
+                  and state in ('pending','claimed')`,
+              [groupDbId, node.id, workIdentity]
+            );
+            await pool.query(
+              `insert into pds_lcm_work_intents (
+                 group_id,owner_user_id,memory_node_id,work_identity,
+                 work_class,compatibility_contract_hash,
+                 compatibility_contract_json,input_revision_hash,state
+               ) values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,'pending')
+               on conflict (group_id,work_identity) do update set
+                 memory_node_id=excluded.memory_node_id,
+                 work_identity=excluded.work_identity,
+                 compatibility_contract_json=
+                   excluded.compatibility_contract_json,
+                 state=case
+                   when pds_lcm_work_intents.state in ('claimed','completed')
+                   then pds_lcm_work_intents.state
+                   else 'pending'
+                 end,
+                 updated_at=now()`,
+              [
+                groupDbId,
+                actor.userId,
+                node.id,
+                workIdentity,
+                node.kind === "leaf" ? "lcm_leaf" : "lcm_rollup",
+                compatibilityContractHash,
+                JSON.stringify(pdsContract),
+                inputRevisionHash
+              ]
+            );
+            await pool.query(
+              "select pg_notify('koed_pds_local_sync','lcm_work_intent')"
+            );
+            const authorityClaim = await pool.query<{
+              claimant_device_id: string;
+              claim_generation: string;
+            }>(
+              `select claimant_device_id,claim_generation
+                 from pds_semantic_work_claims
+                where group_id=$1 and work_identity=$2
+                  and compatibility_contract_hash=$3 and state='active'
+                  and expires_at>now()`,
+              [groupDbId, workIdentity, compatibilityContractHash]
+            );
+            const activeAuthorityClaim = authorityClaim.rows[0];
+            if (!activeAuthorityClaim) continue;
+            pdsAuthority = {
+              claimantDeviceId: activeAuthorityClaim.claimant_device_id,
+              claimGeneration: activeAuthorityClaim.claim_generation
+            };
+          }
+        }
+        const client = await pool.connect();
+        try {
+          await client.query("begin");
+          const current = await client.query<{ id: string }>(
+            `select mn.id
+               from memory_nodes mn
+              where mn.id=$1 and mn.owner_user_id=$2
+                and mn.visibility='personal'
+                and mn.invalidated_at is null
+                and mn.personal_deleted_at is null
+                and mn.kind in ('leaf','rollup')
+                and (
+                  mn.summary_model is null
+                  or mn.summary_structured_schema_version is distinct from $3
+                  or coalesce(mn.summary_structured_json ->> 'contentEncrypted', 'false') = 'true'
+                  or not coalesce(mn.summary_structured_json ? 'lexical_anchors', false)
+                )
+              for update skip locked`,
+            [node.id, actor.userId, LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION]
+          );
+          if (!current.rows[0]) {
+            await client.query("rollback");
+            continue;
+          }
+          const result = await client.query<{
+            id: string;
+            claim_token: string;
+            claim_generation: string;
+            expires_at: Date;
+          }>(
+            `insert into lcm_summary_work_claims (
+               owner_user_id,memory_node_id,work_identity,input_revision_hash,
+               compatibility_contract_hash,claimant_id,claim_generation,
+               claim_token,state,claimed_at,last_heartbeat_at,expires_at,
+               pds_claimant_device_id,pds_claim_generation
+             ) values (
+               $1,$2,$3,$4,$5,$6,1,gen_random_uuid(),'active',now(),now(),
+               now()+($7::bigint * interval '1 millisecond'),$8,$9
+             )
+             on conflict (owner_user_id,work_identity) do update set
+               memory_node_id=excluded.memory_node_id,
+               claimant_id=excluded.claimant_id,
+               claim_generation=lcm_summary_work_claims.claim_generation+1,
+               claim_token=gen_random_uuid(),
+               state='active',
+               claimed_at=now(),
+               last_heartbeat_at=now(),
+               expires_at=excluded.expires_at,
+               pds_claimant_device_id=excluded.pds_claimant_device_id,
+               pds_claim_generation=excluded.pds_claim_generation,
+               completed_at=null,
+               updated_at=now()
+             where lcm_summary_work_claims.state<>'active'
+                or lcm_summary_work_claims.expires_at<=now()
+             returning id,claim_token,claim_generation,expires_at`,
+            [
+              actor.userId,
+              node.id,
+              workIdentity,
+              inputRevisionHash,
+              compatibilityContractHash,
+              input.claimantId,
+              leaseMs,
+              pdsAuthority?.claimantDeviceId ?? null,
+              pdsAuthority?.claimGeneration ?? null
+            ]
+          );
+          const claim = result.rows[0];
+          if (!claim) {
+            await client.query("rollback");
+            continue;
+          }
+          await client.query("commit");
+          claims.push({
+            claimId: claim.id,
+            claimToken: claim.claim_token,
+            claimGeneration: Number(claim.claim_generation),
+            workIdentity,
+            inputRevisionHash,
+            compatibilityContractHash,
+            leaseExpiresAt: claim.expires_at.toISOString(),
+            node
+          });
+        } catch (error) {
+          await client.query("rollback");
+          throw error;
+        } finally {
+          client.release();
+        }
+      }
+      return claims;
+    },
+
+    async renewLcmSummaryWorkClaim(actor, input) {
+      const leaseMs = Math.min(Math.max(input.leaseMs, 30_000), 3_600_000);
+      const result = await pool.query<{ expires_at: Date }>(
+        `update lcm_summary_work_claims
+            set last_heartbeat_at=now(),
+                expires_at=now()+($5::bigint * interval '1 millisecond'),
+                updated_at=now()
+          where id=$1 and owner_user_id=$2 and claim_token=$3
+            and claim_generation=$4 and state='active' and expires_at>now()
+            and (
+              pds_claimant_device_id is null
+              or exists (
+                select 1 from pds_semantic_work_claims pds
+                 where pds.work_identity=lcm_summary_work_claims.work_identity
+                   and pds.claimant_device_id=
+                       lcm_summary_work_claims.pds_claimant_device_id
+                   and pds.claim_generation=
+                       lcm_summary_work_claims.pds_claim_generation
+                   and pds.state='active' and pds.expires_at>now()
+              )
+            )
+        returning expires_at`,
+        [
+          input.claimId,
+          actor.userId,
+          input.claimToken,
+          input.claimGeneration,
+          leaseMs
+        ]
+      );
+      const renewed = result.rows[0];
+      if (renewed) {
+        await pool.query(
+          "select pg_notify('koed_pds_local_sync','lcm_claim_heartbeat')"
+        );
+      }
+      return renewed
+        ? { leaseExpiresAt: renewed.expires_at.toISOString() }
+        : null;
+    },
+
     async getVisibleLcmNodeForSummarization(actor, nodeId) {
       const result = await pool.query<LcmNodeForSummarizationRow>(
         `
@@ -8938,14 +9392,23 @@ export const createMemorySourceRepository = (
           session_id: string | null;
           visibility: Visibility;
           kind: "leaf" | "rollup";
+          depth: number;
           summary_text: string;
           source_items_json: LcmSourceItem[] | null;
+          source_token_estimate: number | null;
+          summary_token_estimate: number | null;
           summary_structured_json: unknown;
           summary_model: string | null;
+          summary_prompt_version: string | null;
+          summary_structured_schema_version: string | null;
+          lcm_algorithm_version: string | null;
         }>(
           `
-          select id, owner_user_id, session_id, visibility, kind, summary_text,
-            source_items_json, summary_structured_json, summary_model
+          select id, owner_user_id, session_id, visibility, kind, depth,
+            summary_text, source_items_json, source_token_estimate,
+            summary_token_estimate, summary_structured_json, summary_model,
+            summary_prompt_version, summary_structured_schema_version,
+            lcm_algorithm_version
           from memory_nodes
           where id = $1
             and invalidated_at is null
@@ -8962,6 +9425,12 @@ export const createMemorySourceRepository = (
         );
         const currentNode = current.rows[0];
         if (!currentNode) {
+          if (input.claim) {
+            throw lcmClaimError(
+              "LcmSummaryClaimLostError",
+              "LCM summary node is no longer eligible"
+            );
+          }
           await client.query("commit");
           return;
         }
@@ -8969,6 +9438,100 @@ export const createMemorySourceRepository = (
           client,
           currentNode
         );
+        if (input.claim) {
+          const activeClaim = await client.query<{
+            input_revision_hash: string;
+            compatibility_contract_hash: string;
+            work_identity: string;
+            pds_claimant_device_id: string | null;
+            pds_claim_generation: string | null;
+          }>(
+            `select input_revision_hash,compatibility_contract_hash,
+                    work_identity,pds_claimant_device_id,pds_claim_generation
+               from lcm_summary_work_claims
+              where id=$1 and owner_user_id=$2 and memory_node_id=$3
+                and claim_token=$4 and claim_generation=$5
+                and state='active' and expires_at>now()
+              for update`,
+            [
+              input.claim.claimId,
+              input.claim.ownerUserId,
+              input.nodeId,
+              input.claim.claimToken,
+              input.claim.claimGeneration
+            ]
+          );
+          const claim = activeClaim.rows[0];
+          if (
+            !claim ||
+            claim.compatibility_contract_hash !==
+              input.claim.compatibilityContractHash
+          ) {
+            throw lcmClaimError(
+              "LcmSummaryClaimLostError",
+              "LCM summary claim is no longer active"
+            );
+          }
+          if (claim.pds_claimant_device_id !== null) {
+            const activePdsClaim = await client.query(
+              `select 1 from pds_semantic_work_claims
+                where work_identity=$1 and claimant_device_id=$2
+                  and claim_generation=$3 and state='active'
+                  and expires_at>now()
+                for share`,
+              [
+                claim.work_identity,
+                claim.pds_claimant_device_id,
+                claim.pds_claim_generation
+              ]
+            );
+            if (!activePdsClaim.rowCount) {
+              throw lcmClaimError(
+                "LcmSummaryClaimLostError",
+                "Personal Device Sync semantic claim is no longer active"
+              );
+            }
+          }
+          const currentForSummary = await mapLcmNodeForSummarization(
+            client,
+            currentNode as LcmNodeForSummarizationRow,
+            encryptedMemoryNodeColumns(currentNode).size > 0
+              ? await resolveMemoryNodeEncryptionProvider(currentNode.id)
+              : options.envelopeEncryptionProvider
+          );
+          const currentRevisionHash =
+            lcmSummaryInputRevisionHash(currentForSummary);
+          if (
+            currentForSummary.summaryModel !== null &&
+            isAnchorAwareLcmSummary(currentForSummary.summaryStructuredJson)
+          ) {
+            throw lcmClaimError(
+              "LcmSummaryClaimLostError",
+              "LCM summary was completed by another claimant"
+            );
+          }
+          if (
+            claim.input_revision_hash !== input.claim.inputRevisionHash ||
+            currentRevisionHash !== input.claim.inputRevisionHash
+          ) {
+            throw lcmClaimError(
+              "LcmSummaryInputStaleError",
+              "LCM summary input changed after the claim was acquired"
+            );
+          }
+          const claimedStructuredSummary = structuredLcmSummarySchema.parse(
+            input.summaryStructuredJson
+          );
+          const anchorValidation = validateLcmLexicalAnchors(
+            claimedStructuredSummary.lexical_anchors,
+            lcmLexicalAnchorGroundingPayloads(currentForSummary.sourceItems)
+          );
+          if (anchorValidation.rejected.length > 0) {
+            throw new Error(
+              "Every lexical anchor must be grounded in the current LCM source"
+            );
+          }
+        }
         const previousEmbeddingText =
           hydratedCurrentNode.summary_model === null ||
           isAnchorAwareLcmSummary(hydratedCurrentNode.summary_structured_json)
@@ -9198,6 +9761,27 @@ export const createMemorySourceRepository = (
           );
         }
 
+        if (input.claim) {
+          const completed = await client.query(
+            `update lcm_summary_work_claims
+                set state='completed',completed_at=now(),updated_at=now()
+              where id=$1 and owner_user_id=$2 and claim_token=$3
+                and claim_generation=$4 and state='active' and expires_at>now()`,
+            [
+              input.claim.claimId,
+              input.claim.ownerUserId,
+              input.claim.claimToken,
+              input.claim.claimGeneration
+            ]
+          );
+          if (completed.rowCount !== 1) {
+            throw lcmClaimError(
+              "LcmSummaryClaimLostError",
+              "LCM summary claim expired before completion"
+            );
+          }
+        }
+
         await client.query("commit");
       } catch (error) {
         await client.query("rollback");
@@ -9255,7 +9839,9 @@ export const createMemorySourceRepository = (
             tokenizer,
             input_transform,
             pooling,
-            normalization
+            normalization,
+            embedding_source_content_hash,
+            embedding_input_hash
           )
           values (
             case when $1 = 'memory_node' then $2::uuid else null end,
@@ -9275,7 +9861,9 @@ export const createMemorySourceRepository = (
             $13,
             $14,
             $15,
-            $16
+            $16,
+            $17,
+            $18
           )
           on conflict do nothing
           returning id, true as inserted
@@ -9296,7 +9884,11 @@ export const createMemorySourceRepository = (
             input.tokenizer,
             input.inputTransform,
             input.pooling,
-            input.normalization
+            input.normalization,
+            createHash("sha256")
+              .update(input.source.text, "utf8")
+              .digest("base64url"),
+            createHash("sha256").update(sourceText, "utf8").digest("base64url")
           ]
         );
 
@@ -9423,7 +10015,48 @@ export const createMemorySourceRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
-        await assertCurrentEmbeddingSourceRevision(client, input.source);
+        if (input.hostedPersonalAuthority) {
+          if (
+            input.source.ownerUserId !==
+            input.hostedPersonalAuthority.ownerUserId
+          ) {
+            throw Object.assign(
+              new Error("Hosted Personal semantic authority owner changed"),
+              { statusCode: 409 }
+            );
+          }
+          const authority = await client.query<{
+            enabled: boolean;
+            target_upstream_id: string | null;
+            mode: string;
+            updated_at: Date;
+          }>(
+            `select enabled, target_upstream_id, mode, updated_at
+               from personal_source_replication_policies
+              where owner_user_id=$1
+              for share`,
+            [input.hostedPersonalAuthority.ownerUserId]
+          );
+          const current = authority.rows[0];
+          if (
+            !current?.enabled ||
+            current.mode !== "hosted_personal" ||
+            current.target_upstream_id !==
+              input.hostedPersonalAuthority.targetUpstreamId ||
+            current.updated_at.toISOString() !==
+              input.hostedPersonalAuthority.policyUpdatedAt
+          ) {
+            throw Object.assign(
+              new Error(
+                "Hosted Personal semantic authority changed before artifact acceptance"
+              ),
+              { statusCode: 409 }
+            );
+          }
+        }
+        await assertCurrentEmbeddingSourceRevision(client, input.source, {
+          requirePortableRevision: Boolean(input.hostedPersonalAuthority)
+        });
         await client.query(
           "select pg_advisory_xact_lock(hashtextextended($1, 0))",
           [
@@ -9517,7 +10150,9 @@ export const createMemorySourceRepository = (
                 tokenizer,
                 input_transform,
                 pooling,
-                normalization
+                normalization,
+                embedding_source_content_hash,
+                embedding_input_hash
               )
               values (
                 case when $1 = 'memory_node' then $2::uuid else null end,
@@ -9525,7 +10160,7 @@ export const createMemorySourceRepository = (
                 case when $1 = 'message' then $2::uuid else null end,
                 case when $1 = 'curated_memory' then $2::uuid else null end,
                 $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                $13, $14, $15, $16, $17
+                $13, $14, $15, $16, $17, $18, $19
               )
               returning id
             `,
@@ -9546,7 +10181,13 @@ export const createMemorySourceRepository = (
               input.tokenizer,
               input.inputTransform,
               input.pooling,
-              input.normalization
+              input.normalization,
+              createHash("sha256")
+                .update(input.source.text, "utf8")
+                .digest("base64url"),
+              createHash("sha256")
+                .update(chunk.sourceText, "utf8")
+                .digest("base64url")
             ]
           );
           const id = embedding.rows[0]?.id;

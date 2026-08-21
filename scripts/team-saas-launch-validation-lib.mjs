@@ -39,7 +39,7 @@ export const launchValidationGates = [
     area: "Shared Memory",
     mode: "automated",
     description:
-      "Independent Conversation Source Access grants cover encrypted exact reads, snapshot and continuous boundaries, revocation, API Token denial, fork export, bounded SSE authorization loss, and audit events.",
+      "Independent Conversation Source Access grants cover exact owner-private source, sanitized Team reads, snapshot and continuous boundaries, revocation, API Token denial, sanitized fork export, bounded SSE authorization loss, and audit events.",
     launchCriterion:
       "Exact source access remains separately consented, encrypted, bounded, auditable, and revocable."
   },
@@ -202,6 +202,7 @@ export const launchValidationGates = [
 ];
 
 const automatedLaunchTestEnvironmentKeys = [
+  "API_COOKIE_SECURE",
   "API_CORS_ORIGINS",
   "API_DATA_ENCRYPTION_KEY",
   "API_ENVELOPE_ENCRYPTION_PROVIDER",
@@ -209,6 +210,7 @@ const automatedLaunchTestEnvironmentKeys = [
   "CACHE_REDIS_URL",
   "CACHE_STORE",
   "CORS_ORIGINS",
+  "COOKIE_SECURE",
   "EMBEDDING_SERVICE_URL",
   "ELECTRON_RUN_AS_NODE",
   "GRAPH_CACHE_TTL_SECONDS",

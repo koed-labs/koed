@@ -355,6 +355,75 @@ export const personalSourceReplicationPolicySchema = z.discriminatedUnion(
 
 export const sourceReplicationIntakeContextSchema = z.object({}).strict();
 
+export const personalEmbeddingContractSchema = z
+  .object({
+    artifactClass: z.literal("memory_embedding/v1"),
+    modelKey: z.string().trim().min(1).max(255),
+    modelArtifactHash: z.string().trim().min(1).max(255),
+    dimensions: z.string().regex(/^[1-9][0-9]{0,5}$/),
+    tokenizer: z.string().trim().min(1).max(255),
+    inputTransform: z.string().trim().min(1).max(255),
+    pooling: z.string().trim().min(1).max(255),
+    normalization: z.string().trim().min(1).max(255),
+    embeddingVersion: z.string().trim().min(1).max(255)
+  })
+  .strict();
+
+export const personalEmbeddingArtifactResolveSchema = z
+  .object({
+    sourceType: z.enum([
+      "memory_node",
+      "memory_event",
+      "message",
+      "curated_memory"
+    ]),
+    sourceContentHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    contract: personalEmbeddingContractSchema,
+    targetDeploymentId: uuid,
+    recipientKey: sourceReplicationRecipientKeySchema
+  })
+  .strict();
+
+export const personalEmbeddingArtifactImportSchema = z
+  .object({
+    sourceType: z.enum([
+      "memory_node",
+      "memory_event",
+      "message",
+      "curated_memory"
+    ]),
+    sourceId: uuid,
+    contract: personalEmbeddingContractSchema
+  })
+  .strict();
+
+export const personalEmbeddingArtifactPayloadSchema = z
+  .object({
+    protocol: z.literal("koed/personal-embedding-artifact/v1"),
+    sourceType: personalEmbeddingArtifactResolveSchema.shape.sourceType,
+    sourceContentHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    contract: personalEmbeddingContractSchema,
+    chunks: z
+      .array(
+        z
+          .object({
+            chunkIndex: z.number().int().safe().nonnegative(),
+            chunkCount: z.number().int().safe().positive(),
+            inputTokenCount: z.number().int().safe().nonnegative(),
+            sourceText: z
+              .string()
+              .min(1)
+              .max(8 * 1024 * 1024),
+            embeddingInputHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+            vector: z.array(z.number().finite()).min(1).max(65_536)
+          })
+          .strict()
+      )
+      .min(1)
+      .max(4_096)
+  })
+  .strict();
+
 export const sourceDownloadAuthorizationSchema = z
   .object({
     sourceGenerationId: uuid,

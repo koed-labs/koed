@@ -198,6 +198,17 @@ const lcmSummaryJson = (summary_text: string) =>
     lexical_anchors: []
   });
 
+const lcmClaim = (node: LcmSummaryNode) => ({
+  claimId: "00000000-0000-4000-8000-0000000000c1",
+  claimToken: "00000000-0000-4000-8000-0000000000c2",
+  claimGeneration: 1,
+  workIdentity: "1".repeat(64),
+  inputRevisionHash: "2".repeat(64),
+  compatibilityContractHash: "3".repeat(64),
+  leaseExpiresAt: new Date(Date.now() + 300_000).toISOString(),
+  node
+});
+
 const createApi = async (handler: http.RequestListener): Promise<string> => {
   const server = http.createServer(handler);
   servers.push(server);
@@ -1128,9 +1139,9 @@ describe("LCM summary background service", () => {
       async listPendingSessionTitles() {
         return { sessions: [] };
       },
-      async listPendingLcmSummaries() {
+      async claimLcmSummaries() {
         await pending;
-        return { nodes: [] };
+        return { claims: [] };
       }
     } as unknown as MemoryApiClient;
 
@@ -1219,8 +1230,8 @@ describe("LCM summary background service", () => {
       async listPendingSessionTitles() {
         return { sessions: [] };
       },
-      async listPendingLcmSummaries() {
-        return { nodes: [] };
+      async claimLcmSummaries() {
+        return { claims: [] };
       }
     } as unknown as MemoryApiClient;
 
@@ -1287,12 +1298,12 @@ describe("LCM summary background service", () => {
       async listLocalMemoryAgentSettings() {
         return { settings: [] };
       },
-      async listPendingLcmSummaries() {
+      async claimLcmSummaries() {
         if (listed) {
-          return { nodes: [] };
+          return { claims: [] };
         }
         listed = true;
-        return { nodes: [node] };
+        return { claims: [lcmClaim(node)] };
       },
       async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
         submissions.push(input);
@@ -1817,30 +1828,41 @@ describe("LCM summary background service", () => {
         );
         return;
       }
-      if (request.url === "/v1/memory/lcm/summaries/pending?limit=1") {
+      if (request.url === "/v1/memory/lcm/summary-claims") {
         response.end(
           JSON.stringify({
-            nodes: submittedSummary
+            claims: submittedSummary
               ? []
               : [
                   {
-                    id: nodeId,
-                    visibility: "personal",
-                    kind: "leaf",
-                    depth: 0,
-                    summaryText:
-                      "LCM placeholder: capture hook recorded that MVP recall uses memory_answer.",
-                    sourceItems: [
-                      {
-                        kind: "memory_event",
-                        sourceTable: "memory_events",
-                        sourceId: eventId,
-                        actor: "user",
-                        text: "The MVP recall flow should use only memory_answer.",
-                        position: 0
-                      }
-                    ],
-                    sourceTokenEstimate: null
+                    claimId: "00000000-0000-4000-8000-0000000000c1",
+                    claimToken: "00000000-0000-4000-8000-0000000000c2",
+                    claimGeneration: 1,
+                    workIdentity: "1".repeat(64),
+                    inputRevisionHash: "2".repeat(64),
+                    compatibilityContractHash: "3".repeat(64),
+                    leaseExpiresAt: new Date(
+                      Date.now() + 300_000
+                    ).toISOString(),
+                    node: {
+                      id: nodeId,
+                      visibility: "personal",
+                      kind: "leaf",
+                      depth: 0,
+                      summaryText:
+                        "LCM placeholder: capture hook recorded that MVP recall uses memory_answer.",
+                      sourceItems: [
+                        {
+                          kind: "memory_event",
+                          sourceTable: "memory_events",
+                          sourceId: eventId,
+                          actor: "user",
+                          text: "The MVP recall flow should use only memory_answer.",
+                          position: 0
+                        }
+                      ],
+                      sourceTokenEstimate: null
+                    }
                   }
                 ],
             count: submittedSummary ? 0 : 1

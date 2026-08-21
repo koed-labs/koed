@@ -364,7 +364,6 @@ export const pdsPortableLcmNodeId = (input: {
   orderedSourceIds: string[];
   compatibilityContractHash: string;
   correctedRevision: string;
-  contentHash: string;
 }): string => sha256(canonicalizePdsJson(input));
 
 const unsignedManifest = (

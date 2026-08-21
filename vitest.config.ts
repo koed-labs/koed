@@ -15,6 +15,10 @@ export default defineConfig({
         replacement: `${root}packages/shared/src/personal-desktop-contract.ts`
       },
       {
+        find: "@koed/shared/private-network",
+        replacement: `${root}packages/shared/src/private-network.ts`
+      },
+      {
         find: "@koed/shared/secure-upstream-fetch",
         replacement: `${root}packages/shared/src/secure-upstream-fetch.ts`
       },

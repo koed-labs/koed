@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { changeRepresentationBundle, createShareBundle } from "./bundles.js";
+import { changeFidelityBundle, createShareBundle } from "./bundles.js";
 
 const expected = {
   consentId: "00000000-0000-4000-8000-000000000001",
@@ -9,7 +9,9 @@ const expected = {
   teamWorkspaceId: "00000000-0000-4000-8000-000000000004",
   previewId: "00000000-0000-4000-8000-000000000005",
   previewRevision: 3,
-  previewHash: "a".repeat(64)
+  previewHash: "a".repeat(64),
+  maximumFidelity: "memory_events" as const,
+  includeCuratedMemory: true
 };
 
 const consent = { ...expected };
@@ -18,7 +20,8 @@ const grant = {
   teamId: expected.teamId,
   teamWorkspaceId: expected.teamWorkspaceId,
   consentId: expected.consentId,
-  activeRepresentation: "lcm_rollups"
+  maximumFidelity: "memory_events",
+  includeCuratedMemory: true
 };
 const actor = { userId: "00000000-0000-4000-8000-000000000006" };
 
@@ -27,7 +30,7 @@ describe("Shared Memory bundle invariants", () => {
     const createShareBundleRepository = vi.fn(async () => ({ consent, grant }));
     const repository = {
       createShareBundle: createShareBundleRepository,
-      changeRepresentationBundle: vi.fn()
+      changeFidelityBundle: vi.fn()
     };
 
     await expect(
@@ -50,7 +53,7 @@ describe("Shared Memory bundle invariants", () => {
       createShareBundle: vi.fn(async () => {
         throw failure;
       }),
-      changeRepresentationBundle: vi.fn()
+      changeFidelityBundle: vi.fn()
     };
 
     await expect(
@@ -62,27 +65,27 @@ describe("Shared Memory bundle invariants", () => {
     ).rejects.toBe(failure);
   });
 
-  it("delegates representation change to the repository-owned transaction", async () => {
-    const changeRepresentationBundleRepository = vi.fn(async () => ({
+  it("delegates cumulative fidelity change to the repository-owned transaction", async () => {
+    const changeFidelityBundleRepository = vi.fn(async () => ({
       consent,
       grant
     }));
     const repository = {
       createShareBundle: vi.fn(),
-      changeRepresentationBundle: changeRepresentationBundleRepository
+      changeFidelityBundle: changeFidelityBundleRepository
     };
 
     await expect(
-      changeRepresentationBundle(repository as never, actor, {
+      changeFidelityBundle(repository as never, actor, {
         consent: {} as never,
-        representation: {} as never,
-        expected: { ...expected, representation: "lcm_rollups" }
+        fidelity: {} as never,
+        expected
       })
     ).resolves.toEqual({ consent, grant });
-    expect(changeRepresentationBundleRepository).toHaveBeenCalledWith(actor, {
+    expect(changeFidelityBundleRepository).toHaveBeenCalledWith(actor, {
       consent: {},
-      representation: {},
-      expected: { ...expected, representation: "lcm_rollups" }
+      fidelity: {},
+      expected
     });
   });
 });

@@ -210,7 +210,8 @@ describe("collaboration Action Grant control", () => {
           teamId: ids.team,
           workspaceId: ids.workspace,
           representation: "memory_events",
-          allowedRepresentations: ["memory_events", "lcm_leaves"]
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false
         }
       }
     });
@@ -234,8 +235,8 @@ describe("collaboration Action Grant control", () => {
           teamId: ids.team,
           workspaceId: ids.workspace,
           mode: "continuous",
-          allowedRepresentations: ["memory_events", "lcm_leaves"],
-          selectedRepresentation: "memory_events",
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
           previewRevision: 2,
           previewHash: "b".repeat(64),
           expiresAt: null
@@ -367,7 +368,8 @@ describe("collaboration Action Grant control", () => {
       teamId: ids.team,
       teamWorkspaceId: ids.workspace,
       representation: "memory_events",
-      allowedRepresentations: ["memory_events", "lcm_leaves"]
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false
     });
   });
 
@@ -404,8 +406,8 @@ describe("collaboration Action Grant control", () => {
       teamWorkspaceId: ids.workspace,
       previewId: ids.remoteReplica,
       mode: "continuous",
-      allowedRepresentations: ["memory_events", "lcm_leaves"],
-      selectedRepresentation: "memory_events",
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
       previewRevision: 2,
       previewHash: "b".repeat(64),
       expiresAt: null
@@ -426,8 +428,8 @@ describe("collaboration Action Grant control", () => {
         workspaceId: ids.workspace,
         consentId: ids.consent,
         mode: "continuous",
-        allowedRepresentations: ["memory_events", "lcm_leaves"],
-        selectedRepresentation: "memory_events",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         previewRevision: 2,
         previewHash: "b".repeat(64),
         expiresAt: null,
@@ -470,7 +472,7 @@ describe("collaboration Action Grant control", () => {
 
     expect(
       fixture.control.describeIntent(fixture.context.backend, {
-        intent: "collaboration.change_shared_memory_representation",
+        intent: "collaboration.change_shared_memory_fidelity",
         commandRequestId: ids.commandRequest,
         mutationId: ids.mutation,
         logicalMemoryId: ids.logicalMemory,
@@ -478,10 +480,10 @@ describe("collaboration Action Grant control", () => {
         workspaceId: ids.workspace,
         shareGrantId: ids.logicalGrant,
         consentId: ids.consent,
-        representation: "lcm_leaves",
+        maximumFidelity: "lcm_leaves",
+        includeCuratedMemory: false,
         expectedGrantVersion: 4,
         mode: "continuous",
-        allowedRepresentations: ["lcm_leaves"],
         previewRevision: 2,
         previewHash: "b".repeat(64),
         expiresAt: null,

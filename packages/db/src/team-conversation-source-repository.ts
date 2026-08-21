@@ -1,4 +1,5 @@
 import type pg from "pg";
+import { isPrivacyMaterializationSourceAdapter } from "@koed/shared";
 import { recordAuditEventWithClient } from "./audit-repository.js";
 import type {
   ActorContext,
@@ -585,6 +586,17 @@ export const createTeamConversationSourceRepository = (
       if (!artifact) {
         throw new TeamConversationSourceConflictError(
           "Conversation Source Artifact is unavailable"
+        );
+      }
+      if (
+        !isPrivacyMaterializationSourceAdapter({
+          sourceKind: artifact.source_kind,
+          artifactFormat: artifact.artifact_format,
+          artifactFormatVersion: artifact.artifact_format_version
+        })
+      ) {
+        throw new TeamConversationSourceConflictError(
+          "Conversation Source Artifact cannot be sanitized for Team access"
         );
       }
       const existing = await client.query<Row>(

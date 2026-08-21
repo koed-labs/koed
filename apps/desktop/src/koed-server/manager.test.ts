@@ -145,6 +145,34 @@ describe("Koed server desktop manager", () => {
     );
   });
 
+  it("treats a Privacy Service provider as an Operator override", async () => {
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {
+        KOED_HOME: "/tmp/koed-managed-privacy-acceleration",
+        PRIVACY_RUNTIME_PROVIDER: "cuda"
+      },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: {}
+      }),
+      existsSync: () => true,
+      execFile: () => undefined,
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.hardwareAcceleration.get()).resolves.toEqual({
+      enabled: true,
+      managedByEnvironment: true
+    });
+    await expect(manager.hardwareAcceleration.set(false)).rejects.toThrow(
+      "managed by the Operator environment"
+    );
+  });
+
   it("treats a repository environment acceleration policy as Operator-managed", async () => {
     const repoRoot = mkdtempSync(resolve(tmpdir(), "koed-desktop-repo-env-"));
     const koedHome = mkdtempSync(
@@ -170,7 +198,7 @@ describe("Koed server desktop manager", () => {
     });
 
     await expect(manager.hardwareAcceleration.get()).resolves.toEqual({
-      enabled: false,
+      enabled: true,
       managedByEnvironment: true
     });
     await expect(manager.hardwareAcceleration.set(true)).rejects.toThrow(
@@ -203,6 +231,32 @@ describe("Koed server desktop manager", () => {
     await manager.handlers.status!();
 
     expect(timeout).toBe(120_000);
+  });
+
+  it("does not require the privacy model for Personal-only Desktop", async () => {
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_TEAM_COLLABORATION_ENABLED: "false" },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        callback(null, JSON.stringify({ ok: true, state: "installed" }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await manager.handlers.models_status!();
+    await manager.handlers.models_install!();
+    expect(calls.every((args) => !args.includes("privacy"))).toBe(true);
+    expect(calls.filter((args) => args.includes("embedding"))).toHaveLength(2);
   });
 
   it("routes optional AI Client setup and repair through idempotent Koed Server commands", async () => {
@@ -2054,7 +2108,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
-      environment: {},
+      environment: { KOED_TEAM_COLLABORATION_ENABLED: "true" },
       createCliInvocation: (args) => ({
         command: "/node",
         args: ["/repo/cli.js", ...args],
@@ -2077,7 +2131,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       ok: true,
       state: "installed"
     });
-    expect(calls[0]).toEqual([
+    expect(calls).toContainEqual([
       "/repo/cli.js",
       "models",
       "status",
@@ -2085,12 +2139,28 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       "embedding",
       "--json"
     ]);
-    expect(calls[1]).toEqual([
+    expect(calls).toContainEqual([
+      "/repo/cli.js",
+      "models",
+      "status",
+      "--kind",
+      "privacy",
+      "--json"
+    ]);
+    expect(calls).toContainEqual([
       "/repo/cli.js",
       "models",
       "install",
       "--kind",
       "embedding",
+      "--json"
+    ]);
+    expect(calls).toContainEqual([
+      "/repo/cli.js",
+      "models",
+      "install",
+      "--kind",
+      "privacy",
       "--json"
     ]);
   });

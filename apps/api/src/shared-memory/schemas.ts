@@ -1,5 +1,7 @@
 import {
   COLLABORATION_SOURCE_PAGE_MAX_ITEMS,
+  sharedMemoryCeilingAuthorizes,
+  sharedMemoryFidelityCeilings,
   collaborationNameSchema
 } from "@koed/shared";
 import { z } from "zod";
@@ -15,19 +17,18 @@ const nonNegativeVersionSchema = z.number().int().safe().min(0);
 const positiveVersionSchema = z.number().int().safe().positive();
 
 export const sharedMemoryRepresentationSchema = z.enum([
-  "memory_events",
-  "lcm_leaves",
-  "lcm_rollups",
+  ...sharedMemoryFidelityCeilings,
   "curated_assertions"
 ]);
 
-const distinctRepresentationsSchema = z
-  .array(sharedMemoryRepresentationSchema)
-  .min(1)
-  .max(4)
-  .refine((values) => new Set(values).size === values.length, {
-    message: "Representations must be distinct"
-  });
+export const sharedMemoryFidelityCeilingSchema = z.enum(
+  sharedMemoryFidelityCeilings
+);
+
+const fidelityConsentShape = {
+  maximumFidelity: sharedMemoryFidelityCeilingSchema,
+  includeCuratedMemory: z.boolean()
+};
 
 export const sharedMemoryAuthoritySchema = z.discriminatedUnion("source", [
   z
@@ -132,7 +133,7 @@ export const putSharedMemoryPolicySchema = z
     mutationId: uuidSchema,
     policyId: uuidSchema.optional(),
     expectedCurrentVersion: nonNegativeVersionSchema,
-    allowedRepresentations: distinctRepresentationsSchema
+    ...fidelityConsentShape
   })
   .strict();
 
@@ -143,13 +144,18 @@ export const createSharedMemoryPreviewSchema = z
     teamId: uuidSchema,
     teamWorkspaceId: uuidSchema,
     representation: sharedMemoryRepresentationSchema,
-    allowedRepresentations: distinctRepresentationsSchema,
+    ...fidelityConsentShape,
     authority: sharedMemoryAuthoritySchema
   })
   .strict()
   .refine(
-    (input) => input.allowedRepresentations.includes(input.representation),
-    { message: "Preview representation is outside the approved allowlist" }
+    (input) =>
+      sharedMemoryCeilingAuthorizes(
+        input.maximumFidelity,
+        input.representation,
+        input.includeCuratedMemory
+      ),
+    { message: "Preview representation is outside the approved fidelity" }
   );
 
 export const createSharedMemoryCandidatePreviewSchema = z
@@ -174,15 +180,20 @@ export const createSharedMemoryCandidatePreviewSchema = z
     teamId: uuidSchema,
     teamWorkspaceId: uuidSchema,
     representation: sharedMemoryRepresentationSchema,
-    allowedRepresentations: distinctRepresentationsSchema,
+    ...fidelityConsentShape,
     mode: z.enum(["snapshot", "continuous"]),
     expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
     authority: sharedMemoryAuthoritySchema
   })
   .strict()
   .refine(
-    (input) => input.allowedRepresentations.includes(input.representation),
-    { message: "Preview representation is outside the approved allowlist" }
+    (input) =>
+      sharedMemoryCeilingAuthorizes(
+        input.maximumFidelity,
+        input.representation,
+        input.includeCuratedMemory
+      ),
+    { message: "Preview representation is outside the approved fidelity" }
   );
 
 export const sharedSourcePreviewReferenceSchema = z
@@ -199,17 +210,11 @@ export const createSourceOwnerConsentSchema = z
     preview: sharedSourcePreviewReferenceSchema,
     previewRevision: positiveVersionSchema,
     mode: z.enum(["snapshot", "continuous"]),
-    allowedRepresentations: distinctRepresentationsSchema,
-    selectedRepresentation: sharedMemoryRepresentationSchema,
+    ...fidelityConsentShape,
     expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
     authority: sharedMemoryAuthoritySchema
   })
-  .strict()
-  .refine(
-    (input) =>
-      input.allowedRepresentations.includes(input.selectedRepresentation),
-    { message: "Selected representation is not owner-authorized" }
-  );
+  .strict();
 
 export const createShareGrantSchema = z
   .object({
@@ -234,22 +239,16 @@ export const createSharedMemoryShareBundleSchema = z
     preview: sharedSourcePreviewReferenceSchema,
     previewRevision: positiveVersionSchema,
     mode: z.enum(["snapshot", "continuous"]),
-    allowedRepresentations: distinctRepresentationsSchema,
-    selectedRepresentation: sharedMemoryRepresentationSchema,
+    ...fidelityConsentShape,
     expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
     title: collaborationNameSchema.optional(),
     authority: sharedMemoryAuthoritySchema
   })
-  .strict()
-  .refine(
-    (input) =>
-      input.allowedRepresentations.includes(input.selectedRepresentation),
-    { message: "Selected representation is not owner-authorized" }
-  );
+  .strict();
 
 export const createPendingShareSchema = createSharedMemoryShareBundleSchema;
 
-export const changeSharedMemoryRepresentationBundleSchema = z
+export const changeSharedMemoryFidelityBundleSchema = z
   .object({
     mutationId: uuidSchema,
     consentId: uuidSchema,
@@ -259,17 +258,12 @@ export const changeSharedMemoryRepresentationBundleSchema = z
     preview: sharedSourcePreviewReferenceSchema,
     previewRevision: positiveVersionSchema,
     mode: z.enum(["snapshot", "continuous"]),
-    allowedRepresentations: distinctRepresentationsSchema,
-    representation: sharedMemoryRepresentationSchema,
+    ...fidelityConsentShape,
     expectedGrantVersion: positiveVersionSchema,
     expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
     authority: sharedMemoryAuthoritySchema
   })
-  .strict()
-  .refine(
-    (input) => input.allowedRepresentations.includes(input.representation),
-    { message: "Selected representation is not owner-authorized" }
-  );
+  .strict();
 
 export const shareGrantParamsSchema = z
   .object({ shareGrantId: uuidSchema })
@@ -310,13 +304,13 @@ export const sharedMemoryItemDetailParamsSchema = scopedShareGrantParamsSchema
   .extend({ sourceId: uuidSchema })
   .strict();
 
-export const selectGrantRepresentationSchema = z
+export const selectGrantFidelitySchema = z
   .object({
     mutationId: uuidSchema,
     teamId: uuidSchema,
     teamWorkspaceId: uuidSchema,
     consentId: uuidSchema,
-    representation: sharedMemoryRepresentationSchema,
+    ...fidelityConsentShape,
     expectedGrantVersion: positiveVersionSchema,
     authority: sharedMemoryAuthoritySchema
   })
@@ -337,7 +331,7 @@ export const materializeGrantRepresentationSchema = z
   .strict();
 
 export const readGrantRepresentationQuerySchema = z
-  .object({ representation: sharedMemoryRepresentationSchema.optional() })
+  .object({ representation: sharedMemoryRepresentationSchema })
   .strict();
 
 export const readGrantRepresentationPageQuerySchema =

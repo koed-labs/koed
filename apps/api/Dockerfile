@@ -1,5 +1,6 @@
 FROM node:22-alpine AS base
 WORKDIR /app
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
 RUN corepack enable
 COPY . .
 RUN pnpm install --frozen-lockfile

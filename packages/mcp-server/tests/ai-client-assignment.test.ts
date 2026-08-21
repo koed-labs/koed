@@ -57,7 +57,7 @@ const clientFor = (
             fullId: "provider/model",
             supportedReasoningEfforts: effort ? ["high"] : undefined
           }
-        ],
+        ] as Array<Record<string, unknown>>,
         capabilities: {
           descriptors: {
             local_synthesis: {
@@ -72,6 +72,42 @@ const clientFor = (
 });
 
 describe("AI Client assignment revalidation", () => {
+  it("validates a native Codex model ID when the capability also has a qualified full ID", async () => {
+    const client = clientFor("codex");
+    const settings = await client.listLocalMemoryAgentSettings();
+    settings.settings[0]!.model = "gpt-5.6-luna";
+    client.listLocalMemoryAgentSettings.mockResolvedValue(settings);
+    const current = await client.listAiClientInstances();
+    current.capabilitySnapshots[0]!.models = [
+      {
+        id: "gpt-5.6-luna",
+        fullId: "openai/gpt-5.6-luna",
+        supportedReasoningEfforts: ["high"]
+      }
+    ];
+    client.listAiClientInstances.mockResolvedValue(current);
+
+    await expect(
+      resolveLocalMemoryAgentConfig({
+        client,
+        flowKey: "mcp_memory_answer",
+        fallback: () => "env-default",
+        fromSetting: () => "assigned"
+      })
+    ).resolves.toBe("assigned");
+
+    settings.settings[0]!.model = "openai/gpt-5.6-luna";
+    client.listLocalMemoryAgentSettings.mockResolvedValue(settings);
+    await expect(
+      resolveLocalMemoryAgentConfig({
+        client,
+        flowKey: "mcp_memory_answer",
+        fallback: () => "env-default",
+        fromSetting: () => "assigned"
+      })
+    ).resolves.toBe("assigned");
+  });
+
   it.each([
     ["codex", "mcp_memory_answer"],
     ["claude", "lcm_summary"],

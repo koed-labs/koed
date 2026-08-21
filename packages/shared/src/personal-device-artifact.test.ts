@@ -248,9 +248,22 @@ describe("portable Personal artifacts", () => {
       nodeKind: "leaf",
       orderedSourceIds: content.orderedSourceIds,
       compatibilityContractHash: pdsArtifactCompatibilityHash(contract),
-      correctedRevision: "0",
-      contentHash
+      correctedRevision: "0"
     });
+    expect(
+      pdsPortableLcmNodeId({
+        nodeKind: "leaf",
+        orderedSourceIds: content.orderedSourceIds,
+        compatibilityContractHash: pdsArtifactCompatibilityHash(contract),
+        correctedRevision: "0"
+      })
+    ).toBe(logicalNodeId);
+    expect(
+      pdsPortableLcmNodeContentHash({
+        ...content,
+        summaryText: "A different valid output for the same claimed work."
+      })
+    ).not.toBe(contentHash);
     const record = createPdsArtifactRecord({
       groupId: "group-1",
       workIdentity: hash(22),

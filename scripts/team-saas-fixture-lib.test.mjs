@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import {
+  FIXTURE_SOURCE_PRIVACY_CANARY,
   FIXTURE_VERSION,
   assertFixtureEnvironment,
   createFixtureRuntime,
@@ -18,6 +19,7 @@ import {
   fixtureUserIds,
   fixtureUsers,
   fixtureWorkspaceAccess,
+  fixtureWorkspaceShareOwnedMemoryAccess,
   fixtureWorkspaceIds,
   fixtureWorkspaces,
   normalizedFixtureSnapshot,
@@ -52,6 +54,9 @@ test("Team SaaS fixture definition is deterministic and realistic", () => {
       ["continuous", "revoked"]
     ]
   );
+  const sourceCanaryText = JSON.stringify(fixtureConversationSources[0]);
+  assert.match(sourceCanaryText, /alice\.smith@example\.com/);
+  assert.ok(sourceCanaryText.includes(FIXTURE_SOURCE_PRIVACY_CANARY.apiKey));
   for (const source of fixtureConversationSources) {
     assert.match(
       source.originKeyId,
@@ -71,6 +76,15 @@ test("Team SaaS fixture definition is deterministic and realistic", () => {
     Object.keys(fixtureUsers).sort()
   );
   assert.equal(new Set(fixtureWorkspaceIds).size, fixtureWorkspaceIds.length);
+  assert.deepEqual(fixtureWorkspaceShareOwnedMemoryAccess, [
+    ["electron", "bob"],
+    ["electron", "david"],
+    ["cloud", "alice"],
+    ["cloud", "carol"],
+    ["ingestion", "alice"],
+    ["ingestion", "carol"],
+    ["ingestion", "david"]
+  ]);
   assert.equal(
     new Set(fixtureMemoryRows.map((memory) => memory.idempotencyKey)).size,
     fixtureMemoryRows.length

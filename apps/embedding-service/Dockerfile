@@ -4,11 +4,15 @@ FROM node:22-bookworm-slim AS build
 
 WORKDIR /app
 
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+
 RUN corepack enable && corepack prepare pnpm@11.1.2 --activate
 
 COPY . .
 
 RUN pnpm install --frozen-lockfile \
+  && find apps packages -name "*.tsbuildinfo" -delete \
+  && rm -rf apps/*/dist packages/*/dist \
   && pnpm --filter @koed/shared build \
   && pnpm --filter @koed/embedding-service build \
   && pnpm --filter @koed/embedding-service deploy --legacy --prod /deploy/embedding-service

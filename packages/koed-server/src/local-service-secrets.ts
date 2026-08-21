@@ -12,6 +12,8 @@ const secretNames = [
   "COLLABORATION_LOCAL_BROKER_SECRET",
   "COLLABORATION_REALTIME_CURSOR_SECRET",
   "EMBEDDING_SERVICE_TOKEN",
+  "PRIVACY_SERVICE_TOKEN",
+  "PRIVACY_RUNTIME_CONTROL_TOKEN",
   "KOED_OPS_METRICS_TOKEN"
 ] as const;
 
@@ -98,6 +100,10 @@ const generatedSecrets = (
     random(48).toString("base64url"),
   EMBEDDING_SERVICE_TOKEN:
     existing.EMBEDDING_SERVICE_TOKEN ?? random(32).toString("base64url"),
+  PRIVACY_SERVICE_TOKEN:
+    existing.PRIVACY_SERVICE_TOKEN ?? random(32).toString("base64url"),
+  PRIVACY_RUNTIME_CONTROL_TOKEN:
+    existing.PRIVACY_RUNTIME_CONTROL_TOKEN ?? random(32).toString("base64url"),
   KOED_OPS_METRICS_TOKEN:
     existing.KOED_OPS_METRICS_TOKEN ?? random(32).toString("base64url")
 });

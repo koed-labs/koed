@@ -13,3 +13,6 @@ allowBuilds:
   electron-winstaller: false
   esbuild: true
   msgpackr-extract: false
+  onnxruntime-node: true
+  protobufjs: false
+  sharp: true

@@ -52,7 +52,8 @@ describe("worker job workflows", () => {
       embeddingWorkflow: {
         embedSource,
         embedSources: vi.fn(),
-        reconcileSharedMemorySemanticItems: vi.fn()
+        reconcileSharedMemorySemanticItems: vi.fn(),
+        getNextSharedMemorySemanticEmbeddingRetryAt: vi.fn()
       },
       lcmEmbedQueue: {} as KoedJobQueue<EmbeddingQueueJobData>,
       repository: () => ({}) as MemorySourceRepository
@@ -152,7 +153,8 @@ describe("worker job workflows", () => {
       embeddingWorkflow: {
         embedSource: vi.fn(),
         embedSources: vi.fn(),
-        reconcileSharedMemorySemanticItems: vi.fn()
+        reconcileSharedMemorySemanticItems: vi.fn(),
+        getNextSharedMemorySemanticEmbeddingRetryAt: vi.fn()
       },
       lcmEmbedQueue: {
         add

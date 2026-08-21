@@ -66,8 +66,10 @@ const current0020Index = 20;
 const expectedPre0020Tag = "0019_tidy_rhino";
 const expectedCurrent0020Tag = "0020_zippy_apocalypse";
 const expectedLocalRuntimeCutoverTag = "0026_amused_zeigeist";
-const expectedLatestMigrationTag = "0033_fixed_scarlet_witch";
+const expectedPreSelectivePiiTag = "0033_fixed_scarlet_witch";
+const expectedLatestMigrationTag = "0034_young_silvermane";
 const preMultiComponentSourceIndex = 29;
+const expectedLatestMigrationIndex = 34;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -163,9 +165,12 @@ const assertAlphaMigrationContract = async () => {
       `Expected exactly one ${expectedLocalRuntimeCutoverTag} migration with a predecessor`
     );
   }
-  if (journal.entries.at(-1)?.tag !== expectedLatestMigrationTag) {
+  if (
+    journal.entries.at(-1)?.idx !== expectedLatestMigrationIndex ||
+    journal.entries.at(-1)?.tag !== expectedLatestMigrationTag
+  ) {
     throw new Error(
-      `Expected ${expectedLatestMigrationTag} to be the latest migration`
+      `Expected ${expectedLatestMigrationTag} at migration index ${expectedLatestMigrationIndex} to be latest`
     );
   }
   return journal;
@@ -1097,6 +1102,20 @@ try {
     { folderPrefix: "koed-through-0020-migrations-" }
   );
   temporaryFolders.add(through0020Folder);
+  const preSelectivePiiIndex = journal.entries.findIndex(
+    (entry) => entry.tag === expectedPreSelectivePiiTag
+  );
+  if (preSelectivePiiIndex < 0) {
+    throw new Error(
+      `Expected pre-selective-PII migration ${expectedPreSelectivePiiTag}`
+    );
+  }
+  const preSelectivePiiFolder = await createMigrationSlice(
+    journal,
+    preSelectivePiiIndex,
+    { folderPrefix: "koed-pre-selective-pii-migrations-" }
+  );
+  temporaryFolders.add(preSelectivePiiFolder);
   const localRuntimeCutoverIndex = journal.entries.findIndex(
     (entry) => entry.tag === expectedLocalRuntimeCutoverTag
   );
@@ -1120,6 +1139,10 @@ try {
   const through0020Records = await migrationRecords(
     through0020Folder,
     journal.entries.slice(0, current0020Index + 1)
+  );
+  const preSelectivePiiRecords = await migrationRecords(
+    preSelectivePiiFolder,
+    journal.entries.slice(0, preSelectivePiiIndex + 1)
   );
   const preLocalRuntimeCutoverRecords = await migrationRecords(
     preLocalRuntimeCutoverFolder,
@@ -1145,6 +1168,64 @@ try {
     });
   });
 
+  await runScenario("selective-pii-requires-explicit-team-reset", async () => {
+    const target = await createDisposableDatabase("selective_pii_reset");
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, {
+        migrationsFolder: preSelectivePiiFolder
+      });
+      await assertMigrationLedger(pool, preSelectivePiiRecords);
+      const personalUser = await pool.query(
+        `insert into users (email, display_name)
+         values ($1, 'Personal migration fixture') returning id`,
+        [`personal-migration-${randomUUID()}@example.test`]
+      );
+      const team = await pool.query(
+        `insert into teams (name) values ($1) returning id`,
+        [`Pre-PII Team ${randomUUID()}`]
+      );
+      await pool.query(
+        `insert into team_representation_policies (
+           team_id, version, allowed_representations, policy_hash, effective_at
+         ) values ($1, 1, array['memory_events']::shared_memory_representation[], $2, now())`,
+        [team.rows[0].id, sha256("pre-pii-team-policy")]
+      );
+
+      let failure;
+      try {
+        await runDbMigrations(pool);
+      } catch (error) {
+        failure = error;
+      }
+      const messages = [];
+      for (let current = failure; current; current = current.cause) {
+        messages.push(
+          current instanceof Error ? current.message : String(current)
+        );
+      }
+      if (
+        !messages.some((message) =>
+          message.includes(
+            "Migration 0034 requires a disposable-alpha Team sharing reset"
+          )
+        )
+      ) {
+        throw new Error(
+          `0034 did not report its Team reset boundary: ${messages.join(" | ")}`
+        );
+      }
+      await assertMigrationLedger(pool, preSelectivePiiRecords);
+      const retained = await pool.query(
+        "select count(*)::integer as count from users where id=$1",
+        [personalUser.rows[0].id]
+      );
+      if (retained.rows[0]?.count !== 1) {
+        throw new Error(
+          "Rejected 0034 migration changed Personal canonical data"
+        );
+      }
+    });
+  });
   await runScenario(
     "multi-component-source-alpha-reset-diagnostic",
     async () => {

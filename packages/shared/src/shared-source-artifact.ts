@@ -91,7 +91,7 @@ export interface SharedSourceArtifactV1 {
   manifest: SharedSourceArtifactManifestEntryV1[];
   manifestHash: string;
   items: SharedSourceArtifactItemV1[];
-  redactedContentHash: string;
+  sourceContentHash: string;
   artifactHash: string;
 }
 
@@ -103,7 +103,7 @@ export interface SharedSourcePreviewV1 {
   representation: SharedSourceArtifactRepresentation;
   binding: SharedSourceArtifactBindingV1;
   items: SharedSourceArtifactItemV1[];
-  redactedContentHash: string;
+  sourceContentHash: string;
   previewHash: string;
 }
 

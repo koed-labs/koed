@@ -31,6 +31,7 @@ import {
   type CollaborationWorkspace,
   type CollaborationWorkspaceAccess,
   type PersonalMemoryEntry,
+  type SharedMemoryFidelityCeiling,
   type PendingShare,
   type SharedMemoryGrant,
   type SharedMemoryCandidatePreview,
@@ -332,7 +333,8 @@ export interface CollaborationRendererClient {
     teamId: string;
     workspaceId: string;
     representation: SharedMemoryRepresentation;
-    allowedRepresentations: SharedMemoryRepresentation[];
+    maximumFidelity: SharedMemoryFidelityCeiling;
+    includeCuratedMemory: boolean;
     candidate?: {
       sessionId: string;
       candidateHash: string;
@@ -357,8 +359,8 @@ export interface CollaborationRendererClient {
     teamId: string;
     workspaceId: string;
     mode: "snapshot" | "continuous";
-    allowedRepresentations: SharedMemoryRepresentation[];
-    selectedRepresentation: SharedMemoryRepresentation;
+    maximumFidelity: SharedMemoryFidelityCeiling;
+    includeCuratedMemory: boolean;
     previewRevision: number;
     previewHash: string;
     expiresAt: string | null;
@@ -373,17 +375,17 @@ export interface CollaborationRendererClient {
     expectedGrantVersion: number;
     reasonCode: string;
   }): Promise<SharedMemoryGrant>;
-  changeSharedMemoryRepresentation(input: {
+  changeSharedMemoryFidelity(input: {
     mutationId: string;
     logicalMemoryId: string;
     teamId: string;
     workspaceId: string;
     shareGrantId: string;
     consentId: string;
-    representation: SharedMemoryRepresentation;
+    maximumFidelity: SharedMemoryFidelityCeiling;
+    includeCuratedMemory: boolean;
     expectedGrantVersion: number;
     mode: "snapshot" | "continuous";
-    allowedRepresentations: SharedMemoryRepresentation[];
     previewRevision: number;
     previewHash: string;
     expiresAt: string | null;
@@ -1474,8 +1476,8 @@ export const createCollaborationRendererClient = (
       "collaboration.preview_shared_memory": "Preview Shared Memory",
       "collaboration.share_memory": "Share Memory",
       "collaboration.revoke_shared_memory": "Revoke Shared Memory",
-      "collaboration.change_shared_memory_representation":
-        "Change Shared Memory representation",
+      "collaboration.change_shared_memory_fidelity":
+        "Change Shared Memory fidelity",
       "collaboration.share_conversation_source": "Share Conversation source",
       "collaboration.revoke_conversation_source":
         "Revoke Conversation source access",
@@ -1833,9 +1835,7 @@ export const createCollaborationRendererClient = (
       )
       .filter(
         ({ session, selection }) =>
-          session.sourceState === "ready" &&
-          session.representationState === "current" &&
-          !cachedSelectionView(selection)
+          session.sourceState === "ready" && !cachedSelectionView(selection)
       )
       .sort(
         (left, right) =>
@@ -2382,14 +2382,14 @@ export const createCollaborationRendererClient = (
             : null;
         const sourceMustBePurged =
           selectedSharedSession !== null &&
-          (selectedSharedSession.session.representation !==
-            update.session.representation ||
+          (selectedSharedSession.session.maximumFidelity !==
+            update.session.maximumFidelity ||
+            selectedSharedSession.session.includeCuratedMemory !==
+              update.session.includeCuratedMemory ||
             selectedSharedSession.session.sourceRevision !==
               update.session.sourceRevision ||
             selectedSharedSession.source.items.length === 0 ||
-            update.session.sourceState !== "ready" ||
-            update.session.representationState === "pending" ||
-            update.session.representationState === "unavailable");
+            update.session.sourceState !== "ready");
         if (sourceMustBePurged) {
           if (next.selection.kind === "shared_session") {
             refreshSelection = next.selection;
@@ -2397,8 +2397,7 @@ export const createCollaborationRendererClient = (
         }
         if (
           recoverableSelection?.sharedSessionId === update.session.id &&
-          update.session.sourceState === "ready" &&
-          update.session.representationState === "current"
+          update.session.sourceState === "ready"
         ) {
           refreshSelection = recoverableSelection;
         }
@@ -2443,7 +2442,8 @@ export const createCollaborationRendererClient = (
                           hasOlder: false,
                           hasNewer: false,
                           sharedSessionId: update.session.id,
-                          representation: update.session.representation,
+                          representation:
+                            selectedSharedSession.source.representation,
                           items: []
                         }
                       }
@@ -2470,14 +2470,14 @@ export const createCollaborationRendererClient = (
         const selected =
           next.selection.kind === "shared_session" &&
           next.selection.sharedSessionId === update.sharedSessionId;
-        const transientRepresentationRemoval =
+        const transientFidelityRemoval =
           selected &&
-          (event.family === "representation_changed" ||
+          (event.family === "fidelity_changed" ||
             event.family === "memory_event_available" ||
             event.family === "lcm_leaf_available" ||
             event.family === "lcm_rollup_available");
         if (
-          transientRepresentationRemoval &&
+          transientFidelityRemoval &&
           next.selection.kind === "shared_session"
         ) {
           rememberSharedSessionSelection(next.selection);
@@ -2514,14 +2514,12 @@ export const createCollaborationRendererClient = (
                   )
                 }
               : next.view,
-          ...(transientRepresentationRemoval &&
-          next.view.kind === "shared_session"
+          ...(transientFidelityRemoval && next.view.kind === "shared_session"
             ? {
                 view: {
                   ...next.view,
                   session: {
                     ...next.view.session,
-                    representationState: "unavailable" as const,
                     sourceState: "unavailable" as const
                   },
                   source: {
@@ -2580,7 +2578,6 @@ export const createCollaborationRendererClient = (
         ) {
           const unavailableSession = {
             ...current.view.session,
-            representationState: "unavailable" as const,
             sourceState: "unavailable" as const
           };
           await publish(
@@ -4049,10 +4046,10 @@ export const createCollaborationRendererClient = (
       }
       return result.data.grant;
     },
-    async changeSharedMemoryRepresentation(input) {
+    async changeSharedMemoryFidelity(input) {
       const commandRequestId = crypto.randomUUID();
       const actionGrant = await waitForActionGrant({
-        intent: "collaboration.change_shared_memory_representation",
+        intent: "collaboration.change_shared_memory_fidelity",
         commandRequestId,
         ...input
       });
@@ -4060,13 +4057,13 @@ export const createCollaborationRendererClient = (
         collaborationRendererCommandSchema.parse({
           contractVersion: COLLABORATION_CONTRACT_VERSION,
           requestId: commandRequestId,
-          command: "collaboration.change_shared_memory_representation",
+          command: "collaboration.change_shared_memory_fidelity",
           input: { ...input, actionGrant }
         })
       );
       if (
         !result.ok ||
-        result.command !== "collaboration.change_shared_memory_representation"
+        result.command !== "collaboration.change_shared_memory_fidelity"
       ) {
         throw new Error("Unexpected collaboration result.");
       }

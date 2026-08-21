@@ -10,6 +10,7 @@ import {
   assignmentStatusFor,
   modelId,
   modelLabel,
+  modelMatches,
   optionValue,
   searchableInstance,
   searchableModelText,
@@ -163,7 +164,9 @@ const buildFlowViewModel = (
   );
   const snapshot = snapshotFor(readModel, draft.ai_client_instance_id);
   const models = snapshot?.models ?? [];
-  const selectedModel = models.find((model) => modelId(model) === draft.model);
+  const selectedModel = models.find((model) =>
+    modelMatches(model, draft.model)
+  );
   return {
     defaultInfo: readModel.defaults[flow.key],
     instance,
@@ -449,6 +452,7 @@ const filteredModels = (
   );
   if (!options.some((model) => modelId(model) === currentModel)) {
     options.unshift({
+      id: currentModel,
       displayName: null,
       provider: null,
       model: null,

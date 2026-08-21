@@ -175,24 +175,18 @@ export const inboxModelFromSnapshot = (
             selection
           });
         }
-        const representationConflict =
-          session.representationState === "stale" ||
-          session.representationState === "unavailable";
         const sourceConflict =
           session.sourceState === "unavailable" ||
           session.sourceState === "permission_denied";
-        if (representationConflict || sourceConflict) {
+        if (sourceConflict) {
           sharedMemoryConflicts.push({
             id: `shared-memory:${session.id}`,
             title: session.title,
             context,
-            description: sourceConflict
-              ? session.sourceState === "permission_denied"
+            description:
+              session.sourceState === "permission_denied"
                 ? "Current access no longer permits this shared source."
-                : "The authorized shared source is unavailable."
-              : session.representationState === "stale"
-                ? "The active shared representation is stale."
-                : "The active shared representation is unavailable.",
+                : "The authorized shared source is unavailable.",
             selection
           });
         }

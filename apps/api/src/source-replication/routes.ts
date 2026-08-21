@@ -14,7 +14,9 @@ import {
   createRecipientPrivateKeyEnvelopeEncryptionProvider,
   decryptEnvelopeToUtf8,
   decryptEncryptedJsonPackage,
+  fetchBoundedJsonObject,
   CONVERSATION_SOURCE_DOWNLOAD_AUTHORIZATION_TTL_MS,
+  upstreamApiUrl,
   parseConversationSourceOriginKeyRegistration,
   parseConversationSourceReplicationSourceDescriptor,
   parseConversationSourceReplicationSegmentEnvelope,
@@ -39,6 +41,9 @@ import {
 } from "../local-edge/upstream-routing.js";
 import {
   personalSourceReplicationPolicySchema,
+  personalEmbeddingArtifactImportSchema,
+  personalEmbeddingArtifactPayloadSchema,
+  personalEmbeddingArtifactResolveSchema,
   sourceClosurePayloadSchema,
   sourceDiscoverySchema,
   sourceDownloadAuthorizationParamsSchema,
@@ -64,6 +69,62 @@ const intakeProfiles = new Set([...hostedTargetProfiles, ...localProfiles]);
 
 const sha256 = (value: string | Uint8Array): string =>
   createHash("sha256").update(value).digest("hex");
+
+const sha256Base64url = (value: string | Uint8Array): string =>
+  createHash("sha256").update(value).digest("base64url");
+
+type HostedSemanticPolicyFence = {
+  enabled: boolean;
+  mode: string;
+  targetUpstreamId: string | null;
+  updatedAt?: string;
+} | null;
+
+type HostedSemanticSourceFence = {
+  ownerUserId: string | null;
+  text: string;
+} | null;
+
+export const hostedPersonalSemanticImportIsCurrent = (input: {
+  ownerUserId: string;
+  sourceContentHash: string;
+  policySnapshot: HostedSemanticPolicyFence;
+  currentPolicy: HostedSemanticPolicyFence;
+  currentSource: HostedSemanticSourceFence;
+}): boolean =>
+  Boolean(
+    input.policySnapshot?.enabled &&
+    input.policySnapshot.mode === "hosted_personal" &&
+    input.policySnapshot.targetUpstreamId &&
+    input.currentPolicy?.enabled &&
+    input.currentPolicy.mode === "hosted_personal" &&
+    input.currentPolicy.targetUpstreamId ===
+      input.policySnapshot.targetUpstreamId &&
+    input.currentPolicy.updatedAt === input.policySnapshot.updatedAt &&
+    input.currentSource?.ownerUserId === input.ownerUserId &&
+    sha256Base64url(input.currentSource.text) === input.sourceContentHash
+  );
+
+const personalEmbeddingArtifactPackage = (
+  value: unknown
+): EncryptedJsonPackage => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw sourceReplicationError("Personal embedding artifact is invalid", 502);
+  }
+  const candidate = value as Partial<EncryptedJsonPackage>;
+  if (
+    candidate.manifest?.objectClass !== "personal_embedding_artifact" ||
+    candidate.envelope?.scope.objectClass !== "personal_embedding_artifact" ||
+    candidate.envelope?.aad.objectClass !== "personal_embedding_artifact" ||
+    candidate.manifest.packageId !== candidate.envelope?.aad.packageId
+  ) {
+    throw sourceReplicationError(
+      "Personal embedding artifact binding is invalid",
+      502
+    );
+  }
+  return candidate as EncryptedJsonPackage;
+};
 
 const sourceReplicationError = (
   message: string,
@@ -282,6 +343,258 @@ export const registerConversationSourceReplicationRoutes = (
                 }
               : { enabled: false, mode: "hosted_personal" }
           )
+      };
+    }
+  );
+
+  app.post(
+    "/v1/personal-semantic-artifacts/resolve",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      if (!hostedTargetProfiles.has(context.config.deploymentProfile)) {
+        throw sourceReplicationError(
+          "Hosted Personal semantic authority is unavailable",
+          404
+        );
+      }
+      const auth = await authenticatedSyncDevice(request, context);
+      const input = personalEmbeddingArtifactResolveSchema.parse(request.body);
+      if (input.targetDeploymentId !== auth.deploymentId) {
+        throw sourceReplicationError(
+          "Personal embedding artifact recipient does not match the enrolled deployment",
+          403
+        );
+      }
+      const artifact = await context
+        .requireRepository()
+        .resolvePersonalEmbeddingArtifact(
+          { userId: auth.user.id },
+          {
+            sourceType: input.sourceType,
+            sourceContentHash: input.sourceContentHash,
+            contract: input.contract
+          }
+        );
+      if (!artifact) {
+        return { state: "pending" as const };
+      }
+      const provider = createRecipientPublicKeyEnvelopeEncryptionProvider(
+        input.recipientKey
+      );
+      return {
+        state: "ready" as const,
+        encryptedPackage: await createEncryptedJsonPackage(provider, {
+          objectClass: "personal_embedding_artifact",
+          payload: {
+            protocol: "koed/personal-embedding-artifact/v1",
+            sourceType: input.sourceType,
+            sourceContentHash: input.sourceContentHash,
+            contract: input.contract,
+            chunks: artifact.chunks
+          },
+          scope: {
+            deploymentId: input.targetDeploymentId,
+            tenantId: auth.user.id
+          },
+          provenance: {
+            rowFamily: "personal_embedding_artifact",
+            sourceId: randomBytes(16).toString("hex")
+          },
+          ciphertextLocation: "personal_embedding_artifact.payload",
+          aad: {
+            protocol: "koed/personal-embedding-artifact/v1",
+            sourceContentHash: input.sourceContentHash,
+            targetDeploymentId: input.targetDeploymentId
+          },
+          metadata: {
+            protocol: "koed/personal-embedding-artifact/v1"
+          }
+        })
+      };
+    }
+  );
+
+  app.post(
+    "/v1/personal-semantic-artifacts/import",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      if (!localProfiles.has(context.config.deploymentProfile)) {
+        throw sourceReplicationError(
+          "Personal semantic artifact import is local-only",
+          404
+        );
+      }
+      const user = await context.auth.authenticateApiToken(request);
+      const input = personalEmbeddingArtifactImportSchema.parse(request.body);
+      const repository = context.requireRepository();
+      const source = await repository.getEmbeddableSource(
+        input.sourceType,
+        input.sourceId
+      );
+      if (!source || source.ownerUserId !== user.id) {
+        throw sourceReplicationError("Embedding source is unavailable", 404);
+      }
+      const policy = await repository.getPersonalSourceReplicationPolicy({
+        userId: user.id
+      });
+      if (
+        !policy?.enabled ||
+        policy.mode !== "hosted_personal" ||
+        !policy.targetUpstreamId
+      ) {
+        return { state: "local_authority" as const };
+      }
+      const registry = readLocalEdgeUpstreamRegistry(
+        context.localEdge.upstreamBackendsPath
+      );
+      const backend = upstreamBackendById(registry, policy.targetUpstreamId);
+      const authorization = backend
+        ? context.localEdge.resolveUpstreamAuthorization(backend)
+        : null;
+      const decision = resolveLocalEdgeRouteDecision({
+        operationFamily: "sync",
+        upstreamBackend: backend,
+        upstreamBackendId: policy.targetUpstreamId,
+        upstreamCredentialAvailable: Boolean(authorization),
+        identityRemoteOperationsAllowed:
+          context.localEdge.remoteOperationsAllowed()
+      });
+      if (
+        !backend ||
+        !authorization ||
+        decision.action !== "queued_sync_handoff"
+      ) {
+        return { state: "hosted_unavailable" as const };
+      }
+      const recipient = await resolveSyncRecipientContext(
+        context,
+        localProfiles
+      );
+      const sourceContentHash = sha256Base64url(source.text);
+      const { response, payload: remote } = await fetchBoundedJsonObject(
+        context.localEdge.fetch,
+        upstreamApiUrl(
+          backend.baseUrl,
+          "/v1/personal-semantic-artifacts/resolve"
+        ),
+        {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            authorization,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            sourceType: input.sourceType,
+            sourceContentHash,
+            contract: input.contract,
+            targetDeploymentId: recipient.localDeployment.protocolDeploymentId,
+            recipientKey: recipient.publicRecipient
+          })
+        },
+        { timeoutMs: 30_000, maxBytes: 64 * 1024 * 1024, readErrorBody: true }
+      );
+      if (!response.ok) {
+        return { state: "hosted_unavailable" as const };
+      }
+      if (remote.state === "pending") {
+        return { state: "hosted_pending" as const };
+      }
+      if (remote.state !== "ready") {
+        throw sourceReplicationError(
+          "Hosted semantic response is invalid",
+          502
+        );
+      }
+      const encryptedPackage = personalEmbeddingArtifactPackage(
+        remote.encryptedPackage
+      );
+      if (
+        encryptedPackage.envelope.scope.deploymentId !==
+          recipient.localDeployment.protocolDeploymentId ||
+        encryptedPackage.envelope.scope.tenantId !== user.id ||
+        encryptedPackage.envelope.aad.sourceContentHash !== sourceContentHash
+      ) {
+        throw sourceReplicationError(
+          "Hosted semantic artifact target binding is invalid",
+          403
+        );
+      }
+      const recipientProvider =
+        await createRecipientPrivateKeyEnvelopeEncryptionProvider(
+          recipient.rootProvider,
+          recipient.recipient
+        );
+      const artifact = personalEmbeddingArtifactPayloadSchema.parse(
+        await decryptEncryptedJsonPackage(recipientProvider, encryptedPackage)
+      );
+      if (
+        artifact.sourceType !== input.sourceType ||
+        artifact.sourceContentHash !== sourceContentHash ||
+        JSON.stringify(artifact.contract) !== JSON.stringify(input.contract) ||
+        artifact.chunks.some(
+          (chunk) =>
+            sha256Base64url(chunk.sourceText) !== chunk.embeddingInputHash ||
+            chunk.vector.length !== Number(input.contract.dimensions)
+        )
+      ) {
+        throw sourceReplicationError(
+          "Hosted semantic artifact verification failed",
+          409
+        );
+      }
+
+      // Authority and source bytes can change while the remote backend is
+      // resolving the artifact. Fence the write against the same snapshot
+      // that authorized the request so a stale completion cannot win.
+      const [currentPolicy, currentSource] = await Promise.all([
+        repository.getPersonalSourceReplicationPolicy({ userId: user.id }),
+        repository.getEmbeddableSource(input.sourceType, input.sourceId)
+      ]);
+      if (
+        !currentPolicy ||
+        !currentSource ||
+        !hostedPersonalSemanticImportIsCurrent({
+          ownerUserId: user.id,
+          sourceContentHash,
+          policySnapshot: policy,
+          currentPolicy,
+          currentSource
+        })
+      ) {
+        throw sourceReplicationError(
+          "Hosted semantic authority changed while resolving artifact",
+          409
+        );
+      }
+      const stored = await repository.replaceSourceEmbeddings({
+        source: currentSource,
+        hostedPersonalAuthority: {
+          ownerUserId: user.id,
+          targetUpstreamId: policy.targetUpstreamId,
+          policyUpdatedAt: currentPolicy.updatedAt
+        },
+        model: input.contract.modelKey,
+        modelArtifactHash: input.contract.modelArtifactHash,
+        dimensions: Number(input.contract.dimensions),
+        version: input.contract.embeddingVersion,
+        tokenizer: input.contract.tokenizer,
+        inputTransform: input.contract.inputTransform,
+        pooling: input.contract.pooling,
+        normalization: input.contract.normalization,
+        chunks: artifact.chunks.map((chunk) => ({
+          vector: chunk.vector,
+          chunkIndex: chunk.chunkIndex,
+          chunkCount: chunk.chunkCount,
+          inputTokenCount: chunk.inputTokenCount,
+          sourceText: chunk.sourceText
+        }))
+      });
+      return {
+        state: "imported" as const,
+        chunks: stored.ids.length,
+        inserted: stored.inserted
       };
     }
   );

@@ -106,7 +106,9 @@ AI Runtime.
    Personal notes, channels, realtime, and the local Personal broker, and the
    Worker retains Personal Projection, embedding, LCM, and deletion
    reembedding. Cross-Identity Sync, retention purge, collaboration replay
-   pruning, and other Team collaboration jobs are not started.
+   pruning, Privacy Filter startup, and other Team collaboration jobs are not
+   started. Privacy Filter credentials and model assets are therefore not
+   Personal-only startup requirements.
    After the API is healthy and a local API Token exists, the supervisor starts
    one Local AI Runtime. The runtime hosts the Transcript Watcher when enabled.
 7. `koed-server start --daemon --json` starts a detached `koed-server start`
@@ -1023,14 +1025,19 @@ sequenceDiagram
    reported to the LLM for one repair attempt. A partial repair retains the
    valid summary and valid grounded anchors and drops anything still invalid.
    Other unsupported worker output fails at the worker boundary.
-6. LCM worker runs the selected AI Client instance through its
-   provider-specific transport. Codex uses app-server mode; Claude uses pinned
-   Agent SDK and confirmed local Claude Code executable; Pi uses isolated
-   strict-LF RPC with no persistent session or user/project resources. The
-   worker parses the returned structured LCM Summary.
-7. Available provider workflow telemetry is persisted as raw-only conversation
+6. Before invoking the selected AI Client, the LCM Summary Service acquires a
+   durable claim bound to the input revision and complete LCM compatibility
+   contract. In a Personal Device Group, relay authority also binds the
+   claimant device and a monotonic generation. The worker renews both leases
+   during synthesis; loss of either lease aborts submission.
+7. The LCM worker runs the selected AI Client instance through its
+   provider-specific transport. Codex uses app-server mode; Claude uses the
+   pinned Agent SDK and confirmed local Claude Code executable; Pi uses
+   isolated strict-LF RPC with no persistent session or user/project
+   resources. The worker parses the returned structured LCM Summary.
+8. Available provider workflow telemetry is persisted as raw-only conversation
    items where supported, and provider token usage is recorded for attribution.
-8. The LCM worker submits the completed LCM Summary to
+9. The LCM worker submits the completed LCM Summary to
    `POST /v1/memory/lcm/summaries/{nodeId}`. The API requires the shared
    semantic-summary schema, matching schema-version metadata, and canonical
    `summaryText` consistent with structured `summary_text`. After authenticating
@@ -1038,14 +1045,14 @@ sequenceDiagram
    enforces that every submitted lexical anchor is an exact, contiguous,
    case-sensitive substring of a supplied source payload. Worker-side repair is
    therefore not the trust boundary for anchor grounding.
-9. The API updates the Memory Node summary fields and enqueues Memory Node
-   embedding. In paid Koed-managed cloud, the stored summary/body/structured
-   JSON fields remain redacted and the submitted LCM Summary, including its
-   lexical anchors, is written to encrypted companions. If a completed child
-   summary or its lexical anchors change, the same transaction requeues every
-   completed ancestor rollup transitively and invalidates their embeddings so
-   no completed ancestor remains current against stale child input.
-10. The Worker embeds the updated Memory Node so retrieval can use the
+10. The API updates the Memory Node summary fields and enqueues Memory Node
+    embedding. In paid Koed-managed cloud, the stored summary/body/structured
+    JSON fields remain redacted and the submitted LCM Summary, including its
+    lexical anchors, is written to encrypted companions. If a completed child
+    summary or its lexical anchors change, the same transaction requeues every
+    completed ancestor rollup transitively and invalidates their embeddings so
+    no completed ancestor remains current against stale child input.
+11. The Worker embeds the updated Memory Node so retrieval can use the
     completed summary. Validated anchors are appended in a separate
     `Lexical anchors:` section of the embedding input. The embedding source hash
     includes both this composition epoch and the Memory Node summary revision.
@@ -1164,8 +1171,10 @@ cwd is used only to resolve or display a Workspace.
 Team chat is a separate collaboration path even when Desktop presents it beside
 Team-shared Captured Sessions. Team Chat Messages use dedicated encrypted tables
 and durable content-safe outbox events; they do not enter raw ingestion,
-Projection, LCM, embedding, or recall. Local-edge Team chat uses separately
-scoped `team_chat_read` and `team_chat_write` device operations and the same
+Projection, LCM, embedding, or recall. Collaboration storage selects the
+Personal provider for Personal threads and the distinct Team Memory provider
+for Team threads. Local-edge Team chat uses separately scoped
+`team_chat_read` and `team_chat_write` device operations and the same
 request-time Team Membership, Workspace Access, lifecycle, and entitlement
 boundaries. See [Team Collaboration Architecture](team-collaboration.md).
 

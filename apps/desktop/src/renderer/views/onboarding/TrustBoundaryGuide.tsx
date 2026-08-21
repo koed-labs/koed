@@ -15,8 +15,8 @@ const lessons = [
     body: "Koed recalls an Evidence Bundle. The connected AI Client turns that evidence into a Memory Answer; Koed's backend does not generate the answer."
   },
   {
-    title: "Review exactly what is shared",
-    body: "Share preview shows the exact outgoing representation. A snapshot shares one revision; continuous sharing can publish later eligible revisions."
+    title: "Review your source before sharing",
+    body: "The immediate preview is owner-only Personal source content. Koed prepares a separate privacy-filtered Team representation before teammates receive access. A snapshot shares one revision; continuous sharing can publish later eligible revisions."
   },
   {
     title: "Revocation and retention differ",

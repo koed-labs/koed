@@ -13,6 +13,11 @@ export const appEnvSources = [
     label: "Embedding service",
     dir: "apps/embedding-service",
     prefix: "EMBEDDING"
+  },
+  {
+    label: "Privacy service",
+    dir: "apps/privacy-service",
+    prefix: "PRIVACY"
   }
 ];
 
@@ -34,7 +39,13 @@ const rootDirective = (line) => {
 };
 
 const defaultRootKey = (key, prefix) => {
-  const passThroughPrefixes = ["API_", "WORKER_", "EMBEDDING_", "MEMORY_"];
+  const passThroughPrefixes = [
+    "API_",
+    "WORKER_",
+    "EMBEDDING_",
+    "MEMORY_",
+    "PRIVACY_"
+  ];
   if (passThroughPrefixes.some((passThrough) => key.startsWith(passThrough))) {
     return key;
   }

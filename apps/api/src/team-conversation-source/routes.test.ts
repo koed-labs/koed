@@ -6,6 +6,9 @@ import type {
   ConversationSourceArtifactRecord,
   ConversationSourceSegmentRecord,
   MemorySourceRepository,
+  PrivacyClassificationRepository,
+  PrivacySanitizedSourceArtifactRecord,
+  PrivacySanitizedSourceChunkRecord,
   TeamConversationSourceGrantRecord,
   UserRecord
 } from "@koed/db";
@@ -15,7 +18,6 @@ import { z } from "zod";
 
 import type { ApiRouteContext } from "../server/context.js";
 import { sealOpaqueCursor } from "../local-edge/opaque-cursor.js";
-import { createFilesystemConversationSourceStorage } from "../memory/conversation-source-storage.js";
 import { createTeamConversationSourceService } from "./routes.js";
 
 const iso = "2026-08-10T00:00:00.000Z";
@@ -27,10 +29,10 @@ const buildFixture = async (options?: {
   completeArtifact?: boolean;
   streaming?: boolean;
   successfulFork?: boolean;
-  multiComponent?: boolean;
   forkRecords?: string[];
   listenerConnectGate?: Promise<void>;
   authorizationRecheckMs?: number;
+  mismatchedSanitizedArtifact?: boolean;
 }) => {
   const ids = {
     owner: randomUUID(),
@@ -40,12 +42,12 @@ const buildFixture = async (options?: {
     workspace: randomUUID(),
     session: randomUUID(),
     artifact: randomUUID(),
-    auxiliaryArtifact: randomUUID(),
     logicalSource: randomUUID(),
     generation: randomUUID(),
     segment: randomUUID(),
-    auxiliarySegment: randomUUID(),
-    sourceGrant: randomUUID()
+    sourceGrant: randomUUID(),
+    sanitizedArtifact: randomUUID(),
+    sanitizedChunk: randomUUID()
   };
   const viewer: UserRecord = {
     id: ids.viewer,
@@ -95,7 +97,7 @@ const buildFixture = async (options?: {
     artifactFormat: "jsonl",
     artifactFormatVersion: 1,
     sourceAdapterVersion: "codex-transcript-v1",
-    lifecycle: "finalized",
+    lifecycle: "active",
     journalStartOffset: options?.completeArtifact === false ? 128 : 0,
     journalStartLine: options?.completeArtifact === false ? 2 : 0,
     liveStartOffset: 0,
@@ -108,9 +110,9 @@ const buildFixture = async (options?: {
     sourceModifiedAt: iso,
     storageProvider: "envelope_db",
     storagePrefix: "must-not-leak/storage-prefix",
-    closureHash: "2".repeat(64),
-    closureManifest: { protocol: "koed/source-component-closure/v1" },
-    closureSignature: "3".repeat(86),
+    closureHash: null,
+    closureManifest: null,
+    closureSignature: null,
     sourceSetClosureHash: null,
     sourceSetClosureManifest: null,
     sourceSetClosureSignature: null,
@@ -124,10 +126,9 @@ const buildFixture = async (options?: {
     redactedSourceLabel: "Codex session",
     createdAt: iso,
     updatedAt: iso,
-    finalizedAt: iso
+    finalizedAt: null
   };
   const koedHome = mkdtempSync(join(tmpdir(), "koed-team-source-route-"));
-  const sourceStorage = createFilesystemConversationSourceStorage(koedHome);
   const forkRecords = options?.forkRecords ?? [
     JSON.stringify({
       type: "response_item",
@@ -160,146 +161,121 @@ const buildFixture = async (options?: {
     createdAt: iso,
     sealedAt: iso
   };
-  if (options?.successfulFork) {
-    const stored = sourceStorage.put({
-      artifactId: ids.artifact,
-      plaintextDigest: forkDigest,
-      bytes: forkBytes
-    });
-    segment.storageProvider = "filesystem";
-    segment.storageKey = stored.storageKey;
-    segment.storedSize = stored.storedSize;
-    segment.encryptionEnvelope = null;
-    artifact.storageProvider = "filesystem";
-    artifact.providerCursorOffset = forkBytes.byteLength;
-    artifact.currentSourceLength = forkBytes.byteLength;
-  }
-  if (options?.multiComponent) {
-    artifact.sourceSetClosureHash = "9".repeat(64);
-    artifact.sourceSetClosureManifest = { componentCount: 2 };
-    artifact.sourceSetClosureSignature = "8".repeat(86);
-    artifact.sourceSetFinalizedAt = iso;
-  }
-  const auxiliaryArtifact: ConversationSourceArtifactRecord | null =
-    options?.multiComponent
-      ? {
-          ...artifact,
-          id: ids.auxiliaryArtifact,
-          sourceComponentId: "agent.worker-1",
-          sourceComponentRole: "auxiliary",
-          parentSourceComponentId: "main",
-          contentFraming: "jsonl",
-          sourceFingerprint: "7".repeat(64),
-          storagePrefix: "must-not-leak/auxiliary-storage-prefix",
-          closureHash: "6".repeat(64),
-          sourceSetClosureHash: null,
-          sourceSetClosureManifest: null,
-          sourceSetClosureSignature: null,
-          sourceSetFinalizedAt: null,
-          redactedSourceLabel: "Claude auxiliary session"
-        }
-      : null;
-  const auxiliarySegment: ConversationSourceSegmentRecord | null =
-    auxiliaryArtifact
-      ? {
-          ...segment,
-          id: ids.auxiliarySegment,
-          artifactId: auxiliaryArtifact.id,
-          plaintextDigest: "5".repeat(64),
-          contentDigest: "4".repeat(64),
-          storageKey: "must-not-leak-auxiliary-storage-key"
-        }
-      : null;
-  if (auxiliaryArtifact && auxiliarySegment) {
-    const bytes = Buffer.from('{"type":"assistant","message":"auxiliary"}\n');
-    const digest = createHash("sha256").update(bytes).digest("hex");
-    const stored = sourceStorage.put({
-      artifactId: auxiliaryArtifact.id,
-      plaintextDigest: digest,
-      bytes
-    });
-    auxiliaryArtifact.storageProvider = "filesystem";
-    auxiliaryArtifact.providerCursorOffset = bytes.byteLength;
-    auxiliaryArtifact.currentSourceLength = bytes.byteLength;
-    auxiliarySegment.storageProvider = "filesystem";
-    auxiliarySegment.storageKey = stored.storageKey;
-    auxiliarySegment.plaintextDigest = digest;
-    auxiliarySegment.plaintextSize = bytes.byteLength;
-    auxiliarySegment.storedSize = stored.storedSize;
-    auxiliarySegment.sourceEndOffset = bytes.byteLength;
-    auxiliarySegment.encryptionEnvelope = null;
-  }
+  const sanitizedArtifact: PrivacySanitizedSourceArtifactRecord = {
+    id: ids.sanitizedArtifact,
+    shareGrantId: ids.shareGrant,
+    sourceArtifactId: options?.mismatchedSanitizedArtifact
+      ? randomUUID()
+      : ids.artifact,
+    ownerUserId: ids.owner,
+    teamId: ids.team,
+    teamWorkspaceId: ids.workspace,
+    classifierGenerationId: randomUUID(),
+    classifierHash: "1".repeat(64),
+    effectivePolicyHash: "2".repeat(64),
+    sourceFrontierHash: "3".repeat(64),
+    sourceFrontierCursor: forkBytes.byteLength,
+    sourceSegmentCount: 1,
+    sourceClosureHash: null,
+    ownerManifestFingerprint: "4".repeat(64),
+    metadataBindingHash: "5".repeat(64),
+    artifactBindingHash: "6".repeat(64),
+    chunkCount: 1,
+    sanitizedByteCount: forkBytes.byteLength,
+    format: "codex_sanitized_ndjson",
+    formatVersion: 1,
+    status: "ready",
+    failureCode: null,
+    createdAt: iso,
+    readyAt: iso,
+    invalidatedAt: null,
+    invalidationReasonCode: null
+  };
+  const sanitizedChunks: Array<{
+    record: PrivacySanitizedSourceChunkRecord;
+    text: string;
+  }> = [
+    {
+      record: {
+        id: ids.sanitizedChunk,
+        artifactId: ids.sanitizedArtifact,
+        classificationResultId: randomUUID(),
+        chunkIndex: 0,
+        sourceStartByte: 0,
+        sourceEndByte: forkBytes.byteLength,
+        sanitizedByteLength: forkBytes.byteLength,
+        ownerChunkFingerprint: "7".repeat(64),
+        payloadBindingHash: "8".repeat(64)
+      },
+      text: forkBytes.toString("utf8")
+    }
+  ];
   let authorized = options?.authorized !== false;
   let consentActive = true;
   let credentialAuthorized = true;
   const sessionId = randomUUID();
   const deviceCredentialId = randomUUID();
   const credentialExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
-  const components = auxiliaryArtifact
-    ? [artifact, auxiliaryArtifact]
-    : [artifact];
-  const segments = auxiliarySegment ? [segment, auxiliarySegment] : [segment];
+  const segments = [segment];
   const auditActions: string[] = [];
   let accessReads = 0;
   let manifestReads = 0;
   const repository = {
     async getTeamConversationSourceAccess() {
       accessReads += 1;
-      return authorized && consentActive
-        ? { grant, artifact, components }
-        : null;
+      return authorized && consentActive ? { grant, artifact } : null;
     },
     async getTeamConversationSourceManifest(
       _actor: unknown,
-      input: {
-        sourceComponentId?: string;
-        afterSegmentIndex: number;
-        limit: number;
-      }
+      input: { afterSegmentIndex: number; limit: number }
     ) {
       manifestReads += 1;
       return authorized && consentActive
         ? {
             grant,
             artifact,
-            components,
-            selectedComponent:
-              components.find(
-                (component) =>
-                  component.sourceComponentId ===
-                  (input.sourceComponentId ?? "main")
-              ) ?? artifact,
             segments: segments
               .filter(
-                (candidate) =>
-                  candidate.artifactId ===
-                    (components.find(
-                      (component) =>
-                        component.sourceComponentId ===
-                        (input.sourceComponentId ?? "main")
-                    )?.id ?? artifact.id) &&
-                  candidate.segmentIndex > input.afterSegmentIndex
+                (candidate) => candidate.segmentIndex > input.afterSegmentIndex
               )
               .slice(0, input.limit)
           }
         : null;
     },
-    async getTeamConversationSourceSegment(
-      _actor: unknown,
-      input: { segmentId: string }
-    ) {
-      const selected = segments.find(
-        (candidate) => candidate.id === input.segmentId
-      );
-      return authorized && consentActive
-        ? { grant, artifact, components, segment: selected ?? segment }
-        : null;
+    async getTeamConversationSourceSegment() {
+      return authorized && consentActive ? { grant, artifact, segment } : null;
     },
     async recordAuditEvent(input: { action: string }) {
       auditActions.push(input.action);
       return undefined;
     }
   } as unknown as MemorySourceRepository;
+  const privacyRepository = {
+    async readLatestSanitizedSourceManifestByGrant() {
+      return authorized && consentActive
+        ? {
+            record: sanitizedArtifact,
+            chunks: sanitizedChunks.map((chunk) => chunk.record)
+          }
+        : null;
+    },
+    async readSanitizedSourceChunkByGrant(input: {
+      sanitizedArtifactId: string;
+      chunkId: string;
+    }) {
+      if (
+        !authorized ||
+        !consentActive ||
+        input.sanitizedArtifactId !== sanitizedArtifact.id
+      ) {
+        return null;
+      }
+      const chunk = sanitizedChunks.find(
+        (candidate) => candidate.record.id === input.chunkId
+      );
+      return chunk ? { artifact: sanitizedArtifact, chunk } : null;
+    }
+  } as unknown as PrivacyClassificationRepository;
   let notificationListener:
     | ((message: { channel: string; payload?: string }) => void)
     | null = null;
@@ -406,6 +382,8 @@ const buildFixture = async (options?: {
   const service = createTeamConversationSourceService({
     app,
     context,
+    privacyRepository,
+    teamEncryptionProvider: {} as never,
     pool: options?.streaming
       ? {
           async connect() {
@@ -433,6 +411,43 @@ const buildFixture = async (options?: {
       rmSync(koedHome, { recursive: true, force: true });
     },
     appendSegment() {
+      const text = `${JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_complete", message: "Sanitized append" }
+      })}\n`;
+      const start = sanitizedArtifact.sourceFrontierCursor;
+      const nextArtifactId = randomUUID();
+      sanitizedArtifact.id = nextArtifactId;
+      sanitizedArtifact.sourceFrontierCursor += Buffer.byteLength(text, "utf8");
+      sanitizedArtifact.sourceSegmentCount += 1;
+      sanitizedArtifact.sourceFrontierHash = createHash("sha256")
+        .update(`${nextArtifactId}:${sanitizedArtifact.sourceFrontierCursor}`)
+        .digest("hex");
+      for (const prior of sanitizedChunks) {
+        prior.record.id = randomUUID();
+        prior.record.artifactId = nextArtifactId;
+      }
+      const sanitized = {
+        record: {
+          ...sanitizedChunks[0]!.record,
+          id: randomUUID(),
+          artifactId: nextArtifactId,
+          classificationResultId: randomUUID(),
+          chunkIndex: sanitizedChunks.length,
+          sourceStartByte: start,
+          sourceEndByte: sanitizedArtifact.sourceFrontierCursor,
+          sanitizedByteLength: Buffer.byteLength(text, "utf8"),
+          ownerChunkFingerprint: "9".repeat(64),
+          payloadBindingHash: "a".repeat(64)
+        },
+        text
+      };
+      sanitizedChunks.push(sanitized);
+      sanitizedArtifact.chunkCount = sanitizedChunks.length;
+      sanitizedArtifact.sanitizedByteCount = sanitizedChunks.reduce(
+        (total, chunk) => total + chunk.record.sanitizedByteLength,
+        0
+      );
       const next = {
         ...segment,
         id: randomUUID(),
@@ -445,16 +460,18 @@ const buildFixture = async (options?: {
         contentDigest: "1".repeat(64)
       };
       segments.push(next);
-      artifact.currentJournalSequence = next.segmentIndex;
       return next;
     },
     corruptDigest() {
-      segment.plaintextDigest = "0".repeat(64);
+      sanitizedChunks[0]!.text = "not-json\n";
     },
     appendBrokenChainSegment() {
       const next = this.appendSegment();
-      next.sourceStartOffset += 1;
+      sanitizedChunks[1]!.record.chunkIndex += 1;
       return next;
+    },
+    rotatePrivacyGeneration() {
+      sanitizedArtifact.classifierHash = "b".repeat(64);
     },
     revoke() {
       authorized = false;
@@ -465,12 +482,11 @@ const buildFixture = async (options?: {
     revokeCredential() {
       credentialAuthorized = false;
     },
-    notify(input?: { logicalSourceId?: string; sourceGenerationId?: string }) {
+    notify(input?: { shareGrantId?: string }) {
       notificationListener?.({
-        channel: "koed_conversation_source_replication",
+        channel: "koed_team_conversation_source",
         payload: JSON.stringify({
-          logicalSourceId: input?.logicalSourceId ?? ids.logicalSource,
-          sourceGenerationId: input?.sourceGenerationId ?? ids.generation
+          shareGrantId: input?.shareGrantId ?? ids.shareGrant
         })
       });
     },
@@ -660,10 +676,7 @@ describe("Team Conversation source routes", () => {
     }
     const before = fixture.sourceReadCounts;
 
-    fixture.notify({
-      logicalSourceId: randomUUID(),
-      sourceGenerationId: randomUUID()
-    });
+    fixture.notify({ shareGrantId: randomUUID() });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(fixture.sourceReadCounts).toEqual(before);
 
@@ -726,8 +739,12 @@ describe("Team Conversation source routes", () => {
         shareGrantId: fixture.ids.shareGrant,
         mode: "continuous"
       },
-      artifact: { id: fixture.ids.artifact },
-      segments: [{ id: fixture.ids.segment, segmentIndex: 0 }]
+      artifact: {
+        id: fixture.ids.sanitizedArtifact,
+        classifierHash: "1".repeat(64),
+        effectivePolicyHash: "2".repeat(64)
+      },
+      segments: [{ id: fixture.ids.sanitizedChunk, segmentIndex: 0 }]
     });
     for (const secret of [
       "storage-prefix",
@@ -740,59 +757,15 @@ describe("Team Conversation source routes", () => {
     ]) {
       expect(response.body).not.toContain(secret);
     }
-    await fixture.service.close();
-    await fixture.app.close();
-    fixture.cleanup();
-  });
-
-  it("serves every verified source component without exposing local custody", async () => {
-    const fixture = await buildFixture({ multiComponent: true });
-    const manifest = await fixture.app.inject({
-      method: "GET",
-      url: `/v1/shared-memory/share-grants/${fixture.ids.shareGrant}/transcript/manifest?sourceComponentId=agent.worker-1`
-    });
-
-    expect(manifest.statusCode).toBe(200);
-    expect(manifest.json()).toMatchObject({
-      artifact: {
-        sourceGenerationId: fixture.ids.generation,
-        sourceComponentId: "main"
-      },
-      components: [
-        { sourceComponentId: "main", sourceComponentRole: "primary" },
-        {
-          sourceComponentId: "agent.worker-1",
-          sourceComponentRole: "auxiliary",
-          parentSourceComponentId: "main"
-        }
-      ],
-      selectedComponent: {
-        id: fixture.ids.auxiliaryArtifact,
-        sourceComponentId: "agent.worker-1"
-      },
-      segments: [
-        {
-          id: fixture.ids.auxiliarySegment,
-          artifactId: fixture.ids.auxiliaryArtifact
-        }
-      ]
-    });
-    for (const privateValue of [
-      "auxiliary-storage-prefix",
-      "auxiliary-storage-key",
-      "must-not-leak-device",
-      "redacted-external-session"
-    ]) {
-      expect(manifest.body).not.toContain(privateValue);
-    }
-
     const segment = await fixture.app.inject({
       method: "GET",
-      url: `/v1/shared-memory/share-grants/${fixture.ids.shareGrant}/transcript/segments/${fixture.ids.auxiliarySegment}`
+      url: `/v1/shared-memory/share-grants/${fixture.ids.shareGrant}/transcript/segments/${fixture.ids.sanitizedChunk}`
     });
     expect(segment.statusCode).toBe(200);
-    expect(segment.body).toContain('"message":"auxiliary"');
-
+    expect(segment.headers["x-koed-privacy-classifier-hash"]).toBe(
+      "1".repeat(64)
+    );
+    expect(segment.headers["x-koed-privacy-policy-hash"]).toBe("2".repeat(64));
     await fixture.service.close();
     await fixture.app.close();
     fixture.cleanup();
@@ -863,6 +836,7 @@ describe("Team Conversation source routes", () => {
     }
     expect(resumedBody).toContain('"segmentIndex":1');
     expect(resumedBody).not.toContain('"segmentIndex":0');
+    expect(resumedBody).not.toContain("generation_changed");
     resumeController.abort();
 
     const expiredCursor = sealOpaqueCursor({
@@ -877,8 +851,11 @@ describe("Team Conversation source routes", () => {
           )
           .digest("hex"),
         shareGrantId: fixture.ids.shareGrant,
-        sourceGenerationId: fixture.ids.generation,
-        componentPositions: { main: 0 },
+        sourceArtifactId: fixture.ids.artifact,
+        segmentIndex: 0,
+        sourceEndByte: fixture.forkBytes.byteLength,
+        classifierHash: "1".repeat(64),
+        effectivePolicyHash: "2".repeat(64),
         expiresAt: Date.now() - 1
       }
     });
@@ -906,28 +883,35 @@ describe("Team Conversation source routes", () => {
     fixture.cleanup();
   });
 
-  it("streams independent positions for every source component", async () => {
-    const fixture = await buildFixture({
-      streaming: true,
-      multiComponent: true
-    });
+  it("resets an active stream only when its stable privacy generation changes", async () => {
+    const fixture = await buildFixture({ streaming: true });
     const baseUrl = await fixture.app.listen({ host: "127.0.0.1", port: 0 });
     const controller = new AbortController();
     const response = await fetch(
       `${baseUrl}/v1/shared-memory/share-grants/${fixture.ids.shareGrant}/transcript/stream`,
       { signal: controller.signal }
     );
-    expect(response.status).toBe(200);
     const reader = response.body!.getReader();
-    let body = "";
-    while (!body.includes('"sourceComponentId":"agent.worker-1"')) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      body += new TextDecoder().decode(value);
+    const decoder = new TextDecoder();
+    let received = "";
+    while (!received.includes('"segmentIndex":0')) {
+      const read = await reader.read();
+      if (read.done) break;
+      received += decoder.decode(read.value, { stream: true });
     }
-    expect(body).toContain('"sourceComponentId":"main"');
-    expect(body).toContain('"sourceComponentId":"agent.worker-1"');
-    expect((body.match(/^id: /gm) ?? []).length).toBe(2);
+
+    fixture.rotatePrivacyGeneration();
+    fixture.notify();
+    const deadline = Date.now() + 2_000;
+    while (!received.includes("generation_changed") && Date.now() < deadline) {
+      const read = await reader.read();
+      if (read.done) break;
+      received += decoder.decode(read.value, { stream: true });
+    }
+
+    expect(received).toContain("generation_changed");
+    expect(received.match(/"segmentIndex":0/g)).toHaveLength(2);
+
     controller.abort();
     await fixture.service.close();
     await fixture.app.close();
@@ -966,7 +950,7 @@ describe("Team Conversation source routes", () => {
     fresh.cleanup();
   });
 
-  it("exports an exact verified source-generation snapshot", async () => {
+  it("exports an exact verified snapshot of the expected source generation", async () => {
     const fixture = await buildFixture({ successfulFork: true });
     const response = await fixture.app.inject({
       method: "POST",
@@ -975,33 +959,17 @@ describe("Team Conversation source routes", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    const body = response.json();
-    expect(body).toMatchObject({
-      protocol: "koed/team-conversation-source-snapshot/v1",
-      parent: {
-        sessionId: fixture.ids.session,
-        shareGrantId: fixture.ids.shareGrant,
-        sourceGenerationId: fixture.ids.generation
-      },
-      components: [
-        {
-          artifact: { sourceComponentId: "main" },
-          verification: {
-            originKeyId: "must-not-leak-key",
-            originPublicKey: "a".repeat(43)
-          }
-        }
-      ]
-    });
-    expect(
-      Buffer.from(body.components[0].segments[0].bytes, "base64url")
-    ).toEqual(fixture.forkBytes);
+    expect(response.rawPayload).toEqual(fixture.forkBytes);
     expect(response.headers["x-koed-parent-session-id"]).toBe(
       fixture.ids.session
     );
     expect(response.headers["x-koed-snapshot-digest"]).toBe(
-      createHash("sha256").update(response.body).digest("hex")
+      createHash("sha256").update(fixture.forkBytes).digest("hex")
     );
+    expect(response.headers["x-koed-privacy-classifier-hash"]).toBe(
+      "1".repeat(64)
+    );
+    expect(response.headers["x-koed-privacy-policy-hash"]).toBe("2".repeat(64));
     expect(fixture.auditActions).toEqual([
       "team_conversation_source.fork_snapshot_exported"
     ]);
@@ -1010,10 +978,10 @@ describe("Team Conversation source routes", () => {
     fixture.cleanup();
   });
 
-  it("exports every verified component in a multi-component source set", async () => {
+  it("rejects a fork manifest from a different source artifact", async () => {
     const fixture = await buildFixture({
       successfulFork: true,
-      multiComponent: true
+      mismatchedSanitizedArtifact: true
     });
     const response = await fixture.app.inject({
       method: "POST",
@@ -1021,55 +989,36 @@ describe("Team Conversation source routes", () => {
       payload: { expectedSourceGenerationId: fixture.ids.generation }
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      parent: {
-        logicalSourceId: fixture.ids.logicalSource,
-        sourceGenerationId: fixture.ids.generation
-      },
-      sourceSetVerification: {
-        closureHash: "9".repeat(64),
-        closureManifest: { componentCount: 2 },
-        closureSignature: "8".repeat(86)
-      },
-      components: [
-        { artifact: { sourceComponentId: "main" } },
-        {
-          artifact: {
-            sourceComponentId: "agent.worker-1",
-            parentSourceComponentId: "main"
-          }
-        }
-      ]
-    });
-    for (const privateValue of [
-      "storage-prefix",
-      "storage-key",
-      "must-not-leak-device",
-      "redacted-external-session"
-    ]) {
-      expect(response.body).not.toContain(privateValue);
-    }
-
+    expect(response.statusCode).toBe(409);
+    expect(fixture.auditActions).toEqual([]);
     await fixture.service.close();
     await fixture.app.close();
     fixture.cleanup();
   });
 
-  it("rejects generation races, digest failures, and invalid source chains", async () => {
-    const race = await buildFixture({ successfulFork: true });
-    const wrongGeneration = await race.app.inject({
-      method: "POST",
-      url: `/v1/shared-memory/share-grants/${race.ids.shareGrant}/transcript/fork-snapshot`,
-      payload: { expectedSourceGenerationId: randomUUID() }
-    });
-
+  it("rejects malformed sanitized JSONL and incomplete sanitized snapshots", async () => {
     const digest = await buildFixture({ successfulFork: true });
     digest.corruptDigest();
     const wrongDigest = await digest.app.inject({
       method: "POST",
       url: `/v1/shared-memory/share-grants/${digest.ids.shareGrant}/transcript/fork-snapshot`,
       payload: { expectedSourceGenerationId: digest.ids.generation }
+    });
+
+    const malformed = await buildFixture({
+      successfulFork: true,
+      forkRecords: [
+        "not-json",
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "task_complete" }
+        })
+      ]
+    });
+    const malformedJsonl = await malformed.app.inject({
+      method: "POST",
+      url: `/v1/shared-memory/share-grants/${malformed.ids.shareGrant}/transcript/fork-snapshot`,
+      payload: { expectedSourceGenerationId: malformed.ids.generation }
     });
 
     const chain = await buildFixture({ successfulFork: true });
@@ -1081,11 +1030,11 @@ describe("Team Conversation source routes", () => {
     });
 
     expect([
-      wrongGeneration.statusCode,
       wrongDigest.statusCode,
+      malformedJsonl.statusCode,
       reordered.statusCode
     ]).toEqual([409, 409, 409]);
-    for (const fixture of [race, digest, chain]) {
+    for (const fixture of [digest, malformed, chain]) {
       await fixture.service.close();
       await fixture.app.close();
       fixture.cleanup();

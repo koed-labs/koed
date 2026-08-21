@@ -25,6 +25,7 @@ export interface KoedServerConfig {
     databaseUrl?: string;
     redisUrl?: string;
     embeddingServiceUrl?: string;
+    privacyServiceUrl?: string;
   };
 }
 
@@ -168,7 +169,11 @@ export const resolveKoedServerConfig = (
       embeddingServiceUrl:
         trim(environment.KOED_EXTERNAL_EMBEDDING_SERVICE_URL) ??
         trim(environment.EMBEDDING_SERVICE_URL) ??
-        trim(file.external?.embeddingServiceUrl)
+        trim(file.external?.embeddingServiceUrl),
+      privacyServiceUrl:
+        trim(environment.KOED_EXTERNAL_PRIVACY_SERVICE_URL) ??
+        trim(environment.PRIVACY_SERVICE_URL) ??
+        trim(file.external?.privacyServiceUrl)
     }
   };
 };

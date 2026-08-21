@@ -640,7 +640,7 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: write
   },
-  "collaboration.change_shared_memory_representation": {
+  "collaboration.change_shared_memory_fidelity": {
     scope: "team",
     desktopOperationFamily: write
   },

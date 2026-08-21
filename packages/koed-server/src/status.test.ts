@@ -1782,22 +1782,28 @@ describe("status and doctor JSON contracts", () => {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
         HOME: root,
-        REDIS_URL: "redis://operator:6379"
+        REDIS_URL: "redis://operator:6379",
+        PRIVACY_SERVICE_URL: "http://privacy.test:8092",
+        PRIVACY_SERVICE_TOKEN: "privacy-token",
+        PRIVACY_RUNTIME_CONTROL_TOKEN: "privacy-control-token",
+        KOED_TEAM_COLLABORATION_ENABLED: "true"
       },
       {
-        fetch: async () =>
-          response(true, 200, {
-            checks: [
-              { service: "postgres", status: "ok" },
-              { service: "postgres-version", status: "ok" },
-              { service: "migrations", status: "ok" },
-              { service: "pgvector", status: "ok" },
-              { service: "redis", status: "ok" },
-              { service: "work-queue", status: "ok" },
-              { service: "embedding-service", status: "ok" },
-              { service: "embedding-model", status: "ok" }
-            ]
-          }),
+        fetch: async (input) =>
+          String(input).includes("privacy.test")
+            ? response(true, 200, { status: "ok" })
+            : response(true, 200, {
+                checks: [
+                  { service: "postgres", status: "ok" },
+                  { service: "postgres-version", status: "ok" },
+                  { service: "migrations", status: "ok" },
+                  { service: "pgvector", status: "ok" },
+                  { service: "redis", status: "ok" },
+                  { service: "work-queue", status: "ok" },
+                  { service: "embedding-service", status: "ok" },
+                  { service: "embedding-model", status: "ok" }
+                ]
+              }),
         spawnSync: (_command, args) =>
           args.includes("doctor")
             ? spawnResult("", 0)

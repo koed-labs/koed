@@ -25,6 +25,11 @@ describe("resolveWorkerEnv", () => {
       embeddingMaxRequestChars: 1_000_000,
       embeddingRequestTimeoutMs: 900000,
       embeddingCapacityRefinedDelayMs: 1800000,
+      privacyServiceTimeoutMs: 30000,
+      privacyServiceMaxAttempts: 3,
+      privacyMaterializationTargetLimit: 25,
+      privacyMaterializationMaxFrontierBytes: 67108864,
+      privacyMaterializationMaxRecords: 20000,
       rawProjectionBatchLimit: 1000,
       rawProjectionActorLimit: 10,
       crossIdentitySyncIntervalMs: 1000,
@@ -65,6 +70,14 @@ describe("resolveWorkerEnv", () => {
         EMBEDDING_MAX_REQUEST_CHARS: "640000",
         EMBEDDING_REQUEST_TIMEOUT_MS: "1200000",
         EMBEDDING_CAPACITY_REFINED_DELAY_MS: "5000",
+        PRIVACY_SERVICE_URL: "http://privacy.test:8092",
+        PRIVACY_SERVICE_TOKEN: " privacy-token ",
+        PRIVACY_FINGERPRINT_KEY: "privacy-fingerprint-key-with-32-bytes",
+        PRIVACY_SERVICE_TIMEOUT_MS: "5000",
+        PRIVACY_SERVICE_MAX_ATTEMPTS: "2",
+        PRIVACY_MATERIALIZATION_TARGET_LIMIT: "10",
+        PRIVACY_MATERIALIZATION_MAX_FRONTIER_BYTES: "1048576",
+        PRIVACY_MATERIALIZATION_MAX_RECORDS: "500",
         MEMORY_RAW_PROJECTION_BATCH_LIMIT: "50",
         MEMORY_RAW_PROJECTION_ACTOR_LIMIT: "4",
         CROSS_IDENTITY_SYNC_STALE_AFTER_SECONDS: "7200",
@@ -99,6 +112,13 @@ describe("resolveWorkerEnv", () => {
       embeddingMaxRequestChars: 640_000,
       embeddingRequestTimeoutMs: 1200000,
       embeddingCapacityRefinedDelayMs: 5000,
+      privacyServiceUrl: "http://privacy.test:8092/",
+      privacyServiceToken: "privacy-token",
+      privacyServiceTimeoutMs: 5000,
+      privacyServiceMaxAttempts: 2,
+      privacyMaterializationTargetLimit: 10,
+      privacyMaterializationMaxFrontierBytes: 1048576,
+      privacyMaterializationMaxRecords: 500,
       rawProjectionBatchLimit: 50,
       rawProjectionActorLimit: 4,
       crossIdentitySyncStaleAfterSeconds: 7200,
@@ -220,6 +240,47 @@ describe("resolveWorkerEnv", () => {
     ).toThrow(
       'KOED_TEAM_COLLABORATION_ENABLED must be exactly "true" or "false"'
     );
+  });
+
+  it("validates privacy service credentials, URL, fingerprint, and bounds", () => {
+    expect(() =>
+      resolveWorkerEnv({
+        PRIVACY_SERVICE_URL: "https://user:secret@privacy.test"
+      })
+    ).toThrow("PRIVACY_SERVICE_URL must be an HTTP(S) URL without credentials");
+    expect(() =>
+      resolveWorkerEnv({ PRIVACY_FINGERPRINT_KEY: "too-short" })
+    ).toThrow("PRIVACY_FINGERPRINT_KEY must contain at least 32 bytes");
+    expect(() =>
+      resolveWorkerEnv({ PRIVACY_SERVICE_MAX_ATTEMPTS: "6" })
+    ).toThrow("PRIVACY_SERVICE_MAX_ATTEMPTS must be an integer from 1 to 5");
+    expect(() =>
+      resolveWorkerEnv({ PRIVACY_MATERIALIZATION_TARGET_LIMIT: "0" })
+    ).toThrow(
+      "PRIVACY_MATERIALIZATION_TARGET_LIMIT must be an integer from 1 to 100"
+    );
+  });
+
+  it("requires complete privacy configuration in production Team mode", () => {
+    const base = {
+      NODE_ENV: "production",
+      KOED_TEAM_COLLABORATION_ENABLED: "true",
+      WORK_QUEUE_BACKEND: "local",
+      DATABASE_URL: "postgres://local",
+      DATA_ENCRYPTION_KEY: "stable-data-encryption-root",
+      EMBEDDING_SERVICE_URL: "http://localhost:8000",
+      EMBEDDING_SERVICE_TOKEN: "token",
+      EMBEDDING_MODEL: "qwen3-0.6b"
+    };
+    expect(() => resolveWorkerEnv(base)).toThrow(
+      "PRIVACY_SERVICE_URL, PRIVACY_SERVICE_TOKEN"
+    );
+    const configured = resolveWorkerEnv({
+      ...base,
+      PRIVACY_SERVICE_URL: "http://127.0.0.1:8092",
+      PRIVACY_SERVICE_TOKEN: "privacy-token"
+    });
+    expect(configured.privacyFingerprintKey).toHaveLength(32);
   });
 
   it("requires production BullMQ service configuration", () => {

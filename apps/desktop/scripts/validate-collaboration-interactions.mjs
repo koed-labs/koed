@@ -24,6 +24,9 @@ const ids = {
 };
 const invitationUrl =
   "https://team.example.test/invitations/accept?token=alpha-1";
+const ownerOnlyCredentialSource =
+  "username: preview-owner password: correct-horse-battery-staple";
+const teamSafeCredentialSource = "username: [USERNAME] password: [SECRET]";
 
 const evaluate = (window, source) =>
   window.webContents.executeJavaScript(source);
@@ -284,6 +287,16 @@ const run = async () => {
           document.body.innerText.includes('Deterministic Electron source replacement.');
       })()`,
       "wide Source and Discussion"
+    );
+    assert.equal(
+      await evaluate(alice, bodyIncludes(teamSafeCredentialSource)),
+      true,
+      "The teammate must see the privacy-filtered Team representation"
+    );
+    assert.equal(
+      await evaluate(alice, bodyIncludes(ownerOnlyCredentialSource)),
+      false,
+      "The owner-only credential source leaked into the teammate Team view"
     );
     await setEmulatedViewport(alice, 800, 700);
     await waitFor(
@@ -690,6 +703,16 @@ const run = async () => {
       `[...document.querySelectorAll('.collab-share-row')]
         .find((item) => item.textContent?.includes('Packaged revocation fixture'))`
     );
+    await waitFor(
+      alice,
+      bodyIncludes(ownerOnlyCredentialSource),
+      "owner-only Personal source preview"
+    );
+    assert.equal(
+      await evaluate(alice, bodyIncludes(teamSafeCredentialSource)),
+      false,
+      "The owner Personal source preview was replaced by the Team derivative"
+    );
     await evaluate(
       alice,
       `window.__koedCollaborationInteractions.emitPendingShareNeedsAttention()`
@@ -821,7 +844,7 @@ const run = async () => {
     );
 
     process.stdout.write(
-      "Collaboration interaction validation passed: owner-wide Shares access and accessibility, trusted Team switching, invitations, channel/DM delivery, Shared Memory layouts, reconnect/replay/backpressure recovery, and stale-event access purge.\n"
+      "Collaboration interaction validation passed: owner-only source versus Team-safe representation, owner-wide Shares access and accessibility, trusted Team switching, invitations, channel/DM delivery, Shared Memory layouts, reconnect/replay/backpressure recovery, and stale-event access purge.\n"
     );
   } finally {
     for (const window of windows) {

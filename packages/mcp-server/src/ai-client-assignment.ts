@@ -31,12 +31,10 @@ const blocked = (message: string): never => {
   throw new AiClientAssignmentError(message);
 };
 
-const modelId = (model: Record<string, unknown>): string | null => {
-  for (const value of [model.fullId, model.id, model.model]) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return null;
-};
+const modelIds = (model: Record<string, unknown>): string[] =>
+  [model.id, model.fullId, model.model].flatMap((value) =>
+    typeof value === "string" && value.trim() ? [value.trim()] : []
+  );
 
 const effortMetadata = (model: Record<string, unknown>): string[] | null => {
   if (!Array.isArray(model.supportedReasoningEfforts)) return null;
@@ -147,8 +145,8 @@ const validateModel = (
   setting: LocalMemoryAgentSettingRecord,
   snapshot: AssignedSnapshot
 ): void => {
-  const selectedModel = snapshot.models.find(
-    (candidate) => modelId(candidate) === setting.model
+  const selectedModel = snapshot.models.find((candidate) =>
+    modelIds(candidate).includes(setting.model)
   );
   if (!selectedModel) {
     throw new AiClientAssignmentError(

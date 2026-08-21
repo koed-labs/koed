@@ -273,7 +273,7 @@ export class PdsRelayClient {
         `${relayPath}/semantic-work/claims/acquire`,
         {
           ...input,
-          leaseSeconds: input.leaseSeconds ?? 60
+          leaseSeconds: String(input.leaseSeconds ?? 60)
         }
       )
     );
@@ -326,6 +326,38 @@ export class PdsRelayClient {
       throw new TypeError("PDS semantic work completion response is invalid");
     }
     return response.completed;
+  }
+
+  async renewSemanticWorkClaim(input: {
+    workIdentity: string;
+    claimGeneration: string;
+    leaseSeconds?: number;
+  }): Promise<{
+    workIdentity: string;
+    claimGeneration: string;
+    expiresAt: string;
+  } | null> {
+    const response = asRecord(
+      await this.request<unknown>(
+        "POST",
+        `${relayPath}/semantic-work/claims/renew`,
+        { ...input, leaseSeconds: String(input.leaseSeconds ?? 60) }
+      )
+    );
+    if (response.claim === null) return null;
+    const claim = asRecord(response.claim);
+    if (
+      typeof claim.workIdentity !== "string" ||
+      typeof claim.claimGeneration !== "string" ||
+      typeof claim.expiresAt !== "string"
+    ) {
+      throw new TypeError("PDS semantic work renewal response is invalid");
+    }
+    return claim as {
+      workIdentity: string;
+      claimGeneration: string;
+      expiresAt: string;
+    };
   }
 
   mailbox(cursor?: string, limit = 50): Promise<unknown> {

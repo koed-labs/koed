@@ -5,7 +5,6 @@ import type {
   SharedMemoryGrantRecord,
   SharedMemoryPolicyRecord,
   SharedMemoryReadResult,
-  SharedMemoryRedactedSourceItemDto,
   SharedMemoryRepository,
   SharedMemoryRepresentationRecord,
   TeamConversationSourceGrantRecord,
@@ -19,22 +18,24 @@ import {
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryConsentActionGrantBinding,
+  sharedMemoryFidelityActionGrantBinding,
+  sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
-  sharedMemoryRepresentationBundleActionGrantBinding,
-  sharedMemoryRepresentationActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryShareActionGrantBinding,
   sharedMemoryShareBundleActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
+  validateSharedMemoryCanonicalSourceItem,
+  SharedMemoryConflictError,
+  SharedMemorySourceItemRejectedError,
+  type SharedMemoryCanonicalSourceItemDto,
   type SharedMemoryActionGrantBinding
 } from "@koed/shared";
 import {
-  redactEligibleSharedMemorySourceItem,
   SHARED_MEMORY_AUTHORITY,
   SharedMemoryAuthorizationError,
-  SharedMemoryConflictError,
-  SharedMemorySourceItemRejectedError,
+  SharedMemorySemanticDerivativePendingError,
   TeamConversationSourceAuthorizationError,
   TeamConversationSourceConflictError
 } from "@koed/db";
@@ -43,11 +44,11 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import { createShareBundle } from "./bundles.js";
 import {
+  changeSharedMemoryFidelityBundleSchema,
   createShareGrantSchema,
   createPendingShareSchema,
   createSharedMemoryCandidatePreviewSchema,
   createSharedMemoryShareBundleSchema,
-  changeSharedMemoryRepresentationBundleSchema,
   createSharedMemoryPreviewSchema,
   createSourceOwnerConsentSchema,
   controlPendingShareSchema,
@@ -64,7 +65,7 @@ import {
   revokeShareGrantSchema,
   revokeTeamConversationSourceGrantSchema,
   scopedShareGrantParamsSchema,
-  selectGrantRepresentationSchema,
+  selectGrantFidelitySchema,
   shareGrantParamsSchema,
   sharedMemoryItemDetailParamsSchema,
   sourceOwnerPolicyParamsSchema,
@@ -341,80 +342,6 @@ const authenticateReader = async (
   );
 };
 
-const secretOutputKeys = new Set([
-  "actiongrant",
-  "apikey",
-  "authorization",
-  "confirmationchallenge",
-  "cookie",
-  "credential",
-  "devicecredential",
-  "devicesecret",
-  "invitecode",
-  "invitesecret",
-  "invitetoken",
-  "password",
-  "privatekey",
-  "rawdevicesecret",
-  "rawinvitesecret",
-  "refreshtoken",
-  "secret",
-  "session",
-  "token"
-]);
-
-const encryptionEnvelopeKeys = new Set([
-  "ciphertext",
-  "encryptedenvelope",
-  "encryptedpayload",
-  "encryptionenvelope",
-  "keyenvelope",
-  "nonce",
-  "wrappedkey"
-]);
-
-const normalizedOutputKey = (key: string): string =>
-  key.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
-
-const sanitizeStructuredOutput = (
-  value: unknown,
-  state: { depth: number; keys: { count: number } } = {
-    depth: 0,
-    keys: { count: 0 }
-  }
-): unknown => {
-  if (state.depth > 16 || state.keys.count > 2_000) {
-    throw new SharedMemorySourceItemRejectedError("invalid_item_schema");
-  }
-  if (Array.isArray(value)) {
-    state.keys.count += value.length;
-    return value.map((item) =>
-      sanitizeStructuredOutput(item, {
-        depth: state.depth + 1,
-        keys: state.keys
-      })
-    );
-  }
-  if (typeof value !== "object" || value === null) return value;
-  const output: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    state.keys.count += 1;
-    const normalizedKey = normalizedOutputKey(key);
-    if (encryptionEnvelopeKeys.has(normalizedKey)) {
-      throw new SharedMemorySourceItemRejectedError(
-        "unsupported_protocol_item"
-      );
-    }
-    output[key] = secretOutputKeys.has(normalizedKey)
-      ? "[REDACTED]"
-      : sanitizeStructuredOutput(item, {
-          depth: state.depth + 1,
-          keys: state.keys
-        });
-  }
-  return output;
-};
-
 const policyDto = (policy: SharedMemoryPolicyRecord) => ({
   id: policy.id,
   policyId: policy.policyId,
@@ -423,10 +350,24 @@ const policyDto = (policy: SharedMemoryPolicyRecord) => ({
   teamId: policy.teamId,
   teamWorkspaceId: policy.teamWorkspaceId,
   version: policy.version,
-  allowedRepresentations: policy.allowedRepresentations,
+  maximumFidelity: policy.maximumFidelity,
+  includeCuratedMemory: policy.includeCuratedMemory,
   policyHash: policy.policyHash,
   effectiveAt: policy.effectiveAt,
   supersededAt: policy.supersededAt
+});
+
+const sourceBindingDto = (
+  binding: SharedMemoryPersistedPreviewRecord["binding"]
+) => ({
+  sourceRevision: binding.sourceRevision,
+  sourceHash: binding.sourceHash,
+  fidelityPolicyRevision: binding.fidelityPolicyRevision,
+  fidelityPolicyHash: binding.fidelityPolicyHash,
+  contentPolicyVersion: binding.contentPolicyVersion,
+  contentPolicyHash: binding.contentPolicyHash,
+  classifierVersion: binding.classifierVersion,
+  classifierHash: binding.classifierHash
 });
 
 const persistedPreviewDto = (preview: SharedMemoryPersistedPreviewRecord) => ({
@@ -437,9 +378,11 @@ const persistedPreviewDto = (preview: SharedMemoryPersistedPreviewRecord) => ({
   teamId: preview.teamId,
   teamWorkspaceId: preview.teamWorkspaceId,
   representation: preview.representation,
-  binding: preview.binding,
+  maximumFidelity: preview.maximumFidelity,
+  includeCuratedMemory: preview.includeCuratedMemory,
+  binding: sourceBindingDto(preview.binding),
   items: preview.items,
-  redactedContentHash: preview.redactedContentHash,
+  sourceContentHash: preview.sourceContentHash,
   sourceRevision: preview.sourceRevision,
   sourceHash: preview.sourceHash,
   createdAt: preview.createdAt
@@ -459,20 +402,20 @@ const consentDto = (consent: SharedMemoryConsentRecord) => ({
   mode: consent.mode,
   state: consent.state,
   consentVersion: consent.consentVersion,
-  allowedRepresentations: consent.allowedRepresentations,
-  selectedRepresentation: consent.selectedRepresentation,
+  maximumFidelity: consent.maximumFidelity,
+  includeCuratedMemory: consent.includeCuratedMemory,
   previewRevision: consent.previewRevision,
   previewHash: consent.previewHash,
   sourceRevision: consent.sourceRevision,
   maximumAuthorizedSourceRevision: consent.maximumAuthorizedSourceRevision,
   sourceHash: consent.sourceHash,
-  representationPolicyRevision: consent.representationPolicyRevision,
-  representationPolicyHash: consent.representationPolicyHash,
+  fidelityPolicyRevision: consent.fidelityPolicyRevision,
+  fidelityPolicyHash: consent.fidelityPolicyHash,
   contentPolicyVersion: consent.contentPolicyVersion,
   contentPolicyHash: consent.contentPolicyHash,
   classifierVersion: consent.classifierVersion,
   classifierHash: consent.classifierHash,
-  redactedContentHash: consent.redactedContentHash,
+  sourceContentHash: consent.sourceContentHash,
   createdAt: consent.createdAt,
   updatedAt: consent.updatedAt,
   activatedAt: consent.activatedAt,
@@ -493,9 +436,9 @@ const grantDto = (grant: SharedMemoryGrantRecord) => ({
   teamPolicyVersion: grant.teamPolicyVersion,
   workspacePolicyId: grant.workspacePolicyId,
   workspacePolicyVersion: grant.workspacePolicyVersion,
-  ownerAllowedRepresentations: grant.ownerAllowedRepresentations,
-  activeRepresentation: grant.activeRepresentation,
-  representationPolicyRevision: grant.representationPolicyRevision,
+  maximumFidelity: grant.maximumFidelity,
+  includeCuratedMemory: grant.includeCuratedMemory,
+  fidelityPolicyRevision: grant.fidelityPolicyRevision,
   contentPolicyVersion: grant.contentPolicyVersion,
   classifierVersion: grant.classifierVersion,
   sourceRevision: grant.sourceRevision,
@@ -549,7 +492,7 @@ const representationDto = (
   teamPolicyVersion: representation.teamPolicyVersion,
   workspacePolicyId: representation.workspacePolicyId,
   workspacePolicyVersion: representation.workspacePolicyVersion,
-  representationPolicyRevision: representation.representationPolicyRevision,
+  fidelityPolicyRevision: representation.fidelityPolicyRevision,
   contentPolicyVersion: representation.contentPolicyVersion,
   classifierVersion: representation.classifierVersion,
   recordVersion: representation.recordVersion,
@@ -596,6 +539,8 @@ const workspaceIndexEntryDto = (entry: WorkspaceIndexEntry) => ({
   id: entry.shareGrantId,
   logicalMemoryId: entry.logicalMemoryId,
   ownerUserId: entry.ownerUserId,
+  maximumFidelity: entry.maximumFidelity,
+  includeCuratedMemory: entry.includeCuratedMemory,
   title: entry.title,
   activeRepresentation: entry.activeRepresentation,
   representationState: entry.representationState,
@@ -610,26 +555,20 @@ const workspaceIndexEntryDto = (entry: WorkspaceIndexEntry) => ({
 
 const validatedReadItems = (
   result: SharedMemoryReadResult
-): SharedMemoryRedactedSourceItemDto[] =>
+): SharedMemoryCanonicalSourceItemDto[] =>
   result.items.map((item) => {
-    const validated = redactEligibleSharedMemorySourceItem({
+    const validated = validateSharedMemoryCanonicalSourceItem({
       representation: result.representation.representation,
       logicalMemoryId: result.grant.logicalMemoryId,
       sourceRevision: result.representation.sourceRevision,
       item
     });
-    return {
-      ...validated,
-      content: sanitizeStructuredOutput(validated.content) as Record<
-        string,
-        unknown
-      >
-    };
+    return validated;
   });
 
 const readDto = (
   result: SharedMemoryReadResult,
-  items: SharedMemoryRedactedSourceItemDto[]
+  items: SharedMemoryCanonicalSourceItemDto[]
 ) => ({
   grant: grantDto(result.grant),
   representation: representationDto(result.representation),
@@ -643,7 +582,7 @@ const readScopedGrant = async (
   context: SharedMemoryRouteContext,
   actor: { id: string },
   scope: { teamId: string; teamWorkspaceId: string; shareGrantId: string },
-  representation?:
+  representation:
     | "memory_events"
     | "lcm_leaves"
     | "lcm_rollups"
@@ -668,8 +607,7 @@ const readScopedGrant = async (
     result.grant.teamWorkspaceId !== scope.teamWorkspaceId ||
     result.companionScope.teamId !== scope.teamId ||
     result.companionScope.teamWorkspaceId !== scope.teamWorkspaceId ||
-    (representation !== undefined &&
-      result.representation.representation !== representation)
+    result.representation.representation !== representation
   ) {
     throw forbidden();
   }
@@ -801,7 +739,8 @@ export const registerSharedMemoryRoutes = (
         teamId: input.teamId,
         teamWorkspaceId: input.teamWorkspaceId,
         representation: input.representation,
-        allowedRepresentations: input.allowedRepresentations
+        maximumFidelity: input.maximumFidelity,
+        includeCuratedMemory: input.includeCuratedMemory
       });
       const result = await executeRepositoryOperation(() =>
         runHighRiskSharedMemoryWrite(
@@ -817,7 +756,8 @@ export const registerSharedMemoryRoutes = (
                 teamId: input.teamId,
                 teamWorkspaceId: input.teamWorkspaceId,
                 representation: input.representation,
-                allowedRepresentations: input.allowedRepresentations,
+                maximumFidelity: input.maximumFidelity,
+                includeCuratedMemory: input.includeCuratedMemory,
                 authority: authenticated.authority
               }
             );
@@ -826,7 +766,9 @@ export const registerSharedMemoryRoutes = (
               preview.remoteReplicaId !== input.remoteReplicaId ||
               preview.teamId !== input.teamId ||
               preview.teamWorkspaceId !== input.teamWorkspaceId ||
-              preview.representation !== input.representation
+              preview.representation !== input.representation ||
+              preview.maximumFidelity !== input.maximumFidelity ||
+              preview.includeCuratedMemory !== input.includeCuratedMemory
             ) {
               return null;
             }
@@ -864,8 +806,8 @@ export const registerSharedMemoryRoutes = (
         teamWorkspaceId: params.teamWorkspaceId,
         previewId: input.preview.previewId,
         mode: input.mode,
-        allowedRepresentations: input.allowedRepresentations,
-        selectedRepresentation: input.selectedRepresentation,
+        maximumFidelity: input.maximumFidelity,
+        includeCuratedMemory: input.includeCuratedMemory,
         previewRevision: input.previewRevision,
         previewHash: input.preview.previewHash,
         expiresAt: input.expiresAt
@@ -882,8 +824,8 @@ export const registerSharedMemoryRoutes = (
                 consentId: input.consentId,
                 preview: input.preview,
                 mode: input.mode,
-                allowedRepresentations: input.allowedRepresentations,
-                selectedRepresentation: input.selectedRepresentation,
+                maximumFidelity: input.maximumFidelity,
+                includeCuratedMemory: input.includeCuratedMemory,
                 expiresAt: input.expiresAt,
                 authority: authenticated.authority
               }
@@ -894,7 +836,9 @@ export const registerSharedMemoryRoutes = (
               consent.teamWorkspaceId !== params.teamWorkspaceId ||
               consent.previewId !== input.preview.previewId ||
               consent.previewRevision !== input.previewRevision ||
-              consent.previewHash !== input.preview.previewHash
+              consent.previewHash !== input.preview.previewHash ||
+              consent.maximumFidelity !== input.maximumFidelity ||
+              consent.includeCuratedMemory !== input.includeCuratedMemory
             ) {
               return null;
             }
@@ -932,8 +876,8 @@ export const registerSharedMemoryRoutes = (
         previewRevision: input.previewRevision,
         previewHash: input.preview.previewHash,
         mode: input.mode,
-        allowedRepresentations: input.allowedRepresentations,
-        selectedRepresentation: input.selectedRepresentation,
+        maximumFidelity: input.maximumFidelity,
+        includeCuratedMemory: input.includeCuratedMemory,
         expiresAt: input.expiresAt,
         title: input.title
       });
@@ -959,8 +903,8 @@ export const registerSharedMemoryRoutes = (
                     previewRevision: input.previewRevision,
                     title: input.title,
                     mode: input.mode,
-                    allowedRepresentations: input.allowedRepresentations,
-                    selectedRepresentation: input.selectedRepresentation,
+                    maximumFidelity: input.maximumFidelity,
+                    includeCuratedMemory: input.includeCuratedMemory,
                     expiresAt: input.expiresAt,
                     authority: authenticated.authority
                   }
@@ -997,8 +941,8 @@ export const registerSharedMemoryRoutes = (
         previewRevision: input.previewRevision,
         previewHash: input.preview.previewHash,
         mode: input.mode,
-        allowedRepresentations: input.allowedRepresentations,
-        selectedRepresentation: input.selectedRepresentation,
+        maximumFidelity: input.maximumFidelity,
+        includeCuratedMemory: input.includeCuratedMemory,
         expiresAt: input.expiresAt,
         title: input.title
       });
@@ -1016,8 +960,8 @@ export const registerSharedMemoryRoutes = (
                   consentId: input.consentId,
                   preview: input.preview,
                   mode: input.mode,
-                  allowedRepresentations: input.allowedRepresentations,
-                  selectedRepresentation: input.selectedRepresentation,
+                  maximumFidelity: input.maximumFidelity,
+                  includeCuratedMemory: input.includeCuratedMemory,
                   expiresAt: input.expiresAt,
                   authority: authenticated.authority
                 },
@@ -1035,7 +979,9 @@ export const registerSharedMemoryRoutes = (
                   teamWorkspaceId: input.teamWorkspaceId,
                   previewId: input.preview.previewId,
                   previewRevision: input.previewRevision,
-                  previewHash: input.preview.previewHash
+                  previewHash: input.preview.previewHash,
+                  maximumFidelity: input.maximumFidelity,
+                  includeCuratedMemory: input.includeCuratedMemory
                 }
               }
             );
@@ -1108,20 +1054,18 @@ export const registerSharedMemoryRoutes = (
   );
 
   app.put(
-    "/v1/shared-memory/share-grants/:shareGrantId/representation-bundle",
+    "/v1/shared-memory/share-grants/:shareGrantId/fidelity-bundle",
     { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
     async (request) => {
       rejectApiToken(request);
       const params = shareGrantParamsSchema.parse(request.params);
-      const input = changeSharedMemoryRepresentationBundleSchema.parse(
-        request.body
-      );
+      const input = changeSharedMemoryFidelityBundleSchema.parse(request.body);
       const authenticated = await authenticateSourceOwnerAuthority(
         request,
         context,
         input.authority
       );
-      const binding = sharedMemoryRepresentationBundleActionGrantBinding({
+      const binding = sharedMemoryFidelityBundleActionGrantBinding({
         referenceId: authenticated.authority.referenceId,
         mutationId: input.mutationId,
         consentId: input.consentId,
@@ -1133,8 +1077,8 @@ export const registerSharedMemoryRoutes = (
         previewRevision: input.previewRevision,
         previewHash: input.preview.previewHash,
         mode: input.mode,
-        allowedRepresentations: input.allowedRepresentations,
-        representation: input.representation,
+        maximumFidelity: input.maximumFidelity,
+        includeCuratedMemory: input.includeCuratedMemory,
         expectedGrantVersion: input.expectedGrantVersion,
         expiresAt: input.expiresAt
       });
@@ -1144,26 +1088,25 @@ export const registerSharedMemoryRoutes = (
           authenticated,
           binding,
           async (repository) => {
-            const pendingShare =
-              await repository.createPendingRepresentationChange(
-                { userId: authenticated.actor.id },
-                {
-                  mutationId: input.mutationId,
-                  consentId: input.consentId,
-                  logicalMemoryId: input.logicalMemoryId,
-                  teamId: input.teamId,
-                  teamWorkspaceId: input.teamWorkspaceId,
-                  shareGrantId: params.shareGrantId,
-                  expectedGrantVersion: input.expectedGrantVersion,
-                  preview: input.preview,
-                  previewRevision: input.previewRevision,
-                  mode: input.mode,
-                  allowedRepresentations: input.allowedRepresentations,
-                  representation: input.representation,
-                  expiresAt: input.expiresAt,
-                  authority: authenticated.authority
-                }
-              );
+            const pendingShare = await repository.createPendingFidelityChange(
+              { userId: authenticated.actor.id },
+              {
+                mutationId: input.mutationId,
+                shareGrantId: params.shareGrantId,
+                consentId: input.consentId,
+                logicalMemoryId: input.logicalMemoryId,
+                teamId: input.teamId,
+                teamWorkspaceId: input.teamWorkspaceId,
+                expectedGrantVersion: input.expectedGrantVersion,
+                preview: input.preview,
+                previewRevision: input.previewRevision,
+                maximumFidelity: input.maximumFidelity,
+                includeCuratedMemory: input.includeCuratedMemory,
+                mode: input.mode,
+                expiresAt: input.expiresAt,
+                authority: authenticated.authority
+              }
+            );
             return {
               statusCode: 202,
               body: {
@@ -1178,25 +1121,26 @@ export const registerSharedMemoryRoutes = (
   );
 
   app.put(
-    "/v1/shared-memory/share-grants/:shareGrantId/representation",
+    "/v1/shared-memory/share-grants/:shareGrantId/fidelity",
     { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
     async (request) => {
       rejectApiToken(request);
       const params = shareGrantParamsSchema.parse(request.params);
-      const input = selectGrantRepresentationSchema.parse(request.body);
+      const input = selectGrantFidelitySchema.parse(request.body);
       const authenticated = await authenticateSourceOwnerAuthority(
         request,
         context,
         input.authority
       );
-      const binding = sharedMemoryRepresentationActionGrantBinding({
+      const binding = sharedMemoryFidelityActionGrantBinding({
         referenceId: authenticated.authority.referenceId,
         mutationId: input.mutationId,
         teamId: input.teamId,
         teamWorkspaceId: input.teamWorkspaceId,
         shareGrantId: params.shareGrantId,
         consentId: input.consentId,
-        representation: input.representation,
+        maximumFidelity: input.maximumFidelity,
+        includeCuratedMemory: input.includeCuratedMemory,
         expectedGrantVersion: input.expectedGrantVersion
       });
       const result = await executeRepositoryOperation(() =>
@@ -1205,13 +1149,14 @@ export const registerSharedMemoryRoutes = (
           authenticated,
           binding,
           async (repository) => {
-            const grant = await repository.selectGrantRepresentation(
+            const grant = await repository.selectGrantFidelity(
               { userId: authenticated.actor.id },
               {
                 mutationId: input.mutationId,
                 shareGrantId: params.shareGrantId,
                 consentId: input.consentId,
-                representation: input.representation,
+                maximumFidelity: input.maximumFidelity,
+                includeCuratedMemory: input.includeCuratedMemory,
                 expectedGrantVersion: input.expectedGrantVersion,
                 authority: authenticated.authority
               }
@@ -1219,7 +1164,8 @@ export const registerSharedMemoryRoutes = (
             if (
               grant.teamId !== input.teamId ||
               grant.teamWorkspaceId !== input.teamWorkspaceId ||
-              grant.activeRepresentation !== input.representation
+              grant.maximumFidelity !== input.maximumFidelity ||
+              grant.includeCuratedMemory !== input.includeCuratedMemory
             ) {
               return null;
             }
@@ -1237,23 +1183,40 @@ export const registerSharedMemoryRoutes = (
       preHandler: context.writeRateLimit,
       bodyLimit: SMALL_BODY_LIMIT_BYTES
     },
-    async (request) => {
+    async (request, reply) => {
       const actor = await authenticateSourceOwner(request, context);
       const params = representationParamsSchema.parse(request.params);
       const input = materializeGrantRepresentationSchema.parse(request.body);
-      const representation = await executeRepositoryOperation(() =>
-        context.requireSharedMemoryRepository().materializeGrantRepresentation(
-          { userId: actor.id },
-          {
-            mutationId: input.mutationId,
+      let representation: SharedMemoryRepresentationRecord;
+      try {
+        representation = await context
+          .requireSharedMemoryRepository()
+          .materializeGrantRepresentation(
+            { userId: actor.id },
+            {
+              mutationId: input.mutationId,
+              shareGrantId: params.shareGrantId,
+              consentId: input.consentId,
+              expectedGrantVersion: input.expectedGrantVersion,
+              expectedRepresentationVersion:
+                input.expectedRepresentationVersion,
+              preview: input.preview
+            }
+          );
+      } catch (error) {
+        if (
+          error instanceof SharedMemorySemanticDerivativePendingError ||
+          (error instanceof Error &&
+            error.name === "SharedMemorySemanticDerivativePendingError")
+        ) {
+          return reply.code(202).send({
+            processing: true,
             shareGrantId: params.shareGrantId,
-            consentId: input.consentId,
-            expectedGrantVersion: input.expectedGrantVersion,
-            expectedRepresentationVersion: input.expectedRepresentationVersion,
-            preview: input.preview
-          }
-        )
-      );
+            representation: params.representation
+          });
+        }
+        return mapSharedMemoryError(error);
+      }
       if (
         representation.shareGrantId !== params.shareGrantId ||
         representation.representation !== params.representation
@@ -1574,8 +1537,6 @@ export const registerSharedMemoryRoutes = (
         page.entries.some(
           (entry) =>
             entry.lifecycle !== "active" ||
-            (entry.representationState !== "available" &&
-              entry.representationState !== "stale") ||
             entry.companionScope.teamId !== params.teamId ||
             entry.companionScope.teamWorkspaceId !== params.teamWorkspaceId ||
             entry.companionScope.logicalMemoryId !== entry.logicalMemoryId ||

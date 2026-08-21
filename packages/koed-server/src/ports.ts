@@ -11,6 +11,7 @@ export interface KoedLocalPorts {
   api: string;
   postgres: string;
   embedding: string;
+  privacy: string;
   llamaEmbedding: string;
   llamaReranker: string;
 }
@@ -19,6 +20,7 @@ const DEFAULT_PORTS: KoedLocalPorts = {
   api: "43300",
   postgres: "45432",
   embedding: "43800",
+  privacy: "48092",
   llamaEmbedding: "18080",
   llamaReranker: "19080"
 };
@@ -48,6 +50,7 @@ const ENV_KEYS = {
   api: ["API_HOST_PORT"],
   postgres: ["POSTGRES_HOST_PORT"],
   embedding: ["EMBEDDING_SERVICE_HOST_PORT"],
+  privacy: ["PRIVACY_SERVICE_PORT"],
   llamaEmbedding: [
     "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT",
     "LLAMA_EMBEDDING_SERVER_PORT"
@@ -184,6 +187,9 @@ export const readPersistedLocalPorts = (
       ...(validPort(parsed.embedding)
         ? { embedding: validPort(parsed.embedding)! }
         : {}),
+      ...(validPort(parsed.privacy)
+        ? { privacy: validPort(parsed.privacy)! }
+        : {}),
       ...(validPort(parsed.llamaEmbedding)
         ? { llamaEmbedding: validPort(parsed.llamaEmbedding)! }
         : {}),
@@ -223,6 +229,9 @@ export const applyPersistedLocalPorts = (
       : {}),
     ...(persisted.embedding && !trim(environment.EMBEDDING_SERVICE_HOST_PORT)
       ? { EMBEDDING_SERVICE_HOST_PORT: persisted.embedding }
+      : {}),
+    ...(persisted.privacy && !trim(environment.PRIVACY_SERVICE_PORT)
+      ? { PRIVACY_SERVICE_PORT: persisted.privacy }
       : {}),
     ...(persisted.llamaEmbedding &&
     !ENV_KEYS.llamaEmbedding.some((key) => trim(environment[key]))
@@ -303,6 +312,7 @@ export const allocateAndPersistLocalPorts = async (
       API_HOST_PORT: allocated.api,
       POSTGRES_HOST_PORT: allocated.postgres,
       EMBEDDING_SERVICE_HOST_PORT: allocated.embedding,
+      PRIVACY_SERVICE_PORT: allocated.privacy,
       EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: allocated.llamaEmbedding,
       EMBEDDING_LLAMA_RERANKER_SERVER_PORT: allocated.llamaReranker
     };

@@ -7,6 +7,7 @@ Related decisions:
 - [0015 Managed Conversation Execution And Realtime](./0015-managed-conversation-execution-and-realtime.md)
 - [0016 Exclusive Execution Handoff And Fork Lineage](./0016-exclusive-execution-handoff-and-fork-lineage.md)
 - [0020 Portable Personal Derived Artifact Replication](./0020-portable-personal-derived-artifact-replication.md)
+- [0030 Personal Semantic Work Is Computed Once And Replicated](./0030-single-personal-semantic-computation.md)
 
 ## Context
 
@@ -50,27 +51,33 @@ summaries have a distinct revision identity.
 
 ### Claims And Fencing
 
-An enrolled device claims one stable semantic-work identity for a bounded
-period. A claim contains the group, work identity, work class, claimant device,
-claim generation, compatibility contract hash, claimed time, and expiry.
+An eligible Personal processor claims one stable semantic-work identity for a
+bounded period. A claim contains the authority, owner, work identity, work
+class, claimant kind and identity, claim generation, compatibility contract
+hash, claimed time, heartbeat, and expiry.
 
-Claim acquisition and renewal are compare-and-swap operations under the
-Personal Device Group authority. Every published artifact carries the claim
-generation. A stale claimant cannot publish after the claim is replaced.
-Expiry makes work reclaimable but does not authorize Conversation source
-writes.
+Claim acquisition and renewal are compare-and-swap operations under the active
+Personal Device Group or hosted Personal semantic-work authority. Every
+published artifact carries the claim generation. A stale claimant cannot
+publish after the claim is replaced. Expiry makes work reclaimable but does not
+authorize Conversation source writes.
 
 Queue jobs and process leases remain local implementation details.
 
 ### Preferred Worker
 
 The device holding managed Conversation execution authority is preferred for
-Projection and owns LCM work on that Conversation. After handoff, the unfinished
-LCM frontier is reconstructed from ordered logical Memory Events and complete
-leaf coverage under the transferred source authority.
+Projection and owns LCM work on that Conversation. It must acquire the durable
+claim before invoking its AI Client. After handoff, the unfinished LCM frontier
+is reconstructed from ordered logical Memory Events and complete leaf coverage
+under the transferred source authority.
 
-Embedding work may be claimed by another active enrolled device when the
-execution device does not advertise a compatible ready embedding capability.
+Embedding work may be owned by an owner-authorized hosted Personal backend or
+claimed by an active enrolled device. While Hosted Personal Source Replication
+is explicitly active, that backend owns compatible embedding work and Personal
+devices fail closed rather than running competing inference. Without hosted
+authority, the execution device is preferred and another device may claim when
+that device does not advertise a compatible ready embedding capability.
 Capability advertisements are bounded, signed state containing the exact
 embedding contract and readiness, not arbitrary host telemetry.
 
@@ -80,8 +87,10 @@ it cannot retarget an existing generation. A synchronized Memory Event or LCM
 node enters a device's embedding queue only while that exact active claim names
 its local mapped source and current content hash.
 
-If no compatible device is available, source and Memory Events remain durable,
-lexical Recall remains possible, and embedding work stays pending.
+If the selected authority is unavailable or no compatible device is available,
+source and Memory Events remain durable, lexical Recall remains possible, and
+embedding work stays pending. Changing authority requires an explicit policy
+change; network failure is not an implicit failover election.
 
 ### Handoff And Fork
 

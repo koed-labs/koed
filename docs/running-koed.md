@@ -307,6 +307,14 @@ to source Memory Events, then calls the MCP `memory_answer` tool with
 or another explicitly assigned provider), the bundled embedding model, and the
 native PostgreSQL client remain live prerequisites.
 
+For synchronized Personal source, verify the Personal Sync status before and
+after the run. `semanticWork.authorityTier` identifies whether hosted Personal
+or the Personal Device Group owns new embeddings; claim and artifact counters
+prove accepted work without exposing source identities. Under hosted authority,
+the local embedding queue must remain pending until an encrypted compatible
+artifact is imported. Disabling or retargeting that explicit policy is the only
+way local embedding authority resumes.
+
 For two-device data-plane validation, first pair two distinct, running
 bundled-local Personal installations and confirm both PDS workers are ready.
 Then run:
@@ -489,10 +497,13 @@ docker compose --env-file .env -f examples/server-compose/docker-compose.yml up 
 ```
 
 Keep the generated `.env` stable across Compose recreation and upgrades. The
-server receives separate general and owner-private encryption provider settings,
-along with persistent collaboration cursor and broker secrets, from that file.
-Changing them requires an explicit rotation or rewrap operation; silently
-regenerating them would make existing encrypted data or durable cursors unusable.
+server receives separate Personal, owner-private, and Team Memory encryption
+provider settings, along with persistent collaboration cursor and broker
+secrets, from that file. Collaboration storage selects the Personal provider
+for Personal threads and the Team Memory provider for Team threads. Changing
+these settings requires an explicit rotation or rewrap operation. If an
+Operator silently regenerates them, existing encrypted data or durable cursors
+become unusable.
 
 The server Compose wrapper sets `restart: unless-stopped` on `koed-server`,
 Postgres, Redis, and the Embedding Service. Dependency containers therefore
@@ -560,7 +571,7 @@ Desktop records completion of its first-run guide under the active `KOED_HOME`
 rather than browser storage, so the setup state is durable and isolated per
 local installation.
 
-Bundled-local mode is native-only. Native Postgres binaries should be available under `KOED_HOME/runtime/postgres/bin` or `KOED_POSTGRES_BIN_DIR`, including `psql`, `pg_dump`, and `pg_restore` for backup/restore operations, and the Embedding Service needs `embedding-service/dist/index.js`, `KOED_HOME/runtime/llama.cpp/llama-server`, and model assets. The llama-server launcher selects the packaged CPU, Metal, or CUDA payload according to the verified acceleration policy; it does not change the stable runtime path. Packaged native runtime assets no longer include Python standalone files or `embedding-service/.venv/bin/python`; `KOED_EMBEDDING_PYTHON_BIN` is not used by the supported bundled-local path. The README Quickstart builds the workspace, runs runtime install, and installs the embedding model as `pnpm local:setup`. Packaged Desktop also checks packaged app resources after `KOED_HOME/runtime`. Source-checkout `vendor` and `apps/embedding-service` paths remain development fallbacks only; packaged mode rejects those fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `KOED_BUNDLED_POSTGRES_MODE` and `KOED_BUNDLED_EMBEDDING_MODE` are deprecated and ignored. Missing native resources fail with setup guidance instead of falling back to Docker Compose. Docker Compose is available only as an Operator-selected external dependency starter.
+Bundled-local mode is native-only. Native Postgres binaries should be available under `KOED_HOME/runtime/postgres/bin` or `KOED_POSTGRES_BIN_DIR`, including `psql`, `pg_dump`, and `pg_restore` for backup/restore operations, and the Embedding Service needs `embedding-service/dist/index.js`, `KOED_HOME/runtime/llama.cpp/llama-server`, and model assets. The llama-server launcher selects the packaged CPU, Metal, or CUDA payload according to the verified acceleration policy; it does not change the stable runtime path. When `KOED_TEAM_COLLABORATION_ENABLED=true`, the local Privacy Filter Service also requires its packaged service entry and pinned Transformers model assets under `KOED_HOME/models/privacy`. Personal-only bundled-local and Desktop startup do not start that service or require its model. Packaged native runtime assets no longer include Python standalone files or `embedding-service/.venv/bin/python`; `KOED_EMBEDDING_PYTHON_BIN` is not used by the supported bundled-local path. The README Quickstart builds the workspace, runs runtime install, and installs both the embedding and Privacy Filter models as `pnpm local:setup`. Packaged Desktop checks only the models required by its active Team collaboration setting. Source-checkout `vendor` and `apps/embedding-service` paths remain development fallbacks only; packaged mode rejects those fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `KOED_BUNDLED_POSTGRES_MODE` and `KOED_BUNDLED_EMBEDDING_MODE` are deprecated and ignored. Missing native resources fail with setup guidance instead of falling back to Docker Compose. Docker Compose is available only as an Operator-selected external dependency starter.
 
 On macOS, Linux, and WSL, Homebrew is one selected provisioning path for the native runtime assets under `KOED_HOME`:
 
@@ -573,6 +584,7 @@ pnpm runtime:install
 
 ```bash
 pnpm models:install:embedding
+pnpm models:install:privacy
 ```
 
 Set `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` only when installing a custom embedding model artifact. Use `--kind reranker` with `KOED_RERANKER_MODEL_URL` and `KOED_RERANKER_MODEL_SHA256` when enabling reranking.

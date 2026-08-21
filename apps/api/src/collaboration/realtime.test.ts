@@ -8,8 +8,7 @@ import type {
   CollaborationRepository,
   CollaborationSubscriptionRecord,
   CollaborationThreadRecord,
-  DeviceCredentialAuthContext,
-  SharedMemoryReadResult
+  DeviceCredentialAuthContext
 } from "@koed/db";
 import {
   COLLABORATION_CONTRACT_VERSION,
@@ -38,7 +37,7 @@ const realtimeFamilyCases = [
   ["message_created", "collaboration_event", "message_created"],
   ["receipt_state_updated", "collaboration_event", "receipt_state_updated"],
   ["share_grant_lifecycle", "collaboration_event", "shared_session_upserted"],
-  ["representation_changed", "collaboration_event", "shared_session_upserted"],
+  ["fidelity_changed", "collaboration_event", "shared_session_upserted"],
   ["memory_event_available", "collaboration_event", "shared_session_upserted"],
   ["lcm_leaf_available", "collaboration_event", "shared_session_upserted"],
   ["lcm_rollup_available", "collaboration_event", "shared_session_upserted"],
@@ -877,9 +876,10 @@ const workspaceChannelThread = (
   archivedAt: null
 });
 
-const sharedReadResult = (
-  fixture: ReturnType<typeof createRepositoryFixture>
-): SharedMemoryReadResult => {
+const workspaceGrantPage = (
+  fixture: ReturnType<typeof createRepositoryFixture>,
+  includeGrant = true
+) => {
   const companionScope = {
     scope: "team" as const,
     kind: "shared_session_discussion" as const,
@@ -889,78 +889,30 @@ const sharedReadResult = (
     shareGrantId: fixture.ids.shareGrant
   };
   return {
-    grant: {
-      id: fixture.ids.shareGrant,
-      logicalGrantId: randomUUID(),
-      logicalMemoryId: fixture.ids.logicalMemory,
-      remoteReplicaId: randomUUID(),
-      ownerUserId: fixture.ids.alice,
-      ownerPrincipalId: fixture.ids.alice,
-      sessionId: randomUUID(),
-      teamId: fixture.ids.teamA,
-      teamWorkspaceId: fixture.ids.workspace,
-      consentId: randomUUID(),
-      displayTitle: "Shared Memory",
-      sourceOwnerPolicyId: randomUUID(),
-      sourceOwnerPolicyVersion: 1,
-      teamPolicyId: randomUUID(),
-      teamPolicyVersion: 1,
-      workspacePolicyId: randomUUID(),
-      workspacePolicyVersion: 1,
-      ownerAllowedRepresentations: ["memory_events"],
-      activeRepresentation: "memory_events",
-      representationPolicyRevision: 1,
-      contentPolicyVersion: 1,
-      classifierVersion: 1,
-      sourceRevision: 7,
-      grantVersion: 2,
-      lifecycle: "active",
-      creatorAuthority: "source_owner",
-      grantedByUserId: fixture.ids.alice,
-      createdAt: iso,
-      updatedAt: iso,
-      revokedAt: null,
-      companionScope
-    },
-    representation: {
-      id: randomUUID(),
-      shareGrantId: fixture.ids.shareGrant,
-      consentId: randomUUID(),
-      sourcePreviewId: randomUUID(),
-      sourceArtifactId: randomUUID(),
-      teamId: fixture.ids.teamA,
-      teamWorkspaceId: fixture.ids.workspace,
-      logicalMemoryId: fixture.ids.logicalMemory,
-      representation: "memory_events",
-      sourceRevision: 7,
-      sourceRevisionHash: "a".repeat(64),
-      provenanceHash: "b".repeat(64),
-      sourceOwnerPolicyId: randomUUID(),
-      sourceOwnerPolicyVersion: 1,
-      teamPolicyId: randomUUID(),
-      teamPolicyVersion: 1,
-      workspacePolicyId: randomUUID(),
-      workspacePolicyVersion: 1,
-      representationPolicyRevision: 1,
-      contentPolicyVersion: 1,
-      classifierVersion: 1,
-      recordVersion: 1,
-      state: "available",
-      chunkCount: 1,
-      createdAt: iso,
-      updatedAt: iso,
-      availableAt: iso,
-      staleAt: null,
-      invalidatedAt: null,
-      invalidationReasonCode: null
-    },
-    items: [],
-    sourcePage: {
-      itemOffset: 0,
-      itemCount: 0
-    },
-    freshness: "fresh",
-    companionScope
+    entries: includeGrant
+      ? [
+          {
+            shareGrantId: fixture.ids.shareGrant,
+            logicalMemoryId: fixture.ids.logicalMemory,
+            ownerUserId: fixture.ids.alice,
+            maximumFidelity: "memory_events" as const,
+            includeCuratedMemory: false,
+            title: "Shared Memory",
+            activeRepresentation: "memory_events" as const,
+            representationState: "available" as const,
+            representationSourceRevision: 7,
+            representationUpdatedAt: iso,
+            freshness: "fresh" as const,
+            lifecycle: "active" as const,
+            createdAt: iso,
+            updatedAt: iso,
+            companionScope
+          }
+        ]
+      : [],
+    limit: 100,
+    offset: 0,
+    hasMore: false
   };
 };
 
@@ -1421,10 +1373,15 @@ describe("collaboration realtime protocol", () => {
         resourceId: fixture.ids.shareGrant
       })
     );
-    const readGrantRepresentation = vi.fn(async () => null);
+    const listWorkspaceGrants = vi.fn(async () =>
+      workspaceGrantPage(fixture, false)
+    );
     const app = await buildTestServer(fixture, {
       heartbeatMs: 20,
-      sharedMemoryRepository: { readGrantRepresentation }
+      sharedMemoryRepository: {
+        getOwnerShare: vi.fn(async () => null),
+        listWorkspaceGrants
+      }
     });
     const snapshot = await createTeamSnapshot(
       app,
@@ -1439,7 +1396,7 @@ describe("collaboration realtime protocol", () => {
     try {
       const body = await stream.readUntil("heartbeat");
       expect(body).not.toContain("event: collaboration_event\n");
-      expect(readGrantRepresentation).toHaveBeenCalledOnce();
+      expect(listWorkspaceGrants).toHaveBeenCalledOnce();
     } finally {
       stream.close();
     }
@@ -1467,7 +1424,8 @@ describe("collaboration realtime protocol", () => {
     const app = await buildTestServer(fixture, {
       heartbeatMs: 20,
       sharedMemoryRepository: {
-        readGrantRepresentation: vi.fn(async () => sharedReadResult(fixture))
+        getOwnerShare: vi.fn(async () => null),
+        listWorkspaceGrants: vi.fn(async () => workspaceGrantPage(fixture))
       }
     });
     const snapshot = await createTeamSnapshot(
@@ -1521,7 +1479,8 @@ describe("collaboration realtime protocol", () => {
     const app = await buildTestServer(fixture, {
       auth: device.auth,
       sharedMemoryRepository: {
-        readGrantRepresentation: vi.fn(async () => sharedReadResult(fixture))
+        getOwnerShare: vi.fn(async () => null),
+        listWorkspaceGrants: vi.fn(async () => workspaceGrantPage(fixture))
       }
     });
     const headers = deviceHeaders();
@@ -1547,7 +1506,8 @@ describe("collaboration realtime protocol", () => {
           id: fixture.ids.shareGrant,
           logicalMemoryId: fixture.ids.logicalMemory,
           companionThreadId: fixture.ids.companionThread,
-          representation: "memory_events",
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
           sourceState: "ready"
         }
       }
@@ -1582,7 +1542,8 @@ describe("collaboration realtime protocol", () => {
     ]);
     const app = await buildTestServer(fixture, {
       sharedMemoryRepository: {
-        readGrantRepresentation: vi.fn(async () => sharedReadResult(fixture))
+        getOwnerShare: vi.fn(async () => null),
+        listWorkspaceGrants: vi.fn(async () => workspaceGrantPage(fixture))
       }
     });
     const snapshot = await createTeamSnapshot(
@@ -1604,7 +1565,8 @@ describe("collaboration realtime protocol", () => {
           id: fixture.ids.shareGrant,
           logicalMemoryId: fixture.ids.logicalMemory,
           companionThreadId: fixture.ids.companionThread,
-          representation: "memory_events",
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
           sourceState: "ready"
         }
       }
@@ -1768,7 +1730,8 @@ describe("collaboration realtime protocol", () => {
           teamId: randomUUID(),
           teamWorkspaceId: randomUUID(),
           representation: "memory_events" as const,
-          allowedRepresentations: ["memory_events" as const],
+          maximumFidelity: "memory_events" as const,
+          includeCuratedMemory: false,
           mode: "continuous" as const,
           sourceRevision: 4,
           state: "needs_attention" as const,
@@ -1831,7 +1794,7 @@ describe("collaboration realtime protocol", () => {
           : null;
       const sharedFamily = [
         "share_grant_lifecycle",
-        "representation_changed",
+        "fidelity_changed",
         "memory_event_available",
         "lcm_leaf_available",
         "lcm_rollup_available"
@@ -1939,8 +1902,9 @@ describe("collaboration realtime protocol", () => {
             : null,
         sharedMemoryRepository: sharedFamily
           ? {
-              readGrantRepresentation: vi.fn(async () =>
-                sharedReadResult(fixture)
+              getOwnerShare: vi.fn(async () => null),
+              listWorkspaceGrants: vi.fn(async () =>
+                workspaceGrantPage(fixture)
               )
             }
           : null

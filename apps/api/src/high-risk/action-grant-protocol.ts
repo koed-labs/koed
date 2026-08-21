@@ -21,7 +21,7 @@ import {
   putTeamConversationSourceGrantSchema,
   revokeShareGrantSchema,
   revokeTeamConversationSourceGrantSchema,
-  selectGrantRepresentationSchema
+  selectGrantFidelitySchema
 } from "../shared-memory/schemas.js";
 import {
   acceptTeamInviteSchema,
@@ -49,10 +49,10 @@ import {
 import {
   bindConversationSourceGrantOperation,
   bindConversationSourceRevokeOperation,
+  bindSharedMemoryFidelityChangeOperation,
   bindSharedMemoryCandidatePreviewOperation,
   bindSharedMemoryPendingShareOperation,
   bindSharedMemoryPreviewOperation,
-  bindSharedMemoryRepresentationChangeOperation,
   bindSharedMemoryRevokeOperation,
   bindSharedMemoryShareOperation
 } from "./shared-memory-action-definitions.js";
@@ -212,8 +212,9 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       teamId: uuidSchema,
       teamWorkspaceId: uuidSchema,
       representation: createSharedMemoryPreviewSchema.shape.representation,
-      allowedRepresentations:
-        createSourceOwnerConsentSchema.shape.allowedRepresentations
+      maximumFidelity: createSourceOwnerConsentSchema.shape.maximumFidelity,
+      includeCuratedMemory:
+        createSourceOwnerConsentSchema.shape.includeCuratedMemory
     })
     .strict(),
   z
@@ -235,8 +236,10 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
         createSharedMemoryCandidatePreviewSchema.shape.teamWorkspaceId,
       representation:
         createSharedMemoryCandidatePreviewSchema.shape.representation,
-      allowedRepresentations:
-        createSharedMemoryCandidatePreviewSchema.shape.allowedRepresentations,
+      maximumFidelity:
+        createSharedMemoryCandidatePreviewSchema.shape.maximumFidelity,
+      includeCuratedMemory:
+        createSharedMemoryCandidatePreviewSchema.shape.includeCuratedMemory,
       mode: createSharedMemoryCandidatePreviewSchema.shape.mode,
       expiresAt: createSharedMemoryCandidatePreviewSchema.shape.expiresAt
     })
@@ -252,10 +255,9 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       consentId: uuidSchema,
       previewId: uuidSchema,
       mode: createSourceOwnerConsentSchema.shape.mode,
-      allowedRepresentations:
-        createSourceOwnerConsentSchema.shape.allowedRepresentations,
-      selectedRepresentation:
-        createSourceOwnerConsentSchema.shape.selectedRepresentation,
+      maximumFidelity: createSourceOwnerConsentSchema.shape.maximumFidelity,
+      includeCuratedMemory:
+        createSourceOwnerConsentSchema.shape.includeCuratedMemory,
       previewRevision: z.number().int().safe().positive(),
       previewHash: z.string().regex(/^[a-f0-9]{64}$/),
       expiresAt: z.string().datetime({ offset: true }).nullable(),
@@ -273,10 +275,9 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       consentId: uuidSchema,
       previewId: uuidSchema,
       mode: createSourceOwnerConsentSchema.shape.mode,
-      allowedRepresentations:
-        createSourceOwnerConsentSchema.shape.allowedRepresentations,
-      selectedRepresentation:
-        createSourceOwnerConsentSchema.shape.selectedRepresentation,
+      maximumFidelity: createSourceOwnerConsentSchema.shape.maximumFidelity,
+      includeCuratedMemory:
+        createSourceOwnerConsentSchema.shape.includeCuratedMemory,
       previewRevision: z.number().int().safe().positive(),
       previewHash: z.string().regex(/^[a-f0-9]{64}$/),
       expiresAt: z.string().datetime({ offset: true }).nullable(),
@@ -318,7 +319,7 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
     .strict(),
   z
     .object({
-      action: z.literal("shared_memory.change_representation"),
+      action: z.literal("shared_memory.change_fidelity"),
       mutationId: uuidSchema,
       logicalMemoryId: uuidSchema,
       teamId: uuidSchema,
@@ -326,12 +327,12 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       shareGrantId: uuidSchema,
       consentId: uuidSchema,
       previewId: uuidSchema,
-      representation: createSharedMemoryPreviewSchema.shape.representation,
       expectedGrantVersion:
-        selectGrantRepresentationSchema.shape.expectedGrantVersion,
+        selectGrantFidelitySchema.shape.expectedGrantVersion,
       mode: createSourceOwnerConsentSchema.shape.mode,
-      allowedRepresentations:
-        createSourceOwnerConsentSchema.shape.allowedRepresentations,
+      maximumFidelity: createSourceOwnerConsentSchema.shape.maximumFidelity,
+      includeCuratedMemory:
+        createSourceOwnerConsentSchema.shape.includeCuratedMemory,
       previewRevision: z.number().int().safe().positive(),
       previewHash: z.string().regex(/^[a-f0-9]{64}$/),
       expiresAt: z.string().datetime({ offset: true }).nullable()
@@ -666,7 +667,8 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             teamId: intent.teamId,
             teamWorkspaceId: intent.workspaceId,
             representation: intent.representation,
-            allowedRepresentations: intent.allowedRepresentations,
+            maximumFidelity: intent.maximumFidelity,
+            includeCuratedMemory: intent.includeCuratedMemory,
             mode: intent.candidate.mode,
             expiresAt: intent.candidate.expiresAt
           }
@@ -678,7 +680,8 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
               teamId: intent.teamId,
               teamWorkspaceId: intent.workspaceId,
               representation: intent.representation,
-              allowedRepresentations: intent.allowedRepresentations
+              maximumFidelity: intent.maximumFidelity,
+              includeCuratedMemory: intent.includeCuratedMemory
             }
           : null;
     case "collaboration.share_memory":
@@ -695,8 +698,8 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             consentId: intent.consentId,
             previewId: resolved.sharedMemoryPreviewId,
             mode: intent.mode,
-            allowedRepresentations: intent.allowedRepresentations,
-            selectedRepresentation: intent.selectedRepresentation,
+            maximumFidelity: intent.maximumFidelity,
+            includeCuratedMemory: intent.includeCuratedMemory,
             previewRevision: intent.previewRevision,
             previewHash: intent.previewHash,
             expiresAt: intent.expiresAt,
@@ -731,10 +734,10 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
         expectedVersion: intent.expectedVersion,
         reasonCode: intent.reasonCode
       };
-    case "collaboration.change_shared_memory_representation":
+    case "collaboration.change_shared_memory_fidelity":
       return resolved?.sharedMemoryPreviewId
         ? {
-            action: "shared_memory.change_representation",
+            action: "shared_memory.change_fidelity",
             mutationId: intent.mutationId,
             logicalMemoryId: intent.logicalMemoryId,
             teamId: intent.teamId,
@@ -742,10 +745,10 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             shareGrantId: intent.shareGrantId,
             consentId: intent.consentId,
             previewId: resolved.sharedMemoryPreviewId,
-            representation: intent.representation,
+            maximumFidelity: intent.maximumFidelity,
+            includeCuratedMemory: intent.includeCuratedMemory,
             expectedGrantVersion: intent.expectedGrantVersion,
             mode: intent.mode,
-            allowedRepresentations: intent.allowedRepresentations,
             previewRevision: intent.previewRevision,
             previewHash: intent.previewHash,
             expiresAt: intent.expiresAt
@@ -870,11 +873,8 @@ export const resolveHighRiskActionGrantOperation = (input: {
       return bindConversationSourceGrantOperation(intent, clientRequestId);
     case "shared_memory.conversation_source_revoke":
       return bindConversationSourceRevokeOperation(intent, clientRequestId);
-    case "shared_memory.change_representation":
-      return bindSharedMemoryRepresentationChangeOperation(
-        intent,
-        clientRequestId
-      );
+    case "shared_memory.change_fidelity":
+      return bindSharedMemoryFidelityChangeOperation(intent, clientRequestId);
     case "conversation_source.discover":
       return bindConversationSourceDiscoveryOperation(intent);
     case "conversation_source.download":

@@ -402,8 +402,8 @@ const collaborationFixture = (): CollaborationSnapshot => {
     owner: participant(currentUser),
     title: "Collaboration renderer cutover",
     latestActivityAt: timestamp,
-    representation: "memory_events" as const,
-    representationState: "current" as const,
+    maximumFidelity: "memory_events" as const,
+    includeCuratedMemory: false,
     liveState: "live" as const,
     sourceState: "ready" as const,
     sourceRevision: revision,
@@ -709,6 +709,10 @@ const interactionIds = {
   activeConsent: uuid(713)
 } as const;
 
+const ownerOnlyCredentialSource =
+  "username: preview-owner password: correct-horse-battery-staple";
+const teamSafeCredentialSource = "username: [USERNAME] password: [SECRET]";
+
 const interactionPerson = (actor: StatefulActor) => ({
   id: interactionIds[actor],
   displayName: actor === "alice" ? "Alice Nguyen" : "Bob Chen",
@@ -808,15 +812,15 @@ const interactionSession = (team: "alpha" | "beta") => ({
     team === "alpha"
       ? interactionIds.alphaWorkspace
       : interactionIds.betaWorkspace,
-  owner: interactionParticipant(team === "alpha" ? "bob" : "alice"),
+  owner: interactionParticipant("alice"),
   title:
     team === "alpha"
       ? "Workspace Memory Timeline UX"
       : "Flat User-Owned Memory Model",
   latestActivityAt: timestamp,
-  representation:
+  maximumFidelity:
     team === "alpha" ? ("memory_events" as const) : ("lcm_rollups" as const),
-  representationState: "current" as const,
+  includeCuratedMemory: false,
   liveState: "live" as const,
   sourceState: "ready" as const,
   sourceRevision: `${revision}-${team}`,
@@ -911,7 +915,8 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
       teamId: interactionIds.alphaTeam,
       workspaceId: interactionIds.alphaWorkspace,
       representation: "memory_events",
-      allowedRepresentations: ["memory_events"],
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
       mode: "continuous",
       sourceRevision: 12,
       state: "activated",
@@ -958,9 +963,9 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
       teamId: interactionIds.alphaTeam,
       workspaceId: interactionIds.alphaWorkspace,
       consentId: interactionIds.activeConsent,
-      ownerAllowedRepresentations: ["lcm_rollups"],
-      activeRepresentation: "lcm_rollups",
-      representationPolicyRevision: 1,
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      fidelityPolicyRevision: 1,
       sourceRevision: 12,
       grantVersion: 2,
       lifecycle: "active",
@@ -1209,7 +1214,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
           hasOlder: false,
           hasNewer: false,
           sharedSessionId: session.id,
-          representation: session.representation,
+          representation: session.maximumFidelity,
           items:
             team === "alpha"
               ? [
@@ -1223,7 +1228,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
                         id: uuid(161),
                         sourceKind: "agent_message",
                         occurredAt: timestamp,
-                        body: "Deterministic Electron source replacement.",
+                        body: `Deterministic Electron source replacement. ${teamSafeCredentialSource}`,
                         actorName: "Codex",
                         toolName: null,
                         toolCallId: null
@@ -1503,6 +1508,45 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
         if (!share) return failure(parsed);
         return result(parsed, { share });
       }
+      case "collaboration.preview_shared_memory_candidate":
+        return result(parsed, {
+          candidate: {
+            sessionId: parsed.input.sessionId,
+            logicalMemoryId: interactionIds.alphaMemory,
+            representation: parsed.input.representation,
+            sourceRevision: 12,
+            candidateHash: "c".repeat(64),
+            itemCount: 1,
+            excludedItemCount: 0,
+            manifest: [
+              {
+                sourceId: uuid(160),
+                revisionHash: "d".repeat(64)
+              }
+            ],
+            byteCount: new TextEncoder().encode(ownerOnlyCredentialSource)
+              .byteLength,
+            items: [
+              {
+                id: uuid(160),
+                representation: "memory_events",
+                sequence: 1,
+                occurredAt: timestamp,
+                sourceItems: [
+                  {
+                    id: uuid(161),
+                    sourceKind: "agent_message",
+                    occurredAt: timestamp,
+                    body: ownerOnlyCredentialSource,
+                    actorName: "Codex",
+                    toolName: null,
+                    toolCallId: null
+                  }
+                ]
+              }
+            ]
+          }
+        });
       case "collaboration.control_pending_share": {
         const sourceUpdateState =
           parsed.input.action === "pause"

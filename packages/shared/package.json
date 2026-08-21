@@ -19,6 +19,10 @@
       "types": "./dist/personal-desktop-contract.d.ts",
       "import": "./dist/personal-desktop-contract.js"
     },
+    "./private-network": {
+      "types": "./dist/private-network.d.ts",
+      "import": "./dist/private-network.js"
+    },
     "./secure-upstream-fetch": {
       "types": "./dist/secure-upstream-fetch.d.ts",
       "import": "./dist/secure-upstream-fetch.js"

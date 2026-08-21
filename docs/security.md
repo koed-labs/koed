@@ -25,6 +25,25 @@ starter is for local source-checkout dependencies or an Operator-chosen
 container layout; do not run it on a public host without binding dependency
 ports to localhost or restricting them with a firewall.
 
+The Privacy Service is also an authenticated internal component. Keep it off
+public networks and pin its model revision, tokenizer, constrained decoder,
+calibration, input contract, and deterministic detector generation. Team mode
+must fail closed when that identity, its output offsets, encryption, or the
+effective content policy cannot be validated. The outage must not block
+Personal capture, Projection, LCM, embedding, or Recall.
+
+Privacy Filter accelerator activation is an authenticated internal control.
+The replacement provider loads and proves final-mask parity before new work is
+switched to it; in-flight work drains on the previous provider. Failed load,
+parity, or capacity checks leave the active provider unchanged. Public health
+reports only coarse Privacy Filter provider state. Detailed warm calibration,
+fallback, and shared accelerator capacity observations require the internal
+runtime-control token and remain explicitly separate from Embedding Service runtime
+diagnostics. Classification and runtime-control credentials are distinct; the
+Worker cannot trigger provider reloads. Active accelerator inference failure
+retries once through a verified CPU runtime without acknowledging or removing
+the durable classification job prematurely.
+
 Public health probes are intentionally coarse. `/health` and `/ready` do not expose local paths, model details, dependency exception messages, or secret values.
 
 Diagnostics are redacted by design: they report whether secrets are configured, but not their values. Detailed diagnostic endpoints are not intended for public reverse-proxy exposure.
@@ -34,7 +53,8 @@ networks. Docker Compose passes `EMBEDDING_SERVICE_TOKEN` to the Embedding
 Service, API, and Worker so embedding and reranking requests require a shared
 internal header. API requests to that Operator-configured service use a
 separate trusted internal-service transport. They do not pass through the
-local-edge upstream transport or its user-configured remote URL policy.
+local-edge upstream transport or its user-configured remote URL policy, and
+remote upstream URLs cannot use that transport to gain private-network access.
 
 Team Shared Memory embedding keeps the exact Share Grant, representation,
 consent, policy, replica, source-artifact, semantic-item, and encrypted-chunk
@@ -222,6 +242,23 @@ outbox failures fail closed. The route and credential rules are enumerated in
 [Team Collaboration Action And Credential Matrix](team-collaboration-action-credential-matrix.md),
 and the complete service boundary is in
 [Team Collaboration Architecture](team-collaboration.md).
+
+The exact Personal Conversation Source Journal and Personal derived artifacts
+remain unchanged and owner-only. Every decryptable Team surface uses a
+separately encrypted sanitized derivative, including Conversation Source
+Artifacts, Memory Events, LCM titles and summaries, lexical anchors, Curated
+Memory fields, evidence and expansion material, and embedding inputs. Source
+snapshot and continuous reads, exports, and fork snapshots return sanitized
+artifacts, never exact Personal source.
+
+The effective content policy is versioned and covers `account_number`,
+`private_address`, `private_email`, `private_person`, `private_phone`,
+`private_url`, `private_date`, and `secret`. The contextual classifier is
+best-effort and its spans are unioned with deterministic structured-key and
+credential-format detection. This reduces exposure but does not guarantee
+anonymization, compliance, or complete secret detection. A missing or invalid
+classifier result, policy binding, sanitized representation, or Team-safe
+vector is unavailable; Team paths never substitute Personal originals.
 
 ## Tiered Desktop Action Approval
 

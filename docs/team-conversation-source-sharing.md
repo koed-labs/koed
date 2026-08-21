@@ -3,10 +3,11 @@
 ## Purpose
 
 Conversation Source Access lets the owner of a Team-shared Captured Session
-separately expose verified source records to currently authorized members of
-the same Team and Workspace. It supports read-only source inspection, live
-observation, and explicit fork-snapshot export. It does not change the active
-Memory Event, LCM leaf, or LCM rollup representation.
+separately expose sanitized, verified source records to currently authorized
+members of the same Team and Workspace. The exact Conversation Source Journal
+remains unchanged and owner-only. Source access supports read-only inspection,
+live observation, and explicit fork-snapshot export, and remains separate from
+the cumulative Memory Event, LCM leaf, and LCM rollup fidelity ceiling.
 
 ## Owner Operations
 
@@ -33,15 +34,17 @@ Authorized Team members use:
 - `POST /v1/shared-memory/share-grants/:shareGrantId/transcript/fork-snapshot`
 
 The manifest contains bounded structural metadata and segment descriptors. The
-segment route returns one verified and decrypted NDJSON source segment with
-`no-store` caching. The SSE stream carries `ready`, segment-availability,
-generation-change, and access-loss events, not source plaintext. Clients fetch
-new segments through the segment route.
+segment route returns one verified, decrypted, sanitized NDJSON Conversation
+Source Artifact segment with `no-store` caching. The SSE stream carries
+`ready`, segment-availability, generation-change, and access-loss events, not
+source plaintext. Clients fetch new sanitized segments through the segment
+route.
 
-Fork snapshots require a fresh browser session and return a bounded verified
-NDJSON snapshot through a completed turn. Parent session, source generation,
-frontier, and digest are returned as response headers. The caller is responsible
-for asking its AI Client to create a new Conversation from that snapshot.
+Fork snapshots require a fresh browser session and return a bounded verified,
+sanitized NDJSON snapshot through a completed turn. Parent session, sanitized
+source generation, frontier, and digest are returned as response headers. The
+caller is responsible for asking its AI Client to create a new Conversation
+from that snapshot. A fork snapshot cannot recover the owner's original values.
 
 ## Authorization
 
@@ -57,8 +60,9 @@ conditions:
 7. active Conversation Source Access grant; and
 8. valid Conversation Source Artifact lifecycle.
 
-Personal deletion or source-owner account disablement makes exact source
-unavailable. Existing Team semantic retention does not retain raw source.
+Personal deletion or source-owner account disablement makes Team source
+artifacts unavailable unless an applicable retention decision preserves the
+sanitized artifact. Team retention never makes exact Personal source readable.
 
 Personal API Tokens have no Team source authority. Team, Workspace, grant,
 artifact, segment, and viewer identities are bound server-side. Missing or
@@ -66,11 +70,27 @@ mismatched resources return no source content.
 
 ## Operational Properties
 
-- Source bytes use the existing signed and encrypted Conversation Source
-  Journal; there is no second copy made for Team sharing.
+- The exact signed and encrypted Conversation Source Journal remains the
+  owner's canonical source. Team reads use separately encrypted sanitized
+  Conversation Source Artifacts bound to source generation, committed
+  frontier, classifier generation, effective content-policy hash, and artifact
+  digest.
+- Snapshot mode pins one sanitized frontier. Continuous mode classifies only
+  newly committed immutable records and publishes a new sanitized generation
+  atomically. Classification or policy failure preserves the prior committed
+  frontier and leaves new Team material pending.
+- The versioned content policy covers `account_number`, `private_address`,
+  `private_email`, `private_person`, `private_phone`, `private_url`,
+  `private_date`, and `secret`. Model spans are unioned with deterministic
+  structured-key and credential-format detection. This best-effort filtering
+  reduces exposure; it does not guarantee anonymization or complete secret
+  detection.
 - PostgreSQL notifications wake live streams after committed changes. Durable
   database rows remain the replay source.
-- Opaque cursors bind replay position to the viewer and Share Grant.
+- Opaque cursors bind replay position to the viewer, Share Grant, and exact
+  sanitized artifact generation. Any artifact-ID rollover resets replay to byte
+  zero even when classifier and policy hashes are unchanged, preventing a
+  prior generation's offset from skipping records in its replacement.
 - Client and per-principal stream limits, backpressure bounds, transport
   heartbeats, and event-driven authorization rechecks protect long-lived
   connections without polling.

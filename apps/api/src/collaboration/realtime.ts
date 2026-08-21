@@ -16,7 +16,6 @@ import type {
   CollaborationThreadRecord,
   DeviceCredentialAuthContext,
   ManagedConversationRepository,
-  SharedMemoryReadResult,
   SharedMemoryRepository
 } from "@koed/db";
 import {
@@ -26,6 +25,7 @@ import {
   COLLABORATION_RENDERER_MAX_PENDING_BYTES,
   COLLABORATION_RENDERER_MAX_PENDING_EVENTS,
   collaborationRendererEventSchema,
+  collaborationRealtimeEventFamilySchema,
   collaborationTeamPersonSchema,
   collaborationThreadSchema,
   COLLABORATION_NAME_MAX_CODE_POINTS,
@@ -161,10 +161,10 @@ export interface CollaborationRealtimeServiceOptions {
           | "getManagedConversationRuntimeBinding"
         >)
     | null;
-  sharedMemoryRepository:
-    | (Pick<SharedMemoryRepository, "readGrantRepresentation"> &
-        Partial<Pick<SharedMemoryRepository, "getOwnerShare">>)
-    | null;
+  sharedMemoryRepository: Pick<
+    SharedMemoryRepository,
+    "getOwnerShare" | "listWorkspaceGrants"
+  > | null;
   teamPresenceRepository?: Pick<
     import("@koed/db").MemorySourceRepository,
     "getTeamRosterMember"
@@ -201,9 +201,11 @@ export const collaborationRealtimePrincipalHash = (principalId: string) =>
 const normalizeOrigin = (value: string): string => value.replace(/\/+$/, "");
 
 const requiredOperationFamiliesForEvent = (
-  family: CollaborationOutboxEventRecord["family"]
-): readonly string[] => {
-  switch (family) {
+  familyInput: unknown
+): readonly string[] | null => {
+  const family = collaborationRealtimeEventFamilySchema.safeParse(familyInput);
+  if (!family.success) return null;
+  switch (family.data) {
     case "team_lifecycle":
     case "team_membership_access":
       return ["admin"];
@@ -217,7 +219,7 @@ const requiredOperationFamiliesForEvent = (
       return ["team_chat_read"];
     case "share_grant_lifecycle":
       return ["share_grant_management"];
-    case "representation_changed":
+    case "fidelity_changed":
     case "memory_event_available":
     case "lcm_leaf_available":
     case "lcm_rollup_available":
@@ -235,11 +237,16 @@ const requiredOperationFamiliesForEvent = (
 const canReceiveEvent = (
   operationFamilies: ReadonlySet<string> | null,
   family: CollaborationOutboxEventRecord["family"]
-): boolean =>
-  operationFamilies === null ||
-  requiredOperationFamiliesForEvent(family).every((operationFamily) =>
-    operationFamilies.has(operationFamily)
+): boolean => {
+  const required = requiredOperationFamiliesForEvent(family);
+  return (
+    required !== null &&
+    (operationFamilies === null ||
+      required.every((operationFamily) =>
+        operationFamilies.has(operationFamily)
+      ))
   );
+};
 
 const encryptionKey = (secret: string): Buffer =>
   createHash("sha256")
@@ -736,37 +743,84 @@ const rendererReceiptStateFromRecord = (
   }
 });
 
+type RealtimeSharedMemoryWorkspaceIndexEntry = Awaited<
+  ReturnType<SharedMemoryRepository["listWorkspaceGrants"]>
+>["entries"][number];
+
+const readWorkspaceGrantForRealtime = async (
+  repository: Pick<SharedMemoryRepository, "listWorkspaceGrants">,
+  actor: ActorContext,
+  event: CollaborationOutboxEventRecord
+): Promise<RealtimeSharedMemoryWorkspaceIndexEntry | null> => {
+  if (
+    event.scope !== "team" ||
+    !event.teamId ||
+    !event.teamWorkspaceId ||
+    !event.shareGrantId
+  ) {
+    return null;
+  }
+  let offset = 0;
+  for (;;) {
+    const page = await repository.listWorkspaceGrants(actor, {
+      teamId: event.teamId,
+      teamWorkspaceId: event.teamWorkspaceId,
+      limit: 100,
+      offset
+    });
+    if (
+      page.limit !== 100 ||
+      page.offset !== offset ||
+      page.entries.some(
+        (entry) =>
+          entry.lifecycle !== "active" ||
+          entry.companionScope.teamId !== event.teamId ||
+          entry.companionScope.teamWorkspaceId !== event.teamWorkspaceId ||
+          entry.companionScope.logicalMemoryId !== entry.logicalMemoryId ||
+          entry.companionScope.shareGrantId !== entry.shareGrantId
+      )
+    ) {
+      return null;
+    }
+    const grant = page.entries.find(
+      (entry) => entry.shareGrantId === event.shareGrantId
+    );
+    if (grant) return grant;
+    if (!page.hasMore) return null;
+    if (page.entries.length === 0) return null;
+    offset += page.entries.length;
+    if (offset > 10_000) return null;
+  }
+};
+
 const rendererSharedSessionFrom = async (
   client: StreamClient,
   event: CollaborationOutboxEventRecord,
-  result: SharedMemoryReadResult,
+  grant: RealtimeSharedMemoryWorkspaceIndexEntry,
   repository: CollaborationRepository
 ): Promise<
   RendererUpdate | null | typeof sharedSessionCompanionUnavailable
 > => {
-  const { grant, representation } = result;
   if (
     event.scope !== "team" ||
     !event.teamId ||
     !event.teamWorkspaceId ||
     !event.shareGrantId ||
     !event.logicalMemoryId ||
-    grant.id !== event.shareGrantId ||
+    grant.shareGrantId !== event.shareGrantId ||
     grant.logicalMemoryId !== event.logicalMemoryId ||
-    grant.teamId !== event.teamId ||
-    grant.teamWorkspaceId !== event.teamWorkspaceId ||
-    result.companionScope.shareGrantId !== grant.id ||
-    result.companionScope.logicalMemoryId !== grant.logicalMemoryId ||
-    result.companionScope.teamId !== grant.teamId ||
-    result.companionScope.teamWorkspaceId !== grant.teamWorkspaceId
+    grant.companionScope.shareGrantId !== grant.shareGrantId ||
+    grant.companionScope.logicalMemoryId !== grant.logicalMemoryId ||
+    grant.companionScope.teamId !== event.teamId ||
+    grant.companionScope.teamWorkspaceId !== event.teamWorkspaceId
   ) {
     return null;
   }
   const companion = (
     await repository.listThreads(client.actor, {
       scope: "team",
-      teamId: grant.teamId,
-      teamWorkspaceId: grant.teamWorkspaceId,
+      teamId: event.teamId,
+      teamWorkspaceId: event.teamWorkspaceId,
       kinds: ["shared_session_discussion"],
       includeArchived: true,
       limit: 100
@@ -774,45 +828,44 @@ const rendererSharedSessionFrom = async (
   )?.find(
     (thread) =>
       thread.sharedLogicalMemoryId === grant.logicalMemoryId &&
-      thread.shareGrantId === grant.id
+      thread.shareGrantId === grant.shareGrantId
   );
   if (
     !companion ||
     companion.kind !== "shared_session_discussion" ||
-    companion.teamId !== grant.teamId ||
-    companion.teamWorkspaceId !== grant.teamWorkspaceId ||
+    companion.teamId !== event.teamId ||
+    companion.teamWorkspaceId !== event.teamWorkspaceId ||
     companion.sharedLogicalMemoryId !== grant.logicalMemoryId ||
-    companion.shareGrantId !== grant.id
+    companion.shareGrantId !== grant.shareGrantId
   ) {
     return sharedSessionCompanionUnavailable;
   }
-  const ownerId = grant.ownerUserId ?? grant.ownerPrincipalId;
+  const ownerId =
+    grant.ownerUserId ?? event.actorPrincipalId ?? client.actor.userId;
   const owner = (
-    await repository.listTeamParticipants(client.actor, grant.teamId)
+    await repository.listTeamParticipants(client.actor, event.teamId)
   )?.find((participant) => participant.userId === ownerId);
   const parsed = sharedMemorySessionSchema.safeParse({
-    id: grant.id,
+    id: grant.shareGrantId,
     logicalMemoryId: grant.logicalMemoryId,
-    shareGrantId: grant.id,
-    teamId: grant.teamId,
-    workspaceId: grant.teamWorkspaceId,
+    shareGrantId: grant.shareGrantId,
+    teamId: event.teamId,
+    workspaceId: event.teamWorkspaceId,
     owner: {
       id: ownerId,
       displayName: displayName(owner?.displayName, "Team member"),
       membershipState: "enabled"
     },
-    title: grant.displayTitle ?? "Shared Memory",
-    latestActivityAt: representation.updatedAt,
-    representation: representation.representation,
-    representationState: representation.state === "stale" ? "stale" : "current",
+    title: grant.title,
+    latestActivityAt: grant.representationUpdatedAt,
+    maximumFidelity: grant.maximumFidelity,
+    includeCuratedMemory: grant.includeCuratedMemory,
     liveState: "live",
     sourceState: "ready",
-    sourceRevision: `ssr1.${hashValue(
-      `${grant.id}:${representation.sourceRevision}`
-    )}`,
+    sourceRevision: null,
     companionThreadId: companion.id,
     unreadCompanionCount: companion.unreadCount,
-    version: grant.grantVersion
+    version: Math.max(1, event.cursor)
   });
   return parsed.success
     ? { type: "shared_session_upserted", session: parsed.data }
@@ -821,6 +874,7 @@ const rendererSharedSessionFrom = async (
 
 const validateRendererUpdate = (
   event: CollaborationOutboxEventRecord,
+  family: string,
   subscriptionId: string,
   update: RendererUpdate,
   onInvalid?: (issues: Array<{ path: string; message: string }>) => void
@@ -832,7 +886,7 @@ const validateRendererUpdate = (
     deliveryId: hashValue(`realtime-validation:${event.id}`),
     eventId: event.id,
     occurredAt: event.occurredAt,
-    family: event.family,
+    family,
     resource: {
       scope: event.scope,
       teamId: event.teamId,
@@ -865,8 +919,13 @@ const materializeEvent = async (
 ): Promise<EventMaterialization> => {
   const materializationRepository = options.materializationRepository;
   const repository = options.repository;
+  const parsedFamily = collaborationRealtimeEventFamilySchema.safeParse(
+    event.family
+  );
+  if (!parsedFamily.success) return { action: "requires_snapshot" };
+  const family = parsedFamily.data;
   let update: RendererUpdate | null = null;
-  switch (event.family) {
+  switch (family) {
     case "personal_memory_changed":
     case "managed_conversation_changed":
       return materializePersonalRealtimeEvent(
@@ -1020,13 +1079,13 @@ const materializeEvent = async (
           event.logicalMemoryId &&
           event.scope === "team"
         ) {
-          const result =
-            await options.sharedMemoryRepository.readGrantRepresentation(
-              client.actor,
-              { shareGrantId: event.shareGrantId }
-            );
-          const sharedSession = result
-            ? await rendererSharedSessionFrom(client, event, result, repository)
+          const grant = await readWorkspaceGrantForRealtime(
+            options.sharedMemoryRepository,
+            client.actor,
+            event
+          );
+          const sharedSession = grant
+            ? await rendererSharedSessionFrom(client, event, grant, repository)
             : null;
           if (sharedSession === sharedSessionCompanionUnavailable) {
             return { action: "skip" };
@@ -1041,7 +1100,7 @@ const materializeEvent = async (
       break;
     }
     case "share_grant_lifecycle":
-    case "representation_changed":
+    case "fidelity_changed":
     case "memory_event_available":
     case "lcm_leaf_available":
     case "lcm_rollup_available": {
@@ -1054,30 +1113,45 @@ const materializeEvent = async (
       ) {
         return { action: "requires_snapshot" };
       }
-      const result =
-        await options.sharedMemoryRepository.readGrantRepresentation(
-          client.actor,
-          { shareGrantId: event.shareGrantId }
-        );
-      if (!result) {
-        if (event.family === "share_grant_lifecycle") {
-          return { action: "skip" };
-        }
-        update = {
-          type: "shared_session_removed",
-          sharedSessionId: event.shareGrantId
-        };
-      } else {
+      const grant = await readWorkspaceGrantForRealtime(
+        options.sharedMemoryRepository,
+        client.actor,
+        event
+      );
+      if (family === "share_grant_lifecycle") {
+        if (!grant) return { action: "skip" };
         const sharedSession = await rendererSharedSessionFrom(
           client,
           event,
-          result,
+          grant,
           repository
         );
         if (sharedSession === sharedSessionCompanionUnavailable) {
           return { action: "skip" };
         }
         update = sharedSession;
+      } else if (family === "fidelity_changed") {
+        const sharedSession = grant
+          ? await rendererSharedSessionFrom(client, event, grant, repository)
+          : null;
+        if (sharedSession === sharedSessionCompanionUnavailable) {
+          return { action: "skip" };
+        }
+        update = sharedSession ?? {
+          type: "shared_session_removed",
+          sharedSessionId: event.shareGrantId
+        };
+      } else {
+        const sharedSession = grant
+          ? await rendererSharedSessionFrom(client, event, grant, repository)
+          : null;
+        if (sharedSession === sharedSessionCompanionUnavailable) {
+          return { action: "skip" };
+        }
+        update = sharedSession ?? {
+          type: "shared_session_removed",
+          sharedSessionId: event.shareGrantId
+        };
       }
       break;
     }
@@ -1095,25 +1169,31 @@ const materializeEvent = async (
       break;
   }
   const validated = update
-    ? validateRendererUpdate(event, client.subscriptionId, update, (issues) => {
-        options.app.log.warn(
-          {
-            event: {
-              name: "collaboration_realtime.materialization_invalid",
-              category: "stream"
+    ? validateRendererUpdate(
+        event,
+        family,
+        client.subscriptionId,
+        update,
+        (issues) => {
+          options.app.log.warn(
+            {
+              event: {
+                name: "collaboration_realtime.materialization_invalid",
+                category: "stream"
+              },
+              collaborationEvent: {
+                id: event.id,
+                family: event.family,
+                resourceType: event.resourceType,
+                resourceId: event.resourceId
+              },
+              rendererUpdate: { type: update.type },
+              validation: { issues }
             },
-            collaborationEvent: {
-              id: event.id,
-              family: event.family,
-              resourceType: event.resourceType,
-              resourceId: event.resourceId
-            },
-            rendererUpdate: { type: update.type },
-            validation: { issues }
-          },
-          "collaboration realtime materialization failed validation"
-        );
-      })
+            "collaboration realtime materialization failed validation"
+          );
+        }
+      )
     : null;
   if (!update) {
     options.app.log.warn(

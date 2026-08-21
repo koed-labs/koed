@@ -34,6 +34,9 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
       EMBEDDING_SERVICE_URL: http://embedding-service:8000
+      PRIVACY_SERVICE_URL: http://privacy-service:8092
+      PRIVACY_SERVICE_TOKEN: ${PRIVACY_SERVICE_TOKEN}
+      PRIVACY_RUNTIME_CONTROL_TOKEN: ${PRIVACY_RUNTIME_CONTROL_TOKEN}
       WORK_QUEUE_BACKEND: ${WORK_QUEUE_BACKEND:-bullmq}
       API_DATA_ENCRYPTION_KEY: ${API_DATA_ENCRYPTION_KEY}
       OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY: ${OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY:?Run pnpm env:setup and preserve the generated owner-private key}
@@ -70,6 +73,12 @@ services:
       WORKOS_PROVIDER_ENVIRONMENT: ${WORKOS_PROVIDER_ENVIRONMENT:-default}
       KOED_MANAGED_CLOUD_RELEASE_STAGE: ${KOED_MANAGED_CLOUD_RELEASE_STAGE:-alpha}
       API_ENVELOPE_ENCRYPTION_PROVIDER: ${API_ENVELOPE_ENCRYPTION_PROVIDER:-local_test_key}
+      API_TEAM_MEMORY_DATA_ENCRYPTION_KEY: ${API_TEAM_MEMORY_DATA_ENCRYPTION_KEY}
+      API_TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER: ${API_TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER:-local_test_key}
+      API_TEAM_MEMORY_MANAGED_KMS_KEY_ID: ${API_TEAM_MEMORY_MANAGED_KMS_KEY_ID:-}
+      API_TEAM_MEMORY_MANAGED_KMS_KEY_VERSION: ${API_TEAM_MEMORY_MANAGED_KMS_KEY_VERSION:-}
+      API_TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL: ${API_TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL:-}
+      API_TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN: ${API_TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN:-}
       TEAM_MEMORY_DATA_ENCRYPTION_KEY: ${API_TEAM_MEMORY_DATA_ENCRYPTION_KEY}
       TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER: ${API_TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER:-local_test_key}
       TEAM_MEMORY_MANAGED_KMS_KEY_ID: ${API_TEAM_MEMORY_MANAGED_KMS_KEY_ID:-}
@@ -91,6 +100,8 @@ services:
       redis:
         condition: service_healthy
       embedding-service:
+        condition: service_healthy
+      privacy-service:
         condition: service_healthy
     healthcheck:
       test:
@@ -185,9 +196,46 @@ services:
       retries: 20
       start_period: 60s
 
+  privacy-service:
+    restart: unless-stopped
+    build:
+      context: ../..
+      dockerfile: packages/koed-server/Dockerfile
+    command:
+      - sh
+      - -ec
+      - >-
+        node packages/koed-server/dist/cli.js models install --kind privacy --json &&
+        exec node packages/koed-server/dist/privacy-service-bootstrap.js
+        apps/privacy-service/dist/index.js
+        /data/koed/models/privacy/transformers-cache
+    environment:
+      KOED_HOME: /data/koed
+      KOED_REPO_ROOT: /app
+      KOED_DEPENDENCY_MODE: bundled-local
+      PRIVACY_SERVICE_HOST: 0.0.0.0
+      PRIVACY_SERVICE_PORT: 8092
+      PRIVACY_SERVICE_TOKEN: ${PRIVACY_SERVICE_TOKEN}
+      PRIVACY_RUNTIME_CONTROL_TOKEN: ${PRIVACY_RUNTIME_CONTROL_TOKEN}
+      PRIVACY_RUNTIME_PROVIDER: ${PRIVACY_RUNTIME_PROVIDER:-auto}
+      PRIVACY_GPU_IDLE_UNLOAD_SECONDS: ${PRIVACY_GPU_IDLE_UNLOAD_SECONDS:-300}
+    volumes:
+      - privacy-model-cache:/data/koed
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://127.0.0.1:8092/health'').then(async r=>process.exit(r.ok&&(await r.json()).status===''ok''?0:1)).catch(()=>process.exit(1))"'
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 120s
+
 volumes:
   koed-server-data:
   koed-device-proof:
   postgres-data:
   redis-data:
   embedding-model-cache:
+  privacy-model-cache:

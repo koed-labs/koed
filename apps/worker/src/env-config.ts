@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
 import {
+  derivePrivacyFingerprintKey,
   requireEnv,
   resolveTeamCollaborationEnabled,
   resolveKoedQueueBackend,
@@ -41,6 +42,14 @@ export interface WorkerEnvConfig {
   embeddingMaxRequestChars: number;
   embeddingRequestTimeoutMs: number;
   embeddingCapacityRefinedDelayMs: number;
+  privacyServiceUrl?: string;
+  privacyServiceToken?: string;
+  privacyFingerprintKey?: Uint8Array;
+  privacyServiceTimeoutMs?: number;
+  privacyServiceMaxAttempts?: number;
+  privacyMaterializationTargetLimit?: number;
+  privacyMaterializationMaxFrontierBytes?: number;
+  privacyMaterializationMaxRecords?: number;
   rawProjectionBatchLimit: number;
   rawProjectionActorLimit: number;
   crossIdentitySyncIntervalMs: number;
@@ -135,11 +144,36 @@ export const resolveWorkerEnv = (
   environment: NodeJS.ProcessEnv = process.env
 ): WorkerEnvConfig => {
   const nodeEnv = environment.NODE_ENV ?? "development";
+  const teamCollaborationEnabled = resolveTeamCollaborationEnabled(environment);
   const queueBackend = resolveKoedQueueBackend(environment.WORK_QUEUE_BACKEND);
   const databaseUrl = optionalEnv(environment.DATABASE_URL);
   const embeddingServiceToken = optionalEnv(
     environment.EMBEDDING_SERVICE_TOKEN
   );
+  const privacyServiceUrl = optionalHttpUrl(environment, "PRIVACY_SERVICE_URL");
+  const privacyServiceToken = optionalEnv(environment.PRIVACY_SERVICE_TOKEN);
+  if (privacyServiceToken && privacyServiceToken.length > 4096) {
+    throw new Error(
+      "PRIVACY_SERVICE_TOKEN must contain at most 4096 characters"
+    );
+  }
+  const explicitPrivacyFingerprintKey = optionalEnv(
+    environment.PRIVACY_FINGERPRINT_KEY
+  );
+  if (
+    explicitPrivacyFingerprintKey &&
+    Buffer.byteLength(explicitPrivacyFingerprintKey, "utf8") < 32
+  ) {
+    throw new Error("PRIVACY_FINGERPRINT_KEY must contain at least 32 bytes");
+  }
+  const privacyFingerprintRoot =
+    optionalEnv(environment.API_DATA_ENCRYPTION_KEY) ??
+    optionalEnv(environment.DATA_ENCRYPTION_KEY);
+  const privacyFingerprintKey = explicitPrivacyFingerprintKey
+    ? Buffer.from(explicitPrivacyFingerprintKey, "utf8")
+    : privacyFingerprintRoot
+      ? derivePrivacyFingerprintKey(privacyFingerprintRoot)
+      : undefined;
   const managedConversationApiUrl = optionalHttpUrl(
     environment,
     "MEMORY_API_URL"
@@ -161,15 +195,23 @@ export const resolveWorkerEnv = (
         ...(queueBackend === "bullmq" ? ["REDIS_URL"] : []),
         "EMBEDDING_SERVICE_URL",
         "EMBEDDING_SERVICE_TOKEN",
-        "EMBEDDING_MODEL"
+        "EMBEDDING_MODEL",
+        ...(teamCollaborationEnabled
+          ? ["PRIVACY_SERVICE_URL", "PRIVACY_SERVICE_TOKEN"]
+          : [])
       ],
       environment
     );
     validateEnvelopeEncryptionProviderEnvironment({ environment });
+    if (teamCollaborationEnabled && !privacyFingerprintKey) {
+      throw new Error(
+        "PRIVACY_FINGERPRINT_KEY or a stable API_DATA_ENCRYPTION_KEY/DATA_ENCRYPTION_KEY is required in production Team mode"
+      );
+    }
   }
 
   return {
-    teamCollaborationEnabled: resolveTeamCollaborationEnabled(environment),
+    teamCollaborationEnabled,
     queueBackend,
     redisUrl: environment.REDIS_URL ?? "redis://localhost:6379",
     ...(databaseUrl ? { databaseUrl } : {}),
@@ -213,6 +255,44 @@ export const resolveWorkerEnv = (
       30 * 60_000,
       1_000,
       24 * 60 * 60_000
+    ),
+    ...(privacyServiceUrl ? { privacyServiceUrl } : {}),
+    ...(privacyServiceToken ? { privacyServiceToken } : {}),
+    ...(privacyFingerprintKey ? { privacyFingerprintKey } : {}),
+    privacyServiceTimeoutMs: boundedIntEnv(
+      environment,
+      "PRIVACY_SERVICE_TIMEOUT_MS",
+      30_000,
+      100,
+      120_000
+    ),
+    privacyServiceMaxAttempts: boundedIntEnv(
+      environment,
+      "PRIVACY_SERVICE_MAX_ATTEMPTS",
+      3,
+      1,
+      5
+    ),
+    privacyMaterializationTargetLimit: boundedIntEnv(
+      environment,
+      "PRIVACY_MATERIALIZATION_TARGET_LIMIT",
+      25,
+      1,
+      100
+    ),
+    privacyMaterializationMaxFrontierBytes: boundedIntEnv(
+      environment,
+      "PRIVACY_MATERIALIZATION_MAX_FRONTIER_BYTES",
+      64 * 1024 * 1024,
+      1024,
+      256 * 1024 * 1024
+    ),
+    privacyMaterializationMaxRecords: boundedIntEnv(
+      environment,
+      "PRIVACY_MATERIALIZATION_MAX_RECORDS",
+      20_000,
+      1,
+      100_000
     ),
     rawProjectionBatchLimit: positiveIntEnv(
       environment,

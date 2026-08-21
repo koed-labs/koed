@@ -16,6 +16,9 @@
       "@koed/shared/personal-desktop": [
         "packages/shared/dist/personal-desktop-contract.d.ts"
       ],
+      "@koed/shared/private-network": [
+        "packages/shared/dist/private-network.d.ts"
+      ],
       "@koed/ui/theme": ["packages/ui/dist/theme.d.ts"]
     },
     "outDir": "dist-types",

@@ -43,12 +43,8 @@ const collaborationUuid = (value) => {
   )}-${hex.slice(20, 32)}`;
 };
 
-const ALL_REPRESENTATIONS = [
-  "memory_events",
-  "lcm_leaves",
-  "lcm_rollups",
-  "curated_assertions"
-];
+const FIXTURE_MAXIMUM_FIDELITY = "memory_events";
+const FIXTURE_INCLUDE_CURATED_MEMORY = true;
 
 const FIXTURE_PERSONAL_ENCRYPTION_KEY = Buffer.alloc(32, 70).toString("base64");
 const FIXTURE_OWNER_ENCRYPTION_KEY = Buffer.alloc(32, 71).toString("base64");
@@ -190,7 +186,15 @@ export const fixtureWorkspaceAccess = [
   ["ingestion", "erin", "read"]
 ];
 
-export const fixtureWorkspaceShareOwnedMemoryAccess = [["electron", "bob"]];
+export const fixtureWorkspaceShareOwnedMemoryAccess = [
+  ["electron", "bob"],
+  ["electron", "david"],
+  ["cloud", "alice"],
+  ["cloud", "carol"],
+  ["ingestion", "alice"],
+  ["ingestion", "carol"],
+  ["ingestion", "david"]
+];
 
 const canShareOwnedMemoryFor = (workspaceKey, userKey) =>
   fixtureWorkspaceShareOwnedMemoryAccess.some(
@@ -398,6 +402,11 @@ export const fixtureMemoryRows = fixtureMemories.map((memory, index) => ({
   idempotencyKey: `${FIXTURE_VERSION}:${memory.key}`
 }));
 
+export const FIXTURE_SOURCE_PRIVACY_CANARY = Object.freeze({
+  email: "alice.smith@example.com",
+  apiKey: "sk-abcdefghijklmnopqrstuv"
+});
+
 export const fixtureConversationSources = [
   {
     key: "timeline-continuous-source",
@@ -409,7 +418,10 @@ export const fixtureConversationSources = [
       [
         {
           type: "response_item",
-          payload: { role: "user", content: "Show the Workspace timeline." }
+          payload: {
+            role: "user",
+            content: `Show the Workspace timeline. Contact ${FIXTURE_SOURCE_PRIVACY_CANARY.email} using api_key=${FIXTURE_SOURCE_PRIVACY_CANARY.apiKey}.`
+          }
         }
       ],
       [{ type: "event_msg", payload: { type: "task_complete" } }]
@@ -677,6 +689,22 @@ export const createFixtureRuntime = async (
   }
   return {
     shared,
+    privacyRepository: db.createPrivacyClassificationRepository(pool, {
+      fingerprintKey: Buffer.alloc(32, 73)
+    }),
+    sharedMemorySanitizedSemanticProvenanceHash:
+      db.sharedMemorySanitizedSemanticProvenanceHash,
+    sharedMemoryDeviceProvenanceHash: db.sharedMemoryDeviceProvenanceHash,
+    sharedMemorySanitizedSemanticSourceBinding:
+      db.sharedMemorySanitizedSemanticSourceBinding,
+    sharedMemorySanitizedSemanticSourceRevisionHash:
+      db.sharedMemorySanitizedSemanticSourceRevisionHash,
+    sharedMemorySemanticEmbeddingSourceBinding:
+      db.sharedMemorySemanticEmbeddingSourceBinding,
+    sharedMemorySemanticPreviewPayloadBindingHash:
+      db.sharedMemorySemanticPreviewPayloadBindingHash,
+    sharedMemorySourceItemIdentityHash: db.sharedMemorySourceItemIdentityHash,
+    composeSharedMemorySemanticText: db.composeSharedMemorySemanticText,
     upsertEncryptedFieldPayloadWithClient:
       encryptedPayloads.upsertEncryptedFieldPayloadWithClient,
     personalProvider,
@@ -693,6 +721,45 @@ export const createFixtureRuntime = async (
       resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
     })
   };
+};
+
+const ensureFixturePrivacyRuntime = async (client, runtime) => {
+  let deploymentIdentityId =
+    await runtime.privacyRepository.getLocalDeploymentIdentityId();
+  if (!deploymentIdentityId) {
+    deploymentIdentityId = fixtureUuid("deployment:privacy-local");
+    await client.query(
+      `insert into deployment_identities (
+         id, protocol_deployment_id, locality, profile, display_name
+       ) values ($1,$2,'local','developer','Fixture local deployment')
+       on conflict (id) do nothing`,
+      [deploymentIdentityId, fixtureUuid("deployment:privacy-local:protocol")]
+    );
+  }
+  const generation =
+    await runtime.privacyRepository.registerClassifierGeneration({
+      ...runtime.shared.PINNED_PRIVACY_CLASSIFIER_GENERATION,
+      classifierHash: runtime.shared.PINNED_PRIVACY_CLASSIFIER_HASH
+    });
+  const classifier =
+    await runtime.privacyRepository.activateClassifierGeneration(generation.id);
+  let policy;
+  try {
+    policy = await runtime.privacyRepository.resolveEffectiveContentPolicy({
+      deploymentIdentityId
+    });
+  } catch {
+    await runtime.privacyRepository.createContentPolicyVersion({
+      scope: "deployment",
+      subject: { deploymentIdentityId },
+      labels: runtime.shared.allPrivacyLabelsPolicy(),
+      expectedPreviousVersion: 0
+    });
+    policy = await runtime.privacyRepository.resolveEffectiveContentPolicy({
+      deploymentIdentityId
+    });
+  }
+  return { classifier, policy };
 };
 
 const json = (value) => JSON.stringify(value);
@@ -881,14 +948,20 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
   const workspace = fixtureWorkspaces[memory.workspace];
   const ownerInfrastructure = fixtureOwnerInfrastructure(memory.owner);
   const workspacePolicy = fixtureWorkspacePolicy(memory.workspace);
+  const maximumFidelity =
+    memory.representation === "curated_assertions"
+      ? "memory_events"
+      : memory.representation;
+  const includeCuratedMemory = memory.representation === "curated_assertions";
   const ownerPolicyHash = fixtureHash(`policy:owner:${memory.key}:hash`);
   const teamPolicyHash = fixtureHash("policy:team:hash");
   const workspacePolicyHash = fixtureHash(
     `policy:workspace:${memory.workspace}:hash`
   );
-  const representationPolicyHash = runtime.shared.crossIdentitySyncDigest({
-    kind: "shared_memory_representation_policy",
-    representation: memory.representation,
+  const fidelityPolicyHash = runtime.shared.crossIdentitySyncDigest({
+    kind: "shared_memory_fidelity_policy",
+    maximumFidelity,
+    includeCuratedMemory,
     revision: 1,
     owner: {
       policyId: memory.sourceOwnerPolicyId,
@@ -906,16 +979,10 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       hash: workspacePolicyHash
     }
   });
-  const contentPolicyHash = runtime.shared.crossIdentitySyncDigest({
-    kind: "shared_memory_content_policy",
-    representation: memory.representation,
-    version: 1
-  });
-  const classifierHash = runtime.shared.crossIdentitySyncDigest({
-    kind: "shared_memory_classifier",
-    representation: memory.representation,
-    version: 1
-  });
+  const contentPolicyHash = runtime.fixturePrivacy.policy.effectivePolicyHash;
+  const classifierHash = runtime.fixturePrivacy.classifier.classifierHash;
+  const classifierGenerationId = runtime.fixturePrivacy.classifier.id;
+  const classifierVersion = runtime.fixturePrivacy.classifier.version;
   const sourceId =
     memory.representation === "memory_events"
       ? memory.eventId
@@ -1036,7 +1103,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     }
   ];
   const manifestHash = runtime.shared.crossIdentitySyncDigest(manifest);
-  const redactedContentHash = runtime.shared.crossIdentitySyncDigest([item]);
+  const sourceContentHash = runtime.shared.crossIdentitySyncDigest([item]);
   const sourceHash = runtime.shared.crossIdentitySyncDigest({
     kind: "shared_memory_authoritative_source",
     representation: memory.representation,
@@ -1044,23 +1111,36 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     sourceRevision: 1,
     sourceCursor: 1,
     manifestHash,
-    redactedContentHash
+    sourceContentHash
   });
   const binding = {
     sourceRevision: 1,
     sourceHash,
     representationPolicyRevision: 1,
-    representationPolicyHash,
+    representationPolicyHash: fidelityPolicyHash,
     contentPolicyVersion: 1,
     contentPolicyHash,
     classifierVersion: 1,
     classifierHash
   };
-  const deviceProvenanceHash = runtime.shared.crossIdentitySyncDigest({
-    fixture: FIXTURE_VERSION,
-    user: memory.owner,
+  const deviceInstanceId = fixtureUuid(`device-instance:${memory.owner}`);
+  const verifierHash = process.env.API_TOKEN_PEPPER?.trim()
+    ? fixtureSessionHash(
+        fixtureDeviceSecrets[memory.owner],
+        process.env.API_TOKEN_PEPPER
+      )
+    : fixtureHash(`device-verifier:${memory.owner}`);
+  const deviceProvenanceHash = runtime.sharedMemoryDeviceProvenanceHash({
+    syncRelationshipId: memory.syncRelationshipId,
     deviceCredentialId: ownerInfrastructure.deviceCredentialId,
-    syncRelationshipId: memory.syncRelationshipId
+    credentialKeyId: ownerInfrastructure.deviceCredentialKeyId,
+    upstreamBackendId: "fixture-backend",
+    deviceInstanceId,
+    lineageId: ownerInfrastructure.deviceCredentialLineageId,
+    credentialVersion: 1,
+    verifierKind: "secret_hash",
+    verifierHash,
+    publicKeyJwk: null
   });
 
   await client.query(
@@ -1163,17 +1243,18 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
   await client.query(
     `insert into source_owner_representation_policies (
        id, policy_id, logical_memory_id, source_owner_principal_id,
-       version, allowed_representations, policy_hash,
+       version, maximum_fidelity, include_curated_memory, policy_hash,
        created_by_user_id, effective_at
      ) values (
-       $1, $2, $3, $4, 1, $5::shared_memory_representation[], $6, $7, $8
+       $1, $2, $3, $4, 1, $5, $6, $7, $8, $9
      )`,
     [
       fixtureUuid(`memory:${memory.key}:owner-policy-row`),
       memory.sourceOwnerPolicyId,
       memory.logicalMemoryId,
       memory.ownerPrincipalId,
-      ALL_REPRESENTATIONS,
+      maximumFidelity,
+      includeCuratedMemory,
       ownerPolicyHash,
       owner.id,
       memory.capturedAt
@@ -1209,7 +1290,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     manifest,
     manifestHash,
     items: [item],
-    redactedContentHash
+    sourceContentHash
   };
   const artifactHash = runtime.shared.sharedSourceArtifactHash(artifactBase);
   const artifactId = runtime.shared.sharedSourceArtifactId(artifactHash);
@@ -1222,7 +1303,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     representation: memory.representation,
     binding,
     items: [item],
-    redactedContentHash
+    sourceContentHash
   };
   const previewHash = runtime.shared.sharedSourcePreviewHash(previewBase);
   const previewId = runtime.shared.sharedSourcePreviewId(previewHash);
@@ -1234,7 +1315,8 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        owner_user_id, owner_principal_id, team_id, team_workspace_id,
        representation, artifact_schema_version, source_revision,
        source_cursor, package_sequence, source_hash, manifest_hash,
-       artifact_hash, redacted_content_hash, source_owner_policy_id,
+       artifact_hash, source_content_hash, maximum_fidelity,
+       include_curated_memory, source_owner_policy_id,
        source_owner_policy_version, team_policy_id, team_policy_version,
        workspace_policy_id, workspace_policy_version,
        representation_policy_revision, representation_policy_hash,
@@ -1243,8 +1325,8 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        remote_user_identity_id, device_credential_id,
        device_provenance_hash
      ) values (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,1,1,1,1,$10,$11,$12,$13,
-       $14,1,$15,1,$16,1,1,$17,1,$18,1,$19,$20,$21,$22,$23
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,1,1,1,1,$10,$11,$12,$13,$14,
+       $15,$16,1,$17,1,$18,1,1,$19,1,$20,$21,$22,$23,$24,$25,$26
      )`,
     [
       artifactId,
@@ -1259,12 +1341,15 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       sourceHash,
       manifestHash,
       artifactHash,
-      redactedContentHash,
+      sourceContentHash,
+      maximumFidelity,
+      includeCuratedMemory,
       memory.sourceOwnerPolicyId,
       fixtureInfrastructure.teamPolicyId,
       workspacePolicy.policyId,
-      representationPolicyHash,
+      fidelityPolicyHash,
       contentPolicyHash,
+      classifierVersion,
       classifierHash,
       fixtureInfrastructure.sourceDeploymentId,
       ownerInfrastructure.remoteUserIdentityId,
@@ -1306,7 +1391,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        id, source_artifact_id, logical_memory_id, remote_replica_id,
        owner_user_id, owner_principal_id, team_id, team_workspace_id,
        representation, preview_schema_version, preview_revision,
-       preview_hash, source_revision, source_hash, redacted_content_hash
+       preview_hash, source_revision, source_hash, source_content_hash
      ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,1,1,$10,1,$11,$12)`,
     [
       previewId,
@@ -1320,7 +1405,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       memory.representation,
       previewHash,
       sourceHash,
-      redactedContentHash
+      sourceContentHash
     ]
   );
   await runtime.upsertEncryptedFieldPayloadWithClient(
@@ -1355,16 +1440,15 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        team_id, team_workspace_id, source_owner_policy_id,
        source_owner_policy_version, team_policy_id, team_policy_version,
        workspace_policy_id, workspace_policy_version, mode, state,
-       consent_version, allowed_representations, selected_representation,
+       consent_version, maximum_fidelity, include_curated_memory,
        preview_id, preview_revision, preview_hash, source_revision,
        maximum_authorized_source_revision, source_hash,
-       representation_policy_revision, representation_policy_hash,
+       fidelity_policy_revision, fidelity_policy_hash,
        content_policy_version, content_policy_hash, classifier_version,
-       classifier_hash, redacted_content_hash, activated_at
+       classifier_hash, source_content_hash, activated_at
      ) values (
        $1,$2,$3,$4,$5,$6,$7,1,$8,1,$9,1,'continuous','active',1,
-       $10::shared_memory_representation[],$11,$12,1,$13,1,null,$14,
-       1,$15,1,$16,1,$17,$18,$19
+       $10,$11,$12,1,$13,1,null,$14,1,$15,1,$16,$17,$18,$19,$20
      )`,
     [
       memory.consentId,
@@ -1376,15 +1460,16 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       memory.sourceOwnerPolicyId,
       fixtureInfrastructure.teamPolicyId,
       workspacePolicy.policyId,
-      ALL_REPRESENTATIONS,
-      memory.representation,
+      maximumFidelity,
+      includeCuratedMemory,
       previewId,
       previewHash,
       sourceHash,
-      representationPolicyHash,
+      fidelityPolicyHash,
       contentPolicyHash,
+      classifierVersion,
       classifierHash,
-      redactedContentHash,
+      sourceContentHash,
       memory.capturedAt
     ]
   );
@@ -1398,8 +1483,8 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        team_workspace_id, consent_id, source_owner_policy_id,
        source_owner_policy_version, team_policy_id, team_policy_version,
        workspace_policy_id, workspace_policy_version,
-       owner_allowed_representations, active_representation,
-       representation_policy_revision, content_policy_version,
+       maximum_fidelity, include_curated_memory,
+       fidelity_policy_revision, content_policy_version,
        classifier_version, source_revision, grant_version, lifecycle,
        creator_authority, granted_by_user_id, revoked_at,
        revoked_by_user_id, revocation_reason, personal_deleted_at,
@@ -1407,8 +1492,8 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        retained_by_team_at, retention_reason
      ) values (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,1,$13,1,
-       $14::shared_memory_representation[],$15,1,1,1,1,1,$16,
-       'fixture_browser_session',$5,$17,$18,$19,$20,$21,$22,$23,$24
+       $14,$15,1,1,$16,1,1,$17,
+       'fixture_browser_session',$5,$18,$19,$20,$21,$22,$23,$24,$25
      )`,
     [
       memory.shareGrantId,
@@ -1424,8 +1509,9 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       memory.sourceOwnerPolicyId,
       fixtureInfrastructure.teamPolicyId,
       workspacePolicy.policyId,
-      ALL_REPRESENTATIONS,
-      memory.representation,
+      maximumFidelity,
+      includeCuratedMemory,
+      classifierVersion,
       revoked ? "revoked" : "active",
       revoked ? memory.capturedAt : null,
       revoked ? owner.id : null,
@@ -1442,13 +1528,206 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     ]
   );
 
-  const provenanceHash = runtime.shared.crossIdentitySyncDigest({
+  const sanitizedSourcePreviewId = fixtureUuid(
+    `memory:${memory.key}:sanitized-preview`
+  );
+  const classificationResultId = fixtureUuid(
+    `memory:${memory.key}:privacy-classification`
+  );
+  const classificationPayloadBindingHash = fixtureHash(
+    `memory:${memory.key}:privacy-classification-payload`
+  );
+  const sourceItemIdentityHash = runtime.sharedMemorySourceItemIdentityHash([
+    item
+  ]);
+  const sanitizedContentHash = sourceContentHash;
+  const semanticPayload = {
+    schemaVersion: 1,
+    semanticPreviewId: sanitizedSourcePreviewId,
+    sourcePreviewId: previewId,
+    sourceArtifactId: artifactId,
+    sourcePreviewRevision: 1,
+    sourcePreviewHash: previewHash,
+    sourceArtifactHash: artifactHash,
+    sourceManifestHash: manifestHash,
+    sourceRevision: 1,
+    sourceHash,
+    logicalMemoryId: memory.logicalMemoryId,
+    ownerUserId: owner.id,
+    ownerPrincipalId: memory.ownerPrincipalId,
+    teamId: fixtureTeam.id,
+    teamWorkspaceId: workspace.id,
+    representation: memory.representation,
+    classificationResultId,
+    classificationPayloadBindingHash,
+    classifierGenerationId,
+    classifierVersion,
+    classifierHash,
+    effectivePrivacyPolicyHash: contentPolicyHash,
+    sourceItemIdentityHash,
+    sourceItemCount: 1,
+    sanitizedContentHash,
+    items: [item],
+    embeddingSourceBindings: [
+      runtime.sharedMemorySemanticEmbeddingSourceBinding(
+        0,
+        item,
+        item,
+        manifest[0]
+      )
+    ]
+  };
+  const semanticPayloadBindingHash =
+    runtime.sharedMemorySemanticPreviewPayloadBindingHash(semanticPayload);
+  await client.query(
+    `insert into privacy_classification_results (
+       id, owner_user_id, classifier_generation_id, classifier_hash,
+       owner_content_fingerprint, input_byte_length, payload_binding_hash,
+       span_count, status, ready_at
+     ) values ($1,$2,$3,$4,$5,$6,$7,0,'ready',$8)`,
+    [
+      classificationResultId,
+      owner.id,
+      classifierGenerationId,
+      classifierHash,
+      fixtureHash(`memory:${memory.key}:owner-content`),
+      Buffer.byteLength(JSON.stringify([item]), "utf8"),
+      classificationPayloadBindingHash,
+      memory.capturedAt
+    ]
+  );
+  await runtime.upsertEncryptedFieldPayloadWithClient(
+    client,
+    { userId: owner.id },
+    runtime.teamProvider,
+    {
+      sourceTable: "shared_source_semantic_previews",
+      sourceId: sanitizedSourcePreviewId,
+      sourceColumn: "sanitized_preview",
+      plaintext: semanticPayload,
+      visibility: "team",
+      teamId: fixtureTeam.id,
+      teamWorkspaceId: workspace.id,
+      rowFamily: "shared_source_semantic_preview",
+      scope: {
+        teamId: fixtureTeam.id,
+        workspaceId: workspace.id,
+        objectClass: "shared_source_semantic_preview"
+      },
+      aad: {
+        sourcePreviewId: previewId,
+        sourcePreviewHash: previewHash,
+        sourceArtifactId: artifactId,
+        sourceArtifactHash: artifactHash,
+        sourceManifestHash: manifestHash,
+        sourceRevision: 1,
+        sourceHash,
+        logicalMemoryId: memory.logicalMemoryId,
+        teamId: fixtureTeam.id,
+        teamWorkspaceId: workspace.id,
+        representation: memory.representation,
+        classificationResultId,
+        classificationPayloadBindingHash,
+        classifierGenerationId,
+        classifierVersion,
+        classifierHash,
+        effectivePrivacyPolicyHash: contentPolicyHash,
+        sourceItemIdentityHash,
+        sourceItemCount: 1,
+        sanitizedContentHash,
+        payloadBindingHash: semanticPayloadBindingHash
+      }
+    }
+  );
+  await client.query(
+    `insert into shared_source_semantic_previews (
+       id, source_preview_id, source_artifact_id, source_preview_revision,
+       source_preview_hash, source_artifact_hash, source_manifest_hash,
+       source_revision, source_hash, logical_memory_id, owner_user_id,
+       owner_principal_id, team_id, team_workspace_id, representation,
+       classification_result_id, classification_payload_binding_hash,
+       classifier_generation_id, classifier_version, classifier_hash,
+       effective_privacy_policy_hash, source_item_identity_hash,
+       source_item_count, sanitized_content_hash, payload_binding_hash,
+       status, ready_at
+     ) values (
+       $1,$2,$3,1,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+       $18,$19,$20,1,$21,$22,'ready',$23
+     )`,
+    [
+      sanitizedSourcePreviewId,
+      previewId,
+      artifactId,
+      previewHash,
+      artifactHash,
+      manifestHash,
+      sourceHash,
+      memory.logicalMemoryId,
+      owner.id,
+      memory.ownerPrincipalId,
+      fixtureTeam.id,
+      workspace.id,
+      memory.representation,
+      classificationResultId,
+      classificationPayloadBindingHash,
+      classifierGenerationId,
+      classifierVersion,
+      classifierHash,
+      contentPolicyHash,
+      sourceItemIdentityHash,
+      sanitizedContentHash,
+      semanticPayloadBindingHash,
+      memory.capturedAt
+    ]
+  );
+  const sourceRevisionHash =
+    runtime.sharedMemorySanitizedSemanticSourceRevisionHash({
+      sourcePreviewId: previewId,
+      sourcePreviewHash: previewHash,
+      sourceArtifactId: artifactId,
+      sourceArtifactHash: artifactHash,
+      sourceManifestHash: manifestHash,
+      sourceRevision: 1,
+      representation: memory.representation,
+      sanitizedSourcePreviewId,
+      sanitizedContentHash,
+      sourceItemIdentityHash,
+      sourceItemCount: 1,
+      privacyClassifierGenerationId: classifierGenerationId,
+      privacyClassifierHash: classifierHash,
+      effectivePrivacyPolicyHash: contentPolicyHash
+    });
+  const teamSourceBinding = runtime.sharedMemorySanitizedSemanticSourceBinding({
+    sourceRevision: 1,
+    sourceRevisionHash,
+    fidelityPolicyRevision: 1,
+    fidelityPolicyHash,
+    contentPolicyVersion: 1,
+    effectivePrivacyPolicyHash: contentPolicyHash,
+    privacyClassifierVersion: classifierVersion,
+    privacyClassifierHash: classifierHash
+  });
+  const provenanceHash = runtime.sharedMemorySanitizedSemanticProvenanceHash({
     shareGrantId: memory.shareGrantId,
     consentId: memory.consentId,
     logicalMemoryId: memory.logicalMemoryId,
     representation: memory.representation,
-    binding,
-    redactedContentHash,
+    binding: teamSourceBinding,
+    sourcePreviewId: previewId,
+    sourcePreviewHash: previewHash,
+    sourceArtifactId: artifactId,
+    sourceArtifactHash: artifactHash,
+    sourceManifestHash: manifestHash,
+    sanitizedSourcePreviewId,
+    classificationResultId,
+    classificationPayloadBindingHash,
+    sourceItemIdentityHash,
+    sourceItemCount: 1,
+    semanticPayloadBindingHash,
+    privacyClassifierGenerationId: classifierGenerationId,
+    privacyClassifierHash: classifierHash,
+    effectivePrivacyPolicyHash: contentPolicyHash,
+    sanitizedContentHash,
     sourceOwnerPolicyId: memory.sourceOwnerPolicyId,
     sourceOwnerPolicyVersion: 1,
     teamPolicyId: fixtureInfrastructure.teamPolicyId,
@@ -1459,18 +1738,21 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
   await client.query(
     `insert into team_memory_representations (
        id, share_grant_id, consent_id, source_preview_id,
-       source_artifact_id, team_id, team_workspace_id, logical_memory_id,
+       source_artifact_id, sanitized_source_preview_id,
+       privacy_classifier_generation_id, privacy_classifier_hash,
+       effective_privacy_policy_hash, source_manifest_hash,
+       sanitized_content_hash, team_id, team_workspace_id, logical_memory_id,
        representation, source_revision, source_revision_hash,
        provenance_hash, source_owner_policy_id,
        source_owner_policy_version, team_policy_id, team_policy_version,
        workspace_policy_id, workspace_policy_version,
-       representation_policy_revision, content_policy_version,
+       fidelity_policy_revision, content_policy_version,
        classifier_version, record_version, state, chunk_count,
        freshness_evaluated_at, available_at, invalidated_at,
        invalidation_reason_code
      ) values (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,1,$10,$11,$12,1,$13,1,$14,1,
-       1,1,1,1,$15,1,$16,$16,$17,$18
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,1,$16,$17,
+       $18,1,$19,1,$20,1,1,1,$21,1,$22,1,$23,$23,$24,$25
      )`,
     [
       memory.representationId,
@@ -1478,15 +1760,22 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       memory.consentId,
       previewId,
       artifactId,
+      sanitizedSourcePreviewId,
+      classifierGenerationId,
+      classifierHash,
+      contentPolicyHash,
+      manifestHash,
+      sanitizedContentHash,
       fixtureTeam.id,
       workspace.id,
       memory.logicalMemoryId,
       memory.representation,
-      sourceHash,
+      sourceRevisionHash,
       provenanceHash,
       memory.sourceOwnerPolicyId,
       fixtureInfrastructure.teamPolicyId,
       workspacePolicy.policyId,
+      classifierVersion,
       revoked ? "invalidated" : "available",
       memory.capturedAt,
       revoked ? memory.capturedAt : null,
@@ -1507,8 +1796,8 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     itemOffset: 0,
     itemCount: 1,
     totalItemCount: 1,
-    ...binding,
-    redactedContentHash,
+    ...teamSourceBinding,
+    sourceContentHash: sanitizedContentHash,
     provenanceHash
   };
   const envelope = await runtime.teamProvider.encrypt({
@@ -1570,7 +1859,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        occurred_at, source_revision, representation_policy_revision,
        content_policy_version, classifier_version, content_hash,
        embedding_state
-     ) values ($1,$2,$3,$4,$5,$6,$7,0,0,0,$8,$9,1,1,1,1,$10,'pending')`,
+     ) values ($1,$2,$3,$4,$5,$6,$7,0,0,0,$8,$9,1,1,1,$10,$11,'pending')`,
     [
       fixtureUuid(`memory:${memory.key}:semantic-item:0`),
       memory.representationId,
@@ -1584,13 +1873,10 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       ),
       itemType,
       memory.capturedAt,
-      runtime.shared.crossIdentitySyncDigest({
-        representationId: memory.representationId,
-        ciphertextHash: encryptedChunkHash,
-        encryptedChunkIndex: 0,
-        encryptedChunkItemIndex: 0,
-        sourceRevision: 1
-      })
+      classifierVersion,
+      createHash("sha256")
+        .update(runtime.composeSharedMemorySemanticText(item), "utf8")
+        .digest("hex")
     ]
   );
 };
@@ -1718,6 +2004,11 @@ const seedConversationSourceFixture = async (client, runtime) => {
       const plaintextDigest = createHash("sha256").update(bytes).digest("hex");
       const manifest = {
         protocol: runtime.shared.CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+        sourceComponentSchemaVersion: 1,
+        sourceComponentId: "main",
+        sourceComponentRole: "primary",
+        parentSourceComponentId: null,
+        contentFraming: "jsonl",
         logicalSourceId: source.logicalSourceId,
         sourceGenerationId: source.sourceGenerationId,
         originKeyId,
@@ -1728,7 +2019,7 @@ const seedConversationSourceFixture = async (client, runtime) => {
         endItemCursor: itemCursor + records.length,
         previousContentDigest,
         plaintextDigest,
-        sourceFormat: "jsonl",
+        sourceFormat: "codex_rollout_jsonl",
         adapterVersion: "codex-transcript-v1",
         sourceCreatedAt,
         priorGenerationClosure: null
@@ -1742,7 +2033,7 @@ const seedConversationSourceFixture = async (client, runtime) => {
         runtime.shared.calculateConversationSourceReplicationContentDigest(
           signedManifest
         );
-      const envelope = await runtime.teamProvider.encrypt({
+      const envelope = await runtime.personalProvider.encrypt({
         plaintext: JSON.stringify({
           signedManifest,
           plaintextBytes: bytes.toString("base64url")
@@ -1780,6 +2071,69 @@ const seedConversationSourceFixture = async (client, runtime) => {
       itemCursor = manifest.endItemCursor;
       previousContentDigest = contentDigest;
     }
+    const closedAt = new Date(
+      Date.parse(sourceCreatedAt) + 1_000
+    ).toISOString();
+    const closureManifest = {
+      protocol: runtime.shared.CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+      sourceComponentSchemaVersion: 1,
+      sourceComponentId: "main",
+      sourceComponentRole: "primary",
+      parentSourceComponentId: null,
+      contentFraming: "jsonl",
+      logicalSourceId: source.logicalSourceId,
+      sourceGenerationId: source.sourceGenerationId,
+      originKeyId,
+      segmentCount: segmentRows.length,
+      endByteCursor: byteCursor,
+      endItemCursor: itemCursor,
+      chainHeadDigest: segmentRows.at(-1)?.contentDigest ?? null,
+      sourceRootDigest: runtime.shared.calculateConversationSourceRootDigest(
+        segmentRows.map((row) => row.contentDigest)
+      ),
+      sourceCreatedAt,
+      closedAt,
+      priorGenerationClosure: null
+    };
+    const signedClosure = runtime.shared.signConversationSourceClosureManifest(
+      closureManifest,
+      privateKey
+    );
+    const closureHash =
+      runtime.shared.calculateConversationSourceClosureDigest(signedClosure);
+    const sourceSetComponents = [
+      {
+        sourceComponentId: "main",
+        sourceComponentRole: "primary",
+        parentSourceComponentId: null,
+        contentFraming: "jsonl",
+        artifactClosureDigest: closureHash
+      }
+    ];
+    const sourceSetClosureManifest = {
+      protocol: runtime.shared.CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
+      sourceSetClosureVersion: 1,
+      sourceComponentSchemaVersion: 1,
+      logicalSourceId: source.logicalSourceId,
+      sourceGenerationId: source.sourceGenerationId,
+      signingComponentId: "main",
+      originKeyId,
+      components: sourceSetComponents,
+      componentSetDigest:
+        runtime.shared.calculateConversationSourceComponentSetDigest(
+          sourceSetComponents
+        ),
+      closedAt
+    };
+    const signedSourceSetClosure =
+      runtime.shared.signConversationSourceSetClosureManifest(
+        sourceSetClosureManifest,
+        privateKey
+      );
+    const sourceSetClosureHash =
+      runtime.shared.calculateConversationSourceSetClosureDigest(
+        signedSourceSetClosure
+      );
     await client.query(
       `insert into conversation_source_artifacts (
          id, owner_user_id, session_id, logical_source_id,
@@ -1790,12 +2144,16 @@ const seedConversationSourceFixture = async (client, runtime) => {
          live_start_line, provider_cursor_offset, provider_cursor_line,
          current_source_length, current_journal_sequence, source_created_at,
          source_modified_at, storage_provider, storage_prefix,
+         closure_hash, closure_manifest, closure_signature,
+         source_set_closure_hash, source_set_closure_manifest,
+         source_set_closure_signature, source_set_finalized_at,
          origin_deployment_id, origin_device_id, origin_key_id,
-         origin_public_key, redacted_source_label
+         origin_public_key, redacted_source_label, finalized_at
        ) values (
-         $1,$2,$3,$4,$5,'origin_local','codex','codex',$6,$7,'jsonl',1,
-         'codex-transcript-v1','active',0,0,0,0,$8,$9,$8,$10,$11,$11,
-         'envelope_db',$12,$13,$14,$15,$16,'Fixture Codex session'
+         $1,$2,$3,$4,$5,'origin_local','codex','codex',$6,$7,'codex_rollout_jsonl',1,
+         'codex-transcript-v1','finalized',0,0,0,0,$8,$9,$8,$10,$11,$11,
+         'envelope_db',$12,$13,$14,$15,$16,$17,$18,$19,
+         $20,$21,$22,$23,'Fixture Codex session',$19
        )`,
       [
         source.artifactId,
@@ -1810,6 +2168,13 @@ const seedConversationSourceFixture = async (client, runtime) => {
         segmentRows.length - 1,
         sourceCreatedAt,
         `${FIXTURE_VERSION}/${source.key}`,
+        closureHash,
+        json(signedClosure.manifest),
+        signedClosure.signature,
+        sourceSetClosureHash,
+        json(signedSourceSetClosure.manifest),
+        signedSourceSetClosure.signature,
+        closedAt,
         fixtureInfrastructure.sourceDeploymentId,
         fixtureUuid(`conversation-source:${source.key}:device`),
         originKeyId,
@@ -1860,13 +2225,14 @@ const seedConversationSourceFixture = async (client, runtime) => {
         : null;
     await client.query(
       `insert into team_conversation_source_grants (
-         id, share_grant_id, artifact_id, logical_source_id, owner_user_id,
+         id, share_grant_id, artifact_id, logical_source_id,
+         source_generation_id, owner_user_id,
          session_id, team_id, team_workspace_id, mode,
          maximum_segment_index, maximum_source_offset, version, lifecycle,
          mutation_id, granted_by_user_id, creator_authority, created_at,
          updated_at, revoked_at, revoked_by_user_id, revocation_reason
        ) values (
-         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$13,$5,
+         $1,$2,$3,$4,$15,$5,$6,$7,$8,$9,$10,$11,1,$12,$13,$5,
          'fixture_seed',$14,$14,
          case when $12='revoked' then $14::timestamptz else null end,
          case when $12='revoked' then $5::uuid else null end,
@@ -1886,7 +2252,8 @@ const seedConversationSourceFixture = async (client, runtime) => {
         snapshotMaximumOffset,
         source.lifecycle,
         source.mutationId,
-        sourceCreatedAt
+        sourceCreatedAt,
+        source.sourceGenerationId
       ]
     );
     await client.query(
@@ -1934,9 +2301,9 @@ export const resetFixture = async (client) => {
   const fixtureUserSessionIds = Object.values(fixtureSessionRows).map(
     (session) => session.id
   );
-  const fixtureDeviceCredentialIds = [
-    ...new Set(fixtureMemoryRows.map((memory) => memory.owner))
-  ].map((userKey) => fixtureOwnerInfrastructure(userKey).deviceCredentialId);
+  const fixtureDeviceCredentialIds = Object.keys(fixtureUsers).map(
+    (userKey) => fixtureOwnerInfrastructure(userKey).deviceCredentialId
+  );
   await client.query("begin");
   try {
     await client.query(
@@ -1987,6 +2354,22 @@ export const resetFixture = async (client) => {
       [fixtureLogicalMemoryIds]
     );
     await client.query(
+      `create temporary table fixture_reset_privacy_classifications
+         on commit drop as
+       select distinct classification_result_id as id
+         from shared_source_semantic_previews
+        where source_preview_id in (select id from fixture_reset_shared_previews)
+           or logical_memory_id = any($1::uuid[])
+       union
+       select unnest($2::uuid[])`,
+      [
+        fixtureLogicalMemoryIds,
+        fixtureMemoryRows.map((memory) =>
+          fixtureUuid(`memory:${memory.key}:privacy-classification`)
+        )
+      ]
+    );
+    await client.query(
       `delete from high_risk_action_grant_execution_receipts
        where action_grant_id in (
          select action_grant.id
@@ -2030,7 +2413,8 @@ export const resetFixture = async (client) => {
     );
     await client.query(
       `delete from encrypted_field_payloads
-       where (source_table = 'collaboration_threads'
+       where team_id = $6
+          or (source_table = 'collaboration_threads'
               and source_id in (select id from fixture_reset_threads))
           or (source_table = 'collaboration_messages' and source_id in (
             select id from collaboration_messages
@@ -2042,6 +2426,14 @@ export const resetFixture = async (client) => {
           or (source_table = 'shared_source_previews' and source_id in (
             select id from fixture_reset_shared_previews
           ))
+          or (source_table = 'shared_source_semantic_previews' and source_id in (
+            select id from shared_source_semantic_previews
+             where source_preview_id in (select id from fixture_reset_shared_previews)
+          ))
+          or (source_table = 'privacy_classification_results'
+              and source_id in (
+                select id from fixture_reset_privacy_classifications
+              ))
           or (source_table = 'curated_memory_assertions'
               and source_id = any($1::uuid[]))
           or (source_table = 'curated_memory_topics'
@@ -2064,7 +2456,8 @@ export const resetFixture = async (client) => {
         fixtureCuratedMemories.flatMap((memory) => [
           memory.leafNodeId,
           memory.nodeId
-        ])
+        ]),
+        fixtureTeam.id
       ]
     );
     await client.query(
@@ -2222,6 +2615,16 @@ export const resetFixture = async (client) => {
       [fixtureMemoryRows.map((memory) => memory.representationId)]
     );
     await client.query(
+      `delete from shared_source_semantic_previews
+       where source_preview_id in (select id from fixture_reset_shared_previews)
+          or logical_memory_id = any($1::uuid[])`,
+      [fixtureLogicalMemoryIds]
+    );
+    await client.query(
+      `delete from privacy_classification_results
+       where id in (select id from fixture_reset_privacy_classifications)`
+    );
+    await client.query(
       "delete from curated_memory_assertions where id = any($1::uuid[])",
       [fixtureCuratedAssertionIds]
     );
@@ -2329,7 +2732,7 @@ export const resetFixture = async (client) => {
     await client.query(
       "delete from sync_external_user_identities where id = any($1::uuid[])",
       [
-        [...new Set(fixtureMemoryRows.map((memory) => memory.owner))].map(
+        Object.keys(fixtureUsers).map(
           (userKey) => fixtureOwnerInfrastructure(userKey).remoteUserIdentityId
         )
       ]
@@ -2424,6 +2827,7 @@ export const seedFixture = async (client, runtime) => {
       "Fixture runtime is required for encrypted fixture seeding"
     );
   }
+  runtime.fixturePrivacy = await ensureFixturePrivacyRuntime(client, runtime);
   await resetFixture(client);
   await client.query("begin");
   try {
@@ -2652,14 +3056,15 @@ export const seedFixture = async (client, runtime) => {
 
     await client.query(
       `insert into team_representation_policies (
-         id, policy_id, team_id, version, allowed_representations,
-         policy_hash, created_by_user_id, effective_at
-       ) values ($1, $2, $3, 1, $4::shared_memory_representation[], $5, $6, $7)`,
+         id, policy_id, team_id, version, maximum_fidelity,
+         include_curated_memory, policy_hash, created_by_user_id, effective_at
+       ) values ($1, $2, $3, 1, $4, $5, $6, $7, $8)`,
       [
         fixtureInfrastructure.teamPolicyRowId,
         fixtureInfrastructure.teamPolicyId,
         fixtureTeam.id,
-        ALL_REPRESENTATIONS,
+        FIXTURE_MAXIMUM_FIDELITY,
+        FIXTURE_INCLUDE_CURATED_MEMORY,
         fixtureHash("policy:team:hash"),
         fixtureUsers.alice.id,
         new Date(FIXTURE_STATE_AT)
@@ -2670,17 +3075,18 @@ export const seedFixture = async (client, runtime) => {
       await client.query(
         `insert into workspace_representation_policies (
            id, policy_id, team_id, team_workspace_id, version,
-           allowed_representations, policy_hash, created_by_user_id,
+           maximum_fidelity, include_curated_memory, policy_hash, created_by_user_id,
            effective_at
          ) values (
-           $1, $2, $3, $4, 1, $5::shared_memory_representation[], $6, $7, $8
+           $1, $2, $3, $4, 1, $5, $6, $7, $8, $9
          )`,
         [
           policy.id,
           policy.policyId,
           fixtureTeam.id,
           workspace.id,
-          ALL_REPRESENTATIONS,
+          FIXTURE_MAXIMUM_FIDELITY,
+          FIXTURE_INCLUDE_CURATED_MEMORY,
           fixtureHash(`policy:workspace:${workspaceKey}:hash`),
           fixtureUsers.alice.id,
           new Date(FIXTURE_STATE_AT)
@@ -3340,7 +3746,7 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
       "sync_external_user_identities",
       "select * from sync_external_user_identities where id = any($1::uuid[])",
       [
-        [...new Set(fixtureMemoryRows.map((memory) => memory.owner))].map(
+        Object.keys(fixtureUsers).map(
           (key) => fixtureOwnerInfrastructure(key).remoteUserIdentityId
         )
       ]
@@ -3349,7 +3755,7 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
       "device_credentials",
       "select * from device_credentials where id = any($1::uuid[])",
       [
-        [...new Set(fixtureMemoryRows.map((memory) => memory.owner))].map(
+        Object.keys(fixtureUsers).map(
           (key) => fixtureOwnerInfrastructure(key).deviceCredentialId
         )
       ]
@@ -3634,7 +4040,7 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
         runtime.shared.parseConversationSourceReplicationSegmentEnvelope(
           JSON.parse(
             await runtime.shared.decryptEnvelopeToUtf8(
-              runtime.teamProvider,
+              runtime.personalProvider,
               row.encryption_envelope
             )
           )
@@ -3802,7 +4208,7 @@ export const validateFixture = async (client, runtime) => {
         runtime.shared.parseConversationSourceReplicationSegmentEnvelope(
           JSON.parse(
             await runtime.shared.decryptEnvelopeToUtf8(
-              runtime.teamProvider,
+              runtime.personalProvider,
               segment.encryptionEnvelope
             )
           )
@@ -4237,7 +4643,8 @@ export const validateFixture = async (client, runtime) => {
     }
     assertDeepEqual(
       {
-        activeRepresentation: read.grant.activeRepresentation,
+        includeCuratedMemory: read.grant.includeCuratedMemory,
+        maximumFidelity: read.grant.maximumFidelity,
         consentId: read.grant.consentId,
         id: read.grant.id,
         logicalMemoryId: read.grant.logicalMemoryId,
@@ -4246,7 +4653,11 @@ export const validateFixture = async (client, runtime) => {
         teamWorkspaceId: read.grant.teamWorkspaceId
       },
       {
-        activeRepresentation: memory.representation,
+        includeCuratedMemory: memory.representation === "curated_assertions",
+        maximumFidelity:
+          memory.representation === "curated_assertions"
+            ? "memory_events"
+            : memory.representation,
         consentId: memory.consentId,
         id: memory.shareGrantId,
         logicalMemoryId: memory.logicalMemoryId,
@@ -4256,9 +4667,6 @@ export const validateFixture = async (client, runtime) => {
       },
       `${memory.title} decrypted Shared Memory grant binding`
     );
-    if (read.grant.activeRepresentation !== memory.representation) {
-      throw new Error(`${memory.title}: Share Grant representation drifted`);
-    }
   }
 
   const denialActors = [
@@ -4807,7 +5215,7 @@ export const validateFixture = async (client, runtime) => {
       "Personal self-chat/channel and every Team thread kind are present",
       "DM, group-DM, and personal-thread direct reads enforce participant isolation",
       "Shared Memory representations decrypt through the authorized production path",
-      "Independent Conversation Source Access grants enforce encrypted exact-read, snapshot, continuous, revocation, and audit boundaries",
+      "Independent Conversation Source Access grants preserve exact owner source and enforce sanitized Team-read, snapshot, continuous, revocation, and audit boundaries",
       "Companion discussion history and unread state are deterministic",
       "Collaboration names, topics, bodies, metadata, and provenance have exact encrypted payload coverage",
       "Shared source artifacts, previews, chunks, bindings, and outbox surfaces contain no sensitive plaintext"

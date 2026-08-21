@@ -1,18 +1,17 @@
 import {
   crossIdentitySyncDigest,
-  type SharedMemoryRepresentation
+  type SharedMemoryFidelityCeiling
 } from "@koed/shared";
 
-export const defaultSharedMemoryRepresentations = [
-  "memory_events",
-  "lcm_leaves",
-  "lcm_rollups"
-] as const satisfies readonly SharedMemoryRepresentation[];
+export const defaultSharedMemoryMaximumFidelity =
+  "memory_events" satisfies SharedMemoryFidelityCeiling;
+export const defaultSharedMemoryIncludesCuratedMemory = false;
 
 export const sharedMemoryPolicyHash = (input: {
   scope: "source_owner" | "team" | "workspace";
   scopeId: string;
   policyId: string;
   version: number;
-  allowedRepresentations: SharedMemoryRepresentation[];
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
 }): string => crossIdentitySyncDigest(input);

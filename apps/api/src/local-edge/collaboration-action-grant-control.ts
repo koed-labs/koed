@@ -76,22 +76,15 @@ export interface CollaborationActionGrantControlContext {
       | "lcm_leaves"
       | "lcm_rollups"
       | "curated_assertions";
-    allowedRepresentations: Array<
-      "memory_events" | "lcm_leaves" | "lcm_rollups" | "curated_assertions"
-    >;
+    maximumFidelity: "memory_events" | "lcm_leaves" | "lcm_rollups";
+    includeCuratedMemory: boolean;
   }) => Promise<{ remoteReplicaId: string } | null>;
   resolveSharedMemoryConsentPreview?: (input: {
     logicalMemoryId: string;
     teamId: string;
     workspaceId: string;
-    selectedRepresentation:
-      | "memory_events"
-      | "lcm_leaves"
-      | "lcm_rollups"
-      | "curated_assertions";
-    allowedRepresentations: Array<
-      "memory_events" | "lcm_leaves" | "lcm_rollups" | "curated_assertions"
-    >;
+    maximumFidelity: "memory_events" | "lcm_leaves" | "lcm_rollups";
+    includeCuratedMemory: boolean;
     previewRevision: number;
     previewHash: string;
   }) => Promise<{ previewId: string } | null>;
@@ -404,23 +397,19 @@ export const createCollaborationActionGrantControl = (
                   teamId: intent.teamId,
                   workspaceId: intent.workspaceId,
                   representation: intent.representation,
-                  allowedRepresentations: intent.allowedRepresentations
+                  maximumFidelity: intent.maximumFidelity,
+                  includeCuratedMemory: intent.includeCuratedMemory
                 })
               : null;
           const consentPreview =
             intent.intent === "collaboration.share_memory" ||
-            intent.intent ===
-              "collaboration.change_shared_memory_representation"
+            intent.intent === "collaboration.change_shared_memory_fidelity"
               ? await context.resolveSharedMemoryConsentPreview?.({
                   logicalMemoryId: intent.logicalMemoryId,
                   teamId: intent.teamId,
                   workspaceId: intent.workspaceId,
-                  selectedRepresentation:
-                    intent.intent ===
-                    "collaboration.change_shared_memory_representation"
-                      ? intent.representation
-                      : intent.selectedRepresentation,
-                  allowedRepresentations: intent.allowedRepresentations,
+                  maximumFidelity: intent.maximumFidelity,
+                  includeCuratedMemory: intent.includeCuratedMemory,
                   previewRevision: intent.previewRevision,
                   previewHash: intent.previewHash
                 })
@@ -439,8 +428,7 @@ export const createCollaborationActionGrantControl = (
             return failure(command, new ControlFailure("permission_denied"));
           }
           if (
-            intent.intent ===
-              "collaboration.change_shared_memory_representation" &&
+            intent.intent === "collaboration.change_shared_memory_fidelity" &&
             !consentPreview
           ) {
             return failure(command, new ControlFailure("permission_denied"));

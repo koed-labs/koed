@@ -202,9 +202,12 @@ const remoteSharedGrant = {
   id: ids.sharedGrant,
   logicalMemoryId: ids.sharedLogicalMemory,
   ownerUserId: ids.participant,
+  maximumFidelity: "memory_events",
+  includeCuratedMemory: false,
+  title: "Shared Memory",
   activeRepresentation: "memory_events",
   representationState: "available",
-  representationSourceRevision: 7,
+  representationSourceRevision: 1,
   representationUpdatedAt: iso,
   lifecycle: "active",
   createdAt: iso,
@@ -2024,7 +2027,8 @@ describe("local-edge collaboration command route", () => {
         teamId: ids.team,
         workspaceId: ids.workspace,
         representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         actionGrant: { id: randomUUID() }
       }
     };
@@ -3151,7 +3155,8 @@ describe("local-edge collaboration command route", () => {
             kind: "shared_session",
             session: {
               id: ids.sharedGrant,
-              representation: "memory_events",
+              maximumFidelity: "memory_events",
+              includeCuratedMemory: false,
               companionThreadId: ids.sharedDiscussionThread,
               unreadCompanionCount: 1
             },

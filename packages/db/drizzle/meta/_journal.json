@@ -239,6 +239,13 @@
       "when": 1787161195478,
       "tag": "0033_fixed_scarlet_witch",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1787239388567,
+      "tag": "0034_young_silvermane",
+      "breakpoints": true
     }
   ]
 }

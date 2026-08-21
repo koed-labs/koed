@@ -1,5 +1,109 @@
 import { createHash } from "node:crypto";
 
+export {
+  PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
+  PRIVACY_CLASSIFICATION_AGGREGATE_FIELD_LIMIT,
+  PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT,
+  PRIVACY_REPLACEMENT_CONTRACT_VERSION,
+  allPrivacyLabelsPolicy,
+  derivePrivacyFingerprintKey,
+  noPrivacyLabelsPolicy,
+  privacyClassificationAggregateResponseSchema,
+  privacyClassificationFieldRequestSchema,
+  privacyClassificationRequestSchema,
+  privacyClassificationResponseSchema,
+  privacyClassifiedFieldSchema,
+  privacyClassifierHash,
+  privacyContentPolicyHash,
+  privacyDetectedSpanSchema,
+  privacyLabelPolicySchema,
+  privacyLabelSchema,
+  privacyLabels,
+  resolveEffectivePrivacyPolicy,
+  sanitizeTextWithPrivacySpans
+} from "./privacy-filter-contract.js";
+export type {
+  PrivacyClassificationFieldRequest,
+  PrivacyClassificationRequest,
+  PrivacyClassificationResponse,
+  PrivacyClassifiedField,
+  PrivacyDetectedSpan,
+  PrivacyLabel,
+  PrivacyLabelPolicy,
+  SanitizedPrivacyText
+} from "./privacy-filter-contract.js";
+export {
+  PINNED_PRIVACY_ARTIFACT_SHA256,
+  PINNED_PRIVACY_CALIBRATION_SHA256,
+  PINNED_PRIVACY_CLASSIFIER_GENERATION,
+  PINNED_PRIVACY_CLASSIFIER_HASH,
+  PINNED_PRIVACY_CONFIG_SHA256,
+  PINNED_PRIVACY_DECODER_SHA256,
+  PINNED_PRIVACY_DETERMINISTIC_DETECTOR_VERSION,
+  PINNED_PRIVACY_MODEL_FILES,
+  PINNED_PRIVACY_MODEL_ID,
+  PINNED_PRIVACY_MODEL_REVISION,
+  PINNED_PRIVACY_Q4_DATA_SHA256,
+  PINNED_PRIVACY_Q4_DATA_SIZE,
+  PINNED_PRIVACY_Q4_ONNX_SHA256,
+  PINNED_PRIVACY_Q4_ONNX_SIZE,
+  PINNED_PRIVACY_TOKENIZER_CONFIG_SHA256,
+  PINNED_PRIVACY_TOKENIZER_SHA256
+} from "./privacy-classifier-generation.js";
+export {
+  createPrivacyServiceClient,
+  PrivacyServiceContractError,
+  PrivacyServiceUnavailableError
+} from "./privacy-service-client.js";
+export type {
+  PrivacyServiceClient,
+  PrivacyServiceClientOptions
+} from "./privacy-service-client.js";
+export {
+  DEFAULT_PRIVACY_FIELD_LIMITS,
+  extractPrivacyTextFields,
+  isFullyRedactedPrivacyText,
+  PrivacyFieldError,
+  reconstructPrivacyTextFields
+} from "./privacy-field-extractor.js";
+export type {
+  ExtractedPrivacyTextField,
+  MaskedPrivacyTextField,
+  PrivacyArrayFieldSchema,
+  PrivacyFieldErrorCode,
+  PrivacyFieldLimits,
+  PrivacyFieldReconstruction,
+  PrivacyFieldSchema,
+  PrivacyFieldSource,
+  PrivacyJsonPrimitive,
+  PrivacyJsonValue,
+  PrivacyLiteralFieldSchema,
+  PrivacyObjectFieldSchema,
+  PrivacyScalarFieldSchema,
+  PrivacyTupleFieldSchema,
+  PrivacyTextFieldSchema
+} from "./privacy-field-extractor.js";
+export {
+  CodexTeamSourcePrivacyError,
+  prepareCodexTeamSourceRecord,
+  reconstructCodexTeamSourceRecord,
+  serializeCodexTeamSourceRecord
+} from "./codex-team-source-privacy.js";
+export type {
+  CodexTeamSourceDropReason,
+  PreparedCodexTeamSourceRecord
+} from "./codex-team-source-privacy.js";
+export {
+  intersectSharedMemoryFidelityCeilings,
+  sharedMemoryCeilingAuthorizes,
+  sharedMemoryFidelityCeilings,
+  sharedMemoryRepresentationsForCeiling
+} from "./shared-memory-fidelity.js";
+export type {
+  HierarchicalSharedMemoryRepresentation,
+  SharedMemoryFidelityCeiling
+} from "./shared-memory-fidelity.js";
+
 // Internal bootstrap identity shared by local capture and Desktop credentials.
 export const LOCAL_PERSONAL_USER_EMAIL = "local@koed.ai";
 
@@ -14,7 +118,9 @@ export {
 export {
   aiClientSourceAdapterRegistry,
   assertSupportedAiClientSourceAdapter,
+  isPrivacyMaterializationSourceAdapter,
   isSupportedAiClientSourceAdapter,
+  privacyMaterializationSourceAdapters,
   resolveAiClientSourceAdapter
 } from "./ai-client-source-adapters.js";
 export type {
@@ -586,10 +692,10 @@ export {
   sharedMemoryGrantManagementRequestHash,
   sharedMemoryGrantManagementScopeHash,
   sharedMemoryPreviewActionGrantBinding,
+  sharedMemoryFidelityBundleActionGrantBinding,
+  sharedMemoryFidelityActionGrantBinding,
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
-  sharedMemoryRepresentationBundleActionGrantBinding,
-  sharedMemoryRepresentationActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryShareBundleActionGrantBinding,
   sharedMemoryShareActionGrantBinding,
@@ -820,6 +926,24 @@ export {
   watchKoedLocalWork
 } from "./local-work-signal.js";
 export type { KoedLocalWorkSignal } from "./local-work-signal.js";
+export {
+  LCM_LEXICAL_ANCHOR_MAX_COUNT,
+  LCM_LEXICAL_ANCHOR_MAX_LENGTH
+} from "./lcm-summary-limits.js";
+export {
+  extractSharedMemorySemanticClassificationFields,
+  reconstructSharedMemorySemanticSanitizedItems,
+  sharedMemoryRepresentations,
+  SharedMemoryConflictError,
+  SharedMemorySourceItemRejectedError,
+  validateSharedMemoryCanonicalSourceItem,
+  validateSharedMemorySemanticSanitizedReconstruction,
+  type SharedMemoryCanonicalSourceItemDto,
+  type SharedMemorySemanticClassificationField,
+  type SharedMemorySemanticMaskedField,
+  type SharedMemorySourceItemInput,
+  type SharedMemorySourceItemType
+} from "./shared-memory-semantic-contract.js";
 export type {
   CapturedSessionSyncChangeOperation,
   CapturedSessionSyncChangeV1,

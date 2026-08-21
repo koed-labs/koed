@@ -418,8 +418,6 @@ export const registerTeamRoutes = (
                 grants.entries.some(
                   (grant) =>
                     grant.lifecycle !== "active" ||
-                    (grant.representationState !== "available" &&
-                      grant.representationState !== "stale") ||
                     grant.companionScope.teamId !== team.id ||
                     grant.companionScope.teamWorkspaceId !== teamWorkspace.id ||
                     grant.companionScope.logicalMemoryId !==
@@ -436,6 +434,8 @@ export const registerTeamRoutes = (
                   id: grant.shareGrantId,
                   logicalMemoryId: grant.logicalMemoryId,
                   ownerUserId: grant.ownerUserId,
+                  maximumFidelity: grant.maximumFidelity,
+                  includeCuratedMemory: grant.includeCuratedMemory,
                   title: grant.title,
                   activeRepresentation: grant.activeRepresentation,
                   representationState: grant.representationState,

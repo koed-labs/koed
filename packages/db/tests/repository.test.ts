@@ -661,12 +661,10 @@ describeDb("memory repository visibility", () => {
           await client.query<{ policy_id: string; version: number }>(
             `insert into source_owner_representation_policies (
                policy_id, logical_memory_id, source_owner_principal_id,
-               version, allowed_representations, policy_hash,
+               version, maximum_fidelity, include_curated_memory, policy_hash,
                created_by_user_id, effective_at
              ) values (
-               $1, $2, $3, 1,
-               array['memory_events']::shared_memory_representation[],
-               $4, $5, now()
+               $1, $2, $3, 1, 'memory_events', false, $4, $5, now()
              ) returning policy_id, version`,
             [
               randomUUID(),
@@ -692,12 +690,11 @@ describeDb("memory repository visibility", () => {
         teamPolicy = (
           await client.query<{ policy_id: string; version: number }>(
             `insert into team_representation_policies (
-               policy_id, team_id, version, allowed_representations,
+               policy_id, team_id, version, maximum_fidelity,
+               include_curated_memory,
                policy_hash, created_by_user_id, effective_at
              ) values (
-               $1, $2, 1,
-               array['memory_events']::shared_memory_representation[],
-               $3, $4, now()
+               $1, $2, 1, 'memory_events', false, $3, $4, now()
              ) returning policy_id, version`,
             [randomUUID(), input.teamId, hash(), input.ownerUserId]
           )
@@ -719,12 +716,10 @@ describeDb("memory repository visibility", () => {
           await client.query<{ policy_id: string; version: number }>(
             `insert into workspace_representation_policies (
                policy_id, team_id, team_workspace_id, version,
-               allowed_representations, policy_hash, created_by_user_id,
-               effective_at
+               maximum_fidelity, include_curated_memory, policy_hash,
+               created_by_user_id, effective_at
              ) values (
-               $1, $2, $3, 1,
-               array['memory_events']::shared_memory_representation[],
-               $4, $5, now()
+               $1, $2, $3, 1, 'memory_events', false, $4, $5, now()
              ) returning policy_id, version`,
             [
               randomUUID(),
@@ -840,7 +835,7 @@ describeDb("memory repository visibility", () => {
       }
 
       const sourceHash = hash();
-      const redactedContentHash = hash();
+      const sourceContentHash = hash();
       const representationPolicyHash = hash();
       const contentPolicyHash = hash();
       const classifierHash = hash();
@@ -850,7 +845,8 @@ describeDb("memory repository visibility", () => {
            id, logical_memory_id, remote_replica_id, sync_relationship_id,
            owner_user_id, owner_principal_id, team_id, team_workspace_id,
            representation, source_revision, source_cursor, package_sequence,
-           source_hash, manifest_hash, artifact_hash, redacted_content_hash,
+           source_hash, manifest_hash, artifact_hash, source_content_hash,
+           maximum_fidelity, include_curated_memory,
            source_owner_policy_id, source_owner_policy_version,
            team_policy_id, team_policy_version, workspace_policy_id,
            workspace_policy_version, representation_policy_revision,
@@ -860,7 +856,8 @@ describeDb("memory repository visibility", () => {
            device_credential_id, device_provenance_hash
          ) values (
            $1, $2, $3, $4, $5, $6, $7, $8, 'memory_events',
-           $9, $9, 0, $10, $11, $12, $13, $14, $15, $16, $17,
+           $9, $9, 0, $10, $11, $12, $13, 'memory_events', false,
+           $14, $15, $16, $17,
            $18, $19, 1, $20, 1, $21, 1, $22, $23, $24, $25, $26
          )`,
         [
@@ -876,7 +873,7 @@ describeDb("memory repository visibility", () => {
           sourceHash,
           hash(),
           hash(),
-          redactedContentHash,
+          sourceContentHash,
           ownerPolicy.policy_id,
           ownerPolicy.version,
           teamPolicy.policy_id,
@@ -899,7 +896,7 @@ describeDb("memory repository visibility", () => {
            id, source_artifact_id, logical_memory_id, remote_replica_id,
            owner_user_id, owner_principal_id, team_id, team_workspace_id,
            representation, preview_revision, preview_hash, source_revision,
-           source_hash, redacted_content_hash
+           source_hash, source_content_hash
          ) values (
            $1, $2, $3, $4, $5, $6, $7, $8, 'memory_events', 1,
            $9, $10, $11, $12
@@ -916,7 +913,7 @@ describeDb("memory repository visibility", () => {
           previewHash,
           logicalMemory.source_revision,
           sourceHash,
-          redactedContentHash
+          sourceContentHash
         ]
       );
 
@@ -928,18 +925,17 @@ describeDb("memory repository visibility", () => {
            source_owner_policy_id, source_owner_policy_version,
            team_policy_id, team_policy_version, workspace_policy_id,
            workspace_policy_version, mode, state, consent_version,
-           allowed_representations, selected_representation, preview_id,
+           maximum_fidelity, include_curated_memory, preview_id,
            preview_revision, preview_hash, source_revision,
            maximum_authorized_source_revision,
-           source_hash, representation_policy_revision,
-           representation_policy_hash, content_policy_version,
+           source_hash, fidelity_policy_revision,
+           fidelity_policy_hash, content_policy_version,
            content_policy_hash, classifier_version, classifier_hash,
-           redacted_content_hash, activated_at
+           source_content_hash, activated_at
          ) values (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-           'continuous', 'active', 1,
-           array['memory_events']::shared_memory_representation[],
-           'memory_events', $13, 1, $14, $15, null, $16, 1, $17, 1,
+           'continuous', 'active', 1, 'memory_events', false,
+           $13, 1, $14, $15, null, $16, 1, $17, 1,
            $18, 1, $19, $20, now()
          )`,
         [
@@ -962,7 +958,7 @@ describeDb("memory repository visibility", () => {
           representationPolicyHash,
           contentPolicyHash,
           classifierHash,
-          redactedContentHash
+          sourceContentHash
         ]
       );
 
@@ -973,16 +969,14 @@ describeDb("memory repository visibility", () => {
            team_workspace_id, consent_id, source_owner_policy_id,
            source_owner_policy_version, team_policy_id, team_policy_version,
            workspace_policy_id, workspace_policy_version,
-           owner_allowed_representations, active_representation,
-           representation_policy_revision, content_policy_version,
+           maximum_fidelity, include_curated_memory,
+           fidelity_policy_revision, content_policy_version,
            classifier_version, source_revision, grant_version, lifecycle,
            creator_authority, granted_by_user_id, revoked_at,
            revoked_by_user_id, revocation_reason
          ) values (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-           $14, $15,
-           array['memory_events']::shared_memory_representation[],
-           'memory_events', 1, 1, 1, $16, 1, $17,
+           $14, $15, 'memory_events', false, 1, 1, 1, $16, 1, $17,
            'repository_test_fixture', $4,
            case when $18::boolean then now() else null end,
            case when $18::boolean then $4::uuid else null end,
@@ -9023,31 +9017,8 @@ describeDb("memory repository visibility", () => {
       teamId: team.id,
       teamWorkspaceId: workspace!.id
     });
-    await pool.query(
-      `insert into team_memory_representations (
-         share_grant_id,consent_id,source_preview_id,source_artifact_id,
-         team_id,team_workspace_id,logical_memory_id,representation,
-         source_revision,source_revision_hash,provenance_hash,
-         source_owner_policy_id,source_owner_policy_version,
-         team_policy_id,team_policy_version,workspace_policy_id,
-         workspace_policy_version,representation_policy_revision,
-         content_policy_version,classifier_version,state,available_at
-       )
-       select g.id,g.consent_id,consent.preview_id,preview.source_artifact_id,
-              g.team_id,g.team_workspace_id,g.logical_memory_id,
-              g.active_representation,g.source_revision,
-              preview.source_hash,$2,g.source_owner_policy_id,
-              g.source_owner_policy_version,g.team_policy_id,
-              g.team_policy_version,g.workspace_policy_id,
-              g.workspace_policy_version,g.representation_policy_revision,
-              g.content_policy_version,g.classifier_version,
-              'available',now()
-         from team_session_share_grants g
-         join source_owner_representation_consents consent
-           on consent.id=g.consent_id
-         join shared_source_previews preview on preview.id=consent.preview_id
-        where g.id=$1`,
-      [synchronizedGrant.id, randomBytes(32).toString("hex")]
+    expect(synchronizedGrant.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     );
     await expect(
       encryptedRepo.getLcmGraphEvent(
@@ -9528,25 +9499,17 @@ describeDb("memory repository visibility", () => {
     });
     await expect(
       pool.query(
-        `select state
-           from team_memory_representations
-          where share_grant_id=$1`,
-        [synchronizedGrant.id]
-      )
-    ).resolves.toMatchObject({ rows: [{ state: "stale" }] });
-    await expect(
-      pool.query(
         `select family,scope,team_id,team_workspace_id,share_grant_id,
                 logical_memory_id,resource_type,resource_id
            from collaboration_outbox
-          where family='representation_changed'
+          where family='fidelity_changed'
             and share_grant_id=$1`,
         [synchronizedGrant.id]
       )
     ).resolves.toMatchObject({
       rows: [
         {
-          family: "representation_changed",
+          family: "fidelity_changed",
           scope: "team",
           team_id: team.id,
           team_workspace_id: workspace!.id,
@@ -9641,8 +9604,10 @@ describeDb("memory repository visibility", () => {
     const logicalSourceId = randomUUID();
     const createArtifact = async (
       sourceCreatedAt: Date,
-      withAuxiliary = false
+      withAuxiliary = false,
+      primaryAdapter: "codex" | "claude-code" = "codex"
     ) => {
+      const claudePrimary = primaryAdapter === "claude-code";
       const sourceGenerationId = randomUUID();
       const artifact = await repo.ensureConversationSourceArtifact(
         { userId: owner.id },
@@ -9651,17 +9616,17 @@ describeDb("memory repository visibility", () => {
           logicalSourceId,
           sourceGenerationId,
           replicaRole: "origin_local",
-          sourceKind: withAuxiliary ? "claude-code" : "codex",
-          sourceRuntime: withAuxiliary ? "claude-code" : "codex",
+          sourceKind: claudePrimary ? "claude-code" : "codex",
+          sourceRuntime: claudePrimary ? "claude-code" : "codex",
           externalSessionId,
           sourceFingerprint: createHash("sha256")
             .update(`${externalSessionId}:${sourceCreatedAt.toISOString()}`)
             .digest("hex"),
-          artifactFormat: withAuxiliary
+          artifactFormat: claudePrimary
             ? "claude_session_jsonl"
             : "codex_rollout_jsonl",
           artifactFormatVersion: 1,
-          sourceAdapterVersion: withAuxiliary
+          sourceAdapterVersion: claudePrimary
             ? "claude-code-transcript-v1"
             : "codex-transcript-v1",
           journalStartOffset: 0,
@@ -9676,7 +9641,9 @@ describeDb("memory repository visibility", () => {
           originDeviceId: `device-${randomUUID()}`,
           originKeyId: `key-${randomUUID()}`,
           originPublicKey: "a".repeat(43),
-          redactedSourceLabel: "Codex session"
+          redactedSourceLabel: claudePrimary
+            ? "Claude Code session"
+            : "Codex session"
         }
       );
       const digest = randomBytes(32).toString("hex");
@@ -9818,6 +9785,31 @@ describeDb("memory repository visibility", () => {
         auxiliarySegmentId
       };
     };
+
+    await createArtifact(
+      new Date("2026-08-09T23:59:00.000Z"),
+      false,
+      "claude-code"
+    );
+    await expect(
+      repo.putTeamConversationSourceGrant(
+        { userId: owner.id },
+        {
+          mutationId: randomUUID(),
+          shareGrantId: shareGrant.id,
+          teamId: team.id,
+          expectedVersion: 0,
+          mode: "continuous",
+          creatorAuthority: "repository_test"
+        }
+      )
+    ).rejects.toThrow("cannot be sanitized for Team access");
+    await expect(
+      pool.query(
+        "select count(*)::int as count from team_conversation_source_grants where share_grant_id=$1",
+        [shareGrant.id]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
 
     const first = await createArtifact(new Date("2026-08-10T00:00:00.000Z"));
     await expect(
@@ -19099,22 +19091,34 @@ describeDb("memory repository visibility", () => {
         insert into memory_embeddings (
           memory_event_id, owner_user_id, visibility, embedding_model,
           embedding_dimensions, embedding_version, source_hash,
-          source_chunk_index, source_chunk_count, source_text
+          source_chunk_index, source_chunk_count, source_text,
+          embedding_source_content_hash, embedding_input_hash
         )
-        values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, 'Display reply')
+        values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, 'Display reply', $4, $4)
       `,
-      [agentSemanticEventId, alice.id, `display-semantic-${randomUUID()}`]
+      [
+        agentSemanticEventId,
+        alice.id,
+        `display-semantic-${randomUUID()}`,
+        createHash("sha256").update("Display reply").digest("hex")
+      ]
     );
     await pool.query(
       `
         insert into memory_embeddings (
           memory_node_id, owner_user_id, visibility, embedding_model,
           embedding_dimensions, embedding_version, source_hash,
-          source_chunk_index, source_chunk_count, source_text
+          source_chunk_index, source_chunk_count, source_text,
+          embedding_source_content_hash, embedding_input_hash
         )
-        values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, 'Display reply node')
+        values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, 'Display reply node', $4, $4)
       `,
-      [node.id, alice.id, `display-node-${randomUUID()}`]
+      [
+        node.id,
+        alice.id,
+        `display-node-${randomUUID()}`,
+        createHash("sha256").update("Display reply node").digest("hex")
+      ]
     );
 
     const previousRebuildDebounce =
@@ -19298,11 +19302,17 @@ describeDb("memory repository visibility", () => {
         insert into memory_embeddings (
           message_id, owner_user_id, visibility, embedding_model,
           embedding_dimensions, embedding_version, source_hash,
-          source_chunk_index, source_chunk_count, source_text
+          source_chunk_index, source_chunk_count, source_text,
+          embedding_source_content_hash, embedding_input_hash
         )
-        values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, 'Display reply')
+        values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, 'Display reply', $4, $4)
       `,
-      [timelineEvents[2]!.id, alice.id, `display-message-${randomUUID()}`]
+      [
+        timelineEvents[2]!.id,
+        alice.id,
+        `display-message-${randomUUID()}`,
+        createHash("sha256").update("Display reply").digest("hex")
+      ]
     );
 
     const previousMessageRebuildDebounce =
@@ -27996,12 +28006,19 @@ describeDb("memory repository visibility", () => {
         insert into memory_embeddings (
           memory_node_id, owner_user_id, visibility, embedding_model,
           embedding_dimensions, embedding_version, source_hash,
-          source_chunk_index, source_chunk_count, source_text
+          source_chunk_index, source_chunk_count, source_text,
+          embedding_source_content_hash, embedding_input_hash
         )
-        values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, $4)
+        values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, $4, $5, $5)
         returning id
       `,
-      [node.id, alice.id, randomUUID(), "Structured summary text"]
+      [
+        node.id,
+        alice.id,
+        randomUUID(),
+        "Structured summary text",
+        createHash("sha256").update("Structured summary text").digest("hex")
+      ]
     );
     await repo.updateLcmNodeSummary({
       nodeId: node.id,
@@ -28026,6 +28043,87 @@ describeDb("memory repository visibility", () => {
     expect(invalidated.rows[0]?.invalidation_reason).toBe(
       "lcm_summary_updated"
     );
+  });
+
+  it("fences LCM synthesis before the AI Client runs and rejects stale completion", async () => {
+    const owner = await repo.createUser({
+      email: `lcm-summary-claim-${randomUUID()}@example.com`
+    });
+    const node = await repo.createMemoryNode(
+      { userId: owner.id },
+      { visibility: "personal", summaryText: "Pending claimed summary" }
+    );
+    const compatibilityContractHash = createHash("sha256")
+      .update("lcm-summary-contract-v1")
+      .digest("hex");
+    const [claim] = await repo.claimLcmNodesForSummarization(
+      { userId: owner.id },
+      {
+        claimantId: "lcm-test-client",
+        compatibilityContractHash,
+        leaseMs: 60_000,
+        limit: 1
+      }
+    );
+    if (!claim) throw new Error("Expected LCM summary claim");
+
+    await expect(
+      repo.claimLcmNodesForSummarization(
+        { userId: owner.id },
+        {
+          claimantId: "competing-client",
+          compatibilityContractHash,
+          leaseMs: 60_000,
+          limit: 1
+        }
+      )
+    ).resolves.toEqual([]);
+    await expect(
+      repo.renewLcmSummaryWorkClaim(
+        { userId: owner.id },
+        {
+          claimId: claim.claimId,
+          claimToken: claim.claimToken,
+          claimGeneration: claim.claimGeneration + 1,
+          leaseMs: 60_000
+        }
+      )
+    ).resolves.toBeNull();
+
+    const completion = {
+      nodeId: node.id,
+      summaryText: "Claimed semantic summary.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v4",
+      summaryTokenEstimate: 4,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Claimed summary",
+        summary_text: "Claimed semantic summary.",
+        lexical_anchors: []
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1",
+      claim: {
+        ownerUserId: owner.id,
+        claimId: claim.claimId,
+        claimToken: claim.claimToken,
+        claimGeneration: claim.claimGeneration,
+        inputRevisionHash: claim.inputRevisionHash,
+        compatibilityContractHash: claim.compatibilityContractHash
+      }
+    };
+    await expect(
+      repo.updateLcmNodeSummary({
+        ...completion,
+        claim: { ...completion.claim, claimToken: randomUUID() }
+      })
+    ).rejects.toMatchObject({ name: "LcmSummaryClaimLostError" });
+    await expect(
+      repo.updateLcmNodeSummary(completion)
+    ).resolves.toBeUndefined();
+    await expect(repo.updateLcmNodeSummary(completion)).rejects.toMatchObject({
+      name: "LcmSummaryClaimLostError"
+    });
   });
 
   it("requeues an already-completed parent rollup when its child summary changes", async () => {
@@ -28089,10 +28187,17 @@ describeDb("memory repository visibility", () => {
       `insert into memory_embeddings (
          memory_node_id, owner_user_id, visibility, embedding_model,
          embedding_dimensions, embedding_version, source_hash,
-         source_chunk_index, source_chunk_count, source_text
-       ) values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, $4)
+         source_chunk_index, source_chunk_count, source_text,
+         embedding_source_content_hash, embedding_input_hash
+       ) values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, $4, $5, $5)
        returning id`,
-      [parent.id, alice.id, randomUUID(), "Completed parent rollup."]
+      [
+        parent.id,
+        alice.id,
+        randomUUID(),
+        "Completed parent rollup.",
+        createHash("sha256").update("Completed parent rollup.").digest("hex")
+      ]
     );
 
     await repo.updateLcmNodeSummary({
@@ -28214,12 +28319,21 @@ describeDb("memory repository visibility", () => {
       `insert into memory_embeddings (
          memory_node_id, owner_user_id, visibility, embedding_model,
          embedding_dimensions, embedding_version, source_hash,
-         source_chunk_index, source_chunk_count, source_text
+         source_chunk_index, source_chunk_count, source_text,
+         embedding_source_content_hash, embedding_input_hash
        ) values
-         ($1, $3, 'personal', 'test-model', 384, 'test-version', $4, 0, 1, 'parent'),
-         ($2, $3, 'personal', 'test-model', 384, 'test-version', $5, 0, 1, 'ancestor')
+         ($1, $3, 'personal', 'test-model', 384, 'test-version', $4, 0, 1, 'parent', $6, $6),
+         ($2, $3, 'personal', 'test-model', 384, 'test-version', $5, 0, 1, 'ancestor', $7, $7)
        returning id, memory_node_id`,
-      [parent.id, ancestor.id, alice.id, randomUUID(), randomUUID()]
+      [
+        parent.id,
+        ancestor.id,
+        alice.id,
+        randomUUID(),
+        randomUUID(),
+        createHash("sha256").update("parent").digest("hex"),
+        createHash("sha256").update("ancestor").digest("hex")
+      ]
     );
 
     await repo.updateLcmNodeSummary({
@@ -32666,6 +32780,31 @@ describeDb("memory repository visibility", () => {
     const importedEmbedding = await importRecord(embeddingRecord);
     expect(importedEmbedding.state).toBe("ready");
     expect(typeof importedEmbedding.localSourceId).toBe("string");
+    const embeddingFetch = mockEmbeddingQuery();
+    try {
+      const recall = await repo.searchMemoryNodes(
+        { userId: owner.id },
+        {
+          scope: "personal",
+          query: content,
+          searchDomain: "global",
+          retrievalStage: "fresh_pending_search",
+          limit: 5
+        }
+      );
+      expect(recall.results).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            sourceType: "memory_event",
+            sourceId: importedEvent.localSourceId,
+            summaryText: content,
+            visibility: "personal"
+          })
+        ])
+      );
+    } finally {
+      embeddingFetch.mockRestore();
+    }
 
     const lcmContract = {
       artifactClass: "lcm_node/v1" as const,
@@ -32696,8 +32835,7 @@ describeDb("memory repository visibility", () => {
       nodeKind: "leaf",
       orderedSourceIds: lcmContent.orderedSourceIds,
       compatibilityContractHash: pdsArtifactCompatibilityHash(lcmContract),
-      correctedRevision: lcmContent.correctedRevision,
-      contentHash: lcmContentHash
+      correctedRevision: lcmContent.correctedRevision
     });
     const lcmRecord = createRecord(lcmContract, logicalNodeId, {
       artifactClass: "lcm_node/v1",
@@ -32839,11 +32977,146 @@ describeDb("memory repository visibility", () => {
     ).toBe(false);
   });
 
+  it("reports semantic authority and lease health without exposing work identities", async () => {
+    const owner = await repo.createUser({
+      email: `pds-semantic-status-${randomUUID()}@example.com`
+    });
+    const group = await createPdsTestGroup({ userId: owner.id });
+    await pool.query(
+      `insert into personal_sync_policies
+       (group_id,enabled,future_closed_sessions_only,historical_backfill_enabled,updated_by_user_id)
+       values ($1,true,true,false,$2)`,
+      [group.groupDbId, owner.id]
+    );
+    await pool.query(
+      `insert into personal_source_replication_policies
+       (owner_user_id,enabled,target_upstream_id,mode,effective_from)
+       values ($1,true,'hosted-test','hosted_personal',now())`,
+      [owner.id]
+    );
+    const compatibilityContractHash = createHash("sha256")
+      .update("semantic-status-contract")
+      .digest("base64url");
+    await pool.query(
+      `insert into pds_semantic_work_claims
+       (group_id,work_identity,work_class,compatibility_contract_hash,
+        claimant_device_id,claim_generation,claimed_at,expires_at,state)
+       values
+       ($1,$2,'memory_embedding',$5,$6,'1',now(),now()+interval '2 minutes','active'),
+       ($1,$3,'lcm_leaf',$5,$6,'1',now()-interval '2 minutes',now()+interval '1 minute','completed'),
+       ($1,$4,'lcm_rollup',$5,$6,'1',now()-interval '2 minutes',now()-interval '1 minute','active')`,
+      [
+        group.groupDbId,
+        createHash("sha256").update("active").digest("base64url"),
+        createHash("sha256").update("completed").digest("base64url"),
+        createHash("sha256").update("expired").digest("base64url"),
+        compatibilityContractHash,
+        group.deviceIds[0]
+      ]
+    );
+
+    const status = await repo.getPdsLocalSyncStatus({
+      userId: owner.id,
+      groupId: group.groupId
+    });
+
+    expect(status?.semanticWork).toMatchObject({
+      authorityTier: "hosted_personal",
+      claims: { active: 1, completed: 1, expired: 1 },
+      acceptedArtifacts: 0
+    });
+    expect(status?.semanticWork.claims.nearestExpirySeconds).toBeGreaterThan(0);
+    expect(JSON.stringify(status)).not.toContain("semantic-status-contract");
+  });
+
+  it("permits one Personal device claimant and fences an expired generation", async () => {
+    const owner = await repo.createUser({
+      email: `pds-semantic-fence-${randomUUID()}@example.com`
+    });
+    const group = await createPdsTestGroup({
+      userId: owner.id,
+      memberCount: 2
+    });
+    const workIdentity = createHash("sha256")
+      .update("portable-semantic-work")
+      .digest("base64url");
+    const compatibilityContractHash = createHash("sha256")
+      .update("portable-semantic-contract")
+      .digest("base64url");
+
+    const first = await repo.acquirePdsSemanticWorkClaim({
+      userId: owner.id,
+      groupId: group.groupId,
+      deviceId: group.deviceIds[0]!,
+      workIdentity,
+      workClass: "lcm_leaf",
+      compatibilityContractHash,
+      leaseSeconds: 60
+    });
+    expect(first).toMatchObject({
+      claimantDeviceId: group.deviceIds[0],
+      claimGeneration: "1"
+    });
+    await expect(
+      repo.acquirePdsSemanticWorkClaim({
+        userId: owner.id,
+        groupId: group.groupId,
+        deviceId: group.deviceIds[1]!,
+        workIdentity,
+        workClass: "lcm_leaf",
+        compatibilityContractHash,
+        leaseSeconds: 60
+      })
+    ).resolves.toBeNull();
+    await pool.query(
+      `update pds_semantic_work_claims
+       set claimed_at=now()-interval '2 minutes',
+           expires_at=now()-interval '1 minute'
+       where group_id=$1 and work_identity=$2`,
+      [group.groupDbId, workIdentity]
+    );
+
+    const second = await repo.acquirePdsSemanticWorkClaim({
+      userId: owner.id,
+      groupId: group.groupId,
+      deviceId: group.deviceIds[1]!,
+      workIdentity,
+      workClass: "lcm_leaf",
+      compatibilityContractHash,
+      leaseSeconds: 60
+    });
+    expect(second).toMatchObject({
+      claimantDeviceId: group.deviceIds[1],
+      claimGeneration: "2"
+    });
+    await expect(
+      repo.completePdsSemanticWorkClaim({
+        userId: owner.id,
+        groupId: group.groupId,
+        deviceId: group.deviceIds[0]!,
+        workIdentity,
+        claimGeneration: "1"
+      })
+    ).resolves.toBe(false);
+    await expect(
+      repo.completePdsSemanticWorkClaim({
+        userId: owner.id,
+        groupId: group.groupId,
+        deviceId: group.deviceIds[1]!,
+        workIdentity,
+        claimGeneration: "2"
+      })
+    ).resolves.toBe(true);
+  });
+
   it("continues LCM only after a PDS replica acquires source authority", async () => {
     const owner = await repo.createUser({
       email: `pds-lcm-authority-${randomUUID()}@example.com`
     });
-    const group = await createPdsTestGroup({ userId: owner.id });
+    const group = await createPdsTestGroup({
+      userId: owner.id,
+      memberCount: 2
+    });
     const externalSessionId = `pds-lcm-session-${randomUUID()}`;
     const session = await repo.createCapturedSession(
       { userId: owner.id },
@@ -32921,6 +33194,155 @@ describeDb("memory repository visibility", () => {
       { visibility: "personal", sessionId: session.id }
     );
     expect(compacted.leafNodeIds).toHaveLength(1);
+
+    const leafNodeId = compacted.leafNodeIds[0]!;
+    const sources = await pool.query<{
+      memory_event_id: string;
+      source_order: number;
+    }>(
+      `select memory_event_id,source_order
+         from memory_node_sources
+        where memory_node_id=$1
+        order by source_order`,
+      [leafNodeId]
+    );
+    const logicalSourceIds = sources.rows.map(
+      (_, index) => `logical-lcm-source-${index}-${randomUUID()}`
+    );
+    for (const [index, source] of sources.rows.entries()) {
+      await pool.query(
+        `insert into pds_memory_event_mappings
+         (group_id,memory_event_id,logical_event_id,source_fingerprint,
+          source_closure_hash,content_hash,source_ordinals)
+         values ($1,$2,$3,$4,$5,$6,array[$7]::text[])`,
+        [
+          group.groupDbId,
+          source.memory_event_id,
+          logicalSourceIds[index],
+          createHash("sha256")
+            .update(`source-${source.memory_event_id}`)
+            .digest("base64url"),
+          createHash("sha256")
+            .update(`closure-${source.memory_event_id}`)
+            .digest("base64url"),
+          createHash("sha256")
+            .update(`content-${source.memory_event_id}`)
+            .digest("base64url"),
+          String(source.source_order)
+        ]
+      );
+    }
+    const contract = {
+      artifactClass: "lcm_node/v1" as const,
+      nodeKind: "leaf" as const,
+      lcmAlgorithmVersion: "depth0-source-items-v1",
+      summaryPromptVersion: "lcm-summary-leaf-v1",
+      summaryModel: "gpt-5.4-mini",
+      structuredOutputSchema: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+      sourceSelectionPolicy: "depth0-source-items-v1"
+    };
+    const compatibilityContractHash = pdsArtifactCompatibilityHash(contract);
+    const workIdentity = createHash("sha256")
+      .update(
+        canonicalizePdsJson({
+          artifactClass: "lcm_node/v1",
+          nodeKind: "leaf",
+          orderedSourceIds: logicalSourceIds,
+          compatibilityContractHash,
+          correctedRevision: "0"
+        })
+      )
+      .digest("base64url");
+    const firstAuthority = await repo.acquirePdsSemanticWorkClaim({
+      userId: owner.id,
+      groupId: group.groupId,
+      deviceId: group.deviceIds[0]!,
+      workIdentity,
+      workClass: "lcm_leaf",
+      compatibilityContractHash,
+      leaseSeconds: 60
+    });
+    expect(firstAuthority?.claimGeneration).toBe("1");
+    const [summaryClaim] = await repo.claimLcmNodesForSummarization(
+      { userId: owner.id },
+      {
+        claimantId: "device-a-ai-client",
+        compatibilityContractHash: createHash("sha256")
+          .update("local-lcm-contract")
+          .digest("hex"),
+        pdsContracts: {
+          leaf: contract,
+          rollup: {
+            artifactClass: "lcm_node/v1",
+            nodeKind: "rollup",
+            lcmAlgorithmVersion: "depth1-child-rollup-v1",
+            summaryPromptVersion: "lcm-summary-rollup-v1",
+            summaryModel: "gpt-5.4-mini",
+            structuredOutputSchema: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+            sourceSelectionPolicy: "depth1-child-rollup-v1"
+          }
+        },
+        leaseMs: 60_000,
+        limit: 1
+      }
+    );
+    if (!summaryClaim) throw new Error("Expected PDS-backed LCM claim");
+
+    await pool.query(
+      `update pds_semantic_work_claims
+          set claimed_at=now()-interval '2 minutes',
+              expires_at=now()-interval '1 minute'
+        where group_id=$1 and work_identity=$2`,
+      [group.groupDbId, workIdentity]
+    );
+    const secondAuthority = await repo.acquirePdsSemanticWorkClaim({
+      userId: owner.id,
+      groupId: group.groupId,
+      deviceId: group.deviceIds[1]!,
+      workIdentity,
+      workClass: "lcm_leaf",
+      compatibilityContractHash,
+      leaseSeconds: 60
+    });
+    expect(secondAuthority).toMatchObject({
+      claimantDeviceId: group.deviceIds[1],
+      claimGeneration: "2"
+    });
+    await expect(
+      repo.renewLcmSummaryWorkClaim(
+        { userId: owner.id },
+        {
+          claimId: summaryClaim.claimId,
+          claimToken: summaryClaim.claimToken,
+          claimGeneration: summaryClaim.claimGeneration,
+          leaseMs: 60_000
+        }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.updateLcmNodeSummary({
+        nodeId: leafNodeId,
+        summaryText: "The stale device must not publish this summary.",
+        summaryModel: "codex:test",
+        summaryPromptVersion: "lcm-summary-leaf-v1",
+        summaryTokenEstimate: 9,
+        summaryStructuredJson: {
+          schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+          title: "Stale device output",
+          summary_text: "The stale device must not publish this summary.",
+          lexical_anchors: []
+        },
+        summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+        claim: {
+          ownerUserId: owner.id,
+          claimId: summaryClaim.claimId,
+          claimToken: summaryClaim.claimToken,
+          claimGeneration: summaryClaim.claimGeneration,
+          inputRevisionHash: summaryClaim.inputRevisionHash,
+          compatibilityContractHash: summaryClaim.compatibilityContractHash
+        }
+      })
+    ).rejects.toMatchObject({ name: "LcmSummaryClaimLostError" });
   });
 
   it("exports every protected Curated Memory proposal beyond 500 rows", async () => {
@@ -32980,5 +33402,189 @@ describeDb("memory repository visibility", () => {
         process.env.KOED_DEPLOYMENT_PROFILE = previousProfile;
       }
     }
+  });
+
+  it("resolves a complete Personal embedding artifact by owner, source bytes, and contract", async () => {
+    const owner = await repo.createUser({
+      email: `personal-embedding-artifact-${randomUUID()}@example.com`
+    });
+    const event = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        projectId: "personal-embedding-artifact",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_message",
+        visibility: "personal",
+        content: "Portable Personal semantic input",
+        idempotencyKey: randomUUID()
+      }
+    );
+    const source = await repo.getEmbeddableSource("memory_event", event.id);
+    if (!source) throw new Error("Expected embeddable Personal source");
+    const vector = Array.from({ length: 1024 }, (_, index) =>
+      index === 0 ? 1 : 0
+    );
+    await repo.replaceSourceEmbeddings({
+      source,
+      model: "qwen3-0.6b",
+      dimensions: 1024,
+      version: "qwen3-0.6b",
+      ...testEmbeddingCompatibility,
+      chunks: [
+        {
+          vector,
+          chunkIndex: 0,
+          chunkCount: 1,
+          inputTokenCount: 4,
+          sourceText: source.text
+        }
+      ]
+    });
+    const contract = {
+      artifactClass: "memory_embedding/v1" as const,
+      modelKey: "qwen3-0.6b",
+      modelArtifactHash: testEmbeddingCompatibility.modelArtifactHash,
+      dimensions: "1024",
+      tokenizer: testEmbeddingCompatibility.tokenizer,
+      inputTransform: testEmbeddingCompatibility.inputTransform,
+      pooling: testEmbeddingCompatibility.pooling,
+      normalization: testEmbeddingCompatibility.normalization,
+      embeddingVersion: "qwen3-0.6b"
+    };
+    const sourceContentHash = createHash("sha256")
+      .update(source.text)
+      .digest("base64url");
+
+    await expect(
+      repo.resolvePersonalEmbeddingArtifact(
+        { userId: owner.id },
+        { sourceType: "memory_event", sourceContentHash, contract }
+      )
+    ).resolves.toEqual({
+      chunks: [
+        {
+          chunkIndex: 0,
+          chunkCount: 1,
+          inputTokenCount: 4,
+          sourceText: source.text,
+          embeddingInputHash: sourceContentHash,
+          vector
+        }
+      ]
+    });
+
+    const other = await repo.createUser({
+      email: `personal-embedding-artifact-other-${randomUUID()}@example.com`
+    });
+    await expect(
+      repo.resolvePersonalEmbeddingArtifact(
+        { userId: other.id },
+        { sourceType: "memory_event", sourceContentHash, contract }
+      )
+    ).resolves.toBeNull();
+  });
+
+  it("atomically fences hosted Personal embedding acceptance to the policy and source revision", async () => {
+    const owner = await repo.createUser({
+      email: `hosted-embedding-fence-${randomUUID()}@example.com`
+    });
+    const event = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        projectId: "hosted-embedding-fence",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_message",
+        visibility: "personal",
+        content: "Hosted semantic authority fence",
+        idempotencyKey: randomUUID()
+      }
+    );
+    const source = await repo.getEmbeddableSource("memory_event", event.id);
+    if (!source) throw new Error("Expected embeddable Personal source");
+    const effectiveFrom = new Date().toISOString();
+    const policy = await repo.upsertPersonalSourceReplicationPolicy(
+      { userId: owner.id },
+      {
+        enabled: true,
+        targetUpstreamId: "hosted-a",
+        mode: "hosted_personal",
+        effectiveFrom
+      }
+    );
+    const vector = Array.from({ length: 1024 }, (_, index) =>
+      index === 0 ? 1 : 0
+    );
+    const replace = () =>
+      repo.replaceSourceEmbeddings({
+        source,
+        hostedPersonalAuthority: {
+          ownerUserId: owner.id,
+          targetUpstreamId: "hosted-a",
+          policyUpdatedAt: policy.updatedAt
+        },
+        model: "qwen3-0.6b",
+        dimensions: 1024,
+        version: "qwen3-0.6b",
+        ...testEmbeddingCompatibility,
+        chunks: [
+          {
+            vector,
+            chunkIndex: 0,
+            chunkCount: 1,
+            inputTokenCount: 4,
+            sourceText: source.text
+          }
+        ]
+      });
+
+    await expect(replace()).resolves.toMatchObject({ inserted: true });
+    await repo.upsertPersonalSourceReplicationPolicy(
+      { userId: owner.id },
+      { enabled: false, mode: "hosted_personal" }
+    );
+    await expect(replace()).rejects.toThrow(
+      "Hosted Personal semantic authority changed before artifact acceptance"
+    );
+
+    const restoredPolicy = await repo.upsertPersonalSourceReplicationPolicy(
+      { userId: owner.id },
+      {
+        enabled: true,
+        targetUpstreamId: "hosted-a",
+        mode: "hosted_personal",
+        effectiveFrom: new Date().toISOString()
+      }
+    );
+    await pool.query("update memory_events set source_hash=$2 where id=$1", [
+      event.id,
+      `changed-${randomUUID()}`
+    ]);
+    await expect(
+      repo.replaceSourceEmbeddings({
+        source,
+        hostedPersonalAuthority: {
+          ownerUserId: owner.id,
+          targetUpstreamId: "hosted-a",
+          policyUpdatedAt: restoredPolicy.updatedAt
+        },
+        model: "qwen3-0.6b",
+        dimensions: 1024,
+        version: "qwen3-0.6b",
+        ...testEmbeddingCompatibility,
+        chunks: [
+          {
+            vector,
+            chunkIndex: 0,
+            chunkCount: 1,
+            inputTokenCount: 4,
+            sourceText: source.text
+          }
+        ]
+      })
+    ).rejects.toThrow(
+      "Memory Event embedding source changed after embedding work began"
+    );
   });
 });
