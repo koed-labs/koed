@@ -69,6 +69,7 @@ export const addAsset = ({
   root,
   version,
   executablePaths,
+  variants,
   platform = platformKey(),
   architecture = process.arch
 }) => {
@@ -87,6 +88,7 @@ export const addAsset = ({
     sha256: sha256Files(root, expectedFiles),
     expectedFiles,
     executablePaths,
+    ...(variants?.length ? { variants } : {}),
     installPath: id
   });
 };
@@ -138,6 +140,44 @@ export const writeRuntimeAssetManifest = ({
     root: resolve(runtimeRoot, "llama.cpp"),
     version: versions.llamaCpp ?? "llama-server-packaged",
     executablePaths: { llama_server: "llama-server" },
+    variants: [
+      ...(existsSync(resolve(runtimeRoot, "llama.cpp", "cpu", "llama-server"))
+        ? [
+            {
+              backend: "cpu",
+              executablePath: "cpu/llama-server",
+              requirements: { platform, architecture }
+            }
+          ]
+        : []),
+      ...(existsSync(resolve(runtimeRoot, "llama.cpp", "metal", "llama-server"))
+        ? [
+            {
+              backend: "metal",
+              executablePath: "metal/llama-server",
+              requirements: {
+                platform: "macos",
+                architecture: "arm64"
+              }
+            }
+          ]
+        : []),
+      ...(existsSync(resolve(runtimeRoot, "llama.cpp", "cuda", "llama-server"))
+        ? [
+            {
+              backend: "cuda",
+              executablePath: "cuda/llama-server",
+              requirements: {
+                platform: "linux",
+                architecture: "x64",
+                minimumCudaToolkit: "12.4",
+                minimumDriverLinux: "550.54.14",
+                discovery: "llama-server --list-devices"
+              }
+            }
+          ]
+        : [])
+    ],
     platform,
     architecture
   });

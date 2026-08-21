@@ -11,6 +11,14 @@ import type { EmbeddingServiceEnv } from "./env-config.js";
 import { extractEmbeddingVectors, normalizeVectors } from "./vectors.js";
 import type { EmbeddingLogger } from "./logging.js";
 import { errorType, event } from "./logging.js";
+import {
+  accelerationArgs,
+  cpuFallback,
+  listLlamaDevices,
+  resolveAcceleration,
+  type AccelerationPolicy,
+  type ResolvedAcceleration
+} from "./acceleration.js";
 
 export interface TokenPiece {
   tokenId: number;
@@ -35,12 +43,17 @@ export interface LlamaServerOptions {
   nUbatch: number;
   parallel: number;
   promptCacheEnabled: boolean;
+  accelerationPolicy: AccelerationPolicy;
+  accelerationDevice: string | null;
+  gpuIdleUnloadSeconds?: number;
 }
 
 export class LlamaServerError extends Error {}
 
 type FetchLike = typeof fetch;
 type SpawnLike = typeof spawn;
+type ListDevicesLike = typeof listLlamaDevices;
+type HostPlatform = { platform: NodeJS.Platform; arch: string };
 const llamaServerShutdownGraceMs = 2_000;
 
 const waitForChildExit = (
@@ -68,18 +81,25 @@ const waitForChildExit = (
 
 export const llamaServerEnvironment = (
   llamaServerBinary: string,
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  backend?: ResolvedAcceleration["backend"]
 ): NodeJS.ProcessEnv => {
   const llamaDir = dirname(llamaServerBinary);
   const existing = environment.LD_LIBRARY_PATH?.trim();
+  const existingDyld = environment.DYLD_LIBRARY_PATH?.trim();
   return {
     ...environment,
     LLAMA_ARG_UI: "false",
-    LD_LIBRARY_PATH: existing ? `${llamaDir}:${existing}` : llamaDir
+    ...(backend ? { KOED_LLAMA_SERVER_BACKEND: backend } : {}),
+    LD_LIBRARY_PATH: existing ? `${llamaDir}:${existing}` : llamaDir,
+    DYLD_LIBRARY_PATH: existingDyld ? `${llamaDir}:${existingDyld}` : llamaDir
   };
 };
 
-export const llamaServerArgs = (options: LlamaServerOptions): string[] => {
+export const llamaServerArgs = (
+  options: LlamaServerOptions,
+  acceleration: ResolvedAcceleration
+): string[] => {
   const args = [
     "--model",
     options.modelPath,
@@ -99,8 +119,7 @@ export const llamaServerArgs = (options: LlamaServerOptions): string[] => {
     "0",
     "--poll-batch",
     "0",
-    "--n-gpu-layers",
-    "0",
+    ...accelerationArgs(acceleration),
     "--host",
     "127.0.0.1",
     "--port",
@@ -109,6 +128,15 @@ export const llamaServerArgs = (options: LlamaServerOptions): string[] => {
     options.pooling,
     "--log-disable"
   ];
+  if (
+    acceleration.backend !== "cpu" &&
+    (options.gpuIdleUnloadSeconds ?? 300) > 0
+  ) {
+    args.push(
+      "--sleep-idle-seconds",
+      String(options.gpuIdleUnloadSeconds ?? 300)
+    );
+  }
   if (!options.promptCacheEnabled) {
     args.push("--no-cache-prompt", "--cache-ram", "0");
   }
@@ -196,6 +224,7 @@ export class LlamaServerClient {
   readonly logPath: string;
   private process: ChildProcess | null = null;
   private logFile: WriteStream | null = null;
+  private resolved: ResolvedAcceleration | null = null;
 
   constructor(
     private readonly config: Pick<
@@ -208,7 +237,9 @@ export class LlamaServerClient {
     private readonly logger: EmbeddingLogger,
     private readonly options: LlamaServerOptions,
     private readonly fetcher: FetchLike = globalThis.fetch.bind(globalThis),
-    private readonly spawner: SpawnLike = spawn
+    private readonly spawner: SpawnLike = spawn,
+    private readonly listDevices: ListDevicesLike = listLlamaDevices,
+    private readonly host?: HostPlatform
   ) {
     this.baseUrl = `http://127.0.0.1:${options.port}`;
     this.logPath = `/tmp/koed-${options.name}-llama-server.log`;
@@ -218,7 +249,82 @@ export class LlamaServerClient {
     if (this.isRunning()) {
       return;
     }
-    const args = llamaServerArgs(this.options);
+    this.resolved = await this.resolveRequestedAcceleration();
+    try {
+      await this.startResolved(this.resolved);
+    } catch (error) {
+      if (
+        this.options.accelerationPolicy !== "auto" ||
+        this.resolved.backend === "cpu"
+      ) {
+        throw error;
+      }
+      const failedBackend = this.resolved.backend;
+      await this.stop();
+      this.resolved = cpuFallback(
+        "auto",
+        `${failedBackend}_startup_failed`,
+        this.resolved.deviceListing
+      );
+      this.logger.warning("llama-server acceleration fell back to CPU", {
+        event: event("embedding.llama_server.acceleration_fallback"),
+        llama_server: { name: this.options.name, failed_backend: failedBackend }
+      });
+      await this.startResolved(this.resolved);
+    }
+  }
+
+  acceleration(): ResolvedAcceleration | null {
+    return this.resolved;
+  }
+
+  private async resolveRequestedAcceleration(): Promise<ResolvedAcceleration> {
+    if (this.options.accelerationPolicy === "cpu") {
+      return resolveAcceleration("cpu", []);
+    }
+    try {
+      const discovered = await this.listDevices(
+        this.config.llamaServerBinary,
+        this.options.accelerationPolicy
+      );
+      const resolved = resolveAcceleration(
+        this.options.accelerationPolicy,
+        discovered.devices,
+        this.options.accelerationDevice,
+        this.host,
+        discovered.listing
+      );
+      if (resolved.fallbackReason) {
+        this.logger.warning("llama-server accelerator is unavailable", {
+          event: event("embedding.llama_server.acceleration_fallback"),
+          llama_server: {
+            name: this.options.name,
+            policy: resolved.policy,
+            fallback_reason: resolved.fallbackReason
+          }
+        });
+      }
+      return resolved;
+    } catch (error) {
+      if (this.options.accelerationPolicy !== "auto") {
+        this.logger.error("required llama-server acceleration is unavailable", {
+          event: event("embedding.llama_server.acceleration_unavailable"),
+          llama_server: {
+            name: this.options.name,
+            policy: this.options.accelerationPolicy,
+            explicit_device_configured: this.options.accelerationDevice !== null
+          }
+        });
+        throw error;
+      }
+      return cpuFallback("auto", "accelerator_discovery_failed", null);
+    }
+  }
+
+  private async startResolved(
+    acceleration: ResolvedAcceleration
+  ): Promise<void> {
+    const args = llamaServerArgs(this.options, acceleration);
 
     this.logger.info("llama-server process starting", {
       event: event("embedding.llama_server.starting"),
@@ -236,7 +342,16 @@ export class LlamaServerClient {
         threads: this.options.nThreads,
         poll: 0,
         poll_batch: 0,
-        prompt_cache_enabled: this.options.promptCacheEnabled
+        prompt_cache_enabled: this.options.promptCacheEnabled,
+        acceleration_policy: acceleration.policy,
+        acceleration_backend: acceleration.backend,
+        acceleration_device: acceleration.device,
+        gpu_layers: acceleration.gpuLayers,
+        fallback_reason: acceleration.fallbackReason,
+        gpu_idle_unload_seconds:
+          acceleration.backend === "cpu"
+            ? 0
+            : (this.options.gpuIdleUnloadSeconds ?? 300)
       }
     });
 
@@ -250,7 +365,11 @@ export class LlamaServerClient {
         `\n--- starting ${this.options.name} llama-server ---\n`
       );
       const child = this.spawner(this.config.llamaServerBinary, args, {
-        env: llamaServerEnvironment(this.config.llamaServerBinary),
+        env: llamaServerEnvironment(
+          this.config.llamaServerBinary,
+          process.env,
+          acceleration.backend
+        ),
         stdio: ["ignore", "pipe", "pipe"]
       });
       this.process = child;

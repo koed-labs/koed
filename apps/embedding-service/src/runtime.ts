@@ -23,6 +23,10 @@ import type {
   EmbedResponse,
   RerankResponse
 } from "./schemas.js";
+import {
+  accelerationDescription,
+  type ResolvedAcceleration
+} from "./acceleration.js";
 
 export interface ChunkCandidate {
   inputIndex: number;
@@ -42,6 +46,7 @@ export interface LlamaEmbeddingClient {
     measuredTokens: number | null;
   }>;
   rerank(query: string, documents: string[]): Promise<LlamaRerankResult>;
+  acceleration?(): ResolvedAcceleration | null;
 }
 
 export class EmbeddingRuntime {
@@ -63,7 +68,10 @@ export class EmbeddingRuntime {
 
   embeddingBatchTokenLimit(): number {
     const headroom = Math.max(0, this.config.llamaBatchTokenHeadroom);
-    return Math.max(1, this.config.llamaNBatch - headroom);
+    return Math.max(
+      1,
+      Math.min(this.config.llamaNBatch, this.config.llamaNUbatch) - headroom
+    );
   }
 
   async loadEmbeddingModel(): Promise<void> {
@@ -140,6 +148,19 @@ export class EmbeddingRuntime {
 
   healthQueueSnapshot() {
     return this.scheduler.snapshot();
+  }
+
+  embeddingAcceleration(): ResolvedAcceleration | null {
+    return this.embeddingServer?.acceleration?.() ?? null;
+  }
+
+  rerankerAcceleration(): ResolvedAcceleration | null {
+    return this.rerankerServer?.acceleration?.() ?? null;
+  }
+
+  modelAcceleration(): string {
+    const resolved = this.embeddingAcceleration();
+    return resolved ? accelerationDescription(resolved) : "loading";
   }
 
   async requireEmbeddingServer(): Promise<LlamaEmbeddingClient> {
@@ -480,7 +501,10 @@ export class EmbeddingRuntime {
         nBatch: this.config.llamaNBatch,
         nUbatch: this.config.llamaNUbatch,
         parallel: this.config.llamaParallel,
-        promptCacheEnabled: false
+        promptCacheEnabled: false,
+        accelerationPolicy: this.config.embeddingAccelerationPolicy,
+        accelerationDevice: this.config.embeddingAccelerationDevice,
+        gpuIdleUnloadSeconds: this.config.embeddingGpuIdleUnloadSeconds
       });
       await this.startClient(this.embeddingServer);
     } catch (error) {
@@ -527,7 +551,10 @@ export class EmbeddingRuntime {
         nBatch: this.config.rerankerNBatch,
         nUbatch: this.config.rerankerNUbatch,
         parallel: this.config.rerankerParallel,
-        promptCacheEnabled: this.config.rerankerPromptCacheEnabled
+        promptCacheEnabled: this.config.rerankerPromptCacheEnabled,
+        accelerationPolicy: this.config.rerankerAccelerationPolicy,
+        accelerationDevice: this.config.rerankerAccelerationDevice,
+        gpuIdleUnloadSeconds: this.config.rerankerGpuIdleUnloadSeconds
       });
       await this.startClient(this.rerankerServer);
     } catch (error) {

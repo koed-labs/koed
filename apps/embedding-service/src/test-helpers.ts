@@ -19,7 +19,9 @@ export const testConfig = (
   modelTokenizer: "qwen3-embedding-0.6b-gguf",
   modelTokenizerRevision:
     "embedded-in-artifact:06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
-  modelAcceleration: "cpu;runtime=llama.cpp;n-gpu-layers=0",
+  embeddingAccelerationPolicy: "cpu",
+  embeddingAccelerationDevice: null,
+  embeddingGpuIdleUnloadSeconds: 300,
   expectedDimensions: 3,
   batchLimit: 16,
   llamaNCtx: 100,
@@ -49,8 +51,10 @@ export const testConfig = (
   rerankerNUbatch: 5,
   rerankerParallel: 1,
   rerankerPromptCacheEnabled: true,
+  rerankerAccelerationPolicy: "cpu",
+  rerankerAccelerationDevice: null,
+  rerankerGpuIdleUnloadSeconds: 300,
   embeddingServiceToken: "",
-  backendClass: "cpu",
   runtimeVersion: "test",
   logLevel: "critical",
   ...overrides

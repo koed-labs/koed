@@ -121,9 +121,12 @@ describe("Embedding Service env config", () => {
       "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439"
     );
     expect(config.modelTokenizer).toBe("qwen3-embedding-0.6b-gguf");
-    expect(config.modelAcceleration).toBe(
-      "cpu;runtime=llama.cpp;n-gpu-layers=0"
-    );
+    expect(config.embeddingAccelerationPolicy).toBe("auto");
+    expect(config.embeddingAccelerationDevice).toBeNull();
+    expect(config.embeddingGpuIdleUnloadSeconds).toBe(300);
+    expect(config.rerankerAccelerationPolicy).toBe("cpu");
+    expect(config.rerankerAccelerationDevice).toBeNull();
+    expect(config.rerankerGpuIdleUnloadSeconds).toBe(300);
     expect(config.expectedDimensions).toBe(1024);
     expect(config.llamaNCtx).toBe(4096);
     expect(config.embeddingMaxTokens).toBe(4096);
@@ -131,7 +134,7 @@ describe("Embedding Service env config", () => {
     expect(config.logLevel).toBe("debug");
     expect(config.llamaNBatch).toBe(8192);
     expect(config.llamaBatchTokenHeadroom).toBe(8);
-    expect(config.llamaNUbatch).toBe(8192);
+    expect(config.llamaNUbatch).toBe(512);
     expect(config.llamaParallel).toBe(1);
     expect(config.llamaServerBinary).toBe("/custom/llama-server");
     expect(config.modelPath).toBe("/models/embedding.gguf");
@@ -139,13 +142,58 @@ describe("Embedding Service env config", () => {
     expect(config.rerankerContextPerSlot).toBe(8192);
     expect(config.rerankerNCtx).toBe(32768);
     expect(config.rerankerNBatch).toBe(8192);
-    expect(config.rerankerNUbatch).toBe(8192);
+    expect(config.rerankerNUbatch).toBe(512);
     expect(config.rerankerParallel).toBe(4);
     expect(config.rerankerPromptCacheEnabled).toBe(true);
     expect(config.rerankerKey).toBeNull();
     expect(config.rerankerModelPath).toBeNull();
     expect(config.rerankerArtifact).toBeNull();
     expect(config.rerankerArtifactSha256).toBeNull();
+  });
+
+  it("keeps embedding and reranker acceleration policies independent", () => {
+    const config = resolveEnv({
+      KOED_EMBEDDING_ACCELERATION: "cuda",
+      KOED_EMBEDDING_DEVICE: "CUDA1",
+      KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS: "120",
+      KOED_RERANKER_ACCELERATION: "cpu",
+      KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS: "0"
+    });
+
+    expect(config.embeddingAccelerationPolicy).toBe("cuda");
+    expect(config.embeddingAccelerationDevice).toBe("CUDA1");
+    expect(config.embeddingGpuIdleUnloadSeconds).toBe(120);
+    expect(config.rerankerAccelerationPolicy).toBe("cpu");
+    expect(config.rerankerGpuIdleUnloadSeconds).toBe(0);
+  });
+
+  it("keeps the safe acceleration defaults when values are blank", () => {
+    const config = resolveEnv({
+      KOED_EMBEDDING_ACCELERATION: "",
+      KOED_RERANKER_ACCELERATION: ""
+    });
+
+    expect(config.embeddingAccelerationPolicy).toBe("auto");
+    expect(config.rerankerAccelerationPolicy).toBe("cpu");
+  });
+
+  it("rejects unknown acceleration policies", () => {
+    expect(() =>
+      resolveEnv({ KOED_EMBEDDING_ACCELERATION: "fastest" })
+    ).toThrow("KOED_EMBEDDING_ACCELERATION must be auto, cpu, metal, or cuda");
+  });
+
+  it("rejects malformed GPU idle unload values", () => {
+    expect(() =>
+      resolveEnv({ KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS: "-1" })
+    ).toThrow(
+      "KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS must be a non-negative integer"
+    );
+    expect(() =>
+      resolveEnv({ KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS: "1.5" })
+    ).toThrow(
+      "KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS must be a non-negative integer"
+    );
   });
 
   it("uses MODEL_KEY app-local precedence and defaults blank keys", () => {

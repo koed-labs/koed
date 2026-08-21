@@ -98,6 +98,15 @@
   justify-self: end;
 }
 
+.koed-preference-toggle-state {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  color: var(--destructive);
+  font-size: 12px;
+}
+
 .koed-preference-control select {
   min-block-size: 34px;
   min-inline-size: 150px;

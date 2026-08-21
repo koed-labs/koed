@@ -937,6 +937,11 @@ describe("start supervisor", () => {
       resolve(modelsDir, "Qwen3-Embedding-0.6B-Q8_0.gguf"),
       "model"
     );
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({ hardwareAcceleration: "cpu" })
+    );
     writeFileSync(
       envPath,
       [
@@ -948,6 +953,7 @@ describe("start supervisor", () => {
         "EMBEDDING_SERVICE_HOST_PORT=23800",
         "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT=28080",
         "EMBEDDING_LLAMA_RERANKER_SERVER_PORT=29080",
+        "KOED_EMBEDDING_ACCELERATION=metal",
         "WORKER_KOED_EMBEDDING_POOL_KEY=local-metal-pool",
         ""
       ].join("\n")
@@ -1016,6 +1022,7 @@ describe("start supervisor", () => {
     expect(spawned[0]?.env?.EMBEDDING_SERVICE_PORT).toBe("23800");
     expect(spawned[0]?.env?.LLAMA_EMBEDDING_SERVER_PORT).toBe("28080");
     expect(spawned[0]?.env?.LLAMA_RERANKER_SERVER_PORT).toBe("29080");
+    expect(spawned[0]?.env?.KOED_EMBEDDING_ACCELERATION).toBe("metal");
     expect(spawned.at(-1)?.env?.API_PORT).toBe("23300");
     const provisionedTokenFile: unknown = JSON.parse(
       readFileSync(resolve(root, "config/local-app-credential.json"), "utf8")

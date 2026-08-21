@@ -56,6 +56,27 @@ test("builds release metadata for standalone koed-server package targets", () =>
     ),
     "sig\n"
   );
+  const native = resolve(root, "native-runtime-linux-x64");
+  mkdirSync(native, { recursive: true });
+  writeFileSync(
+    resolve(native, "koed-native-runtime-linux-x64-0.4.0.tar.gz"),
+    "native archive\n"
+  );
+  writeFileSync(
+    resolve(native, "koed-native-runtime-linux-x64-0.4.0.tar.gz.sha256"),
+    `${"b".repeat(64)}  koed-native-runtime-linux-x64-0.4.0.tar.gz\n`
+  );
+  writeFileSync(
+    resolve(native, "koed-native-runtime-linux-x64-0.4.0.provenance.json"),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      artifact: {
+        version: "0.4.0",
+        platform: "linux",
+        architecture: "x64"
+      }
+    })}\n`
+  );
 
   const metadata = buildReleaseArtifactMetadata({
     version: "0.4.0",
@@ -85,9 +106,13 @@ test("builds release metadata for standalone koed-server package targets", () =>
   );
   assert.equal(metadata.artifacts.koedServerAppRuntime.kind, "app-runtime");
   assert.equal(metadata.artifacts.nativeRuntime.kind, "native-runtime");
-  assert.match(
-    metadata.artifacts.nativeRuntime.description,
-    /not published by this metadata yet/
+  assert.equal(
+    metadata.artifacts.nativeRuntime.targets[0].archive.sha256,
+    "b".repeat(64)
+  );
+  assert.equal(
+    metadata.artifacts.nativeRuntime.targets[0].archive.url,
+    "https://github.com/koed/koed/releases/download/v0.4.0/koed-native-runtime-linux-x64-0.4.0.tar.gz"
   );
   assert.equal(metadata.artifacts.models.kind, "models");
   assert.match(
@@ -112,5 +137,32 @@ test("requires SHA-256 sidecars for koed-server archives", () => {
         artifactRoot: root
       }),
     /Missing SHA-256 sidecar/
+  );
+});
+
+test("requires valid provenance for native runtime archives", () => {
+  const root = tempDir();
+  writeFileSync(
+    resolve(root, "koed-native-runtime-linux-x64-0.4.0.tar.gz"),
+    "archive\n"
+  );
+  writeFileSync(
+    resolve(root, "koed-native-runtime-linux-x64-0.4.0.tar.gz.sha256"),
+    `${"c".repeat(64)}  koed-native-runtime-linux-x64-0.4.0.tar.gz\n`
+  );
+  writeFileSync(
+    resolve(root, "koed-native-runtime-linux-x64-0.4.0.provenance.json"),
+    `${JSON.stringify({ schemaVersion: 1 })}\n`
+  );
+
+  assert.throws(
+    () =>
+      buildReleaseArtifactMetadata({
+        version: "0.4.0",
+        tag: "v0.4.0",
+        repository: "koed/koed",
+        artifactRoot: root
+      }),
+    /Invalid native-runtime provenance/
   );
 });
