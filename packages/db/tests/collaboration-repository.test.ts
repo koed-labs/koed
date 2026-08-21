@@ -631,6 +631,9 @@ describeDb("Collaboration repository", () => {
       )
     );
     expect(noteMessages.every(Boolean)).toBe(true);
+    await expect(
+      repository.listPersonalNoteProjectionActors({ limit: 10 })
+    ).resolves.toContainEqual({ userId: ownerUserId });
     expect(
       new Set(noteMessages.map((message) => message?.threadSequence))
     ).toEqual(new Set([1, 2, 3, 4]));
@@ -692,6 +695,29 @@ describeDb("Collaboration repository", () => {
         messageId: noteMessages[0]!.id
       })
     ).toBeNull();
+
+    let projectionCursor =
+      await repository.getOrCreatePersonalNoteProjectionCursor(
+        actor(ownerUserId),
+        { threadId: notes!.id }
+      );
+    for (const noteMessage of [...noteMessages].sort(
+      (left, right) => left!.threadSequence - right!.threadSequence
+    )) {
+      projectionCursor = await repository.advancePersonalNoteProjectionCursor(
+        actor(ownerUserId),
+        {
+          threadId: notes!.id,
+          expectedSequence: projectionCursor!.lastThreadSequence,
+          nextSequence: noteMessage!.threadSequence,
+          outcome: "existing",
+          embeddingQueued: true
+        }
+      );
+    }
+    await expect(
+      repository.listPersonalNoteProjectionActors({ limit: 10 })
+    ).resolves.not.toContainEqual({ userId: ownerUserId });
 
     const idempotencyKey = `personal-message:${randomUUID()}`;
     const first = await repository.sendMessage(actor(ownerUserId), {
@@ -828,6 +854,20 @@ describeDb("Collaboration repository", () => {
       archivedAt: null,
       version: archived!.version + 1
     });
+
+    for (let index = 0; index < 101; index += 1) {
+      await repository.createThread(actor(ownerUserId), {
+        kind: "personal_channel",
+        idempotencyKey: `newer-personal-channel:${index}:${randomUUID()}`,
+        name: `Newer Personal channel ${index}`
+      });
+    }
+    await expect(
+      repository.getPersonalNotesThread(actor(ownerUserId))
+    ).resolves.toMatchObject({ id: notes?.id, kind: "notes_to_self" });
+    await expect(
+      repository.getPersonalNotesThread(actor(outsiderUserId))
+    ).resolves.toBeNull();
   });
 
   it("keeps encrypted collaboration metadata out of structural and JSON payload records", async () => {

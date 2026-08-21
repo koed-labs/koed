@@ -15,6 +15,7 @@ import {
 import type {
   PersonalDesktopApi,
   PersonalDesktopConversationEvent,
+  PersonalDesktopNote,
   PersonalDesktopProject,
   PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
@@ -715,6 +716,10 @@ const interactionIds = {
   bobNoteMemoryEvent: uuid(133),
   aliceNoteLogicalMemory: uuid(134),
   bobNoteLogicalMemory: uuid(135),
+  aliceCreatedNote: uuid(136),
+  aliceCreatedNoteMemoryEvent: uuid(137),
+  bobCreatedNote: uuid(138),
+  bobCreatedNoteMemoryEvent: uuid(139),
   actionGrant: uuid(140),
   personalSubscription: uuid(141),
   alphaSubscription: uuid(142),
@@ -770,12 +775,7 @@ const interactionNote = (
   };
 };
 
-const interactionNoteSummary = (
-  actor: StatefulActor,
-  title: string,
-  titleVersion: number
-) => {
-  const note = interactionNote(actor, title, titleVersion);
+const interactionNoteSummary = (note: PersonalDesktopNote) => {
   return {
     noteId: note.noteId,
     memoryEventId: note.memoryEventId,
@@ -789,19 +789,77 @@ const interactionNoteSummary = (
 const createInteractionPersonalMemoryApi = (
   actor: StatefulActor
 ): PersonalDesktopApi => {
-  let title = "Browser launch note";
-  let titleVersion = 1;
+  let notes: PersonalDesktopNote[] = [
+    interactionNote(actor, "Browser launch note", 1)
+  ];
+  const record = (operation: string, input: unknown) => {
+    const browserWindow = window as Window & {
+      __koedPersonalMemoryCommands?: Array<{
+        operation: string;
+        input: unknown;
+      }>;
+    };
+    browserWindow.__koedPersonalMemoryCommands ??= [];
+    browserWindow.__koedPersonalMemoryCommands.push({ operation, input });
+  };
   return {
     ...personalMemoryApi,
     listNotes: async () => ({
-      notes: [interactionNoteSummary(actor, title, titleVersion)],
+      notes: notes.map(interactionNoteSummary),
       nextBeforeSequence: null
     }),
-    loadNote: async () => interactionNote(actor, title, titleVersion),
-    renameNote: async ({ title: nextTitle }) => {
-      title = nextTitle;
-      titleVersion += 1;
-      return interactionNoteSummary(actor, title, titleVersion);
+    loadNote: async ({ noteId }) => {
+      const note = notes.find((candidate) => candidate.noteId === noteId);
+      if (!note) throw new Error("Personal Note fixture entry is unavailable");
+      return note;
+    },
+    createNote: async (input) => {
+      record("personal.notes.create", input);
+      const noteId =
+        actor === "alice"
+          ? interactionIds.aliceCreatedNote
+          : interactionIds.bobCreatedNote;
+      const memoryEventId =
+        actor === "alice"
+          ? interactionIds.aliceCreatedNoteMemoryEvent
+          : interactionIds.bobCreatedNoteMemoryEvent;
+      const title = input.body.split(/\r?\n/u)[0]?.trim() || "Untitled Note";
+      const note: PersonalDesktopNote = {
+        noteId,
+        memoryEventId,
+        title,
+        titleVersion: 1,
+        createdAt: timestamp,
+        sourceSequence: 2,
+        event: {
+          id: memoryEventId,
+          actor: "user",
+          eventType: "personal_note_created",
+          timestamp,
+          sourceEventTime: timestamp,
+          sourceSequence: 2,
+          content: input.body,
+          contentPreview: title,
+          metadata: {},
+          invalidatedAt: null
+        }
+      };
+      notes = [note, ...notes];
+      return note;
+    },
+    renameNote: async ({ noteId, title: nextTitle }) => {
+      const index = notes.findIndex((candidate) => candidate.noteId === noteId);
+      if (index < 0)
+        throw new Error("Personal Note fixture entry is unavailable");
+      const renamed = {
+        ...notes[index]!,
+        title: nextTitle,
+        titleVersion: notes[index]!.titleVersion + 1
+      };
+      notes = notes.map((note, noteIndex) =>
+        noteIndex === index ? renamed : note
+      );
+      return interactionNoteSummary(renamed);
     }
   };
 };

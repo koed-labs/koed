@@ -164,6 +164,8 @@ const bodyExcludes = (text) => `!(${bodyIncludes(text)})`;
 
 const commands = (window) =>
   evaluate(window, `window.__koedCollaborationInteractions.commands()`);
+const personalMemoryCommands = (window) =>
+  evaluate(window, `window.__koedPersonalMemoryCommands ?? []`);
 const lastCommand = async (window, name) => {
   const all = await commands(window);
   const matching = all.filter((command) => command.command === name);
@@ -714,9 +716,11 @@ const run = async () => {
       "Browser-created durable Note"
     );
     await trustedClick(alice, `${byText("button", "Save Note")}`);
-    const createdNote = await lastCommand(alice, "collaboration.send_message");
-    assert.equal(createdNote.input.body, "Browser-created durable Note");
-    assert.equal(createdNote.input.thread.threadId, ids.aliceNote);
+    const noteCommands = await personalMemoryCommands(alice);
+    const createdNote = noteCommands.at(-1);
+    assert.equal(createdNote?.operation, "personal.notes.create");
+    assert.equal(createdNote?.input.body, "Browser-created durable Note");
+    assert.equal(typeof createdNote?.input.idempotencyKey, "string");
     await trustedClick(
       alice,
       `[...document.querySelectorAll('.personal-note-items > button')]
@@ -731,12 +735,20 @@ const run = async () => {
       alice,
       `document.querySelector('[aria-label="Rename Note"]')`
     );
+    await waitFor(
+      alice,
+      `Boolean(document.querySelector('.personal-note-header input')) && Boolean(document.querySelector('[aria-label="Save Note title"]'))`,
+      "Personal Note rename editor"
+    );
     await trustedReplace(
       alice,
       `document.querySelector('.personal-note-header input')`,
       "Renamed browser Note"
     );
-    await trustedClick(alice, `${byText("button", "Save title")}`);
+    await trustedClick(
+      alice,
+      `document.querySelector('[aria-label="Save Note title"]')`
+    );
     await waitFor(
       alice,
       bodyIncludes("Renamed browser Note"),
@@ -755,13 +767,13 @@ const run = async () => {
     );
     await waitFor(
       alice,
-      `${bodyIncludes("Share Note")} && ${bodyIncludes("Snapshot")} && ${bodyIncludes("Memory Event")}`,
+      `${bodyIncludes("Share Note")} && ${bodyIncludes("Later edits or renames will not change this shared copy.")} && ${bodyIncludes("Review")}`,
       "fixed Personal Note Share review"
     );
     await trustedClick(alice, `${byText("button", "Review")}`);
     await waitFor(
       alice,
-      bodyIncludes("Approve sharing this exact one-item Note snapshot"),
+      `${bodyIncludes("Approve to share this note with Electron Team App.")} && ${bodyIncludes("Later edits or renames will not change this shared copy.")}`,
       "exact Personal Note candidate preview"
     );
     await trustedClick(alice, `${byText("button", "Approve and share")}`);

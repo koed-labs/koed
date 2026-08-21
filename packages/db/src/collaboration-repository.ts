@@ -368,6 +368,9 @@ export interface CollaborationRepository {
           limit?: number;
         }
   ): Promise<CollaborationThreadRecord[] | null>;
+  getPersonalNotesThread(
+    actor: ActorContext
+  ): Promise<CollaborationThreadRecord | null>;
   renameThread(
     actor: ActorContext,
     input: { threadId: string; expectedVersion: number; name: string }
@@ -422,6 +425,9 @@ export interface CollaborationRepository {
       failureCode?: string;
     }
   ): Promise<PersonalNoteProjectionCursorRecord | null>;
+  listPersonalNoteProjectionActors(input?: {
+    limit?: number;
+  }): Promise<ActorContext[]>;
   listPersonalNotes(
     actor: ActorContext,
     input?: { beforeSequence?: number; limit?: number }
@@ -3993,6 +3999,28 @@ export const createCollaborationRepository = (
         : mapThreadRows(pool, actor, requireProvider(input.scope), rows);
     },
 
+    async getPersonalNotesThread(actor) {
+      const result = await pool.query<{ id: string }>(
+        `select id from collaboration_threads
+          where scope='personal'
+            and kind='notes_to_self'
+            and personal_owner_user_id=$1
+          limit 1`,
+        [actor.userId]
+      );
+      const threadId = result.rows[0]?.id;
+      if (!threadId) return null;
+      const row = await getAuthorizedThreadRow(pool, actor, threadId, {
+        required: "read",
+        includeArchived: true
+      });
+      return row
+        ? (
+            await mapThreadRows(pool, actor, requireProvider("personal"), [row])
+          )[0]!
+        : null;
+    },
+
     async renameThread(actor, input) {
       return withTransaction(pool, async (client) =>
         updateThreadName(
@@ -4139,6 +4167,29 @@ export const createCollaborationRepository = (
       return result.rows[0]
         ? mapPersonalNoteProjectionCursor(result.rows[0])
         : null;
+    },
+
+    async listPersonalNoteProjectionActors(input = {}) {
+      const limit = Math.min(Math.max(input.limit ?? 10, 1), 100);
+      const result = await pool.query<{ user_id: string }>(
+        `select ct.personal_owner_user_id as user_id
+           from collaboration_threads ct
+           join collaboration_messages cm on cm.thread_id=ct.id
+           left join personal_note_projection_cursors cursor
+             on cursor.owner_user_id=ct.personal_owner_user_id
+            and cursor.thread_id=ct.id
+          where ct.scope='personal'
+            and ct.kind='notes_to_self'
+            and ct.personal_owner_user_id is not null
+            and cm.scope='personal'
+            and cm.personal_owner_user_id=ct.personal_owner_user_id
+            and cm.thread_sequence > coalesce(cursor.last_thread_sequence,0)
+          group by ct.personal_owner_user_id
+          order by min(cm.created_at),ct.personal_owner_user_id
+          limit $1`,
+        [limit]
+      );
+      return result.rows.map((row) => ({ userId: row.user_id }));
     },
 
     async listPersonalNotes(actor, input = {}) {

@@ -456,6 +456,15 @@ const createCollaborationFixture = () => {
         nextAfterSequence: selected[selected.length - 1]?.threadSequence ?? null
       };
     },
+    async getPersonalNotesThread(actor) {
+      return (
+        [...threads.values()].find(
+          (candidate) =>
+            candidate.kind === "notes_to_self" &&
+            candidate.personalOwnerUserId === actor.userId
+        ) ?? null
+      );
+    },
     async getOrCreatePersonalNoteProjectionCursor(actor, input) {
       const thread = authorizedThread(actor, input.threadId, "read", true);
       return thread?.kind === "notes_to_self"
@@ -475,6 +484,9 @@ const createCollaborationFixture = () => {
     },
     async advancePersonalNoteProjectionCursor() {
       return null;
+    },
+    async listPersonalNoteProjectionActors() {
+      return [];
     },
     async listPersonalNotes(actor, input = {}) {
       const thread = [...threads.values()].find(
@@ -835,7 +847,8 @@ describe("collaboration HTTP routes", () => {
 
   it("lists, loads, and renames only the owner's bound Personal Notes", async () => {
     const fixture = createCollaborationFixture();
-    const app = await buildTestServer(fixture);
+    const projectPersonalNote = vi.fn(async () => undefined);
+    const app = await buildTestServer(fixture, undefined, projectPersonalNote);
     const thread = await fixture.repository.createThread(
       { userId: fixture.ids.alice },
       { kind: "notes_to_self", idempotencyKey: "fixed-note-thread" }
@@ -855,6 +868,7 @@ describe("collaboration HTTP routes", () => {
       headers: { authorization: "Bearer personal-api-token" }
     });
     expect(list.statusCode).toBe(200);
+    expect(projectPersonalNote).not.toHaveBeenCalled();
     expect(
       jsonBody<{ notes: Array<Record<string, unknown>> }>(list).notes[0]
     ).toMatchObject({

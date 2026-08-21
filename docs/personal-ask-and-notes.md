@@ -66,17 +66,25 @@ LCM summarization, and is available to the global Ask workflow after embedding
 completes. Personal-channel and Team collaboration messages do not use this
 Projection path.
 
-The API also reconciles historical Notes in owner-scoped pages. A durable
-per-owner cursor records the last processed Notes-to-self sequence and bounded
-counts for existing events, created events, embedding admission, and failures.
-The Notes list drains bounded reconciliation batches before it reads the list,
-so an existing User does not need to create another Note to make historical
-Notes available. One malformed Note advances as a recorded failure and does
-not block later Notes. Retryable Projection or embedding-admission failures do
-not advance the cursor. Repeated work uses the Note message identity, so it
-resolves to the same Memory Event. Personal Note events and their embeddings
-stay out of Project graph counts, Project activity, session grouping, and LCM
-work.
+The API also reconciles historical Notes through a local background repair
+service. On startup and at bounded intervals, it discovers owners whose unique
+Notes-to-self thread has messages beyond its durable Projection cursor. Each
+run processes at most one bounded page per owner and prevents overlapping local
+runs. Historical embedding work uses the background priority class. Note list
+requests do not wait for this backlog, and creating a Note synchronously
+projects only the newly accepted Note in the interactive priority class.
+Projected historical Notes emit the normal change notification so Desktop can
+refresh when they become available.
+
+The durable per-owner cursor records the last processed Notes-to-self sequence
+and bounded counts for existing events, created events, embedding admission,
+and failures. One malformed Note advances as a recorded failure and does not
+block later Notes. Retryable Projection or embedding-admission failures do not
+advance the cursor. A concurrent cursor loser reloads durable progress and
+continues or exits successfully when another run completed the same work.
+Repeated work uses the Note message identity, so it resolves to the same Memory
+Event. Personal Note events and their embeddings stay out of Project graph
+counts, Project activity, session grouping, and LCM work.
 
 The full-width layout keeps the Note list beside the detail pane. The narrow
 layout uses a list, drill-in detail, and Back action.

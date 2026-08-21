@@ -49,7 +49,7 @@ import {
   type CollaborationActionGrantControl
 } from "../local-edge/collaboration-action-grant-control.js";
 import {
-  drainPersonalNotesToMemory,
+  createPersonalNoteMemoryRepairService,
   projectPersonalNoteToMemory
 } from "../collaboration/personal-note-memory.js";
 import { createCollaborationActionGrantLifecycle } from "../local-edge/collaboration-action-grant-lifecycle.js";
@@ -457,6 +457,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     typeof createSecureUpstreamFetch
   > | null = null;
   let pendingShareSourceWorkerTimer: NodeJS.Timeout | null = null;
+  let personalNoteMemoryRepairService: ReturnType<
+    typeof createPersonalNoteMemoryRepairService
+  > | null = null;
   const relayCleanup = (
     repository as
       | (MemorySourceRepository & {
@@ -568,6 +571,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     if (pendingShareSourceWorkerTimer) {
       clearInterval(pendingShareSourceWorkerTimer);
     }
+    await personalNoteMemoryRepairService?.close();
     await Promise.all([
       embeddingQueue?.close(),
       compactionQueue?.close(),
@@ -962,15 +966,26 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const collaborationNavigationInvalidationListeners = new Set<
     (backendId: string) => void
   >();
-  const reconcileAllPersonalNotes = async (ownerUserId: string) => {
-    await drainPersonalNotesToMemory(
-      {
-        repository: requireRepository(),
-        enqueueEmbedding
-      },
-      { ownerUserId }
-    );
-  };
+  const personalNoteRepository = repository;
+  if (
+    personalNoteRepository &&
+    typeof personalNoteRepository.listPersonalNoteProjectionActors ===
+      "function"
+  ) {
+    personalNoteMemoryRepairService = createPersonalNoteMemoryRepairService({
+      repository: personalNoteRepository,
+      enqueueEmbedding,
+      onError: (error) => {
+        app.log.error(
+          {
+            err: error,
+            event: { name: "personal_note.memory_repair.failed" }
+          },
+          "Personal Note memory repair failed"
+        );
+      }
+    });
+  }
   const routeContext = {
     config,
     requireRepository,
@@ -988,9 +1003,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           },
           input
         );
-        await reconcileAllPersonalNotes(input.ownerUserId);
       },
-      reconcilePersonalNotes: reconcileAllPersonalNotes,
       actionGrantLifecycle: collaborationActionGrantLifecycle,
       actionGrantControl: collaborationActionGrantControl,
       sharedMemoryControl: collaborationSharedMemoryControl,
@@ -1247,7 +1260,6 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerCollaborationRoutes(app, {
     requireCollaborationRepository: requireRepository,
     projectPersonalNote: routeContext.collaboration.projectPersonalNote,
-    reconcilePersonalNotes: routeContext.collaboration.reconcilePersonalNotes,
     authenticateSessionOrDeviceCredential:
       authHelpers.authenticateSessionOrDeviceCredential,
     authenticateApiToken: authHelpers.authenticateApiToken,

@@ -6,6 +6,7 @@ import type {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  createPersonalNoteMemoryRepairService,
   projectPersonalNoteToMemory,
   reconcilePersonalNotesToMemory,
   type PersonalNoteMemoryReconciliationOptions
@@ -138,13 +139,11 @@ describe("Personal Note memory Projection", () => {
       threadSequence: 8
     };
     const repository = {
-      listThreads: vi.fn(async () => [
-        {
-          id: message.threadId,
-          kind: "notes_to_self",
-          personalOwnerUserId: message.personalOwnerUserId
-        }
-      ]),
+      getPersonalNotesThread: vi.fn(async () => ({
+        id: message.threadId,
+        kind: "notes_to_self",
+        personalOwnerUserId: message.personalOwnerUserId
+      })),
       getOrCreatePersonalNoteProjectionCursor: vi.fn(async () => cursor),
       listMessages: vi.fn(async () => ({
         messages: [malformed, valid],
@@ -209,5 +208,240 @@ describe("Personal Note memory Projection", () => {
       })
     );
     expect(repository.createMemoryEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets concurrent reconciliation callers share durable cursor progress", async () => {
+    let cursor: PersonalNoteProjectionCursorRecord = {
+      ownerUserId: message.personalOwnerUserId!,
+      threadId: message.threadId,
+      lastThreadSequence: 6,
+      scannedCount: 0,
+      existingCount: 0,
+      createdCount: 0,
+      embeddingQueuedCount: 0,
+      failureCount: 0,
+      lastFailureCode: null,
+      updatedAt: message.createdAt
+    };
+    let releaseMessagePages!: () => void;
+    const messagePagesReady = new Promise<void>((resolve) => {
+      releaseMessagePages = resolve;
+    });
+    let pageReaders = 0;
+    let memoryEventCreated = false;
+    const repository = {
+      getPersonalNotesThread: vi.fn(async () => ({
+        id: message.threadId,
+        kind: "notes_to_self",
+        personalOwnerUserId: message.personalOwnerUserId
+      })),
+      getOrCreatePersonalNoteProjectionCursor: vi.fn(async () => cursor),
+      listMessages: vi.fn(async () => {
+        pageReaders += 1;
+        if (pageReaders === 2) releaseMessagePages();
+        await messagePagesReady;
+        return {
+          messages: [message],
+          hasMore: false,
+          nextBeforeSequence: null,
+          nextAfterSequence: message.threadSequence
+        };
+      }),
+      findPersonalNoteMemoryEventId: vi.fn(async () =>
+        memoryEventCreated ? "77777777-7777-4777-8777-777777777777" : null
+      ),
+      createMemoryEvent: vi.fn(async () => {
+        memoryEventCreated = true;
+        return { id: "77777777-7777-4777-8777-777777777777" };
+      }),
+      advancePersonalNoteProjectionCursor: vi.fn(async (_actor, input) => {
+        if (cursor.lastThreadSequence !== input.expectedSequence) return null;
+        cursor = { ...cursor, lastThreadSequence: input.nextSequence };
+        return cursor;
+      })
+    };
+    const options = {
+      repository:
+        repository as unknown as PersonalNoteMemoryReconciliationOptions["repository"],
+      enqueueEmbedding: vi.fn(async () => ({
+        queued: true,
+        inline: false,
+        jobId: "embed-note"
+      }))
+    };
+
+    await expect(
+      Promise.all([
+        reconcilePersonalNotesToMemory(options, {
+          ownerUserId: message.personalOwnerUserId!
+        }),
+        reconcilePersonalNotesToMemory(options, {
+          ownerUserId: message.personalOwnerUserId!
+        })
+      ])
+    ).resolves.toEqual([
+      expect.objectContaining({ cursor: message.threadSequence, failures: 0 }),
+      expect.objectContaining({ cursor: message.threadSequence, failures: 0 })
+    ]);
+    expect(
+      repository.advancePersonalNoteProjectionCursor
+    ).toHaveBeenCalledTimes(2);
+    expect(
+      repository.getOrCreatePersonalNoteProjectionCursor
+    ).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not advance the cursor when embedding admission asks for a retry", async () => {
+    const cursor: PersonalNoteProjectionCursorRecord = {
+      ownerUserId: message.personalOwnerUserId!,
+      threadId: message.threadId,
+      lastThreadSequence: 6,
+      scannedCount: 0,
+      existingCount: 0,
+      createdCount: 0,
+      embeddingQueuedCount: 0,
+      failureCount: 0,
+      lastFailureCode: null,
+      updatedAt: message.createdAt
+    };
+    const repository = {
+      getPersonalNotesThread: vi.fn(async () => ({
+        id: message.threadId,
+        kind: "notes_to_self",
+        personalOwnerUserId: message.personalOwnerUserId
+      })),
+      getOrCreatePersonalNoteProjectionCursor: vi.fn(async () => cursor),
+      listMessages: vi.fn(async () => ({
+        messages: [message],
+        hasMore: false,
+        nextBeforeSequence: null,
+        nextAfterSequence: message.threadSequence
+      })),
+      findPersonalNoteMemoryEventId: vi.fn(async () => null),
+      createMemoryEvent: vi.fn(async () => ({
+        id: "77777777-7777-4777-8777-777777777777"
+      })),
+      advancePersonalNoteProjectionCursor: vi.fn()
+    };
+
+    await expect(
+      reconcilePersonalNotesToMemory(
+        {
+          repository:
+            repository as unknown as PersonalNoteMemoryReconciliationOptions["repository"],
+          enqueueEmbedding: vi.fn(async () => ({
+            queued: false,
+            inline: false,
+            jobId: null
+          }))
+        },
+        { ownerUserId: message.personalOwnerUserId! }
+      )
+    ).resolves.toMatchObject({ cursor: 6, failures: 1, hasMore: true });
+    expect(
+      repository.advancePersonalNoteProjectionCursor
+    ).not.toHaveBeenCalled();
+  });
+
+  it("starts bounded background repair and coalesces overlapping runs", async () => {
+    let releaseActors!: (actors: Array<{ userId: string }>) => void;
+    const actors = new Promise<Array<{ userId: string }>>((resolve) => {
+      releaseActors = resolve;
+    });
+    const repository = {
+      listPersonalNoteProjectionActors: vi.fn(() => actors),
+      getPersonalNotesThread: vi.fn(),
+      getOrCreatePersonalNoteProjectionCursor: vi.fn(),
+      listMessages: vi.fn(),
+      findPersonalNoteMemoryEventId: vi.fn(),
+      createMemoryEvent: vi.fn(),
+      advancePersonalNoteProjectionCursor: vi.fn()
+    };
+    const service = createPersonalNoteMemoryRepairService({
+      repository: repository as unknown as Parameters<
+        typeof createPersonalNoteMemoryRepairService
+      >[0]["repository"],
+      enqueueEmbedding: vi.fn(),
+      actorLimit: 3,
+      noteLimit: 7,
+      intervalMs: 60_000
+    });
+
+    const overlapping = service.runNow();
+    expect(repository.listPersonalNoteProjectionActors).toHaveBeenCalledOnce();
+    expect(repository.listPersonalNoteProjectionActors).toHaveBeenCalledWith({
+      limit: 3
+    });
+    releaseActors([]);
+    await overlapping;
+    await service.close();
+    await service.runNow();
+    expect(repository.listPersonalNoteProjectionActors).toHaveBeenCalledOnce();
+  });
+
+  it("processes at most one bounded Note page per owner in each repair run", async () => {
+    let cursor: PersonalNoteProjectionCursorRecord = {
+      ownerUserId: message.personalOwnerUserId!,
+      threadId: message.threadId,
+      lastThreadSequence: 6,
+      scannedCount: 0,
+      existingCount: 0,
+      createdCount: 0,
+      embeddingQueuedCount: 0,
+      failureCount: 0,
+      lastFailureCode: null,
+      updatedAt: message.createdAt
+    };
+    const repository = {
+      listPersonalNoteProjectionActors: vi.fn(async () => [
+        { userId: message.personalOwnerUserId! }
+      ]),
+      getPersonalNotesThread: vi.fn(async () => ({
+        id: message.threadId,
+        kind: "notes_to_self",
+        personalOwnerUserId: message.personalOwnerUserId
+      })),
+      getOrCreatePersonalNoteProjectionCursor: vi.fn(async () => cursor),
+      listMessages: vi.fn(async () => ({
+        messages: [message],
+        hasMore: true,
+        nextBeforeSequence: null,
+        nextAfterSequence: message.threadSequence
+      })),
+      findPersonalNoteMemoryEventId: vi.fn(async () => null),
+      createMemoryEvent: vi.fn(async () => ({
+        id: "77777777-7777-4777-8777-777777777777"
+      })),
+      advancePersonalNoteProjectionCursor: vi.fn(async (_actor, input) => {
+        cursor = { ...cursor, lastThreadSequence: input.nextSequence };
+        return cursor;
+      })
+    };
+    const enqueueEmbedding = vi.fn(async () => ({
+      queued: true,
+      inline: false,
+      jobId: "embed-note"
+    }));
+    const service = createPersonalNoteMemoryRepairService({
+      repository: repository as unknown as Parameters<
+        typeof createPersonalNoteMemoryRepairService
+      >[0]["repository"],
+      enqueueEmbedding,
+      noteLimit: 7,
+      intervalMs: 60_000
+    });
+
+    await service.runNow();
+    await service.close();
+    expect(repository.listMessages).toHaveBeenCalledOnce();
+    expect(repository.listMessages).toHaveBeenCalledWith(
+      { userId: message.personalOwnerUserId },
+      expect.objectContaining({ limit: 7 })
+    );
+    expect(enqueueEmbedding).toHaveBeenCalledWith(
+      "memory_event",
+      "77777777-7777-4777-8777-777777777777",
+      "historical_import_backfill"
+    );
   });
 });

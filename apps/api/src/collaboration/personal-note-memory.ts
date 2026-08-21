@@ -21,7 +21,7 @@ export interface PersonalNoteMemoryReconciliationOptions {
     MemorySourceRepository,
     | "createMemoryEvent"
     | "findPersonalNoteMemoryEventId"
-    | "listThreads"
+    | "getPersonalNotesThread"
     | "listMessages"
     | "getOrCreatePersonalNoteProjectionCursor"
     | "advancePersonalNoteProjectionCursor"
@@ -31,6 +31,20 @@ export interface PersonalNoteMemoryReconciliationOptions {
     sourceId: string,
     workClass?: KoedWorkClass
   ): Promise<MemoryJobStatus>;
+}
+
+export interface PersonalNoteMemoryRepairOptions extends PersonalNoteMemoryReconciliationOptions {
+  repository: PersonalNoteMemoryReconciliationOptions["repository"] &
+    Pick<MemorySourceRepository, "listPersonalNoteProjectionActors">;
+  intervalMs?: number;
+  actorLimit?: number;
+  noteLimit?: number;
+  onError?(error: unknown): void;
+}
+
+export interface PersonalNoteMemoryRepairService {
+  runNow(): Promise<void>;
+  close(): Promise<void>;
 }
 
 export interface PersonalNoteMemoryReconciliationResult {
@@ -49,6 +63,7 @@ export const projectPersonalNoteToMemory = async (
     ownerUserId: string;
     threadKind: "notes_to_self";
     message: CollaborationMessageRecord;
+    workClass?: KoedWorkClass;
   }
 ): Promise<{ memoryEventId: string; embedding: MemoryJobStatus }> => {
   if (
@@ -93,7 +108,7 @@ export const projectPersonalNoteToMemory = async (
   const embedding = await options.enqueueEmbedding(
     "memory_event",
     event.id,
-    "interactive_recall_question"
+    input.workClass ?? "interactive_recall_question"
   );
   return { memoryEventId: event.id, embedding };
 };
@@ -104,16 +119,7 @@ export const reconcilePersonalNotesToMemory = async (
 ): Promise<PersonalNoteMemoryReconciliationResult> => {
   const limit = Math.max(1, Math.min(100, Math.trunc(input.limit ?? 50)));
   const actor = { userId: input.ownerUserId };
-  const threads = await options.repository.listThreads(actor, {
-    scope: "personal",
-    includeArchived: true,
-    limit: 100
-  });
-  const notesThread = threads?.find(
-    (thread) =>
-      thread.kind === "notes_to_self" &&
-      thread.personalOwnerUserId === input.ownerUserId
-  );
+  const notesThread = await options.repository.getPersonalNotesThread(actor);
   if (!notesThread) {
     return {
       scanned: 0,
@@ -143,6 +149,7 @@ export const reconcilePersonalNotesToMemory = async (
   let embeddingQueued = 0;
   let failures = 0;
   let scanned = 0;
+  let retryNeeded = false;
   for (const message of page.messages) {
     scanned += 1;
     let outcome: "existing" | "created" | "failed" = "failed";
@@ -156,12 +163,14 @@ export const reconcilePersonalNotesToMemory = async (
       const projection = await projectPersonalNoteToMemory(options, {
         ownerUserId: input.ownerUserId,
         threadKind: "notes_to_self",
-        message
+        message,
+        workClass: "historical_import_backfill"
       });
       outcome = prior ? "existing" : "created";
       queued = projection.embedding.queued;
       if (!queued) {
         failures += 1;
+        retryNeeded = true;
         break;
       }
       if (outcome === "existing") existing += 1;
@@ -169,22 +178,49 @@ export const reconcilePersonalNotesToMemory = async (
       if (queued) embeddingQueued += 1;
     } catch (error) {
       failures += 1;
-      if (!(error instanceof TypeError)) break;
+      if (!(error instanceof TypeError)) {
+        retryNeeded = true;
+        break;
+      }
       failureCode = "invalid_note";
     }
-    const advanced =
-      await options.repository.advancePersonalNoteProjectionCursor(actor, {
+    let advanced = await options.repository.advancePersonalNoteProjectionCursor(
+      actor,
+      {
         threadId: notesThread.id,
         expectedSequence: durable.lastThreadSequence,
         nextSequence: message.threadSequence,
         outcome,
         embeddingQueued: queued,
         ...(failureCode ? { failureCode } : {})
-      });
-    if (!advanced) {
-      throw new Error("Personal Note Projection cursor changed concurrently");
+      }
+    );
+    while (!advanced) {
+      const reloaded =
+        await options.repository.getOrCreatePersonalNoteProjectionCursor(
+          actor,
+          {
+            threadId: notesThread.id
+          }
+        );
+      if (!reloaded) {
+        throw new Error("Personal Note Projection cursor is unavailable");
+      }
+      durable = reloaded;
+      if (durable.lastThreadSequence >= message.threadSequence) break;
+      advanced = await options.repository.advancePersonalNoteProjectionCursor(
+        actor,
+        {
+          threadId: notesThread.id,
+          expectedSequence: durable.lastThreadSequence,
+          nextSequence: message.threadSequence,
+          outcome,
+          embeddingQueued: queued,
+          ...(failureCode ? { failureCode } : {})
+        }
+      );
     }
-    durable = advanced;
+    if (advanced) durable = advanced;
   }
 
   return {
@@ -193,26 +229,60 @@ export const reconcilePersonalNotesToMemory = async (
     created,
     embeddingQueued,
     failures,
-    hasMore: page.hasMore || scanned < page.messages.length,
+    hasMore: retryNeeded || page.hasMore || scanned < page.messages.length,
     cursor: durable.lastThreadSequence
   };
 };
 
-export const drainPersonalNotesToMemory = async (
-  options: PersonalNoteMemoryReconciliationOptions,
-  input: { ownerUserId: string; maxBatches?: number }
-): Promise<void> => {
-  const maxBatches = Math.max(
+export const createPersonalNoteMemoryRepairService = (
+  options: PersonalNoteMemoryRepairOptions
+): PersonalNoteMemoryRepairService => {
+  const intervalMs = Math.max(100, Math.trunc(options.intervalMs ?? 5_000));
+  const actorLimit = Math.max(
     1,
-    Math.min(100, Math.trunc(input.maxBatches ?? 100))
+    Math.min(100, Math.trunc(options.actorLimit ?? 10))
   );
-  let previousCursor = -1;
-  for (let batch = 0; batch < maxBatches; batch += 1) {
-    const result = await reconcilePersonalNotesToMemory(options, {
-      ownerUserId: input.ownerUserId,
-      limit: 100
-    });
-    if (!result.hasMore || result.cursor <= previousCursor) return;
-    previousCursor = result.cursor;
-  }
+  const noteLimit = Math.max(
+    1,
+    Math.min(100, Math.trunc(options.noteLimit ?? 100))
+  );
+  let closed = false;
+  let running: Promise<void> | null = null;
+
+  const runNow = (): Promise<void> => {
+    if (closed) return Promise.resolve();
+    if (running) return running;
+    running = (async () => {
+      const actors = await options.repository.listPersonalNoteProjectionActors({
+        limit: actorLimit
+      });
+      for (const actor of actors) {
+        await reconcilePersonalNotesToMemory(options, {
+          ownerUserId: actor.userId,
+          limit: noteLimit
+        });
+      }
+    })()
+      .catch((error: unknown) => {
+        options.onError?.(error);
+      })
+      .finally(() => {
+        running = null;
+      });
+    return running;
+  };
+
+  const timer = setInterval(() => void runNow(), intervalMs);
+  timer.unref();
+  void runNow();
+
+  return {
+    runNow,
+    async close() {
+      if (closed) return;
+      closed = true;
+      clearInterval(timer);
+      await running;
+    }
+  };
 };

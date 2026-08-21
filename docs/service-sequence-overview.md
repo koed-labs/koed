@@ -109,6 +109,12 @@ AI Runtime.
    pruning, and other Team collaboration jobs are not started.
    After the API is healthy and a local API Token exists, the supervisor starts
    one Local AI Runtime. The runtime hosts the Transcript Watcher when enabled.
+   The API also starts a bounded Personal Note repair service. It discovers
+   owner-scoped Notes-to-self history through Postgres, projects one page per
+   owner at a time, and admits those Personal Memory Events to the normal
+   embedding queue. Interactive Note list and create requests never drain this
+   historical backlog. API shutdown stops the repair interval before closing
+   queues and Postgres.
 7. `koed-server start --daemon --json` starts a detached `koed-server start`
    supervisor and returns machine-readable startup intent for Desktop and
    scripts. `koed-server stop --json` stops supervised processes in

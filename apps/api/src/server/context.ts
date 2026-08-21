@@ -41,7 +41,6 @@ export interface ApiRouteContext {
       threadKind: "notes_to_self";
       message: CollaborationMessageRecord;
     }): Promise<void>;
-    reconcilePersonalNotes?(ownerUserId: string): Promise<void>;
     actionGrantLifecycle?: CollaborationActionGrantLifecycle;
     actionGrantControl?: CollaborationActionGrantControl;
     sharedMemoryControl?: CollaborationSharedMemoryControl;

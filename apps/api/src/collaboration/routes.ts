@@ -54,7 +54,6 @@ export interface CollaborationRouteContext {
     threadKind: "notes_to_self";
     message: CollaborationMessageRecord;
   }): Promise<void>;
-  reconcilePersonalNotes?(ownerUserId: string): Promise<void>;
   authenticateSessionOrDeviceCredential: ApiRouteContext["auth"]["authenticateSessionOrDeviceCredential"];
   authenticateApiToken: ApiRouteContext["auth"]["authenticateApiToken"];
   readRateLimit: ApiRouteContext["rateLimit"]["memoryRead"];
@@ -922,7 +921,6 @@ export const registerCollaborationRoutes = (
       );
       const input = listPersonalNotesQuerySchema.parse(request.query);
       const repository = context.requireCollaborationRepository();
-      await context.reconcilePersonalNotes?.(user.id);
       const page = await repository.listPersonalNotes(
         { userId: user.id },
         input
