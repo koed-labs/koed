@@ -28,6 +28,8 @@ import {
   setupProgressEventChannel,
   themePreferenceGetChannel,
   themePreferenceSetChannel,
+  hardwareAccelerationGetChannel,
+  hardwareAccelerationSetChannel,
   type DesktopCommandName
 } from "./protocol.js";
 import {
@@ -129,6 +131,14 @@ export const registerDesktopCommandHandlers = (
       preference: DesktopThemePreference;
       resolvedDark: boolean;
     };
+    getHardwareAcceleration?: () => Promise<{
+      enabled: boolean;
+      managedByEnvironment: boolean;
+    }>;
+    setHardwareAcceleration?: (enabled: boolean) => Promise<{
+      enabled: boolean;
+      managedByEnvironment: boolean;
+    }>;
   }
 ): void => {
   ipcMain.handle(
@@ -219,6 +229,32 @@ export const registerDesktopCommandHandlers = (
     }
     return options.setThemePreference(value);
   });
+
+  ipcMain.handle(hardwareAccelerationGetChannel, async (event) => {
+    if (!trustedSender(event, options.allowedRendererOrigins)) {
+      throw new Error("Untrusted Desktop IPC sender.");
+    }
+    if (!options.getHardwareAcceleration) {
+      throw new Error("Hardware acceleration settings are unavailable.");
+    }
+    return options.getHardwareAcceleration();
+  });
+
+  ipcMain.handle(
+    hardwareAccelerationSetChannel,
+    async (event, value: unknown) => {
+      if (!trustedSender(event, options.allowedRendererOrigins)) {
+        throw new Error("Untrusted Desktop IPC sender.");
+      }
+      if (typeof value !== "boolean") {
+        throw new Error("Invalid hardware acceleration preference.");
+      }
+      if (!options.setHardwareAcceleration) {
+        throw new Error("Hardware acceleration settings are unavailable.");
+      }
+      return options.setHardwareAcceleration(value);
+    }
+  );
 
   ipcMain.handle(
     personalDevicePairingLinkConsumeChannel,

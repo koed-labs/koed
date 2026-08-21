@@ -146,6 +146,45 @@ describe("PreferencesView", () => {
     expect(onThemeChange).toHaveBeenCalledWith("dark");
   });
 
+  it("persists the hardware acceleration toggle through trusted Desktop IPC", async () => {
+    const get = vi.fn(async () => ({
+      enabled: true,
+      managedByEnvironment: false
+    }));
+    const set = vi.fn(async (enabled: boolean) => ({
+      enabled,
+      managedByEnvironment: false
+    }));
+    await renderPreferences({ hardwareAcceleration: { get, set } });
+    const toggle = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Hardware acceleration"]'
+    );
+    expect(toggle).toBeTruthy();
+    expect(toggle!.checked).toBe(true);
+
+    await act(async () => toggle!.click());
+
+    expect(set).toHaveBeenCalledWith(false);
+    expect(toggle!.checked).toBe(false);
+  });
+
+  it("disables hardware acceleration controlled by the Operator environment", async () => {
+    await renderPreferences({
+      hardwareAcceleration: {
+        get: vi.fn(async () => ({
+          enabled: true,
+          managedByEnvironment: true
+        })),
+        set: vi.fn()
+      }
+    });
+    const toggle = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Hardware acceleration"]'
+    );
+    expect(toggle!.disabled).toBe(true);
+    expect(container.textContent).toContain("managed by the Operator");
+  });
+
   it("hides Capture until the Desktop integration is available", async () => {
     await renderPreferences();
     expect(

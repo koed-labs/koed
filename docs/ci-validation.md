@@ -116,4 +116,10 @@ Manual `CI` dispatch supports:
 - `clean-install`: the full path plus a real external model installation.
 
 The separate Linux x64 native build can also be selected for dependency bumps
-or explicit review.
+or explicit review. It runs on GitHub-hosted Ubuntu 22.04, restores the verified
+content-addressed payload when available, and cold-builds only on a cache miss.
+The trusted default-branch Linux cache workflow writes the release-authoritative
+cache; explicit proof runs may retain only their branch-scoped result. Product
+release requires the default-branch cache and only validates, versions,
+checksums, and publishes the native artifact; it never starts an unplanned CUDA
+compilation.

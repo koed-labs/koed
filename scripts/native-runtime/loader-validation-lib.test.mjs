@@ -6,6 +6,8 @@ import test from "node:test";
 import {
   boundedMap,
   collectPlatformBinaries,
+  linuxLoaderEnvironment,
+  linuxLoaderIssues,
   macLoaderIssues
 } from "./loader-validation-lib.mjs";
 
@@ -68,6 +70,62 @@ test("rejects unresolved runtime-relative dependencies", () => {
     "unresolved runtime-relative dependency: @rpath/libssl.3.dylib",
     "unresolved loader-relative dependency: @loader_path/../lib/libpq.5.dylib"
   ]);
+});
+
+test("allows only the host NVIDIA driver dependency in the CUDA payload", () => {
+  assert.deepEqual(
+    linuxLoaderIssues({
+      file: `${runtimeRoot}/llama.cpp/cuda/libggml-cuda.so`,
+      output: `libcuda.so.1 => not found
+libcudart.so.12 => ${runtimeRoot}/llama.cpp/cuda/libcudart.so.12`,
+      runtimeRoot
+    }),
+    []
+  );
+  assert.deepEqual(
+    linuxLoaderIssues({
+      file: `${runtimeRoot}/llama.cpp/cuda/libggml-cuda.so`,
+      output: `libcuda.so.1 => not found
+libcublas.so.12 => not found`,
+      runtimeRoot
+    }),
+    ["unresolved loader dependency: libcublas.so.12"]
+  );
+  assert.deepEqual(
+    linuxLoaderIssues({
+      file: `${runtimeRoot}/llama.cpp/cpu/libggml-cpu.so`,
+      output: "libcuda.so.1 => not found",
+      runtimeRoot
+    }),
+    ["unresolved loader dependency: libcuda.so.1"]
+  );
+});
+
+test("resolves Linux libraries only through their packaged runtime directories", () => {
+  assert.deepEqual(
+    linuxLoaderEnvironment({
+      file: `${runtimeRoot}/postgres/lib/libecpg.so.6`,
+      runtimeRoot,
+      environment: { LD_LIBRARY_PATH: "/existing" }
+    }).LD_LIBRARY_PATH,
+    `${runtimeRoot}/postgres/lib:/existing`
+  );
+  assert.deepEqual(
+    linuxLoaderEnvironment({
+      file: `${runtimeRoot}/llama.cpp/cuda/libggml-cuda.so`,
+      runtimeRoot,
+      environment: {}
+    }).LD_LIBRARY_PATH,
+    `${runtimeRoot}/llama.cpp/cuda`
+  );
+  assert.equal(
+    linuxLoaderEnvironment({
+      file: "/outside/libunexpected.so",
+      runtimeRoot,
+      environment: {}
+    }).LD_LIBRARY_PATH,
+    undefined
+  );
 });
 
 test("recursively identifies Mach-O and ELF files by binary magic", () => {

@@ -22,8 +22,8 @@
   },
   "llamaCpp": {
     "kind": "official-release",
-    "version": "b9000",
-    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9000/llama-b9000-bin-macos-arm64.tar.gz",
-    "sha256": "e4531e819dd9fe4add199db998df55cf8bd20e18a67cbd1449b49409dc01c642"
+    "version": "b10514",
+    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10514/llama-b10514-bin-macos-arm64.tar.gz",
+    "sha256": "ee56771d48bab5cd3a5cc19c074b903661aec3627d81ccf0a5518215c3e10980"
   }
 }

@@ -73,6 +73,7 @@ export type PreferencesViewProps = {
   collaborationClient?: CollaborationRendererClient;
   collaborationSnapshot?: CollaborationSnapshot | null;
   initialSection?: PreferencesSection;
+  hardwareAcceleration?: DesktopApi["hardwareAcceleration"];
   launch?: LocalLaunchCapability;
   localAiClients?: DesktopApi["localAiClients"];
   onSectionChange?: (section: PreferencesSection) => void;
@@ -117,10 +118,14 @@ function SettingRow({
 }
 
 function GeneralSection({
+  hardwareAcceleration,
   launch,
   onThemeChange,
   theme
-}: Pick<PreferencesViewProps, "launch" | "onThemeChange" | "theme">) {
+}: Pick<
+  PreferencesViewProps,
+  "hardwareAcceleration" | "launch" | "onThemeChange" | "theme"
+>) {
   return (
     <div className="koed-preference-section">
       <fieldset className="koed-theme-options">
@@ -141,6 +146,7 @@ function GeneralSection({
           ))}
         </div>
       </fieldset>
+      <HardwareAccelerationSetting api={hardwareAcceleration} />
       {launch ? (
         <SettingRow
           description="This preference stays on this device."
@@ -157,6 +163,70 @@ function GeneralSection({
         </SettingRow>
       ) : null}
     </div>
+  );
+}
+
+function HardwareAccelerationSetting({
+  api
+}: {
+  api?: DesktopApi["hardwareAcceleration"];
+}) {
+  const [state, setState] = useState<{
+    enabled: boolean;
+    managedByEnvironment: boolean;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!api) return;
+    void api
+      .get()
+      .then((value) => {
+        if (active) setState(value);
+      })
+      .catch(() => {
+        if (active) setError("Hardware acceleration could not be read.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [api]);
+
+  if (!api) return null;
+  return (
+    <SettingRow
+      description={
+        state?.managedByEnvironment
+          ? "This setting is managed by the Operator environment."
+          : "Use a compatible local GPU for Koed inference. Changing this restarts local Koed services."
+      }
+      label="Hardware acceleration"
+    >
+      <div className="koed-preference-toggle-state">
+        <input
+          aria-label="Hardware acceleration"
+          checked={state?.enabled ?? false}
+          disabled={state === null || state.managedByEnvironment || busy}
+          onChange={(event) => {
+            const enabled = event.currentTarget.checked;
+            setBusy(true);
+            setError(null);
+            void api
+              .set(enabled)
+              .then(setState)
+              .catch(() =>
+                setError("Hardware acceleration could not be changed.")
+              )
+              .finally(() => setBusy(false));
+          }}
+          type="checkbox"
+        />
+        {busy ? <Spinner aria-label="Restarting local Koed services" /> : null}
+        {error ? <span role="alert">{error}</span> : null}
+      </div>
+    </SettingRow>
   );
 }
 
@@ -817,6 +887,7 @@ export function PreferencesView({
   collaborationClient,
   collaborationSnapshot,
   initialSection = "general",
+  hardwareAcceleration,
   launch,
   localAiClients,
   onSectionChange,
@@ -866,6 +937,7 @@ export function PreferencesView({
         </header>
         {section === "general" ? (
           <GeneralSection
+            hardwareAcceleration={hardwareAcceleration}
             launch={launch}
             onThemeChange={onThemeChange}
             theme={theme}

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolveSupportedEmbeddingModelConfig } from "@koed/shared";
+import type { AccelerationPolicy } from "./acceleration.js";
 
 export interface SupportedEmbeddingModel {
   key: string;
@@ -30,7 +31,9 @@ export interface EmbeddingServiceEnv {
   modelArtifactSha256: string;
   modelTokenizer: string;
   modelTokenizerRevision: string;
-  modelAcceleration: string;
+  embeddingAccelerationPolicy: AccelerationPolicy;
+  embeddingAccelerationDevice: string | null;
+  embeddingGpuIdleUnloadSeconds: number;
   expectedDimensions: number;
   batchLimit: number;
   llamaNCtx: number;
@@ -60,8 +63,10 @@ export interface EmbeddingServiceEnv {
   rerankerNUbatch: number;
   rerankerParallel: number;
   rerankerPromptCacheEnabled: boolean;
+  rerankerAccelerationPolicy: AccelerationPolicy;
+  rerankerAccelerationDevice: string | null;
+  rerankerGpuIdleUnloadSeconds: number;
   embeddingServiceToken: string;
-  backendClass: "cpu" | "metal" | "cuda" | "unknown";
   runtimeVersion: string;
   logLevel: string;
 }
@@ -169,16 +174,16 @@ const trim = (value: string | undefined): string | undefined => {
   return trimmed ? trimmed : undefined;
 };
 
-const embeddingBackendClass = (
-  value: string | undefined
-): EmbeddingServiceEnv["backendClass"] => {
-  const normalized = value?.trim().toLowerCase() ?? "cpu";
-  if (!["cpu", "metal", "cuda", "unknown"].includes(normalized)) {
-    throw new Error(
-      "KOED_EMBEDDING_BACKEND_CLASS must be cpu, metal, cuda, or unknown"
-    );
+const accelerationPolicy = (
+  value: string | undefined,
+  name: string,
+  defaultPolicy: AccelerationPolicy = "auto"
+): AccelerationPolicy => {
+  const normalized = value?.trim().toLowerCase() || defaultPolicy;
+  if (!["auto", "cpu", "metal", "cuda"].includes(normalized)) {
+    throw new Error(`${name} must be auto, cpu, metal, or cuda`);
   }
-  return normalized as EmbeddingServiceEnv["backendClass"];
+  return normalized as AccelerationPolicy;
 };
 
 const firstEnv = (
@@ -209,6 +214,26 @@ const intAlias = (
     if (value !== undefined && value.trim() !== "") {
       return intEnv(environment, name, fallback);
     }
+  }
+  return fallback;
+};
+
+const nonNegativeIntAlias = (
+  environment: NodeJS.ProcessEnv,
+  names: string[],
+  fallback: number
+): number => {
+  for (const name of names) {
+    const value = environment[name];
+    if (value === undefined || value.trim() === "") continue;
+    if (!/^\d+$/.test(value.trim())) {
+      throw new Error(`${name} must be a non-negative integer`);
+    }
+    const parsed = Number(value.trim());
+    if (!Number.isSafeInteger(parsed)) {
+      throw new Error(`${name} must be a non-negative integer`);
+    }
+    return parsed;
   }
   return fallback;
 };
@@ -476,7 +501,17 @@ export const resolveEnv = (
     modelArtifactSha256: configuredArtifactSha256.toLowerCase(),
     modelTokenizer: canonicalModel.tokenizer,
     modelTokenizerRevision: canonicalModel.tokenizerRevision,
-    modelAcceleration: canonicalModel.acceleration,
+    embeddingAccelerationPolicy: accelerationPolicy(
+      environment.KOED_EMBEDDING_ACCELERATION,
+      "KOED_EMBEDDING_ACCELERATION"
+    ),
+    embeddingAccelerationDevice:
+      trim(environment.KOED_EMBEDDING_DEVICE) ?? null,
+    embeddingGpuIdleUnloadSeconds: nonNegativeIntAlias(
+      environment,
+      ["KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS"],
+      300
+    ),
     expectedDimensions: modelConfig.dimensions,
     batchLimit: intAlias(environment, ["EMBEDDING_BATCH_LIMIT"], 16),
     llamaNCtx,
@@ -501,7 +536,7 @@ export const resolveEnv = (
     llamaNUbatch: intAlias(
       environment,
       ["LLAMA_N_UBATCH", "EMBEDDING_LLAMA_N_UBATCH"],
-      llamaNBatch
+      512
     ),
     llamaParallel: intAlias(
       environment,
@@ -559,7 +594,7 @@ export const resolveEnv = (
     rerankerNUbatch: intAlias(
       environment,
       ["RERANKER_LLAMA_N_UBATCH", "EMBEDDING_RERANKER_LLAMA_N_UBATCH"],
-      rerankerNBatch
+      512
     ),
     rerankerParallel,
     rerankerPromptCacheEnabled: boolAlias(
@@ -570,10 +605,18 @@ export const resolveEnv = (
       ],
       true
     ),
-    embeddingServiceToken: environment.EMBEDDING_SERVICE_TOKEN?.trim() ?? "",
-    backendClass: embeddingBackendClass(
-      environment.KOED_EMBEDDING_BACKEND_CLASS
+    rerankerAccelerationPolicy: accelerationPolicy(
+      environment.KOED_RERANKER_ACCELERATION,
+      "KOED_RERANKER_ACCELERATION",
+      "cpu"
     ),
+    rerankerAccelerationDevice: trim(environment.KOED_RERANKER_DEVICE) ?? null,
+    rerankerGpuIdleUnloadSeconds: nonNegativeIntAlias(
+      environment,
+      ["KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS"],
+      300
+    ),
+    embeddingServiceToken: environment.EMBEDDING_SERVICE_TOKEN?.trim() ?? "",
     runtimeVersion:
       trim(environment.KOED_EMBEDDING_RUNTIME_VERSION) ?? "unknown",
     logLevel:
