@@ -107,6 +107,11 @@ The operational surfaces are separated:
 - `GET /ops/status` provides a redacted snapshot to a browser-authenticated
   Koed Operator. Hosted-capable profiles additionally enforce the existing
   Koed operator authorization policy.
+- `GET /v1/historical-import-admission` provides a content-free local
+  `{ admitted, reason }` decision to an authenticated User session or Personal
+  API Token. It shares the Worker admission policy and reads coordinator-owned
+  health/capacity state; the Local AI Runtime does not infer admission from
+  `/ops/status` or probe the Embedding Service independently.
 - `GET /internal/metrics` exports OpenMetrics-compatible low-cardinality counters,
   gauges, and histograms for machine collection. It is disabled unless a
   dedicated monitoring bearer credential is configured, must remain inside

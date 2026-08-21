@@ -156,7 +156,11 @@ export const environmentDefaultFor = (
     provider,
     ai_client_instance_id: value("AI_CLIENT_INSTANCE") ?? `${provider}.default`,
     model,
-    reasoning_effort: value("REASONING_EFFORT") ?? base.reasoning_effort,
+    reasoning_effort:
+      value("REASONING_EFFORT") ??
+      (provider === "claude" && model === "haiku"
+        ? "none"
+        : base.reasoning_effort),
     timeout_ms: spec.parseTimeout(value("TIMEOUT_MS"), base.timeout_ms),
     max_attempts: spec.parseAttempts(value("MAX_ATTEMPTS"), base.max_attempts)
   };

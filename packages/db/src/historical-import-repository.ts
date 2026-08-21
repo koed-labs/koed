@@ -136,6 +136,7 @@ type SourceRow = {
   historical_cursor_offset: string | number;
   historical_cursor_line: number;
   historical_cursor_digest: string | null;
+  historical_cursor_parser_state: Record<string, unknown> | null;
   historical_cursor_current_turn_id: string | null;
   provider_cursor_offset: string | number;
   provider_cursor_line: number;
@@ -195,6 +196,7 @@ const sourceSelect = (): string => {
   coalesce(historical_cursor.source_line, artifact.journal_start_line)
     as historical_cursor_line,
   historical_cursor.last_verified_digest as historical_cursor_digest,
+  historical_cursor.parser_state as historical_cursor_parser_state,
   case
     when jsonb_typeof(historical_cursor.parser_state -> 'currentTurnId') = 'string'
      and length(historical_cursor.parser_state ->> 'currentTurnId') between 1 and 512
@@ -413,6 +415,7 @@ const mapSource = (row: SourceRow): HistoricalImportSourceRecord => {
     historicalCursorOffset: cursorOffset,
     historicalCursorLine: row.historical_cursor_line,
     historicalCursorDigest: row.historical_cursor_digest,
+    historicalCursorParserState: row.historical_cursor_parser_state ?? {},
     ...(row.historical_cursor_current_turn_id
       ? {
           historicalCursorCurrentTurnId: row.historical_cursor_current_turn_id
@@ -1284,6 +1287,30 @@ const transitionSourceRecord = (
   });
 };
 
+// Only fields the real Codex/Claude historical adapters ever produce for
+// mid-parse resume (see codex-historical-ingestion.ts's parserState() and
+// claude-transcript-parser.ts's { currentTurnId }) are safe to persist here.
+// This is the write-side counterpart to apps/api's safeParserState(): every
+// read path (this repository's own mapSource() included) returns the
+// persisted parser_state column verbatim, so anything not filtered out here
+// would otherwise be free-form storage for arbitrary, potentially large
+// content such as raw transcript text.
+const SAFE_HISTORICAL_PARSER_STATE_KEYS = [
+  "activeTurnId",
+  "currentTurnId",
+  "lastEventTime",
+  "assistantMessagePreference"
+] as const;
+
+const safeHistoricalParserState = (
+  state: Record<string, unknown> | undefined
+): Record<string, unknown> =>
+  Object.fromEntries(
+    SAFE_HISTORICAL_PARSER_STATE_KEYS.filter(
+      (key) => (state ?? {})[key] !== undefined
+    ).map((key) => [key, (state ?? {})[key]])
+  );
+
 const ingestBatchRecord = (
   pool: pg.Pool,
   actor: ActorContext,
@@ -1339,7 +1366,7 @@ const ingestBatchRecord = (
         input.sourceOffset,
         input.sourceLine,
         input.lastVerifiedDigest,
-        input.parserState ?? {},
+        safeHistoricalParserState(input.parserState),
         input.expectedSourceOffset
       ]
     );

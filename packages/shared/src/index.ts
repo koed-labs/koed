@@ -6,6 +6,14 @@ export const MEMORY_ANSWER_TIMEOUT_MAX_MS = 600_000;
 export const MEMORY_ANSWER_TRANSPORT_OVERHEAD_MS = 30_000;
 
 export {
+  decideHistoricalAdmission,
+  type HistoricalAdmissionDecision,
+  type HistoricalAdmissionInput,
+  type HistoricalAdmissionPauseReason,
+  type HistoricalImportBatchConfig
+} from "./historical-admission.js";
+
+export {
   aiClientSourceAdapterRegistry,
   assertSupportedAiClientSourceAdapter,
   isSupportedAiClientSourceAdapter,

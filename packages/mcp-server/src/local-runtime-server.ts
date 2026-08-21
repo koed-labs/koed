@@ -11,7 +11,15 @@ import http from "node:http";
 import path from "node:path";
 import { watchKoedLocalWork } from "@koed/shared";
 import { z } from "zod";
-import { startCodexTranscriptWatcher } from "./codex-transcript-watcher.js";
+import {
+  resolveCodexTranscriptWatcherConfig,
+  startCodexTranscriptWatcher
+} from "./codex-transcript-watcher.js";
+import {
+  createCodexHistoricalProviderAdapter,
+  resolveCodexHistoricalIngestionConfig
+} from "./codex-historical-ingestion.js";
+import { startHistoricalIngestionCoordinator } from "./historical-ingestion-coordinator.js";
 import { startClaudeTranscriptWatcher } from "./claude-transcript-watcher.js";
 import { startPiTranscriptWatcher } from "./pi-transcript-watcher.js";
 import {
@@ -331,6 +339,9 @@ export const startDefaultLocalAiRuntimeServices = async (
   let codexTranscriptWatcher: ReturnType<
     typeof startCodexTranscriptWatcher
   > | null = null;
+  let historicalIngestion: ReturnType<
+    typeof startHistoricalIngestionCoordinator
+  > | null = null;
   let claudeTranscriptWatcher: ReturnType<
     typeof startClaudeTranscriptWatcher
   > | null = null;
@@ -352,11 +363,38 @@ export const startDefaultLocalAiRuntimeServices = async (
         workerConfig: resolveCuratedMemoryReviewConfig(environment)
       }
     );
-    codexTranscriptWatcher =
-      environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() ===
-      "false"
-        ? null
-        : dependencies.startCodexTranscriptWatcher(apiClient);
+    const historicalEnabled =
+      environment.MEMORY_HISTORICAL_IMPORT_ENABLED?.trim().toLowerCase() !==
+      "false";
+    const codexWatcherEnabled =
+      environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() !==
+      "false";
+    // The coordinator is provider-neutral. This runtime only offers the Codex
+    // adapter because it is the configured automatic-onboarding provider; the
+    // Claude adapter retains PR #342's explicit multi-component import flow.
+    historicalIngestion =
+      historicalEnabled && codexWatcherEnabled
+        ? startHistoricalIngestionCoordinator({
+            adapter: createCodexHistoricalProviderAdapter({
+              client: apiClient,
+              config: resolveCodexHistoricalIngestionConfig(environment)
+            }),
+            koedHome,
+            retryMs: 1_000,
+            onError: (code) =>
+              logger.warn(
+                { code },
+                "automatic historical ingestion pass failed"
+              )
+          })
+        : null;
+    codexTranscriptWatcher = !codexWatcherEnabled
+      ? null
+      : dependencies.startCodexTranscriptWatcher(
+          apiClient,
+          resolveCodexTranscriptWatcherConfig(environment),
+          historicalIngestion ?? undefined
+        );
     claudeTranscriptWatcher =
       environment.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() ===
       "false"
@@ -394,7 +432,8 @@ export const startDefaultLocalAiRuntimeServices = async (
         await Promise.all([
           codexTranscriptWatcher?.stop(),
           claudeTranscriptWatcher?.stop(),
-          piTranscriptWatcher?.stop()
+          piTranscriptWatcher?.stop(),
+          historicalIngestion?.stop()
         ]);
       }
     };
@@ -406,7 +445,8 @@ export const startDefaultLocalAiRuntimeServices = async (
     await Promise.all([
       codexTranscriptWatcher?.stop(),
       claudeTranscriptWatcher?.stop(),
-      piTranscriptWatcher?.stop()
+      piTranscriptWatcher?.stop(),
+      historicalIngestion?.stop()
     ]);
     throw error;
   }

@@ -3,9 +3,11 @@ import fs, {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   utimesSync,
   writeFileSync
 } from "node:fs";
@@ -17,7 +19,10 @@ import { MemoryApiError } from "../src/index.js";
 import {
   completeTranscriptBoundary,
   discoverCodexTranscripts,
+  latestTranscriptActivity,
+  resolveCodexTranscriptWatcherConfig,
   startCodexTranscriptWatcher,
+  type CodexHistoricalCandidateObserver,
   type CodexTranscriptWatcherClient,
   type CodexTranscriptWatcherConfig
 } from "../src/codex-transcript-watcher.js";
@@ -42,9 +47,14 @@ afterEach(async () => {
 
 const trackedWatcher = (
   client: CodexTranscriptWatcherClient,
-  config: CodexTranscriptWatcherConfig
+  config: CodexTranscriptWatcherConfig,
+  historicalObserver?: CodexHistoricalCandidateObserver
 ) => {
-  const watcher = startCodexTranscriptWatcher(client, config);
+  const watcher = startCodexTranscriptWatcher(
+    client,
+    config,
+    historicalObserver
+  );
   watcherHandles.push(watcher);
   return watcher;
 };
@@ -372,6 +382,28 @@ const transcriptPath = (root: string, name = "rollout-test.jsonl"): string => {
 };
 
 describe("Codex Transcript Watcher source journal", () => {
+  it("uses platform-delimited supported roots and rejects unsafe root scope", () => {
+    const home = temporaryDirectory();
+    const first = path.join(home, ".codex-a");
+    const second = path.join(home, ".codex-b");
+
+    expect(
+      resolveCodexTranscriptWatcherConfig({
+        HOME: home,
+        MEMORY_CODEX_TRANSCRIPT_ROOTS: [first, second].join(path.delimiter)
+      }).roots
+    ).toEqual([first, second]);
+    expect(() =>
+      resolveCodexTranscriptWatcherConfig({
+        HOME: home,
+        MEMORY_CODEX_TRANSCRIPT_ROOTS: "relative/sessions"
+      })
+    ).toThrow("must be absolute");
+    expect(() =>
+      resolveCodexTranscriptWatcherConfig({ HOME: home, CODEX_HOME: home })
+    ).toThrow("too broad");
+  });
+
   it("discovers the newest timestamped transcript first", async () => {
     const root = temporaryDirectory();
     const oldTranscript = transcriptPath(root, "rollout-2026-01-01.jsonl");
@@ -489,6 +521,41 @@ describe("Codex Transcript Watcher source journal", () => {
     readSync.mockRestore();
   });
 
+  it("reads an oversized final record's own timestamp instead of falling back to the transcript's creation time", () => {
+    const root = temporaryDirectory();
+    const transcript = transcriptPath(root);
+    const smallRecord = JSON.stringify({
+      timestamp: "2026-06-01T00:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "small opening message" }
+    });
+    const hugeRecord = JSON.stringify({
+      timestamp: "2026-08-17T00:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "x".repeat(1_100_000) }
+    });
+    const content = `${smallRecord}\n${hugeRecord}\n`;
+    writeFileSync(transcript, content);
+    const boundary = completeTranscriptBoundary(transcript);
+    const context = {
+      threadKind: "conversation" as const,
+      transcriptMetadata: { timestamp: "2026-01-01T00:00:00.000Z" }
+    };
+
+    // A 1MB window landing entirely inside the >1MB trailing record used to
+    // find no earlier newline to align on and silently fall back to the
+    // transcript's creation timestamp, making a recently active
+    // Conversation with one large record look 30+ days stale.
+    const latestActivityAt = latestTranscriptActivity(
+      transcript,
+      boundary,
+      1_048_576,
+      context
+    );
+
+    expect(latestActivityAt).toBe("2026-08-17T00:00:00.000Z");
+  });
+
   it("registers an opaque catalogued Project identity with the source session", async () => {
     const root = temporaryDirectory();
     const projectRoot = path.join(root, "project");
@@ -602,6 +669,68 @@ describe("Codex Transcript Watcher source journal", () => {
     expect(client.policyRequests).toHaveLength(1);
   });
 
+  it("shares one durable frontier when a selected old source grows", async () => {
+    const root = temporaryDirectory();
+    const transcript = transcriptPath(root, "rollout-history-race.jsonl");
+    const startedAt = new Date(Date.now() - 40 * 24 * 60 * 60 * 1_000);
+    const activityAt = new Date(Date.now() - 24 * 60 * 60 * 1_000);
+    const initial =
+      line(
+        sessionRecord(
+          "history-race",
+          "/missing/project",
+          startedAt.toISOString()
+        )
+      ) +
+      line({
+        ...userRecord("long-running historical prompt"),
+        timestamp: activityAt.toISOString()
+      });
+    writeFileSync(transcript, initial);
+    const selections = new Map<
+      string,
+      { frontierOffset: number; frontierLine: number }
+    >();
+    let offeredProjectName: string | undefined;
+    const observer: CodexHistoricalCandidateObserver = {
+      offerCandidates(candidates) {
+        for (const candidate of candidates) {
+          selections.set(candidate.sourceSessionId, {
+            frontierOffset: candidate.frontierOffset,
+            frontierLine: 2
+          });
+          offeredProjectName = candidate.projectName;
+        }
+      },
+      selectionFor(sourceSessionId) {
+        return selections.get(sourceSessionId);
+      }
+    };
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root), observer);
+
+    await watcher.scanNow();
+    expect(selections.get("history-race")?.frontierOffset).toBe(
+      Buffer.byteLength(initial)
+    );
+    expect(offeredProjectName).toBe("Unassigned");
+
+    const appended = line(userRecord("live while history is pending"));
+    appendFileSync(transcript, appended);
+    await watcher.scanNow();
+
+    const artifact = client.artifacts.get("history-race")!;
+    expect(artifact.journalStartOffset).toBe(0);
+    expect(artifact.liveStartOffset).toBe(Buffer.byteLength(initial));
+    expect(artifact.liveStartLine).toBe(2);
+    expect(
+      Buffer.from(client.segments.get(artifact.id)![0]!.bytesBase64, "base64")
+    ).toEqual(Buffer.from(initial + appended));
+    expect(client.itemBatches.flat().map((item) => item.rawText)).toEqual([
+      "live while history is pending"
+    ]);
+  });
+
   it("journals a post-activation source from byte zero", async () => {
     const root = temporaryDirectory();
     const client = new FakeWatcherClient();
@@ -622,6 +751,135 @@ describe("Codex Transcript Watcher source journal", () => {
       Buffer.from(client.segments.get(artifact.id)![0]!.bytesBase64, "base64")
     ).toEqual(Buffer.from(content));
     expect(client.itemBatches.flat().length).toBeGreaterThan(0);
+  });
+
+  it("rediscovers a selected source moved within a supported root", async () => {
+    const root = temporaryDirectory();
+    const original = transcriptPath(root, "rollout-before-move.jsonl");
+    const initial =
+      line(
+        sessionRecord(
+          "moved-history",
+          "/missing/project",
+          new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString()
+        )
+      ) + line(userRecord("before move"));
+    writeFileSync(original, initial);
+    const selections = new Map<string, { frontierOffset: number }>();
+    const observer: CodexHistoricalCandidateObserver = {
+      offerCandidates(candidates) {
+        for (const entry of candidates) {
+          if (!selections.has(entry.sourceSessionId)) {
+            selections.set(entry.sourceSessionId, {
+              frontierOffset: entry.frontierOffset
+            });
+          }
+        }
+      },
+      selectionFor(sourceSessionId) {
+        const selected = selections.get(sourceSessionId);
+        return selected ? { ...selected, frontierLine: 2 } : undefined;
+      }
+    };
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root), observer);
+    await watcher.scanNow();
+
+    const moved = path.join(path.dirname(original), "rollout-after-move.jsonl");
+    renameSync(original, moved);
+    appendFileSync(moved, line(userRecord("after move")));
+    await watcher.scanNow();
+
+    const artifact = client.artifacts.get("moved-history")!;
+    expect(artifact.journalStartOffset).toBe(0);
+    expect(artifact.liveStartOffset).toBe(Buffer.byteLength(initial));
+    expect(client.itemBatches.flat().map((item) => item.rawText)).toEqual([
+      "after move"
+    ]);
+  });
+
+  it("keeps a deleted selected source path-free and retryable", async () => {
+    const root = temporaryDirectory();
+    const transcript = transcriptPath(root, "rollout-deleted-history.jsonl");
+    writeFileSync(
+      transcript,
+      line(
+        sessionRecord(
+          "deleted-history",
+          "/missing/project",
+          new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString()
+        )
+      )
+    );
+    let selection: { frontierOffset: number; frontierLine: number } | undefined;
+    const observer: CodexHistoricalCandidateObserver = {
+      offerCandidates(candidates) {
+        const offered = candidates.find(
+          (entry) => entry.sourceSessionId === "deleted-history"
+        );
+        if (offered && !selection) {
+          selection = {
+            frontierOffset: offered.frontierOffset,
+            frontierLine: 1
+          };
+        }
+      },
+      selectionFor: () => selection
+    };
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root), observer);
+    await watcher.scanNow();
+    unlinkSync(transcript);
+
+    await expect(watcher.scanNow()).resolves.toBeUndefined();
+    expect(selection).toBeDefined();
+    expect(client.artifacts.has("deleted-history")).toBe(false);
+    expect(JSON.stringify(watcher.snapshot())).not.toContain(root);
+  });
+
+  it("does not rewind either cursor after a selected source is truncated", async () => {
+    const root = temporaryDirectory();
+    const transcript = transcriptPath(root, "rollout-truncated-history.jsonl");
+    const initial =
+      line(
+        sessionRecord(
+          "truncated-history",
+          "/missing/project",
+          new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString()
+        )
+      ) + line(userRecord("historical"));
+    writeFileSync(transcript, initial);
+    let frontierOffset: number | undefined;
+    const observer: CodexHistoricalCandidateObserver = {
+      offerCandidates(candidates) {
+        frontierOffset ??= candidates.find(
+          (entry) => entry.sourceSessionId === "truncated-history"
+        )?.frontierOffset;
+      },
+      selectionFor: () =>
+        frontierOffset === undefined
+          ? undefined
+          : { frontierOffset, frontierLine: 2 }
+    };
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root), observer);
+    await watcher.scanNow();
+    appendFileSync(transcript, line(userRecord("live")));
+    await watcher.scanNow();
+    const before = { ...client.artifacts.get("truncated-history")! };
+    const cursorBefore = { ...client.cursors.get(before.id)! };
+
+    writeFileSync(transcript, initial.slice(0, 1));
+    await watcher.scanNow();
+
+    expect(client.artifacts.get("truncated-history")).toMatchObject({
+      providerCursorOffset: before.providerCursorOffset,
+      liveStartOffset: before.liveStartOffset
+    });
+    expect(client.cursors.get(before.id)).toMatchObject({
+      sourceOffset: cursorBefore.sourceOffset
+    });
+    expect(watcher.snapshot().lastErrorCode).toBe("transcript_truncated");
   });
 
   it("baselines an old source first discovered after empty-root activation", async () => {

@@ -38,6 +38,7 @@ import {
   watcherWakePath
 } from "./codex-transcript-watcher-signal.js";
 import { readProjectMetadataForRoot } from "./project-team-workspace-links.js";
+import type { CodexHistoricalCandidate } from "./codex-historical-ingestion.js";
 
 export {
   signalCodexTranscriptWatcher,
@@ -83,6 +84,13 @@ export interface CodexTranscriptWatcherHandle {
   snapshot(): WatcherSnapshot;
 }
 
+export interface CodexHistoricalCandidateObserver {
+  offerCandidates(candidates: readonly CodexHistoricalCandidate[]): void;
+  selectionFor(
+    sourceSessionId: string
+  ): { frontierOffset: number; frontierLine: number } | undefined;
+}
+
 const positiveInt = (
   env: NodeJS.ProcessEnv,
   name: string,
@@ -99,24 +107,61 @@ const uniqueAbsoluteRoots = (values: string[]): string[] => [
   ...new Set(values.map((value) => path.resolve(value)))
 ];
 
+const containsPath = (root: string, candidate: string): boolean => {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === "" ||
+    (!relative.startsWith(`..${path.sep}`) &&
+      relative !== ".." &&
+      !path.isAbsolute(relative))
+  );
+};
+
+const environmentHome = (env: NodeJS.ProcessEnv): string =>
+  path.resolve(
+    (process.platform === "win32" ? (env.USERPROFILE ?? env.HOME) : env.HOME) ??
+      os.homedir()
+  );
+
+const configuredTranscriptRoot = (
+  value: string,
+  home: string,
+  setting = "MEMORY_CODEX_TRANSCRIPT_ROOTS"
+): string => {
+  if (!path.isAbsolute(value)) {
+    throw new Error(`${setting} entries must be absolute`);
+  }
+  const resolved = path.resolve(value);
+  if (resolved === path.parse(resolved).root || containsPath(resolved, home)) {
+    throw new Error(`${setting} entry is too broad`);
+  }
+  return resolved;
+};
+
 export const resolveCodexTranscriptWatcherConfig = (
   env: NodeJS.ProcessEnv = process.env
 ): CodexTranscriptWatcherConfig => {
-  const codexHome = path.resolve(
-    env.CODEX_HOME ?? path.join(os.homedir(), ".codex")
-  );
+  const home = environmentHome(env);
+  const configuredCodexHome = env.CODEX_HOME?.trim();
+  const codexHome = configuredCodexHome
+    ? configuredTranscriptRoot(configuredCodexHome, home, "CODEX_HOME")
+    : path.join(home, ".codex");
   const configuredRoots = env.MEMORY_CODEX_TRANSCRIPT_ROOTS?.split(
     path.delimiter
   )
     .map((value) => value.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((value) => configuredTranscriptRoot(value, home));
   return {
     roots: uniqueAbsoluteRoots(
       configuredRoots?.length
         ? configuredRoots
-        : [path.join(codexHome, "sessions")]
+        : [
+            path.join(codexHome, "sessions"),
+            path.join(codexHome, "archived_sessions")
+          ]
     ),
-    koedHome: path.resolve(env.KOED_HOME ?? path.join(os.homedir(), ".koed")),
+    koedHome: path.resolve(env.KOED_HOME ?? path.join(home, ".koed")),
     debounceMs: positiveInt(
       env,
       "MEMORY_CODEX_TRANSCRIPT_DEBOUNCE_MS",
@@ -295,6 +340,8 @@ class BoundedTranscriptDiscovery {
     while (this.directories.length > 0) {
       const directory = this.directories.shift()!;
       try {
+        const details = await lstat(directory);
+        if (details.isSymbolicLink() || !details.isDirectory()) continue;
         const entries = await readdir(directory, { withFileTypes: true });
         entries.sort((left, right) => right.name.localeCompare(left.name));
         this.current = { path: directory, entries, index: 0 };
@@ -405,6 +452,93 @@ const sourceStartedAfterActivation = (
   return sourceStartedAt > activatedAt;
 };
 
+const recordTimestamp = (value: unknown): string | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  for (const container of [record, record.payload, record.item]) {
+    if (
+      !container ||
+      typeof container !== "object" ||
+      Array.isArray(container)
+    ) {
+      continue;
+    }
+    for (const key of ["timestamp", "time", "created_at", "createdAt"]) {
+      const raw = (container as Record<string, unknown>)[key];
+      if (typeof raw !== "string" && typeof raw !== "number") continue;
+      const parsed = new Date(
+        typeof raw === "number" && raw < 10_000_000_000 ? raw * 1_000 : raw
+      );
+      if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+    }
+  }
+  return null;
+};
+
+// Matches the max single-record size already used elsewhere for this same
+// concern (see codex-transcript-journal.ts's completeTranscriptBoundary).
+const MAX_TRANSCRIPT_ACTIVITY_SCAN_BYTES = 16 * 1024 * 1024;
+
+const timestampsFromAligned = (aligned: Buffer): string[] =>
+  aligned
+    .toString("utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return recordTimestamp(JSON.parse(line));
+      } catch {
+        return null;
+      }
+    })
+    .filter((value): value is string => value !== null);
+
+export const latestTranscriptActivity = (
+  transcriptPath: string,
+  boundary: number,
+  maximumBytes: number,
+  context: TranscriptContext
+): string | null => {
+  const initial = recordTimestamp(context.transcriptMetadata);
+  if (boundary === 0) return initial;
+  const descriptor = openSync(transcriptPath, "r");
+  try {
+    let windowBytes = maximumBytes;
+    for (;;) {
+      const start = Math.max(0, boundary - windowBytes);
+      const bytes = Buffer.allocUnsafe(boundary - start);
+      const bytesRead = readSync(descriptor, bytes, 0, bytes.byteLength, start);
+      if (bytesRead !== bytes.byteLength) return initial;
+      if (start === 0) {
+        const timestamps = timestampsFromAligned(bytes);
+        if (initial) timestamps.push(initial);
+        return timestamps.sort().at(-1) ?? null;
+      }
+      const newline = bytes.indexOf(0x0a);
+      // A newline anywhere before the buffer's final byte marks a genuine
+      // earlier record boundary: everything after it, through boundary, is
+      // one or more complete records safe to parse. A newline only at the
+      // final byte (boundary's own terminator, guaranteed present by
+      // completeTranscriptBoundary) means the whole window sits inside one
+      // record larger than windowBytes -- grow the window so that record's
+      // own start, and its timestamp, come into view instead of silently
+      // falling back to the transcript's creation timestamp.
+      if (newline >= 0 && newline < bytes.byteLength - 1) {
+        const timestamps = timestampsFromAligned(bytes.subarray(newline + 1));
+        if (initial) timestamps.push(initial);
+        return timestamps.sort().at(-1) ?? null;
+      }
+      if (windowBytes >= MAX_TRANSCRIPT_ACTIVITY_SCAN_BYTES) return initial;
+      windowBytes = Math.min(
+        windowBytes * 2,
+        MAX_TRANSCRIPT_ACTIVITY_SCAN_BYTES
+      );
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
 const lookupArtifact = async (
   client: CodexTranscriptWatcherClient,
   sourceSessionId: string
@@ -427,6 +561,11 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private activatedAt: number | null;
   private readonly baselineFileFrontiers: Map<string, number | null>;
   private readonly discovery: BoundedTranscriptDiscovery;
+  private readonly historicalObserver?: CodexHistoricalCandidateObserver;
+  private readonly historicalCandidates = new Map<
+    string,
+    CodexHistoricalCandidate
+  >();
   private readonly watchers: FSWatcher[] = [];
   private readonly hintedTranscriptPaths = new Set<string>();
   private readonly processing = new Set<string>();
@@ -469,10 +608,12 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
 
   constructor(
     client: CodexTranscriptWatcherClient,
-    config: CodexTranscriptWatcherConfig
+    config: CodexTranscriptWatcherConfig,
+    historicalObserver?: CodexHistoricalCandidateObserver
   ) {
     this.client = client;
     this.config = config;
+    this.historicalObserver = historicalObserver;
     const activationState = readActivationState(config);
     this.activatedAt = activationState.activatedAt;
     this.baselineFileFrontiers = activationState.baselineFileFrontiers;
@@ -612,6 +753,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       if (!this.discoverySweepActive && this.discoverySweepPending) {
         this.discoverySweepPending = false;
         this.discoverySweepActive = true;
+        this.historicalCandidates.clear();
       }
       let discovery = { files: [] as string[], cycleComplete: true };
       if (this.discoverySweepActive) {
@@ -628,7 +770,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       for (const transcriptPath of discovery.files) {
         if (this.stopped) break;
         await this.serviceFilesystemHints();
-        await this.processPathOnce(transcriptPath);
+        await this.processPathOnce(transcriptPath, this.discoverySweepActive);
       }
       if (this.activatedAt === null) {
         if (discovery.cycleComplete) {
@@ -639,6 +781,9 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       if (this.discoverySweepActive) {
         if (discovery.cycleComplete) {
           this.discoverySweepActive = false;
+          this.historicalObserver?.offerCandidates([
+            ...this.historicalCandidates.values()
+          ]);
           if (this.discoverySweepPending) this.scanRequested = true;
         } else {
           this.scanRequested = true;
@@ -716,11 +861,14 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     }
   }
 
-  private async processPathOnce(transcriptPath: string): Promise<void> {
+  private async processPathOnce(
+    transcriptPath: string,
+    observeHistorical = false
+  ): Promise<void> {
     if (this.processing.has(transcriptPath)) return;
     this.processing.add(transcriptPath);
     try {
-      await this.processTranscript(transcriptPath);
+      await this.processTranscript(transcriptPath, observeHistorical);
     } catch (error) {
       this.recordFailure(error);
     } finally {
@@ -728,7 +876,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     }
   }
 
-  private async processTranscript(transcriptPath: string): Promise<void> {
+  private async processTranscript(
+    transcriptPath: string,
+    observeHistorical: boolean
+  ): Promise<void> {
     const linkState = await lstat(transcriptPath);
     if (linkState.isSymbolicLink() || !linkState.isFile()) return;
     const before = await stat(transcriptPath);
@@ -742,13 +893,6 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       this.config.maxBytesPerBatch
     );
     this.rememberBaselineFile(fileKey, boundary);
-    if (
-      this.activatedAt !== null &&
-      baselineFrontier !== undefined &&
-      boundary <= (baselineFrontier ?? 0)
-    ) {
-      return;
-    }
     const cachedIdentity = this.identities.get(transcriptPath);
     const parsedIdentity =
       cachedIdentity?.fileKey === fileKey
@@ -764,6 +908,58 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       context: parsedIdentity.context
     };
     this.rememberIdentity(transcriptPath, { ...identity, fileKey });
+    const sourceProjectPath = sourceProjectId(identity.context);
+    const sourceProject = sourceProjectPath
+      ? readProjectMetadataForRoot(sourceProjectPath, {
+          ...process.env,
+          KOED_HOME: this.config.koedHome
+        })
+      : null;
+    if (observeHistorical) {
+      const sourceStartedAt = identity.context.transcriptMetadata.timestamp;
+      const sourceStartedBeforeActivation =
+        this.activatedAt === null ||
+        (typeof sourceStartedAt === "string" &&
+          Number.isFinite(Date.parse(sourceStartedAt)) &&
+          Date.parse(sourceStartedAt) <= this.activatedAt);
+      const latestActivityAt = latestTranscriptActivity(
+        transcriptPath,
+        boundary,
+        Math.max(this.config.maxBytesPerBatch, 64 * 1024),
+        identity.context
+      );
+      if (sourceStartedBeforeActivation && latestActivityAt) {
+        const frontierOffset = baselineFrontier ?? boundary;
+        this.historicalCandidates.set(identity.sessionId, {
+          sourceSessionId: identity.sessionId,
+          transcriptPath,
+          context: identity.context,
+          sourceSession: this.sourceSessionRegistration(
+            identity,
+            sourceProjectPath,
+            sourceProject
+          ),
+          frontierOffset,
+          latestActivityAt,
+          ...(sourceProject
+            ? {
+                projectId: sourceProject.localProjectId,
+                projectName: sourceProject.displayName,
+                projectFingerprint: sha256(
+                  `codex-project:${sourceProject.localProjectId}`
+                )
+              }
+            : { projectName: "Unassigned" })
+        });
+      }
+    }
+    if (
+      this.activatedAt !== null &&
+      baselineFrontier !== undefined &&
+      boundary <= (baselineFrontier ?? 0)
+    ) {
+      return;
+    }
     const turnBoundary = readCodexTranscriptTurnBoundary(
       { KOED_HOME: this.config.koedHome },
       {
@@ -808,66 +1004,25 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     const liveStartLine = existingArtifact
       ? existingArtifact.liveStartLine
       : await countTranscriptLines(transcriptPath, liveStartOffset);
-    const sourceProjectPath = sourceProjectId(identity.context);
-    const sourceProject = sourceProjectPath
-      ? readProjectMetadataForRoot(sourceProjectPath, {
-          ...process.env,
-          KOED_HOME: this.config.koedHome
-        })
-      : null;
+    const historicalSelection = this.historicalObserver?.selectionFor(
+      identity.sessionId
+    );
+    const historicalJournal =
+      !existingArtifact &&
+      historicalSelection?.frontierOffset === liveStartOffset;
     const result = await ingestCodexTranscriptJournal({
       client: this.client,
-      sourceSession: {
-        externalSessionId: identity.sessionId,
-        sourceRuntime: "codex-cli",
-        captureMethod: "api",
-        cwd: sourceProjectPath,
-        idempotencyKey: sha256(`watcher-session:${identity.sessionId}`),
-        metadata: {
-          ...identity.context.transcriptMetadata,
-          threadKind: identity.context.threadKind,
-          ...(identity.context.parentThreadId
-            ? { parentThreadId: identity.context.parentThreadId }
-            : {}),
-          ...(identity.context.parentSessionId
-            ? { parentSessionId: identity.context.parentSessionId }
-            : {}),
-          ...(identity.context.parentExternalSessionId
-            ? {
-                parentExternalSessionId:
-                  identity.context.parentExternalSessionId
-              }
-            : {}),
-          ...(sourceProject
-            ? {
-                localProjectId: sourceProject.localProjectId,
-                projectName: sourceProject.displayName,
-                projectPath:
-                  sourceProject.path.projectRoot ?? sourceProject.path.cwd
-              }
-            : {}),
-          sourceTransport: "transcript",
-          sourceAdapterVersion: "codex-transcript-v1",
-          observedViaTranscript: true
-        },
-        ...(sourceProject
-          ? {
-              detectedProjects: [
-                {
-                  id: sourceProject.localProjectId,
-                  name: sourceProject.displayName,
-                  path: sourceProject.path.projectRoot ?? sourceProject.path.cwd
-                }
-              ]
-            }
-          : {})
-      },
+      sourceSession: this.sourceSessionRegistration(
+        identity,
+        sourceProjectPath,
+        sourceProject
+      ),
       sourceSessionId: identity.sessionId,
       transcriptPath,
       context: identity.context,
       maxBytesPerBatch: this.config.maxBytesPerBatch,
-      journalStartOffset: liveStartOffset,
-      journalStartLine: liveStartLine,
+      journalStartOffset: historicalJournal ? 0 : liveStartOffset,
+      journalStartLine: historicalJournal ? 0 : liveStartLine,
       liveStartOffset,
       liveStartLine,
       existingArtifact,
@@ -911,6 +1066,57 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       before,
       result.canonicalCursorOffset
     );
+  }
+
+  private sourceSessionRegistration(
+    identity: { sessionId: string; context: TranscriptContext },
+    sourceProjectPath: string | undefined,
+    sourceProject: ReturnType<typeof readProjectMetadataForRoot> | null
+  ) {
+    return {
+      externalSessionId: identity.sessionId,
+      sourceRuntime: "codex-cli" as const,
+      captureMethod: "api" as const,
+      cwd: sourceProjectPath,
+      idempotencyKey: sha256(`watcher-session:${identity.sessionId}`),
+      metadata: {
+        ...identity.context.transcriptMetadata,
+        threadKind: identity.context.threadKind,
+        ...(identity.context.parentThreadId
+          ? { parentThreadId: identity.context.parentThreadId }
+          : {}),
+        ...(identity.context.parentSessionId
+          ? { parentSessionId: identity.context.parentSessionId }
+          : {}),
+        ...(identity.context.parentExternalSessionId
+          ? {
+              parentExternalSessionId: identity.context.parentExternalSessionId
+            }
+          : {}),
+        ...(sourceProject
+          ? {
+              localProjectId: sourceProject.localProjectId,
+              projectName: sourceProject.displayName,
+              projectPath:
+                sourceProject.path.projectRoot ?? sourceProject.path.cwd
+            }
+          : {}),
+        sourceTransport: "transcript",
+        sourceAdapterVersion: "codex-transcript-v1",
+        observedViaTranscript: true
+      },
+      ...(sourceProject
+        ? {
+            detectedProjects: [
+              {
+                id: sourceProject.localProjectId,
+                name: sourceProject.displayName,
+                path: sourceProject.path.projectRoot ?? sourceProject.path.cwd
+              }
+            ]
+          }
+        : {})
+    };
   }
 
   private scheduleTurnBoundarySettle(): void {
@@ -1091,9 +1297,14 @@ const watcherErrorCode = (error: unknown): string => {
 
 export const startCodexTranscriptWatcher = (
   client: CodexTranscriptWatcherClient = new MemoryApiClient(defaultConfig()),
-  config = resolveCodexTranscriptWatcherConfig()
+  config = resolveCodexTranscriptWatcherConfig(),
+  historicalObserver?: CodexHistoricalCandidateObserver
 ): CodexTranscriptWatcherHandle => {
-  const watcher = new CodexTranscriptWatcher(client, config);
+  const watcher = new CodexTranscriptWatcher(
+    client,
+    config,
+    historicalObserver
+  );
   watcher.start();
   return watcher;
 };

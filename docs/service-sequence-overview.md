@@ -654,16 +654,20 @@ health or another client's capture path.
 
 1. The supervised Transcript Watcher combines recursive filesystem notification
    hints with bounded periodic rescans of its configured provider source roots.
-   For Codex, the default root is `CODEX_HOME/sessions`; path-delimited
+   For Codex, the default roots are `CODEX_HOME/sessions` and
+   `CODEX_HOME/archived_sessions`; path-delimited
    `MEMORY_CODEX_TRANSCRIPT_ROOTS` replaces it. Claude and Pi use their own
    provider-specific source roots. Notifications only reduce latency: missed
    notifications still converge through rescans.
-2. The first successful bounded full discovery cycle establishes activation. Files in that
-   baseline register an immutable complete-record frontier and leave their
-   prefix to historical import. A file created after
-   activation registers frontier zero and is live from its first complete
-   record. Restart resumes post-frontier growth from the durable live cursor,
-   never from the independent historical checkpoint.
+2. The first successful bounded full discovery cycle establishes activation.
+   The supervised Local AI Runtime freezes at most the newest 50 Conversations
+   whose latest activity is within the inclusive previous 30 days, then works
+   their selected pre-frontier ranges chronologically. The watcher and
+   provider-neutral coordinator race safely through one artifact registration:
+   journal start zero and one immutable complete-record live frontier. A file
+   created after activation registers frontier zero and is live from its first
+   complete record. Restart resumes post-frontier growth from
+   `canonical_live`, never from independent `canonical_historical` parser state.
 3. Before reading a page, the watcher validates file size and compares bounded
    SHA-256 first/last cursor-prefix sentinels. It reads only complete JSONL
    records within bounded file, entry, and byte limits. Partial trailing records
@@ -745,10 +749,17 @@ health or another client's capture path.
     work class; compaction selects only Memory Events with the requested durable
     lineage. Created leaves and rollups persist that lineage, and derived node
     embeddings retain it.
-12. Local historical import state uses authenticated
+12. Before each new raw historical batch, the Local AI Runtime calls
+    authenticated local-only `GET /v1/historical-import-admission`. The API
+    returns only `{ admitted, reason }` after applying the shared Worker
+    admission policy to API/repository, queue, Embedding Service, usable
+    current-model capacity profile, and live-pressure state. It does not expose
+    content or paths, reuse Operator `/ops/status`, affect `/ready`, or ask the
+    runtime to inspect the Embedding Service directly.
+13. Local historical import state uses authenticated
     `/v1/historical-imports` and `/v1/historical-import-sources` routes. A
-    strict local-only lookup resolves one owner-scoped Conversation Source
-    Artifact from its AI Client, source kind, and provider session ID. These
+    strict local-only lookup resolves one owner-scoped source by Conversation
+    Source Artifact identity. These
     routes exist only on developer/local-personal edges. Durable run/source
     records validate transitions and retain the immutable registration
     frontier, separate historical ranges and journal consumer cursor, stage
@@ -757,7 +768,7 @@ health or another client's capture path.
     persisted or returned. New sources can be registered only while a run is
     active or paused; completed, failed, and skipped runs reject registration
     transactionally.
-13. Before source eligibility/queueing and every import batch, API resolves
+14. Before source eligibility/queueing and every import batch, API resolves
     owning User's effective Capture Policy and Capture Pause. Disabled, ask,
     paused, or non-personal results fail closed. Policy mutation is serialized
     against batch persistence. Batch writes use the same
@@ -771,7 +782,7 @@ health or another client's capture path.
     Pre-frontier records are historical; post-frontier/downtime-recovery records
     are live. No Team,
     Workspace Access, or Share Grant mutation occurs.
-14. Worker consumes queued jobs from Redis/BullMQ or `local_work_queue`.
+15. Worker consumes queued jobs from Redis/BullMQ or `local_work_queue`.
     Both backends use lower-number-first priority and FIFO as the current
     within-class tie-breaker, so
     live capture runs ahead of queued historical embedding/LCM work. Schema
@@ -780,14 +791,14 @@ health or another client's capture path.
     delayed jobs that have no stored priority. Aging, token-cost fairness,
     per-User/tenant shares, reserved interactive capacity, and dynamic dispatch
     priority are deferred to KOE-355.
-15. Worker embeds Memory Events by calling Embedding Service and atomically
+16. Worker embeds Memory Events by calling Embedding Service and atomically
     replaces source's complete embedding chunk set.
-16. Worker schedules compaction, creating or updating LCM Placeholder Memory
+17. Worker schedules compaction, creating or updating LCM Placeholder Memory
     Nodes from Memory Events and child nodes, then queues Memory Node embedding.
     In paid Koed-managed cloud, placeholder summaries, body text, source item
     JSON, completed LCM summaries, and structured LCM summary JSON are stored as
     redacted Memory Node fields with encrypted companions.
-17. Pending LCM placeholders remain available as degraded evidence until local
+18. Pending LCM placeholders remain available as degraded evidence until local
     LCM summaries are submitted.
 
 ## Managed Conversation threads

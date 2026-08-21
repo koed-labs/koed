@@ -224,25 +224,35 @@ and segment transfer have an independent local rate-limit bucket so a large
 first discovery cannot consume the interactive Memory read/write allowance used
 by Desktop and the MCP Server.
 
-The first successful bounded full discovery cycle establishes activation. Files
-present in that baseline retain their complete-record boundary as an immutable
-historical frontier but are not registered as Captured Sessions merely because
-they exist. A baselined file is registered only after post-frontier growth or an
-explicit historical import. Live registration starts both the source journal and
-its provider cursor at that frontier, so excluded historical bytes are not
-transferred before current capture can proceed. A file first discovered later is
-likewise deferred when its source timestamp predates activation. Files whose
-source timestamp is after activation use a zero frontier and are live from their
-first complete
-record. Post-frontier ranges, including restart recovery, advance a durable live
-cursor independent of historical imported ranges and checkpoints. Before each
-page, Koed compares cursor offset with bounded SHA-256 first/last prefix
-sentinels. Partial trailing JSONL holds the cursor; malformed complete records,
-truncation, and sentinel-covered prefix mutation fail visibly without
-advancement. Mutations outside sentinel windows are intentionally not detected
-by this bounded check. Capture Policy and Capture Pause are checked before
-session creation and every raw batch. Watcher writes are Personal Memory only
-and grant no Team or Workspace authority.
+The first successful bounded full discovery cycle establishes activation and
+freezes the automatic-history cohort. The coordinator selects Conversations by
+latest source activity in the inclusive previous 30 days, caps the cohort at
+the newest 50, and processes the selected pre-frontier ranges in chronological
+order. A Conversation that began earlier remains eligible when its latest
+activity is inside the window. These product bounds are fixed, not silently
+expanded by configuration.
+
+For every selected source, the watcher and the Local AI Runtime coordinator use
+the same complete-record boundary. Whichever wins registration writes one
+artifact with journal start zero and that immutable `live_start_offset`; the
+other converges on the artifact identity. This closes the old gap where an
+unchanged baseline source existed only in watcher-local state. Local source
+paths remain transient discovery inputs and do not enter the coordinator's
+durable state or canonical identity. Unselected baseline sources retain the
+normal deferred behavior and register only if they later grow.
+
+A file created after activation uses a zero frontier and is live from its first
+complete record. Post-frontier ranges, including restart recovery, advance the
+durable `canonical_live` cursor independently while selected pre-frontier bytes
+advance `canonical_historical`. History can therefore be paused, skipped,
+retried, or incomplete without delaying live append capture. Before each page,
+Koed compares cursor offset with bounded SHA-256 first/last prefix sentinels.
+Partial trailing JSONL holds the cursor; malformed complete records, truncation,
+and sentinel-covered prefix mutation fail visibly without advancement.
+Mutations outside sentinel windows are intentionally not detected by this
+bounded check. Capture Policy and Capture Pause are checked before session
+creation and every raw batch. Watcher writes are Personal Memory only and grant
+no Team or Workspace authority.
 
 The experimental Koed-managed conversation adapter uses
 `sourceAdapterVersion=codex-app-server-conversation-v1` and
@@ -422,6 +432,15 @@ pending interactive Memory Questions are at or below configured thresholds, the
 configured API `/ready` endpoint is healthy, queue probing succeeds, and the
 Embedding Service is healthy.
 
+Before producing each raw historical batch, the Local AI Runtime calls the
+authenticated, local-only `GET /v1/historical-import-admission` contract. Its
+content-free `{ admitted, reason }` response applies the same shared admission
+policy to current API/repository reachability, queue health, Embedding Service
+health, usable current-model capacity profile, and live Projection pressure.
+The runtime neither calls Operator-only `/ops/status` nor probes the Embedding
+Service or reconstructs Worker policy itself. A denied decision pauses only new
+historical production; it does not make `/ready` fail or stop live capture.
+
 Historical batches meter every physical raw row and all raw JSON, text, and
 transport-chunk bytes before admission. Completed-turn segments remain atomic.
 No atomic segment is admitted when it would exceed the configured row or byte
@@ -470,13 +489,13 @@ explicitly retried into `queued`. Historical imported ranges/checkpoint and
 Transcript Watcher live cursor are separate
 transactional streams; neither can advance, rewind, or overwrite the other.
 Source growth is accepted, while truncation, rotation, sentinel-covered prefix
-mutation, and stale submissions fail visibly without changing either stream. Source records
-keep raw source paths and path-like detected Project fields only inside local
-Postgres state. Status and canonical raw/Captured Session provenance use only a
-basename-style redacted label, stable fingerprint, and path-free detected
-Project fields. Routes, including the separate owner-scoped `live-cursor`
-advancement route, are available only in `developer` and `local_personal`
-profiles and require owning User authentication.
+mutation, and stale submissions fail visibly without changing either stream.
+The automatic coordinator identifies a source by Conversation Source Artifact,
+never by a local path; its durable selection stores only path-free source and
+Project identity. Status and canonical raw/Captured Session provenance use only
+a basename-style redacted label, stable fingerprint, and path-free detected
+Project fields. Historical routes are available only in `developer` and
+`local_personal` profiles and require owning User authentication.
 
 Import evaluates effective Capture Policy and Capture Pause before eligibility
 or queueing and again before every raw write batch. `disabled`, `ask`, active
@@ -506,13 +525,13 @@ Team Workspace resolution, or authorization. Import creates Personal Memory
 only and cannot create Workspace Access or Share Grants.
 
 Fresh watcher activation records the complete byte frontier of every discovered
-existing transcript before canonical live ingestion begins, without registering
-an empty Captured Session for an untouched historical file. If a transcript that
-started before activation is first discovered later, Koed records its current
-complete-record frontier and waits for subsequent growth rather than treating
-its prior bytes as live. Only a transcript whose source start time is after
-activation can begin live ingestion at byte zero. Earlier bytes remain eligible
-only for an explicit historical import.
+existing transcript before canonical live ingestion begins. Automatically
+selected transcripts are durably registered against that frontier; unselected
+transcripts are not registered merely because they exist. If an old transcript
+is first discovered after activation, Koed records its current complete-record
+frontier and waits for subsequent growth rather than treating prior bytes as
+live. Only a transcript whose source start time is after activation begins live
+ingestion at byte zero.
 
 When a display item is deleted, Koed excludes the underlying raw source item
 from semantic memory immediately and invalidates affected Memory Events and

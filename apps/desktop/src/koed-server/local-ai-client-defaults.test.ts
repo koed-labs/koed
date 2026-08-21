@@ -58,4 +58,33 @@ describe("Local AI Client runtime defaults", () => {
       ).assignment
     ).toMatchObject({ timeout_ms: 1_000, max_attempts: 2 });
   });
+
+  it("defaults Claude Curated Memory review to haiku with no reasoning effort", () => {
+    expect(
+      defaults(
+        { MEMORY_CURATED_REVIEW_PROVIDER: "claude" },
+        "curated_memory_review"
+      ).assignment
+    ).toMatchObject({
+      provider: "claude",
+      model: "haiku",
+      reasoning_effort: "none"
+    });
+  });
+
+  it("keeps an explicit Claude reasoning-effort override instead of forcing none", () => {
+    expect(
+      defaults(
+        {
+          MEMORY_CURATED_REVIEW_PROVIDER: "claude",
+          MEMORY_CURATED_REVIEW_REASONING_EFFORT: "low"
+        },
+        "curated_memory_review"
+      ).assignment
+    ).toMatchObject({
+      provider: "claude",
+      model: "haiku",
+      reasoning_effort: "low"
+    });
+  });
 });

@@ -37,6 +37,8 @@ background services, hold upstream credentials, or call Team backends directly.
 - LCM Summary and captured-session title processing;
 - Curated Memory review processing;
 - transcript watcher lifecycle and content-free Capture Hook wake signals;
+- provider-neutral automatic historical-ingestion coordination and its bounded
+  AI Client adapters;
 - bounded Memory Answer admission, cancellation, and shutdown.
 
 The local contract binds only to loopback on an ephemeral port. Its registration

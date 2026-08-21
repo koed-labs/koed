@@ -14,7 +14,8 @@
   },
   "files": [
     "dist/**/*",
-    "drizzle/**/*",
+    "drizzle/*.sql",
+    "drizzle/meta/_journal.json",
     "package.json"
   ],
   "scripts": {

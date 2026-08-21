@@ -6,6 +6,7 @@ import type {
 import type {
   DeviceIdentityInspection,
   EnvelopeEncryptionProvider,
+  HistoricalAdmissionDecision,
   KoedWorkClass
 } from "@koed/shared";
 import type { AuthHelpers } from "../auth/session.js";
@@ -56,6 +57,9 @@ export interface ApiRouteContext {
       jobId?: string,
       sourceRevision?: string
     ): Promise<MemoryJobStatus>;
+  };
+  historicalImport: {
+    admission(): Promise<HistoricalAdmissionDecision>;
   };
   graph: {
     cacheProvider: CacheProvider;

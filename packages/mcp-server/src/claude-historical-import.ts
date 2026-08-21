@@ -18,6 +18,7 @@ type HistoricalSource = {
   sourceFingerprint: string;
   historicalCursorOffset: number;
   historicalCursorLine: number;
+  historicalCursorParserState?: Record<string, unknown>;
   historicalCursorCurrentTurnId?: string;
   registrationFrontierOffset: number;
   state: string;
@@ -116,10 +117,14 @@ export const importClaudeHistoricalSource = async (input: {
 }): Promise<{ sourceId: string; batchCount: number; itemCount: number }> => {
   let offset = input.source.historicalCursorOffset;
   let line = input.source.historicalCursorLine;
+  // Preserve PR #342's current-turn recovery while accepting the shared,
+  // bounded parser-state contract used by automatic provider adapters.
   let parserState: ClaudeTranscriptParserState | undefined = input.source
-    .historicalCursorCurrentTurnId
-    ? { currentTurnId: input.source.historicalCursorCurrentTurnId }
-    : undefined;
+    .historicalCursorParserState
+    ? (input.source.historicalCursorParserState as ClaudeTranscriptParserState)
+    : input.source.historicalCursorCurrentTurnId
+      ? { currentTurnId: input.source.historicalCursorCurrentTurnId }
+      : undefined;
   let batchCount = 0;
   let itemCount = 0;
   while (offset < input.source.registrationFrontierOffset) {

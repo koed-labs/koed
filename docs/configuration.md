@@ -554,7 +554,7 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `MEMORY_CURATED_REVIEW_PROVIDER`: local Curated Memory review provider. Supported values are `codex`, `claude`, and `pi`; default `codex`. Pi requires full provider/model ID.
 - `MEMORY_CURATED_REVIEW_AI_CLIENT_INSTANCE`: selected local AI Client instance for Curated Memory Review. Default `<provider>.default`.
 - `MEMORY_CURATED_REVIEW_MODEL`: model for the separate local Curated Memory reviewer. Default `gpt-5.6-luna` for Codex; Claude uses `haiku` when unset, and Pi requires an explicit full provider/model ID.
-- `MEMORY_CURATED_REVIEW_REASONING_EFFORT`: reasoning effort for Curated Memory review. Default `low`.
+- `MEMORY_CURATED_REVIEW_REASONING_EFFORT`: reasoning effort for Curated Memory review. Default `low` for Codex; `none` for Claude's default `haiku` model, which does not support an explicit reasoning-effort level.
 - `MEMORY_CURATED_REVIEW_TIMEOUT_MS`: maximum duration of one local review call. Default `90000`.
 - `MEMORY_CURATED_REVIEW_MAX_ATTEMPTS`: maximum review attempts before a non-stale worker failure becomes a rejection. Default `2`.
 - `MEMORY_CURATED_REVIEW_MAX_PROMPT_TOKENS`: maximum complete review-bundle size. Oversized evidence fails closed instead of being truncated. Default `24000`.
@@ -694,6 +694,20 @@ policy, or full URLs containing customer content.
 - `MEMORY_HISTORICAL_IMPORT_LIVE_BACKLOG_MAX`: live raw-Projection rows permitted before historical admission pauses. Default `0`; valid range `0`–`10000`.
 - `MEMORY_HISTORICAL_IMPORT_API_READY_URL`: optional worker-visible API readiness override for historical admission. When omitted, Koed derives `/ready` from `MEMORY_API_URL`; if neither URL is configured, historical batches fail closed.
 - `MEMORY_HISTORICAL_IMPORT_API_READY_TIMEOUT_MS`: timeout for that API readiness probe. Default `1000`; valid range `100`–`10000`.
+- `MEMORY_HISTORICAL_IMPORT_ENABLED`: set to `false` to disable automatic
+  historical ingestion in the supervised Local AI Runtime. The automatic
+  coordinator only enables configured supported AI-client adapters.
+- `MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_ROWS`: maximum canonical raw items in
+  one Local AI Runtime historical upload. Default `100`; valid range `1`–`500`.
+- `MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_BYTES`: maximum serialized canonical
+  raw-item bytes in one Local AI Runtime historical upload. Default `1000000`;
+  valid range `1024`–`3800000`.
+- `MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_RUNTIME_MS`: maximum parser runtime
+  before the Local AI Runtime yields at a complete record. Default `15000`;
+  valid range `100`–`60000`.
+- `MEMORY_HISTORICAL_IMPORT_JOURNAL_BATCH_BYTES`: maximum complete source bytes
+  appended to the Conversation Source Journal in one coordinator pass. Default
+  `1048576`; valid range `1024`–`4194304`.
 - `MEMORY_VECTOR_CANDIDATE_LIMIT`: vector retrieval candidate count.
 - `MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT`, `MEMORY_RAG_LEAF_CANDIDATE_LIMIT`, `MEMORY_RAG_FRESH_EVENT_CANDIDATE_LIMIT`, `MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT`, `MEMORY_RAG_SCOPED_LEAF_CANDIDATE_LIMIT`: optional per-stage retrieval candidate limits. Leave blank to use code defaults derived from the requested result limit.
 - `MEMORY_RAG_ROLLUP_RESULT_LIMIT`: optional cap on rollup results admitted into final recall evidence.
@@ -915,7 +929,10 @@ bounded historical admission do not yet provide aging, token-cost fairness,
 per-User/tenant shares, reserved interactive capacity, or dynamic dispatch
 priority; KOE-355 owns that scheduler work.
 
-A coordinator registers each existing source with immutable fingerprint,
+A provider-neutral Local AI Runtime coordinator reuses the Transcript Watcher's
+bounded discovery and current Project metadata. It selects by latest activity
+inside the fixed 30-day window, caps the cohort at 50, processes selected
+sources chronologically, and registers each with immutable fingerprint,
 source-session identity, complete-record frontier offset, and bounded prefix sentinel hash.
 Pre-frontier rows receive the historical class. Post-frontier rows, including
 downtime catch-up, receive the live class. A source created after registration
@@ -928,16 +945,19 @@ accept owning User browser sessions or Personal API Tokens and grant no Team
 authority. No separate configuration enables these routes on private VPS, Team
 Self-Hosted, or Koed-managed cloud profiles.
 
-Import coordinators persist source path through local-only source registration.
+The coordinator retains source paths only in transient local discovery state;
+its restart-safe selection and source lookup use Conversation Source Artifact
+identity.
 Status and batch responses expose a redacted basename label and stable SHA-256
-fingerprint, never raw path or path-like detected Project fields. Coordinators
-must send transcript records through reusable `codex-transcript-v1` adapter and
-must maintain the returned historical checkpoint/imported ranges separately
-from the live-tail/recovery cursor. Neither stream may derive from or update the
-other. Source growth is allowed; truncation, rotation/sentinel-covered prefix mutation,
-and stale checkpoints fail explicitly. Exact retries return a read-only replay. Effective
-Capture Policy and Capture Pause are rechecked under the same
-owner-scoped transaction lock as each batch write.
+fingerprint, never raw path or path-like detected Project fields. A coordinator
+must use the source Artifact's registered AI-client adapter version (the current
+automatic adapter is `codex-transcript-v1`) and maintain its bounded historical
+parser checkpoint/imported ranges separately from the live-tail/recovery cursor.
+Neither stream may derive from or update the other. Source growth is allowed;
+truncation, rotation/sentinel-covered prefix mutation, and stale checkpoints fail
+explicitly. Exact retries return a read-only replay. Effective Capture Policy and
+Capture Pause are rechecked under the same owner-scoped transaction lock as each
+batch write.
 
 ## Data At Rest
 

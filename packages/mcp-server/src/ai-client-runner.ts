@@ -637,10 +637,19 @@ export const claudeAgentSdkTokenUsage = (
 export const claudeSupportedReasoningEfforts = (
   model: Pick<ModelInfo, "supportsEffort" | "supportedEffortLevels">
 ): string[] | undefined => {
-  if (model.supportsEffort === false) return ["none"];
-  return Array.isArray(model.supportedEffortLevels)
-    ? [...model.supportedEffortLevels]
-    : undefined;
+  if (Array.isArray(model.supportedEffortLevels)) {
+    return [...model.supportedEffortLevels];
+  }
+  // supportsEffort === true with no levels array is genuinely ambiguous (the
+  // SDK claims support but didn't say which levels); leave that undecided.
+  if (model.supportsEffort === true) return undefined;
+  // supportsEffort === false, or the SDK simply didn't report either field
+  // (e.g. Haiku), both mean the same thing here: no effort override is safe
+  // to send. claudeAgentSdkEffort() throws on any value other than "none"
+  // for a model with no supported effort levels, so this must never fall
+  // through to `undefined` (which the UI/validation read as "no data" rather
+  // than "not supported", leaving Save permanently disabled).
+  return ["none"];
 };
 
 export const claudeAgentSdkEffort = (

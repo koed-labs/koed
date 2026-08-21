@@ -35,23 +35,46 @@ const safeProjectProvenance = (
       .map((key) => [key, project[key]])
   );
 
+const safeParserState = (
+  state: Record<string, unknown>
+): Record<string, string | boolean> =>
+  Object.fromEntries(
+    [
+      "activeTurnId",
+      "currentTurnId",
+      "lastEventTime",
+      "assistantMessagePreference"
+    ]
+      .filter((key) => ["string", "boolean"].includes(typeof state[key]))
+      .map((key) => [key, state[key] as string | boolean])
+  );
+
 const presentSource = (
   source: HistoricalImportSourceRecord,
-  options: { includeResumeCursor?: boolean } = {}
+  options: { includeResumeState?: boolean } = {}
 ) => {
   const safe = Object.fromEntries(
     Object.entries(source).filter(
       ([key]) =>
         key !== "redactedSourceLabel" &&
         key !== "detectedProject" &&
+        key !== "historicalCursorParserState" &&
         key !== "historicalCursorCurrentTurnId"
     )
   );
   return {
     ...safe,
-    ...(options.includeResumeCursor && source.historicalCursorCurrentTurnId
+    ...(options.includeResumeState
       ? {
-          historicalCursorCurrentTurnId: source.historicalCursorCurrentTurnId
+          historicalCursorParserState: safeParserState(
+            source.historicalCursorParserState
+          ),
+          ...(source.historicalCursorCurrentTurnId
+            ? {
+                historicalCursorCurrentTurnId:
+                  source.historicalCursorCurrentTurnId
+              }
+            : {})
         }
       : {}),
     sourceLabel: source.redactedSourceLabel,
@@ -143,6 +166,21 @@ const registerCreateRunRoute = (
   );
 };
 
+const registerAdmissionRoute = (
+  app: FastifyInstance,
+  context: ApiRouteContext
+): void => {
+  app.get(
+    "/v1/historical-import-admission",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      requireLocalImportSurface(context);
+      await context.auth.authenticate(request);
+      return context.historicalImport.admission();
+    }
+  );
+};
+
 const registerListRunsRoute = (
   app: FastifyInstance,
   context: ApiRouteContext
@@ -205,7 +243,9 @@ const registerCreateSourceRoute = (
           statusCode: 409
         });
       }
-      return { source: presentSource(source) };
+      return {
+        source: presentSource(source, { includeResumeState: true })
+      };
     }
   );
 };
@@ -230,7 +270,7 @@ const registerSourceLookupRoute = (
         });
       }
       return {
-        source: presentSource(source, { includeResumeCursor: true })
+        source: presentSource(source, { includeResumeState: true })
       };
     }
   );
@@ -306,12 +346,6 @@ const ingestHistoricalBatch = async (
 ) => {
   const repo = context.requireRepository();
   const source = await requireSource(repo, userId, sourceId);
-  const sourceAdapterVersion =
-    source.sourceKind === "claude-code"
-      ? "claude-code-transcript-v1"
-      : source.sourceKind === "pi"
-        ? "pi-session-v1"
-        : "codex-transcript-v1";
   return repo.ingestHistoricalImportBatch(
     { userId },
     {
@@ -320,7 +354,7 @@ const ingestHistoricalBatch = async (
       items: input.items.map((item) => ({
         ...item,
         sourceKind: source.sourceKind,
-        sourceAdapterVersion,
+        sourceAdapterVersion: source.sourceAdapterVersion,
         sourceTransport: "historical_import"
       }))
     }
@@ -364,6 +398,7 @@ export const registerHistoricalImportRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext
 ): void => {
+  registerAdmissionRoute(app, context);
   registerCreateRunRoute(app, context);
   registerListRunsRoute(app, context);
   registerGetRunRoute(app, context);
