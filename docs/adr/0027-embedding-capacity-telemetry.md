@@ -9,6 +9,7 @@ Related decisions:
 - [0010 Managed SaaS Queryable Vectors](./0010-managed-saas-queryable-vectors.md)
 - [0025 MCP v2 and Local AI Runtime Ownership](./0025-mcp-v2-local-ai-runtime-ownership.md)
 - [0026 Pre-launch Schema Reset and Processing Epochs](./0026-pre-launch-schema-reset-and-processing-epochs.md)
+- [0031 Verified Embedding Acceleration](./0031-verified-embedding-acceleration.md)
 - [Hosted Capacity Plan And Load Checks](../hosted-capacity-plan.md)
 
 ## Context
@@ -163,7 +164,8 @@ No HTTP status or scrape request may start calibration or embedding work.
 ## Non-Goals
 
 - Multi-tenant fair scheduling or dynamic priority policy.
-- GPU provisioning or autoscaling.
+- Dynamic GPU provisioning or autoscaling. Local verified accelerator selection
+  is defined by ADR 0031.
 - Reranker capacity management.
 - User-facing dashboard design.
 - Running a benchmark inside health, readiness, status, or metrics handling.

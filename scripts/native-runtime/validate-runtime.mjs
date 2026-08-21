@@ -8,6 +8,8 @@ import {
   boundedMap,
   collectPlatformBinaries,
   listRuntimeFiles,
+  linuxLoaderEnvironment,
+  linuxLoaderIssues,
   macLoaderIssues
 } from "./loader-validation-lib.mjs";
 
@@ -191,12 +193,16 @@ const validateLinuxLoaders = (runtimeRoot) => {
     runtimeRoot,
     platform: "linux"
   }).map((file) => {
-    const result = run("ldd", [file]);
+    const result = run("ldd", [file], {
+      env: linuxLoaderEnvironment({ file, runtimeRoot })
+    });
     const output = `${result.stdout}\n${result.stderr}`;
+    const issues = linuxLoaderIssues({ file, output, runtimeRoot });
     return {
       file,
       command: result.command,
-      ok: result.status === 0 && !/not found/i.test(output),
+      ok: result.status === 0 && issues.length === 0,
+      issues,
       output: output.trim()
     };
   });

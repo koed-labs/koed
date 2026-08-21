@@ -29,7 +29,12 @@ koed-runtime/
     ... pgvector extension files ...
   llama.cpp/
     llama-server
-    ... runtime libraries ...
+    cpu/
+      llama-server
+      ... CPU runtime libraries ...
+    cuda/
+      llama-server
+      ... redistributable CUDA runtime libraries ...
   embedding-service/
     dist/index.js
     package.json
@@ -63,6 +68,12 @@ pnpm native-runtime:validate -- --runtime-root dist/native-runtime/macos-arm64/k
 
 See `docs/native-runtime-artifact-pipeline.md`.
 
+Generated native archives are release assets, not Git-tracked files. Linux CUDA
+is cold-built only by the explicitly requested CI proof or the trusted
+default-branch cache workflow. The validated payload is cached by its pinned
+source and build recipe; releases repackage that payload and publish the archive,
+SHA-256 sidecar, and provenance manifest without recompiling it.
+
 ## Validation
 
 `koed-server runtime status --provider packaged --json` and `runtime install --provider packaged --dependency-mode bundled-local --json` validate:
@@ -72,7 +83,7 @@ See `docs/native-runtime-artifact-pipeline.md`.
 - executable bit on installed executables;
 - PostgreSQL 17 via `pg_config --version` or `initdb --version`;
 - `llama-server` responds to `--version` or `--help`;
-- loader output where tooling exists (`otool -L` on macOS, `ldd` on Linux) has no missing libraries.
+- loader output where tooling exists (`otool -L` on macOS, `ldd` on Linux) has no missing libraries, except the host-provided `libcuda.so.1` driver interface within the Linux CUDA payload.
 
 Bundled-local startup separately requires the built Embedding Service entry (`embedding-service/dist/index.js`), `llama-server`, and an installed embedding model path. It does not require `embedding-service/.venv/bin/python` or `KOED_EMBEDDING_PYTHON_BIN`.
 

@@ -74,6 +74,7 @@ export {
   runDesktopCollaborationBrokerProcess
 } from "./desktop-collaboration-broker.js";
 export { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
+export { loadRepoEnv } from "./env-file.js";
 export {
   deviceIdentityLockTarget,
   ensureDeviceIdentity,
@@ -81,6 +82,7 @@ export {
 } from "./device-identity.js";
 export type {
   KoedDependencyMode,
+  HardwareAccelerationPreference,
   KoedServerConfig,
   KoedServerRuntimeMode
 } from "./config.js";

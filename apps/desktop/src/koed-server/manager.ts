@@ -24,8 +24,11 @@ import {
 } from "@koed/shared";
 import {
   installLocalModel,
+  loadRepoEnv,
+  resolveKoedServerConfig,
   resolveKoedServerPaths,
-  runPersonalSyncCommand
+  runPersonalSyncCommand,
+  writeKoedServerConfig
 } from "@koed/koed-server";
 import {
   existsSync as nodeExistsSync,
@@ -157,6 +160,10 @@ export interface KoedServerManager {
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
   localAiClients: LocalAiClientDesktopHandler;
+  hardwareAcceleration: {
+    get: () => Promise<HardwareAccelerationState>;
+    set: (enabled: boolean) => Promise<HardwareAccelerationState>;
+  };
   managedConversation: ManagedConversationDesktopHandler;
   subscribePersonalMemory: (
     listener: (change: PersonalDesktopChange) => void,
@@ -164,6 +171,11 @@ export interface KoedServerManager {
   ) => Promise<void>;
   resume: () => Promise<unknown>;
   stop: () => Promise<unknown>;
+}
+
+export interface HardwareAccelerationState {
+  enabled: boolean;
+  managedByEnvironment: boolean;
 }
 
 type DiagnosticStatus = KoedServerStatus & {
@@ -3164,6 +3176,64 @@ export const createKoedServerManager = ({
     return result;
   };
 
+  const hardwareAccelerationEnvironment = (): NodeJS.ProcessEnv => ({
+    ...loadRepoEnv(repoRoot, environment),
+    ...environment
+  });
+
+  const hardwareAccelerationManagedByEnvironment = (): boolean => {
+    const effectiveEnvironment = hardwareAccelerationEnvironment();
+    return Boolean(
+      effectiveEnvironment.KOED_HARDWARE_ACCELERATION?.trim() ||
+      effectiveEnvironment.KOED_EMBEDDING_ACCELERATION?.trim()
+    );
+  };
+
+  const hardwareAccelerationState =
+    async (): Promise<HardwareAccelerationState> => {
+      const effectiveEnvironment = hardwareAccelerationEnvironment();
+      const config = resolveKoedServerConfig(
+        resolveKoedServerPaths(environment),
+        effectiveEnvironment
+      );
+      const explicitEmbeddingPolicy =
+        effectiveEnvironment.KOED_EMBEDDING_ACCELERATION?.trim() || undefined;
+      return {
+        enabled:
+          explicitEmbeddingPolicy === undefined
+            ? config.hardwareAcceleration === "auto"
+            : explicitEmbeddingPolicy !== "cpu",
+        managedByEnvironment: hardwareAccelerationManagedByEnvironment()
+      };
+    };
+
+  const setHardwareAcceleration = async (
+    enabled: boolean
+  ): Promise<HardwareAccelerationState> => {
+    if (hardwareAccelerationManagedByEnvironment()) {
+      throw new Error(
+        "Hardware acceleration is managed by the Operator environment."
+      );
+    }
+    const paths = resolveKoedServerPaths(environment);
+    const config = resolveKoedServerConfig(paths, {});
+    writeKoedServerConfig(paths, {
+      ...config,
+      hardwareAcceleration: enabled ? "auto" : "cpu"
+    });
+    const restarted = await runJson(["restart"], 60_000);
+    if (!resultOk(restarted)) {
+      throw new Error(
+        resultMessage(
+          restarted,
+          "Koed could not restart with the new hardware acceleration preference."
+        )
+      );
+    }
+    await pollUntilReady(60);
+    return hardwareAccelerationState();
+  };
+
   const runMutatingAiClient = async (
     client: "Codex" | "Claude Code" | "Pi",
     args: ["setup" | "repair" | "remove", "codex" | "claude" | "pi"]
@@ -3193,6 +3263,10 @@ export const createKoedServerManager = ({
   return {
     personalMemory,
     localAiClients,
+    hardwareAcceleration: {
+      get: hardwareAccelerationState,
+      set: setHardwareAcceleration
+    },
     managedConversation,
     subscribePersonalMemory,
     resume,

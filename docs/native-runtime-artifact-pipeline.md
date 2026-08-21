@@ -70,6 +70,11 @@ Use `KOED_NATIVE_RUNTIME_SOURCE_DIR=/path/to/linux-x64/koed-runtime` only when v
 
 The builder verifies each archive by SHA-256, assembles the deterministic `koed-runtime/` layout, writes the packaged runtime manifest, and archives the runtime tarball. Validation recursively inspects every Mach-O or ELF file in the runtime instead of relying on a short executable list. macOS validation rejects undeclared absolute loader paths, missing `@loader_path`/`@rpath` dependencies, and package-manager paths. Validation also starts temporary Postgres and verifies both `CREATE EXTENSION pgcrypto` and `CREATE EXTENSION vector`. It validates `llama-server`; it does not validate Python because Python is no longer packaged as a native runtime asset.
 
+Linux CUDA validation requires every redistributable CUDA runtime dependency to
+resolve from the packaged payload. The sole external exception is
+`libcuda.so.1`, which is the host NVIDIA driver interface and cannot be bundled.
+That exception is accepted only for ELF files under `llama.cpp/cuda/`.
+
 ## CI
 
 `.github/workflows/ci.yml` runs native macOS validation only after static checks, tests, and the normal build succeed. Packaging/runtime-relevant pull requests restore a source-, script-, platform-, architecture-, and Xcode-keyed native payload, regenerate current provenance and checksums, validate it fail closed, and consume it in an unpacked-app packaged Desktop smoke. This path skips DMG/ZIP generation and routine artifact uploads. Documentation-only pull requests do not allocate a macOS runner, and the `full-ci` label forces the app-only smoke when the path policy needs an override.
@@ -81,9 +86,16 @@ and validate the immutable cache entry, cold-build it on a miss, and save it
 only after validation. Source archives and compiler work directories are not
 shared; the cached unit is the completed `koed-runtime/` tree.
 
-The `changeset-release/main` pull request, weekly schedule, and manual `full` or `clean-install` dispatch use an independent cold native build. CI extracts the completed tarball into a separate temporary directory before validation, which exercises the same relocation boundary as a consumer. That full path builds and verifies the app, DMG, ZIP, and block maps, but does not publish its validation outputs. The Linux x64 native runtime job remains manual because it is expensive and should run on dependency bumps or explicit review; its assets target glibc 2.35+ and should be built on Ubuntu 22.04 or an equivalent baseline image.
+The `changeset-release/main` pull request, weekly schedule, and manual `full` or `clean-install` dispatch use an independent cold native build. CI extracts the completed tarball into a separate temporary directory before validation, which exercises the same relocation boundary as a consumer. That full path builds and verifies the app, DMG, ZIP, and block maps, but does not publish its validation outputs. The Linux x64 native runtime job remains manual because a cold CUDA build is expensive and should run on dependency bumps or explicit review. It restores a content-addressed completed payload when available, builds only on a cache miss, validates before saving, then packages and uploads the current commit artifact. Its assets target glibc 2.35+ and build on a GitHub-hosted Ubuntu 22.04 runner.
 
-The release workflow independently rebuilds the macOS native runtime and Desktop package from the exact merged release commit, uploads the unsigned DMG/ZIP and checksum file, verifies the complete required asset set, and publishes the draft only after validation succeeds. See `docs/ci-validation.md` for the complete tier policy and `docs/desktop-internal-artifacts.md` for release artifact install/open, Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
+`.github/workflows/native-runtime-linux-cache.yml` is the trusted Linux cache
+writer. It runs on the default branch when the pinned source recipe or relevant
+build/validation code changes, refreshes the cache on a bounded schedule, and
+may be dispatched manually. The cache key covers payload-producing inputs;
+validation-only changes revalidate the existing payload without recompiling it.
+Ordinary CI and local setup never compile CUDA automatically.
+
+The release workflow independently rebuilds the macOS native runtime and Desktop package from the exact merged release commit. For Linux x64 it requires the matching validated native payload cache, regenerates versioned provenance and checksums without recompilation, and publishes the native archive as a separate GitHub Release asset. The draft release is published only after the complete required asset set is present. See `docs/ci-validation.md` for the complete tier policy and `docs/desktop-internal-artifacts.md` for release artifact install/open, Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
 
 ## Desktop consumption
 

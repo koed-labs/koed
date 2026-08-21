@@ -62,6 +62,124 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
+  it("persists and restarts after changing hardware acceleration", async () => {
+    const koedHome = mkdtempSync(
+      resolve(tmpdir(), "koed-desktop-acceleration-")
+    );
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {
+        KOED_HOME: koedHome,
+        DATABASE_URL: "postgres://operator-secret@database/koed"
+      },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        callback(
+          null,
+          JSON.stringify(
+            args.includes("status")
+              ? healthyLocalServiceStatus()
+              : { ok: true, state: "healthy" }
+          ),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.hardwareAcceleration.get()).resolves.toEqual({
+      enabled: true,
+      managedByEnvironment: false
+    });
+    await expect(manager.hardwareAcceleration.set(false)).resolves.toEqual({
+      enabled: false,
+      managedByEnvironment: false
+    });
+    expect(calls.some((args) => args.includes("restart"))).toBe(true);
+    const persisted = readFileSync(
+      resolve(koedHome, "config/server.json"),
+      "utf8"
+    );
+    expect(JSON.parse(persisted)).toMatchObject({
+      hardwareAcceleration: "cpu"
+    });
+    expect(persisted).not.toContain("operator-secret");
+    rmSync(koedHome, { recursive: true, force: true });
+  });
+
+  it("does not override Operator-managed hardware acceleration", async () => {
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {
+        KOED_HOME: "/tmp/koed-managed-acceleration",
+        KOED_EMBEDDING_ACCELERATION: "cuda"
+      },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: {}
+      }),
+      existsSync: () => true,
+      execFile: () => undefined,
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.hardwareAcceleration.get()).resolves.toEqual({
+      enabled: true,
+      managedByEnvironment: true
+    });
+    await expect(manager.hardwareAcceleration.set(false)).rejects.toThrow(
+      "managed by the Operator environment"
+    );
+  });
+
+  it("treats a repository environment acceleration policy as Operator-managed", async () => {
+    const repoRoot = mkdtempSync(resolve(tmpdir(), "koed-desktop-repo-env-"));
+    const koedHome = mkdtempSync(
+      resolve(tmpdir(), "koed-desktop-repo-env-home-")
+    );
+    writeFileSync(
+      resolve(repoRoot, ".env"),
+      "KOED_EMBEDDING_ACCELERATION=cpu\n"
+    );
+    const manager = createKoedServerManager({
+      repoRoot,
+      cliPath: resolve(repoRoot, "cli.js"),
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: [resolve(repoRoot, "cli.js"), ...args],
+        env: {}
+      }),
+      existsSync: () => true,
+      execFile: () => undefined,
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.hardwareAcceleration.get()).resolves.toEqual({
+      enabled: false,
+      managedByEnvironment: true
+    });
+    await expect(manager.hardwareAcceleration.set(true)).rejects.toThrow(
+      "managed by the Operator environment"
+    );
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(koedHome, { recursive: true, force: true });
+  });
+
   it("allows a cold-start status inspection to use the two-minute budget", async () => {
     let timeout: number | undefined;
     const manager = createKoedServerManager({

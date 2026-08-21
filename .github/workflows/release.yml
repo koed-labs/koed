@@ -108,7 +108,7 @@ jobs:
 
           - Desktop package: Koed Desktop control-plane assets.
           - koed-server app-runtime package: standalone JS/service runtime archives named `koed-server-<version>-<platform>-<arch>.tar.gz` with SHA-256 sidecars.
-          - Native runtime assets: separate from the koed-server app-runtime package and currently bundled/provisioned through Desktop/native-runtime install flows.
+          - Native runtime assets: separate, checksum-pinned Postgres, pgvector, and llama-server runtime archives. Linux x64 includes CPU and CUDA payloads; models remain separate.
           - Model artifacts: separate embedding and reranker assets installed under `KOED_HOME/models`; not embedded in the koed-server app-runtime package.
           EOF
 
@@ -218,6 +218,7 @@ jobs:
     needs:
       - release
       - standalone-koed-server-release-assets
+      - native-runtime-linux-x64-release-assets
     if: needs.release.outputs.desktop_assets_enabled == 'true'
 
     steps:
@@ -236,6 +237,12 @@ jobs:
           path: release-artifacts
           merge-multiple: true
 
+      - name: Download Linux native runtime assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: koed-native-runtime-linux-x64
+          path: release-artifacts/native-runtime-linux-x64
+
       - name: Write release artifact metadata
         run: |
           node scripts/write-koed-release-artifact-metadata.mjs -- \
@@ -252,6 +259,84 @@ jobs:
         run: |
           gh release upload "${{ needs.release.outputs.tag }}" \
             "koed-release-artifacts-${{ needs.release.outputs.version }}.json" \
+            --clobber
+
+  native-runtime-linux-x64-release-assets:
+    name: Linux x64 native runtime release assets
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    needs: release
+    if: needs.release.outputs.desktop_assets_enabled == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build koed-server CLI
+        run: pnpm --filter @koed/koed-server build
+
+      - name: Restore verified Linux native runtime payload
+        id: native-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-native-runtime-cache/linux-x64/koed-runtime
+          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
+
+      - name: Require prebuilt verified native runtime payload
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "Verified Linux native runtime cache is missing for the current pinned build recipe." >&2
+          echo "Run the Linux native runtime cache workflow on main before publishing this release." >&2
+          exit 1
+
+      - name: Validate cached native runtime payload
+        run: pnpm native-runtime:validate -- --runtime-root "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --platform linux --json
+
+      - name: Package native runtime release artifact
+        run: pnpm native-runtime:build:linux-x64 -- --source-dir "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --version "${{ needs.release.outputs.version }}" --json
+
+      - name: Validate packaged native runtime artifact
+        run: pnpm native-runtime:validate -- --runtime-root dist/native-runtime/linux-x64/koed-runtime --platform linux --json
+
+      - name: Stage native runtime release assets
+        run: |
+          set -euo pipefail
+          release_dir="release-artifacts/native-runtime-linux-x64"
+          mkdir -p "${release_dir}"
+          cp dist/native-runtime/linux-x64/koed-native-runtime-linux-x64-*.tar.gz "${release_dir}/"
+          cp dist/native-runtime/linux-x64/koed-native-runtime-linux-x64-*.tar.gz.sha256 "${release_dir}/"
+          cp dist/native-runtime/linux-x64/provenance.json "${release_dir}/koed-native-runtime-linux-x64-${{ needs.release.outputs.version }}.provenance.json"
+
+      - name: Upload native runtime assets to workflow
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-native-runtime-linux-x64
+          path: release-artifacts/native-runtime-linux-x64
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload native runtime assets to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.release.outputs.tag }}" \
+            release-artifacts/native-runtime-linux-x64/* \
             --clobber
 
   unsigned-desktop-release-assets:
@@ -355,6 +440,7 @@ jobs:
       - release
       - standalone-koed-server-release-assets
       - standalone-koed-server-release-metadata
+      - native-runtime-linux-x64-release-assets
       - unsigned-desktop-release-assets
     if: needs.release.outputs.desktop_assets_enabled == 'true'
 
@@ -385,6 +471,9 @@ jobs:
             "koed-server-app-runtime-${VERSION}-macos-arm64.provenance.json" \
             "koed-server-app-runtime-${VERSION}-macos-arm64.manifest.json" \
             "koed-release-artifacts-${VERSION}.json" \
+            "koed-native-runtime-linux-x64-${VERSION}.tar.gz" \
+            "koed-native-runtime-linux-x64-${VERSION}.tar.gz.sha256" \
+            "koed-native-runtime-linux-x64-${VERSION}.provenance.json" \
             'Koed-*-arm64.dmg' \
             'Koed-*-arm64.zip' \
             'koed-desktop-macos-arm64-unsigned.sha256'; do

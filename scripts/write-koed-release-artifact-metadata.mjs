@@ -12,7 +12,7 @@ Options:
   --version <version>        Product/package version, without leading v.
   --tag <tag>                GitHub Release tag, for example v0.4.0.
   --repository <owner/repo>  GitHub repository. Defaults to GITHUB_REPOSITORY.
-  --artifact-root <dir>      Directory containing koed-server package assets.
+  --artifact-root <dir>      Directory containing Koed release assets.
   --out <path>               Metadata JSON output path.
   --json                     Print JSON result.
   -h, --help                 Show help.
@@ -148,8 +148,59 @@ const collectServerPackageTargets = ({ artifactRoot, repository, tag }) => {
   });
 };
 
+const collectNativeRuntimeTargets = ({ artifactRoot, repository, tag }) => {
+  const files = listFiles(resolve(artifactRoot));
+  return files
+    .filter((file) => basename(file).match(/^koed-native-runtime-.+\.tar\.gz$/))
+    .sort()
+    .map((archive) => {
+      const checksum = `${archive}.sha256`;
+      if (!files.includes(checksum)) {
+        throw new Error(`Missing SHA-256 sidecar for ${archive}`);
+      }
+      const provenanceFile = files.find(
+        (file) =>
+          dirname(file) === dirname(archive) &&
+          basename(file).endsWith(".provenance.json")
+      );
+      if (!provenanceFile) {
+        throw new Error(`Missing native-runtime provenance for ${archive}`);
+      }
+      const provenance = JSON.parse(readFileSync(provenanceFile, "utf8"));
+      if (
+        provenance.schemaVersion !== 1 ||
+        typeof provenance.artifact?.version !== "string" ||
+        typeof provenance.artifact?.platform !== "string" ||
+        typeof provenance.artifact?.architecture !== "string"
+      ) {
+        throw new Error(`Invalid native-runtime provenance: ${provenanceFile}`);
+      }
+      return {
+        version: provenance.artifact?.version,
+        platform: provenance.artifact?.platform,
+        architecture: provenance.artifact?.architecture,
+        archive: {
+          name: basename(archive),
+          url: releaseUrl({ repository, tag, file: archive }),
+          sha256: readSha256Sidecar(checksum)
+        },
+        checksum: {
+          name: basename(checksum),
+          url: releaseUrl({ repository, tag, file: checksum }),
+          algorithm: "sha256"
+        },
+        provenance: {
+          name: basename(provenanceFile),
+          url: releaseUrl({ repository, tag, file: provenanceFile }),
+          schemaVersion: provenance.schemaVersion
+        }
+      };
+    });
+};
+
 export const buildReleaseArtifactMetadata = (options) => {
   const targets = collectServerPackageTargets(options);
+  const nativeRuntimeTargets = collectNativeRuntimeTargets(options);
   return {
     schemaVersion: 1,
     release: {
@@ -173,7 +224,8 @@ export const buildReleaseArtifactMetadata = (options) => {
         kind: "native-runtime",
         packageName: "koed-native-runtime",
         description:
-          "Postgres, pgvector, and llama-server runtime assets are separate from koed-server app-runtime packages and are currently bundled/provisioned through Desktop/native-runtime install flows. Standalone native runtime release assets are not published by this metadata yet."
+          "Checksum-pinned Postgres, pgvector, and llama-server runtime assets published separately from koed-server app-runtime packages and model files.",
+        targets: nativeRuntimeTargets
       },
       models: {
         kind: "models",

@@ -119,6 +119,11 @@ const main = () => {
         architecture: "x64",
         workDir: process.env.KOED_NATIVE_RUNTIME_WORK_DIR
       });
+  if (!sourceDir && procurement.components.llamaCppCuda?.skipped) {
+    throw new Error(
+      `Pinned CUDA runtime is required for the Linux x64 artifact: ${procurement.components.llamaCppCuda.reason}`
+    );
+  }
   prunePythonEmbeddingRuntimeFiles(runtimeRoot);
   const nativeAssets = writeRuntimeAssetManifest({
     runtimeRoot,

@@ -1,7 +1,9 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -10,7 +12,8 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   resolveKoedServerConfig,
-  writeCodexGlobalMemoryGuidancePreference
+  writeCodexGlobalMemoryGuidancePreference,
+  writeKoedServerConfig
 } from "./config.js";
 import type { KoedServerPaths } from "./paths.js";
 
@@ -66,7 +69,8 @@ describe("koed-server config", () => {
       dependencyMode: "external",
       codexTranscriptWatcherEnabled: true,
       claudeTranscriptWatcherEnabled: true,
-      codexGlobalMemoryGuidanceEnabled: true
+      codexGlobalMemoryGuidanceEnabled: true,
+      hardwareAcceleration: "auto"
     });
   });
 
@@ -86,6 +90,66 @@ describe("koed-server config", () => {
         KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "true"
       })
     ).toMatchObject({ codexGlobalMemoryGuidanceEnabled: true });
+  });
+
+  it("persists local hardware acceleration with environment precedence", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({ hardwareAcceleration: "cpu" })
+    );
+
+    expect(resolveKoedServerConfig(paths(root), {})).toMatchObject({
+      hardwareAcceleration: "cpu"
+    });
+    expect(
+      resolveKoedServerConfig(paths(root), {
+        KOED_HARDWARE_ACCELERATION: "auto"
+      })
+    ).toMatchObject({ hardwareAcceleration: "auto" });
+  });
+
+  it("writes configuration atomically with private permissions", () => {
+    const root = tempDir();
+    const resolvedPaths = paths(root);
+
+    writeKoedServerConfig(resolvedPaths, {
+      ...resolveKoedServerConfig(resolvedPaths, {}),
+      hardwareAcceleration: "cpu"
+    });
+
+    expect(
+      JSON.parse(readFileSync(resolvedPaths.serverConfigPath, "utf8"))
+    ).toMatchObject({ hardwareAcceleration: "cpu" });
+    expect(
+      readdirSync(resolve(root, "config")).filter((name) =>
+        name.endsWith(".tmp")
+      )
+    ).toEqual([]);
+  });
+
+  it("removes a temporary configuration file when replacement fails", () => {
+    const root = tempDir();
+    const resolvedPaths = paths(root);
+
+    expect(() =>
+      writeKoedServerConfig(
+        resolvedPaths,
+        resolveKoedServerConfig(resolvedPaths, {}),
+        {
+          renameSync: () => {
+            throw new Error("replacement failed");
+          }
+        }
+      )
+    ).toThrow("replacement failed");
+    expect(existsSync(resolvedPaths.serverConfigPath)).toBe(false);
+    expect(
+      readdirSync(resolve(root, "config")).filter((name) =>
+        name.endsWith(".tmp")
+      )
+    ).toEqual([]);
   });
 
   it("updates only the global memory guidance preference", () => {
@@ -119,6 +183,19 @@ describe("koed-server config", () => {
     ).toThrow("server.json is malformed");
     expect(readFileSync(resolve(root, "config/server.json"), "utf8")).toBe(
       "{broken"
+    );
+  });
+
+  it("rejects malformed persisted hardware acceleration", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({ hardwareAcceleration: "fastest" })
+    );
+
+    expect(() => resolveKoedServerConfig(paths(root), {})).toThrow(
+      "server.json hardwareAcceleration must be auto or cpu"
     );
   });
 
