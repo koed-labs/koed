@@ -92,9 +92,15 @@ describe("Claude AI Client runner boundary", () => {
     expect(
       claudeSupportedReasoningEfforts({ supportsEffort: true })
     ).toBeUndefined();
+    // The SDK reports neither field for models like Haiku that don't support
+    // an explicit reasoning-effort level. That must resolve to the same
+    // "none" sentinel as supportsEffort === false, not `undefined` — an
+    // undecided/omitted capability leaves the model's assignment permanently
+    // unsavable in the Desktop UI (empty option list, nothing validates).
     expect(
       claudeSupportedReasoningEfforts({ supportsEffort: undefined })
-    ).toBeUndefined();
+    ).toEqual(["none"]);
+    expect(claudeSupportedReasoningEfforts({})).toEqual(["none"]);
   });
 
   it("passes only explicit Claude effort values and never coerces an invalid option", () => {

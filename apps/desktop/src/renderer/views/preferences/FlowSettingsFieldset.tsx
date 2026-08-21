@@ -195,7 +195,7 @@ const updateInstanceDraft = (
     provider: nextInstance?.driverId ?? draft.provider,
     ai_client_instance_id: instanceId,
     model: nextModel ? modelId(nextModel) : draft.model,
-    reasoning_effort: nextModel?.reasoningEfforts[0] ?? ""
+    reasoning_effort: nextModel?.reasoningEfforts[0] ?? "none"
   });
 };
 
@@ -210,7 +210,7 @@ const updateModelDraft = (
   updateDraft(flow.key, {
     ...draft,
     model,
-    reasoning_effort: nextModel?.reasoningEfforts[0] ?? ""
+    reasoning_effort: nextModel?.reasoningEfforts[0] ?? "none"
   });
 };
 
@@ -324,7 +324,7 @@ const ReasoningSelect = ({
       value={draft.reasoning_effort}
     >
       {efforts.length === 0 ? (
-        <option value="">Not explicitly supported by selected model</option>
+        <option value="none">Not supported by selected model</option>
       ) : null}
       {efforts.map((effort) => (
         <option key={effort} value={effort}>
