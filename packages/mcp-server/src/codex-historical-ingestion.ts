@@ -471,6 +471,42 @@ const createRun = async (client: MemoryApiClient): Promise<string> => {
   return run.id;
 };
 
+// A single complete JSONL record that itself exceeds maxBatchRows/
+// maxBatchBytes can never fit a batch, no matter how many times it is
+// retried: buildCodexHistoricalBatch only throws this on the batch's first
+// (localOffset === 0) record, so there is no smaller unit to fall back to.
+// Left uncaught, the coordinator retries the same oldest chronological
+// selection forever and its "exhaust the oldest range first" ordering blocks
+// every newer selection from ever running. Skip the source instead so the
+// cohort keeps moving; the historical_import_state machine requires passing
+// through "failed" (with a failure reason) before "skipped" is reachable.
+const isUnrepresentableRecordError = (error: unknown): boolean =>
+  error instanceof Error &&
+  error.message === "historical_record_exceeds_batch_limit";
+
+const skipUnrepresentableSource = async (
+  client: MemoryApiClient,
+  source: HistoricalSource
+): Promise<void> => {
+  try {
+    await client.transitionHistoricalImportSource(source.id, {
+      expectedState: "importing",
+      state: "failed",
+      failureReason: "historical_record_exceeds_batch_limit"
+    });
+  } catch (error) {
+    if (!(error instanceof MemoryApiError) || error.status !== 409) throw error;
+  }
+  try {
+    await client.transitionHistoricalImportSource(source.id, {
+      expectedState: "failed",
+      state: "skipped"
+    });
+  } catch (error) {
+    if (!(error instanceof MemoryApiError) || error.status !== 409) throw error;
+  }
+};
+
 const tryComplete = async (
   client: MemoryApiClient,
   source: HistoricalSource
@@ -681,14 +717,24 @@ export const createCodexHistoricalProviderAdapter = (input: {
           runId: activeRunId
         };
       }
-      if (
-        await importNextBatch({
+      let progressed: boolean;
+      try {
+        progressed = await importNextBatch({
           client: input.client,
           source,
           selection: currentSelection,
           config
-        })
-      ) {
+        });
+      } catch (error) {
+        if (!isUnrepresentableRecordError(error)) throw error;
+        await skipUnrepresentableSource(input.client, source);
+        return {
+          state: "skipped",
+          selection: currentSelection,
+          runId: activeRunId
+        };
+      }
+      if (progressed) {
         return {
           state: "progress",
           selection: currentSelection,

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -13,7 +14,7 @@ import {
   startHistoricalIngestionCoordinator,
   type HistoricalProviderAdapter
 } from "../src/historical-ingestion-coordinator.js";
-import type { MemoryApiClient } from "../src/index.js";
+import { MemoryApiError, type MemoryApiClient } from "../src/index.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -313,7 +314,239 @@ describe("bounded Codex historical parsing", () => {
   });
 });
 
+// Minimal fake covering only what processNextBatch needs once a source's
+// artifactId is already known, so these tests can exercise the real Codex
+// adapter's post-registration flow without a real transcript file on disk.
+class FakeHistoricalSourceClient {
+  private readonly sourcesByArtifact = new Map<
+    string,
+    Record<string, unknown>
+  >();
+  private readonly sourcesById = new Map<string, Record<string, unknown>>();
+  private readonly segmentsByArtifact = new Map<
+    string,
+    Array<{ segment: Record<string, unknown>; bytes: Buffer }>
+  >();
+  readonly transitionCalls: Array<{
+    sourceId: string;
+    expectedState: string;
+    state: string;
+    failureReason?: string;
+  }> = [];
+  readonly ingestCalls: Array<{
+    sourceId: string;
+    input: Record<string, unknown>;
+  }> = [];
+
+  seedSource(
+    artifactId: string,
+    source: Record<string, unknown>,
+    bytes: Buffer
+  ): void {
+    this.sourcesByArtifact.set(artifactId, source);
+    this.sourcesById.set(source.id as string, source);
+    this.segmentsByArtifact.set(artifactId, [
+      {
+        segment: {
+          id: `${artifactId}-segment-0`,
+          segmentIndex: 0,
+          sourceStartOffset: 0,
+          sourceEndOffset: bytes.byteLength,
+          sourceStartLine: 0,
+          sourceEndLine: 1,
+          plaintextDigest: createHash("sha256").update(bytes).digest("hex"),
+          plaintextSize: bytes.byteLength
+        },
+        bytes
+      }
+    ]);
+  }
+
+  async lookupHistoricalImportSource(artifactId: string) {
+    const source = this.sourcesByArtifact.get(artifactId);
+    if (!source) throw new MemoryApiError("not found", { status: 404 });
+    return { source };
+  }
+
+  async effectiveCapturePolicy() {
+    return {
+      policy: { visibility: "personal", captureState: "enabled", paused: false }
+    };
+  }
+
+  async historicalImportAdmission() {
+    return { admitted: true };
+  }
+
+  async transitionHistoricalImportSource(
+    sourceId: string,
+    input: { expectedState: string; state: string; failureReason?: string }
+  ) {
+    this.transitionCalls.push({ sourceId, ...input });
+    const source = this.sourcesById.get(sourceId);
+    if (!source || source.state !== input.expectedState) {
+      throw new MemoryApiError("conflict", { status: 409 });
+    }
+    source.state = input.state;
+    return { source };
+  }
+
+  async transitionHistoricalImportRun(runId: string, input: { state: string }) {
+    return { run: { id: runId, state: input.state } };
+  }
+
+  async listConversationSourceSegments(
+    artifactId: string,
+    input: { afterOffset: number; limit?: number }
+  ) {
+    const entries = this.segmentsByArtifact.get(artifactId) ?? [];
+    return {
+      segments: entries
+        .filter(
+          (entry) =>
+            (entry.segment.sourceEndOffset as number) > input.afterOffset
+        )
+        .slice(0, input.limit ?? 20)
+        .map((entry) => entry.segment)
+    };
+  }
+
+  async getConversationSourceSegmentContent(
+    artifactId: string,
+    segmentId: string
+  ) {
+    const entries = this.segmentsByArtifact.get(artifactId) ?? [];
+    const entry = entries.find(
+      (candidate) => candidate.segment.id === segmentId
+    );
+    return { bytesBase64: entry?.bytes.toString("base64") };
+  }
+
+  async ingestHistoricalImportBatch(
+    sourceId: string,
+    input: Record<string, unknown>
+  ) {
+    this.ingestCalls.push({ sourceId, input });
+    const source = this.sourcesById.get(sourceId)!;
+    source.historicalCursorOffset = input.sourceOffset;
+    source.historicalCursorLine = input.sourceLine;
+    source.historicalCursorParserState = input.parserState;
+    return { source };
+  }
+}
+
+const oversizedUserMessageRecord = (timestamp: string): Buffer =>
+  Buffer.from(
+    `${JSON.stringify({
+      timestamp,
+      type: "event_msg",
+      payload: { type: "user_message", message: "x".repeat(1_100_000) }
+    })}\n`
+  );
+
+describe("bounded Codex historical batch failures", () => {
+  it("skips a source whose first record can never fit a batch instead of retrying it forever", async () => {
+    const bytes = oversizedUserMessageRecord("2026-08-17T00:00:01.000Z");
+    const client = new FakeHistoricalSourceClient();
+    const source = {
+      id: "source-huge",
+      runId: "run-huge",
+      artifactId: "artifact-huge",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      sourceSessionId: "session-huge",
+      sourceFingerprint: "a".repeat(64),
+      historicalCursorOffset: 0,
+      historicalCursorLine: 0,
+      registrationFrontierOffset: bytes.byteLength,
+      state: "importing"
+    };
+    client.seedSource("artifact-huge", source, bytes);
+    const adapter = createCodexHistoricalProviderAdapter({
+      client: client as unknown as MemoryApiClient
+    });
+    const selection = {
+      aiClient: "codex",
+      candidateId: "session-huge",
+      artifactId: "artifact-huge",
+      frontierOffset: bytes.byteLength,
+      frontierLine: 1,
+      latestActivityAt: "2026-08-17T00:00:00.000Z",
+      adapterState: { threadKind: "conversation" }
+    };
+
+    const first = await adapter.processNextBatch({
+      selection,
+      runId: "run-huge"
+    });
+
+    expect(first.state).toBe("skipped");
+    expect(client.ingestCalls).toEqual([]);
+    expect(client.transitionCalls).toEqual([
+      {
+        sourceId: "source-huge",
+        expectedState: "importing",
+        state: "failed",
+        failureReason: "historical_record_exceeds_batch_limit"
+      },
+      { sourceId: "source-huge", expectedState: "failed", state: "skipped" }
+    ]);
+
+    // A retry after the skip must not re-attempt the batch or throw again.
+    const second = await adapter.processNextBatch({
+      selection: first.selection,
+      runId: "run-huge"
+    });
+    expect(second.state).toBe("skipped");
+    expect(client.ingestCalls).toEqual([]);
+  });
+});
+
 describe("provider-neutral historical ingestion coordination", () => {
+  it("does not let a skipped oldest selection block a newer selection in the same pass", async () => {
+    const koedHome = temporaryDirectory();
+    const calls: string[] = [];
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "skip-then-newer-provider",
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry, index) => ({
+          aiClient: "skip-then-newer-provider",
+          candidateId: entry.id,
+          frontierOffset: 40,
+          frontierLine: 2,
+          latestActivityAt: `2026-08-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`
+        })),
+      async processNextBatch({ selection }) {
+        calls.push(selection.candidateId);
+        // Mirrors what the real Codex adapter now does for an unrepresentable
+        // record: terminal "skipped" on the first attempt, never "progress"
+        // forever and never an uncaught throw that would abort the pass
+        // before reaching a newer chronological selection.
+        if (selection.candidateId === "oldest-unrepresentable") {
+          return { state: "skipped", selection, runId: "run-mixed" };
+        }
+        return { state: "completed", selection, runId: "run-mixed" };
+      },
+      completeRun: async () => undefined
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome,
+      retryMs: 60_000
+    });
+
+    coordinator.offerCandidates([
+      { id: "oldest-unrepresentable" },
+      { id: "newest" }
+    ]);
+    await vi.waitFor(() =>
+      expect(coordinator.snapshot().runCompleted).toBe(true)
+    );
+
+    expect(calls).toEqual(["oldest-unrepresentable", "newest"]);
+    await coordinator.stop();
+  });
+
   it("finishes selected source ranges in chronological order", async () => {
     const koedHome = temporaryDirectory();
     const attempts = new Map<string, number>();
