@@ -11,6 +11,8 @@ import { invokeChannel, registerDesktopCommandHandlers } from "./commands.js";
 import {
   clipboardWriteChannel,
   collaborationCommandChannel,
+  hardwareAccelerationGetChannel,
+  hardwareAccelerationSetChannel,
   isDesktopCommandName,
   managedConversationCommandChannel,
   personalDevicePairingLinkConsumeChannel,
@@ -113,6 +115,15 @@ describe("desktop IPC command registry", () => {
         return { preference, resolvedDark: preference === "dark" };
       }
     );
+    let hardwareAccelerationEnabled = true;
+    const getHardwareAcceleration = vi.fn(async () => ({
+      enabled: hardwareAccelerationEnabled,
+      managedByEnvironment: false
+    }));
+    const setHardwareAcceleration = vi.fn(async (enabled: boolean) => {
+      hardwareAccelerationEnabled = enabled;
+      return { enabled, managedByEnvironment: false };
+    });
     const mutatingHandlers = Object.fromEntries(
       [
         "setup_codex",
@@ -174,7 +185,9 @@ describe("desktop IPC command registry", () => {
         consumePendingPersonalDevicePairingLink,
         writeClipboard,
         getThemePreference,
-        setThemePreference
+        setThemePreference,
+        getHardwareAcceleration,
+        setHardwareAcceleration
       }
     );
     return {
@@ -188,6 +201,8 @@ describe("desktop IPC command registry", () => {
       writeClipboard,
       getThemePreference,
       setThemePreference,
+      getHardwareAcceleration,
+      setHardwareAcceleration,
       mutatingHandlers,
       checkHandlers
     };
@@ -418,6 +433,30 @@ describe("desktop IPC command registry", () => {
     await expect(
       set(renderer("https://attacker.example/"), "light")
     ).rejects.toThrow("Untrusted Desktop IPC sender");
+  });
+
+  it("gets and sets hardware acceleration only for trusted renderers", async () => {
+    const { registered, getHardwareAcceleration, setHardwareAcceleration } =
+      register();
+    const get = registered.get(hardwareAccelerationGetChannel)!;
+    const set = registered.get(hardwareAccelerationSetChannel)!;
+
+    await expect(get(renderer())).resolves.toEqual({
+      enabled: true,
+      managedByEnvironment: false
+    });
+    await expect(set(renderer(), false)).resolves.toEqual({
+      enabled: false,
+      managedByEnvironment: false
+    });
+    expect(getHardwareAcceleration).toHaveBeenCalledOnce();
+    expect(setHardwareAcceleration).toHaveBeenCalledWith(false);
+    await expect(set(renderer(), "cuda")).rejects.toThrow(
+      "Invalid hardware acceleration preference"
+    );
+    await expect(get(renderer("https://attacker.example/"))).rejects.toThrow(
+      "Untrusted Desktop IPC sender"
+    );
   });
 
   it("rejects untrusted, missing, malformed, and non-main-frame senders", async () => {

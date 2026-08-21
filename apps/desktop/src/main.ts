@@ -342,7 +342,10 @@ const bootstrap = async () => {
         preference,
         resolvedDark: nativeTheme.shouldUseDarkColors
       };
-    }
+    },
+    getHardwareAcceleration: () => server.hardwareAcceleration.get(),
+    setHardwareAcceleration: (enabled) =>
+      server.hardwareAcceleration.set(enabled)
   });
   await startDesktopWindowAndRuntime({
     createWindow,

@@ -1311,7 +1311,6 @@ export interface SupportedEmbeddingModelConfig {
   inputTransform: string;
   pooling: string;
   normalization: string;
-  acceleration: string;
 }
 
 /** Versioned trusted Team evidence-to-embedding composition contract. */
@@ -1384,8 +1383,7 @@ export const SUPPORTED_EMBEDDING_MODELS: Record<
       "embedded-in-artifact:06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
     inputTransform: "qwen3-retrieval-document-v1",
     pooling: "last",
-    normalization: "l2",
-    acceleration: "cpu;runtime=llama.cpp;n-gpu-layers=0"
+    normalization: "l2"
   }
 };
 

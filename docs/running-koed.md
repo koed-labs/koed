@@ -560,7 +560,7 @@ Desktop records completion of its first-run guide under the active `KOED_HOME`
 rather than browser storage, so the setup state is durable and isolated per
 local installation.
 
-Bundled-local mode is native-only. Native Postgres binaries should be available under `KOED_HOME/runtime/postgres/bin` or `KOED_POSTGRES_BIN_DIR`, including `psql`, `pg_dump`, and `pg_restore` for backup/restore operations, and the Embedding Service needs `embedding-service/dist/index.js`, `KOED_HOME/runtime/llama.cpp/llama-server`, and model assets. Packaged native runtime assets no longer include Python standalone files or `embedding-service/.venv/bin/python`; `KOED_EMBEDDING_PYTHON_BIN` is not used by the supported bundled-local path. The README Quickstart builds the workspace, runs runtime install, and installs the embedding model as `pnpm local:setup`. Packaged Desktop also checks packaged app resources after `KOED_HOME/runtime`. Source-checkout `vendor` and `apps/embedding-service` paths remain development fallbacks only; packaged mode rejects those fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `KOED_BUNDLED_POSTGRES_MODE` and `KOED_BUNDLED_EMBEDDING_MODE` are deprecated and ignored. Missing native resources fail with setup guidance instead of falling back to Docker Compose. Docker Compose is available only as an Operator-selected external dependency starter.
+Bundled-local mode is native-only. Native Postgres binaries should be available under `KOED_HOME/runtime/postgres/bin` or `KOED_POSTGRES_BIN_DIR`, including `psql`, `pg_dump`, and `pg_restore` for backup/restore operations, and the Embedding Service needs `embedding-service/dist/index.js`, `KOED_HOME/runtime/llama.cpp/llama-server`, and model assets. The llama-server launcher selects the packaged CPU, Metal, or CUDA payload according to the verified acceleration policy; it does not change the stable runtime path. Packaged native runtime assets no longer include Python standalone files or `embedding-service/.venv/bin/python`; `KOED_EMBEDDING_PYTHON_BIN` is not used by the supported bundled-local path. The README Quickstart builds the workspace, runs runtime install, and installs the embedding model as `pnpm local:setup`. Packaged Desktop also checks packaged app resources after `KOED_HOME/runtime`. Source-checkout `vendor` and `apps/embedding-service` paths remain development fallbacks only; packaged mode rejects those fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `KOED_BUNDLED_POSTGRES_MODE` and `KOED_BUNDLED_EMBEDDING_MODE` are deprecated and ignored. Missing native resources fail with setup guidance instead of falling back to Docker Compose. Docker Compose is available only as an Operator-selected external dependency starter.
 
 On macOS, Linux, and WSL, Homebrew is one selected provisioning path for the native runtime assets under `KOED_HOME`:
 
@@ -610,6 +610,44 @@ Capture Hook-like personal ingestion, Projection, local queue/embedding work,
 Memory Answer evidence retrieval with a unique marker, API readiness,
 and cleanup through `koed-server stop --json`. Missing native binaries or model
 assets fail clearly instead of falling back to Docker.
+
+On Apple Silicon, validate the Metal runtime on real hardware with a clean
+temporary Koed home and a forced backend:
+
+```bash
+KOED_EMBEDDING_ACCELERATION=metal \
+  pnpm smoke:bundled-local -- --full --install-runtime --json
+```
+
+The command must pass capture, persisted embedding, and semantic Recall. The
+Embedding Service startup event must report `acceleration_backend` as `metal`
+with `gpu_layers` set to `all`. Repeat once with
+`KOED_EMBEDDING_ACCELERATION=cpu`; it must use the same pinned model and runtime
+while reporting zero GPU layers. A forced Metal run that cannot discover or
+start Metal must fail rather than silently use CPU.
+
+Koed Desktop exposes a Hardware acceleration toggle in General preferences.
+The preference is stored in `KOED_HOME/config/server.json`; changing it restarts
+the local Koed services. An explicit Operator environment policy remains
+authoritative and makes the toggle read-only. Accelerated embedding and
+reranker models unload after five idle minutes by default and reload on the
+next request. Set the corresponding idle-unload value to `0` only when keeping
+the model resident is an intentional resource decision.
+
+Run the manual CPU/GPU comparison through the production Embedding Service
+path after installing the pinned model and a verified accelerated runtime:
+
+```bash
+pnpm embedding:benchmark -- \
+  --llama-server "$KOED_HOME/runtime/llama.cpp/llama-server" \
+  --gpu-backend cuda \
+  --output ./embedding-acceleration-report.json
+```
+
+Use `--gpu-backend metal` on Apple Silicon. The benchmark uses generated,
+Memory Event-shaped 256, 1024, and 2048 token classes and reports process cold,
+idle wake, warm throughput, RAM, available VRAM telemetry, and CPU/GPU vector
+agreement. It is manual hardware validation and does not run in normal CI.
 
 Packaged Desktop smoke now exercises the packaged Electron bundle with a temporary `KOED_HOME`, unsets `KOED_REPO_ROOT`, and verifies daemon start/status/reconnect/stop without checkout fallbacks. For CI or diagnostics when native assets are absent, run:
 

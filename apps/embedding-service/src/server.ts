@@ -5,9 +5,7 @@ import {
   type ServerResponse
 } from "node:http";
 import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
 import { arch, cpus, platform, release, totalmem } from "node:os";
-import { promisify } from "node:util";
 import {
   HttpError,
   embeddingTokenAuthStatus,
@@ -27,7 +25,7 @@ import {
 } from "./logging.js";
 import { normalizeEmbeddingPriority } from "./priority-scheduler.js";
 import type { EmbeddingRuntime } from "./runtime.js";
-import { llamaServerEnvironment } from "./llama-server.js";
+import type { ResolvedAcceleration } from "./acceleration.js";
 import { validateEmbedRequest, validateRerankRequest } from "./schemas.js";
 
 export interface EmbeddingService {
@@ -93,7 +91,12 @@ export const createEmbeddingService = (
             request.method === "GET" &&
             url.pathname === "/capacity/identity"
           ) {
-            return await handleCapacityIdentity(config, request, requestId);
+            return await handleCapacityIdentity(
+              config,
+              runtime,
+              request,
+              requestId
+            );
           }
           if (request.method === "POST" && url.pathname === "/embed") {
             return await handleEmbed(
@@ -157,47 +160,18 @@ export const createEmbeddingService = (
 const stableHash = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-const execFileAsync = promisify(execFile);
-
-const acceleratorListing = async (
-  config: EmbeddingServiceEnv
-): Promise<string | null> => {
-  if (config.backendClass === "cpu") return null;
-  let output: { stdout: string; stderr: string };
-  try {
-    output = await execFileAsync(config.llamaServerBinary, ["--list-devices"], {
-      encoding: "utf8",
-      env: llamaServerEnvironment(config.llamaServerBinary),
-      timeout: 10_000,
-      maxBuffer: 1024 * 1024
-    });
-  } catch {
-    throw new HttpError(503, "embedding accelerator identity is unavailable");
-  }
-  const listing = `${output.stdout}\n${output.stderr}`
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!listing) {
-    throw new HttpError(503, "embedding accelerator identity is unavailable");
-  }
-  return listing;
-};
-
 export const capacityHardwareIdentity = async (
-  config: EmbeddingServiceEnv,
-  listAccelerators: (
-    config: EmbeddingServiceEnv
-  ) => Promise<string | null> = acceleratorListing
+  acceleration: ResolvedAcceleration
 ): Promise<{
   hardwareFingerprint: string;
   acceleratorFingerprint: string | null;
 }> => {
-  const listing = await listAccelerators(config);
-  if (config.backendClass !== "cpu" && !listing) {
+  const listing = acceleration.deviceListing;
+  if (acceleration.backend !== "cpu" && !listing) {
     throw new HttpError(503, "embedding accelerator identity is unavailable");
   }
   const acceleratorFingerprint = listing
-    ? stableHash({ backendClass: config.backendClass, listing })
+    ? stableHash({ backendClass: acceleration.backend, listing })
     : null;
   return {
     acceleratorFingerprint,
@@ -210,7 +184,7 @@ export const capacityHardwareIdentity = async (
         .sort(),
       cpuCount: cpus().length,
       totalMemoryBytes: totalmem(),
-      backendClass: config.backendClass,
+      backendClass: acceleration.backend,
       acceleratorFingerprint
     })
   };
@@ -218,11 +192,16 @@ export const capacityHardwareIdentity = async (
 
 const handleCapacityIdentity = async (
   config: EmbeddingServiceEnv,
+  runtime: EmbeddingRuntime,
   request: Request,
   requestId: string
 ): Promise<Response> => {
   requireInternalToken(config, headerValue(request, "x-koed-embedding-token"));
-  const hardwareIdentity = await capacityHardwareIdentity(config);
+  const acceleration = runtime.embeddingAcceleration();
+  if (!acceleration) {
+    throw new HttpError(503, "embedding runtime identity is unavailable");
+  }
+  const hardwareIdentity = await capacityHardwareIdentity(acceleration);
   const runtimeSettings = {
     batchLimit: config.batchLimit,
     embeddingMaxTokens: config.embeddingMaxTokens,
@@ -230,7 +209,16 @@ const handleCapacityIdentity = async (
     llamaNThreads: config.llamaNThreads,
     llamaNBatch: config.llamaNBatch,
     llamaNUbatch: config.llamaNUbatch,
-    llamaParallel: config.llamaParallel
+    llamaParallel: config.llamaParallel,
+    accelerationBackend: acceleration.backend,
+    accelerationDeviceFingerprint: acceleration.device
+      ? stableHash(acceleration.device)
+      : null,
+    gpuLayers: acceleration.gpuLayers,
+    gpuIdleUnloadSeconds:
+      acceleration.backend === "cpu"
+        ? 0
+        : runtime.config.embeddingGpuIdleUnloadSeconds
   };
   return jsonResponse(
     {
@@ -239,7 +227,7 @@ const handleCapacityIdentity = async (
       dimensions: config.expectedDimensions,
       runtimeKind: "llama-server",
       runtimeVersion: config.runtimeVersion,
-      backendClass: config.backendClass,
+      backendClass: acceleration.backend,
       ...hardwareIdentity,
       settingsFingerprint: stableHash(runtimeSettings),
       runtimeSettings
@@ -262,6 +250,7 @@ const handleHealth = (
   const rerankerReady = !rerankerEnabled(config) || runtime.isRerankerLoaded();
   const status = runtime.isModelLoaded() && rerankerReady ? "ok" : "loading";
   const rerankerProvenance = runtime.rerankerProvenance();
+  const embeddingAcceleration = runtime.embeddingAcceleration();
   const exposeConfiguredArtifacts = auth.authRequired && auth.authValid;
   return jsonResponse(
     {
@@ -285,9 +274,25 @@ const handleHealth = (
       artifactHash: config.modelArtifactSha256,
       tokenizer: config.modelTokenizer,
       tokenizerRevision: config.modelTokenizerRevision,
-      acceleration: config.modelAcceleration,
+      acceleration: runtime.modelAcceleration(),
+      ...(exposeConfiguredArtifacts && embeddingAcceleration?.fallbackReason
+        ? {
+            accelerationFallback: {
+              policy: embeddingAcceleration.policy,
+              reason: embeddingAcceleration.fallbackReason
+            }
+          }
+        : {}),
       nCtx: config.llamaNCtx,
       queue: runtime.healthQueueSnapshot(),
+      ...(exposeConfiguredArtifacts
+        ? {
+            gpuIdleUnloadSeconds:
+              embeddingAcceleration?.backend === "cpu"
+                ? 0
+                : runtime.config.embeddingGpuIdleUnloadSeconds
+          }
+        : {}),
       reranker: {
         enabled: rerankerEnabled(config),
         loaded: runtime.isRerankerLoaded(),
@@ -300,7 +305,18 @@ const handleHealth = (
           : null,
         artifactRevision: rerankerProvenance?.artifactRevision ?? null,
         artifactHash: rerankerProvenance?.artifactHash ?? null,
-        batchLimit: config.rerankerBatchLimit
+        batchLimit: config.rerankerBatchLimit,
+        acceleration: runtime.rerankerAcceleration()
+          ? runtime.rerankerAcceleration()!.backend
+          : null,
+        ...(exposeConfiguredArtifacts && runtime.rerankerAcceleration()
+          ? {
+              gpuIdleUnloadSeconds:
+                runtime.rerankerAcceleration()!.backend === "cpu"
+                  ? 0
+                  : runtime.config.rerankerGpuIdleUnloadSeconds
+            }
+          : {})
       }
     },
     status === "ok" ? 200 : 503,

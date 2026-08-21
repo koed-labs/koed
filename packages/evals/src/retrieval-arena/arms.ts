@@ -337,8 +337,7 @@ export const resolveKoedEmbeddingServiceReproducibility = async (options: {
       metadata.artifactRevision !== canonical.artifactRevision ||
       metadata.artifactHash !== canonical.defaultArtifactSha256 ||
       metadata.tokenizer !== canonical.tokenizer ||
-      metadata.tokenizerRevision !== canonical.tokenizerRevision ||
-      metadata.acceleration !== canonical.acceleration
+      metadata.tokenizerRevision !== canonical.tokenizerRevision
     ) {
       throw new Error(
         "strict embedding reproducibility rejected metadata that differs from the canonical supported model"

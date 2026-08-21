@@ -15,7 +15,8 @@ import {
   readlinkSync,
   realpathSync,
   rmSync,
-  statSync
+  statSync,
+  writeFileSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -187,7 +188,52 @@ export const isLlamaRuntimeFile = (file) => {
   );
 };
 
-const stageLlama = ({ source, runtimeRoot, cacheDir, workDir }) => {
+export const llamaLauncher = `#!/bin/sh
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+backend=\${KOED_LLAMA_SERVER_BACKEND:-\${KOED_EMBEDDING_ACCELERATION:-auto}}
+case "$backend" in
+  cpu)
+    if [ -x "$root/cpu/llama-server" ]; then
+      candidate="$root/cpu/llama-server"
+    else
+      candidate="$root/metal/llama-server"
+    fi
+    ;;
+  cuda) candidate="$root/cuda/llama-server" ;;
+  metal) candidate="$root/metal/llama-server" ;;
+  auto)
+    if [ -x "$root/metal/llama-server" ]; then
+      candidate="$root/metal/llama-server"
+    elif [ -x "$root/cuda/llama-server" ] && \
+      LD_LIBRARY_PATH="$root/cuda\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+      "$root/cuda/llama-server" --list-devices 2>&1 | grep -q '^[[:space:]]*CUDA'; then
+      candidate="$root/cuda/llama-server"
+    else
+      candidate="$root/cpu/llama-server"
+    fi
+    ;;
+  *) echo "Unsupported Koed llama-server backend: $backend" >&2; exit 64 ;;
+esac
+if [ ! -x "$candidate" ]; then
+  echo "Koed llama-server backend '$backend' is not installed" >&2
+  exit 69
+fi
+libdir=$(dirname -- "$candidate")
+export LD_LIBRARY_PATH="$libdir\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export DYLD_LIBRARY_PATH="$libdir\${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+exec "$candidate" "$@"
+`;
+
+const writeLlamaLauncher = (target) => {
+  writeFileSync(resolve(target, "llama-server"), llamaLauncher, {
+    encoding: "utf8",
+    mode: 0o755
+  });
+  chmodIfExists(resolve(target, "llama-server"));
+};
+
+const stageLlama = ({ source, runtimeRoot, cacheDir, workDir, variant }) => {
   const archive = download({ ...source, cacheDir });
   const extractDir = resolve(workDir, "llama.cpp");
   extractArchive(archive, extractDir);
@@ -199,13 +245,15 @@ const stageLlama = ({ source, runtimeRoot, cacheDir, workDir }) => {
   if (!llamaServer)
     throw new Error("llama.cpp archive did not contain llama-server.");
   const target = resolve(runtimeRoot, "llama.cpp");
-  rmSync(target, { recursive: true, force: true });
+  const variantTarget = resolve(target, variant);
+  rmSync(variantTarget, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
+  mkdirSync(variantTarget, { recursive: true });
   const runtimeFiles = listFiles(unpackedRoot)
     .filter(isLlamaRuntimeFile)
     .sort();
   for (const file of runtimeFiles) {
-    const destination = resolve(target, basename(file));
+    const destination = resolve(variantTarget, basename(file));
     if (
       existsSync(destination) &&
       realpathSync(file) !== realpathSync(destination)
@@ -216,17 +264,138 @@ const stageLlama = ({ source, runtimeRoot, cacheDir, workDir }) => {
     }
     copyFileSync(file, destination);
   }
-  materializeAbsoluteSymlinks(target);
-  chmodIfExists(resolve(target, "llama-server"));
-  if (!existsSync(resolve(target, "llama-server"))) {
+  materializeAbsoluteSymlinks(variantTarget);
+  chmodIfExists(resolve(variantTarget, "llama-server"));
+  if (!existsSync(resolve(variantTarget, "llama-server"))) {
     throw new Error(
       "Could not stage llama-server at the packaged runtime root."
     );
   }
+  writeLlamaLauncher(target);
   return {
     archive,
-    llamaServer: resolve(target, "llama-server"),
+    llamaServer: resolve(variantTarget, "llama-server"),
+    variant,
     stagedFiles: runtimeFiles.map((file) => basename(file))
+  };
+};
+
+const cudaToolkitVersion = () => {
+  const result = spawnSync("nvcc", ["--version"], { encoding: "utf8" });
+  if (result.error || result.status !== 0) return null;
+  const match = `${result.stdout}\n${result.stderr}`.match(
+    /release\s+(\d+)\.(\d+)/i
+  );
+  return match ? { major: Number(match[1]), minor: Number(match[2]) } : null;
+};
+
+const copyCudaRuntimeLibraries = (binaryRoot, target) => {
+  const dependencies = new Map();
+  for (const file of listFiles(binaryRoot)) {
+    const result = spawnSync("ldd", [file], { encoding: "utf8" });
+    if (result.status !== 0) continue;
+    for (const line of result.stdout.split(/\r?\n/)) {
+      const match = line.match(
+        /=>\s+(\/[^\s]+\/(?:libcudart|libcublasLt|libcublas)\.so(?:\.\d+)*)/
+      );
+      if (match?.[1]) {
+        dependencies.set(basename(match[1]), realpathSync(match[1]));
+      }
+    }
+  }
+  for (const [name, dependency] of dependencies) {
+    copyFileSync(dependency, resolve(target, name));
+  }
+  return [...dependencies.keys()];
+};
+
+export const buildLlamaCuda = ({ source, runtimeRoot, cacheDir, workDir }) => {
+  const toolkit = cudaToolkitVersion();
+  if (
+    !toolkit ||
+    toolkit.major < 12 ||
+    (toolkit.major === 12 && toolkit.minor < 4)
+  ) {
+    return {
+      skipped: true,
+      reason: "CUDA toolkit 12.4 or newer is not available"
+    };
+  }
+  const expectedToolkit = source.cudaToolkitVersion ?? "12.4";
+  const actualToolkit = `${toolkit.major}.${toolkit.minor}`;
+  if (
+    actualToolkit !== expectedToolkit &&
+    process.env.KOED_CUDA_ALLOW_UNPINNED_TOOLKIT !== "1"
+  ) {
+    return {
+      skipped: true,
+      reason: `CUDA toolkit ${expectedToolkit} is required for a redistributable runtime; found ${actualToolkit}`
+    };
+  }
+  const archive = download({ ...source, cacheDir });
+  const extractDir = resolve(workDir, "llama.cpp-cuda-source");
+  const incremental = process.env.KOED_CUDA_INCREMENTAL_BUILD === "1";
+  if (!incremental || !existsSync(extractDir)) {
+    extractArchive(archive, extractDir);
+  }
+  const sourceRoot = firstChildDir(extractDir);
+  const buildRoot = resolve(workDir, "llama.cpp-cuda-build");
+  const cudaArchitectures =
+    process.env.KOED_CUDA_ARCHITECTURES?.trim() || "75;80;86;89;90";
+  if (!incremental) {
+    rmSync(buildRoot, { recursive: true, force: true });
+  }
+  run("cmake", [
+    "-S",
+    sourceRoot,
+    "-B",
+    buildRoot,
+    "-DGGML_CUDA=ON",
+    "-DGGML_NATIVE=OFF",
+    "-DLLAMA_CURL=OFF",
+    "-DLLAMA_BUILD_TESTS=OFF",
+    "-DLLAMA_BUILD_EXAMPLES=OFF",
+    "-DLLAMA_BUILD_SERVER=ON",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DCMAKE_BUILD_RPATH_USE_ORIGIN=ON",
+    "-DCMAKE_BUILD_RPATH=$ORIGIN",
+    "-DCMAKE_INSTALL_RPATH=$ORIGIN",
+    `-DCMAKE_CUDA_ARCHITECTURES=${cudaArchitectures}`
+  ]);
+  run("cmake", [
+    "--build",
+    buildRoot,
+    "--config",
+    "Release",
+    "--target",
+    "llama-server",
+    "-j",
+    String(
+      Math.max(1, Math.min(8, Number(process.env.KOED_CUDA_BUILD_JOBS) || 4))
+    )
+  ]);
+  const binaryRoot = resolve(buildRoot, "bin");
+  const target = resolve(runtimeRoot, "llama.cpp", "cuda");
+  rmSync(target, { recursive: true, force: true });
+  mkdirSync(target, { recursive: true });
+  const files = listFiles(binaryRoot).filter(isLlamaRuntimeFile);
+  for (const file of files) {
+    copyFileSync(file, resolve(target, basename(file)));
+  }
+  const cudaLibraries = copyCudaRuntimeLibraries(binaryRoot, target);
+  chmodIfExists(resolve(target, "llama-server"));
+  if (!existsSync(resolve(target, "llama-server"))) {
+    throw new Error("CUDA llama.cpp build did not produce llama-server.");
+  }
+  writeLlamaLauncher(resolve(runtimeRoot, "llama.cpp"));
+  return {
+    skipped: false,
+    archive,
+    toolkit: actualToolkit,
+    redistributable: actualToolkit === expectedToolkit,
+    cudaArchitectures,
+    llamaServer: resolve(target, "llama-server"),
+    stagedFiles: [...files.map((file) => basename(file)), ...cudaLibraries]
   };
 };
 
@@ -580,9 +749,20 @@ export const procureRuntime = ({
       source: sources.llamaCpp,
       runtimeRoot: resolvedRuntimeRoot,
       cacheDir: resolvedCacheDir,
-      workDir: resolvedWorkDir
+      workDir: resolvedWorkDir,
+      variant: sources.platform === "macos" ? "metal" : "cpu"
     })
   );
+  const llamaCppCuda = sources.llamaCppCuda
+    ? timedPhase(timings, "llama.cpp CUDA runtime build", () =>
+        buildLlamaCuda({
+          source: sources.llamaCppCuda,
+          runtimeRoot: resolvedRuntimeRoot,
+          cacheDir: resolvedCacheDir,
+          workDir: resolvedWorkDir
+        })
+      )
+    : null;
   const result = {
     ok: true,
     sourcesPath: resolvedSourcesPath,
@@ -592,7 +772,7 @@ export const procureRuntime = ({
     cacheDir: resolvedCacheDir,
     workDir: resolvedWorkDir,
     timings,
-    components: { postgres, pgvector, llamaCpp }
+    components: { postgres, pgvector, llamaCpp, llamaCppCuda }
   };
   return result;
 };

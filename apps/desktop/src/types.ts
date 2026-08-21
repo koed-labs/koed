@@ -160,6 +160,16 @@ export interface DesktopApi {
       preference: DesktopThemePreference
     ) => Promise<{ preference: DesktopThemePreference; resolvedDark: boolean }>;
   };
+  hardwareAcceleration?: {
+    get: () => Promise<{
+      enabled: boolean;
+      managedByEnvironment: boolean;
+    }>;
+    set: (enabled: boolean) => Promise<{
+      enabled: boolean;
+      managedByEnvironment: boolean;
+    }>;
+  };
   setup?: DesktopSetupApi;
   collaboration?: {
     command: (

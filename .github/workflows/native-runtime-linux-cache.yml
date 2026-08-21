@@ -1,0 +1,110 @@
+name: Linux native runtime cache
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/native-runtime-linux-cache.yml
+      - package.json
+      - scripts/native-runtime/sources.linux-x64.json
+      - scripts/native-runtime/procure-runtime.mjs
+      - scripts/native-runtime/manifest-lib.mjs
+      - scripts/native-runtime/build-linux-x64.mjs
+      - scripts/native-runtime/loader-validation-lib.mjs
+      - scripts/native-runtime/validate-runtime.mjs
+      - scripts/native-runtime-copy.mjs
+  schedule:
+    - cron: "23 4 * * 2,5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-runtime-cache-linux-x64
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 24.13.1
+  PNPM_VERSION: 11.1.2
+
+jobs:
+  maintain-native-runtime-cache:
+    name: Maintain verified Linux x64 native runtime cache
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build koed-server CLI
+        run: pnpm --filter @koed/koed-server build
+
+      - name: Restore verified Linux native runtime payload
+        id: native-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-native-runtime-cache/linux-x64/koed-runtime
+          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
+
+      - name: Install native runtime build dependencies
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y build-essential bison flex libssl-dev curl ca-certificates
+
+      - name: Install pinned CUDA build toolkit
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
+          curl --fail --location --retry 3 \
+            --output "${RUNNER_TEMP}/cuda-keyring.deb" \
+            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          echo "d93190d50b98ad4699ff40f4f7af50f16a76dac3bb8da1eaaf366d47898ff8df  ${RUNNER_TEMP}/cuda-keyring.deb" | sha256sum --check --strict
+          sudo dpkg --install "${RUNNER_TEMP}/cuda-keyring.deb"
+          sudo apt-get update
+          sudo apt-get install -y cuda-toolkit-12-4
+          echo "/usr/local/cuda-12.4/bin" >> "${GITHUB_PATH}"
+          echo "CUDA_HOME=/usr/local/cuda-12.4" >> "${GITHUB_ENV}"
+          echo "CUDACXX=/usr/local/cuda-12.4/bin/nvcc" >> "${GITHUB_ENV}"
+
+      - name: Cold-build native runtime payload
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        env:
+          KOED_NATIVE_RUNTIME_VERSION: cache-seed
+        run: |
+          pnpm native-runtime:build:linux-x64 -- --out-dir "${RUNNER_TEMP}/koed-native-runtime-cache-build" --json
+          mkdir -p "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64"
+          cp -a "${RUNNER_TEMP}/koed-native-runtime-cache-build/koed-runtime" "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime"
+
+      - name: Validate native runtime payload before use or save
+        run: |
+          report="${RUNNER_TEMP}/koed-native-runtime-validation.json"
+          set +e
+          node scripts/native-runtime/validate-runtime.mjs --runtime-root "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --platform linux --json > "${report}"
+          status=$?
+          set -e
+          jq '{ok, errors, timings, packagedProvider: (.packagedProvider | {skipped, ok, status: (.status | {status, stderr}), install: (.install | {status, stderr})})}' "${report}"
+          exit "${status}"
+
+      - name: Save verified Linux native runtime payload
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-native-runtime-cache/linux-x64/koed-runtime
+          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}

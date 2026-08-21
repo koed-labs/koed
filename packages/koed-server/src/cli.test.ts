@@ -1544,4 +1544,31 @@ describe("JSON command output", () => {
       apiUrl: "http://localhost:43300"
     });
   });
+
+  it("passes the persistent Codex memory-guidance opt-out to setup", async () => {
+    const stdout = writer();
+    let configuredValue: string | undefined;
+
+    const exitCode = await runKoedServerCli(
+      ["setup", "codex", "--without-memory-guidance", "--json"],
+      {
+        stdout: stdout.stream,
+        setupCodex: async (options = {}) => {
+          configuredValue =
+            options.environment?.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED;
+          return {
+            ok: true,
+            state: "healthy",
+            koedHome: "/tmp/koed",
+            apiUrl: "http://localhost:3300",
+            checkedAt: "2026-01-01T00:00:00.000Z",
+            command: "node scripts/clients-bootstrap.mjs"
+          };
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(configuredValue).toBe("false");
+  });
 });
