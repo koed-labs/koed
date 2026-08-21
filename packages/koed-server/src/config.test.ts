@@ -10,7 +10,11 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveKoedServerConfig, writeKoedServerConfig } from "./config.js";
+import {
+  resolveKoedServerConfig,
+  writeCodexGlobalMemoryGuidancePreference,
+  writeKoedServerConfig
+} from "./config.js";
 import type { KoedServerPaths } from "./paths.js";
 
 const temps: string[] = [];
@@ -65,8 +69,27 @@ describe("koed-server config", () => {
       dependencyMode: "external",
       codexTranscriptWatcherEnabled: true,
       claudeTranscriptWatcherEnabled: true,
+      codexGlobalMemoryGuidanceEnabled: true,
       hardwareAcceleration: "auto"
     });
+  });
+
+  it("defaults global memory guidance on and accepts a persistent opt-out", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({ codexGlobalMemoryGuidanceEnabled: false })
+    );
+
+    expect(resolveKoedServerConfig(paths(root), {})).toMatchObject({
+      codexGlobalMemoryGuidanceEnabled: false
+    });
+    expect(
+      resolveKoedServerConfig(paths(root), {
+        KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "true"
+      })
+    ).toMatchObject({ codexGlobalMemoryGuidanceEnabled: true });
   });
 
   it("persists local hardware acceleration with environment precedence", () => {
@@ -122,6 +145,64 @@ describe("koed-server config", () => {
       )
     ).toThrow("replacement failed");
     expect(existsSync(resolvedPaths.serverConfigPath)).toBe(false);
+    expect(
+      readdirSync(resolve(root, "config")).filter((name) =>
+        name.endsWith(".tmp")
+      )
+    ).toEqual([]);
+  });
+
+  it("updates only the global memory guidance preference", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({ dependencyMode: "bundled-local", custom: "preserved" })
+    );
+
+    writeCodexGlobalMemoryGuidancePreference(paths(root), false);
+
+    expect(
+      JSON.parse(
+        readFileSync(resolve(root, "config/server.json"), "utf8") as string
+      )
+    ).toEqual({
+      dependencyMode: "bundled-local",
+      custom: "preserved",
+      codexGlobalMemoryGuidanceEnabled: false
+    });
+  });
+
+  it("does not overwrite malformed server config when updating guidance", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(resolve(root, "config/server.json"), "{broken");
+
+    expect(() =>
+      writeCodexGlobalMemoryGuidancePreference(paths(root), false)
+    ).toThrow("server.json is malformed");
+    expect(readFileSync(resolve(root, "config/server.json"), "utf8")).toBe(
+      "{broken"
+    );
+  });
+
+  it("preserves server config when guidance replacement fails", () => {
+    const root = tempDir();
+    const resolvedPaths = paths(root);
+    const original =
+      '{\n  "dependencyMode": "bundled-local",\n  "hardwareAcceleration": "cpu",\n  "custom": "preserved"\n}\n';
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(resolvedPaths.serverConfigPath, original);
+
+    expect(() =>
+      writeCodexGlobalMemoryGuidancePreference(resolvedPaths, false, {
+        renameSync: () => {
+          throw new Error("replacement failed");
+        }
+      })
+    ).toThrow("replacement failed");
+
+    expect(readFileSync(resolvedPaths.serverConfigPath, "utf8")).toBe(original);
     expect(
       readdirSync(resolve(root, "config")).filter((name) =>
         name.endsWith(".tmp")

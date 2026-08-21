@@ -31,10 +31,29 @@ node packages/koed-server/dist/cli.js setup codex --json
 ```
 
 That compatibility command writes only Koed-owned Codex MCP/Capture Hook
-configuration, registers the resolved Codex executable, and preserves unrelated
-Codex settings. Koed Desktop mandatory
-setup runs core setup only. `pnpm clients:bootstrap` remains an explicit
-Codex-focused Local Operator Script for manual recovery.
+configuration, reconciles Koed's managed memory guidance in
+`CODEX_HOME/AGENTS.md`, registers the resolved Codex executable, and preserves
+unrelated Codex settings. Koed Desktop mandatory setup runs core setup only.
+`pnpm clients:bootstrap` remains an explicit Codex-focused Local Operator
+Script for manual recovery.
+
+Koed changes only the section between its `koed-memory-guidance` HTML comment
+markers. Existing global instructions and all Project-level `AGENTS.md` files
+remain untouched. Repeated setup updates that section in place. If the markers
+are duplicated, unmatched, or reversed, setup stops and asks the Operator to
+repair or remove the malformed managed block rather than guessing which text
+it owns. Restart Codex after setup or repair so new sessions load the guidance.
+
+The guidance is recommended and installed by default, but optional. Operators
+can persistently opt out while keeping the MCP Server and Capture Hook enabled:
+
+```bash
+node packages/koed-server/dist/cli.js setup codex --without-memory-guidance --json
+```
+
+Run the same command with `--with-memory-guidance` to enable it again. Setup,
+repair, status, and doctor honor the persisted choice. Opting out removes only
+Koed's marked block and preserves all other global instructions.
 
 ## API Token
 
@@ -68,11 +87,17 @@ Working directory: /path/to/koed
 `koed-server setup codex` writes this configuration only after explicit Codex
 setup. Desktop exposes the same protected setup, check, repair, and remove
 commands after per-action consent. `check codex --json` is read-only and
-`remove codex --json` removes only Koed's marked block and registry entry. The
+`remove codex --json` transactionally removes Koed's marked MCP/Capture Hook
+block, managed global guidance block, and registry entry while preserving all
+User-owned content. A failed repair or removal restores both managed files. The
 adapter discovers the authenticated Local AI Runtime through an owner-only
 local registration under `KOED_HOME`; API and upstream credentials are not
 copied into Codex MCP configuration. Installing or detecting Codex does not
-select it for other flows.
+select it for other flows. The same setup operation installs the packaged Koed
+memory guidance in Codex's global instructions. `koed-server status --json` and
+`doctor --json` report missing, stale, or malformed guidance through the
+existing Codex configuration check, and **Fix Codex integration** reconciles
+missing or stale content.
 If Codex Desktop cannot resolve `node`, set the command to an absolute Node path
 or run setup with `MEMORY_NODE_COMMAND=/path/to/node`. Shell-managed versions
 from NVM, pyenv, or similar tools may not be on the PATH when Codex runs hooks.

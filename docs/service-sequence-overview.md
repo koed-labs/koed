@@ -122,9 +122,10 @@ AI Runtime.
 8. `koed-server status --json` and `koed-server doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker and Local AI Runtime process state, local API Token configuration, MCP
-   artifact health, Supported Capture Hook config, per-client Codex, Claude
-   Code, and Pi config, LCM Summary Service process health, and last
-   verification metadata. Core status is separate from client diagnostics:
+   artifact health, Supported Capture Hook config, per-client Codex configuration
+   and global memory guidance, Claude Code and Pi config, LCM Summary Service
+   process health, and last verification metadata. Core status is separate from
+   client diagnostics:
    zero configured AI Clients is healthy core state. Client profile MCP config,
    Capture Hook, Transcript Watcher, authentication, and synthesis readiness do
    not gate core. Doctor prints all diagnostics, but only core components affect
@@ -173,12 +174,14 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
 9. `koed-server setup core --json` validates or provisions client-neutral core
    local credential state. Final verification is recorded by `doctor --json`.
    `koed-server setup codex --json` remains an explicit Codex profile
-   compatibility path that may compose core setup with Codex MCP/Capture Hook configuration. Setup applies persisted auto-allocated local ports before
+   compatibility path that may compose core setup with Codex MCP/Capture Hook
+   configuration and managed global memory guidance. Setup applies persisted
+   auto-allocated local ports before
    resolving the API URL, so Desktop-managed ports and direct CLI
    setup write the same target URL/token. `koed-server repair codex --json` is
    the narrower Desktop repair path: it rewrites the Koed-managed Codex MCP
-   block for the active local API URL/token and the credential-free Hook
-   command without
+   block for the active Local AI Runtime, the credential-free Hook command, and
+   the Koed-managed section of `CODEX_HOME/AGENTS.md` without
    running the full bootstrap. The managed supervisor is the sole owner of
    Desktop API Token provisioning and rotation. Source and packaged runtimes
    both mint the token through the active runtime repository with the same

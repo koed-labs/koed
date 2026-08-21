@@ -19,6 +19,7 @@ export interface KoedServerConfig {
   dependencyMode: KoedDependencyMode;
   codexTranscriptWatcherEnabled: boolean;
   claudeTranscriptWatcherEnabled: boolean;
+  codexGlobalMemoryGuidanceEnabled: boolean;
   hardwareAcceleration: HardwareAccelerationPreference;
   external?: {
     databaseUrl?: string;
@@ -32,6 +33,7 @@ export const defaultKoedServerConfig: KoedServerConfig = {
   dependencyMode: "external",
   codexTranscriptWatcherEnabled: true,
   claudeTranscriptWatcherEnabled: true,
+  codexGlobalMemoryGuidanceEnabled: true,
   hardwareAcceleration: "auto"
 };
 
@@ -69,6 +71,7 @@ const codexTranscriptWatcherSetting = (
 };
 
 const claudeTranscriptWatcherSetting = codexTranscriptWatcherSetting;
+const booleanSetting = codexTranscriptWatcherSetting;
 
 const hardwareAccelerationPreference = (
   value: unknown,
@@ -139,6 +142,10 @@ export const resolveKoedServerConfig = (
     claudeTranscriptWatcherEnabled:
       resolvedClaudeTranscriptWatcherSetting ??
       resolvedRuntimeMode !== "external",
+    codexGlobalMemoryGuidanceEnabled:
+      booleanSetting(environment.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED) ??
+      booleanSetting(file.codexGlobalMemoryGuidanceEnabled) ??
+      defaultKoedServerConfig.codexGlobalMemoryGuidanceEnabled,
     hardwareAcceleration:
       hardwareAccelerationPreference(
         environment.KOED_HARDWARE_ACCELERATION,
@@ -166,9 +173,9 @@ export const resolveKoedServerConfig = (
   };
 };
 
-export const writeKoedServerConfig = (
+const writeServerConfigAtomically = (
   paths: KoedServerPaths,
-  config: KoedServerConfig,
+  config: unknown,
   deps: Pick<
     KoedServerConfigDeps,
     "writeFileSync" | "renameSync" | "rmSync"
@@ -187,4 +194,47 @@ export const writeKoedServerConfig = (
     (deps.rmSync ?? rmSync)(temporary, { force: true });
     throw error;
   }
+};
+
+export const writeKoedServerConfig = (
+  paths: KoedServerPaths,
+  config: KoedServerConfig,
+  deps: Pick<
+    KoedServerConfigDeps,
+    "writeFileSync" | "renameSync" | "rmSync"
+  > = {}
+): void => {
+  writeServerConfigAtomically(paths, config, deps);
+};
+
+export const writeCodexGlobalMemoryGuidancePreference = (
+  paths: KoedServerPaths,
+  enabled: boolean,
+  deps: KoedServerConfigDeps = {}
+): void => {
+  const fileExists = deps.existsSync ?? existsSync;
+  const read = deps.readFileSync ?? readFileSync;
+  let existing: Record<string, unknown> = {};
+  if (fileExists(paths.serverConfigPath)) {
+    try {
+      const parsed: unknown = JSON.parse(
+        read(paths.serverConfigPath, "utf8") as string
+      );
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("expected a JSON object");
+      }
+      existing = parsed as Record<string, unknown>;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Cannot update Codex memory guidance preference because ${paths.serverConfigPath} is malformed: ${message}.`,
+        { cause: error }
+      );
+    }
+  }
+  writeServerConfigAtomically(
+    paths,
+    { ...existing, codexGlobalMemoryGuidanceEnabled: enabled },
+    deps
+  );
 };
