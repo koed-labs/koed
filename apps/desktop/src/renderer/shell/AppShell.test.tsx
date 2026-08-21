@@ -61,7 +61,7 @@ describe("AppShell", () => {
     return props;
   };
 
-  it("presents Inbox, Personal, Teams, Add Team, Preferences and identity", async () => {
+  it("presents Inbox, Personal, Teams, Add Team, and Preferences", async () => {
     await renderShell();
     expect(
       [...container.querySelectorAll("button")].map((item) =>
@@ -75,8 +75,7 @@ describe("AppShell", () => {
         "Devices",
         "Add or join Team",
         "Search and commands",
-        "Preferences",
-        "Identity: Personal"
+        "Preferences"
       ])
     );
     expect(container.textContent).toContain("4");

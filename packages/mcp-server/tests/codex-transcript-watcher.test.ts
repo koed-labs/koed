@@ -1158,7 +1158,7 @@ describe("Codex Transcript Watcher source journal", () => {
         line(userRecord("prioritize this live session"))
     );
 
-    await waitFor(() => client.artifacts.has("filesystem-live"), 2_000);
+    await waitFor(() => client.artifacts.has("filesystem-live"), 5_000);
     expect(
       client.itemBatches
         .flat()

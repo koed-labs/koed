@@ -638,10 +638,14 @@ describeDb("Collaboration repository", () => {
       limit: 2
     });
     expect(notePage.notes.map((note) => note.sourceSequence)).toEqual([4, 3]);
+    const latestNoteMessage = noteMessages.find(
+      (message) => message?.threadSequence === 4
+    );
+    expect(latestNoteMessage).toBeDefined();
     expect(notePage.notes[0]).toMatchObject({
-      title: "Concurrent private note 3",
+      title: latestNoteMessage!.bodyText,
       titleVersion: 1,
-      body: "Concurrent private note 3"
+      body: latestNoteMessage!.bodyText
     });
     expect(notePage.nextBeforeSequence).toBe(3);
     expect(

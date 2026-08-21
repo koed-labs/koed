@@ -990,7 +990,6 @@ describe("collaboration Shared Memory control", () => {
         ...previewCommand().input,
         candidate: {
           source: capturedSource,
-          sessionId: ids.localSession,
           candidateHash: hash,
           sourceRevision: 4,
           itemCount: 1,
@@ -1819,7 +1818,6 @@ describe("collaboration Shared Memory control", () => {
           previewRevision: 1,
           previewHash: hashC,
           expiresAt: null,
-          candidateSessionId: ids.localSession,
           actionGrant: { id: ids.actionGrant }
         }
       },
@@ -1865,8 +1863,7 @@ describe("collaboration Shared Memory control", () => {
         ...shareCommand(),
         input: {
           ...shareCommand().input,
-          mutationId,
-          candidateSessionId: ids.localSession
+          mutationId
         }
       },
       context()
@@ -1906,16 +1903,7 @@ describe("collaboration Shared Memory control", () => {
       persistPendingSourceWork: false,
       preparePendingShareSource
     });
-    const result = await fixture.control.dispatch(
-      {
-        ...shareCommand(),
-        input: {
-          ...shareCommand().input,
-          candidateSessionId: ids.localSession
-        }
-      },
-      context()
-    );
+    const result = await fixture.control.dispatch(shareCommand(), context());
 
     expectFailure(result, "not_available");
     expect(preparePendingShareSource).not.toHaveBeenCalled();

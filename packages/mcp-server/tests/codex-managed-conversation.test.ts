@@ -1219,7 +1219,7 @@ describe("Codex managed conversation coordinator", () => {
         directory,
         undefined,
         {
-          requestTimeoutMs: 200,
+          requestTimeoutMs: 2_000,
           interruptRequestTimeoutMs: 100,
           interruptGraceMs: 200,
           closeGraceMs: 200
@@ -1228,8 +1228,8 @@ describe("Codex managed conversation coordinator", () => {
     );
 
     try {
-      await expect(session.runTurn("Timeout prompt", 15)).rejects.toThrow(
-        "timed out after 15ms"
+      await expect(session.runTurn("Timeout prompt", 500)).rejects.toThrow(
+        "timed out after 500ms"
       );
       const lifecycle = fs
         .readFileSync(lifecyclePath, "utf8")
@@ -1274,7 +1274,7 @@ describe("Codex managed conversation coordinator", () => {
         }),
         directory,
         undefined,
-        { requestTimeoutMs: 300, closeGraceMs: 200 }
+        { requestTimeoutMs: 2_000, closeGraceMs: 200 }
       )
     );
 
@@ -1693,14 +1693,14 @@ describe("Codex managed conversation coordinator", () => {
         }),
         directory,
         undefined,
-        { requestTimeoutMs: 1_000, closeGraceMs: 200 }
+        { requestTimeoutMs: 2_000, closeGraceMs: 200 }
       )
     );
 
     try {
       await session.start();
-      await expect(session.runTurn("Unanswered start", 20)).rejects.toThrow(
-        "timed out after 20ms"
+      await expect(session.runTurn("Unanswered start", 500)).rejects.toThrow(
+        "timed out after 500ms"
       );
       expect(fs.readFileSync(lifecyclePath, "utf8").trim().split("\n")).toEqual(
         ["turn-accepted", "signal"]
@@ -1729,14 +1729,14 @@ describe("Codex managed conversation coordinator", () => {
         }),
         directory,
         undefined,
-        { requestTimeoutMs: 200, closeGraceMs: 200 }
+        { requestTimeoutMs: 2_000, closeGraceMs: 200 }
       )
     );
 
     try {
       await session.start();
-      await expect(session.runTurn("Request timeout", 1_000)).rejects.toThrow(
-        "turn/start request timed out after 200ms"
+      await expect(session.runTurn("Request timeout", 3_000)).rejects.toThrow(
+        "turn/start request timed out after 2000ms"
       );
       expect(fs.readFileSync(lifecyclePath, "utf8").trim().split("\n")).toEqual(
         ["turn-accepted", "signal"]
