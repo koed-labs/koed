@@ -312,6 +312,80 @@ describe("bounded Codex historical parsing", () => {
     expect(byteBounded.bytesConsumed).toBe(firstRecordBytes);
     expect(runtimeBounded.bytesConsumed).toBe(firstRecordBytes);
   });
+
+  it("defers a trailing agent_message until its response_item arrives instead of duplicating it", () => {
+    const eventMessage = JSON.stringify({
+      timestamp: "2026-08-17T00:00:01.000Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "partial answer" }
+    });
+    const responseItem = JSON.stringify({
+      timestamp: "2026-08-17T00:00:02.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        id: "resp-1",
+        content: [{ type: "output_text", text: "final answer" }]
+      }
+    });
+    const config = {
+      maxBatchRows: 100,
+      maxBatchBytes: 100_000,
+      maxBatchRuntimeMs: 15_000,
+      maxJournalBytesPerBatch: 100_000
+    };
+
+    // The event_msg alone, with nothing to resolve it against yet, must not
+    // become its own committed item -- otherwise a later batch containing
+    // the response_item would create a second, duplicate representation of
+    // the same assistant turn.
+    const deferred = buildCodexHistoricalBatch({
+      bytes: Buffer.from(`${eventMessage}\n`),
+      absoluteStartOffset: 0,
+      lineIndexOffset: 0,
+      prior: {},
+      source,
+      selection,
+      config
+    });
+    expect(deferred).toMatchObject({ bytesConsumed: 0, items: [] });
+
+    // Once the response_item is available in the same read, both records
+    // resolve together: the transient event_msg becomes a raw-only
+    // observation (not a second projected item) and the response_item is
+    // the sole item that will actually project into memory.
+    const resolved = buildCodexHistoricalBatch({
+      bytes: Buffer.from(`${eventMessage}\n${responseItem}\n`),
+      absoluteStartOffset: 0,
+      lineIndexOffset: 0,
+      prior: {},
+      source,
+      selection,
+      config
+    });
+    expect(resolved.bytesConsumed).toBe(
+      Buffer.byteLength(`${eventMessage}\n${responseItem}\n`)
+    );
+    expect(
+      resolved.items.map((item) => ({
+        rawText: item.rawText,
+        observationOnly: item.observationOnly ?? false,
+        projectionStatus: item.projectionStatus
+      }))
+    ).toEqual([
+      {
+        rawText: "partial answer",
+        observationOnly: true,
+        projectionStatus: "raw_only"
+      },
+      {
+        rawText: "final answer",
+        observationOnly: false,
+        projectionStatus: "pending"
+      }
+    ]);
+  });
 });
 
 // Minimal fake covering only what processNextBatch needs once a source's

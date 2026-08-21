@@ -19,6 +19,7 @@ import { MemoryApiError } from "../src/index.js";
 import {
   completeTranscriptBoundary,
   discoverCodexTranscripts,
+  latestTranscriptActivity,
   resolveCodexTranscriptWatcherConfig,
   startCodexTranscriptWatcher,
   type CodexHistoricalCandidateObserver,
@@ -518,6 +519,41 @@ describe("Codex Transcript Watcher source journal", () => {
       readSync.mock.calls.reduce((total, call) => total + call[1].byteLength, 0)
     ).toBe(1);
     readSync.mockRestore();
+  });
+
+  it("reads an oversized final record's own timestamp instead of falling back to the transcript's creation time", () => {
+    const root = temporaryDirectory();
+    const transcript = transcriptPath(root);
+    const smallRecord = JSON.stringify({
+      timestamp: "2026-06-01T00:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "small opening message" }
+    });
+    const hugeRecord = JSON.stringify({
+      timestamp: "2026-08-17T00:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "x".repeat(1_100_000) }
+    });
+    const content = `${smallRecord}\n${hugeRecord}\n`;
+    writeFileSync(transcript, content);
+    const boundary = completeTranscriptBoundary(transcript);
+    const context = {
+      threadKind: "conversation" as const,
+      transcriptMetadata: { timestamp: "2026-01-01T00:00:00.000Z" }
+    };
+
+    // A 1MB window landing entirely inside the >1MB trailing record used to
+    // find no earlier newline to align on and silently fall back to the
+    // transcript's creation timestamp, making a recently active
+    // Conversation with one large record look 30+ days stale.
+    const latestActivityAt = latestTranscriptActivity(
+      transcript,
+      boundary,
+      1_048_576,
+      context
+    );
+
+    expect(latestActivityAt).toBe("2026-08-17T00:00:00.000Z");
   });
 
   it("registers an opaque catalogued Project identity with the source session", async () => {

@@ -306,6 +306,31 @@ const nextLineBoundary = (bytes: Buffer, maximum: number): number => {
   return after + 1;
 };
 
+const historicalItemsFor = (
+  input: Parameters<typeof buildCodexHistoricalBatch>[0],
+  records: unknown[],
+  lineIndexOffset: number
+): ReturnType<typeof historicalItem>[] =>
+  buildCodexTranscriptConversationItems({
+    records,
+    indexOffset: lineIndexOffset,
+    sessionId: input.source.sessionId,
+    sourceSessionId: input.source.sourceSessionId,
+    sourceTransport: "historical_import",
+    sourceFingerprint: input.source.sourceFingerprint,
+    threadKind:
+      input.selection.adapterState?.threadKind === "subagent"
+        ? "subagent"
+        : "conversation",
+    ...(typeof input.selection.adapterState?.parentThreadId === "string"
+      ? { parentThreadId: input.selection.adapterState.parentThreadId }
+      : {})
+  }).map(historicalItem);
+
+const isMalformedRecordError = (error: unknown): boolean =>
+  error instanceof Error &&
+  /malformed complete JSONL record/.test(error.message);
+
 export const buildCodexHistoricalBatch = (input: {
   bytes: Buffer;
   absoluteStartOffset: number;
@@ -323,60 +348,96 @@ export const buildCodexHistoricalBatch = (input: {
   let state = input.prior;
   let malformedRecordCount = 0;
   let items: ReturnType<typeof historicalItem>[] = [];
-  while (localOffset < input.bytes.byteLength) {
-    const newline = input.bytes.indexOf(0x0a, localOffset);
-    if (newline < 0) throw new Error("historical_segment_record_incomplete");
-    const nextOffset = newline + 1;
-    const recordBytes = input.bytes.subarray(localOffset, nextOffset);
-    let nextState = state;
-    let nextItems: ReturnType<typeof historicalItem>[] = [];
-    try {
-      const parsed = parseTranscriptJournalBytes({
-        bytes: recordBytes,
-        absoluteStartOffset: input.absoluteStartOffset + localOffset,
-        lineIndexOffset: line,
-        prior: state
-      });
-      nextState = parserState(parsed.checkpoint);
-      nextItems = buildCodexTranscriptConversationItems({
-        records: parsed.records,
-        indexOffset: parsed.indexOffset,
-        sessionId: input.source.sessionId,
-        sourceSessionId: input.source.sourceSessionId,
-        sourceTransport: "historical_import",
-        sourceFingerprint: input.source.sourceFingerprint,
-        threadKind:
-          input.selection.adapterState?.threadKind === "subagent"
-            ? "subagent"
-            : "conversation",
-        ...(typeof input.selection.adapterState?.parentThreadId === "string"
-          ? { parentThreadId: input.selection.adapterState.parentThreadId }
-          : {})
-      }).map(historicalItem);
-    } catch (error) {
+  recordLoop: while (localOffset < input.bytes.byteLength) {
+    // A trailing event_msg/agent_message with no stable response_item yet
+    // must not become its own item: a later page could still supply the
+    // response_item that supersedes it, and the two have different source
+    // identities, so committing both would duplicate the same assistant
+    // turn. Grow this record's page one record at a time -- re-parsing with
+    // deferPageEndingAssistantEvent each time -- until the parser actually
+    // advances past localOffset (nothing was deferred, or a later record
+    // resolved it), we run out of available records (leave the deferred
+    // tail for the next batch, exactly like the live watcher), or growth
+    // hits the batch caps (force a non-deferred resolve so a source can
+    // never stall on this the way an oversized single record used to).
+    let pageEnd = localOffset;
+    let lastGoodPageEnd = localOffset;
+    let recordsInPage = 0;
+    for (;;) {
+      const newline = input.bytes.indexOf(0x0a, pageEnd);
+      if (newline < 0) {
+        if (pageEnd === localOffset) {
+          throw new Error("historical_segment_record_incomplete");
+        }
+        break recordLoop;
+      }
+      pageEnd = newline + 1;
+      recordsInPage += 1;
+      const pageBytes = input.bytes.subarray(localOffset, pageEnd);
+      const atGrowthCap =
+        pageBytes.byteLength >= input.config.maxBatchBytes ||
+        recordsInPage >= input.config.maxBatchRows;
+      let parsed: ReturnType<typeof parseTranscriptJournalBytes>;
+      try {
+        parsed = parseTranscriptJournalBytes({
+          bytes: pageBytes,
+          absoluteStartOffset: input.absoluteStartOffset + localOffset,
+          lineIndexOffset: line,
+          prior: state,
+          deferPageEndingAssistantEvent: !atGrowthCap
+        });
+      } catch (error) {
+        if (!isMalformedRecordError(error)) throw error;
+        // strictJsonLines throws on the first malformed line it reaches, in
+        // file order, so a page that only just started failing must be
+        // failing on the record most recently added to it: everything
+        // through lastGoodPageEnd already parsed cleanly on an earlier
+        // growth attempt (or there was no growth yet). Re-resolve that
+        // known-good prefix without deferral risk, commit it, then treat
+        // the newly-added record as the isolated malformed one, exactly as
+        // a single-record page would have.
+        if (lastGoodPageEnd > localOffset) {
+          const goodParsed = parseTranscriptJournalBytes({
+            bytes: input.bytes.subarray(localOffset, lastGoodPageEnd),
+            absoluteStartOffset: input.absoluteStartOffset + localOffset,
+            lineIndexOffset: line,
+            prior: state
+          });
+          const goodItems = historicalItemsFor(input, goodParsed.records, line);
+          items = [...items, ...goodItems];
+          state = parserState(goodParsed.checkpoint);
+          line = goodParsed.checkpoint.lineCount;
+        }
+        malformedRecordCount += 1;
+        localOffset = pageEnd;
+        line += 1;
+        continue recordLoop;
+      }
+      const resolvedThroughOffset = parsed.checkpoint.offset;
+      const pageAbsoluteEnd = input.absoluteStartOffset + pageEnd;
+      if (resolvedThroughOffset < pageAbsoluteEnd && !atGrowthCap) {
+        // Still deferred: nothing new to commit yet. Keep growing the page.
+        lastGoodPageEnd = pageEnd;
+        continue;
+      }
+      const nextItems = historicalItemsFor(input, parsed.records, line);
+      const combined = [...items, ...nextItems];
       if (
-        !(error instanceof Error) ||
-        !/malformed complete JSONL record/.test(error.message)
+        combined.length > input.config.maxBatchRows ||
+        Buffer.byteLength(JSON.stringify(combined), "utf8") >
+          input.config.maxBatchBytes
       ) {
-        throw error;
+        if (localOffset === 0) {
+          throw new Error("historical_record_exceeds_batch_limit");
+        }
+        break recordLoop;
       }
-      malformedRecordCount += 1;
-    }
-    const combined = [...items, ...nextItems];
-    if (
-      combined.length > input.config.maxBatchRows ||
-      Buffer.byteLength(JSON.stringify(combined), "utf8") >
-        input.config.maxBatchBytes
-    ) {
-      if (localOffset === 0) {
-        throw new Error("historical_record_exceeds_batch_limit");
-      }
+      items = combined;
+      state = parserState(parsed.checkpoint);
+      line = parsed.checkpoint.lineCount;
+      localOffset = resolvedThroughOffset - input.absoluteStartOffset;
       break;
     }
-    items = combined;
-    state = nextState;
-    localOffset = nextOffset;
-    line += 1;
     if (now() - startedAt >= input.config.maxBatchRuntimeMs) break;
   }
   return {

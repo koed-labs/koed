@@ -475,31 +475,12 @@ const recordTimestamp = (value: unknown): string | null => {
   return null;
 };
 
-const latestTranscriptActivity = (
-  transcriptPath: string,
-  boundary: number,
-  maximumBytes: number,
-  context: TranscriptContext
-): string | null => {
-  const initial = recordTimestamp(context.transcriptMetadata);
-  if (boundary === 0) return initial;
-  const start = Math.max(0, boundary - maximumBytes);
-  const bytes = Buffer.allocUnsafe(boundary - start);
-  const descriptor = openSync(transcriptPath, "r");
-  try {
-    const bytesRead = readSync(descriptor, bytes, 0, bytes.byteLength, start);
-    if (bytesRead !== bytes.byteLength) return initial;
-  } finally {
-    closeSync(descriptor);
-  }
-  const aligned =
-    start === 0
-      ? bytes
-      : (() => {
-          const newline = bytes.indexOf(0x0a);
-          return newline < 0 ? Buffer.alloc(0) : bytes.subarray(newline + 1);
-        })();
-  const timestamps = aligned
+// Matches the max single-record size already used elsewhere for this same
+// concern (see codex-transcript-journal.ts's completeTranscriptBoundary).
+const MAX_TRANSCRIPT_ACTIVITY_SCAN_BYTES = 16 * 1024 * 1024;
+
+const timestampsFromAligned = (aligned: Buffer): string[] =>
+  aligned
     .toString("utf8")
     .split("\n")
     .filter(Boolean)
@@ -511,8 +492,51 @@ const latestTranscriptActivity = (
       }
     })
     .filter((value): value is string => value !== null);
-  if (initial) timestamps.push(initial);
-  return timestamps.sort().at(-1) ?? null;
+
+export const latestTranscriptActivity = (
+  transcriptPath: string,
+  boundary: number,
+  maximumBytes: number,
+  context: TranscriptContext
+): string | null => {
+  const initial = recordTimestamp(context.transcriptMetadata);
+  if (boundary === 0) return initial;
+  const descriptor = openSync(transcriptPath, "r");
+  try {
+    let windowBytes = maximumBytes;
+    for (;;) {
+      const start = Math.max(0, boundary - windowBytes);
+      const bytes = Buffer.allocUnsafe(boundary - start);
+      const bytesRead = readSync(descriptor, bytes, 0, bytes.byteLength, start);
+      if (bytesRead !== bytes.byteLength) return initial;
+      if (start === 0) {
+        const timestamps = timestampsFromAligned(bytes);
+        if (initial) timestamps.push(initial);
+        return timestamps.sort().at(-1) ?? null;
+      }
+      const newline = bytes.indexOf(0x0a);
+      // A newline anywhere before the buffer's final byte marks a genuine
+      // earlier record boundary: everything after it, through boundary, is
+      // one or more complete records safe to parse. A newline only at the
+      // final byte (boundary's own terminator, guaranteed present by
+      // completeTranscriptBoundary) means the whole window sits inside one
+      // record larger than windowBytes -- grow the window so that record's
+      // own start, and its timestamp, come into view instead of silently
+      // falling back to the transcript's creation timestamp.
+      if (newline >= 0 && newline < bytes.byteLength - 1) {
+        const timestamps = timestampsFromAligned(bytes.subarray(newline + 1));
+        if (initial) timestamps.push(initial);
+        return timestamps.sort().at(-1) ?? null;
+      }
+      if (windowBytes >= MAX_TRANSCRIPT_ACTIVITY_SCAN_BYTES) return initial;
+      windowBytes = Math.min(
+        windowBytes * 2,
+        MAX_TRANSCRIPT_ACTIVITY_SCAN_BYTES
+      );
+    }
+  } finally {
+    closeSync(descriptor);
+  }
 };
 
 const lookupArtifact = async (
