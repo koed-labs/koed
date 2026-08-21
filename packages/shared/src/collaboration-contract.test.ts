@@ -910,7 +910,6 @@ describe("collaboration renderer commands", () => {
           previewRevision: 1,
           previewHash: "b".repeat(64),
           expiresAt: null,
-          candidateSessionId: ids.sharedSession,
           actionGrant: actionGrant()
         }
       },
@@ -947,7 +946,6 @@ describe("collaboration renderer commands", () => {
           previewRevision: 1,
           previewHash: "b".repeat(64),
           expiresAt: null,
-          candidateSessionId: ids.sharedSession,
           actionGrant: actionGrant()
         }
       }
@@ -1066,8 +1064,7 @@ describe("collaboration renderer commands", () => {
         selectedRepresentation: "memory_events",
         previewRevision: 1,
         previewHash: "b".repeat(64),
-        expiresAt: null,
-        candidateSessionId: ids.sharedSession
+        expiresAt: null
       },
       {
         intent: "collaboration.revoke_shared_memory",
@@ -1099,8 +1096,7 @@ describe("collaboration renderer commands", () => {
         allowedRepresentations: ["lcm_leaves"],
         previewRevision: 1,
         previewHash: "b".repeat(64),
-        expiresAt: null,
-        candidateSessionId: ids.sharedSession
+        expiresAt: null
       }
     ] as const) {
       expect(
