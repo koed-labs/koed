@@ -93,7 +93,14 @@ jobs:
           cp -a "${RUNNER_TEMP}/koed-native-runtime-cache-build/koed-runtime" "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime"
 
       - name: Validate native runtime payload before use or save
-        run: pnpm native-runtime:validate -- --runtime-root "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --platform linux --json
+        run: |
+          report="${RUNNER_TEMP}/koed-native-runtime-validation.json"
+          set +e
+          node scripts/native-runtime/validate-runtime.mjs --runtime-root "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --platform linux --json > "${report}"
+          status=$?
+          set -e
+          jq '{ok, errors, timings, packagedProvider: (.packagedProvider | {skipped, ok, status: (.status | {status, stderr}), install: (.install | {status, stderr})})}' "${report}"
+          exit "${status}"
 
       - name: Save verified Linux native runtime payload
         if: steps.native-cache.outputs.cache-hit != 'true'
