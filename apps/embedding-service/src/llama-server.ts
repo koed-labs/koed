@@ -45,6 +45,7 @@ export interface LlamaServerOptions {
   promptCacheEnabled: boolean;
   accelerationPolicy: AccelerationPolicy;
   accelerationDevice: string | null;
+  gpuIdleUnloadSeconds?: number;
 }
 
 export class LlamaServerError extends Error {}
@@ -127,6 +128,15 @@ export const llamaServerArgs = (
     options.pooling,
     "--log-disable"
   ];
+  if (
+    acceleration.backend !== "cpu" &&
+    (options.gpuIdleUnloadSeconds ?? 300) > 0
+  ) {
+    args.push(
+      "--sleep-idle-seconds",
+      String(options.gpuIdleUnloadSeconds ?? 300)
+    );
+  }
   if (!options.promptCacheEnabled) {
     args.push("--no-cache-prompt", "--cache-ram", "0");
   }
@@ -337,7 +347,11 @@ export class LlamaServerClient {
         acceleration_backend: acceleration.backend,
         acceleration_device: acceleration.device,
         gpu_layers: acceleration.gpuLayers,
-        fallback_reason: acceleration.fallbackReason
+        fallback_reason: acceleration.fallbackReason,
+        gpu_idle_unload_seconds:
+          acceleration.backend === "cpu"
+            ? 0
+            : (this.options.gpuIdleUnloadSeconds ?? 300)
       }
     });
 

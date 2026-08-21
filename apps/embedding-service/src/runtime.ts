@@ -503,7 +503,8 @@ export class EmbeddingRuntime {
         parallel: this.config.llamaParallel,
         promptCacheEnabled: false,
         accelerationPolicy: this.config.embeddingAccelerationPolicy,
-        accelerationDevice: this.config.embeddingAccelerationDevice
+        accelerationDevice: this.config.embeddingAccelerationDevice,
+        gpuIdleUnloadSeconds: this.config.embeddingGpuIdleUnloadSeconds
       });
       await this.startClient(this.embeddingServer);
     } catch (error) {
@@ -552,7 +553,8 @@ export class EmbeddingRuntime {
         parallel: this.config.rerankerParallel,
         promptCacheEnabled: this.config.rerankerPromptCacheEnabled,
         accelerationPolicy: this.config.rerankerAccelerationPolicy,
-        accelerationDevice: this.config.rerankerAccelerationDevice
+        accelerationDevice: this.config.rerankerAccelerationDevice,
+        gpuIdleUnloadSeconds: this.config.rerankerGpuIdleUnloadSeconds
       });
       await this.startClient(this.rerankerServer);
     } catch (error) {

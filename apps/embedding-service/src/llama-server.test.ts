@@ -66,8 +66,40 @@ describe("llama-server adapter helpers", () => {
     );
 
     expect(args).toContain("--embedding");
+    expect(args).not.toContain("--sleep-idle-seconds");
     expect(args).not.toContain("--no-ui");
     expect(args).not.toContain("--embd-normalize");
+  });
+
+  it("unloads accelerated models after the configured idle period", () => {
+    const config = testConfig();
+    const options = {
+      name: "embedding" as const,
+      modelPath: config.modelPath!,
+      port: config.embeddingServerPort,
+      pooling: "last" as const,
+      embedding: true,
+      reranking: false,
+      nCtx: config.llamaNCtx,
+      nThreads: config.llamaNThreads,
+      nBatch: config.llamaNBatch,
+      nUbatch: config.llamaNUbatch,
+      parallel: config.llamaParallel,
+      promptCacheEnabled: false,
+      accelerationPolicy: "cuda" as const,
+      accelerationDevice: null,
+      gpuIdleUnloadSeconds: 120
+    };
+    const cuda = resolveAcceleration("cuda", [
+      { id: "CUDA0", backend: "cuda" }
+    ]);
+
+    expect(llamaServerArgs(options, cuda)).toEqual(
+      expect.arrayContaining(["--sleep-idle-seconds", "120"])
+    );
+    expect(
+      llamaServerArgs({ ...options, gpuIdleUnloadSeconds: 0 }, cuda)
+    ).not.toContain("--sleep-idle-seconds");
   });
 
   it("extracts rerank scores in original document order", () => {

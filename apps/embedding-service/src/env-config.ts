@@ -33,6 +33,7 @@ export interface EmbeddingServiceEnv {
   modelTokenizerRevision: string;
   embeddingAccelerationPolicy: AccelerationPolicy;
   embeddingAccelerationDevice: string | null;
+  embeddingGpuIdleUnloadSeconds: number;
   expectedDimensions: number;
   batchLimit: number;
   llamaNCtx: number;
@@ -64,6 +65,7 @@ export interface EmbeddingServiceEnv {
   rerankerPromptCacheEnabled: boolean;
   rerankerAccelerationPolicy: AccelerationPolicy;
   rerankerAccelerationDevice: string | null;
+  rerankerGpuIdleUnloadSeconds: number;
   embeddingServiceToken: string;
   runtimeVersion: string;
   logLevel: string;
@@ -212,6 +214,26 @@ const intAlias = (
     if (value !== undefined && value.trim() !== "") {
       return intEnv(environment, name, fallback);
     }
+  }
+  return fallback;
+};
+
+const nonNegativeIntAlias = (
+  environment: NodeJS.ProcessEnv,
+  names: string[],
+  fallback: number
+): number => {
+  for (const name of names) {
+    const value = environment[name];
+    if (value === undefined || value.trim() === "") continue;
+    if (!/^\d+$/.test(value.trim())) {
+      throw new Error(`${name} must be a non-negative integer`);
+    }
+    const parsed = Number(value.trim());
+    if (!Number.isSafeInteger(parsed)) {
+      throw new Error(`${name} must be a non-negative integer`);
+    }
+    return parsed;
   }
   return fallback;
 };
@@ -485,6 +507,11 @@ export const resolveEnv = (
     ),
     embeddingAccelerationDevice:
       trim(environment.KOED_EMBEDDING_DEVICE) ?? null,
+    embeddingGpuIdleUnloadSeconds: nonNegativeIntAlias(
+      environment,
+      ["KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS"],
+      300
+    ),
     expectedDimensions: modelConfig.dimensions,
     batchLimit: intAlias(environment, ["EMBEDDING_BATCH_LIMIT"], 16),
     llamaNCtx,
@@ -584,6 +611,11 @@ export const resolveEnv = (
       "cpu"
     ),
     rerankerAccelerationDevice: trim(environment.KOED_RERANKER_DEVICE) ?? null,
+    rerankerGpuIdleUnloadSeconds: nonNegativeIntAlias(
+      environment,
+      ["KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS"],
+      300
+    ),
     embeddingServiceToken: environment.EMBEDDING_SERVICE_TOKEN?.trim() ?? "",
     runtimeVersion:
       trim(environment.KOED_EMBEDDING_RUNTIME_VERSION) ?? "unknown",

@@ -214,7 +214,11 @@ const handleCapacityIdentity = async (
     accelerationDeviceFingerprint: acceleration.device
       ? stableHash(acceleration.device)
       : null,
-    gpuLayers: acceleration.gpuLayers
+    gpuLayers: acceleration.gpuLayers,
+    gpuIdleUnloadSeconds:
+      acceleration.backend === "cpu"
+        ? 0
+        : runtime.config.embeddingGpuIdleUnloadSeconds
   };
   return jsonResponse(
     {
@@ -281,6 +285,14 @@ const handleHealth = (
         : {}),
       nCtx: config.llamaNCtx,
       queue: runtime.healthQueueSnapshot(),
+      ...(exposeConfiguredArtifacts
+        ? {
+            gpuIdleUnloadSeconds:
+              embeddingAcceleration?.backend === "cpu"
+                ? 0
+                : runtime.config.embeddingGpuIdleUnloadSeconds
+          }
+        : {}),
       reranker: {
         enabled: rerankerEnabled(config),
         loaded: runtime.isRerankerLoaded(),
@@ -296,7 +308,15 @@ const handleHealth = (
         batchLimit: config.rerankerBatchLimit,
         acceleration: runtime.rerankerAcceleration()
           ? runtime.rerankerAcceleration()!.backend
-          : null
+          : null,
+        ...(exposeConfiguredArtifacts && runtime.rerankerAcceleration()
+          ? {
+              gpuIdleUnloadSeconds:
+                runtime.rerankerAcceleration()!.backend === "cpu"
+                  ? 0
+                  : runtime.config.rerankerGpuIdleUnloadSeconds
+            }
+          : {})
       }
     },
     status === "ok" ? 200 : 503,

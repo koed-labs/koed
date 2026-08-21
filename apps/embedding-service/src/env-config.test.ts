@@ -123,8 +123,10 @@ describe("Embedding Service env config", () => {
     expect(config.modelTokenizer).toBe("qwen3-embedding-0.6b-gguf");
     expect(config.embeddingAccelerationPolicy).toBe("auto");
     expect(config.embeddingAccelerationDevice).toBeNull();
+    expect(config.embeddingGpuIdleUnloadSeconds).toBe(300);
     expect(config.rerankerAccelerationPolicy).toBe("cpu");
     expect(config.rerankerAccelerationDevice).toBeNull();
+    expect(config.rerankerGpuIdleUnloadSeconds).toBe(300);
     expect(config.expectedDimensions).toBe(1024);
     expect(config.llamaNCtx).toBe(4096);
     expect(config.embeddingMaxTokens).toBe(4096);
@@ -153,12 +155,16 @@ describe("Embedding Service env config", () => {
     const config = resolveEnv({
       KOED_EMBEDDING_ACCELERATION: "cuda",
       KOED_EMBEDDING_DEVICE: "CUDA1",
-      KOED_RERANKER_ACCELERATION: "cpu"
+      KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS: "120",
+      KOED_RERANKER_ACCELERATION: "cpu",
+      KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS: "0"
     });
 
     expect(config.embeddingAccelerationPolicy).toBe("cuda");
     expect(config.embeddingAccelerationDevice).toBe("CUDA1");
+    expect(config.embeddingGpuIdleUnloadSeconds).toBe(120);
     expect(config.rerankerAccelerationPolicy).toBe("cpu");
+    expect(config.rerankerGpuIdleUnloadSeconds).toBe(0);
   });
 
   it("keeps the safe acceleration defaults when values are blank", () => {
@@ -175,6 +181,19 @@ describe("Embedding Service env config", () => {
     expect(() =>
       resolveEnv({ KOED_EMBEDDING_ACCELERATION: "fastest" })
     ).toThrow("KOED_EMBEDDING_ACCELERATION must be auto, cpu, metal, or cuda");
+  });
+
+  it("rejects malformed GPU idle unload values", () => {
+    expect(() =>
+      resolveEnv({ KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS: "-1" })
+    ).toThrow(
+      "KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS must be a non-negative integer"
+    );
+    expect(() =>
+      resolveEnv({ KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS: "1.5" })
+    ).toThrow(
+      "KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS must be a non-negative integer"
+    );
   });
 
   it("uses MODEL_KEY app-local precedence and defaults blank keys", () => {

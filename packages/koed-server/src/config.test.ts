@@ -1,8 +1,16 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveKoedServerConfig } from "./config.js";
+import { resolveKoedServerConfig, writeKoedServerConfig } from "./config.js";
 import type { KoedServerPaths } from "./paths.js";
 
 const temps: string[] = [];
@@ -56,8 +64,82 @@ describe("koed-server config", () => {
       runtimeMode: "developer",
       dependencyMode: "external",
       codexTranscriptWatcherEnabled: true,
-      claudeTranscriptWatcherEnabled: true
+      claudeTranscriptWatcherEnabled: true,
+      hardwareAcceleration: "auto"
     });
+  });
+
+  it("persists local hardware acceleration with environment precedence", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({ hardwareAcceleration: "cpu" })
+    );
+
+    expect(resolveKoedServerConfig(paths(root), {})).toMatchObject({
+      hardwareAcceleration: "cpu"
+    });
+    expect(
+      resolveKoedServerConfig(paths(root), {
+        KOED_HARDWARE_ACCELERATION: "auto"
+      })
+    ).toMatchObject({ hardwareAcceleration: "auto" });
+  });
+
+  it("writes configuration atomically with private permissions", () => {
+    const root = tempDir();
+    const resolvedPaths = paths(root);
+
+    writeKoedServerConfig(resolvedPaths, {
+      ...resolveKoedServerConfig(resolvedPaths, {}),
+      hardwareAcceleration: "cpu"
+    });
+
+    expect(
+      JSON.parse(readFileSync(resolvedPaths.serverConfigPath, "utf8"))
+    ).toMatchObject({ hardwareAcceleration: "cpu" });
+    expect(
+      readdirSync(resolve(root, "config")).filter((name) =>
+        name.endsWith(".tmp")
+      )
+    ).toEqual([]);
+  });
+
+  it("removes a temporary configuration file when replacement fails", () => {
+    const root = tempDir();
+    const resolvedPaths = paths(root);
+
+    expect(() =>
+      writeKoedServerConfig(
+        resolvedPaths,
+        resolveKoedServerConfig(resolvedPaths, {}),
+        {
+          renameSync: () => {
+            throw new Error("replacement failed");
+          }
+        }
+      )
+    ).toThrow("replacement failed");
+    expect(existsSync(resolvedPaths.serverConfigPath)).toBe(false);
+    expect(
+      readdirSync(resolve(root, "config")).filter((name) =>
+        name.endsWith(".tmp")
+      )
+    ).toEqual([]);
+  });
+
+  it("rejects malformed persisted hardware acceleration", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({ hardwareAcceleration: "fastest" })
+    );
+
+    expect(() => resolveKoedServerConfig(paths(root), {})).toThrow(
+      "server.json hardwareAcceleration must be auto or cpu"
+    );
   });
 
   it("accepts bundled-local dependency mode from file and environment", () => {

@@ -16,6 +16,8 @@ import { createPersonalDevicePairingPreloadApi } from "./ipc/personal-device-pai
 import {
   clipboardWriteChannel,
   desktopCommandNames,
+  hardwareAccelerationGetChannel,
+  hardwareAccelerationSetChannel,
   setupCommandChannel,
   setupProgressEventChannel,
   themePreferenceGetChannel,
@@ -63,6 +65,11 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     get: () => ipcRenderer.invoke(themePreferenceGetChannel),
     set: (preference: "light" | "dark" | "system") =>
       ipcRenderer.invoke(themePreferenceSetChannel, preference)
+  }),
+  hardwareAcceleration: Object.freeze({
+    get: () => ipcRenderer.invoke(hardwareAccelerationGetChannel),
+    set: (enabled: boolean) =>
+      ipcRenderer.invoke(hardwareAccelerationSetChannel, enabled)
   }),
   setup: Object.freeze({
     inspect: () => ipcRenderer.invoke(setupCommandChannel, "inspect"),

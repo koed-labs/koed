@@ -626,6 +626,29 @@ with `gpu_layers` set to `all`. Repeat once with
 while reporting zero GPU layers. A forced Metal run that cannot discover or
 start Metal must fail rather than silently use CPU.
 
+Koed Desktop exposes a Hardware acceleration toggle in General preferences.
+The preference is stored in `KOED_HOME/config/server.json`; changing it restarts
+the local Koed services. An explicit Operator environment policy remains
+authoritative and makes the toggle read-only. Accelerated embedding and
+reranker models unload after five idle minutes by default and reload on the
+next request. Set the corresponding idle-unload value to `0` only when keeping
+the model resident is an intentional resource decision.
+
+Run the manual CPU/GPU comparison through the production Embedding Service
+path after installing the pinned model and a verified accelerated runtime:
+
+```bash
+pnpm embedding:benchmark -- \
+  --llama-server "$KOED_HOME/runtime/llama.cpp/llama-server" \
+  --gpu-backend cuda \
+  --output ./embedding-acceleration-report.json
+```
+
+Use `--gpu-backend metal` on Apple Silicon. The benchmark uses generated,
+Memory Event-shaped 256, 1024, and 2048 token classes and reports process cold,
+idle wake, warm throughput, RAM, available VRAM telemetry, and CPU/GPU vector
+agreement. It is manual hardware validation and does not run in normal CI.
+
 Packaged Desktop smoke now exercises the packaged Electron bundle with a temporary `KOED_HOME`, unsets `KOED_REPO_ROOT`, and verifies daemon start/status/reconnect/stop without checkout fallbacks. For CI or diagnostics when native assets are absent, run:
 
 ```bash

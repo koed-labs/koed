@@ -30,6 +30,13 @@ Reranking defaults to `cpu` so loading a second model cannot unexpectedly
 consume accelerator memory. Operators may configure the two policies and
 device identifiers independently.
 
+Desktop persists one bounded local inference preference: `auto` enables
+compatible acceleration and `cpu` disables it. Service-specific Operator
+environment settings remain authoritative and make the Desktop preference
+read-only. The preference is deliberately reusable by other local inference
+services, but each service retains its own provider implementation and resource
+policy.
+
 `auto` prefers Metal on Apple Silicon and CUDA on Linux or WSL when the selected
 `llama-server` binary reports a compatible device. Otherwise it uses CPU and
 records a bounded fallback reason. A GPU startup failure in `auto` may retry
@@ -40,6 +47,23 @@ GPU processes receive an explicit device, full model offload, and disabled
 automatic fit. Koed does not silently reduce context, batch, parallelism, or
 GPU layers to make a process start. Resource settings remain Operator-visible
 configuration.
+
+Accelerated embedding and reranker processes pass a native llama-server idle
+sleep policy. After five minutes without inference by default, llama-server
+unloads model and KV-cache memory while keeping its process and request boundary
+available; the next request reloads the model transparently. Embedding and
+reranker delays are independent and `0` explicitly disables idle unloading.
+CPU processes omit the sleep policy. Authenticated health and capacity identity
+report the configured effective delay, but Koed does not infer or claim live
+residency without an authoritative runtime signal.
+
+A manually invoked benchmark compares CPU with Metal or CUDA through the same
+production Embedding Service, pinned model, dimensions, normalization, and
+chunking path. It uses deterministic synthetic Memory Event-sized inputs and
+measures process cold start, first request, accelerated idle wake, warm p50/p95
+latency and token throughput, process-tree RAM, available VRAM telemetry, and
+CPU/GPU cosine agreement. Reports omit vectors and source text. Routine CI tests
+the harness contract but does not run hardware measurements.
 
 The resolved process state is authoritative. Health and capacity identity do
 not accept a separately asserted backend label. Capacity identity includes the
@@ -84,6 +108,8 @@ CUDA payload and rejects every other unresolved loader dependency.
   embedding compatibility and stored vectors.
 - Forced acceleration failures are actionable; automatic fallback remains
   observable.
+- Idle local accelerators release model memory without restarting Koed, at the
+  cost of a measured reload delay on the next request.
 - CUDA release artifacts are larger because required redistributable runtime
   libraries travel with the native payload.
 - A changed source revision, CUDA version, or payload-producing build script

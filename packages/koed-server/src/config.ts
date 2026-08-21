@@ -1,16 +1,25 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import type { KoedServerPaths } from "./paths.js";
 
 export type KoedServerRuntimeMode = "local-personal" | "external" | "developer";
 export type KoedDependencyMode = "bundled-local" | "external";
+export type HardwareAccelerationPreference = "auto" | "cpu";
 
 export interface KoedServerConfig {
   runtimeMode: KoedServerRuntimeMode;
   dependencyMode: KoedDependencyMode;
   codexTranscriptWatcherEnabled: boolean;
   claudeTranscriptWatcherEnabled: boolean;
+  hardwareAcceleration: HardwareAccelerationPreference;
   external?: {
     databaseUrl?: string;
     redisUrl?: string;
@@ -22,13 +31,16 @@ export const defaultKoedServerConfig: KoedServerConfig = {
   runtimeMode: "developer",
   dependencyMode: "external",
   codexTranscriptWatcherEnabled: true,
-  claudeTranscriptWatcherEnabled: true
+  claudeTranscriptWatcherEnabled: true,
+  hardwareAcceleration: "auto"
 };
 
 export interface KoedServerConfigDeps {
   existsSync?: typeof existsSync;
   readFileSync?: typeof readFileSync;
   writeFileSync?: typeof writeFileSync;
+  renameSync?: typeof renameSync;
+  rmSync?: typeof rmSync;
 }
 
 const trim = (value: string | undefined): string | undefined => {
@@ -57,6 +69,18 @@ const codexTranscriptWatcherSetting = (
 };
 
 const claudeTranscriptWatcherSetting = codexTranscriptWatcherSetting;
+
+const hardwareAccelerationPreference = (
+  value: unknown,
+  source: string
+): HardwareAccelerationPreference | undefined =>
+  value === undefined
+    ? undefined
+    : value === "auto" || value === "cpu"
+      ? value
+      : (() => {
+          throw new Error(`${source} must be auto or cpu`);
+        })();
 
 const readConfig = (
   paths: KoedServerPaths,
@@ -115,6 +139,16 @@ export const resolveKoedServerConfig = (
     claudeTranscriptWatcherEnabled:
       resolvedClaudeTranscriptWatcherSetting ??
       resolvedRuntimeMode !== "external",
+    hardwareAcceleration:
+      hardwareAccelerationPreference(
+        environment.KOED_HARDWARE_ACCELERATION,
+        "KOED_HARDWARE_ACCELERATION"
+      ) ??
+      hardwareAccelerationPreference(
+        file.hardwareAcceleration,
+        "server.json hardwareAcceleration"
+      ) ??
+      defaultKoedServerConfig.hardwareAcceleration,
     external: {
       databaseUrl:
         trim(environment.KOED_EXTERNAL_DATABASE_URL) ??
@@ -135,12 +169,22 @@ export const resolveKoedServerConfig = (
 export const writeKoedServerConfig = (
   paths: KoedServerPaths,
   config: KoedServerConfig,
-  deps: Pick<KoedServerConfigDeps, "writeFileSync"> = {}
+  deps: Pick<
+    KoedServerConfigDeps,
+    "writeFileSync" | "renameSync" | "rmSync"
+  > = {}
 ): void => {
   mkdirSync(dirname(paths.serverConfigPath), { recursive: true, mode: 0o700 });
-  (deps.writeFileSync ?? writeFileSync)(
-    paths.serverConfigPath,
-    `${JSON.stringify(config, null, 2)}\n`,
-    { mode: 0o600 }
-  );
+  const temporary = `${paths.serverConfigPath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    (deps.writeFileSync ?? writeFileSync)(
+      temporary,
+      `${JSON.stringify(config, null, 2)}\n`,
+      { mode: 0o600 }
+    );
+    (deps.renameSync ?? renameSync)(temporary, paths.serverConfigPath);
+  } catch (error) {
+    (deps.rmSync ?? rmSync)(temporary, { force: true });
+    throw error;
+  }
 };

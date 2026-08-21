@@ -12,16 +12,22 @@ test("CPU and CUDA Compose paths remain explicit and independent", () => {
 
   assert.match(cpuDockerfile, /llama\.cpp:server@sha256:[a-f0-9]{64}/);
   assert.match(cpuDockerfile, /KOED_EMBEDDING_ACCELERATION=cpu/);
+  assert.match(cpuDockerfile, /KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS=300/);
   assert.doesNotMatch(cpuDockerfile, /server-cuda/);
 
   assert.match(cudaDockerfile, /llama\.cpp:server-cuda@sha256:[a-f0-9]{64}/);
   assert.match(cudaDockerfile, /KOED_EMBEDDING_ACCELERATION=cuda/);
   assert.match(cudaDockerfile, /KOED_RERANKER_ACCELERATION=cpu/);
+  assert.match(cudaDockerfile, /KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS=300/);
+  assert.match(cudaDockerfile, /KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS=300/);
 
   assert.match(cpuCompose, /KOED_EMBEDDING_ACCELERATION:-cpu/);
+  assert.match(cpuCompose, /KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS:-300/);
   assert.match(cudaCompose, /Dockerfile\.cuda/);
   assert.match(cudaCompose, /gpus: all/);
   assert.match(cudaCompose, /KOED_EMBEDDING_ACCELERATION:-cuda/);
+  assert.match(cudaCompose, /KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS:-300/);
+  assert.match(cudaCompose, /KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS:-300/);
 });
 
 test("Linux native artifact CI installs and requires the pinned CUDA toolkit", () => {

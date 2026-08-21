@@ -243,6 +243,8 @@ describe("Embedding Service routes", () => {
         "embedded-in-artifact:06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
       acceleration: "cpu;runtime=llama.cpp;n-gpu-layers=0"
     });
+    expect(payload).not.toHaveProperty("gpuIdleUnloadSeconds");
+    expect(payload.reranker).not.toHaveProperty("gpuIdleUnloadSeconds");
     expect(payload.reranker).toMatchObject({
       artifact: `sha256:${"a".repeat(64)}`,
       artifactRevision: `sha256:${"a".repeat(64)}`,
@@ -298,6 +300,8 @@ describe("Embedding Service routes", () => {
     const payload = await json(response);
 
     expect(payload.artifact).toBe(config.modelArtifact);
+    expect(payload.gpuIdleUnloadSeconds).toBe(0);
+    expect(payload.reranker).not.toHaveProperty("gpuIdleUnloadSeconds");
   });
 
   it("does not expose raw accelerator device details through public health", async () => {

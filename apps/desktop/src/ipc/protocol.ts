@@ -69,6 +69,8 @@ export const collaborationEventChannel = "koed:collaboration:event";
 export const clipboardWriteChannel = "koed:clipboard:write";
 export const themePreferenceGetChannel = "koed:theme-preference:get";
 export const themePreferenceSetChannel = "koed:theme-preference:set";
+export const hardwareAccelerationGetChannel = "koed:hardware-acceleration:get";
+export const hardwareAccelerationSetChannel = "koed:hardware-acceleration:set";
 export const personalMemoryCommandChannel = "koed:personal-memory:command";
 export const personalMemoryEventChannel = "koed:personal-memory:event";
 export { localAiClientCommandChannel } from "./local-ai-client-protocol.js";
