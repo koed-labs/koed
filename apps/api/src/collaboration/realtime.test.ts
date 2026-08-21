@@ -315,6 +315,12 @@ const createRepositoryFixture = () => {
   };
 
   const repository: CollaborationRepository = {
+    async getPersonalNotesThread() {
+      return null;
+    },
+    async listPersonalNoteProjectionActors() {
+      return [];
+    },
     async getOrCreatePersonalNoteProjectionCursor() {
       throw new Error("unused");
     },

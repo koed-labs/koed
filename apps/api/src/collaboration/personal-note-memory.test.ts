@@ -331,8 +331,7 @@ describe("Personal Note memory Projection", () => {
             repository as unknown as PersonalNoteMemoryReconciliationOptions["repository"],
           enqueueEmbedding: vi.fn(async () => ({
             queued: false,
-            inline: false,
-            jobId: null
+            inline: false
           }))
         },
         { ownerUserId: message.personalOwnerUserId! }
