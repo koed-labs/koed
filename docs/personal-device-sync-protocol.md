@@ -6,8 +6,9 @@ This document freezes Personal Device Sync (PDS) V1. The shared protocol,
 Authority/Relay API, control client, secure local runtime, and Worker data plane
 implement the canonical source-package and portable-derived-artifact profiles.
 Receivers transactionally import compatible signed Memory Event, embedding, and
-LCM node artifacts and fall back to local derivation from canonical source when
-an artifact is absent or incompatible. In particular, existing
+LCM node artifacts. When an artifact is absent or incompatible, one capable
+device first acquires the exact semantic-work claim and then derives it from
+canonical source. In particular, existing
 [Directed Hosted Cross-Identity Sync](self-hosted-to-hosted-sync.md) uses a
 distinct RSA-OAEP target-envelope contract and must not be reused as PDS V1.
 PDS is not Directed Hosted Cross-Identity Sync. It is a symmetric Personal
@@ -464,13 +465,18 @@ The V1 artifact registry initially permits:
 - `lcm_node/v1`, containing a leaf or rollup bound to its exact ordered logical
   source identities and complete LCM compatibility contract.
 
-The receiver verifies group membership, signatures, source binding, payload
-hash, artifact schema, and contract compatibility before a transactional,
-idempotent upsert. A compatible artifact is trusted because its producer is an
-active explicitly enrolled Personal device. An incompatible or unavailable
-artifact is ignored without weakening source replication and is rebuilt from
-the canonical source closure. Local HNSW/vector indexes, queue state, leases,
-credentials, paths, and operational rows are never artifact payloads.
+The receiver verifies group membership, serving transport signature, producer
+attestation, source binding, payload hash, artifact schema, claim-completion
+receipt, and contract compatibility before a transactional, idempotent upsert.
+A compatible PDS artifact producer is an active explicitly enrolled Personal
+device. A device may serve an exact hosted-produced embedding only after it has
+verified the owner-bound, recipient-encrypted hosted package under ADR 0030;
+its PDS signature attests that verified import and preserves hosted origin
+provenance. An incompatible or unavailable artifact is ignored without
+weakening source replication and remains eligible for one newly claimed
+derivation. Local HNSW/vector indexes,
+queue state, leases, credentials, paths, and operational rows are never artifact
+payloads.
 
 Before importing a vector, the receiver derives the source through its normal
 embeddable-source path, including authorized decryption. It must match the
@@ -496,6 +502,13 @@ contract hash, claim generation, claim time, and expiry. Artifact publication
 must present the current claim generation. Physical queue leases remain local
 and are never replicated.
 
+LCM work is claimed before the Local AI Runtime invokes its AI Client. The
+claim is renewed during synthesis and the resulting `lcm_node/v1` artifact uses
+that same generation. Reacquisition after expiry always advances generation,
+including when the claimant device is unchanged. Only an explicit unexpired
+renewal preserves generation. A stale generation cannot submit a summary or
+publish an artifact.
+
 The unfinished LCM frontier is deterministic state, not another replicated
 mutable record. It is reconstructed from ordered logical Memory Events after
 subtracting complete, current `lcm_node/v1` leaf coverage. Managed Conversation
@@ -512,6 +525,10 @@ embedding claim requires a fresh `ready` advertisement for that contract. An
 existing claimant may renew only the same work identity, work class, claimant
 device, source binding, and compatibility contract. Local embedding dispatch
 for synchronized Memory Events or LCM nodes requires that exact active claim;
+when explicit Hosted Personal Source Replication is active, PDS devices do not
+advertise or claim competing embedding work for that hosted-authority
+partition. Local authority resumes only after the policy is explicitly
+disabled or retargeted;
 an approximate model match or stale capability cannot admit the work.
 
 Materialized replica source identity, provenance, ordering, and source payload
@@ -821,11 +838,10 @@ content.
 
 Not V1: direct or multiple relay transport endpoints, Authority
 transfer/rotation, historical import/backfill, open/edited Sessions, partial
-replication, mixed-version compatibility, LCM Summary replication,
-Project-wide/global packages, automatic conflict resolution, device-authorized
-Team actions, any Operator/support recovery bypass, server key escrow,
-post-closure source mutation, or any change to Directed Hosted Cross-Identity
-Sync.
+replication, mixed-version compatibility, Project-wide/global packages,
+automatic conflict resolution, device-authorized Team actions, any
+Operator/support recovery bypass, server key escrow, post-closure source
+mutation, or any change to Directed Hosted Cross-Identity Sync.
 
 Fixed interoperability vectors live at
 `packages/shared/test-fixtures/personal-device-sync-v1.json`. They include

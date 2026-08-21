@@ -419,7 +419,7 @@ const candidateManifestFor = (representation: SharedMemoryRepresentation) => [
 const sharedSession = (
   id: string,
   title: string,
-  representation: SharedMemoryRepresentation,
+  maximumFidelity: Exclude<SharedMemoryRepresentation, "curated_assertions">,
   sourceState: SharedMemorySession["sourceState"] = "ready"
 ): SharedMemorySession => ({
   id,
@@ -430,8 +430,10 @@ const sharedSession = (
   owner: participant(remoteMark),
   title,
   latestActivityAt: at,
-  representation,
-  representationState: "current",
+  sourceCapabilities: ["memory_events", "lcm_leaves", "lcm_rollups"],
+  activationRepresentation: maximumFidelity,
+  maximumFidelity,
+  includeCuratedMemory: false,
   liveState: "live",
   sourceState,
   sourceRevision: revision,
@@ -633,8 +635,8 @@ const viewFor = (
           hasOlder: true,
           hasNewer: false,
           sharedSessionId: session.id,
-          representation: session.representation,
-          items: [sourceItem(session.representation)]
+          representation: session.maximumFidelity,
+          items: [sourceItem(session.maximumFidelity)]
         },
         companion: {
           thread: discussion(),
@@ -1004,25 +1006,23 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       async () => current.navigation.personal.memory[0]!
     ),
     previewSharedMemoryCandidate: vi.fn(async (input) => ({
-      ...(input.sessionId
-        ? {
-            source: {
-              kind: "captured_session" as const,
-              sessionId: input.sessionId,
-              logicalMemoryId: ids.logicalMemory
-            }
-          }
-        : {}),
-      sessionId: input.sessionId,
-      logicalMemoryId: ids.logicalMemory,
-      representation: input.representation,
+      source: input.source,
+      logicalMemoryId: input.source.logicalMemoryId,
+      sourceCapabilities: [
+        "memory_events" as const,
+        "lcm_leaves" as const,
+        "lcm_rollups" as const
+      ],
+      activationRepresentation: input.activationRepresentation,
+      mode: input.mode,
+      expiresAt: null,
       sourceRevision: 12,
       candidateHash: "c".repeat(64),
       itemCount: 1,
       excludedItemCount: 0,
-      manifest: candidateManifestFor(input.representation),
+      manifest: candidateManifestFor(input.activationRepresentation),
       byteCount: 128,
-      items: [sourceItem(input.representation)]
+      items: [sourceItem(input.activationRepresentation)]
     })),
     pauseSharedMemorySync: vi.fn(async () => ({
       ...current.navigation.personal.memory[0]!,
@@ -1037,20 +1037,24 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       syncState: "revoked" as const
     })),
     previewSharedMemory: vi.fn(async (input) => ({
+      source: input.source,
+      sourceCapabilities: input.sourceCapabilities,
       logicalMemoryId: input.logicalMemoryId,
       teamId: input.teamId,
       workspaceId: input.workspaceId,
-      representation: input.representation,
-      allowedRepresentations: input.allowedRepresentations,
+      activationRepresentation: input.activationRepresentation,
+      mode: input.mode,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       previewRevision: 1,
       sourceRevision: 12,
       policyRevision: 1,
       contentPolicyVersion: 1,
       classifierVersion: 1,
-      redactedContentHash: "a".repeat(64),
+      sourceContentHash: "a".repeat(64),
       previewHash: "b".repeat(64),
       itemCount: 1,
-      items: [sourceItem(input.representation)],
+      items: [sourceItem(input.activationRepresentation)],
       nextCursor: null
     })),
     loadSharedMemoryPreviewPage: vi.fn(async () => {
@@ -1059,6 +1063,9 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       );
     }),
     shareMemory: vi.fn(async (input) => ({
+      source: input.source,
+      sourceCapabilities: input.sourceCapabilities,
+      activationRepresentation: input.activationRepresentation,
       id: ids.grant,
       logicalGrantId: input.logicalGrantId,
       logicalMemoryId: input.logicalMemoryId,
@@ -1066,9 +1073,10 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       teamId: input.teamId,
       workspaceId: input.workspaceId,
       consentId: input.consentId,
-      ownerAllowedRepresentations: ["memory_events" as const],
-      activeRepresentation: "memory_events" as const,
-      representationPolicyRevision: 1,
+      mode: input.mode,
+      maximumFidelity: "memory_events" as const,
+      includeCuratedMemory: false,
+      fidelityPolicyRevision: 1,
       sourceRevision: 12,
       grantVersion: 1,
       lifecycle: "active" as const,
@@ -1082,7 +1090,7 @@ const createClient = (initial = baseSnapshot()): MockClient => {
         "Shared Memory owner flow is not configured in this fixture"
       );
     }),
-    changeSharedMemoryRepresentation: vi.fn(async () => {
+    changeSharedMemoryFidelity: vi.fn(async () => {
       throw new Error(
         "Shared Memory owner flow is not configured in this fixture"
       );
@@ -1139,6 +1147,7 @@ const createPersonalMemoryApi = (client: MockClient): PersonalDesktopApi => ({
     title: body.split(/\r?\n/u)[0] || "Untitled Note",
     titleVersion: 1,
     memoryEventId: uuid(1_351),
+    logicalMemoryId: ids.logicalMemory,
     createdAt: at,
     sourceSequence: 1,
     event: {
@@ -1209,6 +1218,7 @@ const createPersonalMemoryApi = (client: MockClient): PersonalDesktopApi => ({
       title,
       titleVersion: 1,
       memoryEventId: item.id,
+      logicalMemoryId: ids.logicalMemory,
       createdAt: item.createdAt,
       sourceSequence: item.sequence,
       event: {
@@ -1387,6 +1397,7 @@ describe("CollaborationApp", () => {
               id: "local-thread",
               name: "Local sharing regression",
               sessionId: localSessionId,
+              logicalMemoryId: uuid(308),
               sourceAiClient: "codex-cli",
               projectId: "koed-project",
               projectName: "koed",
@@ -1456,6 +1467,13 @@ describe("CollaborationApp", () => {
     const pending: OwnedShareItem = {
       kind: "pending",
       pendingShare: {
+        source: {
+          kind: "captured_session",
+          sessionId: entry.id,
+          logicalMemoryId: entry.logicalMemoryId!
+        },
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events",
         id: uuid(620),
         mutationId: uuid(621),
         logicalGrantId: uuid(622),
@@ -1463,8 +1481,8 @@ describe("CollaborationApp", () => {
         logicalMemoryId: entry.logicalMemoryId!,
         teamId: ids.team,
         workspaceId: ids.workspace,
-        representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         mode: "continuous",
         sourceRevision: 12,
         state: "preparing",
@@ -1519,7 +1537,9 @@ describe("CollaborationApp", () => {
     );
 
     await vi.waitFor(() =>
-      expect(document.body.textContent).toContain("preparing · processing")
+      expect(document.body.textContent).toContain(
+        "preparing · privacy filtering"
+      )
     );
     expect(document.body.textContent).not.toContain("Not shared yet.");
     expect(client.listOwnedShares).toHaveBeenCalledWith({
@@ -1571,8 +1591,11 @@ describe("CollaborationApp", () => {
     };
     vi.mocked(client.previewSharedMemoryCandidate).mockResolvedValue({
       source,
+      sourceCapabilities: ["memory_events" as const],
+      activationRepresentation: "memory_events" as const,
+      mode: "snapshot" as const,
+      expiresAt: null,
       logicalMemoryId,
-      representation: "memory_events",
       sourceRevision: 1,
       candidateHash: "c".repeat(64),
       itemCount: 1,
@@ -1583,23 +1606,29 @@ describe("CollaborationApp", () => {
     });
     vi.mocked(client.previewSharedMemory).mockResolvedValue({
       source,
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      mode: "snapshot",
       logicalMemoryId,
       teamId: ids.team,
       workspaceId: ids.workspace,
-      representation: "memory_events",
-      allowedRepresentations: ["memory_events"],
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
       previewRevision: 1,
       sourceRevision: 1,
       policyRevision: 1,
       contentPolicyVersion: 1,
       classifierVersion: 1,
-      redactedContentHash: "a".repeat(64),
+      sourceContentHash: "a".repeat(64),
       previewHash: "b".repeat(64),
       itemCount: 1,
       items: [item],
       nextCursor: null
     });
     vi.mocked(client.shareMemory).mockResolvedValue({
+      source,
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
       id: uuid(643),
       mutationId: uuid(644),
       logicalGrantId: uuid(645),
@@ -1607,8 +1636,8 @@ describe("CollaborationApp", () => {
       logicalMemoryId,
       teamId: ids.team,
       workspaceId: ids.workspace,
-      representation: "memory_events",
-      allowedRepresentations: ["memory_events"],
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
       mode: "snapshot",
       sourceRevision: 1,
       state: "preparing",
@@ -1636,6 +1665,7 @@ describe("CollaborationApp", () => {
             note: {
               noteId,
               memoryEventId,
+              logicalMemoryId,
               title: "Launch date",
               titleVersion: 1,
               createdAt: at,
@@ -1691,16 +1721,19 @@ describe("CollaborationApp", () => {
       "One immutable snapshot of"
     );
     expect(client.previewSharedMemoryCandidate).toHaveBeenCalledWith({
-      noteId,
-      representation: "memory_events"
+      source,
+      activationRepresentation: "memory_events",
+      mode: "snapshot"
     });
     expect(client.shareMemory).toHaveBeenCalledWith(
       expect.objectContaining({
         source,
         logicalMemoryId,
         mode: "snapshot",
-        allowedRepresentations: ["memory_events"],
-        selectedRepresentation: "memory_events",
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         title: "Launch date"
       })
     );
@@ -1712,6 +1745,13 @@ describe("CollaborationApp", () => {
     const pending: OwnedShareItem = {
       kind: "pending",
       pendingShare: {
+        source: {
+          kind: "captured_session",
+          sessionId: ids.eventSession,
+          logicalMemoryId: ids.logicalMemory
+        },
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events",
         id: uuid(611),
         mutationId: uuid(612),
         logicalGrantId: uuid(613),
@@ -1719,8 +1759,8 @@ describe("CollaborationApp", () => {
         logicalMemoryId: ids.logicalMemory,
         teamId: ids.team,
         workspaceId: ids.workspace,
-        representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         mode: "continuous",
         sourceRevision: 12,
         state: "activated",
@@ -1767,6 +1807,10 @@ describe("CollaborationApp", () => {
       summary: { ...pending.summary, sourceTitle: "Launch review" }
     };
     const grant: SharedMemoryGrant = {
+      source: pending.pendingShare.source,
+      sourceCapabilities: pending.pendingShare.sourceCapabilities,
+      activationRepresentation: pending.pendingShare.activationRepresentation,
+      mode: pending.pendingShare.mode,
       id: pending.pendingShare.grantId!,
       logicalGrantId: pending.pendingShare.logicalGrantId,
       logicalMemoryId: pending.pendingShare.logicalMemoryId,
@@ -1774,13 +1818,9 @@ describe("CollaborationApp", () => {
       teamId: pending.pendingShare.teamId,
       workspaceId: pending.pendingShare.workspaceId,
       consentId: pending.pendingShare.consentId,
-      ownerAllowedRepresentations: [
-        "memory_events",
-        "lcm_leaves",
-        "lcm_rollups"
-      ],
-      activeRepresentation: "memory_events",
-      representationPolicyRevision: 1,
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      fidelityPolicyRevision: 1,
       sourceRevision: 12,
       grantVersion: 2,
       lifecycle: "active",
@@ -1791,8 +1831,10 @@ describe("CollaborationApp", () => {
     };
     const replacement: PendingShare = {
       ...pending.pendingShare,
-      representation: "lcm_leaves",
-      allowedRepresentations: ["lcm_leaves"],
+      activationRepresentation: "lcm_leaves",
+      sourceCapabilities: ["memory_events", "lcm_leaves"],
+      maximumFidelity: "lcm_leaves",
+      includeCuratedMemory: false,
       state: "preparing",
       stage: "syncing",
       operationVersion: pending.pendingShare.operationVersion + 1
@@ -1807,9 +1849,7 @@ describe("CollaborationApp", () => {
     vi.mocked(client.controlPendingShare).mockResolvedValue(
       paused.pendingShare
     );
-    vi.mocked(client.changeSharedMemoryRepresentation).mockResolvedValue(
-      replacement
-    );
+    vi.mocked(client.changeSharedMemoryFidelity).mockResolvedValue(replacement);
     const personalMemoryApi: PersonalDesktopApi = {
       assignSessionProject: vi.fn(async () => ({ projectId: null })),
       listProjects: vi.fn(async () => []),
@@ -1943,7 +1983,7 @@ describe("CollaborationApp", () => {
       )
     ).toBeNull();
     const leaves = document.body.querySelector<HTMLInputElement>(
-      '.collab-change-detail-modal input[aria-label="LCM Leaves"]'
+      '.collab-change-detail-modal input[aria-label="Up to LCM Leaves"]'
     );
     expect(leaves).not.toBeNull();
     await act(async () => leaves!.click());
@@ -1959,15 +1999,16 @@ describe("CollaborationApp", () => {
     ).toBeNull();
     await click(container, "Apply change");
     await vi.waitFor(() =>
-      expect(client.changeSharedMemoryRepresentation).toHaveBeenCalledWith(
+      expect(client.changeSharedMemoryFidelity).toHaveBeenCalledWith(
         expect.objectContaining({
           source: {
             kind: "captured_session",
-            sessionId: snapshot.navigation.personal.memory[0]!.id,
+            sessionId: ids.eventSession,
             logicalMemoryId: grant.logicalMemoryId
           },
           mode: "continuous",
-          representation: "lcm_leaves",
+          maximumFidelity: "lcm_leaves",
+          includeCuratedMemory: false,
           shareGrantId: grant.id,
           teamId: ids.team,
           workspaceId: ids.workspace
@@ -2011,6 +2052,14 @@ describe("CollaborationApp", () => {
   it("closes Share revocation confirmation after approval while execution continues", async () => {
     const snapshot = baseSnapshot();
     const grant: SharedMemoryGrant = {
+      source: {
+        kind: "captured_session",
+        sessionId: ids.eventSession,
+        logicalMemoryId: ids.logicalMemory
+      },
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      mode: "continuous",
       id: uuid(621),
       logicalGrantId: uuid(622),
       logicalMemoryId: ids.logicalMemory,
@@ -2018,9 +2067,9 @@ describe("CollaborationApp", () => {
       teamId: ids.team,
       workspaceId: ids.workspace,
       consentId: uuid(623),
-      ownerAllowedRepresentations: ["memory_events"],
-      activeRepresentation: "memory_events",
-      representationPolicyRevision: 1,
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      fidelityPolicyRevision: 1,
       sourceRevision: 12,
       grantVersion: 1,
       lifecycle: "active",
@@ -2343,6 +2392,13 @@ describe("CollaborationApp", () => {
     const failed: OwnedShareItem = {
       kind: "pending",
       pendingShare: {
+        source: {
+          kind: "captured_session",
+          sessionId: source.id,
+          logicalMemoryId: source.logicalMemoryId!
+        },
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events",
         id: uuid(631),
         mutationId: uuid(632),
         logicalGrantId: uuid(633),
@@ -2350,8 +2406,8 @@ describe("CollaborationApp", () => {
         logicalMemoryId: source.logicalMemoryId!,
         teamId: ids.team,
         workspaceId: ids.workspace,
-        representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         mode: "continuous",
         sourceRevision: 12,
         state: "failed",
@@ -3584,6 +3640,13 @@ describe("CollaborationApp", () => {
     const pending: OwnedShareItem = {
       kind: "pending",
       pendingShare: {
+        source: {
+          kind: "captured_session",
+          sessionId: ids.eventSession,
+          logicalMemoryId: ids.logicalMemory
+        },
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events",
         id: uuid(601),
         mutationId: uuid(602),
         logicalGrantId: uuid(603),
@@ -3591,8 +3654,8 @@ describe("CollaborationApp", () => {
         logicalMemoryId: ids.logicalMemory,
         teamId: ids.team,
         workspaceId: ids.workspace,
-        representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         mode: "continuous",
         sourceRevision: 12,
         state: "activated",
@@ -3836,7 +3899,7 @@ pnpm test
     }
     const curatedSession = {
       ...selected.view.session,
-      representation: "curated_assertions" as const
+      includeCuratedMemory: true
     };
     const curatedSnapshot = collaborationSnapshotSchema.parse({
       ...selected,
@@ -4126,9 +4189,11 @@ pnpm test
         sessionId: localSessionId,
         logicalMemoryId: prepared.logicalMemoryId
       },
-      sessionId: localSessionId,
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      mode: "continuous",
+      expiresAt: null,
       logicalMemoryId: prepared.logicalMemoryId,
-      representation: "memory_events",
       sourceRevision: 2,
       candidateHash: "c".repeat(64),
       itemCount: 1,
@@ -4151,7 +4216,7 @@ pnpm test
             sessionId: localSessionId,
             localEntry: {
               ...prepared,
-              logicalMemoryId: null,
+              logicalMemoryId: prepared.logicalMemoryId,
               hasSynchronizedRevision: false,
               syncState: "not_started"
             }
@@ -4175,8 +4240,13 @@ pnpm test
       expect(document.body.querySelector(".collab-preview-list")).not.toBeNull()
     );
     expect(client.previewSharedMemoryCandidate).toHaveBeenCalledWith({
-      sessionId: localSessionId,
-      representation: "memory_events"
+      source: {
+        kind: "captured_session",
+        sessionId: localSessionId,
+        logicalMemoryId: prepared.logicalMemoryId
+      },
+      activationRepresentation: "memory_events",
+      mode: "continuous"
     });
     expect(client.prepareSharedMemorySource).not.toHaveBeenCalled();
     expect(client.previewSharedMemory).toHaveBeenCalledWith(
@@ -4193,9 +4263,11 @@ pnpm test
         sessionId: snapshot.navigation.personal.memory[0]!.id,
         logicalMemoryId: ids.logicalMemory
       },
-      sessionId: snapshot.navigation.personal.memory[0]!.id,
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      mode: "continuous",
+      expiresAt: null,
       logicalMemoryId: ids.logicalMemory,
-      representation: "memory_events",
       sourceRevision: 2,
       candidateHash: "c".repeat(64),
       itemCount: 0,
@@ -4265,9 +4337,11 @@ pnpm test
         sessionId: localSessionId,
         logicalMemoryId
       },
-      sessionId: localSessionId,
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      mode: "continuous",
+      expiresAt: null,
       logicalMemoryId,
-      representation: "memory_events",
       sourceRevision: 2,
       candidateHash: "c".repeat(64),
       itemCount: 1,
@@ -4286,7 +4360,6 @@ pnpm test
       sessionId: localSessionId,
       localEntry: {
         ...processing,
-        logicalMemoryId: null,
         syncState: "not_started" as const
       }
     };
@@ -4359,17 +4432,25 @@ pnpm test
     );
     await act(async () =>
       resolveAuthoritativePreview({
+        source: {
+          kind: "captured_session",
+          sessionId: localSessionId,
+          logicalMemoryId
+        },
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events",
+        mode: "continuous",
         logicalMemoryId,
         teamId: ids.team,
         workspaceId: ids.workspace,
-        representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         previewRevision: 1,
         sourceRevision: 2,
         policyRevision: 1,
         contentPolicyVersion: 1,
         classifierVersion: 1,
-        redactedContentHash: "a".repeat(64),
+        sourceContentHash: "a".repeat(64),
         previewHash: "b".repeat(64),
         itemCount: 1,
         items: [sourceItem("memory_events")],
@@ -4413,17 +4494,25 @@ pnpm test
     ).toBe("");
     await act(async () =>
       resolveSnapshotPreview({
+        source: {
+          kind: "captured_session",
+          sessionId: localSessionId,
+          logicalMemoryId
+        },
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events",
+        mode: "snapshot",
         logicalMemoryId,
         teamId: ids.team,
         workspaceId: ids.workspace,
-        representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         previewRevision: 2,
         sourceRevision: 2,
         policyRevision: 1,
         contentPolicyVersion: 1,
         classifierVersion: 1,
-        redactedContentHash: "a".repeat(64),
+        sourceContentHash: "a".repeat(64),
         previewHash: "d".repeat(64),
         itemCount: 1,
         items: [sourceItem("memory_events")],
@@ -4508,6 +4597,7 @@ pnpm test
     const noteId = uuid(1_350);
     const savedNote = {
       noteId,
+      logicalMemoryId: uuid(1_351),
       title: "Local durable Note",
       titleVersion: 1,
       memoryEventId: noteId,

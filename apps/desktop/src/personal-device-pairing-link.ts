@@ -1,4 +1,4 @@
-import { isPrivateNetworkIpv4Address } from "@koed/shared";
+import { isPrivateNetworkIpv4Address } from "@koed/shared/private-network";
 
 export const isPrivatePersonalDevicePairingIpv4 = isPrivateNetworkIpv4Address;
 

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createSharedMemoryCandidatePreviewSchema,
-  createSharedMemoryShareBundleSchema
+  createPendingShareSchema
 } from "./schemas.js";
 
 const authority = {
@@ -31,8 +31,10 @@ const personalNoteCandidate = () => {
     byteCount: 100,
     teamId: randomUUID(),
     teamWorkspaceId: randomUUID(),
-    representation: "memory_events" as const,
-    allowedRepresentations: ["memory_events" as const],
+    sourceCapabilities: ["memory_events" as const],
+    activationRepresentation: "memory_events" as const,
+    maximumFidelity: "memory_events" as const,
+    includeCuratedMemory: false,
     mode: "snapshot" as const,
     authority
   };
@@ -99,18 +101,20 @@ describe("Shared Memory source schemas", () => {
       preview: { previewId: randomUUID(), previewHash: "c".repeat(64) },
       previewRevision: 1,
       mode: "snapshot" as const,
-      allowedRepresentations: ["memory_events" as const],
-      selectedRepresentation: "memory_events" as const,
+      sourceCapabilities: ["memory_events" as const],
+      activationRepresentation: "memory_events" as const,
+      maximumFidelity: "memory_events" as const,
+      includeCuratedMemory: false,
       authority
     };
-    expect(createSharedMemoryShareBundleSchema.parse(bundle).source?.kind).toBe(
+    expect(createPendingShareSchema.parse(bundle).source?.kind).toBe(
       "personal_note"
     );
     expect(() =>
-      createSharedMemoryShareBundleSchema.parse({
+      createPendingShareSchema.parse({
         ...bundle,
-        allowedRepresentations: ["memory_events", "lcm_leaves"]
+        sourceCapabilities: ["memory_events", "lcm_leaves"]
       })
-    ).toThrow("memory_events");
+    ).toThrow("Memory Event source capability");
   });
 });

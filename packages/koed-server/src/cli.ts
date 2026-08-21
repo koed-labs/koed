@@ -35,6 +35,10 @@ import {
   type LocalModelKind
 } from "./local-models-runtime.js";
 import {
+  collectPrivacyModelStatus,
+  installPrivacyModel
+} from "./privacy-model-runtime.js";
+import {
   collectHomebrewRuntimeStatus,
   installHomebrewRuntime
 } from "./runtime-homebrew.js";
@@ -182,6 +186,8 @@ export interface KoedServerCliDependencies {
   repairCodex?: typeof repairCodexIntegration;
   collectModelStatus?: typeof collectLocalModelStatus;
   installModel?: typeof installLocalModel;
+  collectPrivacyModelStatus?: typeof collectPrivacyModelStatus;
+  installPrivacyModel?: typeof installPrivacyModel;
   collectRuntimeStatus?: typeof collectHomebrewRuntimeStatus;
   installRuntime?: typeof installHomebrewRuntime;
   collectPackagedRuntimeStatus?: typeof collectPackagedRuntimeStatus;
@@ -474,6 +480,8 @@ export const runKoedServerCli = async (
     repairCodex = repairCodexIntegration,
     collectModelStatus = collectLocalModelStatus,
     installModel = installLocalModel,
+    collectPrivacyModelStatus: collectPrivacyStatus = collectPrivacyModelStatus,
+    installPrivacyModel: installPrivacy = installPrivacyModel,
     collectRuntimeStatus = collectHomebrewRuntimeStatus,
     installRuntime = installHomebrewRuntime,
     collectPackagedRuntimeStatus:
@@ -518,7 +526,7 @@ export const runKoedServerCli = async (
   const kindFlagIndex = args.indexOf("--kind");
   const modelKind = (
     kindFlagIndex >= 0 ? args[kindFlagIndex + 1] : "embedding"
-  ) as LocalModelKind | undefined;
+  ) as LocalModelKind | "privacy" | undefined;
 
   try {
     if (wantsHelp || !command) {
@@ -764,18 +772,21 @@ export const runKoedServerCli = async (
     }
 
     if (command === "models" && subcommand === "status") {
-      if (modelKind !== "embedding" && modelKind !== "reranker") {
-        throw new Error("--kind must be embedding or reranker.");
+      if (
+        modelKind !== "embedding" &&
+        modelKind !== "reranker" &&
+        modelKind !== "privacy"
+      ) {
+        throw new Error("--kind must be embedding, reranker, or privacy.");
       }
       const paths = resolvePaths();
       const modelEnvironment = mergeRepoEnvironment(
         loadEnvironment(paths.repoRoot)
       );
-      const result = await collectModelStatus(
-        paths,
-        modelKind,
-        modelEnvironment
-      );
+      const result =
+        modelKind === "privacy"
+          ? await collectPrivacyStatus(paths)
+          : await collectModelStatus(paths, modelKind, modelEnvironment);
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -785,14 +796,21 @@ export const runKoedServerCli = async (
     }
 
     if (command === "models" && subcommand === "install") {
-      if (modelKind !== "embedding" && modelKind !== "reranker") {
-        throw new Error("--kind must be embedding or reranker.");
+      if (
+        modelKind !== "embedding" &&
+        modelKind !== "reranker" &&
+        modelKind !== "privacy"
+      ) {
+        throw new Error("--kind must be embedding, reranker, or privacy.");
       }
       const paths = resolvePaths();
       const modelEnvironment = mergeRepoEnvironment(
         loadEnvironment(paths.repoRoot)
       );
-      const result = await installModel(paths, modelKind, modelEnvironment);
+      const result =
+        modelKind === "privacy"
+          ? await installPrivacy(paths, modelEnvironment)
+          : await installModel(paths, modelKind, modelEnvironment);
       if (wantsJson) {
         printJson(stdout, result);
       } else {

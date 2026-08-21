@@ -8,6 +8,7 @@ import {
   type PendingShare,
   type SharedMemoryCandidatePreview,
   type SharedMemoryGrant,
+  type SharedMemoryFidelityCeiling,
   type SharedMemoryPreview,
   type SharedMemoryRepresentation,
   type SharedMemorySession,
@@ -157,7 +158,7 @@ export const modalIsAuthorized = (
       Boolean(
         localEntry &&
         localEntry.id === modal.sessionId &&
-        localEntry.logicalMemoryId === null &&
+        localEntry.logicalMemoryId !== null &&
         !localEntry.hasSynchronizedRevision &&
         localEntry.syncState === "not_started"
       )
@@ -302,23 +303,24 @@ const representationLabel = (value: SharedMemoryRepresentation): string => {
   return "Curated Assertions";
 };
 
+const fidelityLabel = (value: SharedMemoryFidelityCeiling): string =>
+  `Up to ${representationLabel(value)}`;
+
+const pendingShareStageLabel = (stage: PendingShare["stage"]): string => {
+  if (stage === "accepted") return "accepted";
+  if (stage === "syncing") return "preparing source";
+  if (stage === "uploading") return "uploading source";
+  if (stage === "processing") return "privacy filtering";
+  if (stage === "activating") return "publishing";
+  return "complete";
+};
+
 const liveStateLabel = (value: SharedMemorySession["liveState"]): string =>
   value === "live"
     ? "Live"
     : value === "reconnecting"
       ? "Reconnecting"
       : "Ended";
-
-const representationStateLabel = (
-  value: SharedMemorySession["representationState"]
-): string =>
-  value === "current"
-    ? "Current"
-    : value === "pending"
-      ? "Preparing"
-      : value === "stale"
-        ? "Update pending"
-        : "Unavailable";
 
 function Modal({
   children,
@@ -538,8 +540,8 @@ const ownedShareRepresentation = (
   item: OwnedShareItem
 ): SharedMemoryRepresentation | null =>
   item.kind === "pending"
-    ? item.pendingShare.representation
-    : item.grant.activeRepresentation;
+    ? item.pendingShare.activationRepresentation
+    : item.grant.activationRepresentation;
 
 const ownedShareSection = (item: OwnedShareItem): OwnedShareSection => {
   if (
@@ -605,7 +607,7 @@ function OwnedSharePreview({
     return (
       <StateView
         icon={<LoaderCircle className="collab-spin" />}
-        title="Loading shared preview"
+        title="Loading source preview"
       />
     );
   }
@@ -613,7 +615,7 @@ function OwnedSharePreview({
     return (
       <StateView
         icon={<CircleAlert />}
-        title="Shared preview unavailable"
+        title="Source preview unavailable"
         message="The share settings are still available from Modify."
       />
     );
@@ -634,13 +636,17 @@ function OwnedSharePreview({
     authorizedRevision !== preview.sourceRevision;
   return (
     <div className="collab-share-preview-body">
+      <p className="collab-share-preview-notice">
+        This owner-only view shows your Personal source. Team members receive a
+        separately privacy-filtered representation.
+      </p>
       {revisionChanged ? (
         <p className="collab-share-preview-notice" role="status">
           This source is now at revision {preview.sourceRevision}. Revision{" "}
           {authorizedRevision} was authorized for this share.
         </p>
       ) : null}
-      {preview.representation === "memory_events" ? (
+      {preview.activationRepresentation === "memory_events" ? (
         <div className="shared-conversation-preview">
           <ConversationRows
             events={sharedMemoryConversationEvents(preview.items)}
@@ -911,14 +917,16 @@ function OwnedSharesWorkspace({
           return;
         }
         const representation = ownedShareRepresentation(detail);
-        if (!detail.summary.sourceSessionId || !representation) {
+        const record = ownedShareRecord(detail);
+        if (!record.source || !representation) {
           setPreview(null);
           setPreviewState("failed");
           return;
         }
         const candidate = await client.previewSharedMemoryCandidate({
-          sessionId: detail.summary.sourceSessionId,
-          representation
+          source: record.source,
+          activationRepresentation: representation,
+          mode: record.mode
         });
         if (!active) return;
         setPreview(candidate);
@@ -1188,7 +1196,7 @@ function OwnedSharesWorkspace({
   const selectedSection = selectedShare
     ? ownedShareSection(selectedShare)
     : null;
-  const selectedRepresentation = selectedShare
+  const activationRepresentation = selectedShare
     ? ownedShareRepresentation(selectedShare)
     : null;
   const selectedActive =
@@ -1373,8 +1381,8 @@ function OwnedSharesWorkspace({
             </span>
             <span>
               <strong>Shared detail</strong>
-              {selectedRepresentation
-                ? representationLabel(selectedRepresentation)
+              {activationRepresentation
+                ? representationLabel(activationRepresentation)
                 : "Unavailable"}
             </span>
             <span>
@@ -1394,7 +1402,7 @@ function OwnedSharesWorkspace({
             {preview ? (
               <header>
                 <p>
-                  {`${representationLabel(preview.representation)} · ${preview.itemCount} ${preview.itemCount === 1 ? "item" : "items"} · Revision ${preview.sourceRevision}`}
+                  {`${representationLabel(preview.activationRepresentation)} · ${preview.itemCount} ${preview.itemCount === 1 ? "item" : "items"} · Revision ${preview.sourceRevision}`}
                 </p>
               </header>
             ) : null}
@@ -1784,7 +1792,10 @@ function OwnedSharesWorkspace({
             logicalMemoryId: ownedShareRecord(detailChange.share)
               .logicalMemoryId,
             mode: detailChange.share.summary.mode,
-            representation: ownedShareRepresentation(detailChange.share)!,
+            maximumFidelity: ownedShareRecord(detailChange.share)
+              .maximumFidelity,
+            includeCuratedMemory: ownedShareRecord(detailChange.share)
+              .includeCuratedMemory,
             teamId: ownedShareRecord(detailChange.share).teamId,
             workspaceId: ownedShareRecord(detailChange.share).workspaceId
           }}
@@ -2930,7 +2941,8 @@ export function SharedMemoryIndex({
                 <strong>{session.title}</strong>
                 <small>
                   {session.owner.displayName} ·{" "}
-                  {representationLabel(session.representation)}
+                  {fidelityLabel(session.maximumFidelity)}
+                  {session.includeCuratedMemory ? " + Curated Memory" : ""}
                 </small>
               </span>
               <time dateTime={session.latestActivityAt}>
@@ -3141,7 +3153,7 @@ function SourceTimeline({
         <div className="collab-empty-inline">No source items available.</div>
       ) : null}
       {rows.length > 0 ? (
-        session.representation === "memory_events" ? (
+        page.representation === "memory_events" ? (
           <ConversationTimeline
             ariaLabel="Memory Events source items"
             className="collab-source-list collab-virtual-list native-timeline-scroll shared-conversation-timeline"
@@ -3152,11 +3164,11 @@ function SourceTimeline({
             onLoadOlder={() => loadPage("older")}
             onLoadNewer={() => loadPage("newer")}
             scope="workspace"
-            threadKey={`${session.id}:${session.representation}`}
+            threadKey={`${session.id}:${page.representation}`}
           />
         ) : (
           <VirtualizedTimeline
-            ariaLabel={`${representationLabel(session.representation)} source items`}
+            ariaLabel={`${representationLabel(page.representation)} source items`}
             className="collab-source-list collab-virtual-list"
             estimatedItemHeight={132}
             events={rows}
@@ -3171,7 +3183,7 @@ function SourceTimeline({
                 markdownAdapters={markdownAdapters}
               />
             )}
-            threadKey={`${session.id}:${session.representation}`}
+            threadKey={`${session.id}:${page.representation}`}
           />
         )
       ) : null}
@@ -3279,7 +3291,8 @@ export function SharedSessionView({
           <h1>{session.title}</h1>
           <p>
             {session.owner.displayName} ·{" "}
-            {representationLabel(session.representation)}
+            {fidelityLabel(session.maximumFidelity)}
+            {session.includeCuratedMemory ? " + Curated Memory" : ""}
           </p>
         </div>
         <span className={`collab-source-state ${session.liveState}`}>
@@ -3363,8 +3376,8 @@ export function SharedSessionView({
         >
           <header className="collab-pane-header">
             <FileText aria-hidden="true" />
-            <strong>{representationLabel(session.representation)}</strong>
-            <span>{representationStateLabel(session.representationState)}</span>
+            <strong>{representationLabel(source.representation)}</strong>
+            <span>{source.items.length} source items</span>
           </header>
           <SourceTimeline
             client={client}
@@ -3434,12 +3447,11 @@ export function SharedSessionView({
   );
 }
 
-const SHARED_MEMORY_REPRESENTATIONS = [
+const SHARED_MEMORY_FIDELITIES = [
   "memory_events",
   "lcm_leaves",
-  "lcm_rollups",
-  "curated_assertions"
-] as const satisfies readonly SharedMemoryRepresentation[];
+  "lcm_rollups"
+] as const satisfies readonly SharedMemoryFidelityCeiling[];
 
 const sharedMemoryPreparationCopy = (
   syncState: PersonalMemoryEntry["syncState"]
@@ -3506,7 +3518,8 @@ function SharedMemoryOwnerModal({
     grantId: string;
     logicalMemoryId: string;
     mode: "snapshot" | "continuous";
-    representation: SharedMemoryRepresentation;
+    maximumFidelity: SharedMemoryFidelityCeiling;
+    includeCuratedMemory: boolean;
     teamId: string;
     workspaceId: string;
   };
@@ -3520,7 +3533,9 @@ function SharedMemoryOwnerModal({
   const focusedDetailChange = Boolean(detailChange);
   const detailChangeGrantId = detailChange?.grantId;
   const detailChangeMode = detailChange?.mode;
-  const detailChangeRepresentation = detailChange?.representation;
+  const detailChangeMaximumFidelity = detailChange?.maximumFidelity;
+  const detailChangeIncludeCuratedMemory =
+    detailChange?.includeCuratedMemory ?? false;
   const detailChangeTeamId = detailChange?.teamId;
   const detailChangeWorkspaceId = detailChange?.workspaceId;
   const ownerLogicalMemoryId =
@@ -3544,10 +3559,13 @@ function SharedMemoryOwnerModal({
   const [workspaceId, setWorkspaceId] = useState(
     detailChange?.workspaceId ?? initialWorkspace?.id ?? ""
   );
-  const [representation, setRepresentation] =
-    useState<SharedMemoryRepresentation>(
-      detailChange?.representation ?? "memory_events"
+  const [maximumFidelity, setMaximumFidelity] =
+    useState<SharedMemoryFidelityCeiling>(
+      detailChange?.maximumFidelity ?? "memory_events"
     );
+  const [includeCuratedMemory, setIncludeCuratedMemory] = useState(
+    detailChange?.includeCuratedMemory ?? false
+  );
   const [mode, setMode] = useState<"snapshot" | "continuous">(
     detailChange?.mode ?? "continuous"
   );
@@ -3662,7 +3680,7 @@ function SharedMemoryOwnerModal({
         if (
           detailChangeGrantId &&
           detailChangeMode &&
-          detailChangeRepresentation &&
+          detailChangeMaximumFidelity &&
           detailChangeTeamId &&
           detailChangeWorkspaceId
         ) {
@@ -3679,7 +3697,8 @@ function SharedMemoryOwnerModal({
           }
           setTeamId(detailChangeTeamId);
           setWorkspaceId(detailChangeWorkspaceId);
-          setRepresentation(detailChangeRepresentation);
+          setMaximumFidelity(detailChangeMaximumFidelity);
+          setIncludeCuratedMemory(detailChangeIncludeCuratedMemory);
           setMode(detailChangeMode);
           setWorkflow({ kind: "change", grant: targetGrant });
           return;
@@ -3709,8 +3728,9 @@ function SharedMemoryOwnerModal({
   }, [
     client,
     detailChangeGrantId,
+    detailChangeIncludeCuratedMemory,
     detailChangeMode,
-    detailChangeRepresentation,
+    detailChangeMaximumFidelity,
     detailChangeTeamId,
     detailChangeWorkspaceId,
     focusedDetailChange,
@@ -3747,17 +3767,38 @@ function SharedMemoryOwnerModal({
       setPreparingPreview(true);
       try {
         requireDestination();
+        if (!currentEntry.logicalMemoryId) {
+          throw new CollaborationInputError(
+            "Prepare this Personal Memory before sharing it."
+          );
+        }
+        const source =
+          workflow?.kind === "change"
+            ? workflow.grant.source
+            : {
+                kind: "captured_session" as const,
+                sessionId: currentEntry.id,
+                logicalMemoryId: currentEntry.logicalMemoryId
+              };
+        if (source.kind !== "captured_session") {
+          throw new CollaborationInputError(
+            "Personal Notes do not support Shared Memory fidelity changes."
+          );
+        }
         const localCandidate = await client.previewSharedMemoryCandidate({
-          sessionId: currentEntry.id,
-          representation
+          source,
+          activationRepresentation: maximumFidelity,
+          mode
         });
         if (
           localCandidate.source?.kind !== "captured_session" ||
-          localCandidate.source.sessionId !== currentEntry.id ||
+          localCandidate.source.sessionId !== source.sessionId ||
+          localCandidate.source.logicalMemoryId !== source.logicalMemoryId ||
+          localCandidate.logicalMemoryId !== source.logicalMemoryId ||
           localCandidate.items.length === 0
         ) {
           throw new CollaborationInputError(
-            `No ${representationLabel(representation)} are available for this Personal Memory.`
+            `No ${representationLabel(maximumFidelity)} are available for this Personal Memory.`
           );
         }
         setCandidate({ ...localCandidate, source: localCandidate.source });
@@ -3775,13 +3816,19 @@ function SharedMemoryOwnerModal({
     setError("");
     void client
       .previewSharedMemory({
+        source: candidate.source,
+        sourceCapabilities: candidate.sourceCapabilities,
         logicalMemoryId: candidate.logicalMemoryId,
         teamId,
         workspaceId,
-        representation,
-        allowedRepresentations: [representation],
+        activationRepresentation: maximumFidelity,
+        maximumFidelity,
+        includeCuratedMemory,
+        mode,
         candidate: {
           source: candidate.source,
+          sourceCapabilities: candidate.sourceCapabilities,
+          activationRepresentation: candidate.activationRepresentation,
           candidateHash: candidate.candidateHash,
           sourceRevision: candidate.sourceRevision,
           itemCount: candidate.itemCount,
@@ -3810,7 +3857,8 @@ function SharedMemoryOwnerModal({
     candidate,
     mode,
     preparingPreview,
-    representation,
+    includeCuratedMemory,
+    maximumFidelity,
     teamId,
     workspaceId
   ]);
@@ -3823,7 +3871,8 @@ function SharedMemoryOwnerModal({
     const workspace = firstWritableWorkspace(team);
     setTeamId(team?.id ?? "");
     setWorkspaceId(workspace?.id ?? "");
-    setRepresentation("memory_events");
+    setMaximumFidelity("memory_events");
+    setIncludeCuratedMemory(false);
     setPreview(null);
     setCandidate(null);
     setPreparingPreview(false);
@@ -3832,10 +3881,11 @@ function SharedMemoryOwnerModal({
     setError("");
   };
 
-  const beginRepresentationChange = (grant: SharedMemoryGrant) => {
+  const beginFidelityChange = (grant: SharedMemoryGrant) => {
     setTeamId(grant.teamId);
     setWorkspaceId(grant.workspaceId);
-    setRepresentation(grant.activeRepresentation ?? "memory_events");
+    setMaximumFidelity(grant.maximumFidelity);
+    setIncludeCuratedMemory(grant.includeCuratedMemory);
     setPreview(null);
     setCandidate(null);
     setPreparingPreview(false);
@@ -3931,18 +3981,20 @@ function SharedMemoryOwnerModal({
             "This Shared Memory changed while consent was being recorded. Reload it and try again."
           );
         }
-        const changed = await client.changeSharedMemoryRepresentation({
+        const changed = await client.changeSharedMemoryFidelity({
           source: candidate.source,
+          sourceCapabilities: candidate.sourceCapabilities,
+          activationRepresentation: candidate.activationRepresentation,
           mutationId: crypto.randomUUID(),
           logicalMemoryId: candidate.logicalMemoryId,
           teamId,
           workspaceId,
           shareGrantId: refreshedGrant.id,
           consentId,
-          representation,
+          maximumFidelity,
+          includeCuratedMemory,
           expectedGrantVersion: refreshedGrant.grantVersion,
           mode,
-          allowedRepresentations: [representation],
           previewRevision: preview.previewRevision,
           previewHash: preview.previewHash,
           expiresAt: null
@@ -3961,6 +4013,8 @@ function SharedMemoryOwnerModal({
       } else {
         const shared = await client.shareMemory({
           source: candidate.source,
+          sourceCapabilities: candidate.sourceCapabilities,
+          activationRepresentation: candidate.activationRepresentation,
           mutationId: crypto.randomUUID(),
           logicalGrantId: crypto.randomUUID(),
           consentId,
@@ -3968,8 +4022,8 @@ function SharedMemoryOwnerModal({
           teamId,
           workspaceId,
           mode,
-          allowedRepresentations: [representation],
-          selectedRepresentation: representation,
+          maximumFidelity,
+          includeCuratedMemory,
           previewRevision: preview.previewRevision,
           previewHash: preview.previewHash,
           expiresAt: null,
@@ -4159,7 +4213,8 @@ function SharedMemoryOwnerModal({
                         </strong>
                         <span>{team?.name ?? "Unavailable Team"}</span>
                         <small>
-                          {share.state.replaceAll("_", " ")} · {share.stage}
+                          {share.state.replaceAll("_", " ")} ·{" "}
+                          {pendingShareStageLabel(share.stage)}
                         </small>
                       </div>
                     </li>
@@ -4175,8 +4230,11 @@ function SharedMemoryOwnerModal({
                         <strong>{destination.workspace}</strong>
                         <span>{destination.team}</span>
                         <small>
-                          {active && grant.activeRepresentation
-                            ? representationLabel(grant.activeRepresentation)
+                          {active
+                            ? fidelityLabel(grant.maximumFidelity) +
+                              (grant.includeCuratedMemory
+                                ? " + Curated Memory"
+                                : "")
                             : recoverable
                               ? "Sharing unavailable"
                               : "Sharing stopped"}
@@ -4188,7 +4246,7 @@ function SharedMemoryOwnerModal({
                             type="button"
                             className="secondary"
                             disabled={busy}
-                            onClick={() => beginRepresentationChange(grant)}
+                            onClick={() => beginFidelityChange(grant)}
                           >
                             {recoverable ? "Review detail" : "Change detail"}
                           </button>
@@ -4231,28 +4289,31 @@ function SharedMemoryOwnerModal({
           </>
         ) : preview || candidate ? (
           <>
+            <p className="collab-share-preview-notice">
+              This is your private Personal source preview. Privacy filtering
+              completes before any Team member can access the shared
+              representation.
+            </p>
             {focusedDetailChange ? (
               <div className="collab-change-detail-comparison">
                 <span>
                   <small>Current detail</small>
                   <strong>
-                    {representationLabel(detailChange!.representation)}
+                    {fidelityLabel(detailChange!.maximumFidelity)}
                   </strong>
                 </span>
                 <span aria-hidden="true">→</span>
                 <span>
                   <small>New detail</small>
-                  <strong>
-                    {representationLabel(
-                      (preview ?? candidate)!.representation
-                    )}
-                  </strong>
+                  <strong>{fidelityLabel(maximumFidelity)}</strong>
                 </span>
               </div>
             ) : (
               <div className="collab-share-summary">
                 <strong>
-                  {representationLabel((preview ?? candidate)!.representation)}
+                  {representationLabel(
+                    (preview ?? candidate)!.activationRepresentation
+                  )}
                 </strong>
                 <span>
                   {(preview ?? candidate)!.itemCount}{" "}
@@ -4260,7 +4321,8 @@ function SharedMemoryOwnerModal({
                 </span>
               </div>
             )}
-            {(preview ?? candidate)!.representation === "memory_events" ? (
+            {(preview ?? candidate)!.activationRepresentation ===
+            "memory_events" ? (
               <div className="collab-preview-list shared-conversation-preview">
                 <ConversationRows
                   events={sharedMemoryConversationEvents(
@@ -4323,9 +4385,7 @@ function SharedMemoryOwnerModal({
             {focusedDetailChange ? (
               <div className="collab-change-detail-current">
                 <small>Current detail</small>
-                <strong>
-                  {representationLabel(detailChange!.representation)}
-                </strong>
+                <strong>{fidelityLabel(detailChange!.maximumFidelity)}</strong>
                 <span>
                   The existing Share remains available until the replacement is
                   ready.
@@ -4408,31 +4468,44 @@ function SharedMemoryOwnerModal({
                   <legend>
                     {focusedDetailChange ? "New detail" : "Shared detail"}
                   </legend>
-                  {SHARED_MEMORY_REPRESENTATIONS.map((value) => (
+                  {SHARED_MEMORY_FIDELITIES.map((value) => (
                     <label key={value} className="collab-check">
                       <input
                         type="radio"
-                        aria-label={representationLabel(value)}
-                        checked={representation === value}
+                        aria-label={fidelityLabel(value)}
+                        checked={maximumFidelity === value}
                         disabled={
                           workflow.kind === "change" &&
-                          workflow.grant.activeRepresentation === value
+                          workflow.grant.maximumFidelity === value &&
+                          workflow.grant.includeCuratedMemory ===
+                            includeCuratedMemory
                         }
                         onChange={() => {
-                          setRepresentation(value);
+                          setMaximumFidelity(value);
                           setPreview(null);
                           setCandidate(null);
                         }}
                       />
                       <span>
-                        <strong>{representationLabel(value)}</strong>
+                        <strong>{fidelityLabel(value)}</strong>
                         {focusedDetailChange &&
-                        detailChange!.representation === value ? (
+                        detailChange!.maximumFidelity === value ? (
                           <small>Current</small>
                         ) : null}
                       </span>
                     </label>
                   ))}
+                  <label className="collab-check">
+                    <input
+                      type="checkbox"
+                      checked={includeCuratedMemory}
+                      onChange={(event) => {
+                        setIncludeCuratedMemory(event.currentTarget.checked);
+                        setPreview(null);
+                      }}
+                    />
+                    Include Curated Memory
+                  </label>
                 </fieldset>
               </>
             )}
@@ -4508,7 +4581,9 @@ function SharedMemoryOwnerModal({
                   (workflow.kind === "new" &&
                     Boolean(selectedDestinationPendingShare)) ||
                   (workflow.kind === "change" &&
-                    workflow.grant.activeRepresentation === representation)
+                    workflow.grant.maximumFidelity === maximumFidelity &&
+                    workflow.grant.includeCuratedMemory ===
+                      includeCuratedMemory)
                 }
                 onClick={() =>
                   void (preview ? confirmShare() : prepareAndPreview())
@@ -4593,9 +4668,16 @@ function PersonalNoteShareModal({
           "Choose an available Team Workspace."
         );
       }
-      const nextCandidate = await client.previewSharedMemoryCandidate({
+      const source = {
+        kind: "personal_note" as const,
         noteId: note.noteId,
-        representation: "memory_events"
+        memoryEventId: note.memoryEventId,
+        logicalMemoryId: note.logicalMemoryId
+      };
+      const nextCandidate = await client.previewSharedMemoryCandidate({
+        source,
+        activationRepresentation: "memory_events",
+        mode: "snapshot"
       });
       if (
         nextCandidate.source?.kind !== "personal_note" ||
@@ -4610,13 +4692,19 @@ function PersonalNoteShareModal({
         );
       }
       const nextPreview = await client.previewSharedMemory({
+        source,
+        sourceCapabilities: ["memory_events"],
         logicalMemoryId: nextCandidate.logicalMemoryId,
         teamId,
         workspaceId,
-        representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        activationRepresentation: "memory_events",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
+        mode: "snapshot",
         candidate: {
           source: nextCandidate.source,
+          sourceCapabilities: nextCandidate.sourceCapabilities,
+          activationRepresentation: nextCandidate.activationRepresentation,
           candidateHash: nextCandidate.candidateHash,
           sourceRevision: nextCandidate.sourceRevision,
           itemCount: nextCandidate.itemCount,
@@ -4628,7 +4716,7 @@ function PersonalNoteShareModal({
         }
       });
       if (
-        nextPreview.representation !== "memory_events" ||
+        nextPreview.activationRepresentation !== "memory_events" ||
         nextPreview.itemCount !== 1 ||
         nextPreview.items.length !== 1
       ) {
@@ -4645,6 +4733,8 @@ function PersonalNoteShareModal({
       if (!candidate || !preview || !selectedWorkspace) return;
       const result = await client.shareMemory({
         source: candidate.source,
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events",
         mutationId: crypto.randomUUID(),
         logicalGrantId: crypto.randomUUID(),
         consentId: crypto.randomUUID(),
@@ -4652,8 +4742,8 @@ function PersonalNoteShareModal({
         teamId,
         workspaceId,
         mode: "snapshot",
-        allowedRepresentations: ["memory_events"],
-        selectedRepresentation: "memory_events",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         previewRevision: preview.previewRevision,
         previewHash: preview.previewHash,
         expiresAt: null,

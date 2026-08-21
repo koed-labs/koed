@@ -2,6 +2,7 @@ import {
   createDbPool,
   createEmbeddingCapacityRepository,
   createMemorySourceRepository,
+  createPrivacyClassificationRepository,
   createRetentionLifecycleRepository,
   databaseErrorCode,
   waitForCurrentDbMigrations,
@@ -14,6 +15,7 @@ import {
   createEnvelopeEncryptionProviderFromEnvironment,
   createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
   createTeamMemoryEnvelopeEncryptionProviderFromEnvironment,
+  createPrivacyServiceClient,
   embeddingDispatchKey,
   inspectDeviceIdentityAtKoedHome,
   lcmCompactQueueName,
@@ -49,6 +51,11 @@ import { createReloadablePdsWorkerRuntimeFromEnvironment } from "./personal-devi
 import { createConversationSourceReplicationService } from "./conversation-source-replication-service.js";
 import { createManagedConversationRuntimeCoordinator } from "./managed-conversation-runtime-coordinator.js";
 import { createSharedMemoryEmbeddingService } from "./shared-memory-embedding-service.js";
+import {
+  createPrivacyMaterializationService,
+  initializePrivacyMaterialization
+} from "./privacy-materialization-service.js";
+import { createSharedMemoryPrivacyMaterializationService } from "./shared-memory-privacy-materialization-service.js";
 
 loadWorkerEnv();
 
@@ -58,6 +65,11 @@ const logger = createWorkerLogger({
   logLevel: workerEnv.logLevel,
   logDestination: workerEnv.logDestination
 });
+
+const privacyInitializationErrorName = (error: unknown): string =>
+  error instanceof Error && /^[A-Za-z][A-Za-z0-9_.-]{0,119}$/.test(error.name)
+    ? error.name
+    : "UnknownError";
 
 const pool = workerEnv.databaseUrl
   ? createDbPool({
@@ -123,7 +135,11 @@ const embeddingWorkflow = createEmbeddingWorkflow({
   repository: requireRepository
 });
 const sharedMemoryEmbeddingService = repository
-  ? createSharedMemoryEmbeddingService({ embeddingWorkflow, logger })
+  ? createSharedMemoryEmbeddingService({
+      embeddingWorkflow,
+      wakePool: pool!,
+      logger
+    })
   : null;
 
 const queueProducerOptions = {
@@ -347,6 +363,82 @@ const conversationSourceReplicationService =
         logger
       })
     : null;
+const privacyClassificationRepository =
+  pool && workerEnv.privacyFingerprintKey
+    ? createPrivacyClassificationRepository(pool, {
+        fingerprintKey: workerEnv.privacyFingerprintKey
+      })
+    : null;
+const privacyServiceClient =
+  workerEnv.privacyServiceUrl && workerEnv.privacyServiceToken
+    ? createPrivacyServiceClient({
+        baseUrl: workerEnv.privacyServiceUrl,
+        token: workerEnv.privacyServiceToken,
+        timeoutMs: workerEnv.privacyServiceTimeoutMs ?? 30_000,
+        maxAttempts: workerEnv.privacyServiceMaxAttempts ?? 3
+      })
+    : null;
+const privacyMaterializationService =
+  workerEnv.teamCollaborationEnabled &&
+  privacyClassificationRepository &&
+  repository &&
+  pool &&
+  envelopeEncryptionProvider &&
+  teamEnvelopeEncryptionProvider &&
+  privacyServiceClient
+    ? await initializePrivacyMaterialization({
+        privacyRepository: privacyClassificationRepository
+      })
+        .then(() =>
+          createPrivacyMaterializationService({
+            privacyRepository: privacyClassificationRepository,
+            sourceRepository: repository,
+            privacyService: privacyServiceClient,
+            sourceEnvelopeEncryptionProvider: envelopeEncryptionProvider,
+            classificationEncryptionProvider: envelopeEncryptionProvider,
+            teamEncryptionProvider: teamEnvelopeEncryptionProvider,
+            koedHome: workerEnv.koedHome,
+            targetLimit: workerEnv.privacyMaterializationTargetLimit ?? 25,
+            maxFrontierBytes:
+              workerEnv.privacyMaterializationMaxFrontierBytes ??
+              64 * 1024 * 1024,
+            maxRecords: workerEnv.privacyMaterializationMaxRecords ?? 20_000,
+            wakePool: pool,
+            logger
+          })
+        )
+        .catch((error: unknown) => {
+          logger.warn(
+            {
+              event: {
+                name: "privacy.materialization_initialization_failed",
+                category: "privacy"
+              },
+              error_name: privacyInitializationErrorName(error)
+            },
+            "privacy materialization is unavailable"
+          );
+          return null;
+        })
+    : null;
+const sharedMemoryPrivacyMaterializationService =
+  workerEnv.teamCollaborationEnabled &&
+  privacyMaterializationService &&
+  privacyClassificationRepository &&
+  repository &&
+  pool &&
+  envelopeEncryptionProvider &&
+  privacyServiceClient
+    ? createSharedMemoryPrivacyMaterializationService({
+        sharedMemoryRepository: repository,
+        privacyRepository: privacyClassificationRepository,
+        privacyService: privacyServiceClient,
+        classificationEncryptionProvider: envelopeEncryptionProvider,
+        wakePool: pool,
+        targetLimit: workerEnv.privacyMaterializationTargetLimit ?? 25,
+        logger
+      })
+    : null;
 const workerDeviceIdentity = inspectDeviceIdentityAtKoedHome({
   koedHome: workerEnv.koedHome,
   environment: process.env
@@ -400,7 +492,9 @@ const activeBackgroundServices = startWorkerBackgroundServices({
   team: [
     crossIdentitySyncService,
     collaborationReplayPruneService,
-    sharedMemoryEmbeddingService
+    sharedMemoryEmbeddingService,
+    privacyMaterializationService,
+    sharedMemoryPrivacyMaterializationService
   ]
 });
 

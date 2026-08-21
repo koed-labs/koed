@@ -32,11 +32,17 @@ export const emptyFlowStates = (): Record<LocalAiClientFlowKey, FlowState> =>
 
 export const modelId = (
   model: ReadModel["capabilitySnapshots"][number]["models"][number]
-): string => model.fullId;
+): string => model.id;
 
 export const modelLabel = (
   model: ReadModel["capabilitySnapshots"][number]["models"][number]
 ): string => aiClientModelLabel({ ...model, id: model.fullId });
+
+export const modelMatches = (
+  model: ReadModel["capabilitySnapshots"][number]["models"][number],
+  candidate: string
+): boolean =>
+  [model.id, model.fullId, model.model].some((value) => value === candidate);
 
 export const snapshotFor = (readModel: ReadModel, instanceId: string) =>
   readModel.capabilitySnapshots.find(
@@ -120,10 +126,14 @@ export const assignmentFrom = (
 ): Draft | null => {
   const setting = readModel.settings.find((item) => item.flowKey === flowKey);
   if (setting) {
+    const reportedModel = snapshotFor(
+      readModel,
+      setting.aiClientInstanceId
+    )?.models.find((model) => modelMatches(model, setting.model));
     return {
       provider: setting.provider,
       ai_client_instance_id: setting.aiClientInstanceId,
-      model: setting.model,
+      model: reportedModel ? modelId(reportedModel) : setting.model,
       reasoning_effort: setting.reasoningEffort,
       timeout_ms: setting.timeoutMs,
       max_attempts: setting.maxAttempts
@@ -140,6 +150,7 @@ const searchableModel = (
 ): (string | null)[] => [
   model.provider,
   model.model,
+  model.id,
   model.displayName,
   model.fullId,
   ...model.reasoningEfforts

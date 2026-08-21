@@ -148,6 +148,7 @@ const writeReadme = (packageRoot) => {
       "- koed-runtime/api",
       "- koed-runtime/worker",
       "- koed-runtime/embedding-service",
+      "- koed-runtime/privacy-service",
       "- koed-runtime/mcp-server",
       "",
       "Native runtime assets and models are installed separately under KOED_HOME.",
@@ -406,6 +407,7 @@ const main = () => {
     deploy("@koed/api", runtimeRoot, "api");
     deploy("@koed/worker", runtimeRoot, "worker");
     deploy("@koed/embedding-service", runtimeRoot, "embedding-service");
+    deploy("@koed/privacy-service", runtimeRoot, "privacy-service");
     deploy("@koed/mcp-server", runtimeRoot, "mcp-server");
 
     for (const manifestPath of [

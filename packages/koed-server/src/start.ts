@@ -4,6 +4,7 @@ import {
   type ChildProcess,
   type SpawnSyncReturns
 } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -28,6 +29,7 @@ import {
   resolveApiUrl
 } from "./env-file.js";
 import { startLocalEmbeddingRuntime } from "./local-embedding-runtime.js";
+import { startLocalPrivacyRuntime } from "./local-privacy-runtime.js";
 import { resolveLocalModelManifest } from "./local-models-runtime.js";
 import { ensurePackagedLocalServiceSecrets } from "./local-service-secrets.js";
 import {
@@ -51,6 +53,7 @@ import { monitorSupervisorExitRequest } from "./supervisor-exit-request.js";
 import type { KoedServerRuntimeState } from "./types.js";
 import { provisionDesktopApiToken } from "./local-api-token.js";
 import { migrateKoedOwnedCodexRegistrationBestEffort } from "./ai-client-registry.js";
+import { resolveTeamCollaborationEnabled } from "@koed/shared";
 export {
   provisionDesktopApiToken,
   provisionDesktopLocalCredential
@@ -100,6 +103,17 @@ const runCommand = (
   if (result.status !== 0) {
     throw new Error(`${label} failed with exit code ${result.status ?? 1}.`);
   }
+};
+
+const createOpaqueSecret = (prefix: string): string =>
+  `${prefix}_${randomBytes(32).toString("base64url")}`;
+
+const appProcessEnvironment = (
+  environment: NodeJS.ProcessEnv
+): NodeJS.ProcessEnv => {
+  const output = { ...environment };
+  delete output.PRIVACY_RUNTIME_CONTROL_TOKEN;
+  return output;
 };
 
 const spawnManagedProcess = (
@@ -258,6 +272,9 @@ const localServiceEnv = (
     repoEnv.EMBEDDING_SERVICE_HOST_PORT ??
     "3800";
   const embeddingServiceUrl = `http://localhost:${embeddingPort}`;
+  const privacyPort =
+    environment.PRIVACY_SERVICE_PORT ?? repoEnv.PRIVACY_SERVICE_PORT ?? "8092";
+  const privacyServiceUrl = `http://localhost:${privacyPort}`;
   const serverConfig = resolveKoedServerConfig(
     paths,
     koedServerConfigEnvironment(environment, repoEnv)
@@ -311,6 +328,16 @@ const localServiceEnv = (
     KOED_EMBEDDING_ACCELERATION:
       environment.KOED_EMBEDDING_ACCELERATION ??
       repoEnv.KOED_EMBEDDING_ACCELERATION ??
+      serverConfig.hardwareAcceleration,
+    KOED_HARDWARE_ACCELERATION:
+      environment.KOED_HARDWARE_ACCELERATION ??
+      repoEnv.KOED_HARDWARE_ACCELERATION ??
+      serverConfig.hardwareAcceleration,
+    PRIVACY_RUNTIME_PROVIDER:
+      environment.PRIVACY_RUNTIME_PROVIDER ??
+      repoEnv.PRIVACY_RUNTIME_PROVIDER ??
+      environment.KOED_HARDWARE_ACCELERATION ??
+      repoEnv.KOED_HARDWARE_ACCELERATION ??
       serverConfig.hardwareAcceleration,
     WORKER_LOG_LEVEL: repoEnv.WORKER_LOG_LEVEL ?? environment.WORKER_LOG_LEVEL,
     KOED_EMBEDDING_POOL_KEY:
@@ -494,6 +521,33 @@ const localServiceEnv = (
           embeddingServiceUrl),
     EMBEDDING_SERVICE_TOKEN:
       environment.EMBEDDING_SERVICE_TOKEN ?? repoEnv.EMBEDDING_SERVICE_TOKEN,
+    PRIVACY_SERVICE_URL:
+      serverConfig.dependencyMode === "external"
+        ? (serverConfig.external?.privacyServiceUrl ??
+          environment.PRIVACY_SERVICE_URL ??
+          repoEnv.PRIVACY_SERVICE_URL ??
+          process.env.PRIVACY_SERVICE_URL)
+        : (environment.PRIVACY_SERVICE_URL ??
+          repoEnv.PRIVACY_SERVICE_URL ??
+          privacyServiceUrl),
+    PRIVACY_SERVICE_TOKEN:
+      serverConfig.dependencyMode === "external"
+        ? (environment.PRIVACY_SERVICE_TOKEN ??
+          repoEnv.PRIVACY_SERVICE_TOKEN ??
+          process.env.PRIVACY_SERVICE_TOKEN)
+        : (environment.PRIVACY_SERVICE_TOKEN ??
+          repoEnv.PRIVACY_SERVICE_TOKEN ??
+          process.env.PRIVACY_SERVICE_TOKEN ??
+          createOpaqueSecret("privacy")),
+    PRIVACY_RUNTIME_CONTROL_TOKEN:
+      serverConfig.dependencyMode === "external"
+        ? (environment.PRIVACY_RUNTIME_CONTROL_TOKEN ??
+          repoEnv.PRIVACY_RUNTIME_CONTROL_TOKEN ??
+          process.env.PRIVACY_RUNTIME_CONTROL_TOKEN)
+        : (environment.PRIVACY_RUNTIME_CONTROL_TOKEN ??
+          repoEnv.PRIVACY_RUNTIME_CONTROL_TOKEN ??
+          process.env.PRIVACY_RUNTIME_CONTROL_TOKEN ??
+          createOpaqueSecret("privacy-control")),
     EMBEDDING_MODEL:
       environment.EMBEDDING_MODEL_KEY ??
       environment.EMBEDDING_MODEL ??
@@ -805,6 +859,7 @@ export const startKoedServer = async ({
     POSTGRES_HOST_PORT: allocatedPortEnvironment.POSTGRES_HOST_PORT,
     EMBEDDING_SERVICE_HOST_PORT:
       allocatedPortEnvironment.EMBEDDING_SERVICE_HOST_PORT,
+    PRIVACY_SERVICE_PORT: allocatedPortEnvironment.PRIVACY_SERVICE_PORT,
     EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT:
       allocatedPortEnvironment.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT,
     EMBEDDING_LLAMA_RERANKER_SERVER_PORT:
@@ -840,9 +895,17 @@ export const startKoedServer = async ({
     paths
   );
   const useBundledLocalDependencies = config.dependencyMode === "bundled-local";
+  const teamCollaborationEnabled = resolveTeamCollaborationEnabled({
+    ...repoEnv,
+    ...environment
+  });
   const localAiRuntimeEnabled = config.runtimeMode !== "external";
   const runtimeServices = useBundledLocalDependencies
-    ? ["postgres-native", "embedding-service-native"]
+    ? [
+        "postgres-native",
+        "embedding-service-native",
+        ...(teamCollaborationEnabled ? ["privacy-service-native"] : [])
+      ]
     : [];
   const appServices = [
     "api",
@@ -883,6 +946,7 @@ export const startKoedServer = async ({
 
   let startedNativePostgres = false;
   let nativeEmbeddingProcess: ChildProcess | undefined;
+  let nativePrivacyProcess: ChildProcess | undefined;
   const managedChildren: Record<string, ChildProcess> = {};
   const managedProcessMonitor = createManagedProcessMonitor({
     expectedSignals: []
@@ -920,6 +984,7 @@ export const startKoedServer = async ({
         "localAiRuntime",
         "worker",
         "api",
+        "privacyService",
         "embeddingService"
       ];
       for (const name of shutdownOrder) {
@@ -990,6 +1055,16 @@ export const startKoedServer = async ({
           : []),
         ["EMBEDDING_SERVICE_URL", refreshedEnv.EMBEDDING_SERVICE_URL]
       ];
+      if (teamCollaborationEnabled) {
+        requiredExternalServices.push(
+          ["PRIVACY_SERVICE_URL", refreshedEnv.PRIVACY_SERVICE_URL],
+          ["PRIVACY_SERVICE_TOKEN", refreshedEnv.PRIVACY_SERVICE_TOKEN],
+          [
+            "PRIVACY_RUNTIME_CONTROL_TOKEN",
+            refreshedEnv.PRIVACY_RUNTIME_CONTROL_TOKEN
+          ]
+        );
+      }
       const missing = requiredExternalServices.flatMap(([name, value]) =>
         value?.trim() ? [] : [name]
       );
@@ -1022,6 +1097,8 @@ export const startKoedServer = async ({
           "--filter",
           "@koed/embedding-service",
           "--filter",
+          "@koed/privacy-service",
+          "--filter",
           "@koed/mcp-server",
           "build"
         ],
@@ -1043,10 +1120,28 @@ export const startKoedServer = async ({
       }
     }
 
-    if (useBundledLocalDependencies) {
-      const result = startLocalEmbeddingRuntime(paths, refreshedEnv, {
+    if (useBundledLocalDependencies && teamCollaborationEnabled) {
+      const result = await startLocalPrivacyRuntime(paths, refreshedEnv, {
         spawn
       });
+      Object.assign(refreshedEnv, result.env);
+      nativePrivacyProcess = result.process;
+      if (nativePrivacyProcess) {
+        manageChild("privacyService", nativePrivacyProcess);
+      }
+      if (!result.ok) {
+        throw new Error(
+          `Bundled-local Privacy Filter Service could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
+        );
+      }
+    }
+
+    if (useBundledLocalDependencies) {
+      const result = startLocalEmbeddingRuntime(
+        paths,
+        appProcessEnvironment(refreshedEnv),
+        { spawn }
+      );
       Object.assign(refreshedEnv, result.env);
       nativeEmbeddingProcess = result.process;
       if (nativeEmbeddingProcess) {
@@ -1066,7 +1161,7 @@ export const startKoedServer = async ({
             "API",
             process.execPath,
             [appRuntime.apiEntry],
-            refreshedEnv,
+            appProcessEnvironment(refreshedEnv),
             spawn,
             resolve(appRuntime.root, "api")
           )
@@ -1075,7 +1170,7 @@ export const startKoedServer = async ({
             "API",
             process.execPath,
             [resolve(paths.repoRoot, "apps/api/dist/index.js")],
-            refreshedEnv,
+            appProcessEnvironment(refreshedEnv),
             spawn,
             resolve(paths.repoRoot, "apps/api")
           );
@@ -1095,6 +1190,9 @@ export const startKoedServer = async ({
       processes: {
         ...(nativeEmbeddingProcess
           ? { embeddingService: nativeEmbeddingProcess.pid ?? 0 }
+          : {}),
+        ...(nativePrivacyProcess
+          ? { privacyService: nativePrivacyProcess.pid ?? 0 }
           : {}),
         api: api.pid ?? 0
       }
@@ -1166,7 +1264,7 @@ export const startKoedServer = async ({
         process.execPath,
         [appRuntime.localAiRuntime],
         {
-          ...refreshedEnv,
+          ...appProcessEnvironment(refreshedEnv),
           KOED_HOME: paths.koedHome,
           MEMORY_API_URL: apiUrl,
           MEMORY_API_TOKEN: finalApiToken,
@@ -1192,7 +1290,7 @@ export const startKoedServer = async ({
             "Worker",
             process.execPath,
             [appRuntime.workerEntry],
-            refreshedEnv,
+            appProcessEnvironment(refreshedEnv),
             spawn,
             resolve(appRuntime.root, "worker")
           )
@@ -1201,7 +1299,7 @@ export const startKoedServer = async ({
             "Worker",
             process.execPath,
             [resolve(paths.repoRoot, "apps/worker/dist/index.js")],
-            refreshedEnv,
+            appProcessEnvironment(refreshedEnv),
             spawn,
             resolve(paths.repoRoot, "apps/worker")
           );
@@ -1245,6 +1343,7 @@ export const startKoedServer = async ({
           database: status.database,
           redis: status.redis,
           embeddingService: status.embeddingService,
+          privacyService: status.privacyService,
           workerQueues: status.workerQueues
         },
         null,

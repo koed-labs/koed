@@ -22,6 +22,15 @@ representation inside the trusted backend search boundary. This representation
 is the operational search index for recall. It is sensitive derived customer
 data, not zero-knowledge storage.
 
+Personal embeddings remain owner-only and are computed from unchanged
+full-fidelity Personal Memory. A Team-queryable vector is derived only from the
+current sanitized Team representation. When the final Team embedding input is
+byte-identical to a Personal input under the same model, tokenizer,
+composition, pooling, and normalization generation, an authorized worker lease
+may reuse the existing computation. If sanitization changes that input, Koed
+computes one Team-safe embedding. Grant-scoped vector rows may remain
+physically separate so authorization, revocation, and retention stay explicit.
+
 Canonical embeddings used for rebuild, export, support, or future migration
 must be treated as encrypted sensitive payloads. Queryable pgvector rows remain
 inside the database/search boundary with tenant/team authorization metadata and
@@ -54,6 +63,15 @@ storage or policy.
 - Production candidate generation is semantic in every deployment profile;
   there is no plaintext lexical-search stage or configuration escape hatch.
 - Reranking input must be built only from already-authorized candidates.
+- Vector creation must bind the classifier generation, effective content-policy
+  version and hash, sanitized content hash, and canonical final-input
+  fingerprint. A policy or classifier change rematerializes provenance but
+  does not rerun embedding when the final input and embedding generation are
+  unchanged.
+- Team vectors, queryable inputs, exact-hint checks, and evidence expansion must
+  use sanitized Team material. They must never substitute Personal text,
+  Personal lexical anchors, or Personal vectors when Team materialization is
+  pending or unavailable.
 - Diagnostics, logs, audit metadata, support status, and queue payloads must not
   include raw Memory text, raw embedding vectors, or decrypted canonical
   embedding payloads.
@@ -65,6 +83,9 @@ storage or policy.
 - Managed SaaS recall remains practical with encrypted Memory text.
 - Queryable vectors remain a trusted-boundary data asset that must be protected
   by tenant isolation, database roles, backups, support policy, and audit.
+- Revocation, retention expiry, hard purge, and key rotation cover Team-safe
+  vectors and any encrypted canonical embedding artifacts together with their
+  sanitized source representations.
 - Exact terminology is routed through focused semantic queries, grounded LCM
   anchors, and checks over already-authorized candidates rather than a separate
   lexical index.

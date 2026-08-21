@@ -1123,6 +1123,7 @@ const createFakeRepository = () => {
 
   const repository = {
     health: async () => true,
+    getLocalSyncDeployment: async () => null,
     getConversationProjectionBacklog: async () => ({
       liveProjectionRows: 0,
       historicalImportRows: 0,
@@ -5082,6 +5083,12 @@ const createFakeRepository = () => {
     },
     async listLcmNodesNeedingSummaries() {
       return [];
+    },
+    async claimLcmNodesForSummarization() {
+      return [];
+    },
+    async renewLcmSummaryWorkClaim() {
+      return null;
     },
     async getVisibleLcmNodeForSummarization() {
       return null;
@@ -15892,7 +15899,9 @@ describe("account and access flows", () => {
         models: [
           {
             id: "gpt-5.4",
+            provider: "openai",
             model: "gpt-5.4",
+            fullId: "openai/gpt-5.4",
             provenance: "reported",
             supportedReasoningEfforts: ["high"]
           },
@@ -16290,7 +16299,9 @@ describe("account and access flows", () => {
         models: [
           {
             id: "gpt-5.4",
+            provider: "openai",
             model: "gpt-5.4",
+            fullId: "openai/gpt-5.4",
             provenance: "reported",
             supportedReasoningEfforts: ["low"]
           }
@@ -16311,6 +16322,7 @@ describe("account and access flows", () => {
     });
     const unknownModel = await assignment("not-reported");
     const valid = await assignment("gpt-5.4");
+    const validQualifiedAlias = await assignment("openai/gpt-5.4");
     await app.close();
 
     expect(missing.statusCode).toBe(409);
@@ -16318,6 +16330,7 @@ describe("account and access flows", () => {
     expect(withoutSnapshot.statusCode).toBe(409);
     expect(unknownModel.statusCode).toBe(409);
     expect(valid.statusCode).toBe(200);
+    expect(validQualifiedAlias.statusCode).toBe(200);
   });
 
   it("validates Claude reasoning effort against the reported model capability", async () => {

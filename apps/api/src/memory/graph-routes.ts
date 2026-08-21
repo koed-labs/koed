@@ -1,5 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import { createEncryptedJsonPackage } from "@koed/shared";
+import {
+  createEncryptedJsonPackage,
+  crossIdentitySyncDeterministicUuid
+} from "@koed/shared";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
 import {
@@ -226,11 +229,27 @@ export const registerGraphRoutes = (
       if (cached) {
         return cached;
       }
+      const [projects, localDeployment] = await Promise.all([
+        repo.listLcmGraphThreads({ userId: user.id }, personalQuery),
+        repo.getLocalSyncDeployment()
+      ]);
       const response = graphThreadIndexResponseSchema.parse({
-        projects: await repo.listLcmGraphThreads(
-          { userId: user.id },
-          personalQuery
-        )
+        projects: projects.map((project) => ({
+          ...project,
+          threads: project.threads.map((thread) => ({
+            ...thread,
+            logicalMemoryId:
+              thread.sessionId && localDeployment
+                ? crossIdentitySyncDeterministicUuid({
+                    protocol: "koed.captured-session-sync/v1",
+                    sourceDeploymentId: localDeployment.protocolDeploymentId,
+                    sourceUserId: user.id,
+                    originSessionId: thread.sessionId,
+                    identity: "logical-memory"
+                  })
+                : null
+          }))
+        }))
       });
       await cacheProvider.setJson(cacheKey, response, graphCacheTtlSeconds);
       return response;

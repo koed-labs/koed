@@ -4,6 +4,7 @@ import type {
   MemorySourceRepository
 } from "@koed/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { crossIdentitySyncDeterministicUuid } from "@koed/shared";
 
 import type { ApiRouteContext } from "../server/context.js";
 import {
@@ -47,7 +48,9 @@ export interface CollaborationRouteContext {
   requireCollaborationRepository(): CollaborationRepository &
     Pick<
       MemorySourceRepository,
-      "findPersonalNoteMemoryEventId" | "getPersonalNoteMemoryEvent"
+      | "findPersonalNoteMemoryEventId"
+      | "getPersonalNoteMemoryEvent"
+      | "getLocalSyncDeployment"
     >;
   projectPersonalNote(input: {
     ownerUserId: string;
@@ -98,6 +101,19 @@ const parseIdempotencyKey = (request: FastifyRequest): string =>
   collaborationIdempotencyHeadersSchema.parse(request.headers)[
     "idempotency-key"
   ];
+
+const personalNoteLogicalMemoryId = (input: {
+  sourceDeploymentId: string;
+  ownerUserId: string;
+  noteId: string;
+}): string =>
+  crossIdentitySyncDeterministicUuid({
+    protocol: "koed.personal-note-share/v1",
+    sourceDeploymentId: input.sourceDeploymentId,
+    sourceOwnerPrincipalId: input.ownerUserId,
+    noteId: input.noteId,
+    identity: "logical-memory"
+  });
 
 const requirePersonalThread = async (
   repository: CollaborationRepository,
@@ -987,11 +1003,12 @@ export const registerCollaborationRoutes = (
         threadKind: "notes_to_self",
         message
       });
-      const [note, event] = await Promise.all([
+      const [note, event, deployment] = await Promise.all([
         repository.getPersonalNote({ userId: user.id }, { noteId: message.id }),
-        repository.getPersonalNoteMemoryEvent({ userId: user.id }, message.id)
+        repository.getPersonalNoteMemoryEvent({ userId: user.id }, message.id),
+        repository.getLocalSyncDeployment()
       ]);
-      if (!note || !event) {
+      if (!note || !event || !deployment) {
         throw Object.assign(new Error("Personal Note projection failed"), {
           statusCode: 503
         });
@@ -1002,6 +1019,11 @@ export const registerCollaborationRoutes = (
           title: note.title,
           titleVersion: note.titleVersion,
           memoryEventId: event.id,
+          logicalMemoryId: personalNoteLogicalMemoryId({
+            sourceDeploymentId: deployment.protocolDeploymentId,
+            ownerUserId: user.id,
+            noteId: note.noteId
+          }),
           createdAt: note.createdAt,
           sourceSequence: note.sourceSequence,
           event
@@ -1021,11 +1043,12 @@ export const registerCollaborationRoutes = (
       );
       const { noteId } = personalNoteParamsSchema.parse(request.params);
       const repository = context.requireCollaborationRepository();
-      const [note, event] = await Promise.all([
+      const [note, event, deployment] = await Promise.all([
         repository.getPersonalNote({ userId: user.id }, { noteId }),
-        repository.getPersonalNoteMemoryEvent({ userId: user.id }, noteId)
+        repository.getPersonalNoteMemoryEvent({ userId: user.id }, noteId),
+        repository.getLocalSyncDeployment()
       ]);
-      if (!note || !event) {
+      if (!note || !event || !deployment) {
         return reply.status(404).send({ message: "Personal Note not found" });
       }
       return {
@@ -1034,6 +1057,11 @@ export const registerCollaborationRoutes = (
           title: note.title,
           titleVersion: note.titleVersion,
           memoryEventId: event.id,
+          logicalMemoryId: personalNoteLogicalMemoryId({
+            sourceDeploymentId: deployment.protocolDeploymentId,
+            ownerUserId: user.id,
+            noteId: note.noteId
+          }),
           createdAt: note.createdAt,
           sourceSequence: note.sourceSequence,
           event

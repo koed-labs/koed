@@ -53,8 +53,8 @@ const capturedSource = {
 const binding = () => ({
   sourceRevision: 4,
   sourceHash: hash,
-  representationPolicyRevision: 3,
-  representationPolicyHash: hash,
+  fidelityPolicyRevision: 3,
+  fidelityPolicyHash: hash,
   contentPolicyVersion: 2,
   contentPolicyHash: hash,
   classifierVersion: 5,
@@ -71,54 +71,75 @@ const sourceItem = (index = 0): PreviewItem => ({
   content: { text: `authoritative item ${index}` }
 });
 
+type TestRepresentation =
+  | "memory_events"
+  | "lcm_leaves"
+  | "lcm_rollups"
+  | "curated_assertions";
+
+const sourceItemForRepresentation = (
+  representation: TestRepresentation
+): PreviewItem => {
+  if (representation === "memory_events") return sourceItem();
+  if (representation === "curated_assertions") {
+    return {
+      ...sourceItem(),
+      itemType: "curated_assertion",
+      content: {
+        assertionText: "The authorized Curated Memory assertion.",
+        topicTitle: null,
+        tags: ["authorized"],
+        sourceCount: 1
+      }
+    };
+  }
+  return {
+    ...sourceItem(),
+    itemType: representation === "lcm_leaves" ? "lcm_leaf" : "lcm_rollup",
+    content: {
+      summaryText: `The authorized ${representation} summary.`,
+      lexicalAnchors: ["authorized"],
+      sourceIds: [ids.source]
+    }
+  };
+};
+
 const previewResponse = (items: PreviewItem[] = [sourceItem()]) => ({
   source: capturedSource,
+  sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"] as const,
+  activationRepresentation: "memory_events" as const,
+  mode: "continuous" as const,
   previewId: ids.preview,
   previewHash: hash,
   previewRevision: 1,
   logicalMemoryId: ids.logicalMemory,
   teamId: ids.team,
   teamWorkspaceId: ids.workspace,
-  representation: "memory_events" as const,
+  maximumFidelity: "memory_events" as const,
+  includeCuratedMemory: false,
   binding: binding(),
   items,
-  redactedContentHash: hashB,
+  sourceContentHash: hashB,
   sourceRevision: 4,
   sourceHash: hash,
   createdAt: iso
-});
-
-const consentResponse = () => ({
-  source: capturedSource,
-  id: ids.consent,
-  logicalMemoryId: ids.logicalMemory,
-  teamId: ids.team,
-  teamWorkspaceId: ids.workspace,
-  mode: "continuous" as const,
-  state: "active" as const,
-  consentVersion: 1,
-  allowedRepresentations: ["memory_events"] as const,
-  selectedRepresentation: "memory_events" as const,
-  previewRevision: 1,
-  previewHash: hash,
-  sourceRevision: 4,
-  createdAt: iso,
-  updatedAt: iso,
-  activatedAt: iso,
-  revokedAt: null
 });
 
 const grantResponse = (
   input: {
     lifecycle?: "active" | "unavailable" | "revoked";
     grantVersion?: number;
-    representation?: "memory_events" | "lcm_leaves";
+    maximumFidelity?: "memory_events" | "lcm_leaves" | "lcm_rollups";
+    includeCuratedMemory?: boolean;
     consentId?: string;
     sourceRevision?: number;
     updatedAt?: string;
   } = {}
 ) => ({
   source: capturedSource,
+  sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"] as const,
+  activationRepresentation: "memory_events" as const,
+  mode: "continuous" as const,
   id: ids.grant,
   logicalGrantId: ids.logicalGrant,
   logicalMemoryId: ids.logicalMemory,
@@ -126,9 +147,9 @@ const grantResponse = (
   teamId: ids.team,
   teamWorkspaceId: ids.workspace,
   consentId: input.consentId ?? ids.consent,
-  ownerAllowedRepresentations: [input.representation ?? "memory_events"],
-  activeRepresentation: input.representation ?? "memory_events",
-  representationPolicyRevision: 3,
+  maximumFidelity: input.maximumFidelity ?? "memory_events",
+  includeCuratedMemory: input.includeCuratedMemory ?? false,
+  fidelityPolicyRevision: 3,
   sourceRevision: input.sourceRevision ?? 4,
   grantVersion: input.grantVersion ?? 1,
   lifecycle: input.lifecycle ?? "active",
@@ -145,22 +166,40 @@ const grantResponse = (
   }
 });
 
-const remoteReadResponse = () => ({
-  grant: grantResponse(),
+const remoteReadResponse = (
+  input: {
+    representation?: TestRepresentation;
+    maximumFidelity?: "memory_events" | "lcm_leaves" | "lcm_rollups";
+    includeCuratedMemory?: boolean;
+    items?: PreviewItem[];
+  } = {}
+) => ({
+  grant: grantResponse({
+    maximumFidelity: input.maximumFidelity,
+    includeCuratedMemory: input.includeCuratedMemory
+  }),
   representation: {
     shareGrantId: ids.grant,
     consentId: ids.consent,
     teamId: ids.team,
     teamWorkspaceId: ids.workspace,
     logicalMemoryId: ids.logicalMemory,
-    representation: "memory_events" as const,
+    representation: input.representation ?? "memory_events",
     sourceRevision: 4,
     sourceRevisionHash: hash,
     recordVersion: 1,
     state: "available" as const
   },
-  items: [sourceItem(0), sourceItem(1), sourceItem(2)],
-  sourcePage: { itemOffset: 0, itemCount: 3 },
+  items:
+    input.items ??
+    (input.representation
+      ? [sourceItemForRepresentation(input.representation)]
+      : [sourceItem(0), sourceItem(1), sourceItem(2)]),
+  sourcePage: {
+    itemOffset: 0,
+    itemCount:
+      input.items?.length ?? (input.representation === undefined ? 3 : 1)
+  },
   freshness: "fresh" as const,
   companionScope: grantResponse().companionScope
 });
@@ -174,6 +213,8 @@ const collaborationConsent = (): CollaborationPersistedSharedMemoryConsent => ({
   previewId: ids.preview,
   consent: {
     source: capturedSource,
+    sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+    activationRepresentation: "memory_events",
     id: ids.consent,
     logicalMemoryId: ids.logicalMemory,
     teamId: ids.team,
@@ -181,8 +222,8 @@ const collaborationConsent = (): CollaborationPersistedSharedMemoryConsent => ({
     mode: "continuous",
     state: "active",
     version: 1,
-    allowedRepresentations: ["memory_events"],
-    selectedRepresentation: "memory_events",
+    maximumFidelity: "memory_events",
+    includeCuratedMemory: false,
     previewRevision: 1,
     previewHash: hash,
     sourceRevision: 4,
@@ -197,7 +238,8 @@ const collaborationGrant = (
   input: {
     lifecycle?: "active" | "unavailable" | "revoked";
     grantVersion?: number;
-    representation?: "memory_events" | "lcm_leaves";
+    maximumFidelity?: "memory_events" | "lcm_leaves" | "lcm_rollups";
+    includeCuratedMemory?: boolean;
     consentId?: string;
     sourceRevision?: number;
     updatedAt?: string;
@@ -208,6 +250,9 @@ const collaborationGrant = (
   upstreamUserId: ids.upstreamUser,
   grant: {
     source: capturedSource,
+    sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+    activationRepresentation: "memory_events",
+    mode: "continuous",
     id: ids.grant,
     logicalGrantId: ids.logicalGrant,
     logicalMemoryId: ids.logicalMemory,
@@ -215,9 +260,9 @@ const collaborationGrant = (
     teamId: ids.team,
     workspaceId: ids.workspace,
     consentId: input.consentId ?? ids.consent,
-    ownerAllowedRepresentations: [input.representation ?? "memory_events"],
-    activeRepresentation: input.representation ?? "memory_events",
-    representationPolicyRevision: 3,
+    maximumFidelity: input.maximumFidelity ?? "memory_events",
+    includeCuratedMemory: input.includeCuratedMemory ?? false,
+    fidelityPolicyRevision: 3,
     sourceRevision: input.sourceRevision ?? 4,
     grantVersion: input.grantVersion ?? 1,
     lifecycle: input.lifecycle ?? "active",
@@ -237,11 +282,15 @@ const commandBase = (command: string) => ({
 const previewCommand = () => ({
   ...commandBase("collaboration.preview_shared_memory"),
   input: {
+    source: capturedSource,
+    sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+    activationRepresentation: "memory_events",
+    mode: "continuous",
     logicalMemoryId: ids.logicalMemory,
     teamId: ids.team,
     workspaceId: ids.workspace,
-    representation: "memory_events",
-    allowedRepresentations: ["memory_events"],
+    maximumFidelity: "memory_events",
+    includeCuratedMemory: false,
     actionGrant: { id: ids.actionGrant }
   }
 });
@@ -250,6 +299,8 @@ const shareCommand = () => ({
   ...commandBase("collaboration.share_memory"),
   input: {
     source: capturedSource,
+    sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+    activationRepresentation: "memory_events",
     mutationId: randomUUID(),
     logicalGrantId: ids.logicalGrant,
     logicalMemoryId: ids.logicalMemory,
@@ -257,8 +308,8 @@ const shareCommand = () => ({
     workspaceId: ids.workspace,
     consentId: ids.consent,
     mode: "continuous",
-    allowedRepresentations: ["memory_events"],
-    selectedRepresentation: "memory_events",
+    maximumFidelity: "memory_events",
+    includeCuratedMemory: false,
     previewRevision: 1,
     previewHash: hash,
     expiresAt: null,
@@ -349,8 +400,7 @@ const createFixture = (
     ...previewResponse(previewItems),
     backendId: "team-backend",
     localOwnerUserId: ids.localOwner,
-    upstreamUserId: ids.upstreamUser,
-    allowedRepresentations: ["memory_events"]
+    upstreamUserId: ids.upstreamUser
   };
   previews.set(initialPreview.previewHash, initialPreview);
   consents.set(ids.consent, collaborationConsent());
@@ -375,8 +425,7 @@ const createFixture = (
       const persisted: CollaborationPersistedSharedMemoryPreview = {
         ...input.preview,
         ...input.identity,
-        previewRevision: 1,
-        allowedRepresentations: input.allowedRepresentations
+        previewRevision: 1
       };
       previews.set(persisted.previewHash, persisted);
       return persisted;
@@ -385,8 +434,7 @@ const createFixture = (
       const persisted: CollaborationPersistedSharedMemoryPreview = {
         ...input.preview,
         ...input.identity,
-        previewRevision: 1,
-        allowedRepresentations: input.allowedRepresentations
+        previewRevision: 1
       };
       previews.set(persisted.previewHash, persisted);
       return persisted;
@@ -408,8 +456,8 @@ const createFixture = (
           mode: remote.mode,
           state: remote.state,
           version: remote.consentVersion,
-          allowedRepresentations: [...remote.allowedRepresentations],
-          selectedRepresentation: remote.selectedRepresentation,
+          maximumFidelity: remote.maximumFidelity,
+          includeCuratedMemory: remote.includeCuratedMemory,
           previewRevision: remote.previewRevision,
           previewHash: remote.previewHash,
           sourceRevision: remote.sourceRevision,
@@ -437,10 +485,8 @@ const createFixture = (
               ? "revoked"
               : "active",
         grantVersion: remote.grantVersion,
-        representation:
-          remote.activeRepresentation === "lcm_leaves"
-            ? "lcm_leaves"
-            : "memory_events",
+        maximumFidelity: remote.maximumFidelity,
+        includeCuratedMemory: remote.includeCuratedMemory,
         consentId: remote.consentId,
         sourceRevision: remote.sourceRevision,
         updatedAt: remote.updatedAt
@@ -510,14 +556,16 @@ const createFixture = (
         response = {
           admission: {
             source: recorded.body?.source,
+            sourceCapabilities: recorded.body?.sourceCapabilities,
+            activationRepresentation: recorded.body?.activationRepresentation,
             previewId: ids.preview,
             previewHash: hashB,
             previewRevision: 1,
             logicalMemoryId: ids.logicalMemory,
             teamId: ids.team,
             teamWorkspaceId: ids.workspace,
-            representation: "memory_events",
-            allowedRepresentations: ["memory_events"],
+            maximumFidelity: recorded.body?.maximumFidelity,
+            includeCuratedMemory: recorded.body?.includeCuratedMemory,
             sourceRevision: 4,
             sourceHash: hash,
             redactedContentHash: hash,
@@ -543,8 +591,6 @@ const createFixture = (
         url.pathname.endsWith("/v1/shared-memory/previews")
       ) {
         response = { preview: previewResponse(previewItems) };
-      } else if (url.pathname.endsWith("/consents")) {
-        response = { consent: consentResponse() };
       } else if (
         recorded.method === "POST" &&
         url.pathname.endsWith("/v1/shared-memory/pending-shares")
@@ -552,6 +598,8 @@ const createFixture = (
         response = {
           pendingShare: {
             source: recorded.body?.source,
+            sourceCapabilities: recorded.body?.sourceCapabilities,
+            activationRepresentation: recorded.body?.activationRepresentation,
             id: uuidFor(700),
             mutationId: recorded.body?.mutationId,
             logicalGrantId: recorded.body?.logicalGrantId,
@@ -559,8 +607,8 @@ const createFixture = (
             logicalMemoryId: recorded.body?.logicalMemoryId,
             teamId: recorded.body?.teamId,
             workspaceId: recorded.body?.teamWorkspaceId,
-            representation: recorded.body?.selectedRepresentation,
-            allowedRepresentations: recorded.body?.allowedRepresentations,
+            maximumFidelity: recorded.body?.maximumFidelity,
+            includeCuratedMemory: recorded.body?.includeCuratedMemory,
             mode: recorded.body?.mode,
             sourceRevision: 4,
             state: "preparing",
@@ -579,20 +627,14 @@ const createFixture = (
           }
         };
       } else if (
-        recorded.method === "POST" &&
-        url.pathname.endsWith("/v1/shared-memory/share-bundles")
-      ) {
-        response = {
-          consent: consentResponse(),
-          grant: grantResponse()
-        };
-      } else if (
         recorded.method === "PUT" &&
-        url.pathname.endsWith("/representation-bundle")
+        url.pathname.endsWith("/fidelity-bundle")
       ) {
         response = {
           pendingShare: {
             source: recorded.body?.source,
+            sourceCapabilities: recorded.body?.sourceCapabilities,
+            activationRepresentation: recorded.body?.activationRepresentation,
             id: uuidFor(701),
             mutationId: recorded.body?.mutationId,
             logicalGrantId: ids.logicalGrant,
@@ -600,8 +642,8 @@ const createFixture = (
             logicalMemoryId: recorded.body?.logicalMemoryId,
             teamId: recorded.body?.teamId,
             workspaceId: recorded.body?.teamWorkspaceId,
-            representation: "lcm_leaves",
-            allowedRepresentations: ["lcm_leaves"],
+            maximumFidelity: "lcm_leaves",
+            includeCuratedMemory: false,
             mode: recorded.body?.mode,
             sourceRevision: 4,
             state: "preparing",
@@ -734,10 +776,10 @@ const createFixture = (
         response = {
           grant: grantResponse({ lifecycle: "revoked", grantVersion: 2 })
         };
-      } else if (url.pathname.endsWith("/representation")) {
+      } else if (url.pathname.endsWith("/fidelity")) {
         response = {
           grant: grantResponse({
-            representation: "lcm_leaves",
+            maximumFidelity: "lcm_leaves",
             consentId: uuidFor(500),
             grantVersion: 2
           })
@@ -766,7 +808,10 @@ const createFixture = (
             ...remote,
             items: remote.items.slice(itemOffset, end),
             sourcePage: { itemOffset, itemCount: remote.items.length }
-          }
+          },
+          ...(url.pathname.endsWith("/initial-view")
+            ? { companion: { thread: null, messages: null } }
+            : {})
         };
       } else {
         return json({ error: "not found" }, 404);
@@ -871,16 +916,43 @@ const expectFailure = (
   expect(result).toMatchObject({ ok: false, error: { code } });
 };
 
+const loadInitialSource = async (
+  fixture: ReturnType<typeof createFixture>,
+  representation: TestRepresentation = "memory_events",
+  limit = 2
+) => {
+  const loaded = await fixture.control.loadInitialSharedSession(
+    {
+      requestId: randomUUID(),
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      sharedSessionId: ids.grant,
+      representation,
+      limit
+    },
+    context()
+  );
+  if (!loaded) throw new Error("initial source load was not handled");
+  return loaded.sourceResult;
+};
+
 describe("collaboration Shared Memory control", () => {
   it("resolves a consent preview only for its exact persisted source", async () => {
     const fixture = createFixture();
     const input = {
       source: capturedSource,
+      sourceCapabilities: [
+        "lcm_rollups" as const,
+        "lcm_leaves" as const,
+        "memory_events" as const
+      ],
+      activationRepresentation: "memory_events" as const,
+      mode: "continuous" as const,
+      maximumFidelity: "memory_events" as const,
+      includeCuratedMemory: false,
       logicalMemoryId: ids.logicalMemory,
       teamId: ids.team,
       workspaceId: ids.workspace,
-      selectedRepresentation: "memory_events" as const,
-      allowedRepresentations: ["memory_events" as const],
       previewRevision: 1,
       previewHash: hash
     };
@@ -901,9 +973,12 @@ describe("collaboration Shared Memory control", () => {
 
   it("returns a bounded local candidate without resolving remote authority", async () => {
     const loadLocalCandidatePreview = vi.fn(async () => ({
-      sessionId: ids.localSession,
+      source: capturedSource,
+      sourceCapabilities: ["memory_events" as const],
+      activationRepresentation: "memory_events" as const,
+      mode: "continuous" as const,
+      expiresAt: null,
       logicalMemoryId: ids.logicalMemory,
-      representation: "memory_events" as const,
       sourceRevision: 4,
       candidateHash: hash,
       itemCount: 0,
@@ -920,8 +995,9 @@ describe("collaboration Shared Memory control", () => {
       {
         ...commandBase("collaboration.preview_shared_memory_candidate"),
         input: {
-          sessionId: ids.localSession,
-          representation: "memory_events"
+          source: capturedSource,
+          activationRepresentation: "memory_events",
+          mode: "continuous"
         }
       },
       context()
@@ -935,16 +1011,23 @@ describe("collaboration Shared Memory control", () => {
     expect(loadLocalCandidatePreview).toHaveBeenCalledWith({
       localOwnerUserId: ids.localOwner,
       sessionId: ids.localSession,
-      representation: "memory_events"
+      representation: "memory_events",
+      mode: "continuous"
     });
   });
 
   it("binds a local candidate to an authoritative destination without a sync target", async () => {
     const localCandidate = {
       source: capturedSource,
-      sessionId: ids.localSession,
+      sourceCapabilities: [
+        "lcm_rollups" as const,
+        "lcm_leaves" as const,
+        "memory_events" as const
+      ],
+      activationRepresentation: "memory_events" as const,
+      mode: "continuous" as const,
+      expiresAt: null,
       logicalMemoryId: ids.logicalMemory,
-      representation: "memory_events" as const,
       sourceRevision: 4,
       candidateHash: hash,
       itemCount: 1,
@@ -990,6 +1073,8 @@ describe("collaboration Shared Memory control", () => {
         ...previewCommand().input,
         candidate: {
           source: capturedSource,
+          sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+          activationRepresentation: "memory_events",
           candidateHash: hash,
           sourceRevision: 4,
           itemCount: 1,
@@ -1142,6 +1227,9 @@ describe("collaboration Shared Memory control", () => {
     const pending = {
       kind: "pending",
       pendingShare: {
+        source: capturedSource,
+        sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+        activationRepresentation: "memory_events",
         id: pendingShareId,
         mutationId: uuidFor(815),
         logicalGrantId: uuidFor(816),
@@ -1149,8 +1237,8 @@ describe("collaboration Shared Memory control", () => {
         logicalMemoryId: ids.logicalMemory,
         teamId: ids.team,
         workspaceId: ids.workspace,
-        representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         mode: "continuous",
         sourceRevision: 4,
         state: "preparing",
@@ -1239,6 +1327,7 @@ describe("collaboration Shared Memory control", () => {
       const logicalMemoryId = uuidFor(1_200 + index);
       const remoteGrant = {
         ...grantResponse(),
+        source: { ...capturedSource, logicalMemoryId },
         id: shareGrantId,
         logicalGrantId: uuidFor(1_400 + index),
         logicalMemoryId,
@@ -1271,6 +1360,10 @@ describe("collaboration Shared Memory control", () => {
         ...collaborationGrant(),
         grant: {
           ...collaborationGrant().grant,
+          source: {
+            ...capturedSource,
+            logicalMemoryId: entry.grant.logicalMemoryId
+          },
           id: entry.grant.id,
           logicalGrantId: entry.grant.logicalGrantId,
           logicalMemoryId: entry.grant.logicalMemoryId
@@ -1415,6 +1508,9 @@ describe("collaboration Shared Memory control", () => {
     const ownedPending = {
       kind: "pending",
       pendingShare: {
+        source: capturedSource,
+        sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+        activationRepresentation: "memory_events",
         id: pendingShareId,
         mutationId: uuidFor(47),
         logicalGrantId: ids.logicalGrant,
@@ -1422,8 +1518,8 @@ describe("collaboration Shared Memory control", () => {
         logicalMemoryId: ids.logicalMemory,
         teamId: ids.team,
         workspaceId: ids.workspace,
-        representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         mode: "continuous",
         sourceRevision: 4,
         state: "activated",
@@ -1553,12 +1649,16 @@ describe("collaboration Shared Memory control", () => {
       item.pathname.endsWith("/v1/shared-memory/previews")
     );
     expect(request?.body).toEqual({
+      source: capturedSource,
+      sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+      activationRepresentation: "memory_events",
+      mode: "continuous",
       logicalMemoryId: ids.logicalMemory,
       remoteReplicaId: ids.remoteReplica,
       teamId: ids.team,
       teamWorkspaceId: ids.workspace,
-      representation: "memory_events",
-      allowedRepresentations: ["memory_events"],
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
       authority: {
         action: "workspace.memory.share_owned",
         source: "device_action_grant",
@@ -1676,8 +1776,8 @@ describe("collaboration Shared Memory control", () => {
       ...previewCommand(),
       input: {
         ...previewCommand().input,
-        representation: "lcm_leaves" as const,
-        allowedRepresentations: ["lcm_leaves" as const]
+        activationRepresentation: "lcm_leaves" as const,
+        maximumFidelity: "lcm_leaves" as const
       }
     };
 
@@ -1733,7 +1833,7 @@ describe("collaboration Shared Memory control", () => {
     expect(second.data.preview.items[0]?.sequence).toBe(101);
   });
 
-  it("queues, revokes, and changes representation through persisted scoped authority", async () => {
+  it("shares, revokes, and changes fidelity through persisted scoped authority", async () => {
     const shareFixture = createFixture();
     const shared = await shareFixture.control.dispatch(
       shareCommand(),
@@ -1783,11 +1883,11 @@ describe("collaboration Shared Memory control", () => {
       ...previewResponse(),
       previewId: replacementPreviewId,
       previewHash: hashC,
-      representation: "lcm_leaves",
+      activationRepresentation: "lcm_leaves",
       backendId: "team-backend",
       localOwnerUserId: ids.localOwner,
       upstreamUserId: ids.upstreamUser,
-      allowedRepresentations: ["lcm_leaves"]
+      maximumFidelity: "lcm_leaves"
     });
     changeFixture.consents.set(replacementConsentId, {
       ...collaborationConsent(),
@@ -1795,26 +1895,28 @@ describe("collaboration Shared Memory control", () => {
       consent: {
         ...collaborationConsent().consent,
         id: replacementConsentId,
-        selectedRepresentation: "lcm_leaves",
-        allowedRepresentations: ["lcm_leaves"],
+        activationRepresentation: "lcm_leaves",
+        maximumFidelity: "lcm_leaves",
         previewHash: hashC
       }
     });
     const changed = await changeFixture.control.dispatch(
       {
-        ...commandBase("collaboration.change_shared_memory_representation"),
+        ...commandBase("collaboration.change_shared_memory_fidelity"),
         input: {
           source: capturedSource,
+          sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+          activationRepresentation: "lcm_leaves",
           mutationId: randomUUID(),
           logicalMemoryId: ids.logicalMemory,
           teamId: ids.team,
           workspaceId: ids.workspace,
           shareGrantId: ids.grant,
           consentId: replacementConsentId,
-          representation: "lcm_leaves",
+          maximumFidelity: "lcm_leaves",
+          includeCuratedMemory: false,
           expectedGrantVersion: 1,
           mode: "continuous",
-          allowedRepresentations: ["lcm_leaves"],
           previewRevision: 1,
           previewHash: hashC,
           expiresAt: null,
@@ -1827,7 +1929,9 @@ describe("collaboration Shared Memory control", () => {
       ok: true,
       data: {
         pendingShare: {
-          representation: "lcm_leaves",
+          activationRepresentation: "lcm_leaves",
+          maximumFidelity: "lcm_leaves",
+          includeCuratedMemory: false,
           workspaceAccessState: "active",
           state: "preparing",
           grantId: ids.grant
@@ -1835,7 +1939,7 @@ describe("collaboration Shared Memory control", () => {
       }
     });
     const replacementRequest = changeFixture.requests.find((request) =>
-      request.pathname.endsWith("/representation-bundle")
+      request.pathname.endsWith("/fidelity-bundle")
     );
     expect(replacementRequest).toMatchObject({
       method: "PUT",
@@ -1909,24 +2013,41 @@ describe("collaboration Shared Memory control", () => {
     expect(preparePendingShareSource).not.toHaveBeenCalled();
   });
 
+  it("keeps acceptance pending while semantic privacy materialization continues asynchronously", async () => {
+    const fixture = createFixture({
+      mutateResponse(request, response) {
+        if (
+          request.method === "PUT" &&
+          request.pathname.includes("/representations/")
+        ) {
+          return {
+            processing: true,
+            shareGrantId: ids.grant,
+            representation: "memory_events"
+          };
+        }
+        return response;
+      }
+    });
+
+    const result = await fixture.control.dispatch(shareCommand(), context());
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        pendingShare: {
+          state: "preparing",
+          stage: "accepted",
+          workspaceAccessState: "none",
+          grantId: null
+        }
+      }
+    });
+  });
+
   it("loads bounded source pages through an authorized remote grant read", async () => {
     const fixture = createFixture();
-    const first = await fixture.control.dispatch(
-      {
-        ...commandBase("collaboration.load_shared_source_page"),
-        input: {
-          sharedSession: {
-            teamId: ids.team,
-            workspaceId: ids.workspace,
-            sharedSessionId: ids.grant
-          },
-          direction: "older",
-          cursor: null,
-          limit: 2
-        }
-      },
-      context()
-    );
+    const first = await loadInitialSource(fixture);
     expect(first).toMatchObject({
       ok: true,
       data: {
@@ -1952,7 +2073,9 @@ describe("collaboration Shared Memory control", () => {
     expect(fixture.requests.at(-1)?.pathname).toContain(
       `/teams/${ids.team}/workspaces/${ids.workspace}/share-grants/${ids.grant}`
     );
-    expect(fixture.requests.at(-1)?.pathname.endsWith("/page")).toBe(true);
+    expect(fixture.requests.at(-1)?.pathname.endsWith("/initial-view")).toBe(
+      true
+    );
     expect(fixture.requests.at(-1)?.search).toContain("direction=older");
     expect(fixture.requests.at(-1)?.search).toContain("limit=2");
 
@@ -1975,6 +2098,70 @@ describe("collaboration Shared Memory control", () => {
     expect(older).toMatchObject({
       ok: true,
       data: { page: { hasOlder: false, hasNewer: true } }
+    });
+    expect(fixture.requests.at(-1)?.pathname.endsWith("/page")).toBe(true);
+  });
+
+  it("authorizes cumulative Memory layers and gates Curated Memory independently", async () => {
+    const allowed = [
+      ["memory_events", "memory_events"],
+      ["memory_events", "lcm_leaves"],
+      ["memory_events", "lcm_rollups"],
+      ["lcm_leaves", "lcm_leaves"],
+      ["lcm_leaves", "lcm_rollups"],
+      ["lcm_rollups", "lcm_rollups"]
+    ] as const;
+    for (const [maximumFidelity, representation] of allowed) {
+      const fixture = createFixture({
+        remoteRead: remoteReadResponse({ maximumFidelity, representation })
+      });
+      await expect(
+        loadInitialSource(fixture, representation, 10)
+      ).resolves.toMatchObject({
+        ok: true,
+        data: { page: { representation } }
+      });
+    }
+
+    const denied = [
+      ["lcm_leaves", "memory_events"],
+      ["lcm_rollups", "lcm_leaves"],
+      ["lcm_rollups", "memory_events"]
+    ] as const;
+    for (const [maximumFidelity, representation] of denied) {
+      const fixture = createFixture({
+        remoteRead: remoteReadResponse({ maximumFidelity, representation })
+      });
+      expectFailure(
+        await loadInitialSource(fixture, representation, 10),
+        "permission_denied"
+      );
+    }
+
+    const curatedDenied = createFixture({
+      remoteRead: remoteReadResponse({
+        representation: "curated_assertions",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false
+      })
+    });
+    expectFailure(
+      await loadInitialSource(curatedDenied, "curated_assertions", 10),
+      "permission_denied"
+    );
+
+    const curatedAllowed = createFixture({
+      remoteRead: remoteReadResponse({
+        representation: "curated_assertions",
+        maximumFidelity: "lcm_rollups",
+        includeCuratedMemory: true
+      })
+    });
+    await expect(
+      loadInitialSource(curatedAllowed, "curated_assertions", 10)
+    ).resolves.toMatchObject({
+      ok: true,
+      data: { page: { representation: "curated_assertions" } }
     });
   });
 
@@ -2096,7 +2283,7 @@ describe("collaboration Shared Memory control", () => {
     );
     expect(
       fixture.requests.filter((item) =>
-        item.pathname.endsWith("/share-bundles")
+        item.pathname.endsWith("/pending-shares")
       )
     ).toHaveLength(0);
   });
@@ -2134,22 +2321,7 @@ describe("collaboration Shared Memory control", () => {
 
   it("rejects a tampered source cursor before another protected source read", async () => {
     const fixture = createFixture();
-    const first = await fixture.control.dispatch(
-      {
-        ...commandBase("collaboration.load_shared_source_page"),
-        input: {
-          sharedSession: {
-            teamId: ids.team,
-            workspaceId: ids.workspace,
-            sharedSessionId: ids.grant
-          },
-          direction: "older",
-          cursor: null,
-          limit: 2
-        }
-      },
-      context()
-    );
+    const first = await loadInitialSource(fixture);
     if (
       !first?.ok ||
       first.command !== "collaboration.load_shared_source_page"
@@ -2215,22 +2387,7 @@ describe("collaboration Shared Memory control", () => {
       }
     });
     expectFailure(
-      await wrongWorkspace.control.dispatch(
-        {
-          ...commandBase("collaboration.load_shared_source_page"),
-          input: {
-            sharedSession: {
-              teamId: ids.team,
-              workspaceId: ids.workspace,
-              sharedSessionId: ids.grant
-            },
-            direction: "older",
-            cursor: null,
-            limit: 10
-          }
-        },
-        context()
-      ),
+      await loadInitialSource(wrongWorkspace, "memory_events", 10),
       "permission_denied"
     );
 
@@ -2238,6 +2395,7 @@ describe("collaboration Shared Memory control", () => {
       mutateResponse: (request, response) =>
         request.method === "GET" && !request.pathname.includes("local-edge")
           ? {
+              ...response,
               sharedMemory: {
                 ...((response.sharedMemory ?? {}) as Record<string, unknown>),
                 representation: {
@@ -2250,22 +2408,7 @@ describe("collaboration Shared Memory control", () => {
           : response
     });
     expectFailure(
-      await substituted.control.dispatch(
-        {
-          ...commandBase("collaboration.load_shared_source_page"),
-          input: {
-            sharedSession: {
-              teamId: ids.team,
-              workspaceId: ids.workspace,
-              sharedSessionId: ids.grant
-            },
-            direction: "older",
-            cursor: null,
-            limit: 10
-          }
-        },
-        context()
-      ),
+      await loadInitialSource(substituted, "memory_events", 10),
       "permission_denied"
     );
   });

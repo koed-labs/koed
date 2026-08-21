@@ -13,13 +13,14 @@ import {
   readLocalEdgeClientCredentialAuthorization,
   RemoteRequestTimeoutError,
   RemoteResponseLimitError,
+  sharedMemoryCeilingAuthorizes,
   sharedMemoryConsentSchema,
+  sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryCandidatePreviewSchema,
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryGrantSchema,
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryPreviewSchema,
-  sharedMemoryRepresentationBundleActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
@@ -74,7 +75,7 @@ const sharedMemoryControlCommandNames = [
   "collaboration.load_shared_memory_preview_page",
   "collaboration.share_memory",
   "collaboration.revoke_shared_memory",
-  "collaboration.change_shared_memory_representation"
+  "collaboration.change_shared_memory_fidelity"
 ] as const;
 
 type SharedMemoryControlCommandName =
@@ -90,6 +91,8 @@ type Representation =
   | "lcm_leaves"
   | "lcm_rollups"
   | "curated_assertions";
+
+type MaximumFidelity = "memory_events" | "lcm_leaves" | "lcm_rollups";
 
 interface DesktopLocalCredentialAuthorization {
   version: 1;
@@ -116,11 +119,11 @@ const representationSchema = z.enum([
   "lcm_rollups",
   "curated_assertions"
 ]);
-const representationsSchema = z
-  .array(representationSchema)
-  .min(1)
-  .max(4)
-  .refine((values) => new Set(values).size === values.length);
+const maximumFidelitySchema = z.enum([
+  "memory_events",
+  "lcm_leaves",
+  "lcm_rollups"
+]);
 
 const dispatchContextSchema = z
   .object({
@@ -140,8 +143,8 @@ const sourceBindingSchema = z
   .object({
     sourceRevision: z.number().int().safe().min(0),
     sourceHash: hashSchema,
-    representationPolicyRevision: z.number().int().safe().positive(),
-    representationPolicyHash: hashSchema,
+    fidelityPolicyRevision: z.number().int().safe().positive(),
+    fidelityPolicyHash: hashSchema,
     contentPolicyVersion: z.number().int().safe().positive(),
     contentPolicyHash: hashSchema,
     classifierVersion: z.number().int().safe().positive(),
@@ -172,17 +175,21 @@ const redactedSourceItemSchema = z
 
 const remotePreviewSchema = z
   .object({
-    source: sharedMemorySourceRefSchema.optional(),
+    source: sharedMemorySourceRefSchema,
+    sourceCapabilities: z.array(representationSchema).min(1).max(4),
     previewId: uuidSchema,
     previewHash: hashSchema,
     previewRevision: z.number().int().safe().positive(),
     logicalMemoryId: uuidSchema,
     teamId: uuidSchema,
     teamWorkspaceId: uuidSchema,
-    representation: representationSchema,
+    activationRepresentation: representationSchema,
+    maximumFidelity: maximumFidelitySchema,
+    includeCuratedMemory: z.boolean(),
+    mode: z.enum(["snapshot", "continuous"]),
     binding: sourceBindingSchema,
     items: z.array(redactedSourceItemSchema).min(1).max(2_048),
-    redactedContentHash: hashSchema,
+    sourceContentHash: hashSchema,
     sourceRevision: z.number().int().safe().min(0),
     sourceHash: hashSchema,
     createdAt: timestampSchema
@@ -191,15 +198,17 @@ const remotePreviewSchema = z
 
 const remoteCandidateAdmissionSchema = z
   .object({
-    source: sharedMemorySourceRefSchema.optional(),
+    source: sharedMemorySourceRefSchema,
+    sourceCapabilities: z.array(representationSchema).min(1).max(4),
     previewId: uuidSchema,
     previewHash: hashSchema,
     previewRevision: z.literal(1),
     logicalMemoryId: uuidSchema,
     teamId: uuidSchema,
     teamWorkspaceId: uuidSchema,
-    representation: representationSchema,
-    allowedRepresentations: representationsSchema,
+    activationRepresentation: representationSchema,
+    maximumFidelity: maximumFidelitySchema,
+    includeCuratedMemory: z.boolean(),
     sourceRevision: z.number().int().safe().min(0),
     sourceHash: hashSchema,
     redactedContentHash: hashSchema,
@@ -236,8 +245,7 @@ const persistedPreviewSchema = remotePreviewSchema
     backendId: backendIdSchema,
     localOwnerUserId: uuidSchema,
     upstreamUserId: uuidSchema,
-    previewRevision: z.number().int().safe().positive(),
-    allowedRepresentations: representationsSchema
+    previewRevision: z.number().int().safe().positive()
   })
   .strict();
 
@@ -247,7 +255,9 @@ export type CollaborationPersistedSharedMemoryPreview = z.infer<
 
 const remoteConsentSchema = z
   .object({
-    source: sharedMemorySourceRefSchema.optional(),
+    source: sharedMemorySourceRefSchema,
+    sourceCapabilities: z.array(representationSchema).min(1).max(4),
+    activationRepresentation: representationSchema,
     id: uuidSchema,
     logicalMemoryId: uuidSchema,
     teamId: uuidSchema,
@@ -255,8 +265,8 @@ const remoteConsentSchema = z
     mode: z.enum(["snapshot", "continuous"]),
     state: z.enum(["pending", "active", "paused", "revoked", "expired"]),
     consentVersion: z.number().int().safe().positive(),
-    allowedRepresentations: representationsSchema,
-    selectedRepresentation: representationSchema,
+    maximumFidelity: maximumFidelitySchema,
+    includeCuratedMemory: z.boolean(),
     previewRevision: z.number().int().safe().positive(),
     previewHash: hashSchema,
     sourceRevision: z.number().int().safe().min(0),
@@ -288,7 +298,9 @@ const companionScopeSchema = z
 
 const remoteGrantSchema = z
   .object({
-    source: sharedMemorySourceRefSchema.optional(),
+    source: sharedMemorySourceRefSchema,
+    sourceCapabilities: z.array(representationSchema).min(1).max(4),
+    activationRepresentation: representationSchema,
     id: uuidSchema,
     logicalGrantId: uuidSchema,
     logicalMemoryId: uuidSchema,
@@ -296,9 +308,10 @@ const remoteGrantSchema = z
     teamId: uuidSchema,
     teamWorkspaceId: uuidSchema,
     consentId: uuidSchema,
-    ownerAllowedRepresentations: representationsSchema,
-    activeRepresentation: representationSchema.nullable(),
-    representationPolicyRevision: z.number().int().safe().positive(),
+    mode: z.enum(["snapshot", "continuous"]),
+    maximumFidelity: maximumFidelitySchema,
+    includeCuratedMemory: z.boolean(),
+    fidelityPolicyRevision: z.number().int().safe().positive(),
     sourceRevision: z.number().int().safe().min(0),
     grantVersion: z.number().int().safe().positive(),
     lifecycle: z.enum([
@@ -469,12 +482,10 @@ export interface CollaborationSharedMemoryAuthorityStore {
   /** Durably records the response with its authoritative remote revision. */
   persistAuthoritativePreview(input: {
     identity: AuthorityIdentity;
-    allowedRepresentations: Representation[];
     preview: z.infer<typeof remotePreviewSchema>;
   }): Promise<CollaborationPersistedSharedMemoryPreview | null>;
   persistAuthoritativeCandidatePreview(input: {
     identity: AuthorityIdentity;
-    allowedRepresentations: Representation[];
     preview: z.infer<typeof remotePreviewSchema>;
     previewExpiresAt: string;
   }): Promise<CollaborationPersistedSharedMemoryPreview | null>;
@@ -573,6 +584,7 @@ export interface CollaborationSharedMemoryControlOptions {
     localOwnerUserId: string;
     sessionId: string;
     representation: Representation;
+    mode: "snapshot" | "continuous";
   }): Promise<SharedMemoryCandidatePreview | null>;
   loadPersonalNoteCandidatePreview?(input: {
     localOwnerUserId: string;
@@ -605,22 +617,29 @@ const readStoredDesktopCredential: DesktopCredentialReader = (koedHome) => {
 export interface CollaborationSharedMemoryControl {
   resolvePreviewTarget(
     input: {
+      source: shared.SharedMemorySourceRef;
+      sourceCapabilities: Representation[];
       logicalMemoryId: string;
       teamId: string;
       workspaceId: string;
-      representation: Representation;
-      allowedRepresentations: Representation[];
+      activationRepresentation: Representation;
+      maximumFidelity: MaximumFidelity;
+      includeCuratedMemory: boolean;
+      mode: "snapshot" | "continuous";
     },
     context: CollaborationSharedMemoryControlDispatchContext
   ): Promise<{ remoteReplicaId: string } | null>;
   resolveConsentPreview(
     input: {
       source: shared.SharedMemorySourceRef;
+      sourceCapabilities: Representation[];
+      activationRepresentation: Representation;
       logicalMemoryId: string;
       teamId: string;
       workspaceId: string;
-      selectedRepresentation: Representation;
-      allowedRepresentations: Representation[];
+      maximumFidelity: MaximumFidelity;
+      includeCuratedMemory: boolean;
+      mode: "snapshot" | "continuous";
       previewRevision: number;
       previewHash: string;
     },
@@ -719,13 +738,6 @@ const commandNameFrom = (
   isControlCommandName((value as { command?: unknown }).command)
     ? ((value as { command: SharedMemoryControlCommandName }).command ?? null)
     : null;
-
-const sameRepresentations = (
-  left: readonly Representation[],
-  right: readonly Representation[]
-): boolean =>
-  left.length === right.length &&
-  left.every((representation) => right.includes(representation));
 
 const sameIdentity = (
   value: AuthorityIdentity,
@@ -1379,7 +1391,7 @@ const previewSnapshotKey = (
     previewHash: preview.previewHash,
     previewRevision: preview.previewRevision,
     sourceRevision: preview.sourceRevision,
-    redactedContentHash: preview.redactedContentHash,
+    sourceContentHash: preview.sourceContentHash,
     itemIds: preview.items.map((item) => item.sourceId)
   });
 
@@ -1391,7 +1403,7 @@ const previewDto = (
 ): z.infer<typeof sharedMemoryPreviewSchema> | null => {
   const slice = preview.items.slice(offset, offset + limit);
   const items = mapSourceItems(
-    preview.representation,
+    preview.activationRepresentation,
     slice,
     offset,
     preview.sourceHash
@@ -1399,18 +1411,21 @@ const previewDto = (
   if (!items) return null;
   const nextOffset = offset + slice.length;
   return {
-    ...(preview.source ? { source: preview.source } : {}),
+    source: preview.source,
+    sourceCapabilities: preview.sourceCapabilities,
     logicalMemoryId: preview.logicalMemoryId,
     teamId: preview.teamId,
     workspaceId: preview.teamWorkspaceId,
-    representation: preview.representation,
-    allowedRepresentations: preview.allowedRepresentations,
+    activationRepresentation: preview.activationRepresentation,
+    maximumFidelity: preview.maximumFidelity,
+    includeCuratedMemory: preview.includeCuratedMemory,
+    mode: preview.mode,
     previewRevision: preview.previewRevision,
     sourceRevision: preview.sourceRevision,
-    policyRevision: preview.binding.representationPolicyRevision,
+    policyRevision: preview.binding.fidelityPolicyRevision,
     contentPolicyVersion: preview.binding.contentPolicyVersion,
     classifierVersion: preview.binding.classifierVersion,
-    redactedContentHash: preview.redactedContentHash,
+    sourceContentHash: preview.sourceContentHash,
     previewHash: preview.previewHash,
     itemCount: preview.items.length,
     items,
@@ -1433,8 +1448,7 @@ const previewDto = (
 const persistedPreviewMatches = (
   preview: CollaborationPersistedSharedMemoryPreview,
   identity: AuthorityIdentity,
-  remote: z.infer<typeof remotePreviewSchema>,
-  allowedRepresentations: Representation[]
+  remote: z.infer<typeof remotePreviewSchema>
 ): boolean =>
   sameIdentity(preview, identity) &&
   preview.previewId === remote.previewId &&
@@ -1444,13 +1458,17 @@ const persistedPreviewMatches = (
   preview.logicalMemoryId === remote.logicalMemoryId &&
   preview.teamId === remote.teamId &&
   preview.teamWorkspaceId === remote.teamWorkspaceId &&
-  preview.representation === remote.representation &&
+  canonicalJson(preview.sourceCapabilities) ===
+    canonicalJson(remote.sourceCapabilities) &&
+  preview.activationRepresentation === remote.activationRepresentation &&
+  preview.maximumFidelity === remote.maximumFidelity &&
+  preview.includeCuratedMemory === remote.includeCuratedMemory &&
+  preview.mode === remote.mode &&
   preview.sourceRevision === remote.sourceRevision &&
   preview.sourceHash === remote.sourceHash &&
-  preview.redactedContentHash === remote.redactedContentHash &&
+  preview.sourceContentHash === remote.sourceContentHash &&
   canonicalJson(preview.binding) === canonicalJson(remote.binding) &&
-  canonicalJson(preview.items) === canonicalJson(remote.items) &&
-  sameRepresentations(preview.allowedRepresentations, allowedRepresentations);
+  canonicalJson(preview.items) === canonicalJson(remote.items);
 
 const remoteGrantMatchesPersisted = (
   remote: z.infer<typeof remoteGrantSchema>,
@@ -1463,19 +1481,18 @@ const remoteGrantMatchesPersisted = (
     grant.id === remote.id &&
     crossIdentitySyncDigest(grant.source ?? null) ===
       crossIdentitySyncDigest(remote.source ?? null) &&
+    canonicalJson(grant.sourceCapabilities) ===
+      canonicalJson(remote.sourceCapabilities) &&
+    grant.activationRepresentation === remote.activationRepresentation &&
     grant.logicalGrantId === remote.logicalGrantId &&
     grant.logicalMemoryId === remote.logicalMemoryId &&
     grant.ownerUserId === remote.ownerUserId &&
     grant.teamId === remote.teamId &&
     grant.workspaceId === remote.teamWorkspaceId &&
     grant.consentId === remote.consentId &&
-    sameRepresentations(
-      grant.ownerAllowedRepresentations,
-      remote.ownerAllowedRepresentations
-    ) &&
-    grant.activeRepresentation === remote.activeRepresentation &&
-    grant.representationPolicyRevision ===
-      remote.representationPolicyRevision &&
+    grant.maximumFidelity === remote.maximumFidelity &&
+    grant.includeCuratedMemory === remote.includeCuratedMemory &&
+    grant.fidelityPolicyRevision === remote.fidelityPolicyRevision &&
     grant.sourceRevision === remote.sourceRevision &&
     grant.grantVersion === remote.grantVersion &&
     grant.lifecycle === remote.lifecycle &&
@@ -1504,19 +1521,18 @@ const remoteGrantCanRefreshPersisted = (
     grant.id === remote.id &&
     crossIdentitySyncDigest(grant.source ?? null) ===
       crossIdentitySyncDigest(remote.source ?? null) &&
+    canonicalJson(grant.sourceCapabilities) ===
+      canonicalJson(remote.sourceCapabilities) &&
+    grant.activationRepresentation === remote.activationRepresentation &&
     grant.logicalGrantId === remote.logicalGrantId &&
     grant.logicalMemoryId === remote.logicalMemoryId &&
     grant.ownerUserId === remote.ownerUserId &&
     grant.teamId === remote.teamId &&
     grant.workspaceId === remote.teamWorkspaceId &&
     grant.consentId === remote.consentId &&
-    sameRepresentations(
-      grant.ownerAllowedRepresentations,
-      remote.ownerAllowedRepresentations
-    ) &&
-    grant.activeRepresentation === remote.activeRepresentation &&
-    grant.representationPolicyRevision ===
-      remote.representationPolicyRevision &&
+    grant.maximumFidelity === remote.maximumFidelity &&
+    grant.includeCuratedMemory === remote.includeCuratedMemory &&
+    grant.fidelityPolicyRevision === remote.fidelityPolicyRevision &&
     grant.grantVersion === remote.grantVersion &&
     grant.createdAt === remote.createdAt &&
     remote.sourceRevision > grant.sourceRevision &&
@@ -1655,7 +1671,8 @@ const dispatchLoadSource = async (
     CollaborationSharedMemoryControlCommand,
     { command: "collaboration.load_shared_source_page" }
   >,
-  prefetchedPayload?: Record<string, unknown>
+  prefetchedPayload?: Record<string, unknown>,
+  prefetchedRepresentation?: Representation
 ): Promise<CollaborationCommandResult> => {
   const ref = command.input.sharedSession;
   const preliminaryCursor = command.input.cursor
@@ -1682,28 +1699,31 @@ const dispatchLoadSource = async (
       throw new ControlFailure("history_expired");
     }
   }
-  const payload =
-    prefetchedPayload ??
-    (await remoteRequest(options, authority, {
-      method: "GET",
-      path: queryPath(
-        `${scopedGrantPath({
-          teamId: ref.teamId,
-          workspaceId: ref.workspaceId,
-          shareGrantId: ref.sharedSessionId
-        })}/page`,
-        {
-          representation: preliminaryCursor?.success
-            ? preliminaryCursor.data.representation
-            : null,
-          direction: command.input.direction,
-          boundary: preliminaryCursor?.success
-            ? preliminaryCursor.data.boundary
-            : null,
-          limit: command.input.limit
-        }
-      )
-    }));
+  if (!prefetchedPayload && !preliminaryCursor?.success) {
+    throw new ControlFailure("invalid_input");
+  }
+  const payload = prefetchedPayload
+    ? prefetchedPayload
+    : await remoteRequest(options, authority, {
+        method: "GET",
+        path: queryPath(
+          `${scopedGrantPath({
+            teamId: ref.teamId,
+            workspaceId: ref.workspaceId,
+            shareGrantId: ref.sharedSessionId
+          })}/page`,
+          {
+            representation: preliminaryCursor?.success
+              ? preliminaryCursor.data.representation
+              : null,
+            direction: command.input.direction,
+            boundary: preliminaryCursor?.success
+              ? preliminaryCursor.data.boundary
+              : null,
+            limit: command.input.limit
+          }
+        )
+      });
   const parsed = remoteReadSchema.safeParse(payload.sharedMemory);
   if (!parsed.success) throw new ControlFailure("internal_error");
   const remote = parsed.data;
@@ -1717,7 +1737,13 @@ const dispatchLoadSource = async (
     remote.grant.teamId !== ref.teamId ||
     remote.grant.teamWorkspaceId !== ref.workspaceId ||
     remote.grant.lifecycle !== "active" ||
-    remote.grant.activeRepresentation !== binding.representation ||
+    (prefetchedRepresentation !== undefined &&
+      binding.representation !== prefetchedRepresentation) ||
+    !sharedMemoryCeilingAuthorizes(
+      remote.grant.maximumFidelity,
+      binding.representation,
+      remote.grant.includeCuratedMemory
+    ) ||
     remote.representation.shareGrantId !== binding.shareGrantId ||
     remote.representation.logicalMemoryId !== binding.logicalMemoryId ||
     remote.representation.teamId !== ref.teamId ||
@@ -1954,7 +1980,8 @@ const dispatchCandidatePreview = async (
       : await options.loadLocalCandidatePreview?.({
           localOwnerUserId: authority.localOwnerUserId,
           sessionId: candidateSessionId!,
-          representation: command.input.representation
+          representation: command.input.activationRepresentation,
+          mode: command.input.mode
         })
   );
   if (
@@ -1970,13 +1997,20 @@ const dispatchCandidatePreview = async (
     crossIdentitySyncDigest(candidate.data.manifest) !==
       crossIdentitySyncDigest(command.input.candidate.manifest) ||
     candidate.data.byteCount !== command.input.candidate.byteCount ||
-    candidate.data.representation !== command.input.representation ||
+    canonicalJson(candidate.data.sourceCapabilities) !==
+      canonicalJson(command.input.sourceCapabilities) ||
+    candidate.data.activationRepresentation !==
+      command.input.activationRepresentation ||
+    candidate.data.mode !== command.input.mode ||
+    candidate.data.expiresAt !== command.input.candidate.expiresAt ||
     candidate.data.items.length === 0
   ) {
     throw new ControlFailure("conflict");
   }
   const binding = sharedMemoryCandidatePreviewActionGrantBinding({
     referenceId: command.input.actionGrant.id,
+    source: candidate.data.source,
+    sourceCapabilities: candidate.data.sourceCapabilities,
     logicalMemoryId: command.input.logicalMemoryId,
     candidateHash: candidate.data.candidateHash,
     sourceRevision: candidate.data.sourceRevision,
@@ -1986,11 +2020,11 @@ const dispatchCandidatePreview = async (
     manifest: candidate.data.manifest,
     teamId: command.input.teamId,
     teamWorkspaceId: command.input.workspaceId,
-    representation: command.input.representation,
-    allowedRepresentations: command.input.allowedRepresentations,
-    mode: command.input.candidate.mode,
-    expiresAt: command.input.candidate.expiresAt,
-    source: candidate.data.source
+    activationRepresentation: command.input.activationRepresentation,
+    maximumFidelity: command.input.maximumFidelity,
+    includeCuratedMemory: command.input.includeCuratedMemory,
+    mode: command.input.mode,
+    expiresAt: command.input.candidate.expiresAt
   });
   const payload = await remoteRequest(options, authority, {
     method: binding.method,
@@ -2012,8 +2046,14 @@ const dispatchCandidatePreview = async (
     admission.data.sourceRevision !== candidate.data.sourceRevision ||
     admission.data.teamId !== command.input.teamId ||
     admission.data.teamWorkspaceId !== command.input.workspaceId ||
-    admission.data.representation !== command.input.representation ||
-    admission.data.mode !== command.input.candidate.mode ||
+    canonicalJson(admission.data.sourceCapabilities) !==
+      canonicalJson(command.input.sourceCapabilities) ||
+    admission.data.activationRepresentation !==
+      command.input.activationRepresentation ||
+    admission.data.maximumFidelity !== command.input.maximumFidelity ||
+    admission.data.includeCuratedMemory !==
+      command.input.includeCuratedMemory ||
+    admission.data.mode !== command.input.mode ||
     admission.data.expiresAt !== command.input.candidate.expiresAt ||
     admission.data.itemCount !== candidate.data.itemCount ||
     admission.data.excludedItemCount !== candidate.data.excludedItemCount ||
@@ -2028,25 +2068,29 @@ const dispatchCandidatePreview = async (
   }
   const remotePreview = remotePreviewSchema.parse({
     source: admission.data.source,
+    sourceCapabilities: admission.data.sourceCapabilities,
     previewId: admission.data.previewId,
     previewHash: admission.data.previewHash,
     previewRevision: admission.data.previewRevision,
     logicalMemoryId: admission.data.logicalMemoryId,
     teamId: admission.data.teamId,
     teamWorkspaceId: admission.data.teamWorkspaceId,
-    representation: admission.data.representation,
+    activationRepresentation: admission.data.activationRepresentation,
+    maximumFidelity: admission.data.maximumFidelity,
+    includeCuratedMemory: admission.data.includeCuratedMemory,
+    mode: admission.data.mode,
     binding: {
       sourceRevision: admission.data.sourceRevision,
       sourceHash: admission.data.sourceHash,
-      representationPolicyRevision: admission.data.representationPolicyRevision,
-      representationPolicyHash: admission.data.representationPolicyHash,
+      fidelityPolicyRevision: admission.data.representationPolicyRevision,
+      fidelityPolicyHash: admission.data.representationPolicyHash,
       contentPolicyVersion: admission.data.contentPolicyVersion,
       contentPolicyHash: admission.data.contentPolicyHash,
       classifierVersion: admission.data.classifierVersion,
       classifierHash: admission.data.classifierHash
     },
     items: candidateRemoteItems(candidate.data),
-    redactedContentHash: admission.data.redactedContentHash,
+    sourceContentHash: admission.data.redactedContentHash,
     sourceRevision: admission.data.sourceRevision,
     sourceHash: admission.data.sourceHash,
     createdAt: admission.data.createdAt
@@ -2055,7 +2099,6 @@ const dispatchCandidatePreview = async (
   const persisted = persistedPreviewSchema.safeParse(
     await options.authorityStore.persistAuthoritativeCandidatePreview({
       identity,
-      allowedRepresentations: command.input.allowedRepresentations,
       preview: remotePreview,
       previewExpiresAt: admission.data.previewExpiresAt
     })
@@ -2090,19 +2133,19 @@ const dispatchPreview = async (
       logicalMemoryId: command.input.logicalMemoryId,
       teamId: command.input.teamId,
       workspaceId: command.input.workspaceId,
-      representation: command.input.representation
+      representation: command.input.activationRepresentation
     })
   );
   if (!target.success) throw new ControlFailure("permission_denied");
   if (
-    command.input.representation === "lcm_leaves" ||
-    command.input.representation === "lcm_rollups"
+    command.input.activationRepresentation === "lcm_leaves" ||
+    command.input.activationRepresentation === "lcm_rollups"
   ) {
     const preparationState = await options.prepareLocalLcmRepresentation?.({
       localOwnerUserId: authority.localOwnerUserId,
       localSessionId: target.data.localSessionId,
       syncRelationshipId: target.data.syncRelationshipId,
-      representation: command.input.representation
+      representation: command.input.activationRepresentation
     });
     if (preparationState !== "ready") {
       throw new ControlFailure("representation_pending");
@@ -2110,12 +2153,16 @@ const dispatchPreview = async (
   }
   const binding = sharedMemoryPreviewActionGrantBinding({
     referenceId: command.input.actionGrant.id,
+    source: command.input.source,
+    sourceCapabilities: command.input.sourceCapabilities,
     logicalMemoryId: command.input.logicalMemoryId,
     remoteReplicaId: target.data.remoteReplicaId,
     teamId: command.input.teamId,
     teamWorkspaceId: command.input.workspaceId,
-    representation: command.input.representation,
-    allowedRepresentations: command.input.allowedRepresentations
+    activationRepresentation: command.input.activationRepresentation,
+    maximumFidelity: command.input.maximumFidelity,
+    includeCuratedMemory: command.input.includeCuratedMemory,
+    mode: command.input.mode
   });
   const payload = await remoteRequest(options, authority, {
     method: binding.method,
@@ -2135,7 +2182,15 @@ const dispatchPreview = async (
     remote.data.logicalMemoryId !== command.input.logicalMemoryId ||
     remote.data.teamId !== command.input.teamId ||
     remote.data.teamWorkspaceId !== command.input.workspaceId ||
-    remote.data.representation !== command.input.representation ||
+    crossIdentitySyncDigest(remote.data.source) !==
+      crossIdentitySyncDigest(command.input.source) ||
+    canonicalJson(remote.data.sourceCapabilities) !==
+      canonicalJson(command.input.sourceCapabilities) ||
+    remote.data.activationRepresentation !==
+      command.input.activationRepresentation ||
+    remote.data.maximumFidelity !== command.input.maximumFidelity ||
+    remote.data.includeCuratedMemory !== command.input.includeCuratedMemory ||
+    remote.data.mode !== command.input.mode ||
     remote.data.sourceRevision !== remote.data.binding.sourceRevision ||
     remote.data.sourceHash !== remote.data.binding.sourceHash ||
     remote.data.items.some(
@@ -2149,20 +2204,12 @@ const dispatchPreview = async (
   const persistedValue =
     await options.authorityStore.persistAuthoritativePreview({
       identity,
-      allowedRepresentations: command.input.allowedRepresentations,
       preview: remote.data
     });
   if (persistedValue === null) throw new ControlFailure("not_available");
   const persisted = persistedPreviewSchema.safeParse(persistedValue);
   if (!persisted.success) throw new ControlFailure("internal_error");
-  if (
-    !persistedPreviewMatches(
-      persisted.data,
-      identity,
-      remote.data,
-      command.input.allowedRepresentations
-    )
-  ) {
+  if (!persistedPreviewMatches(persisted.data, identity, remote.data)) {
     throw new ControlFailure("not_available");
   }
   const dto = previewDto(
@@ -2251,13 +2298,15 @@ const dispatchShare = async (
     preview.data.logicalMemoryId !== command.input.logicalMemoryId ||
     preview.data.teamId !== command.input.teamId ||
     preview.data.teamWorkspaceId !== command.input.workspaceId ||
-    preview.data.representation !== command.input.selectedRepresentation ||
-    crossIdentitySyncDigest(preview.data.source ?? null) !==
+    preview.data.activationRepresentation !==
+      command.input.activationRepresentation ||
+    canonicalJson(preview.data.sourceCapabilities) !==
+      canonicalJson(command.input.sourceCapabilities) ||
+    crossIdentitySyncDigest(preview.data.source) !==
       crossIdentitySyncDigest(command.input.source) ||
-    !sameRepresentations(
-      preview.data.allowedRepresentations,
-      command.input.allowedRepresentations
-    )
+    preview.data.maximumFidelity !== command.input.maximumFidelity ||
+    preview.data.includeCuratedMemory !== command.input.includeCuratedMemory ||
+    preview.data.mode !== command.input.mode
   ) {
     throw new ControlFailure("conflict");
   }
@@ -2265,6 +2314,8 @@ const dispatchShare = async (
   const binding = sharedMemoryPendingShareActionGrantBinding({
     referenceId: command.input.actionGrant.id,
     source: pendingSource,
+    sourceCapabilities: command.input.sourceCapabilities,
+    activationRepresentation: command.input.activationRepresentation,
     mutationId: command.input.mutationId,
     logicalGrantId: command.input.logicalGrantId,
     logicalMemoryId: command.input.logicalMemoryId,
@@ -2275,8 +2326,8 @@ const dispatchShare = async (
     previewRevision: command.input.previewRevision,
     previewHash: command.input.previewHash,
     mode: command.input.mode,
-    allowedRepresentations: command.input.allowedRepresentations,
-    selectedRepresentation: command.input.selectedRepresentation,
+    maximumFidelity: command.input.maximumFidelity,
+    includeCuratedMemory: command.input.includeCuratedMemory,
     expiresAt: command.input.expiresAt,
     title: command.input.title
   });
@@ -2305,17 +2356,19 @@ const dispatchShare = async (
     pendingShare.data.logicalGrantId !== command.input.logicalGrantId ||
     pendingShare.data.consentId !== command.input.consentId ||
     pendingShare.data.logicalMemoryId !== command.input.logicalMemoryId ||
-    crossIdentitySyncDigest(pendingShare.data.source ?? null) !==
+    crossIdentitySyncDigest(pendingShare.data.source) !==
       crossIdentitySyncDigest(pendingSource) ||
+    canonicalJson(pendingShare.data.sourceCapabilities) !==
+      canonicalJson(command.input.sourceCapabilities) ||
     pendingShare.data.teamId !== command.input.teamId ||
     pendingShare.data.workspaceId !== command.input.workspaceId ||
-    pendingShare.data.representation !== command.input.selectedRepresentation ||
+    pendingShare.data.activationRepresentation !==
+      command.input.activationRepresentation ||
     pendingShare.data.mode !== command.input.mode ||
     pendingShare.data.sourceRevision !== preview.data.sourceRevision ||
-    !sameRepresentations(
-      pendingShare.data.allowedRepresentations,
-      command.input.allowedRepresentations
-    ) ||
+    pendingShare.data.maximumFidelity !== command.input.maximumFidelity ||
+    pendingShare.data.includeCuratedMemory !==
+      command.input.includeCuratedMemory ||
     pendingShare.data.workspaceAccessState !== "none" ||
     pendingShare.data.state !== "preparing"
   ) {
@@ -2629,8 +2682,8 @@ const dispatchListOwnedShares = async (
         : entry.grant.teamWorkspaceId;
     const representation =
       entry.kind === "pending"
-        ? entry.pendingShare.representation
-        : entry.grant.activeRepresentation;
+        ? entry.pendingShare.activationRepresentation
+        : entry.grant.activationRepresentation;
     return representation
       ? {
           logicalMemoryId,
@@ -2767,8 +2820,8 @@ const dispatchGetOwnedShare = async (
   const entry = detail.data.share;
   const sourceRepresentation =
     entry.kind === "pending"
-      ? entry.pendingShare.representation
-      : entry.grant.activeRepresentation;
+      ? entry.pendingShare.activationRepresentation
+      : entry.grant.activationRepresentation;
   const sourceTarget = sourceRepresentation
     ? await options.authorityStore.resolvePreviewTarget({
         ...identity,
@@ -2792,14 +2845,14 @@ const dispatchGetOwnedShare = async (
     sourceSessionId: sourceTarget?.localSessionId ?? null
   };
   const authorizedPreview = entry.summary.authorizedPreview;
-  const expectedRepresentation =
+  const maximumFidelity =
     entry.kind === "pending"
-      ? entry.pendingShare.representation
-      : entry.grant.activeRepresentation;
-  const allowedRepresentations =
+      ? entry.pendingShare.maximumFidelity
+      : entry.grant.maximumFidelity;
+  const includeCuratedMemory =
     entry.kind === "pending"
-      ? entry.pendingShare.allowedRepresentations
-      : entry.grant.ownerAllowedRepresentations;
+      ? entry.pendingShare.includeCuratedMemory
+      : entry.grant.includeCuratedMemory;
   let persistedPreviewValue = authorizedPreview
     ? await options.authorityStore.readAuthoritativePreview({
         ...identity,
@@ -2826,24 +2879,24 @@ const dispatchGetOwnedShare = async (
         (entry.kind === "pending"
           ? entry.pendingShare.workspaceId
           : entry.grant.teamWorkspaceId) ||
-      remotePreview.representation !== expectedRepresentation
+      !sharedMemoryCeilingAuthorizes(
+        maximumFidelity,
+        remotePreview.activationRepresentation,
+        includeCuratedMemory
+      ) ||
+      remotePreview.maximumFidelity !== maximumFidelity ||
+      remotePreview.includeCuratedMemory !== includeCuratedMemory
     ) {
       throw new ControlFailure("permission_denied");
     }
     persistedPreviewValue =
       await options.authorityStore.persistAuthoritativePreview({
         identity,
-        allowedRepresentations,
         preview: remotePreview
       });
     if (
       !persistedPreviewValue ||
-      !persistedPreviewMatches(
-        persistedPreviewValue,
-        identity,
-        remotePreview,
-        allowedRepresentations
-      )
+      !persistedPreviewMatches(persistedPreviewValue, identity, remotePreview)
     ) {
       throw new ControlFailure("not_available");
     }
@@ -2872,7 +2925,11 @@ const dispatchGetOwnedShare = async (
       (entry.kind === "pending"
         ? entry.pendingShare.workspaceId
         : entry.grant.teamWorkspaceId) &&
-    persistedPreview.data.representation === expectedRepresentation
+    sharedMemoryCeilingAuthorizes(
+      maximumFidelity,
+      persistedPreview.data.activationRepresentation,
+      includeCuratedMemory
+    )
       ? previewDto(
           authority,
           persistedPreview.data,
@@ -3065,12 +3122,12 @@ const dispatchConversationSourceAccess = async (
   return result;
 };
 
-const dispatchChangeRepresentation = async (
+const dispatchChangeFidelity = async (
   options: CollaborationSharedMemoryControlOptions,
   authority: ResolvedAuthority,
   command: Extract<
     CollaborationSharedMemoryControlCommand,
-    { command: "collaboration.change_shared_memory_representation" }
+    { command: "collaboration.change_shared_memory_fidelity" }
   >
 ): Promise<CollaborationCommandResult> => {
   const identity = authorityIdentity(authority);
@@ -3107,19 +3164,24 @@ const dispatchChangeRepresentation = async (
     parsedPreview.data.logicalMemoryId !== prior.grant.logicalMemoryId ||
     parsedPreview.data.teamId !== command.input.teamId ||
     parsedPreview.data.teamWorkspaceId !== command.input.workspaceId ||
-    parsedPreview.data.representation !== command.input.representation ||
-    crossIdentitySyncDigest(parsedPreview.data.source ?? null) !==
+    parsedPreview.data.activationRepresentation !==
+      command.input.activationRepresentation ||
+    canonicalJson(parsedPreview.data.sourceCapabilities) !==
+      canonicalJson(command.input.sourceCapabilities) ||
+    crossIdentitySyncDigest(parsedPreview.data.source) !==
       crossIdentitySyncDigest(source) ||
-    !sameRepresentations(
-      parsedPreview.data.allowedRepresentations,
-      command.input.allowedRepresentations
-    )
+    parsedPreview.data.maximumFidelity !== command.input.maximumFidelity ||
+    parsedPreview.data.includeCuratedMemory !==
+      command.input.includeCuratedMemory ||
+    parsedPreview.data.mode !== command.input.mode
   ) {
     throw new ControlFailure("conflict");
   }
-  const binding = sharedMemoryRepresentationBundleActionGrantBinding({
+  const binding = sharedMemoryFidelityBundleActionGrantBinding({
     referenceId: command.input.actionGrant.id,
     source,
+    sourceCapabilities: command.input.sourceCapabilities,
+    activationRepresentation: command.input.activationRepresentation,
     mutationId: command.input.mutationId,
     logicalMemoryId: command.input.logicalMemoryId,
     teamId: command.input.teamId,
@@ -3127,10 +3189,10 @@ const dispatchChangeRepresentation = async (
     shareGrantId: command.input.shareGrantId,
     consentId: command.input.consentId,
     previewId: parsedPreview.data.previewId,
-    representation: command.input.representation,
     expectedGrantVersion: command.input.expectedGrantVersion,
     mode: command.input.mode,
-    allowedRepresentations: command.input.allowedRepresentations,
+    maximumFidelity: command.input.maximumFidelity,
+    includeCuratedMemory: command.input.includeCuratedMemory,
     previewRevision: command.input.previewRevision,
     previewHash: command.input.previewHash,
     expiresAt: command.input.expiresAt
@@ -3159,19 +3221,21 @@ const dispatchChangeRepresentation = async (
     pendingShare.data.mutationId !== command.input.mutationId ||
     pendingShare.data.consentId !== command.input.consentId ||
     pendingShare.data.logicalMemoryId !== command.input.logicalMemoryId ||
-    crossIdentitySyncDigest(pendingShare.data.source ?? null) !==
+    crossIdentitySyncDigest(pendingShare.data.source) !==
       crossIdentitySyncDigest(source) ||
+    canonicalJson(pendingShare.data.sourceCapabilities) !==
+      canonicalJson(command.input.sourceCapabilities) ||
     pendingShare.data.teamId !== command.input.teamId ||
     pendingShare.data.workspaceId !== command.input.workspaceId ||
-    pendingShare.data.representation !== command.input.representation ||
+    pendingShare.data.activationRepresentation !==
+      command.input.activationRepresentation ||
+    pendingShare.data.maximumFidelity !== command.input.maximumFidelity ||
+    pendingShare.data.includeCuratedMemory !==
+      command.input.includeCuratedMemory ||
     pendingShare.data.sourceRevision !== parsedPreview.data.sourceRevision ||
     pendingShare.data.grantId !== command.input.shareGrantId ||
     pendingShare.data.workspaceAccessState !== "active" ||
-    pendingShare.data.state !== "preparing" ||
-    !sameRepresentations(
-      pendingShare.data.allowedRepresentations,
-      command.input.allowedRepresentations
-    )
+    pendingShare.data.state !== "preparing"
   ) {
     throw new ControlFailure("permission_denied");
   }
@@ -3229,8 +3293,8 @@ const dispatchResolved = async (
       return dispatchShare(options, authority, command);
     case "collaboration.revoke_shared_memory":
       return dispatchRevoke(options, authority, command);
-    case "collaboration.change_shared_memory_representation":
-      return dispatchChangeRepresentation(options, authority, command);
+    case "collaboration.change_shared_memory_fidelity":
+      return dispatchChangeFidelity(options, authority, command);
   }
 };
 
@@ -3242,11 +3306,14 @@ export const createCollaborationSharedMemoryControl = (
     const parsedInput = z
       .object({
         source: sharedMemorySourceRefSchema,
+        sourceCapabilities: z.array(representationSchema).min(1).max(4),
+        activationRepresentation: representationSchema,
         logicalMemoryId: uuidSchema,
         teamId: uuidSchema,
         workspaceId: uuidSchema,
-        representation: representationSchema,
-        allowedRepresentations: representationsSchema
+        maximumFidelity: maximumFidelitySchema,
+        includeCuratedMemory: z.boolean(),
+        mode: z.enum(["snapshot", "continuous"])
       })
       .strict()
       .safeParse(input);
@@ -3257,11 +3324,15 @@ export const createCollaborationSharedMemoryControl = (
         requestId: randomUUID(),
         command: "collaboration.preview_shared_memory",
         input: {
+          source: parsedInput.data.source,
+          sourceCapabilities: parsedInput.data.sourceCapabilities,
+          activationRepresentation: parsedInput.data.activationRepresentation,
           logicalMemoryId: parsedInput.data.logicalMemoryId,
           teamId: parsedInput.data.teamId,
           workspaceId: parsedInput.data.workspaceId,
-          representation: parsedInput.data.representation,
-          allowedRepresentations: parsedInput.data.allowedRepresentations,
+          maximumFidelity: parsedInput.data.maximumFidelity,
+          includeCuratedMemory: parsedInput.data.includeCuratedMemory,
+          mode: parsedInput.data.mode,
           actionGrant: { id: randomUUID() }
         }
       });
@@ -3275,7 +3346,7 @@ export const createCollaborationSharedMemoryControl = (
           logicalMemoryId: parsedInput.data.logicalMemoryId,
           teamId: parsedInput.data.teamId,
           workspaceId: parsedInput.data.workspaceId,
-          representation: parsedInput.data.representation
+          representation: parsedInput.data.activationRepresentation
         })
       );
       return target.success ? target.data : null;
@@ -3288,11 +3359,14 @@ export const createCollaborationSharedMemoryControl = (
     const parsedInput = z
       .object({
         source: sharedMemorySourceRefSchema,
+        sourceCapabilities: z.array(representationSchema).min(1).max(4),
+        activationRepresentation: representationSchema,
         logicalMemoryId: uuidSchema,
         teamId: uuidSchema,
         workspaceId: uuidSchema,
-        selectedRepresentation: representationSchema,
-        allowedRepresentations: representationsSchema,
+        maximumFidelity: maximumFidelitySchema,
+        includeCuratedMemory: z.boolean(),
+        mode: z.enum(["snapshot", "continuous"]),
         previewRevision: z.number().int().safe().positive(),
         previewHash: hashSchema
       })
@@ -3306,15 +3380,17 @@ export const createCollaborationSharedMemoryControl = (
         command: "collaboration.share_memory",
         input: {
           source: parsedInput.data.source,
+          sourceCapabilities: parsedInput.data.sourceCapabilities,
+          activationRepresentation: parsedInput.data.activationRepresentation,
           mutationId: randomUUID(),
           logicalGrantId: randomUUID(),
           consentId: randomUUID(),
           logicalMemoryId: parsedInput.data.logicalMemoryId,
           teamId: parsedInput.data.teamId,
           workspaceId: parsedInput.data.workspaceId,
-          mode: "snapshot",
-          allowedRepresentations: parsedInput.data.allowedRepresentations,
-          selectedRepresentation: parsedInput.data.selectedRepresentation,
+          mode: parsedInput.data.mode,
+          maximumFidelity: parsedInput.data.maximumFidelity,
+          includeCuratedMemory: parsedInput.data.includeCuratedMemory,
           previewRevision: parsedInput.data.previewRevision,
           previewHash: parsedInput.data.previewHash,
           expiresAt: null,
@@ -3337,17 +3413,19 @@ export const createCollaborationSharedMemoryControl = (
         !sameIdentity(preview.data, identity) ||
         preview.data.previewHash !== parsedInput.data.previewHash ||
         preview.data.previewRevision !== parsedInput.data.previewRevision ||
-        crossIdentitySyncDigest(preview.data.source ?? null) !==
+        crossIdentitySyncDigest(preview.data.source) !==
           crossIdentitySyncDigest(parsedInput.data.source) ||
+        canonicalJson(preview.data.sourceCapabilities) !==
+          canonicalJson(parsedInput.data.sourceCapabilities) ||
+        preview.data.activationRepresentation !==
+          parsedInput.data.activationRepresentation ||
         preview.data.logicalMemoryId !== parsedInput.data.logicalMemoryId ||
         preview.data.teamId !== parsedInput.data.teamId ||
         preview.data.teamWorkspaceId !== parsedInput.data.workspaceId ||
-        preview.data.representation !==
-          parsedInput.data.selectedRepresentation ||
-        !sameRepresentations(
-          preview.data.allowedRepresentations,
-          parsedInput.data.allowedRepresentations
-        )
+        preview.data.maximumFidelity !== parsedInput.data.maximumFidelity ||
+        preview.data.includeCuratedMemory !==
+          parsedInput.data.includeCuratedMemory ||
+        preview.data.mode !== parsedInput.data.mode
       ) {
         return null;
       }
@@ -3427,7 +3505,8 @@ export const createCollaborationSharedMemoryControl = (
         options,
         authority,
         command,
-        payload
+        payload,
+        parsedInput.data.representation
       );
       return { sourceResult, companion };
     } catch (error) {
@@ -3482,27 +3561,33 @@ export const createCollaborationSharedMemoryControl = (
     if (!parsedContext.success) return failure(command, "invalid_input");
     try {
       if (command.command === "collaboration.preview_shared_memory_candidate") {
-        const hasSession = command.input.sessionId !== undefined;
-        const hasNote = command.input.noteId !== undefined;
+        const source = command.input.source;
         if (
-          hasSession === hasNote ||
-          (hasNote && command.input.representation !== "memory_events")
+          source.kind === "personal_note" &&
+          command.input.activationRepresentation !== "memory_events"
         ) {
           return failure(command, "invalid_input");
         }
         const candidate = sharedMemoryCandidatePreviewSchema.safeParse(
-          hasNote
+          source.kind === "personal_note"
             ? await options.loadPersonalNoteCandidatePreview?.({
                 localOwnerUserId: parsedContext.data.localOwnerUserId,
-                noteId: command.input.noteId!
+                noteId: source.noteId
               })
             : await options.loadLocalCandidatePreview?.({
                 localOwnerUserId: parsedContext.data.localOwnerUserId,
-                sessionId: command.input.sessionId!,
-                representation: command.input.representation
+                sessionId: source.sessionId,
+                representation: command.input.activationRepresentation,
+                mode: command.input.mode
               })
         );
-        if (!candidate.success) {
+        if (
+          !candidate.success ||
+          crossIdentitySyncDigest(candidate.data.source) !==
+            crossIdentitySyncDigest(source) ||
+          candidate.data.activationRepresentation !==
+            command.input.activationRepresentation
+        ) {
           return failure(command, "not_available");
         }
         const result = success(command, { candidate: candidate.data });

@@ -23,6 +23,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@koed/shared": "workspace:*",
     "js-tiktoken": "^1.0.21",
     "zod": "^4.4.3"
   }

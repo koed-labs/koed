@@ -11,10 +11,9 @@ pnpm env:setup
 ```
 
 This creates `.env` and generates `API_DATA_ENCRYPTION_KEY`,
-`API_TOKEN_PEPPER`, `EMBEDDING_SERVICE_TOKEN`, and a local
-`POSTGRES_PASSWORD`. If `.env` already exists, the command preserves existing
-values and adds any missing keys from
-`.env.example`.
+`API_TOKEN_PEPPER`, `EMBEDDING_SERVICE_TOKEN`, `PRIVACY_SERVICE_TOKEN`, and a
+local `POSTGRES_PASSWORD`. If `.env` already exists, the command preserves
+existing values and adds any missing keys from `.env.example`.
 
 For server/private VPS deployments, treat `koed-server` as the application
 deployment unit and Postgres, queue backend, Embedding Service, reverse
@@ -37,13 +36,23 @@ documented defaults. API and Worker processes in one deployment must be started
 from the same resolved environment. Changing `.env` after startup has no effect
 until the affected processes are restarted.
 
-External dependency mode means the Operator manages Postgres, Redis/BullMQ, and
-the Embedding Service lifecycle. The services may be launched by Docker Compose,
-systemd, Homebrew, managed infrastructure, or another Operator-managed path.
+External dependency mode means the Operator manages Postgres, Redis/BullMQ, the
+Embedding Service, and the Privacy Service lifecycle. The services may be
+launched by Docker Compose, systemd, Homebrew, managed infrastructure, or
+another Operator-managed path.
 `koed-server` connects to those services and supervises Koed app processes; it
 does not start or stop Docker Compose in this mode.
 
-Bundled-local dependency mode is a native local runtime for Postgres/pgvector and the Embedding Service. In this mode, `koed-server start` starts Koed-owned native runtimes under `KOED_HOME`; it never starts Docker Compose. API/Worker jobs default to `WORK_QUEUE_BACKEND=local`, so Redis is not required for queues unless the Operator explicitly sets `WORK_QUEUE_BACKEND=bullmq`. With BullMQ, Redis is Operator-managed external infrastructure. Native local personal mode stores data, queue state, logs, model files, Postgres data, and runtime state under `KOED_HOME`. This is not an asset, model, Homebrew, or system-service installer; required native binaries and model files still need to exist through the current local setup path.
+Bundled-local dependency mode is a native local runtime for Postgres/pgvector,
+the Embedding Service, and the pinned Privacy Service. In this mode,
+`koed-server start` starts Koed-owned native runtimes under `KOED_HOME`; it never
+starts Docker Compose. API/Worker jobs default to `WORK_QUEUE_BACKEND=local`, so
+Redis is not required for queues unless the Operator explicitly sets
+`WORK_QUEUE_BACKEND=bullmq`. With BullMQ, Redis is Operator-managed external
+infrastructure. Native local personal mode stores data, queue state, logs,
+model files, Postgres data, and runtime state under `KOED_HOME`. Required
+native binaries and pinned model files still need to exist through the current
+local setup path.
 
 Supported mode fields:
 
@@ -74,8 +83,11 @@ Supported mode fields:
   service. Shutdown is valid when those worker timers were never created. The
   Worker continues Personal Projection, embedding, LCM, and
   deletion reembedding, but does not start Cross-Identity Sync, retention purge,
-  collaboration replay pruning, or other Team collaboration jobs. Restart both
-  API and Worker after changing the value.
+  collaboration replay pruning, Privacy Filter infrastructure, or other Team
+  collaboration jobs. External mode does not require Privacy Filter URLs or
+  credentials while this switch is false. Bundled-local and Desktop do not
+  start the Privacy Filter Service or require its model while this switch is
+  false. Restart the supervisor, API, and Worker after changing the value.
 - `KOED_DEVELOPER_TEAM_BACKEND_ENABLED`: an isolated local-testing switch that
   lets the `developer` deployment profile truthfully advertise and serve the
   Team backend capability foundation. It accepts only `true` or `false`,
@@ -652,6 +664,64 @@ policy, or full URLs containing customer content.
   successful package or valid heartbeat.
 - `RETENTION_PURGE_INTERVAL_MS`: Worker interval for claiming and completing
   durable retention purge jobs. Default `1000`; values below `250` are clamped.
+- `PRIVACY_SERVICE_URL`: authenticated internal Privacy Service URL consumed by
+  the Worker. This dependency is required only when
+  `KOED_TEAM_COLLABORATION_ENABLED=true`. Production Team mode requires this
+  setting and fails closed for
+  Team materialization when the service or pinned classifier is unavailable.
+  Personal capture, Projection, LCM, embedding, and Recall continue.
+- `KOED_EXTERNAL_PRIVACY_SERVICE_URL`: `koed-server` external-dependency URL
+  override for the same service.
+- `PRIVACY_SERVICE_TOKEN`: shared internal token required by the Privacy
+  Service. Keep it in deployment secret storage and off public networks.
+- `PRIVACY_RUNTIME_PROVIDER`: Privacy Filter execution preference: `cpu`,
+  `auto`, `cuda`, `coreml`, or `dml`. Bundled-local operation inherits the
+  product-level `KOED_HARDWARE_ACCELERATION` preference and therefore defaults
+  to `auto`; an explicit value remains an Operator override. Candidate
+  accelerators are verified by model load,
+  final-mask parity, and warm calibration before activation. `auto` keeps CPU
+  when accelerator pressure is critical or measured benefit is insufficient;
+  explicit unavailable providers fail without changing the active runtime.
+  Active accelerator inference failure reloads the verified CPU provider and
+  retries the side-effect-free classification once. This setting does not
+  change Embedding Service acceleration.
+- `PRIVACY_GPU_IDLE_UNLOAD_SECONDS`: seconds of Privacy Filter accelerator
+  inactivity before the model is unloaded from accelerator memory. Defaults to
+  `300`; `0` keeps it resident. The next classification reloads the selected
+  provider transparently. CPU inference is unaffected.
+- `PRIVACY_RUNTIME_CONTROL_TOKEN`: separate internal credential for detailed
+  Privacy Filter runtime diagnostics and provider changes. It is retained only
+  by the supervisor/service control boundary and must not be passed to the
+  Worker or other classification callers.
+- `PRIVACY_FINGERPRINT_KEY`: optional stable key of at least 32 bytes for
+  trust-boundary-scoped content fingerprints. Production Team mode requires
+  this or derives it from `API_DATA_ENCRYPTION_KEY`/`DATA_ENCRYPTION_KEY`.
+- `PRIVACY_SERVICE_TIMEOUT_MS`: Worker request timeout. Default `30000`; valid
+  range `100`–`120000`.
+- `PRIVACY_SERVICE_MAX_ATTEMPTS`: bounded Team materialization attempts.
+  Default `3`; valid range `1`–`5`.
+- Transient Privacy Service and Team-safe embedding failures remain durable
+  pending work. PostgreSQL notifications wake immediate work, while each
+  Worker keeps one exact timer for the earliest persisted retry deadline;
+  neither path uses an idle polling interval.
+- `PRIVACY_MATERIALIZATION_TARGET_LIMIT`: Team targets reconciled per Worker
+  pass. Default `25`; valid range `1`–`100`.
+- `PRIVACY_MATERIALIZATION_MAX_FRONTIER_BYTES`: maximum source frontier bytes
+  admitted to one materialization. Default `67108864`; valid range `1024`–
+  `268435456`.
+- `PRIVACY_MATERIALIZATION_MAX_RECORDS`: maximum source records admitted to one
+  materialization. Default `20000`; valid range `1`–`100000`.
+- `PRIVACY_SERVICE_HOST` / `PRIVACY_SERVICE_PORT`: bind address and port for the
+  service process. Defaults to `127.0.0.1:8092`.
+- `PRIVACY_MAX_FIELDS`, `PRIVACY_MAX_FIELD_CHARS`,
+  `PRIVACY_MAX_REQUEST_CHARS`, and `PRIVACY_MAX_BODY_BYTES`: authenticated
+  service abuse and resource bounds. Defaults are `32`, `100000`, `200000`,
+  and `1048576` respectively.
+- `koed-server models status --kind privacy --json` and `koed-server models
+install --kind privacy --json`: verify or install the pinned local Privacy
+  Service model, tokenizer, decoder, and calibration assets in Koed's
+  content-addressed model cache. Runtime configuration cannot silently select a
+  different classifier generation.
 - `COLLABORATION_REPLAY_PRUNE_INTERVAL_MS`: Worker interval for pruning expired
   collaboration replay events after advancing a durable scope-bound low-water
   mark. Default `60000`; values below `1000` are clamped.
@@ -669,7 +739,7 @@ policy, or full URLs containing customer content.
 - `KOED_BUNDLED_EMBEDDING_MODE`: deprecated. Bundled-local Embedding Service is native-only; `compose` is ignored and missing native assets report setup guidance.
 - `KOED_EMBEDDING_LLAMA_SERVER_BIN`: llama-server executable for the native bundled-local Embedding Service. Defaults to `KOED_HOME/runtime/llama.cpp/llama-server`, then packaged Desktop resources when running packaged Desktop, with source-checkout `vendor/llama.cpp/llama-server` only as a development fallback; the Docker default `EMBEDDING_LLAMA_SERVER_BINARY=/opt/llama.cpp/llama-server` is ignored for native auto-detection unless overridden with this setting.
 - `KOED_EMBEDDING_ACCELERATION`: embedding acceleration policy: `auto`, `cpu`, `metal`, or `cuda`. Native bundled-local runs default to `auto`; CPU Docker Compose defaults to `cpu`. `auto` prefers Metal on Apple Silicon and CUDA on Linux/WSL when the selected llama-server reports a compatible device, then falls back visibly to CPU. Explicit GPU policies fail instead of falling back.
-- `KOED_HARDWARE_ACCELERATION`: persisted local inference preference used by Koed Desktop. `auto` enables compatible local acceleration and `cpu` disables it. A service-specific `KOED_EMBEDDING_ACCELERATION` environment value remains the Operator override and makes the Desktop control read-only.
+- `KOED_HARDWARE_ACCELERATION`: persisted local inference preference used by Koed Desktop. `auto` enables compatible local acceleration and `cpu` disables it. Service-specific `KOED_EMBEDDING_ACCELERATION` or `PRIVACY_RUNTIME_PROVIDER` environment values remain Operator overrides and make the Desktop control read-only.
 - `KOED_EMBEDDING_DEVICE`: optional exact llama-server device identifier, such as `CUDA0`. The device must match the requested backend.
 - `KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS`: seconds of accelerator inactivity before llama-server unloads the embedding model from memory. Defaults to `300`; `0` keeps it resident. CPU execution does not use this policy.
 - `KOED_RERANKER_ACCELERATION`: independent reranker acceleration policy. Defaults to `cpu` to avoid unexpected VRAM contention with embedding work.
@@ -837,6 +907,14 @@ These values are copied into the AI Client configuration and are not consumed au
   isolated-index capability. Leave both unset for normal production retrieval. The older
   `KOED_EVAL_RETRIEVAL_COMPOSITION` string is not trusted as a capability.
 - `MEMORY_API_TOKEN`: Personal API Token provisioned for the Local AI Runtime. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`; it is not written into MCP configuration.
+  When Hosted Personal Source Replication is explicitly enabled, the Worker
+  uses this local API bridge to request an owner-bound encrypted embedding
+  artifact from the enrolled upstream before local inference. Missing local
+  bridge configuration fails closed; it does not silently spend local compute
+  or create a second vector. When no hosted policy is active, one capable PDS
+  device obtains the exact relay claim before embedding synchronized source.
+  `getPdsLocalSyncStatus` and operator diagnostics expose only aggregate
+  authority, lease, intent, and accepted-artifact counts.
 - `MEMORY_RAW_INGEST_BATCH_BYTES`: target maximum request size for canonical conversation-item ingestion batches. Default `180000`. Oversized logical items use at most 64 transport chunks of 256 KiB each and fail before upload above the 16 MiB logical-item ceiling.
 - `MEMORY_API_REQUEST_TIMEOUT_MS`: timeout for Local AI Runtime API calls. Default `60_000`.
 - `KOED_AI_CLIENT_INSTANCE_REGISTRY`: explicit JSON registry of local AI Client instances probed by the Local AI Runtime. Default `KOED_HOME/config/ai-client-instances.json`; missing or empty registry publishes no instances. Setup commands register provider defaults.
@@ -985,5 +1063,14 @@ Memory Question paths hydrate encrypted companions after access checks.
 Owner-private remote replicas use the separate
 `OWNER_PRIVATE_REPLICA_*` envelope provider family. Team/general encryption
 keys are not used as a fallback for owner-private replica reads or writes.
+
+Exact Personal Conversation Source and Personal derived artifacts remain
+unchanged and owner-only. Team-readable source, Memory Events, LCM summaries,
+lexical anchors, Curated Memory, evidence, and embedding inputs are separately
+sanitized and encrypted. The effective eight-label content policy is persisted,
+versioned, and hashed; environment values may seed deployment defaults but do
+not reinterpret existing Team representations. Encrypted classification
+results, sanitized artifacts, Team vectors, and their wrapped keys participate
+in retention, hard purge, backup expiry, and encryption rewrap.
 
 Operators should treat the Postgres database and backups as sensitive memory data. Keep Postgres on a private network, restrict database credentials to Koed services and trusted administrators, use encrypted disks or managed-database storage encryption, encrypt backups, and rotate secrets if a backup or database role is exposed.

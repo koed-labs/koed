@@ -9,6 +9,7 @@ Related decisions:
 - [0009 Commercial SaaS Encryption And Key Management](./0009-commercial-saas-encryption-key-management.md)
 - [0012 Symmetric Replicated Personal Memory Across Devices](./0012-symmetric-replicated-personal-memory.md)
 - [0013 Team Collaboration Uses Device-Mediated, Server-Authorized Operations](./0013-team-collaboration-authority.md)
+- [0030 Personal Semantic Work Is Computed Once And Replicated](./0030-single-personal-semantic-computation.md)
 
 ## Context
 
@@ -273,14 +274,16 @@ After complete encrypted bytes are durable, the target:
    object-storage abstraction;
 5. invokes the same provider source adapter and canonical ingestion boundary
    used locally;
-6. derives target-local Projection, Memory Events, embeddings, indexes, graph
-   state, and LCM work;
+6. derives target-local Projection and Memory Events, claims compatible
+   Personal embedding work through the shared semantic-work authority, and
+   imports or publishes accepted embedding and LCM artifacts;
 7. publishes each readiness cohort only when its own atomic visibility
    contract is satisfied.
 
-Remote object bytes never bypass canonical ingestion. Projected rows,
-embeddings, vectors, Memory Nodes, and summaries are deployment-local derived
-data and are not source replication primitives.
+Remote object bytes never bypass canonical ingestion. Projected rows and local
+indexes remain deployment-local. Accepted embeddings and LCM nodes are
+portable semantic artifacts governed by ADR 0030 rather than source
+replication primitives.
 
 Publication records retain the source generation and signed chain head from
 which they were derived. Origin equivocation, source revocation, deletion, or
@@ -304,9 +307,11 @@ contiguous range, recipient key, expiry, and operation id.
 
 The device verifies protocol version, identity, ranges, digests, ordering, and
 closure before materializing the source into its local Koed source storage.
-Local canonical ingestion and derived processing then use the normal source
-adapter. The device must not create a second Captured Session or duplicate
-canonical source rows for a logical source it already holds.
+Local canonical ingestion uses the normal source adapter. Compatible accepted
+embedding and LCM artifacts are imported separately and rebuild local indexes
+without repeated inference. The device must not create a second Captured
+Session or duplicate canonical source rows for a logical source it already
+holds.
 
 Hosted source availability permits complete Conversation viewing, deterministic
 reprocessing, and preparation for execution portability. It does not itself
@@ -398,9 +403,10 @@ download authorization.
 - Active Conversations can become remotely durable and visible while work
   continues locally.
 - A new authenticated device can reconstruct exact Conversation source and
-  derive local Personal Memory.
-- Storage and processing costs increase because each processing backend derives
-  its own semantic data.
+  import or, when no compatible artifact exists, claim derivation of Personal
+  Memory.
+- Storage and bandwidth increase for portable artifacts, while embedding and
+  LCM compute are reused instead of repeated per processing backend.
 - Exact source replication increases the sensitivity of hosted storage and
   requires strict envelope encryption, retention, deletion, backup, and support
   treatment.

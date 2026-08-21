@@ -64,6 +64,7 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
     localOwnerUserId: string;
     sessionId: string;
     representation: SharedMemoryRepresentation;
+    mode: "snapshot" | "continuous";
   }): Promise<SharedMemoryCandidatePreview | null> => {
     const projects = await options.repository.listLcmGraphThreads(
       { userId: input.localOwnerUserId },
@@ -250,11 +251,19 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
       sessionId: input.sessionId,
       logicalMemoryId
     };
+    const sourceCapabilities = [
+      "lcm_rollups" as const,
+      "lcm_leaves" as const,
+      "memory_events" as const,
+      "curated_assertions" as const
+    ];
     const candidateHash = crossIdentitySyncDigest({
-      version: 1,
+      version: 2,
       source,
       sourceOwnerPrincipalId: input.localOwnerUserId,
-      representation: input.representation,
+      sourceCapabilities,
+      activationRepresentation: input.representation,
+      mode: input.mode,
       sourceRevision,
       itemCount: items.length,
       byteCount,
@@ -264,9 +273,11 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
     });
     return {
       source,
-      sessionId: input.sessionId,
       logicalMemoryId,
-      representation: input.representation,
+      sourceCapabilities,
+      activationRepresentation: input.representation,
+      mode: input.mode,
+      expiresAt: null,
       sourceRevision,
       candidateHash,
       itemCount: items.length,
@@ -339,11 +350,14 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
     const byteCount = Buffer.byteLength(JSON.stringify(items[0]), "utf8");
     if (byteCount > 256 * 1_024) return null;
     const manifest = [{ sourceId: event.id, revisionHash }];
+    const sourceCapabilities = ["memory_events" as const];
     const candidateHash = crossIdentitySyncDigest({
-      version: 1,
+      version: 2,
       source,
       sourceOwnerPrincipalId: input.localOwnerUserId,
-      representation: "memory_events",
+      sourceCapabilities,
+      activationRepresentation: "memory_events",
+      mode: "snapshot",
       sourceRevision: 1,
       itemCount: 1,
       byteCount,
@@ -354,7 +368,10 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
     return {
       source,
       logicalMemoryId,
-      representation: "memory_events",
+      sourceCapabilities,
+      activationRepresentation: "memory_events",
+      mode: "snapshot" as const,
+      expiresAt: null,
       sourceRevision: 1,
       candidateHash,
       itemCount: 1,

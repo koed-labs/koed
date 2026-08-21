@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { supportedAiClientDriverIds } from "@koed/shared";
+import { supportedAiClientDriverIds } from "@koed/shared/ai-client-contract";
 
 export const localAiClientCommandChannel = "koed:local-ai-client:command";
 
@@ -43,6 +43,7 @@ export type LocalAiClientCommand = z.infer<typeof localAiClientCommandSchema>;
 
 const modelSchema = z
   .object({
+    id: z.string().min(1),
     displayName: z.string().nullable(),
     provider: z.string().nullable(),
     model: z.string().nullable(),

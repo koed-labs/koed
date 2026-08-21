@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 
 import {
   decryptEnvelopeToUtf8,
+  sharedMemoryCeilingAuthorizes,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
   type SharedMemoryConsent,
+  type SharedMemoryFidelityCeiling,
   type SharedMemoryGrant,
   type SharedMemoryRepresentation,
   type SharedMemorySourceRef,
@@ -18,7 +20,7 @@ export interface CollaborationSharedMemoryAuthorityIdentity {
   upstreamUserId: string;
 }
 
-export interface CollaborationSharedMemoryRedactedSourceItem {
+export interface CollaborationSharedMemoryCanonicalSourceItem {
   itemType:
     | "user_message"
     | "assistant_message"
@@ -38,8 +40,8 @@ export interface CollaborationSharedMemoryRedactedSourceItem {
 export interface CollaborationSharedMemorySourceBinding {
   sourceRevision: number;
   sourceHash: string;
-  representationPolicyRevision: number;
-  representationPolicyHash: string;
+  fidelityPolicyRevision: number;
+  fidelityPolicyHash: string;
   contentPolicyVersion: number;
   contentPolicyHash: string;
   classifierVersion: number;
@@ -47,17 +49,21 @@ export interface CollaborationSharedMemorySourceBinding {
 }
 
 export interface CollaborationRemoteSharedMemoryPreview {
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
+  sourceCapabilities: SharedMemoryRepresentation[];
   previewId: string;
   previewHash: string;
   previewRevision: number;
   logicalMemoryId: string;
   teamId: string;
   teamWorkspaceId: string;
-  representation: SharedMemoryRepresentation;
+  activationRepresentation: SharedMemoryRepresentation;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
+  mode: "snapshot" | "continuous";
   binding: CollaborationSharedMemorySourceBinding;
-  items: CollaborationSharedMemoryRedactedSourceItem[];
-  redactedContentHash: string;
+  items: CollaborationSharedMemoryCanonicalSourceItem[];
+  sourceContentHash: string;
   sourceRevision: number;
   sourceHash: string;
   createdAt: string;
@@ -68,11 +74,12 @@ export interface CollaborationPersistedSharedMemoryPreview
     CollaborationRemoteSharedMemoryPreview,
     CollaborationSharedMemoryAuthorityIdentity {
   previewRevision: number;
-  allowedRepresentations: SharedMemoryRepresentation[];
 }
 
 export interface CollaborationRemoteSharedMemoryConsent {
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
+  sourceCapabilities: SharedMemoryRepresentation[];
+  activationRepresentation: SharedMemoryRepresentation;
   id: string;
   logicalMemoryId: string;
   teamId: string;
@@ -80,8 +87,8 @@ export interface CollaborationRemoteSharedMemoryConsent {
   mode: "snapshot" | "continuous";
   state: "pending" | "active" | "paused" | "revoked" | "expired";
   consentVersion: number;
-  allowedRepresentations: SharedMemoryRepresentation[];
-  selectedRepresentation: SharedMemoryRepresentation;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
   previewRevision: number;
   previewHash: string;
   sourceRevision: number;
@@ -97,7 +104,9 @@ export interface CollaborationPersistedSharedMemoryConsent extends Collaboration
 }
 
 export interface CollaborationRemoteSharedMemoryGrant {
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
+  sourceCapabilities: SharedMemoryRepresentation[];
+  activationRepresentation: SharedMemoryRepresentation;
   id: string;
   logicalGrantId: string;
   logicalMemoryId: string;
@@ -105,9 +114,10 @@ export interface CollaborationRemoteSharedMemoryGrant {
   teamId: string;
   teamWorkspaceId: string;
   consentId: string;
-  ownerAllowedRepresentations: SharedMemoryRepresentation[];
-  activeRepresentation: SharedMemoryRepresentation | null;
-  representationPolicyRevision: number;
+  mode: "snapshot" | "continuous";
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
+  fidelityPolicyRevision: number;
   sourceRevision: number;
   grantVersion: number;
   lifecycle: SharedMemoryGrant["lifecycle"];
@@ -135,7 +145,8 @@ export interface CollaborationPersistedSharedSessionBinding extends Collaboratio
   logicalMemoryId: string;
   teamId: string;
   workspaceId: string;
-  representation: SharedMemoryRepresentation;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
 }
 
 export interface CollaborationSharedMemoryAuthorityStore {
@@ -171,12 +182,10 @@ export interface CollaborationSharedMemoryAuthorityStore {
   >;
   persistAuthoritativePreview(input: {
     identity: CollaborationSharedMemoryAuthorityIdentity;
-    allowedRepresentations: SharedMemoryRepresentation[];
     preview: CollaborationRemoteSharedMemoryPreview;
   }): Promise<CollaborationPersistedSharedMemoryPreview | null>;
   persistAuthoritativeCandidatePreview(input: {
     identity: CollaborationSharedMemoryAuthorityIdentity;
-    allowedRepresentations: SharedMemoryRepresentation[];
     preview: CollaborationRemoteSharedMemoryPreview;
     previewExpiresAt: string;
   }): Promise<CollaborationPersistedSharedMemoryPreview | null>;
@@ -301,9 +310,11 @@ type PreviewRow = ProtectedRow & {
   team_id: string;
   team_workspace_id: string;
   representation: SharedMemoryRepresentation;
+  maximum_fidelity: SharedMemoryFidelityCeiling;
+  include_curated_memory: boolean;
   source_revision: string | number;
   source_hash: string;
-  redacted_content_hash: string;
+  source_content_hash: string;
   item_count: number;
   expires_at: Date | string;
 };
@@ -317,6 +328,8 @@ type ConsentRow = ProtectedRow & {
   logical_memory_id: string;
   team_id: string;
   team_workspace_id: string;
+  maximum_fidelity: SharedMemoryFidelityCeiling;
+  include_curated_memory: boolean;
   source_revision: string | number;
 };
 
@@ -337,7 +350,8 @@ type GrantRow = ProtectedRow & {
   consent_id: string;
   team_id: string;
   team_workspace_id: string;
-  active_representation: SharedMemoryRepresentation | null;
+  maximum_fidelity: SharedMemoryFidelityCeiling;
+  include_curated_memory: boolean;
   source_revision: string | number;
   grant_version: number;
   lifecycle: SharedMemoryGrant["lifecycle"];
@@ -352,6 +366,11 @@ const representationSet = new Set<SharedMemoryRepresentation>([
   "lcm_leaves",
   "lcm_rollups",
   "curated_assertions"
+]);
+const fidelitySet = new Set<SharedMemoryFidelityCeiling>([
+  "memory_events",
+  "lcm_leaves",
+  "lcm_rollups"
 ]);
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -385,6 +404,9 @@ const validRepresentations = (
   values.length <= 4 &&
   values.every(isRepresentation) &&
   new Set(values).size === values.length;
+const isFidelity = (value: unknown): value is SharedMemoryFidelityCeiling =>
+  typeof value === "string" &&
+  fidelitySet.has(value as SharedMemoryFidelityCeiling);
 
 const canonicalize = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -617,12 +639,21 @@ const validPersistedPreview = (
     !isUuid(value.logicalMemoryId) ||
     !isUuid(value.teamId) ||
     !isUuid(value.teamWorkspaceId) ||
-    !isRepresentation(value.representation) ||
-    !validRepresentations(value.allowedRepresentations) ||
-    !value.allowedRepresentations.includes(value.representation) ||
+    !Array.isArray(value.sourceCapabilities) ||
+    !validRepresentations(value.sourceCapabilities) ||
+    !isRepresentation(value.activationRepresentation) ||
+    !isFidelity(value.maximumFidelity) ||
+    typeof value.includeCuratedMemory !== "boolean" ||
+    (value.mode !== "snapshot" && value.mode !== "continuous") ||
+    !sharedMemoryCeilingAuthorizes(
+      value.maximumFidelity,
+      value.activationRepresentation,
+      value.includeCuratedMemory
+    ) ||
+    !value.sourceCapabilities.includes(value.activationRepresentation) ||
     !isRevision(value.sourceRevision) ||
     !isHash(value.sourceHash) ||
-    !isHash(value.redactedContentHash) ||
+    !isHash(value.sourceContentHash) ||
     !isTimestamp(value.createdAt) ||
     !Array.isArray(value.items) ||
     value.items.length < 1 ||
@@ -633,8 +664,8 @@ const validPersistedPreview = (
   if (
     !isRevision(binding.sourceRevision) ||
     !isHash(binding.sourceHash) ||
-    !isPositiveInteger(binding.representationPolicyRevision) ||
-    !isHash(binding.representationPolicyHash) ||
+    !isPositiveInteger(binding.fidelityPolicyRevision) ||
+    !isHash(binding.fidelityPolicyHash) ||
     !isPositiveInteger(binding.contentPolicyVersion) ||
     !isHash(binding.contentPolicyHash) ||
     !isPositiveInteger(binding.classifierVersion) ||
@@ -646,8 +677,8 @@ const validPersistedPreview = (
   }
   const source = sharedMemorySourceRefSchema.safeParse(value.source);
   if (
-    value.source !== undefined &&
-    (!source.success || source.data.logicalMemoryId !== value.logicalMemoryId)
+    !source.success ||
+    source.data.logicalMemoryId !== value.logicalMemoryId
   ) {
     return false;
   }
@@ -655,7 +686,12 @@ const validPersistedPreview = (
   if (
     source.success &&
     source.data.kind === "personal_note" &&
-    (value.representation !== "memory_events" ||
+    (value.activationRepresentation !== "memory_events" ||
+      value.sourceCapabilities.length !== 1 ||
+      value.sourceCapabilities[0] !== "memory_events" ||
+      value.maximumFidelity !== "memory_events" ||
+      value.includeCuratedMemory ||
+      value.mode !== "snapshot" ||
       value.sourceRevision !== 1 ||
       value.items.length !== 1 ||
       !isObject(firstItem) ||
@@ -706,9 +742,8 @@ const validPersistedConsent = (
       String(consent.state)
     ) &&
     isPositiveInteger(consent.version) &&
-    validRepresentations(consent.allowedRepresentations) &&
-    isRepresentation(consent.selectedRepresentation) &&
-    consent.allowedRepresentations.includes(consent.selectedRepresentation) &&
+    isFidelity(consent.maximumFidelity) &&
+    typeof consent.includeCuratedMemory === "boolean" &&
     isPositiveInteger(consent.previewRevision) &&
     isHash(consent.previewHash) &&
     isRevision(consent.sourceRevision) &&
@@ -737,13 +772,9 @@ const validPersistedGrant = (
     isUuid(grant.teamId) &&
     isUuid(grant.workspaceId) &&
     isUuid(grant.consentId) &&
-    validRepresentations(grant.ownerAllowedRepresentations) &&
-    (grant.activeRepresentation === null ||
-      (isRepresentation(grant.activeRepresentation) &&
-        grant.ownerAllowedRepresentations.includes(
-          grant.activeRepresentation
-        ))) &&
-    isPositiveInteger(grant.representationPolicyRevision) &&
+    isFidelity(grant.maximumFidelity) &&
+    typeof grant.includeCuratedMemory === "boolean" &&
+    isPositiveInteger(grant.fidelityPolicyRevision) &&
     isRevision(grant.sourceRevision) &&
     isPositiveInteger(grant.grantVersion) &&
     [
@@ -773,10 +804,12 @@ const previewMatchesRow = (
   value.logicalMemoryId === row.logical_memory_id &&
   value.teamId === row.team_id &&
   value.teamWorkspaceId === row.team_workspace_id &&
-  value.representation === row.representation &&
+  value.activationRepresentation === row.representation &&
+  value.maximumFidelity === row.maximum_fidelity &&
+  value.includeCuratedMemory === row.include_curated_memory &&
   value.sourceRevision === Number(row.source_revision) &&
   value.sourceHash === row.source_hash &&
-  value.redactedContentHash === row.redacted_content_hash &&
+  value.sourceContentHash === row.source_content_hash &&
   value.items.length === row.item_count;
 
 const consentMatchesRow = (
@@ -793,6 +826,8 @@ const consentMatchesRow = (
   value.consent.logicalMemoryId === row.logical_memory_id &&
   value.consent.teamId === row.team_id &&
   value.consent.workspaceId === row.team_workspace_id &&
+  value.consent.maximumFidelity === row.maximum_fidelity &&
+  value.consent.includeCuratedMemory === row.include_curated_memory &&
   value.consent.sourceRevision === Number(row.source_revision);
 
 const grantMatchesRow = (
@@ -807,7 +842,8 @@ const grantMatchesRow = (
   value.grant.consentId === row.consent_id &&
   value.grant.teamId === row.team_id &&
   value.grant.workspaceId === row.team_workspace_id &&
-  value.grant.activeRepresentation === row.active_representation &&
+  value.grant.maximumFidelity === row.maximum_fidelity &&
+  value.grant.includeCuratedMemory === row.include_curated_memory &&
   value.grant.sourceRevision === Number(row.source_revision) &&
   value.grant.grantVersion === row.grant_version &&
   value.grant.lifecycle === row.lifecycle;
@@ -815,7 +851,9 @@ const grantMatchesRow = (
 const mapConsent = (
   consent: CollaborationRemoteSharedMemoryConsent
 ): SharedMemoryConsent => ({
-  ...(consent.source ? { source: consent.source } : {}),
+  source: consent.source,
+  sourceCapabilities: consent.sourceCapabilities,
+  activationRepresentation: consent.activationRepresentation,
   id: consent.id,
   logicalMemoryId: consent.logicalMemoryId,
   teamId: consent.teamId,
@@ -823,8 +861,8 @@ const mapConsent = (
   mode: consent.mode,
   state: consent.state,
   version: consent.consentVersion,
-  allowedRepresentations: consent.allowedRepresentations,
-  selectedRepresentation: consent.selectedRepresentation,
+  maximumFidelity: consent.maximumFidelity,
+  includeCuratedMemory: consent.includeCuratedMemory,
   previewRevision: consent.previewRevision,
   previewHash: consent.previewHash,
   sourceRevision: consent.sourceRevision,
@@ -838,7 +876,9 @@ const mapGrant = (
   grant: CollaborationRemoteSharedMemoryGrant,
   companionThreadId: string
 ): SharedMemoryGrant => ({
-  ...(grant.source ? { source: grant.source } : {}),
+  source: grant.source,
+  sourceCapabilities: grant.sourceCapabilities,
+  activationRepresentation: grant.activationRepresentation,
   id: grant.id,
   logicalGrantId: grant.logicalGrantId,
   logicalMemoryId: grant.logicalMemoryId,
@@ -846,9 +886,10 @@ const mapGrant = (
   teamId: grant.teamId,
   workspaceId: grant.teamWorkspaceId,
   consentId: grant.consentId,
-  ownerAllowedRepresentations: grant.ownerAllowedRepresentations,
-  activeRepresentation: grant.activeRepresentation,
-  representationPolicyRevision: grant.representationPolicyRevision,
+  mode: grant.mode,
+  maximumFidelity: grant.maximumFidelity,
+  includeCuratedMemory: grant.includeCuratedMemory,
+  fidelityPolicyRevision: grant.fidelityPolicyRevision,
   sourceRevision: grant.sourceRevision,
   grantVersion: grant.grantVersion,
   lifecycle: grant.lifecycle,
@@ -860,19 +901,21 @@ const mapGrant = (
 
 const selectPreviewSql = `select preview_id, preview_hash, preview_revision,
                                  logical_memory_id, team_id, team_workspace_id,
-                                 representation, source_revision, source_hash,
-                                 redacted_content_hash, item_count,
+                                 representation, maximum_fidelity,
+                                 include_curated_memory, source_revision, source_hash,
+                                 source_content_hash, item_count,
                                  protected_dto_hash, protected_dto, expires_at
                             from collaboration_shared_memory_previews`;
 const selectConsentSql = `select consent_id, consent_version, preview_id,
                                  preview_hash, preview_revision,
                                  logical_memory_id, team_id,
-                                 team_workspace_id, source_revision,
+                                 team_workspace_id, maximum_fidelity,
+                                 include_curated_memory, source_revision,
                                  protected_dto_hash, protected_dto
                             from collaboration_shared_memory_consents`;
 const selectGrantSql = `select share_grant_id, logical_grant_id, logical_memory_id,
                                consent_id, team_id, team_workspace_id,
-                               active_representation, source_revision,
+                               maximum_fidelity, include_curated_memory, source_revision,
                                grant_version, lifecycle,
                                protected_dto_hash, protected_dto
                           from collaboration_shared_memory_grants`;
@@ -1234,14 +1277,10 @@ export const createCollaborationSharedMemoryAuthorityStore = (
     },
 
     async persistAuthoritativeCandidatePreview(input) {
-      const { identity, allowedRepresentations, preview } = input;
+      const { identity, preview } = input;
       if (
         !validIdentity(identity) ||
-        !validPersistedPreview({
-          ...identity,
-          ...preview,
-          allowedRepresentations
-        })
+        !validPersistedPreview({ ...identity, ...preview })
       ) {
         return null;
       }
@@ -1250,7 +1289,7 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         if (!enrollment) return null;
         await lockBinding(
           client,
-          `csm:candidate-preview:${preview.logicalMemoryId}:${preview.teamId}:${preview.teamWorkspaceId}:${preview.representation}`
+          `csm:candidate-preview:${preview.logicalMemoryId}:${preview.teamId}:${preview.teamWorkspaceId}:${preview.activationRepresentation}`
         );
         const existingById = await readPreviewRow(client, enrollment.id, {
           includeExpired: true,
@@ -1263,8 +1302,7 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         const existing = existingById ?? existingByHash;
         const persisted: CollaborationPersistedSharedMemoryPreview = {
           ...identity,
-          ...preview,
-          allowedRepresentations
+          ...preview
         };
         if (existing) {
           if (
@@ -1311,10 +1349,10 @@ export const createCollaborationSharedMemoryAuthorityStore = (
               preview.logicalMemoryId,
               preview.teamId,
               preview.teamWorkspaceId,
-              preview.representation,
+              preview.activationRepresentation,
               preview.sourceRevision,
               preview.sourceHash,
-              preview.redactedContentHash,
+              preview.sourceContentHash,
               preview.items.length,
               protectedValue.hash,
               protectedValue.envelope,
@@ -1330,16 +1368,10 @@ export const createCollaborationSharedMemoryAuthorityStore = (
     },
 
     async persistAuthoritativePreview(input) {
-      const { identity, preview, allowedRepresentations } = input;
+      const { identity, preview } = input;
       if (
         !validIdentity(identity) ||
-        !validRepresentations(allowedRepresentations) ||
-        !allowedRepresentations.includes(preview.representation) ||
-        !validPersistedPreview({
-          ...identity,
-          ...preview,
-          allowedRepresentations
-        })
+        !validPersistedPreview({ ...identity, ...preview })
       ) {
         return null;
       }
@@ -1362,7 +1394,7 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         } else return null;
         await lockBinding(
           client,
-          `csm:preview:${previewAuthorityId}:${preview.teamId}:${preview.teamWorkspaceId}:${preview.representation}`
+          `csm:preview:${previewAuthorityId}:${preview.teamId}:${preview.teamWorkspaceId}:${preview.activationRepresentation}`
         );
         const existingById = await readPreviewRow(client, enrollment.id, {
           includeExpired: true,
@@ -1382,14 +1414,7 @@ export const createCollaborationSharedMemoryAuthorityStore = (
             return null;
           }
           const decoded = await decodePreview(existing, identity);
-          if (
-            !decoded ||
-            !sameDto(decoded, {
-              ...identity,
-              ...preview,
-              allowedRepresentations
-            })
-          ) {
+          if (!decoded || !sameDto(decoded, { ...identity, ...preview })) {
             return null;
           }
           await client.query(
@@ -1403,8 +1428,7 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         }
         const persisted: CollaborationPersistedSharedMemoryPreview = {
           ...identity,
-          ...preview,
-          allowedRepresentations
+          ...preview
         };
         const protectedValue = await encryptedDto(provider, {
           table: "collaboration_shared_memory_previews",
@@ -1417,9 +1441,10 @@ export const createCollaborationSharedMemoryAuthorityStore = (
             `insert into collaboration_shared_memory_previews
                (enrollment_id, sync_relationship_id, preview_id, preview_hash,
                 preview_revision, logical_memory_id, team_id, team_workspace_id,
-                representation, source_revision, source_hash,
-                redacted_content_hash, item_count, protected_dto_hash, protected_dto)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+                representation, maximum_fidelity, include_curated_memory,
+                source_revision, source_hash,
+                source_content_hash, item_count, protected_dto_hash, protected_dto)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
             [
               enrollment.id,
               target?.relationship_id ?? null,
@@ -1429,10 +1454,12 @@ export const createCollaborationSharedMemoryAuthorityStore = (
               preview.logicalMemoryId,
               preview.teamId,
               preview.teamWorkspaceId,
-              preview.representation,
+              preview.activationRepresentation,
+              preview.maximumFidelity,
+              preview.includeCuratedMemory,
               preview.sourceRevision,
               preview.sourceHash,
-              preview.redactedContentHash,
+              preview.sourceContentHash,
               preview.items.length,
               protectedValue.hash,
               protectedValue.envelope
@@ -1490,9 +1517,8 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           preview.teamId !== consent.teamId ||
           preview.teamWorkspaceId !== consent.teamWorkspaceId ||
           preview.sourceRevision !== consent.sourceRevision ||
-          !consent.allowedRepresentations.every((value) =>
-            preview.allowedRepresentations.includes(value)
-          )
+          preview.maximumFidelity !== consent.maximumFidelity ||
+          preview.includeCuratedMemory !== consent.includeCuratedMemory
         ) {
           return null;
         }
@@ -1527,8 +1553,9 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           `insert into collaboration_shared_memory_consents
              (enrollment_id, consent_id, consent_version, preview_id,
               preview_hash, preview_revision, logical_memory_id, team_id,
-              team_workspace_id, source_revision, protected_dto_hash, protected_dto)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+              team_workspace_id, maximum_fidelity, include_curated_memory,
+              source_revision, protected_dto_hash, protected_dto)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
           [
             enrollment.id,
             consent.id,
@@ -1539,6 +1566,8 @@ export const createCollaborationSharedMemoryAuthorityStore = (
             consent.logicalMemoryId,
             consent.teamId,
             consent.teamWorkspaceId,
+            consent.maximumFidelity,
+            consent.includeCuratedMemory,
             consent.sourceRevision,
             protectedValue.hash,
             protectedValue.envelope
@@ -1576,12 +1605,9 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         !isUuid(grant.consentId) ||
         !isPositiveInteger(grant.grantVersion) ||
         !isRevision(grant.sourceRevision) ||
-        !validRepresentations(grant.ownerAllowedRepresentations) ||
-        (grant.activeRepresentation !== null &&
-          (!isRepresentation(grant.activeRepresentation) ||
-            !grant.ownerAllowedRepresentations.includes(
-              grant.activeRepresentation
-            ))) ||
+        !isFidelity(grant.maximumFidelity) ||
+        typeof grant.includeCuratedMemory !== "boolean" ||
+        !isPositiveInteger(grant.fidelityPolicyRevision) ||
         grant.companionScope.scope !== "team" ||
         grant.companionScope.kind !== "shared_session_discussion" ||
         grant.companionScope.shareGrantId !== grant.id ||
@@ -1759,9 +1785,10 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           `insert into collaboration_shared_memory_grants
              (enrollment_id, companion_binding_id, share_grant_id,
               logical_grant_id, logical_memory_id, consent_id, team_id,
-              team_workspace_id, active_representation, source_revision,
+              team_workspace_id, maximum_fidelity, include_curated_memory,
+              source_revision,
               grant_version, lifecycle, protected_dto_hash, protected_dto)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
           [
             active.id,
             companion.id,
@@ -1771,7 +1798,8 @@ export const createCollaborationSharedMemoryAuthorityStore = (
             grant.consentId,
             grant.teamId,
             grant.teamWorkspaceId,
-            grant.activeRepresentation,
+            grant.maximumFidelity,
+            grant.includeCuratedMemory,
             grant.sourceRevision,
             grant.grantVersion,
             grant.lifecycle,
@@ -1842,7 +1870,8 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           `select distinct on (share_grant_id)
                   share_grant_id, logical_grant_id, logical_memory_id,
                   consent_id, team_id, team_workspace_id,
-                  active_representation, source_revision, grant_version,
+                  maximum_fidelity, include_curated_memory,
+                  source_revision, grant_version,
                   lifecycle, protected_dto_hash, protected_dto
              from collaboration_shared_memory_grants
             where enrollment_id = $1 and logical_memory_id = $2
@@ -2080,16 +2109,17 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         if (!enrollment) return null;
         const result = await client.query<
           CompanionRow & {
-            active_representation: SharedMemoryRepresentation;
+            maximum_fidelity: SharedMemoryFidelityCeiling;
+            include_curated_memory: boolean;
             lifecycle: SharedMemoryGrant["lifecycle"];
           }
         >(
           `select b.id, b.share_grant_id, b.logical_memory_id, b.team_id,
                 b.team_workspace_id, b.companion_thread_id, b.shared_session_id,
-                g.active_representation, g.lifecycle
+                g.maximum_fidelity, g.include_curated_memory, g.lifecycle
            from collaboration_shared_memory_companion_bindings b
            join lateral (
-             select active_representation, lifecycle
+             select maximum_fidelity, include_curated_memory, lifecycle
                from collaboration_shared_memory_grants
               where enrollment_id = b.enrollment_id
                 and companion_binding_id = b.id
@@ -2099,7 +2129,6 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           where b.enrollment_id = $1 and b.shared_session_id = $2
             and b.revoked_at is null
             and g.lifecycle = 'active'
-            and g.active_representation is not null
             limit 1`,
           [enrollment.id, input.sharedSessionId]
         );
@@ -2111,7 +2140,8 @@ export const createCollaborationSharedMemoryAuthorityStore = (
               logicalMemoryId: row.logical_memory_id,
               teamId: row.team_id,
               workspaceId: row.team_workspace_id,
-              representation: row.active_representation
+              maximumFidelity: row.maximum_fidelity,
+              includeCuratedMemory: row.include_curated_memory
             }
           : null;
       });

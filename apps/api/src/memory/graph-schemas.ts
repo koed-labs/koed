@@ -21,6 +21,7 @@ export const graphThreadIndexResponseSchema = z.object({
           id: z.string(),
           name: z.string(),
           sessionId: z.string().uuid().nullable(),
+          logicalMemoryId: z.string().uuid().nullable().optional(),
           sourceAiClient: sourceAiClientSchema.nullable(),
           projectId: z.string(),
           projectName: z.string(),

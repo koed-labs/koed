@@ -48,7 +48,7 @@ pnpm local:setup
 KOED_DEPENDENCY_MODE=bundled-local KOED_AUTO_PORTS=1 pnpm desktop:start
 ```
 
-`pnpm local:setup` prepares `.env`, builds the workspace, links the Homebrew-backed bundled-local runtime, and installs the default embedding model.
+`pnpm local:setup` prepares `.env`, builds the workspace, links the Homebrew-backed bundled-local runtime, and installs the pinned embedding and Privacy Filter models.
 
 Koed Desktop opens when core setup is complete. Mandatory setup does not
 configure or select an AI Client. Configure Codex, Claude Code, or Pi

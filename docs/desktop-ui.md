@@ -220,11 +220,10 @@ Grant. The renderer cannot select or downgrade the tier:
 4. **Bundled stages** retain separate records and audit while sharing the one
    User decision for the surrounding workflow.
 
-Shared Memory preview is Direct. Initial sharing and representation changes
-bundle consent with the Share Grant mutation, so they never prompt for consent
-as a standalone implementation stage. Workspace Access selects edit a visible
-local draft; **Review and apply** shows every before/after value before exact
-changes are classified as Native review or independent Step-up.
+Shared Memory preview is Direct. Initial sharing and fidelity changes bind
+consent to one Pending Share acceptance. They never prompt for consent as a
+standalone stage. Workspace Access selects edit a visible local draft.
+**Review and apply** shows each changed value before Native review or Step-up.
 
 The status surface distinguishes native review, browser Step-up, approved, applying, complete,
 canceled, denied, expired, and failed. Completion is shown only after the

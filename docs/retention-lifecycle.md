@@ -38,12 +38,15 @@ later revocation uses a new epoch and new decision/job rather than reviving the
 canceled work.
 
 When expiry and legal holds allow deletion, the Worker purges only that grant's
-Team representation chunks, encrypted companion discussion, grant-scoped
-outbox/replay material, and structural rows. It resets a stream cursor that
-acknowledged a deleted grant event. Grant-specific vector and search evidence
-is explicitly `not_applicable` until those materializations exist. The
-owner-private source, other grants, normal Team channels, and unrelated Team
-content are not part of this purge scope. Team, Workspace, representation,
+Team representation chunks, sanitized Conversation Source Artifacts, encrypted
+privacy-classification results, encrypted sanitized semantic previews,
+encrypted companion discussion, grant-scoped vectors, privacy/materialization
+jobs and caches, outbox/replay material, and structural rows. A semantic-preview
+payload and wrapped DEK are removed only when no other non-purged grant still
+references that preview. Purge resets a stream cursor that acknowledged a
+deleted grant event. The owner-private source and Personal derived artifacts,
+other grants, normal Team channels, and unrelated Team content are not part of
+this purge scope. Team, Workspace, representation, source-artifact,
 companion-thread, and companion-message-range holds block destructive work.
 
 ## Shortening Existing Retention
@@ -87,10 +90,11 @@ exists; retention-policy confirmation cannot release or bypass a hold.
 ## Purge Progress And Failure
 
 The Worker claims one durable attempt and processes required artifacts in this
-order: outbox/replay, vectors, encrypted payloads, wrapped keys, search index,
-database lifecycle rows, and backup expiry. Each artifact cleanup and evidence
-checkpoint is transactional. Verified artifacts are immutable and skipped on a
-retry.
+order: outbox/replay, vectors, sanitized source and representation ciphertext,
+encrypted privacy-classification results and caches, wrapped keys, search
+index, database lifecycle rows, and backup expiry. Each artifact cleanup and
+evidence checkpoint is transactional. Verified artifacts are immutable and
+skipped on a retry.
 
 An artifact failure records `failed` evidence with its artifact kind and
 content-free locator hash, then stores the same pair as the resume checkpoint.
@@ -120,3 +124,12 @@ removes replica-derived records, target-owned vectors, sync package/replay state
 encrypted companions, and wrapped keys when retention and holds allow. A
 retained Team representation follows its own grant-scoped retention and key
 boundary; purging one scope must not delete unrelated grants or replicas.
+
+Privacy classifier and content-policy generations are immutable lifecycle
+bindings. A policy-only change may rematerialize sanitized Team content from
+retained encrypted span results without rerunning classification. A classifier
+generation change requires reclassification. Key rotation rewraps the DEKs for
+classification ciphertext, sanitized artifacts, Team representations, and
+encrypted canonical embeddings where stored; it does not relabel or rewrite
+content as a substitute for rematerialization. Retention and backup expiry must
+cover those privacy artifacts and their Team-safe vectors together.

@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
 import {
-  canonicalizePdsJson,
   pdsArtifactCompatibilityHash,
   pdsPortableLcmNodeContentHash,
   pdsPortableLcmNodeId,
@@ -98,8 +97,20 @@ export interface PdsPortableLcmNodeCandidate {
   sourceClosureHash: string;
   workIdentity: string;
   workClass: "lcm_leaf" | "lcm_rollup";
+  claimantDeviceId: string;
+  claimGeneration: string;
   compatibilityContract: PdsLcmNodeContractV1;
   node: PdsPortableLcmNodeV1;
+}
+
+export interface PdsLcmWorkIntentRecord {
+  localMemoryNodeId: string;
+  workIdentity: string;
+  workClass: "lcm_leaf" | "lcm_rollup";
+  compatibilityContractHash: string;
+  compatibilityContract: PdsLcmNodeContractV1;
+  inputRevisionHash: string;
+  claimGeneration?: string;
 }
 
 export interface PersonalDeviceArtifactRepository {
@@ -125,6 +136,25 @@ export interface PersonalDeviceArtifactRepository {
     groupId: string;
     limit?: number;
   }): Promise<PdsPortableLcmNodeCandidate[]>;
+  listPendingPdsLcmWorkIntents(input: {
+    userId: string;
+    groupId: string;
+    limit?: number;
+  }): Promise<PdsLcmWorkIntentRecord[]>;
+  listClaimedPdsLcmWorkIntents(input: {
+    userId: string;
+    groupId: string;
+    deviceId: string;
+    limit?: number;
+  }): Promise<PdsLcmWorkIntentRecord[]>;
+  markPdsLcmWorkIntentClaimed(input: {
+    userId: string;
+    groupId: string;
+    deviceId: string;
+    localMemoryNodeId: string;
+    workIdentity: string;
+    claimGeneration: string;
+  }): Promise<boolean>;
   acquirePdsSemanticWorkClaim(input: {
     userId: string;
     groupId: string;
@@ -864,6 +894,117 @@ export const createPersonalDeviceArtifactRepository = (
     return [...eventCandidates, ...nodeCandidates];
   },
 
+  async listPendingPdsLcmWorkIntents(input) {
+    const result = await pool.query<{
+      memory_node_id: string;
+      work_identity: string;
+      work_class: "lcm_leaf" | "lcm_rollup";
+      compatibility_contract_hash: string;
+      compatibility_contract_json: PdsLcmNodeContractV1;
+      input_revision_hash: string;
+    }>(
+      `select intent.memory_node_id,intent.work_identity,intent.work_class,
+              intent.compatibility_contract_hash,
+              intent.compatibility_contract_json,intent.input_revision_hash
+         from pds_lcm_work_intents intent
+         join personal_device_groups g on g.id=intent.group_id
+         join local_personal_identities identity
+           on identity.id=g.local_personal_identity_id
+        where identity.owner_user_id=$1 and intent.owner_user_id=$1
+          and g.group_id=$2 and g.state='active' and intent.state='pending'
+        order by intent.created_at,intent.id
+        limit $3`,
+      [input.userId, input.groupId, input.limit ?? 50]
+    );
+    return result.rows.map((row) => ({
+      localMemoryNodeId: row.memory_node_id,
+      workIdentity: row.work_identity,
+      workClass: row.work_class,
+      compatibilityContractHash: row.compatibility_contract_hash,
+      compatibilityContract: row.compatibility_contract_json,
+      inputRevisionHash: row.input_revision_hash
+    }));
+  },
+
+  async listClaimedPdsLcmWorkIntents(input) {
+    const result = await pool.query<{
+      memory_node_id: string;
+      work_identity: string;
+      work_class: "lcm_leaf" | "lcm_rollup";
+      compatibility_contract_hash: string;
+      compatibility_contract_json: PdsLcmNodeContractV1;
+      input_revision_hash: string;
+      claim_generation: string;
+    }>(
+      `select intent.memory_node_id,intent.work_identity,intent.work_class,
+              intent.compatibility_contract_hash,
+              intent.compatibility_contract_json,intent.input_revision_hash,
+              claim.claim_generation
+         from pds_lcm_work_intents intent
+         join personal_device_groups g on g.id=intent.group_id
+         join local_personal_identities identity
+           on identity.id=g.local_personal_identity_id
+         join pds_semantic_work_claims claim on claim.group_id=g.id
+           and claim.work_identity=intent.work_identity
+           and claim.compatibility_contract_hash=
+               intent.compatibility_contract_hash
+           and claim.claimant_device_id=$3 and claim.state='active'
+           and claim.expires_at>now()
+        where identity.owner_user_id=$1 and intent.owner_user_id=$1
+          and g.group_id=$2 and g.state='active' and intent.state='claimed'
+        order by intent.updated_at,intent.id
+        limit $4`,
+      [input.userId, input.groupId, input.deviceId, input.limit ?? 50]
+    );
+    return result.rows.map((row) => ({
+      localMemoryNodeId: row.memory_node_id,
+      workIdentity: row.work_identity,
+      workClass: row.work_class,
+      compatibilityContractHash: row.compatibility_contract_hash,
+      compatibilityContract: row.compatibility_contract_json,
+      inputRevisionHash: row.input_revision_hash,
+      claimGeneration: row.claim_generation
+    }));
+  },
+
+  async markPdsLcmWorkIntentClaimed(input) {
+    const result = await pool.query(
+      `with claimed as (
+         update pds_lcm_work_intents intent
+          set state='claimed',updated_at=now()
+         from personal_device_groups g
+         join local_personal_identities identity
+           on identity.id=g.local_personal_identity_id
+        where intent.group_id=g.id and identity.owner_user_id=$1
+          and intent.owner_user_id=$1 and g.group_id=$2
+          and intent.memory_node_id=$3 and intent.work_identity=$4
+          and intent.state='pending'
+          and exists (
+            select 1 from pds_semantic_work_claims claim
+             where claim.group_id=g.id
+               and claim.work_identity=intent.work_identity
+               and claim.compatibility_contract_hash=
+                   intent.compatibility_contract_hash
+               and claim.claimant_device_id=$5
+               and claim.claim_generation=$6
+               and claim.state='active' and claim.expires_at>now()
+          )
+         returning intent.id
+       )
+       select pg_notify('koed_lcm_summary_work','claimed')
+       where exists (select 1 from claimed)`,
+      [
+        input.userId,
+        input.groupId,
+        input.localMemoryNodeId,
+        input.workIdentity,
+        input.deviceId,
+        input.claimGeneration
+      ]
+    );
+    return result.rowCount === 1;
+  },
+
   async listPdsPortableLcmNodeCandidates(input) {
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
     const nodes = await pool.query<{
@@ -881,15 +1022,34 @@ export const createPersonalDeviceArtifactRepository = (
       source_span_end: Date | null;
       summary_corrected_at: Date | null;
       mapped_content_hash: string | null;
+      intent_work_identity: string;
+      intent_work_class: "lcm_leaf" | "lcm_rollup";
+      intent_contract_hash: string;
+      intent_contract_json: PdsLcmNodeContractV1;
+      claimant_device_id: string;
+      claim_generation: string;
     }>(
       `select mn.id,mn.session_id,mn.kind,mn.summary_text,mn.summary_model,
          mn.summary_prompt_version,mn.summary_structured_json,
          mn.summary_structured_schema_version,mn.lcm_algorithm_version,
          mn.summary_token_estimate,
          mn.source_span_start,mn.source_span_end,mn.summary_corrected_at,
-         mapping.content_hash as mapped_content_hash
+         mapping.content_hash as mapped_content_hash,
+         intent.work_identity as intent_work_identity,
+         intent.work_class as intent_work_class,
+         intent.compatibility_contract_hash as intent_contract_hash,
+         intent.compatibility_contract_json as intent_contract_json,
+         claim.claimant_device_id,claim.claim_generation
        from memory_nodes mn
        left join pds_lcm_node_mappings mapping on mapping.memory_node_id=mn.id
+       join pds_lcm_work_intents intent on intent.memory_node_id=mn.id
+         and intent.owner_user_id=mn.owner_user_id and intent.state='claimed'
+       join pds_semantic_work_claims claim on claim.group_id=intent.group_id
+         and claim.work_identity=intent.work_identity
+         and claim.compatibility_contract_hash=intent.compatibility_contract_hash
+         and claim.state='active' and claim.expires_at>now()
+       join personal_device_groups intent_group on intent_group.id=intent.group_id
+         and intent_group.group_id=$2 and intent_group.state='active'
        where mn.owner_user_id=$1 and mn.visibility='personal'
          and mn.session_id is not null and mn.invalidated_at is null
          and mn.personal_deleted_at is null and mn.kind in ('leaf','rollup')
@@ -899,8 +1059,8 @@ export const createPersonalDeviceArtifactRepository = (
          and mn.summary_structured_schema_version is not null
          and mn.lcm_algorithm_version is not null
        order by mn.depth,mn.created_at,mn.id
-       limit $2`,
-      [input.userId, limit]
+       limit $3`,
+      [input.userId, input.groupId, limit]
     );
     const candidates: PdsPortableLcmNodeCandidate[] = [];
     for (const row of nodes.rows) {
@@ -983,15 +1143,20 @@ export const createPersonalDeviceArtifactRepository = (
       const orderedSourceIds = sources.rows.map(
         (source) => source.logical_source_id
       );
-      const contract: PdsLcmNodeContractV1 = {
-        artifactClass: "lcm_node/v1",
-        nodeKind: row.kind,
-        lcmAlgorithmVersion: row.lcm_algorithm_version,
-        summaryPromptVersion: row.summary_prompt_version,
-        summaryModel: row.summary_model,
-        structuredOutputSchema: row.summary_structured_schema_version,
-        sourceSelectionPolicy: row.lcm_algorithm_version
-      };
+      const contract = row.intent_contract_json;
+      if (
+        contract.artifactClass !== "lcm_node/v1" ||
+        contract.nodeKind !== row.kind ||
+        contract.lcmAlgorithmVersion !== row.lcm_algorithm_version ||
+        contract.summaryPromptVersion !== row.summary_prompt_version ||
+        contract.summaryModel !== row.summary_model ||
+        contract.structuredOutputSchema !==
+          row.summary_structured_schema_version ||
+        contract.sourceSelectionPolicy !== row.lcm_algorithm_version ||
+        pdsArtifactCompatibilityHash(contract) !== row.intent_contract_hash
+      ) {
+        continue;
+      }
       const correctedRevision = row.summary_corrected_at
         ? String(row.summary_corrected_at.getTime())
         : "0";
@@ -1011,25 +1176,14 @@ export const createPersonalDeviceArtifactRepository = (
       };
       const contentHash = pdsPortableLcmNodeContentHash(nodeWithoutIdentity);
       if (row.mapped_content_hash === contentHash) continue;
-      const compatibilityContractHash = pdsArtifactCompatibilityHash(contract);
+      const compatibilityContractHash = row.intent_contract_hash;
       const logicalNodeId = pdsPortableLcmNodeId({
         nodeKind: row.kind,
         orderedSourceIds,
         compatibilityContractHash,
-        correctedRevision,
-        contentHash
+        correctedRevision
       });
-      const workIdentity = createHash("sha256")
-        .update(
-          canonicalizePdsJson({
-            artifactClass: "lcm_node/v1",
-            nodeKind: row.kind,
-            orderedSourceIds,
-            compatibilityContractHash,
-            correctedRevision
-          })
-        )
-        .digest("base64url");
+      const workIdentity = row.intent_work_identity;
       candidates.push({
         localMemoryNodeId: row.id,
         localSessionId: row.session_id,
@@ -1039,7 +1193,9 @@ export const createPersonalDeviceArtifactRepository = (
         sourceFingerprint,
         sourceClosureHash,
         workIdentity,
-        workClass: row.kind === "leaf" ? "lcm_leaf" : "lcm_rollup",
+        workClass: row.intent_work_class,
+        claimantDeviceId: row.claimant_device_id,
+        claimGeneration: row.claim_generation,
         compatibilityContract: contract,
         node: {
           logicalNodeId,
@@ -1075,18 +1231,11 @@ export const createPersonalDeviceArtifactRepository = (
        set work_class=excluded.work_class,
            compatibility_contract_hash=excluded.compatibility_contract_hash,
            claimant_device_id=excluded.claimant_device_id,
-           claim_generation=case
-             when pds_semantic_work_claims.claimant_device_id=excluded.claimant_device_id
-               then pds_semantic_work_claims.claim_generation
-             else (pds_semantic_work_claims.claim_generation::numeric+1)::text
-           end,
+           claim_generation=(pds_semantic_work_claims.claim_generation::numeric+1)::text,
            claimed_at=now(),expires_at=excluded.expires_at,state='active',
            updated_at=now()
        where pds_semantic_work_claims.state<>'active'
           or pds_semantic_work_claims.expires_at<=now()
-          or (pds_semantic_work_claims.claimant_device_id=excluded.claimant_device_id
-              and pds_semantic_work_claims.compatibility_contract_hash=
-                  excluded.compatibility_contract_hash)
        returning work_identity,work_class,compatibility_contract_hash,
          claimant_device_id,claim_generation,claimed_at,expires_at`,
       [
@@ -1461,6 +1610,15 @@ export const createPersonalDeviceArtifactRepository = (
           manifest.claimGeneration
         ]
       );
+      if (manifest.artifactClass === "lcm_node/v1") {
+        await client.query(
+          `update pds_lcm_work_intents
+              set state='completed',updated_at=now()
+            where group_id=$1 and work_identity=$2
+              and state='claimed'`,
+          [groupDbId, manifest.workIdentity]
+        );
+      }
       await client.query(
         "select pg_notify('koed_pds_local_sync','artifact_ready')"
       );
@@ -2154,12 +2312,13 @@ export const createPersonalDeviceArtifactRepository = (
           `insert into memory_embeddings
            (memory_event_id,memory_node_id,owner_user_id,visibility,embedding_model,
             embedding_dimensions,embedding_version,source_hash,
-            source_chunk_index,source_chunk_count,source_text,
-            model_artifact_hash,tokenizer,input_transform,pooling,normalization)
+           source_chunk_index,source_chunk_count,source_text,
+            model_artifact_hash,tokenizer,input_transform,pooling,normalization,
+            embedding_source_content_hash,embedding_input_hash)
            values (
              case when $1='memory_event' then $2::uuid else null end,
              case when $1='lcm_node' then $2::uuid else null end,
-             $3,'personal',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+             $3,'personal',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17
            )
            on conflict do nothing returning id`,
           [
@@ -2178,7 +2337,11 @@ export const createPersonalDeviceArtifactRepository = (
             compatibilityContract.tokenizer,
             compatibilityContract.inputTransform,
             compatibilityContract.pooling,
-            compatibilityContract.normalization
+            compatibilityContract.normalization,
+            embedding.canonicalSourceTextHash,
+            createHash("sha256")
+              .update(embedding.sourceText, "utf8")
+              .digest("base64url")
           ]
         );
         const localMemoryEmbeddingId = inserted.rows[0]?.id;

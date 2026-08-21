@@ -39,8 +39,10 @@ separate physical memory hierarchies.
 - API Tokens remain user-owned. Team and Workspace authority is derived from
   the owning User's current Team Membership and Workspace Access at request
   time.
-- Sharing changes authorization. It does not move ownership, create a copy, or
-  create an independently evolving memory lifespan.
+- Sharing changes authorization. It does not move ownership or create an
+  independently evolving memory lifespan. Sanitized encrypted Team
+  representations are derived sharing artifacts, while exact Personal
+  originals and Personal derived artifacts remain unchanged and owner-only.
 - Cross-Identity Sync is the model for personal Koed to Team-personal sharing
   when the same logical memory lifespan must continue across identities or
   deployments. It may maintain a policy-aware synced replica for availability,
@@ -108,6 +110,14 @@ that Team and Workspace. A private LCM Summary, rollup, embedding, or graph edge
 must not become Team-visible by relabeling or by pointing to one shared source
 while also carrying unrelated private source material. Source authorization is a
 retrieval and derivation boundary, not only a UI display filter.
+
+The semantic representation choice is cumulative and sets maximum fidelity:
+Memory Events permit complete Memory Events, leaves, and rollups; LCM leaves
+permit complete leaves and rollups; and LCM rollups permit rollups only. Every
+Team layer must be independently current, complete, sanitized, encrypted, and
+policy-bound. Conversation Source Access and Curated Memory remain separate
+grant and consent surfaces, and no missing layer permits fallback to Personal
+or finer Team source.
 
 Cross-Identity Sync requires sync state and provenance in later implementation
 work. A Team-side replica must be marked as synced, stale, revoked, or otherwise

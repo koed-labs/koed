@@ -69,7 +69,7 @@ describe("Team collaboration feature switch", () => {
       "/v1/local-edge/device-enrollments/challenges",
       "/v1/local-edge/team-memory/answer",
       "/v1/retention/teams/sensitive-team-id/deletion-request",
-      "/v1/shared-memory/share-grants",
+      "/v1/shared-memory/pending-shares",
       "/v1/team-context",
       "/v1/team-invites/accept",
       "/v1/team-workspaces/sensitive-workspace-id/context",

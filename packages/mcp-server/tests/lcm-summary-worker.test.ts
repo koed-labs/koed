@@ -39,6 +39,17 @@ const summaryJson = (summary_text: string, lexical_anchors: string[] = []) =>
     lexical_anchors
   });
 
+const claimFor = (node: LcmSummaryNode) => ({
+  claimId: "00000000-0000-4000-8000-0000000000c1",
+  claimToken: "00000000-0000-4000-8000-0000000000c2",
+  claimGeneration: 1,
+  workIdentity: "1".repeat(64),
+  inputRevisionHash: "2".repeat(64),
+  compatibilityContractHash: "3".repeat(64),
+  leaseExpiresAt: new Date(Date.now() + 300_000).toISOString(),
+  node
+});
+
 it("reclaims an LCM summary lock whose process no longer exists", async () => {
   const lockPath = await tempLockPath();
   await writeFile(
@@ -127,12 +138,12 @@ it("persists the loaded LCM prompt version for operator overrides", async () => 
   const submissions: Record<string, unknown>[] = [];
   let listed = false;
   const client = {
-    async listPendingLcmSummaries() {
+    async claimLcmSummaries() {
       if (listed) {
-        return { nodes: [] };
+        return { claims: [] };
       }
       listed = true;
-      return { nodes: [node] };
+      return { claims: [claimFor(node)] };
     },
     async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
       submissions.push(input);
@@ -186,12 +197,12 @@ it("fails before listing work when an LCM override omits its output schema", asy
     ].join("\n")
   );
 
-  const listPendingLcmSummaries = vi.fn();
+  const claimLcmSummaries = vi.fn();
   const runner = vi.fn();
 
   await expect(
     summarizePendingLcmNodes(
-      { listPendingLcmSummaries } as unknown as Parameters<
+      { claimLcmSummaries } as unknown as Parameters<
         typeof summarizePendingLcmNodes
       >[0],
       {
@@ -209,7 +220,7 @@ it("fails before listing work when an LCM override omits its output schema", asy
   ).rejects.toThrow(
     /output_schema <missing>.*Update or remove the incompatible KOED_PROMPT_DIR override/
   );
-  expect(listPendingLcmSummaries).not.toHaveBeenCalled();
+  expect(claimLcmSummaries).not.toHaveBeenCalled();
   expect(runner).not.toHaveBeenCalled();
 });
 
@@ -349,12 +360,12 @@ describe("LCM summary worker", () => {
     const submissions: Record<string, unknown>[] = [];
     let listed = false;
     const client = {
-      async listPendingLcmSummaries() {
+      async claimLcmSummaries() {
         if (listed) {
-          return { nodes: [] };
+          return { claims: [] };
         }
         listed = true;
-        return { nodes: [node] };
+        return { claims: [claimFor(node)] };
       },
       async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
         submissions.push(input);
@@ -433,10 +444,10 @@ describe("LCM summary worker", () => {
     const submitted: Record<string, unknown>[] = [];
     let listed = false;
     const client = {
-      async listPendingLcmSummaries() {
-        if (listed) return { nodes: [] };
+      async claimLcmSummaries() {
+        if (listed) return { claims: [] };
         listed = true;
-        return { nodes: [node] };
+        return { claims: [claimFor(node)] };
       },
       async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
         submitted.push(input);
@@ -550,8 +561,10 @@ describe("LCM summary worker", () => {
     const operations: string[] = [];
     const tokenConversationItemId = "00000000-0000-4000-8000-000000000099";
     const client = {
-      async listPendingLcmSummaries() {
-        return submitted.length === 0 ? { nodes: [node] } : { nodes: [] };
+      async claimLcmSummaries() {
+        return submitted.length === 0
+          ? { claims: [claimFor(node)] }
+          : { claims: [] };
       },
       async createConversationItems(input: unknown) {
         operations.push("raw");
@@ -744,10 +757,10 @@ describe("LCM summary worker", () => {
     const submitted: Record<string, unknown>[] = [];
     let listed = false;
     const client = {
-      async listPendingLcmSummaries() {
-        if (listed) return { nodes: [] };
+      async claimLcmSummaries() {
+        if (listed) return { claims: [] };
         listed = true;
-        return { nodes: [node] };
+        return { claims: [claimFor(node)] };
       },
       async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
         submitted.push(input);
@@ -805,8 +818,10 @@ describe("LCM summary worker", () => {
     const tokenUsageRequests: unknown[] = [];
     let rawCallIndex = 0;
     const client = {
-      async listPendingLcmSummaries() {
-        return submitted.length === 0 ? { nodes: [node] } : { nodes: [] };
+      async claimLcmSummaries() {
+        return submitted.length === 0
+          ? { claims: [claimFor(node)] }
+          : { claims: [] };
       },
       async createConversationItems(input: unknown) {
         rawCallIndex += 1;
@@ -955,8 +970,10 @@ describe("LCM summary worker", () => {
     const submitted: unknown[] = [];
     const tokenUsageRequests: unknown[] = [];
     const client = {
-      async listPendingLcmSummaries() {
-        return submitted.length === 0 ? { nodes: [node] } : { nodes: [] };
+      async claimLcmSummaries() {
+        return submitted.length === 0
+          ? { claims: [claimFor(node)] }
+          : { claims: [] };
       },
       async recordTokenUsage(input: unknown) {
         tokenUsageRequests.push(input);
@@ -1032,8 +1049,10 @@ describe("LCM summary worker", () => {
     };
     const submitted: unknown[] = [];
     const client = {
-      async listPendingLcmSummaries() {
-        return submitted.length === 0 ? { nodes: [node] } : { nodes: [] };
+      async claimLcmSummaries() {
+        return submitted.length === 0
+          ? { claims: [claimFor(node)] }
+          : { claims: [] };
       },
       async submitLcmSummary(_nodeId: string, input: unknown) {
         submitted.push(input);
@@ -1098,8 +1117,10 @@ describe("LCM summary worker", () => {
     };
     const submissions: Record<string, unknown>[] = [];
     const client = {
-      async listPendingLcmSummaries() {
-        return submissions.length === 0 ? { nodes: [node] } : { nodes: [] };
+      async claimLcmSummaries() {
+        return submissions.length === 0
+          ? { claims: [claimFor(node)] }
+          : { claims: [] };
       },
       async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
         submissions.push(input);
@@ -1188,8 +1209,10 @@ describe("LCM summary worker", () => {
     };
     const submissions: Record<string, unknown>[] = [];
     const client = {
-      async listPendingLcmSummaries() {
-        return submissions.length === 0 ? { nodes: [node] } : { nodes: [] };
+      async claimLcmSummaries() {
+        return submissions.length === 0
+          ? { claims: [claimFor(node)] }
+          : { claims: [] };
       },
       async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
         submissions.push(input);
@@ -1259,8 +1282,10 @@ describe("LCM summary worker", () => {
     };
     const submitted: unknown[] = [];
     const client = {
-      async listPendingLcmSummaries() {
-        return submitted.length === 0 ? { nodes: [node] } : { nodes: [] };
+      async claimLcmSummaries() {
+        return submitted.length === 0
+          ? { claims: [claimFor(node)] }
+          : { claims: [] };
       },
       async submitLcmSummary(_nodeId: string, input: unknown) {
         submitted.push(input);

@@ -84,6 +84,13 @@ export interface PdsRelayOperationalStatus {
     deletionFloors: number;
     oldestTombstoneAckLagSeconds: number;
   };
+  semanticWork: {
+    activeClaims: number;
+    completedClaims: number;
+    expiredClaims: number;
+    readyCapabilities: number;
+    nearestExpirySeconds: number | null;
+  };
 }
 
 export type PdsRelayDeviceCapability =
@@ -500,22 +507,11 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
          set work_class=excluded.work_class,
            compatibility_contract_hash=excluded.compatibility_contract_hash,
            claimant_device_id=excluded.claimant_device_id,
-           claim_generation=case
-             when pds_semantic_work_claims.claimant_device_id=
-               excluded.claimant_device_id
-             then pds_semantic_work_claims.claim_generation
-             else (pds_semantic_work_claims.claim_generation::numeric+1)::text
-           end,
+           claim_generation=(pds_semantic_work_claims.claim_generation::numeric+1)::text,
            claimed_at=now(),expires_at=excluded.expires_at,state='active',
            updated_at=now()
          where pds_semantic_work_claims.state<>'active'
             or pds_semantic_work_claims.expires_at<=now()
-            or (
-              pds_semantic_work_claims.claimant_device_id=
-                excluded.claimant_device_id
-              and pds_semantic_work_claims.compatibility_contract_hash=
-                excluded.compatibility_contract_hash
-            )
          returning work_identity,work_class,compatibility_contract_hash,
            claimant_device_id,claim_generation,claimed_at,expires_at`,
         [
@@ -587,6 +583,58 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
         ).rowCount === 1;
       await client.query("commit");
       return completed;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  async renewPdsRelaySemanticWorkClaim(
+    input: PdsRelayAuthContext & {
+      workIdentity: string;
+      claimGeneration: string;
+      leaseSeconds?: number;
+    }
+  ): Promise<{
+    workIdentity: string;
+    claimGeneration: string;
+    expiresAt: string;
+  } | null> {
+    const seconds = Math.min(Math.max(input.leaseSeconds ?? 60, 5), 3600);
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const auth = await assertCurrentRelayAuth(client, input);
+      const result = await client.query<{
+        work_identity: string;
+        claim_generation: string;
+        expires_at: Date;
+      }>(
+        `update pds_semantic_work_claims
+         set expires_at=now()+($5::text || ' seconds')::interval,
+             updated_at=now()
+         where group_id=$1 and work_identity=$2 and claimant_device_id=$3
+           and claim_generation=$4 and state='active' and expires_at>now()
+         returning work_identity,claim_generation,expires_at`,
+        [
+          auth.groupDbId,
+          input.workIdentity,
+          auth.deviceId,
+          input.claimGeneration,
+          seconds
+        ]
+      );
+      await client.query("commit");
+      const renewed = result.rows[0];
+      return renewed
+        ? {
+            workIdentity: renewed.work_identity,
+            claimGeneration: renewed.claim_generation,
+            expiresAt: renewed.expires_at.toISOString()
+          }
+        : null;
     } catch (error) {
       await client.query("rollback");
       throw error;
@@ -1311,8 +1359,9 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
   },
 
   async getPdsRelayOperationalStatus(): Promise<PdsRelayOperationalStatus> {
-    const result = await pool.query(
-      `select
+    const [result, semanticWork] = await Promise.all([
+      pool.query(
+        `select
         count(*) filter (where state='uploading')::int as uploading,
         count(*) filter (where state='committed')::int as committed,
         count(*) filter (where state='expired')::int as expired,
@@ -1320,9 +1369,31 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
         (select count(*) from pds_relay_recipients r join pds_relay_transports t on t.id=r.transport_id where t.state='committed' and r.acked_at is null and r.waived_at is null)::int as pending_recipients,
         coalesce((select extract(epoch from now()-min(t.relay_accepted_at))::int from pds_relay_recipients r join pds_relay_transports t on t.id=r.transport_id where t.state='committed' and r.acked_at is null and r.waived_at is null),0) as ack_lag_seconds
        from pds_relay_transports`
-    );
+      ),
+      pool.query<{
+        active_claims: string;
+        completed_claims: string;
+        expired_claims: string;
+        ready_capabilities: string;
+        nearest_expiry_seconds: string | null;
+      }>(
+        `select
+           (select count(*) from pds_semantic_work_claims
+             where state='active' and expires_at>now())::text as active_claims,
+           (select count(*) from pds_semantic_work_claims
+             where state='completed')::text as completed_claims,
+           (select count(*) from pds_semantic_work_claims
+             where state='active' and expires_at<=now())::text as expired_claims,
+           (select count(*) from pds_device_capabilities
+             where readiness='ready' and expires_at>now())::text as ready_capabilities,
+           (select ceil(extract(epoch from min(expires_at)-now()))::text
+              from pds_semantic_work_claims
+             where state='active' and expires_at>now()) as nearest_expiry_seconds`
+      )
+    ]);
     const value = row<Record<string, unknown>>(result.rows[0]);
     const count = (key: string) => Number(value[key] ?? 0);
+    const semantic = semanticWork.rows[0]!;
     return {
       transports: {
         uploading: count("uploading"),
@@ -1337,7 +1408,17 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
         groupLimitBytes: MAX_GROUP_BYTES
       },
       retries: { uploading: count("uploading"), expired: count("expired") },
-      lifecycle: await this.getPdsLifecycleOperationalStatus()
+      lifecycle: await this.getPdsLifecycleOperationalStatus(),
+      semanticWork: {
+        activeClaims: Number(semantic.active_claims),
+        completedClaims: Number(semantic.completed_claims),
+        expiredClaims: Number(semantic.expired_claims),
+        readyCapabilities: Number(semantic.ready_capabilities),
+        nearestExpirySeconds:
+          semantic.nearest_expiry_seconds === null
+            ? null
+            : Math.max(0, Number(semantic.nearest_expiry_seconds))
+      }
     };
   },
 

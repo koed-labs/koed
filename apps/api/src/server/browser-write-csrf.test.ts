@@ -13,7 +13,7 @@ const sessionCookie = "cm_session=session-secret";
 
 const protectedWrites = [
   ["POST", "/v1/high-risk/browser-activations/selector/decision"],
-  ["POST", "/v1/shared-memory/share-grants"],
+  ["POST", "/v1/shared-memory/pending-shares"],
   ["POST", "/v1/retention/legal-holds"],
   ["POST", "/v1/teams"],
   ["PUT", "/v1/team-workspaces/workspace-id/access"],
@@ -202,7 +202,7 @@ describe("high-risk browser write CSRF protection", () => {
     const app = await buildTestServer();
     const response = await app.inject({
       method: "POST",
-      url: "/v1/shared-memory/share-grants",
+      url: "/v1/shared-memory/pending-shares",
       headers: {
         cookie: sessionCookie,
         origin: allowedOrigin,
@@ -261,7 +261,7 @@ describe("high-risk browser write CSRF protection", () => {
       const app = await buildTestServer();
       const response = await app.inject({
         method: "POST",
-        url: "/v1/shared-memory/share-grants",
+        url: "/v1/shared-memory/pending-shares",
         headers: {
           cookie: sessionCookie,
           ...headers,
@@ -277,7 +277,7 @@ describe("high-risk browser write CSRF protection", () => {
     const app = await buildTestServer();
     const response = await app.inject({
       method: "POST",
-      url: "/v1/shared-memory/share-grants",
+      url: "/v1/shared-memory/pending-shares",
       headers: {
         cookie: sessionCookie,
         origin: allowedOrigin,
@@ -294,7 +294,7 @@ describe("high-risk browser write CSRF protection", () => {
       const app = await buildTestServer();
       const response = await app.inject({
         method: "POST",
-        url: "/v1/shared-memory/share-grants",
+        url: "/v1/shared-memory/pending-shares",
         headers: { authorization }
       });
 

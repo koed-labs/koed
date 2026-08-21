@@ -41,10 +41,10 @@ const documentedDefaults = () =>
     ])
   );
 
-const modelId = (model: Record<string, unknown>): string | null => {
-  const value = model.fullId ?? model.id ?? model.model;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-};
+const modelIds = (model: Record<string, unknown>): string[] =>
+  [model.id, model.fullId, model.model].flatMap((value) =>
+    typeof value === "string" && value.trim() ? [value.trim()] : []
+  );
 
 const supportedReasoningEfforts = (
   model: Record<string, unknown>
@@ -89,8 +89,8 @@ const validateAssignment = (
     (candidate) => candidate.instanceId === input.ai_client_instance_id
   );
   validateSnapshot(snapshot, input);
-  const selectedModel = snapshot!.models.find(
-    (candidate) => modelId(candidate) === input.model
+  const selectedModel = snapshot!.models.find((candidate) =>
+    modelIds(candidate).includes(input.model)
   );
   if (!selectedModel) {
     throw assignmentUnavailable(

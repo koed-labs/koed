@@ -29,6 +29,26 @@ export const aiClientSourceAdapterRegistry = Object.freeze([
   })
 ] as const);
 
+export const privacyMaterializationSourceAdapters = Object.freeze([
+  Object.freeze({
+    sourceKind: "codex",
+    artifactFormat: "codex_rollout_jsonl",
+    artifactFormatVersion: 1
+  })
+] as const);
+
+export const isPrivacyMaterializationSourceAdapter = (candidate: {
+  sourceKind?: unknown;
+  artifactFormat?: unknown;
+  artifactFormatVersion?: unknown;
+}): boolean =>
+  privacyMaterializationSourceAdapters.some(
+    (adapter) =>
+      candidate.sourceKind === adapter.sourceKind &&
+      candidate.artifactFormat === adapter.artifactFormat &&
+      candidate.artifactFormatVersion === adapter.artifactFormatVersion
+  );
+
 export type AiClientSourceAdapter =
   (typeof aiClientSourceAdapterRegistry)[number];
 

@@ -294,6 +294,7 @@ describe("Personal Notes", () => {
     };
     const note = {
       ...summary,
+      logicalMemoryId: "55555555-5555-4555-8555-555555555555",
       event: {
         id: summary.memoryEventId,
         actor: "user",

@@ -203,6 +203,7 @@ export const personalDesktopProjectThreadSchema = z
     id: identifierSchema,
     name: z.string().max(512),
     sessionId: z.uuid().nullable(),
+    logicalMemoryId: z.uuid().nullable().optional(),
     sourceAiClient: z
       .enum(["codex", "codex-cli", "claude-code", "pi"])
       .nullable(),
@@ -440,7 +441,10 @@ export const personalDesktopNoteSummarySchema = z
   .strict();
 
 export const personalDesktopNoteSchema = personalDesktopNoteSummarySchema
-  .extend({ event: personalDesktopConversationEventSchema })
+  .extend({
+    logicalMemoryId: z.uuid(),
+    event: personalDesktopConversationEventSchema
+  })
   .strict();
 
 export const personalDesktopNoteListInputSchema = z

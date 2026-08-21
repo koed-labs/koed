@@ -3,14 +3,13 @@ import {
   HIGH_RISK_ACTION_GRANT_HASH_DOMAINS
 } from "./high-risk-action-grant-hash.js";
 import type { SharedMemorySourceRef } from "./shared-memory-source.js";
+import type { SharedMemoryFidelityCeiling } from "./shared-memory-fidelity.js";
 
 export const SHARED_MEMORY_AUTHORITY_ACTION =
   "workspace.memory.share_owned" as const;
 
 export type SharedMemoryRepresentation =
-  | "memory_events"
-  | "lcm_leaves"
-  | "lcm_rollups"
+  | SharedMemoryFidelityCeiling
   | "curated_assertions";
 
 export interface SharedMemoryActionGrantBinding {
@@ -64,42 +63,56 @@ const withHashes = (
   requestHash: sharedMemoryGrantManagementRequestHash(input)
 });
 
-const allowedSetScope = (
-  allowedRepresentations: readonly SharedMemoryRepresentation[]
-): string => [...allowedRepresentations].sort().join(":");
-
-const sourceBody = (source: SharedMemorySourceRef | undefined) =>
-  source ? { source } : {};
+const shareIntentScope = <T extends { referenceId: string }>(
+  input: T
+): string => {
+  const scope = { ...input };
+  Reflect.deleteProperty(scope, "referenceId");
+  return highRiskActionGrantCanonicalHash(
+    HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.sharedMemoryScope,
+    scope
+  );
+};
 
 export const sharedMemoryPreviewActionGrantBinding = (input: {
   referenceId: string;
+  source: SharedMemorySourceRef;
+  sourceCapabilities: readonly SharedMemoryRepresentation[];
   logicalMemoryId: string;
   remoteReplicaId: string;
   teamId: string;
   teamWorkspaceId: string;
-  representation: SharedMemoryRepresentation;
-  allowedRepresentations: SharedMemoryRepresentation[];
+  activationRepresentation: SharedMemoryRepresentation;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
+  mode: "snapshot" | "continuous";
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
-    action: `shared_memory.preview.${input.representation}.${allowedSetScope(input.allowedRepresentations)}`,
+    action: `shared_memory.preview.${shareIntentScope(input)}`,
     teamId: input.teamId,
     targetId: input.remoteReplicaId,
     method: "POST",
     path: "/v1/shared-memory/previews",
     body: {
+      source: input.source,
+      sourceCapabilities: input.sourceCapabilities,
       logicalMemoryId: input.logicalMemoryId,
       remoteReplicaId: input.remoteReplicaId,
       teamId: input.teamId,
       teamWorkspaceId: input.teamWorkspaceId,
-      representation: input.representation,
-      allowedRepresentations: input.allowedRepresentations,
+      activationRepresentation: input.activationRepresentation,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
+      mode: input.mode,
       authority: authorityBody(input.referenceId)
     }
   });
 
 export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
   referenceId: string;
+  source: SharedMemorySourceRef;
+  sourceCapabilities: readonly SharedMemoryRepresentation[];
   logicalMemoryId: string;
   candidateHash: string;
   sourceRevision: number;
@@ -109,21 +122,22 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
   manifest: Array<{ sourceId: string; revisionHash: string }>;
   teamId: string;
   teamWorkspaceId: string;
-  representation: SharedMemoryRepresentation;
-  allowedRepresentations: SharedMemoryRepresentation[];
+  activationRepresentation: SharedMemoryRepresentation;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
   mode: "snapshot" | "continuous";
   expiresAt?: string | null;
-  source?: SharedMemorySourceRef;
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
-    action: `shared_memory.candidate_preview.${input.representation}.${allowedSetScope(input.allowedRepresentations)}`,
+    action: `shared_memory.candidate_preview.${shareIntentScope(input)}`,
     teamId: input.teamId,
     targetId: input.logicalMemoryId,
     method: "POST",
     path: "/v1/shared-memory/candidate-previews",
     body: {
-      ...sourceBody(input.source),
+      source: input.source,
+      sourceCapabilities: input.sourceCapabilities,
       logicalMemoryId: input.logicalMemoryId,
       candidateHash: input.candidateHash,
       sourceRevision: input.sourceRevision,
@@ -133,84 +147,20 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
       manifest: input.manifest,
       teamId: input.teamId,
       teamWorkspaceId: input.teamWorkspaceId,
-      representation: input.representation,
-      allowedRepresentations: input.allowedRepresentations,
+      activationRepresentation: input.activationRepresentation,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       mode: input.mode,
       expiresAt: input.expiresAt ?? null,
-      authority: authorityBody(input.referenceId)
-    }
-  });
-
-export const sharedMemoryConsentActionGrantBinding = (input: {
-  referenceId: string;
-  consentId: string;
-  logicalMemoryId: string;
-  teamId: string;
-  teamWorkspaceId: string;
-  previewId: string;
-  mode: "snapshot" | "continuous";
-  allowedRepresentations: SharedMemoryRepresentation[];
-  selectedRepresentation: SharedMemoryRepresentation;
-  previewRevision: number;
-  previewHash: string;
-  expiresAt?: string | null;
-  source?: SharedMemorySourceRef;
-}): SharedMemoryActionGrantBinding =>
-  withHashes({
-    operationFamily: "share_grant_management",
-    action: `shared_memory.consent.${input.logicalMemoryId}.pr${input.previewRevision}`,
-    teamId: input.teamId,
-    targetId: input.consentId,
-    method: "POST",
-    path: `/v1/shared-memory/teams/${input.teamId}/workspaces/${input.teamWorkspaceId}/consents`,
-    body: {
-      ...sourceBody(input.source),
-      consentId: input.consentId,
-      logicalMemoryId: input.logicalMemoryId,
-      preview: {
-        previewId: input.previewId,
-        previewHash: input.previewHash
-      },
-      previewRevision: input.previewRevision,
-      mode: input.mode,
-      allowedRepresentations: input.allowedRepresentations,
-      selectedRepresentation: input.selectedRepresentation,
-      expiresAt: input.expiresAt,
-      authority: authorityBody(input.referenceId)
-    }
-  });
-
-export const sharedMemoryShareActionGrantBinding = (input: {
-  referenceId: string;
-  mutationId: string;
-  logicalGrantId: string;
-  logicalMemoryId: string;
-  teamId: string;
-  teamWorkspaceId: string;
-  consentId: string;
-  source?: SharedMemorySourceRef;
-}): SharedMemoryActionGrantBinding =>
-  withHashes({
-    operationFamily: "share_grant_management",
-    action: `shared_memory.share.${input.logicalMemoryId}.${input.teamWorkspaceId}`,
-    teamId: input.teamId,
-    targetId: input.logicalGrantId,
-    method: "POST",
-    path: "/v1/shared-memory/share-grants",
-    body: {
-      ...sourceBody(input.source),
-      mutationId: input.mutationId,
-      logicalGrantId: input.logicalGrantId,
-      logicalMemoryId: input.logicalMemoryId,
-      teamId: input.teamId,
-      teamWorkspaceId: input.teamWorkspaceId,
-      consentId: input.consentId,
       authority: authorityBody(input.referenceId)
     }
   });
 
 export const sharedMemoryPendingShareActionGrantBinding = (input: {
   referenceId: string;
+  source: SharedMemorySourceRef;
+  sourceCapabilities: readonly SharedMemoryRepresentation[];
+  activationRepresentation: SharedMemoryRepresentation;
   mutationId: string;
   logicalGrantId: string;
   consentId: string;
@@ -221,21 +171,22 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
   previewRevision: number;
   previewHash: string;
   mode: "snapshot" | "continuous";
-  allowedRepresentations: SharedMemoryRepresentation[];
-  selectedRepresentation: SharedMemoryRepresentation;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
   expiresAt?: string | null;
   title?: string;
-  source?: SharedMemorySourceRef;
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
-    action: `shared_memory.pending_share.${input.logicalMemoryId}.pr${input.previewRevision}`,
+    action: `shared_memory.pending_share.${shareIntentScope(input)}`,
     teamId: input.teamId,
     targetId: input.logicalGrantId,
     method: "POST",
     path: "/v1/shared-memory/pending-shares",
     body: {
-      ...sourceBody(input.source),
+      source: input.source,
+      sourceCapabilities: input.sourceCapabilities,
+      activationRepresentation: input.activationRepresentation,
       mutationId: input.mutationId,
       logicalGrantId: input.logicalGrantId,
       consentId: input.consentId,
@@ -248,55 +199,8 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
       },
       previewRevision: input.previewRevision,
       mode: input.mode,
-      allowedRepresentations: input.allowedRepresentations,
-      selectedRepresentation: input.selectedRepresentation,
-      expiresAt: input.expiresAt ?? null,
-      ...(input.title ? { title: input.title } : {}),
-      authority: authorityBody(input.referenceId)
-    }
-  });
-
-export const sharedMemoryShareBundleActionGrantBinding = (input: {
-  referenceId: string;
-  mutationId: string;
-  logicalGrantId: string;
-  consentId: string;
-  logicalMemoryId: string;
-  teamId: string;
-  teamWorkspaceId: string;
-  previewId: string;
-  previewRevision: number;
-  previewHash: string;
-  mode: "snapshot" | "continuous";
-  allowedRepresentations: SharedMemoryRepresentation[];
-  selectedRepresentation: SharedMemoryRepresentation;
-  expiresAt?: string | null;
-  title?: string;
-  source?: SharedMemorySourceRef;
-}): SharedMemoryActionGrantBinding =>
-  withHashes({
-    operationFamily: "share_grant_management",
-    action: `shared_memory.share.${input.logicalMemoryId}.${input.teamWorkspaceId}`,
-    teamId: input.teamId,
-    targetId: input.logicalGrantId,
-    method: "POST",
-    path: "/v1/shared-memory/share-bundles",
-    body: {
-      ...sourceBody(input.source),
-      mutationId: input.mutationId,
-      logicalGrantId: input.logicalGrantId,
-      consentId: input.consentId,
-      logicalMemoryId: input.logicalMemoryId,
-      teamId: input.teamId,
-      teamWorkspaceId: input.teamWorkspaceId,
-      preview: {
-        previewId: input.previewId,
-        previewHash: input.previewHash
-      },
-      previewRevision: input.previewRevision,
-      mode: input.mode,
-      allowedRepresentations: input.allowedRepresentations,
-      selectedRepresentation: input.selectedRepresentation,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       expiresAt: input.expiresAt ?? null,
       ...(input.title ? { title: input.title } : {}),
       authority: authorityBody(input.referenceId)
@@ -377,37 +281,11 @@ export const sharedMemoryTranscriptRevokeActionGrantBinding = (input: {
     }
   });
 
-export const sharedMemoryRepresentationActionGrantBinding = (input: {
-  referenceId: string;
-  mutationId: string;
-  teamId: string;
-  teamWorkspaceId: string;
-  shareGrantId: string;
-  consentId: string;
-  representation: SharedMemoryRepresentation;
-  expectedGrantVersion: number;
-}): SharedMemoryActionGrantBinding =>
-  withHashes({
-    operationFamily: "share_grant_management",
-    action: `shared_memory.change_representation.${input.teamWorkspaceId}.${input.representation}`,
-    teamId: input.teamId,
-    targetId: input.shareGrantId,
-    method: "PUT",
-    path: `/v1/shared-memory/share-grants/${input.shareGrantId}/representation`,
-    body: {
-      mutationId: input.mutationId,
-      teamId: input.teamId,
-      teamWorkspaceId: input.teamWorkspaceId,
-      consentId: input.consentId,
-      representation: input.representation,
-      expectedGrantVersion: input.expectedGrantVersion,
-      authority: authorityBody(input.referenceId)
-    }
-  });
-
-export const sharedMemoryRepresentationBundleActionGrantBinding = (input: {
+export const sharedMemoryFidelityBundleActionGrantBinding = (input: {
   referenceId: string;
   source: SharedMemorySourceRef;
+  sourceCapabilities: readonly SharedMemoryRepresentation[];
+  activationRepresentation: SharedMemoryRepresentation;
   mutationId: string;
   consentId: string;
   logicalMemoryId: string;
@@ -418,20 +296,22 @@ export const sharedMemoryRepresentationBundleActionGrantBinding = (input: {
   previewRevision: number;
   previewHash: string;
   mode: "snapshot" | "continuous";
-  allowedRepresentations: SharedMemoryRepresentation[];
-  representation: SharedMemoryRepresentation;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
   expectedGrantVersion: number;
   expiresAt?: string | null;
 }): SharedMemoryActionGrantBinding =>
   withHashes({
     operationFamily: "share_grant_management",
-    action: `shared_memory.change_representation.${input.teamWorkspaceId}.${input.representation}`,
+    action: `shared_memory.change_fidelity.${shareIntentScope(input)}`,
     teamId: input.teamId,
     targetId: input.shareGrantId,
     method: "PUT",
-    path: `/v1/shared-memory/share-grants/${input.shareGrantId}/representation-bundle`,
+    path: `/v1/shared-memory/share-grants/${input.shareGrantId}/fidelity-bundle`,
     body: {
-      ...sourceBody(input.source),
+      source: input.source,
+      sourceCapabilities: input.sourceCapabilities,
+      activationRepresentation: input.activationRepresentation,
       mutationId: input.mutationId,
       consentId: input.consentId,
       logicalMemoryId: input.logicalMemoryId,
@@ -443,8 +323,8 @@ export const sharedMemoryRepresentationBundleActionGrantBinding = (input: {
       },
       previewRevision: input.previewRevision,
       mode: input.mode,
-      allowedRepresentations: input.allowedRepresentations,
-      representation: input.representation,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory,
       expectedGrantVersion: input.expectedGrantVersion,
       expiresAt: input.expiresAt ?? null,
       authority: authorityBody(input.referenceId)

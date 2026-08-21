@@ -18,6 +18,7 @@ export interface KoedAppRuntime {
   apiEntry: string;
   workerEntry: string;
   embeddingServiceEntry: string;
+  privacyServiceEntry: string;
   mcpCli: string;
   localAiRuntime: string;
   captureHook: string;
@@ -44,6 +45,12 @@ const packagedRuntime = (
     "dist",
     "index.js"
   );
+  const privacyServiceEntry = resolve(
+    root,
+    "privacy-service",
+    "dist",
+    "index.js"
+  );
   const mcpCli = resolve(root, "mcp-server", "dist", "cli.js");
   const localAiRuntime = resolve(
     root,
@@ -57,6 +64,7 @@ const packagedRuntime = (
     apiEntry,
     workerEntry,
     embeddingServiceEntry,
+    privacyServiceEntry,
     mcpCli,
     localAiRuntime,
     captureHook,
@@ -72,6 +80,7 @@ const packagedRuntime = (
     apiEntry,
     workerEntry,
     embeddingServiceEntry,
+    privacyServiceEntry,
     mcpCli,
     localAiRuntime,
     captureHook,
@@ -91,6 +100,13 @@ const sourceRuntime = (
     root,
     "apps",
     "embedding-service",
+    "dist",
+    "index.js"
+  );
+  const privacyServiceEntry = resolve(
+    root,
+    "apps",
+    "privacy-service",
     "dist",
     "index.js"
   );
@@ -114,6 +130,7 @@ const sourceRuntime = (
     resolve(root, "scripts", "setup-env.mjs"),
     resolve(root, "apps", "api", "package.json"),
     resolve(root, "apps", "worker", "package.json"),
+    resolve(root, "apps", "privacy-service", "package.json"),
     resolve(root, "packages", "db", "package.json"),
     resolve(root, "packages", "mcp-server", "package.json")
   ];
@@ -124,6 +141,7 @@ const sourceRuntime = (
     apiEntry,
     workerEntry,
     embeddingServiceEntry,
+    privacyServiceEntry,
     mcpCli,
     localAiRuntime,
     captureHook,
@@ -240,7 +258,7 @@ export const assertKoedAppRuntimeAvailable = (
       [
         "Packaged Koed JS runtime artifacts are missing.",
         `Missing runtime files under ${runtime.root}: ${runtime.missing.join(", ")}.`,
-        "Rebuild Koed Desktop packaging so koed-runtime contains API, Worker, Embedding Service, MCP Server, Supported Capture Hook, and DB migration artifacts."
+        "Rebuild Koed Desktop packaging so koed-runtime contains API, Worker, Embedding Service, Privacy Filter Service, MCP Server, Supported Capture Hook, and DB migration artifacts."
       ].join(" ")
     );
   }

@@ -13,11 +13,15 @@ import {
   approvalDecisionDisplaySchema,
   personalDesktopToolDisplaySchema
 } from "./personal-desktop-contract.js";
+import {
+  sharedMemoryCeilingAuthorizes,
+  sharedMemoryFidelityCeilings
+} from "./shared-memory-fidelity.js";
 import { aiClientIdentifierPattern } from "./ai-client-contract.js";
 import { sharedMemorySourceRefSchema } from "./shared-memory-source.js";
 export type { SharedMemorySourceRef } from "./shared-memory-source.js";
 
-export const COLLABORATION_CONTRACT_VERSION = 4;
+export const COLLABORATION_CONTRACT_VERSION = 5;
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
 export const COLLABORATION_DISPLAY_NAME_MAX_CODE_POINTS = 128;
 export const COLLABORATION_TOPIC_DESCRIPTION_MAX_UTF8_BYTES = 1_024;
@@ -964,14 +968,20 @@ export const collaborationMessagePageSchema = z
     }
   });
 
-export const sharedMemoryRepresentationSchema = z.enum([
-  "memory_events",
-  "lcm_leaves",
-  "lcm_rollups",
-  "curated_assertions"
-]);
+export const sharedMemoryFidelityCeilingSchema = z.enum(
+  sharedMemoryFidelityCeilings
+);
 
-const distinctSharedMemoryRepresentationsSchema = z
+export const sharedMemoryRepresentations = [
+  ...sharedMemoryFidelityCeilings,
+  "curated_assertions"
+] as const;
+
+export const sharedMemoryRepresentationSchema = z.enum(
+  sharedMemoryRepresentations
+);
+
+export const sharedMemorySourceCapabilitiesSchema = z
   .array(sharedMemoryRepresentationSchema)
   .min(1)
   .max(4)
@@ -979,10 +989,99 @@ const distinctSharedMemoryRepresentationsSchema = z
     if (new Set(values).size !== values.length) {
       context.addIssue({
         code: "custom",
-        message: "Shared Memory representations must be distinct"
+        message: "Shared Memory source capabilities must be distinct"
       });
     }
-  });
+  })
+  .transform((values) =>
+    [...values].sort(
+      (left, right) =>
+        sharedMemoryRepresentations.indexOf(left) -
+        sharedMemoryRepresentations.indexOf(right)
+    )
+  );
+
+const sharedMemorySelectionIsEffective = (input: {
+  sourceCapabilities: readonly z.infer<
+    typeof sharedMemoryRepresentationSchema
+  >[];
+  activationRepresentation: z.infer<typeof sharedMemoryRepresentationSchema>;
+  maximumFidelity: z.infer<typeof sharedMemoryFidelityCeilingSchema>;
+  includeCuratedMemory: boolean;
+}): boolean =>
+  input.sourceCapabilities.includes(input.activationRepresentation) &&
+  sharedMemoryCeilingAuthorizes(
+    input.maximumFidelity,
+    input.activationRepresentation,
+    input.includeCuratedMemory
+  );
+
+const sharedMemorySourcesEqual = (
+  left: z.infer<typeof sharedMemorySourceRefSchema>,
+  right: z.infer<typeof sharedMemorySourceRefSchema>
+): boolean => {
+  if (left.kind !== right.kind) return false;
+  if (
+    left.logicalMemoryId !== right.logicalMemoryId ||
+    (left.kind === "captured_session" &&
+      right.kind === "captured_session" &&
+      left.sessionId !== right.sessionId)
+  ) {
+    return false;
+  }
+  return (
+    left.kind !== "personal_note" ||
+    (right.kind === "personal_note" &&
+      left.noteId === right.noteId &&
+      left.memoryEventId === right.memoryEventId)
+  );
+};
+
+const validateSharedMemorySelection = (
+  input: {
+    source: z.infer<typeof sharedMemorySourceRefSchema>;
+    logicalMemoryId: string;
+    sourceCapabilities: z.infer<typeof sharedMemorySourceCapabilitiesSchema>;
+    activationRepresentation: z.infer<typeof sharedMemoryRepresentationSchema>;
+    maximumFidelity: z.infer<typeof sharedMemoryFidelityCeilingSchema>;
+    includeCuratedMemory: boolean;
+    mode: "snapshot" | "continuous";
+  },
+  context: z.RefinementCtx,
+  pathPrefix: Array<string | number> = []
+): void => {
+  if (input.source.logicalMemoryId !== input.logicalMemoryId) {
+    context.addIssue({
+      code: "custom",
+      path: [...pathPrefix, "source", "logicalMemoryId"],
+      message: "Shared Memory source must match the logical Memory"
+    });
+  }
+  if (!sharedMemorySelectionIsEffective(input)) {
+    context.addIssue({
+      code: "custom",
+      path: [...pathPrefix, "activationRepresentation"],
+      message:
+        "Activation representation must be supported by the source and consent"
+    });
+  }
+  if (
+    input.source.kind === "personal_note" &&
+    (input.sourceCapabilities.length !== 1 ||
+      input.sourceCapabilities[0] !== "memory_events" ||
+      input.activationRepresentation !== "memory_events" ||
+      input.maximumFidelity !== "memory_events" ||
+      input.includeCuratedMemory ||
+      input.mode !== "snapshot")
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: [...pathPrefix, "source"],
+      message:
+        "Personal Note sharing requires snapshot Memory Event source capability, activation, and consent"
+    });
+  }
+};
 
 export const sharedMemoryEventSourceKindSchema = z.enum([
   "user_message",
@@ -1087,8 +1186,10 @@ export const sharedMemorySessionSchema = z
     owner: participantSchema,
     title: collaborationNameSchema,
     latestActivityAt: collaborationTimestampSchema,
-    representation: sharedMemoryRepresentationSchema,
-    representationState: z.enum(["current", "stale", "pending", "unavailable"]),
+    sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
+    activationRepresentation: sharedMemoryRepresentationSchema,
+    maximumFidelity: sharedMemoryFidelityCeilingSchema,
+    includeCuratedMemory: z.boolean(),
     liveState: z.enum(["live", "reconnecting", "ended"]),
     sourceState: z.enum([
       "ready",
@@ -1563,6 +1664,8 @@ export const sharedMemoryCandidateManifestEntrySchema = z
 const sharedMemoryCandidateBindingSchema = z
   .object({
     source: sharedMemorySourceRefSchema,
+    sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
+    activationRepresentation: sharedMemoryRepresentationSchema,
     candidateHash: sha256Schema,
     sourceRevision: nonNegativeSequenceSchema,
     itemCount: z.number().int().safe().positive(),
@@ -1582,9 +1685,8 @@ const sharedMemoryCandidateBindingSchema = z
   })
   .strict();
 
-export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
-  "intent",
-  [
+export const collaborationActionGrantIntentSchema = z
+  .discriminatedUnion("intent", [
     actionGrantIntent("collaboration.create_team", {
       name: collaborationNameSchema
     }),
@@ -1646,15 +1748,21 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
       expectedVersion: positiveVersionSchema.nullable()
     }),
     actionGrantIntent("collaboration.preview_shared_memory", {
+      source: sharedMemorySourceRefSchema,
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
       workspaceId: z.uuid(),
-      representation: sharedMemoryRepresentationSchema,
-      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
+      sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
+      activationRepresentation: sharedMemoryRepresentationSchema,
+      maximumFidelity: sharedMemoryFidelityCeilingSchema,
+      includeCuratedMemory: z.boolean(),
+      mode: z.enum(["snapshot", "continuous"]),
       candidate: sharedMemoryCandidateBindingSchema.optional()
     }),
     actionGrantIntent("collaboration.share_memory", {
       source: sharedMemorySourceRefSchema,
+      sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
+      activationRepresentation: sharedMemoryRepresentationSchema,
       mutationId: z.uuid(),
       logicalGrantId: z.uuid(),
       consentId: z.uuid(),
@@ -1662,8 +1770,8 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       mode: z.enum(["snapshot", "continuous"]),
-      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
-      selectedRepresentation: sharedMemoryRepresentationSchema,
+      maximumFidelity: sharedMemoryFidelityCeilingSchema,
+      includeCuratedMemory: z.boolean(),
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
@@ -1699,18 +1807,20 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
         .max(120)
         .regex(/^[A-Za-z][A-Za-z0-9_.-]{0,119}$/)
     }),
-    actionGrantIntent("collaboration.change_shared_memory_representation", {
+    actionGrantIntent("collaboration.change_shared_memory_fidelity", {
       source: sharedMemorySourceRefSchema,
+      sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
+      activationRepresentation: sharedMemoryRepresentationSchema,
       mutationId: z.uuid(),
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       shareGrantId: z.uuid(),
       consentId: z.uuid(),
-      representation: sharedMemoryRepresentationSchema,
+      maximumFidelity: sharedMemoryFidelityCeilingSchema,
+      includeCuratedMemory: z.boolean(),
       expectedGrantVersion: positiveVersionSchema,
       mode: z.enum(["snapshot", "continuous"]),
-      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable()
@@ -1731,8 +1841,43 @@ export const collaborationActionGrantIntentSchema = z.discriminatedUnion(
         "independent_work"
       ])
     })
-  ]
-);
+  ])
+  .superRefine((intent, context) => {
+    if (
+      intent.intent === "collaboration.preview_shared_memory" ||
+      intent.intent === "collaboration.share_memory" ||
+      intent.intent === "collaboration.change_shared_memory_fidelity"
+    ) {
+      validateSharedMemorySelection(intent, context);
+    }
+    if (
+      intent.intent === "collaboration.change_shared_memory_fidelity" &&
+      intent.source.kind === "personal_note"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["source"],
+        message: "Personal Note shares do not support fidelity replacement"
+      });
+    }
+    if (
+      intent.intent === "collaboration.preview_shared_memory" &&
+      intent.candidate &&
+      (!sharedMemorySourcesEqual(intent.source, intent.candidate.source) ||
+        intent.candidate.sourceCapabilities.join(":") !==
+          intent.sourceCapabilities.join(":") ||
+        intent.candidate.activationRepresentation !==
+          intent.activationRepresentation ||
+        intent.candidate.mode !== intent.mode)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["candidate"],
+        message:
+          "Preview candidate must match the complete reviewed Share Intent"
+      });
+    }
+  });
 
 const collaborationActionGrantStatusStateSchema = z.enum([
   "pending",
@@ -1971,18 +2116,21 @@ export const collaborationWorkspaceSchema = z
 
 export const sharedMemoryPreviewSchema = z
   .object({
-    source: sharedMemorySourceRefSchema.optional(),
+    source: sharedMemorySourceRefSchema,
     logicalMemoryId: z.uuid(),
     teamId: z.uuid(),
     workspaceId: z.uuid(),
-    representation: sharedMemoryRepresentationSchema,
-    allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
+    sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
+    activationRepresentation: sharedMemoryRepresentationSchema,
+    maximumFidelity: sharedMemoryFidelityCeilingSchema,
+    includeCuratedMemory: z.boolean(),
+    mode: z.enum(["snapshot", "continuous"]),
     previewRevision: positiveVersionSchema,
     sourceRevision: nonNegativeSequenceSchema,
     policyRevision: positiveVersionSchema,
     contentPolicyVersion: positiveVersionSchema,
     classifierVersion: positiveVersionSchema,
-    redactedContentHash: sha256Schema,
+    sourceContentHash: sha256Schema,
     previewHash: sha256Schema,
     itemCount: z.number().int().safe().min(1),
     items: z
@@ -1992,32 +2140,28 @@ export const sharedMemoryPreviewSchema = z
   })
   .strict()
   .superRefine((preview, context) => {
-    if (!preview.allowedRepresentations.includes(preview.representation)) {
-      context.addIssue({
-        code: "custom",
-        path: ["allowedRepresentations"],
-        message: "Preview representation must be owner-authorized"
-      });
-    }
+    validateSharedMemorySelection(preview, context);
     if (
       preview.items.some(
-        (item) => item.representation !== preview.representation
+        (item) => item.representation !== preview.activationRepresentation
       )
     ) {
       context.addIssue({
         code: "custom",
         path: ["items"],
-        message: "Preview items must match the selected representation"
+        message: "Preview items must match the activation representation"
       });
     }
   });
 
 export const sharedMemoryCandidatePreviewSchema = z
   .object({
-    source: sharedMemorySourceRefSchema.optional(),
-    sessionId: z.uuid().optional(),
+    source: sharedMemorySourceRefSchema,
     logicalMemoryId: z.uuid(),
-    representation: sharedMemoryRepresentationSchema,
+    sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
+    activationRepresentation: sharedMemoryRepresentationSchema,
+    mode: z.enum(["snapshot", "continuous"]),
+    expiresAt: collaborationTimestampSchema.nullable(),
     sourceRevision: nonNegativeSequenceSchema,
     candidateHash: sha256Schema,
     itemCount: z.number().int().safe().nonnegative(),
@@ -2037,44 +2181,22 @@ export const sharedMemoryCandidatePreviewSchema = z
   })
   .strict()
   .superRefine((candidate, context) => {
-    if (!candidate.source && !candidate.sessionId) {
-      context.addIssue({
-        code: "custom",
-        path: ["source"],
-        message: "Candidate source identity is required"
-      });
-    }
     if (
-      candidate.source?.logicalMemoryId !== undefined &&
-      candidate.source.logicalMemoryId !== candidate.logicalMemoryId
+      candidate.source.logicalMemoryId !== candidate.logicalMemoryId ||
+      !candidate.sourceCapabilities.includes(candidate.activationRepresentation)
     ) {
       context.addIssue({
         code: "custom",
-        path: ["source", "logicalMemoryId"],
-        message: "Candidate source must match its logical memory"
+        path: ["activationRepresentation"],
+        message: "Candidate activation must match its source capabilities"
       });
     }
-    if (
-      candidate.source?.kind === "captured_session" &&
-      candidate.sessionId &&
-      candidate.source.sessionId !== candidate.sessionId
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["sessionId"],
-        message: "Candidate session must match its source binding"
-      });
-    }
-    if (candidate.source?.kind === "personal_note") {
-      if (candidate.sessionId !== undefined) {
-        context.addIssue({
-          code: "custom",
-          path: ["sessionId"],
-          message: "Personal Note candidates cannot bind a session"
-        });
-      }
+    if (candidate.source.kind === "personal_note") {
       if (
-        candidate.representation !== "memory_events" ||
+        candidate.sourceCapabilities.length !== 1 ||
+        candidate.sourceCapabilities[0] !== "memory_events" ||
+        candidate.activationRepresentation !== "memory_events" ||
+        candidate.mode !== "snapshot" ||
         candidate.sourceRevision !== 1 ||
         candidate.itemCount !== 1 ||
         candidate.manifest[0]?.sourceId !== candidate.source.memoryEventId
@@ -2089,13 +2211,13 @@ export const sharedMemoryCandidatePreviewSchema = z
     }
     if (
       candidate.items.some(
-        (item) => item.representation !== candidate.representation
+        (item) => item.representation !== candidate.activationRepresentation
       )
     ) {
       context.addIssue({
         code: "custom",
         path: ["items"],
-        message: "Candidate items must match the selected representation"
+        message: "Candidate items must match the activation representation"
       });
     }
     if (
@@ -2112,7 +2234,9 @@ export const sharedMemoryCandidatePreviewSchema = z
 
 export const sharedMemoryConsentSchema = z
   .object({
-    source: sharedMemorySourceRefSchema.optional(),
+    source: sharedMemorySourceRefSchema,
+    sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
+    activationRepresentation: sharedMemoryRepresentationSchema,
     id: z.uuid(),
     logicalMemoryId: z.uuid(),
     teamId: z.uuid(),
@@ -2120,8 +2244,8 @@ export const sharedMemoryConsentSchema = z
     mode: z.enum(["snapshot", "continuous"]),
     state: z.enum(["pending", "active", "paused", "revoked", "expired"]),
     version: positiveVersionSchema,
-    allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
-    selectedRepresentation: sharedMemoryRepresentationSchema,
+    maximumFidelity: sharedMemoryFidelityCeilingSchema,
+    includeCuratedMemory: z.boolean(),
     previewRevision: positiveVersionSchema,
     previewHash: sha256Schema,
     sourceRevision: nonNegativeSequenceSchema,
@@ -2132,20 +2256,14 @@ export const sharedMemoryConsentSchema = z
   })
   .strict()
   .superRefine((consent, context) => {
-    if (
-      !consent.allowedRepresentations.includes(consent.selectedRepresentation)
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["selectedRepresentation"],
-        message: "Selected representation must be consented"
-      });
-    }
+    validateSharedMemorySelection(consent, context);
   });
 
 export const sharedMemoryGrantSchema = z
   .object({
-    source: sharedMemorySourceRefSchema.optional(),
+    source: sharedMemorySourceRefSchema,
+    sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
+    activationRepresentation: sharedMemoryRepresentationSchema,
     id: z.uuid(),
     logicalGrantId: z.uuid(),
     logicalMemoryId: z.uuid(),
@@ -2153,9 +2271,10 @@ export const sharedMemoryGrantSchema = z
     teamId: z.uuid(),
     workspaceId: z.uuid(),
     consentId: z.uuid(),
-    ownerAllowedRepresentations: distinctSharedMemoryRepresentationsSchema,
-    activeRepresentation: sharedMemoryRepresentationSchema.nullable(),
-    representationPolicyRevision: positiveVersionSchema,
+    mode: z.enum(["snapshot", "continuous"]),
+    maximumFidelity: sharedMemoryFidelityCeilingSchema,
+    includeCuratedMemory: z.boolean(),
+    fidelityPolicyRevision: positiveVersionSchema,
     sourceRevision: nonNegativeSequenceSchema,
     grantVersion: positiveVersionSchema,
     lifecycle: z.enum([
@@ -2171,11 +2290,29 @@ export const sharedMemoryGrantSchema = z
     revokedAt: collaborationTimestampSchema.nullable(),
     companionThreadId: z.uuid()
   })
-  .strict();
+  .strict()
+  .superRefine((grant, context) => {
+    if (grant.source.logicalMemoryId !== grant.logicalMemoryId) {
+      context.addIssue({
+        code: "custom",
+        path: ["source", "logicalMemoryId"],
+        message: "Share Grant source must match its logical Memory"
+      });
+    }
+    if (!sharedMemorySelectionIsEffective(grant)) {
+      context.addIssue({
+        code: "custom",
+        path: ["activationRepresentation"],
+        message:
+          "Share Grant activation must be supported by its source and consent"
+      });
+    }
+  });
 
 export const pendingShareSchema = z
   .object({
-    source: sharedMemorySourceRefSchema.optional(),
+    source: sharedMemorySourceRefSchema,
+    sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
     id: z.uuid(),
     mutationId: z.uuid(),
     logicalGrantId: z.uuid(),
@@ -2183,8 +2320,9 @@ export const pendingShareSchema = z
     logicalMemoryId: z.uuid(),
     teamId: z.uuid(),
     workspaceId: z.uuid(),
-    representation: sharedMemoryRepresentationSchema,
-    allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
+    activationRepresentation: sharedMemoryRepresentationSchema,
+    maximumFidelity: sharedMemoryFidelityCeilingSchema,
+    includeCuratedMemory: z.boolean(),
     mode: z.enum(["snapshot", "continuous"]),
     sourceRevision: nonNegativeSequenceSchema,
     state: z.enum([
@@ -2224,7 +2362,10 @@ export const pendingShareSchema = z
     revokedAt: collaborationTimestampSchema.nullable(),
     grantId: z.uuid().nullable()
   })
-  .strict();
+  .strict()
+  .superRefine((pendingShare, context) => {
+    validateSharedMemorySelection(pendingShare, context);
+  });
 
 export const ownedShareSummarySchema = z
   .object({
@@ -2542,9 +2683,9 @@ export const collaborationRendererCommandSchema = z
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.preview_shared_memory_candidate", {
-      sessionId: z.uuid().optional(),
-      noteId: z.uuid().optional(),
-      representation: sharedMemoryRepresentationSchema
+      source: sharedMemorySourceRefSchema,
+      activationRepresentation: sharedMemoryRepresentationSchema,
+      mode: z.enum(["snapshot", "continuous"])
     }),
     command("collaboration.prepare_shared_memory_source", {
       sessionId: z.uuid(),
@@ -2560,11 +2701,15 @@ export const collaborationRendererCommandSchema = z
       sessionId: z.uuid()
     }),
     command("collaboration.preview_shared_memory", {
+      source: sharedMemorySourceRefSchema,
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
       workspaceId: z.uuid(),
-      representation: sharedMemoryRepresentationSchema,
-      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
+      sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
+      activationRepresentation: sharedMemoryRepresentationSchema,
+      maximumFidelity: sharedMemoryFidelityCeilingSchema,
+      includeCuratedMemory: z.boolean(),
+      mode: z.enum(["snapshot", "continuous"]),
       candidate: sharedMemoryCandidateBindingSchema.optional(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
@@ -2575,6 +2720,8 @@ export const collaborationRendererCommandSchema = z
     }),
     command("collaboration.share_memory", {
       source: sharedMemorySourceRefSchema,
+      sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
+      activationRepresentation: sharedMemoryRepresentationSchema,
       mutationId: z.uuid(),
       logicalGrantId: z.uuid(),
       consentId: z.uuid(),
@@ -2582,8 +2729,8 @@ export const collaborationRendererCommandSchema = z
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       mode: z.enum(["snapshot", "continuous"]),
-      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
-      selectedRepresentation: sharedMemoryRepresentationSchema,
+      maximumFidelity: sharedMemoryFidelityCeilingSchema,
+      includeCuratedMemory: z.boolean(),
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
@@ -2603,18 +2750,20 @@ export const collaborationRendererCommandSchema = z
         .regex(/^[A-Za-z0-9_.:-]+$/),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
-    command("collaboration.change_shared_memory_representation", {
+    command("collaboration.change_shared_memory_fidelity", {
       source: sharedMemorySourceRefSchema,
+      sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
+      activationRepresentation: sharedMemoryRepresentationSchema,
       mutationId: z.uuid(),
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
       workspaceId: z.uuid(),
       shareGrantId: z.uuid(),
       consentId: z.uuid(),
-      representation: sharedMemoryRepresentationSchema,
+      maximumFidelity: sharedMemoryFidelityCeilingSchema,
+      includeCuratedMemory: z.boolean(),
       expectedGrantVersion: positiveVersionSchema,
       mode: z.enum(["snapshot", "continuous"]),
-      allowedRepresentations: distinctSharedMemoryRepresentationsSchema,
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
@@ -2641,15 +2790,41 @@ export const collaborationRendererCommandSchema = z
   ])
   .superRefine((rendererCommand, context) => {
     if (
-      rendererCommand.command === "collaboration.preview_shared_memory" &&
-      !rendererCommand.input.allowedRepresentations.includes(
-        rendererCommand.input.representation
-      )
+      rendererCommand.command === "collaboration.preview_shared_memory" ||
+      rendererCommand.command === "collaboration.share_memory" ||
+      rendererCommand.command === "collaboration.change_shared_memory_fidelity"
+    ) {
+      validateSharedMemorySelection(rendererCommand.input, context, ["input"]);
+    }
+    if (
+      rendererCommand.command ===
+        "collaboration.change_shared_memory_fidelity" &&
+      rendererCommand.input.source.kind === "personal_note"
     ) {
       context.addIssue({
         code: "custom",
-        path: ["input", "representation"],
-        message: "Preview representation must be owner-authorized"
+        path: ["input", "source"],
+        message: "Personal Note shares do not support fidelity replacement"
+      });
+    }
+    if (
+      rendererCommand.command === "collaboration.preview_shared_memory" &&
+      rendererCommand.input.candidate &&
+      (!sharedMemorySourcesEqual(
+        rendererCommand.input.source,
+        rendererCommand.input.candidate.source
+      ) ||
+        rendererCommand.input.candidate.sourceCapabilities.join(":") !==
+          rendererCommand.input.sourceCapabilities.join(":") ||
+        rendererCommand.input.candidate.activationRepresentation !==
+          rendererCommand.input.activationRepresentation ||
+        rendererCommand.input.candidate.mode !== rendererCommand.input.mode)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["input", "candidate"],
+        message:
+          "Preview candidate must match the complete reviewed Share Intent"
       });
     }
   });
@@ -2788,7 +2963,7 @@ const commandNameSchema = z.enum([
   "collaboration.load_shared_memory_preview_page",
   "collaboration.share_memory",
   "collaboration.revoke_shared_memory",
-  "collaboration.change_shared_memory_representation",
+  "collaboration.change_shared_memory_fidelity",
   "collaboration.subscribe",
   "collaboration.unsubscribe",
   "collaboration.acknowledge_delivery"
@@ -2995,7 +3170,7 @@ export const collaborationCommandResultSchema = z.union([
     z.object({ grant: sharedMemoryGrantSchema }).strict()
   ),
   successResult(
-    "collaboration.change_shared_memory_representation",
+    "collaboration.change_shared_memory_fidelity",
     z.object({ pendingShare: pendingShareSchema }).strict()
   ),
   successResult(
@@ -3188,7 +3363,7 @@ export const collaborationRealtimeEventFamilySchema = z.enum([
   "message_created",
   "receipt_state_updated",
   "share_grant_lifecycle",
-  "representation_changed",
+  "fidelity_changed",
   "memory_event_available",
   "lcm_leaf_available",
   "lcm_rollup_available",
@@ -3334,7 +3509,7 @@ const realtimeUpdateDeliverySchema = z
         "shared_session_upserted",
         "shared_session_removed"
       ]),
-      representation_changed: new Set([
+      fidelity_changed: new Set([
         "shared_session_upserted",
         "shared_session_removed"
       ]),
@@ -3568,8 +3743,14 @@ export type CollaborationReadState = z.infer<
 export type CollaborationMessagePage = z.infer<
   typeof collaborationMessagePageSchema
 >;
+export type SharedMemoryFidelityCeiling = z.infer<
+  typeof sharedMemoryFidelityCeilingSchema
+>;
 export type SharedMemoryRepresentation = z.infer<
   typeof sharedMemoryRepresentationSchema
+>;
+export type SharedMemorySourceCapabilities = z.infer<
+  typeof sharedMemorySourceCapabilitiesSchema
 >;
 export type PersonalMemoryEntry = z.infer<typeof personalMemoryEntrySchema>;
 export type SharedMemorySourceItem = z.infer<

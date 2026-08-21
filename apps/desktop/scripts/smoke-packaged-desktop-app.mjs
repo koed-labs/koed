@@ -847,49 +847,59 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   );
   finishPhase(timings, "runtime install and verification", phaseStarted);
 
-  phaseStarted = beginPhase("embedding model verification or install");
-  const modelStatus = runPackagedCommand(layout, koedHome, [
-    "models",
-    "status",
-    "--kind",
-    "embedding",
-    "--json"
-  ]);
-  if (modelStatus.status !== 0) {
-    throw new Error(
-      `models status --json failed with ${modelStatus.status}: ${modelStatus.stderr || modelStatus.stdout}`
-    );
-  }
-  const modelStatusJson = parseJsonOutput(
-    "models status --json",
-    modelStatus.stdout
-  );
-  assertNoSourceCheckoutResolution("models status --json", modelStatusJson);
-  if (modelStatusJson.state !== "installed") {
-    const modelInstall = runPackagedCommand(layout, koedHome, [
+  phaseStarted = beginPhase("required model verification or install");
+  const requiredModelStatuses = {};
+  for (const kind of ["embedding", "privacy"]) {
+    const modelStatus = runPackagedCommand(layout, koedHome, [
       "models",
-      "install",
+      "status",
       "--kind",
-      "embedding",
+      kind,
       "--json"
     ]);
-    if (modelInstall.status !== 0) {
+    if (modelStatus.status !== 0) {
       throw new Error(
-        `models install --json failed with ${modelInstall.status}: ${modelInstall.stderr || modelInstall.stdout}`
+        `models status --kind ${kind} --json failed with ${modelStatus.status}: ${modelStatus.stderr || modelStatus.stdout}`
       );
     }
-    const modelInstallJson = parseJsonOutput(
-      "models install --json",
-      modelInstall.stdout
+    const modelStatusJson = parseJsonOutput(
+      `models status --kind ${kind} --json`,
+      modelStatus.stdout
     );
-    assertNoSourceCheckoutResolution("models install --json", modelInstallJson);
-    if (modelInstallJson.ok !== true) {
-      throw new Error(
-        `models install --json was not ok: ${JSON.stringify(modelInstallJson, null, 2)}`
+    assertNoSourceCheckoutResolution(
+      `models status --kind ${kind} --json`,
+      modelStatusJson
+    );
+    requiredModelStatuses[kind] = modelStatusJson;
+    if (modelStatusJson.state !== "installed") {
+      const modelInstall = runPackagedCommand(layout, koedHome, [
+        "models",
+        "install",
+        "--kind",
+        kind,
+        "--json"
+      ]);
+      if (modelInstall.status !== 0) {
+        throw new Error(
+          `models install --kind ${kind} --json failed with ${modelInstall.status}: ${modelInstall.stderr || modelInstall.stdout}`
+        );
+      }
+      const modelInstallJson = parseJsonOutput(
+        `models install --kind ${kind} --json`,
+        modelInstall.stdout
       );
+      assertNoSourceCheckoutResolution(
+        `models install --kind ${kind} --json`,
+        modelInstallJson
+      );
+      if (modelInstallJson.ok !== true) {
+        throw new Error(
+          `models install --kind ${kind} --json was not ok: ${JSON.stringify(modelInstallJson, null, 2)}`
+        );
+      }
     }
   }
-  finishPhase(timings, "embedding model verification or install", phaseStarted);
+  finishPhase(timings, "required model verification or install", phaseStarted);
 
   phaseStarted = beginPhase("first daemon start and health");
   const start = runPackagedCommand(layout, koedHome, [
@@ -992,7 +1002,8 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     runtimeStatus: runtimeStatusJson,
     install: installJson,
     installedRuntimeStatus: installedRuntimeStatusJson,
-    modelStatus: modelStatusJson,
+    modelStatus: requiredModelStatuses.embedding,
+    requiredModelStatuses,
     firstStatus,
     reconnectStatus: reconnectJson,
     stop: stopJson,

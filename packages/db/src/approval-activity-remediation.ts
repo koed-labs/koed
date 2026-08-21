@@ -543,7 +543,7 @@ export const correctApprovalActivity = async (
              protocol_version,family,scope,team_id,team_workspace_id,
              share_grant_id,logical_memory_id,resource_type,resource_id,
              actor_principal_id,mutation_id,replay_until
-           ) values (1,'representation_changed','team',$1,$2,$3,$4,
+           ) values (1,'fidelity_changed','team',$1,$2,$3,$4,
                      'team_memory_representation',$5,$6,$7,now()+interval '30 days')
            on conflict (mutation_id,family) do nothing`,
           [
@@ -585,7 +585,7 @@ export const correctApprovalActivity = async (
              'scope','team','teamId',$1::uuid,
              'cursor',(select max(cursor) from collaboration_outbox
                         where share_grant_id=$2
-                          and family in ('representation_changed','share_grant_lifecycle')),
+                          and family in ('fidelity_changed','share_grant_lifecycle')),
              'family','share_grant_lifecycle'
            )::text
          )`,

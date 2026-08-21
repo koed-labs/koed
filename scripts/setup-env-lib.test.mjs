@@ -27,6 +27,8 @@ const generatedValues = new Map([
   ["API_COLLABORATION_LOCAL_BROKER_SECRET", "generated-broker-secret"],
   ["API_COLLABORATION_REALTIME_CURSOR_SECRET", "generated-cursor-secret"],
   ["EMBEDDING_SERVICE_TOKEN", "generated-embedding-token"],
+  ["PRIVACY_SERVICE_TOKEN", "generated-privacy-token"],
+  ["PRIVACY_RUNTIME_CONTROL_TOKEN", "generated-privacy-control-token"],
   ["KOED_OPS_METRICS_TOKEN", "generated-ops-metrics-token"]
 ]);
 
@@ -60,6 +62,8 @@ test("retains compatibility-sensitive values from an existing env", () => {
     "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
     "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
     "EMBEDDING_SERVICE_TOKEN=replace_with_generated_embedding_service_token",
+    "PRIVACY_SERVICE_TOKEN=replace_with_generated_privacy_service_token",
+    "PRIVACY_RUNTIME_CONTROL_TOKEN=replace_with_generated_privacy_runtime_control_token",
     "KOED_OPS_METRICS_TOKEN=replace_with_generated_ops_metrics_token",
     "POSTGRES_PASSWORD=replace_with_generated_postgres_password",
     "DATABASE_URL=replace_with_generated_database_url",
@@ -73,6 +77,8 @@ test("retains compatibility-sensitive values from an existing env", () => {
     "API_COLLABORATION_LOCAL_BROKER_SECRET=old-broker-secret",
     "API_COLLABORATION_REALTIME_CURSOR_SECRET=old-cursor-secret",
     "EMBEDDING_SERVICE_TOKEN=old-embedding-token",
+    "PRIVACY_SERVICE_TOKEN=old-privacy-token",
+    "PRIVACY_RUNTIME_CONTROL_TOKEN=old-privacy-control-token",
     "KOED_OPS_METRICS_TOKEN=old-ops-metrics-token",
     "POSTGRES_PASSWORD=old-postgres-password",
     "DATABASE_URL=postgres://koed:old-postgres-password@localhost:15432/koed",
@@ -102,6 +108,11 @@ test("retains compatibility-sensitive values from an existing env", () => {
     "old-cursor-secret"
   );
   assert.equal(rendered.get("EMBEDDING_SERVICE_TOKEN"), "old-embedding-token");
+  assert.equal(rendered.get("PRIVACY_SERVICE_TOKEN"), "old-privacy-token");
+  assert.equal(
+    rendered.get("PRIVACY_RUNTIME_CONTROL_TOKEN"),
+    "old-privacy-control-token"
+  );
   assert.equal(rendered.get("KOED_OPS_METRICS_TOKEN"), "old-ops-metrics-token");
   assert.equal(rendered.get("POSTGRES_PASSWORD"), "old-postgres-password");
   assert.equal(
@@ -126,6 +137,8 @@ test("generates missing generated secrets while preserving non-generated values"
         "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
         "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
         "EMBEDDING_SERVICE_TOKEN=replace_with_generated_embedding_service_token",
+        "PRIVACY_SERVICE_TOKEN=replace_with_generated_privacy_service_token",
+        "PRIVACY_RUNTIME_CONTROL_TOKEN=replace_with_generated_privacy_runtime_control_token",
         "KOED_OPS_METRICS_TOKEN=replace_with_generated_ops_metrics_token",
         "POSTGRES_PASSWORD=replace_with_generated_postgres_password",
         "DATABASE_URL=replace_with_generated_database_url",
@@ -173,6 +186,14 @@ test("generates missing generated secrets while preserving non-generated values"
   assert.equal(
     rendered.get("EMBEDDING_SERVICE_TOKEN"),
     "generated-embedding-token"
+  );
+  assert.equal(
+    rendered.get("PRIVACY_SERVICE_TOKEN"),
+    "generated-privacy-token"
+  );
+  assert.equal(
+    rendered.get("PRIVACY_RUNTIME_CONTROL_TOKEN"),
+    "generated-privacy-control-token"
   );
   assert.equal(
     rendered.get("POSTGRES_PASSWORD"),
@@ -227,6 +248,7 @@ test("replaces generated-secret placeholders instead of retaining them", () => {
         "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
         "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
         "EMBEDDING_SERVICE_TOKEN=replace_with_generated_embedding_service_token",
+        "PRIVACY_SERVICE_TOKEN=replace_with_generated_privacy_service_token",
         "POSTGRES_PASSWORD=replace_with_generated_postgres_password",
         "DATABASE_URL=replace_with_generated_database_url"
       ].join("\n"),
@@ -237,6 +259,7 @@ test("replaces generated-secret placeholders instead of retaining them", () => {
         "API_COLLABORATION_LOCAL_BROKER_SECRET=replace_with_generated_local_broker_secret",
         "API_COLLABORATION_REALTIME_CURSOR_SECRET=replace_with_generated_realtime_cursor_secret",
         "EMBEDDING_SERVICE_TOKEN=replace_with_generated_embedding_service_token",
+        "PRIVACY_SERVICE_TOKEN=replace_with_generated_privacy_service_token",
         "POSTGRES_PASSWORD=replace_with_generated_postgres_password",
         "DATABASE_URL=replace_with_generated_database_url"
       ].join("\n"),
@@ -265,6 +288,10 @@ test("replaces generated-secret placeholders instead of retaining them", () => {
   assert.equal(
     rendered.get("EMBEDDING_SERVICE_TOKEN"),
     "generated-embedding-token"
+  );
+  assert.equal(
+    rendered.get("PRIVACY_SERVICE_TOKEN"),
+    "generated-privacy-token"
   );
   assert.equal(
     rendered.get("POSTGRES_PASSWORD"),

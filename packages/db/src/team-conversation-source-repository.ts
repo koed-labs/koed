@@ -1,4 +1,5 @@
 import type pg from "pg";
+import { isPrivacyMaterializationSourceAdapter } from "@koed/shared";
 import { recordAuditEventWithClient } from "./audit-repository.js";
 import type {
   ActorContext,
@@ -473,6 +474,7 @@ export const createTeamConversationSourceRepository = (
          left join team_conversation_source_grants source_grant
            on source_grant.share_grant_id=share_grant.id
         where share_grant.id=$1 and share_grant.owner_user_id=$2
+          and share_grant.source_kind='captured_session'
           and share_grant.lifecycle='active' and share_grant.revoked_at is null
           and share_grant.personal_deleted_at is null
           and team.lifecycle='active'
@@ -549,6 +551,7 @@ export const createTeamConversationSourceRepository = (
             and (consent.expires_at is null or consent.expires_at > now())
           where share_grant.id = $1
             and share_grant.owner_user_id = $2
+            and share_grant.source_kind = 'captured_session'
             and share_grant.team_id = $3
             and share_grant.lifecycle = 'active'
             and share_grant.revoked_at is null
@@ -585,6 +588,17 @@ export const createTeamConversationSourceRepository = (
       if (!artifact) {
         throw new TeamConversationSourceConflictError(
           "Conversation Source Artifact is unavailable"
+        );
+      }
+      if (
+        !isPrivacyMaterializationSourceAdapter({
+          sourceKind: artifact.source_kind,
+          artifactFormat: artifact.artifact_format,
+          artifactFormatVersion: artifact.artifact_format_version
+        })
+      ) {
+        throw new TeamConversationSourceConflictError(
+          "Conversation Source Artifact cannot be sanitized for Team access"
         );
       }
       const existing = await client.query<Row>(

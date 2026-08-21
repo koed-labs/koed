@@ -196,7 +196,9 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
 
     expect(first).toMatchObject({
       source: { kind: "personal_note", noteId, memoryEventId: eventId },
-      representation: "memory_events",
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      mode: "snapshot",
       sourceRevision: 1,
       itemCount: 1,
       excludedItemCount: 0,

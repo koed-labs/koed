@@ -45,7 +45,8 @@ const createCollaborationFixture = () => {
     teamA: randomUUID(),
     teamB: randomUUID(),
     workspaceA: randomUUID(),
-    workspaceB: randomUUID()
+    workspaceB: randomUUID(),
+    deployment: randomUUID()
   };
   const users = new Map<string, FixtureUser>([
     [
@@ -297,8 +298,20 @@ const createCollaborationFixture = () => {
   const repository: CollaborationRepository &
     Pick<
       MemorySourceRepository,
-      "findPersonalNoteMemoryEventId" | "getPersonalNoteMemoryEvent"
+      | "findPersonalNoteMemoryEventId"
+      | "getPersonalNoteMemoryEvent"
+      | "getLocalSyncDeployment"
     > = {
+    async getLocalSyncDeployment() {
+      return {
+        id: ids.deployment,
+        protocolDeploymentId: ids.deployment,
+        locality: "local",
+        profile: "self_hosted",
+        baseUrl: null,
+        upstreamBackendId: null
+      };
+    },
     async listTeamParticipants(actor, teamId) {
       if (!teamMember(actor.userId, teamId)) return null;
       return [...users.values()]

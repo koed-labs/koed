@@ -37,6 +37,13 @@ read-only. The preference is deliberately reusable by other local inference
 services, but each service retains its own provider implementation and resource
 policy.
 
+The Privacy Filter consumes this product preference through its native ONNX
+providers while retaining an independent service override. It uses CUDA on
+supported Linux x64 hosts, Core ML on macOS, and DirectML on Windows. Provider
+activation remains subject to its classifier-parity, calibration, and
+fail-closed privacy boundary; Embedding Service device discovery is not treated
+as proof that a Privacy provider loaded successfully.
+
 `auto` prefers Metal on Apple Silicon and CUDA on Linux or WSL when the selected
 `llama-server` binary reports a compatible device. Otherwise it uses CPU and
 records a bounded fallback reason. A GPU startup failure in `auto` may retry

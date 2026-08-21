@@ -65,6 +65,7 @@ export interface KoedServerStatus {
   redis: KoedServerComponentStatus;
   workerQueues: KoedServerComponentStatus;
   embeddingService: KoedServerComponentStatus;
+  privacyService: KoedServerComponentStatus;
   localAiRuntime: KoedServerComponentStatus;
   apiToken: KoedServerComponentStatus & { configured: boolean };
   mcpServer: KoedServerComponentStatus;

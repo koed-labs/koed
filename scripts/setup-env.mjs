@@ -77,6 +77,8 @@ const generatedValues = new Map([
     randomBytes(48).toString("base64url")
   ],
   ["EMBEDDING_SERVICE_TOKEN", randomBytes(32).toString("base64url")],
+  ["PRIVACY_SERVICE_TOKEN", randomBytes(32).toString("base64url")],
+  ["PRIVACY_RUNTIME_CONTROL_TOKEN", randomBytes(32).toString("base64url")],
   ["KOED_OPS_METRICS_TOKEN", randomBytes(32).toString("base64url")]
 ]);
 

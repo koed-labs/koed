@@ -420,8 +420,14 @@ const collaborationFixture = (): CollaborationSnapshot => {
     owner: participant(currentUser),
     title: "Collaboration renderer cutover",
     latestActivityAt: timestamp,
-    representation: "memory_events" as const,
-    representationState: "current" as const,
+    maximumFidelity: "memory_events" as const,
+    sourceCapabilities: [
+      "memory_events" as const,
+      "lcm_leaves" as const,
+      "lcm_rollups" as const
+    ],
+    activationRepresentation: "memory_events" as const,
+    includeCuratedMemory: false,
     liveState: "live" as const,
     sourceState: "ready" as const,
     sourceRevision: revision,
@@ -720,6 +726,8 @@ const interactionIds = {
   aliceCreatedNoteMemoryEvent: uuid(137),
   bobCreatedNote: uuid(138),
   bobCreatedNoteMemoryEvent: uuid(139),
+  aliceCreatedNoteLogicalMemory: uuid(144),
+  bobCreatedNoteLogicalMemory: uuid(145),
   actionGrant: uuid(140),
   personalSubscription: uuid(141),
   alphaSubscription: uuid(142),
@@ -734,6 +742,10 @@ const interactionIds = {
   activeLogicalGrant: uuid(712),
   activeConsent: uuid(713)
 } as const;
+
+const ownerOnlyCredentialSource =
+  "username: preview-owner password: correct-horse-battery-staple";
+const teamSafeCredentialSource = "username: [USERNAME] password: [SECRET]";
 
 const interactionPerson = (actor: StatefulActor) => ({
   id: interactionIds[actor],
@@ -756,6 +768,10 @@ const interactionNote = (
   return {
     noteId,
     memoryEventId,
+    logicalMemoryId:
+      actor === "alice"
+        ? interactionIds.aliceNoteLogicalMemory
+        : interactionIds.bobNoteLogicalMemory,
     title,
     titleVersion,
     createdAt: timestamp,
@@ -827,6 +843,10 @@ const createInteractionPersonalMemoryApi = (
       const note: PersonalDesktopNote = {
         noteId,
         memoryEventId,
+        logicalMemoryId:
+          actor === "alice"
+            ? interactionIds.aliceCreatedNoteLogicalMemory
+            : interactionIds.bobCreatedNoteLogicalMemory,
         title,
         titleVersion: 1,
         createdAt: timestamp,
@@ -956,15 +976,22 @@ const interactionSession = (team: "alpha" | "beta") => ({
     team === "alpha"
       ? interactionIds.alphaWorkspace
       : interactionIds.betaWorkspace,
-  owner: interactionParticipant(team === "alpha" ? "bob" : "alice"),
+  owner: interactionParticipant("alice"),
   title:
     team === "alpha"
       ? "Workspace Memory Timeline UX"
       : "Flat User-Owned Memory Model",
   latestActivityAt: timestamp,
-  representation:
+  maximumFidelity:
     team === "alpha" ? ("memory_events" as const) : ("lcm_rollups" as const),
-  representationState: "current" as const,
+  sourceCapabilities: [
+    "memory_events" as const,
+    "lcm_leaves" as const,
+    "lcm_rollups" as const
+  ],
+  activationRepresentation:
+    team === "alpha" ? ("memory_events" as const) : ("lcm_rollups" as const),
+  includeCuratedMemory: false,
   liveState: "live" as const,
   sourceState: "ready" as const,
   sourceRevision: `${revision}-${team}`,
@@ -1051,6 +1078,13 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
   let pendingOwnedShare: Extract<OwnedShareItem, { kind: "pending" }> = {
     kind: "pending",
     pendingShare: {
+      source: {
+        kind: "captured_session",
+        sessionId: interactionIds.alphaSession,
+        logicalMemoryId: interactionIds.alphaMemory
+      },
+      sourceCapabilities: ["memory_events", "lcm_leaves", "lcm_rollups"],
+      activationRepresentation: "memory_events",
       id: interactionIds.pendingShare,
       mutationId: interactionIds.pendingMutation,
       logicalGrantId: interactionIds.pendingLogicalGrant,
@@ -1058,8 +1092,8 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
       logicalMemoryId: interactionIds.alphaMemory,
       teamId: interactionIds.alphaTeam,
       workspaceId: interactionIds.alphaWorkspace,
-      representation: "memory_events",
-      allowedRepresentations: ["memory_events"],
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
       mode: "continuous",
       sourceRevision: 12,
       state: "activated",
@@ -1096,6 +1130,13 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
   let activeOwnedShare: Extract<OwnedShareItem, { kind: "grant" }> | null = {
     kind: "grant",
     grant: {
+      source: {
+        kind: "captured_session",
+        sessionId: interactionIds.alphaSession,
+        logicalMemoryId: interactionIds.alphaMemory
+      },
+      sourceCapabilities: ["memory_events", "lcm_leaves", "lcm_rollups"],
+      activationRepresentation: "memory_events",
       id: interactionIds.activeGrant,
       logicalGrantId: interactionIds.activeLogicalGrant,
       logicalMemoryId: interactionIds.alphaMemory,
@@ -1106,9 +1147,10 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
       teamId: interactionIds.alphaTeam,
       workspaceId: interactionIds.alphaWorkspace,
       consentId: interactionIds.activeConsent,
-      ownerAllowedRepresentations: ["lcm_rollups"],
-      activeRepresentation: "lcm_rollups",
-      representationPolicyRevision: 1,
+      mode: "snapshot",
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      fidelityPolicyRevision: 1,
       sourceRevision: 12,
       grantVersion: 2,
       lifecycle: "active",
@@ -1357,7 +1399,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
           hasOlder: false,
           hasNewer: false,
           sharedSessionId: session.id,
-          representation: session.representation,
+          representation: session.maximumFidelity,
           items:
             team === "alpha"
               ? [
@@ -1371,7 +1413,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
                         id: uuid(161),
                         sourceKind: "agent_message",
                         occurredAt: timestamp,
-                        body: "Deterministic Electron source replacement.",
+                        body: `Deterministic Electron source replacement. ${teamSafeCredentialSource}`,
                         actorName: "Codex",
                         toolName: null,
                         toolCallId: null
@@ -1662,6 +1704,53 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
           nextCursor: null
         });
       case "collaboration.preview_shared_memory_candidate": {
+        if (parsed.input.source.kind === "captured_session") {
+          return result(parsed, {
+            candidate: {
+              source: parsed.input.source,
+              logicalMemoryId: parsed.input.source.logicalMemoryId,
+              sourceCapabilities: [
+                "memory_events",
+                "lcm_leaves",
+                "lcm_rollups"
+              ],
+              activationRepresentation: parsed.input.activationRepresentation,
+              mode: "continuous",
+              expiresAt: null,
+              sourceRevision: 12,
+              candidateHash: "c".repeat(64),
+              itemCount: 1,
+              excludedItemCount: 0,
+              manifest: [
+                {
+                  sourceId: uuid(160),
+                  revisionHash: "d".repeat(64)
+                }
+              ],
+              byteCount: new TextEncoder().encode(ownerOnlyCredentialSource)
+                .byteLength,
+              items: [
+                {
+                  id: uuid(160),
+                  representation: "memory_events",
+                  sequence: 1,
+                  occurredAt: timestamp,
+                  sourceItems: [
+                    {
+                      id: uuid(161),
+                      sourceKind: "agent_message",
+                      occurredAt: timestamp,
+                      body: ownerOnlyCredentialSource,
+                      actorName: "Codex",
+                      toolName: null,
+                      toolCallId: null
+                    }
+                  ]
+                }
+              ]
+            }
+          });
+        }
         const note = interactionNote(actor, "Browser launch note", 1);
         const logicalMemoryId =
           actor === "alice"
@@ -1694,7 +1783,10 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
           candidate: {
             source,
             logicalMemoryId,
-            representation: "memory_events",
+            sourceCapabilities: ["memory_events"],
+            activationRepresentation: "memory_events",
+            mode: "snapshot",
+            expiresAt: null,
             sourceRevision: 1,
             candidateHash: "c".repeat(64),
             itemCount: 1,
@@ -1716,14 +1808,17 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
             logicalMemoryId: parsed.input.logicalMemoryId,
             teamId: parsed.input.teamId,
             workspaceId: parsed.input.workspaceId,
-            representation: "memory_events",
-            allowedRepresentations: ["memory_events"],
+            sourceCapabilities: ["memory_events"],
+            activationRepresentation: "memory_events",
+            maximumFidelity: "memory_events",
+            includeCuratedMemory: false,
+            mode: "snapshot",
             previewRevision: 1,
             sourceRevision: 1,
             policyRevision: 1,
             contentPolicyVersion: 1,
             classifierVersion: 1,
-            redactedContentHash: "a".repeat(64),
+            sourceContentHash: "a".repeat(64),
             previewHash: "b".repeat(64),
             itemCount: 1,
             items: [
@@ -1753,6 +1848,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
         return result(parsed, {
           pendingShare: {
             source: parsed.input.source,
+            sourceCapabilities: ["memory_events"],
             id: interactionIds.pendingShare,
             mutationId: parsed.input.mutationId,
             logicalGrantId: parsed.input.logicalGrantId,
@@ -1760,8 +1856,9 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
             logicalMemoryId: parsed.input.logicalMemoryId,
             teamId: parsed.input.teamId,
             workspaceId: parsed.input.workspaceId,
-            representation: "memory_events",
-            allowedRepresentations: ["memory_events"],
+            activationRepresentation: "memory_events",
+            maximumFidelity: "memory_events",
+            includeCuratedMemory: false,
             mode: "snapshot",
             sourceRevision: 1,
             state: "preparing",

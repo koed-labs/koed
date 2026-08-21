@@ -55,9 +55,11 @@ const readModels = (value: unknown) =>
         const model = text(item?.model);
         const composedFullId = [provider, model].filter(Boolean).join("/");
         const fullId = text(item?.fullId) ?? (composedFullId || text(item?.id));
-        if (!item || !fullId) return [];
+        const id = text(item?.id) ?? fullId;
+        if (!item || !id || !fullId) return [];
         return [
           {
+            id,
             displayName: text(item.displayName),
             provider,
             model,

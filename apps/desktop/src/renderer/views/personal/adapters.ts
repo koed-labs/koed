@@ -57,7 +57,13 @@ export type ShareToWorkspaceRequest = {
 export const personalMemorySharingSource = (
   thread: Pick<
     PersonalDesktopProjectThread,
-    "eventCount" | "latestAt" | "name" | "projectName" | "sample" | "sessionId"
+    | "eventCount"
+    | "latestAt"
+    | "logicalMemoryId"
+    | "name"
+    | "projectName"
+    | "sample"
+    | "sessionId"
   >,
   records: readonly PersonalMemorySharingRecord[]
 ): PersonalMemorySharingSource | null => {
@@ -70,7 +76,7 @@ export const personalMemorySharingSource = (
       entryId: thread.sessionId,
       localEntry: {
         id: thread.sessionId,
-        logicalMemoryId: null,
+        logicalMemoryId: thread.logicalMemoryId ?? null,
         title: thread.name.trim() || "Untitled session",
         projectName: thread.projectName,
         updatedAt: thread.latestAt,
@@ -79,7 +85,7 @@ export const personalMemorySharingSource = (
         hasSynchronizedRevision: false,
         syncState: "not_started"
       },
-      logicalMemoryId: null,
+      logicalMemoryId: thread.logicalMemoryId ?? null,
       sessionId: thread.sessionId,
       syncState: "not_started"
     };

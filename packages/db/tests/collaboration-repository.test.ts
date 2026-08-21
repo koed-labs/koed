@@ -13,7 +13,7 @@ import {
   type ManagedKmsKeyring
 } from "@koed/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type pg from "pg";
+import pg from "pg";
 
 import {
   CollaborationIdempotencyConflictError,
@@ -141,6 +141,566 @@ describeDb("Collaboration repository", () => {
     };
   };
 
+  type FidelityCeiling = "memory_events" | "lcm_leaves" | "lcm_rollups";
+  type ConcreteRepresentation = FidelityCeiling | "curated_assertions";
+
+  type AuthorizationScopeFixture = {
+    teamWorkspaceId: string;
+    logicalMemoryId: string;
+    remoteReplicaId: string;
+    ownerPrincipalId: string;
+    consentId: string;
+    shareGrantId: string;
+    threadId: string;
+    sourceOwnerPolicyId: string;
+    teamPolicyId: string;
+    workspacePolicyId: string;
+  };
+
+  const createSharedMemoryAuthorizationHarness = async () => {
+    const authorizationPool = new pg.Pool({
+      connectionString: databaseUrl,
+      max: 1
+    });
+    await authorizationPool.query(`
+      create temp table users (
+        id uuid primary key,
+        display_name text,
+        disabled_at timestamptz,
+        deleted_at timestamptz
+      );
+      create temp table teams (
+        id uuid primary key,
+        lifecycle text not null,
+        entitlement_status text not null
+      );
+      create temp table team_memberships (
+        team_id uuid not null,
+        user_id uuid not null,
+        status text not null,
+        disabled_at timestamptz
+      );
+      create temp table team_workspaces (
+        id uuid primary key,
+        team_id uuid not null,
+        lifecycle text not null,
+        archived_at timestamptz
+      );
+      create temp table team_workspace_access_grants (
+        team_workspace_id uuid not null,
+        team_id uuid not null,
+        user_id uuid not null,
+        access text not null,
+        disabled_at timestamptz
+      );
+      create temp table source_owner_representation_policies (
+        policy_id uuid not null,
+        version integer not null,
+        logical_memory_id uuid not null,
+        source_owner_principal_id uuid not null,
+        maximum_fidelity text not null,
+        include_curated_memory boolean not null,
+        superseded_at timestamptz
+      );
+      create temp table team_representation_policies (
+        policy_id uuid not null,
+        version integer not null,
+        team_id uuid not null,
+        maximum_fidelity text not null,
+        include_curated_memory boolean not null,
+        superseded_at timestamptz
+      );
+      create temp table workspace_representation_policies (
+        policy_id uuid not null,
+        version integer not null,
+        team_id uuid not null,
+        team_workspace_id uuid not null,
+        maximum_fidelity text not null,
+        include_curated_memory boolean not null,
+        superseded_at timestamptz
+      );
+      create temp table source_owner_representation_consents (
+        id uuid primary key,
+        logical_memory_id uuid not null,
+        remote_replica_id uuid not null,
+        source_owner_principal_id uuid not null,
+        team_id uuid not null,
+        team_workspace_id uuid not null,
+        source_owner_policy_id uuid not null,
+        source_owner_policy_version integer not null,
+        team_policy_id uuid not null,
+        team_policy_version integer not null,
+        workspace_policy_id uuid not null,
+        workspace_policy_version integer not null,
+        state text not null,
+        maximum_fidelity text not null,
+        include_curated_memory boolean not null,
+        expires_at timestamptz,
+        revoked_at timestamptz
+      );
+      create temp table team_session_share_grants (
+        id uuid primary key,
+        logical_memory_id uuid not null,
+        remote_replica_id uuid not null,
+        owner_principal_id uuid not null,
+        team_id uuid not null,
+        team_workspace_id uuid not null,
+        consent_id uuid not null,
+        source_owner_policy_id uuid not null,
+        source_owner_policy_version integer not null,
+        team_policy_id uuid not null,
+        team_policy_version integer not null,
+        workspace_policy_id uuid not null,
+        workspace_policy_version integer not null,
+        maximum_fidelity text not null,
+        include_curated_memory boolean not null,
+        fidelity_policy_revision integer not null,
+        content_policy_version integer not null,
+        classifier_version integer not null,
+        lifecycle text not null,
+        revoked_at timestamptz,
+        tombstoned_at timestamptz,
+        purge_completed_at timestamptz
+      );
+      create temp table collaboration_threads (
+        id uuid primary key,
+        logical_id uuid not null,
+        scope collaboration_scope not null,
+        kind text not null,
+        personal_owner_user_id uuid,
+        team_id uuid,
+        team_workspace_id uuid,
+        shared_logical_memory_id uuid,
+        share_grant_id uuid,
+        system_key text,
+        name_marker text,
+        topic_marker text,
+        normalized_name_hash text,
+        participant_key text,
+        created_by_user_id uuid,
+        version integer not null,
+        audience_version integer not null,
+        next_sequence bigint not null,
+        lifecycle text not null,
+        created_at timestamptz not null,
+        updated_at timestamptz not null,
+        last_activity_at timestamptz not null,
+        archived_at timestamptz
+      );
+      create temp table collaboration_participants (
+        thread_id uuid not null,
+        user_id uuid not null,
+        ordinal integer not null
+      );
+      create temp table collaboration_receipt_states (
+        thread_id uuid not null,
+        user_id uuid not null,
+        last_read_message_id uuid,
+        last_read_sequence bigint not null default 0
+      );
+      create temp table collaboration_messages (
+        id uuid primary key,
+        thread_id uuid not null,
+        thread_sequence bigint not null,
+        sender_principal_id uuid
+      );
+      create temp table team_memory_representations (
+        id uuid primary key,
+        share_grant_id uuid not null,
+        consent_id uuid not null,
+        team_id uuid not null,
+        team_workspace_id uuid not null,
+        logical_memory_id uuid not null,
+        representation text not null,
+        source_owner_policy_id uuid not null,
+        source_owner_policy_version integer not null,
+        team_policy_id uuid not null,
+        team_policy_version integer not null,
+        workspace_policy_id uuid not null,
+        workspace_policy_version integer not null,
+        fidelity_policy_revision integer not null,
+        content_policy_version integer not null,
+        classifier_version integer not null,
+        state text not null,
+        invalidated_at timestamptz,
+        curated_expires_at timestamptz
+      );
+      create temp table collaboration_outbox (
+        id uuid primary key,
+        cursor bigint not null,
+        protocol_version integer not null,
+        family text not null,
+        scope collaboration_scope not null,
+        personal_owner_user_id uuid,
+        team_id uuid,
+        team_workspace_id uuid,
+        thread_id uuid,
+        message_id uuid,
+        share_grant_id uuid,
+        logical_memory_id uuid,
+        resource_type text not null,
+        resource_id uuid not null,
+        actor_principal_id uuid,
+        mutation_id uuid not null,
+        occurred_at timestamptz not null default now(),
+        available_at timestamptz not null default now(),
+        replay_until timestamptz not null default (now() + interval '1 day'),
+        invalidated_at timestamptz
+      );
+    `);
+
+    const actorUserId = randomUUID();
+    const teamId = randomUUID();
+    await authorizationPool.query(
+      `insert into users (id,display_name)
+       values ($1,'Authorization Reader')`,
+      [actorUserId]
+    );
+    await authorizationPool.query(
+      `insert into teams (id,lifecycle,entitlement_status)
+       values ($1,'active','active')`,
+      [teamId]
+    );
+    await authorizationPool.query(
+      `insert into team_memberships (team_id,user_id,status)
+       values ($1,$2,'enabled')`,
+      [teamId, actorUserId]
+    );
+
+    const createScope = async (input?: {
+      maximumFidelity?: FidelityCeiling;
+      includeCuratedMemory?: boolean;
+    }): Promise<AuthorizationScopeFixture> => {
+      const maximumFidelity = input?.maximumFidelity ?? "memory_events";
+      const includeCuratedMemory = input?.includeCuratedMemory ?? false;
+      const scope: AuthorizationScopeFixture = {
+        teamWorkspaceId: randomUUID(),
+        logicalMemoryId: randomUUID(),
+        remoteReplicaId: randomUUID(),
+        ownerPrincipalId: randomUUID(),
+        consentId: randomUUID(),
+        shareGrantId: randomUUID(),
+        threadId: randomUUID(),
+        sourceOwnerPolicyId: randomUUID(),
+        teamPolicyId: randomUUID(),
+        workspacePolicyId: randomUUID()
+      };
+      await authorizationPool.query(
+        `insert into team_workspaces (id,team_id,lifecycle)
+         values ($1,$2,'active')`,
+        [scope.teamWorkspaceId, teamId]
+      );
+      await authorizationPool.query(
+        `insert into team_workspace_access_grants (
+           team_workspace_id,team_id,user_id,access
+         ) values ($1,$2,$3,'read')`,
+        [scope.teamWorkspaceId, teamId, actorUserId]
+      );
+      await authorizationPool.query(
+        `insert into source_owner_representation_policies (
+           policy_id,version,logical_memory_id,source_owner_principal_id,
+           maximum_fidelity,include_curated_memory
+         ) values ($1,1,$2,$3,$4,$5)`,
+        [
+          scope.sourceOwnerPolicyId,
+          scope.logicalMemoryId,
+          scope.ownerPrincipalId,
+          maximumFidelity,
+          includeCuratedMemory
+        ]
+      );
+      await authorizationPool.query(
+        `insert into team_representation_policies (
+           policy_id,version,team_id,maximum_fidelity,include_curated_memory
+         ) values ($1,1,$2,$3,$4)`,
+        [scope.teamPolicyId, teamId, maximumFidelity, includeCuratedMemory]
+      );
+      await authorizationPool.query(
+        `insert into workspace_representation_policies (
+           policy_id,version,team_id,team_workspace_id,maximum_fidelity,
+           include_curated_memory
+         ) values ($1,1,$2,$3,$4,$5)`,
+        [
+          scope.workspacePolicyId,
+          teamId,
+          scope.teamWorkspaceId,
+          maximumFidelity,
+          includeCuratedMemory
+        ]
+      );
+      await authorizationPool.query(
+        `insert into source_owner_representation_consents (
+           id,logical_memory_id,remote_replica_id,source_owner_principal_id,
+           team_id,team_workspace_id,source_owner_policy_id,
+           source_owner_policy_version,team_policy_id,team_policy_version,
+           workspace_policy_id,workspace_policy_version,state,
+           maximum_fidelity,include_curated_memory
+         ) values (
+           $1,$2,$3,$4,$5,$6,$7,1,$8,1,$9,1,'active',$10,$11
+         )`,
+        [
+          scope.consentId,
+          scope.logicalMemoryId,
+          scope.remoteReplicaId,
+          scope.ownerPrincipalId,
+          teamId,
+          scope.teamWorkspaceId,
+          scope.sourceOwnerPolicyId,
+          scope.teamPolicyId,
+          scope.workspacePolicyId,
+          maximumFidelity,
+          includeCuratedMemory
+        ]
+      );
+      await authorizationPool.query(
+        `insert into team_session_share_grants (
+           id,logical_memory_id,remote_replica_id,owner_principal_id,team_id,
+           team_workspace_id,consent_id,source_owner_policy_id,
+           source_owner_policy_version,team_policy_id,team_policy_version,
+           workspace_policy_id,workspace_policy_version,maximum_fidelity,
+           include_curated_memory,fidelity_policy_revision,
+           content_policy_version,classifier_version,lifecycle
+         ) values (
+           $1,$2,$3,$4,$5,$6,$7,$8,1,$9,1,$10,1,$11,$12,1,1,1,'active'
+         )`,
+        [
+          scope.shareGrantId,
+          scope.logicalMemoryId,
+          scope.remoteReplicaId,
+          scope.ownerPrincipalId,
+          teamId,
+          scope.teamWorkspaceId,
+          scope.consentId,
+          scope.sourceOwnerPolicyId,
+          scope.teamPolicyId,
+          scope.workspacePolicyId,
+          maximumFidelity,
+          includeCuratedMemory
+        ]
+      );
+      await authorizationPool.query(
+        `insert into collaboration_threads (
+           id,logical_id,scope,kind,team_id,team_workspace_id,
+           shared_logical_memory_id,share_grant_id,created_by_user_id,
+           version,audience_version,next_sequence,lifecycle,created_at,
+           updated_at,last_activity_at
+         ) values (
+           $1,$2,'team','shared_session_discussion',$3,$4,$5,$6,$7,
+           1,1,1,'active',now(),now(),now()
+         )`,
+        [
+          scope.threadId,
+          randomUUID(),
+          teamId,
+          scope.teamWorkspaceId,
+          scope.logicalMemoryId,
+          scope.shareGrantId,
+          actorUserId
+        ]
+      );
+      return scope;
+    };
+
+    const setFidelity = async (
+      scope: AuthorizationScopeFixture,
+      maximumFidelity: FidelityCeiling
+    ): Promise<void> => {
+      await authorizationPool.query(
+        `update team_session_share_grants
+            set maximum_fidelity=$2 where id=$1`,
+        [scope.shareGrantId, maximumFidelity]
+      );
+      await authorizationPool.query(
+        `update source_owner_representation_consents
+            set maximum_fidelity=$2 where id=$1`,
+        [scope.consentId, maximumFidelity]
+      );
+      await authorizationPool.query(
+        `update source_owner_representation_policies
+            set maximum_fidelity=$2 where policy_id=$1 and version=1`,
+        [scope.sourceOwnerPolicyId, maximumFidelity]
+      );
+      await authorizationPool.query(
+        `update team_representation_policies
+            set maximum_fidelity=$2 where policy_id=$1 and version=1`,
+        [scope.teamPolicyId, maximumFidelity]
+      );
+      await authorizationPool.query(
+        `update workspace_representation_policies
+            set maximum_fidelity=$2 where policy_id=$1 and version=1`,
+        [scope.workspacePolicyId, maximumFidelity]
+      );
+    };
+
+    const setCurated = async (
+      scope: AuthorizationScopeFixture,
+      authority:
+        | "grant"
+        | "consent"
+        | "owner_policy"
+        | "team_policy"
+        | "workspace_policy",
+      included: boolean
+    ): Promise<void> => {
+      const updates = {
+        grant: ["team_session_share_grants", "id", scope.shareGrantId],
+        consent: [
+          "source_owner_representation_consents",
+          "id",
+          scope.consentId
+        ],
+        owner_policy: [
+          "source_owner_representation_policies",
+          "policy_id",
+          scope.sourceOwnerPolicyId
+        ],
+        team_policy: [
+          "team_representation_policies",
+          "policy_id",
+          scope.teamPolicyId
+        ],
+        workspace_policy: [
+          "workspace_representation_policies",
+          "policy_id",
+          scope.workspacePolicyId
+        ]
+      } as const;
+      const [table, column, id] = updates[authority];
+      await authorizationPool.query(
+        `update ${table} set include_curated_memory=$2 where ${column}=$1`,
+        [id, included]
+      );
+    };
+
+    let nextCursor = 1;
+    const addRepresentationEvent = async (
+      scope: AuthorizationScopeFixture,
+      representation: ConcreteRepresentation,
+      input?: {
+        family?:
+          | "fidelity_changed"
+          | "memory_event_available"
+          | "lcm_leaf_available"
+          | "lcm_rollup_available";
+        eventTeamWorkspaceId?: string;
+        eventLogicalMemoryId?: string;
+        eventShareGrantId?: string;
+        representationTeamWorkspaceId?: string;
+      }
+    ) => {
+      const representationId = randomUUID();
+      const eventId = randomUUID();
+      const family =
+        input?.family ??
+        (representation === "memory_events"
+          ? "memory_event_available"
+          : representation === "lcm_leaves"
+            ? "lcm_leaf_available"
+            : representation === "lcm_rollups"
+              ? "lcm_rollup_available"
+              : "fidelity_changed");
+      const cursor = nextCursor++;
+      await authorizationPool.query(
+        `insert into team_memory_representations (
+           id,share_grant_id,consent_id,team_id,team_workspace_id,
+           logical_memory_id,representation,source_owner_policy_id,
+           source_owner_policy_version,team_policy_id,team_policy_version,
+           workspace_policy_id,workspace_policy_version,
+           fidelity_policy_revision,content_policy_version,classifier_version,
+           state
+         ) values (
+           $1,$2,$3,$4,$5,$6,$7,$8,1,$9,1,$10,1,1,1,1,'available'
+         )`,
+        [
+          representationId,
+          scope.shareGrantId,
+          scope.consentId,
+          teamId,
+          input?.representationTeamWorkspaceId ?? scope.teamWorkspaceId,
+          scope.logicalMemoryId,
+          representation,
+          scope.sourceOwnerPolicyId,
+          scope.teamPolicyId,
+          scope.workspacePolicyId
+        ]
+      );
+      await authorizationPool.query(
+        `insert into collaboration_outbox (
+           id,cursor,protocol_version,family,scope,team_id,team_workspace_id,
+           share_grant_id,logical_memory_id,resource_type,resource_id,
+           mutation_id
+         ) values (
+           $1,$2,$3,$4,'team',$5,$6,$7,$8,
+           'team_memory_representation',$9,$10
+         )`,
+        [
+          eventId,
+          cursor,
+          COLLABORATION_CONTRACT_VERSION,
+          family,
+          teamId,
+          input?.eventTeamWorkspaceId ?? scope.teamWorkspaceId,
+          input?.eventShareGrantId ?? scope.shareGrantId,
+          input?.eventLogicalMemoryId ?? scope.logicalMemoryId,
+          representationId,
+          randomUUID()
+        ]
+      );
+      return { eventId, cursor, family, representationId };
+    };
+
+    const addGrantEvent = async (
+      scope: AuthorizationScopeFixture,
+      family: "share_grant_lifecycle" | "fidelity_changed" | "access_revoked",
+      input?: {
+        eventTeamWorkspaceId?: string;
+        eventLogicalMemoryId?: string;
+        eventShareGrantId?: string;
+        resourceType?:
+          | "team_session_share_grant"
+          | "team_memory_representation";
+      }
+    ) => {
+      const eventId = randomUUID();
+      const cursor = nextCursor++;
+      const shareGrantId = input?.eventShareGrantId ?? scope.shareGrantId;
+      await authorizationPool.query(
+        `insert into collaboration_outbox (
+           id,cursor,protocol_version,family,scope,team_id,team_workspace_id,
+           share_grant_id,logical_memory_id,resource_type,resource_id,
+           mutation_id
+         ) values ($1,$2,$3,$4,'team',$5,$6,$7,$8,$9,$7,$10)`,
+        [
+          eventId,
+          cursor,
+          COLLABORATION_CONTRACT_VERSION,
+          family,
+          teamId,
+          input?.eventTeamWorkspaceId ?? scope.teamWorkspaceId,
+          shareGrantId,
+          input?.eventLogicalMemoryId ?? scope.logicalMemoryId,
+          input?.resourceType ?? "team_session_share_grant",
+          randomUUID()
+        ]
+      );
+      return { eventId, cursor, family };
+    };
+
+    return {
+      pool: authorizationPool,
+      repository: createCollaborationRepository(authorizationPool, {
+        envelopeEncryptionProvider: provider
+      }),
+      actorUserId,
+      teamId,
+      createScope,
+      setFidelity,
+      setCurated,
+      addRepresentationEvent,
+      addGrantEvent
+    };
+  };
+
   beforeAll(async () => {
     pool = createDbPool({ connectionString: databaseUrl });
     await runDbMigrations(pool);
@@ -158,6 +718,267 @@ describeDb("Collaboration repository", () => {
 
   afterAll(async () => {
     await Promise.all([pool.end(), competingPool.end()]);
+  });
+
+  it("authorizes cumulative Shared Memory layers using each concrete realtime representation", async () => {
+    const harness = await createSharedMemoryAuthorizationHarness();
+    try {
+      const scope = await harness.createScope();
+      const events = {
+        memory_events: await harness.addRepresentationEvent(
+          scope,
+          "memory_events"
+        ),
+        lcm_leaves: await harness.addRepresentationEvent(scope, "lcm_leaves"),
+        lcm_rollups: await harness.addRepresentationEvent(scope, "lcm_rollups"),
+        curated_assertions: await harness.addRepresentationEvent(
+          scope,
+          "curated_assertions"
+        )
+      };
+      const mismatchedConcreteRepresentation =
+        await harness.addRepresentationEvent(scope, "lcm_rollups", {
+          family: "memory_event_available"
+        });
+      const isAuthorized = (event: { eventId: string; cursor: number }) =>
+        harness.repository.isEventAuthorized(actor(harness.actorUserId), {
+          eventId: event.eventId,
+          cursor: event.cursor,
+          scope: "team",
+          teamId: harness.teamId
+        });
+
+      const cases: Array<{
+        ceiling: FidelityCeiling;
+        allowed: ConcreteRepresentation[];
+      }> = [
+        {
+          ceiling: "memory_events",
+          allowed: ["memory_events", "lcm_leaves", "lcm_rollups"]
+        },
+        {
+          ceiling: "lcm_leaves",
+          allowed: ["lcm_leaves", "lcm_rollups"]
+        },
+        { ceiling: "lcm_rollups", allowed: ["lcm_rollups"] }
+      ];
+
+      for (const testCase of cases) {
+        await harness.setFidelity(scope, testCase.ceiling);
+        for (const representation of Object.keys(
+          events
+        ) as ConcreteRepresentation[]) {
+          await expect(isAuthorized(events[representation])).resolves.toBe(
+            testCase.allowed.includes(representation)
+          );
+        }
+        await expect(
+          isAuthorized(mismatchedConcreteRepresentation)
+        ).resolves.toBe(false);
+        await expect(
+          harness.repository.getThread(actor(harness.actorUserId), {
+            threadId: scope.threadId
+          })
+        ).resolves.toMatchObject({
+          kind: "shared_session_discussion",
+          shareGrantId: scope.shareGrantId
+        });
+
+        const replay = await harness.repository.replayEvents(
+          actor(harness.actorUserId),
+          { scope: "team", teamId: harness.teamId, afterCursor: 0 }
+        );
+        expect(new Set(replay?.events.map((event) => event.id))).toEqual(
+          new Set(
+            testCase.allowed.map(
+              (representation) => events[representation].eventId
+            )
+          )
+        );
+      }
+    } finally {
+      await harness.pool.end();
+    }
+  });
+
+  it("keeps Curated Memory authorization independent from hierarchical fidelity", async () => {
+    const harness = await createSharedMemoryAuthorizationHarness();
+    try {
+      const scope = await harness.createScope({
+        maximumFidelity: "lcm_rollups",
+        includeCuratedMemory: true
+      });
+      const rollup = await harness.addRepresentationEvent(scope, "lcm_rollups");
+      const curated = await harness.addRepresentationEvent(
+        scope,
+        "curated_assertions"
+      );
+      const isAuthorized = (event: { eventId: string; cursor: number }) =>
+        harness.repository.isEventAuthorized(actor(harness.actorUserId), {
+          eventId: event.eventId,
+          cursor: event.cursor,
+          scope: "team",
+          teamId: harness.teamId
+        });
+
+      await expect(isAuthorized(rollup)).resolves.toBe(true);
+      await expect(isAuthorized(curated)).resolves.toBe(true);
+
+      for (const authority of [
+        "grant",
+        "consent",
+        "owner_policy",
+        "team_policy",
+        "workspace_policy"
+      ] as const) {
+        await harness.setCurated(scope, authority, false);
+        await expect(isAuthorized(curated)).resolves.toBe(false);
+        await expect(isAuthorized(rollup)).resolves.toBe(true);
+        await expect(
+          harness.repository.getThread(actor(harness.actorUserId), {
+            threadId: scope.threadId
+          })
+        ).resolves.not.toBeNull();
+        await harness.setCurated(scope, authority, true);
+        await expect(isAuthorized(curated)).resolves.toBe(true);
+      }
+    } finally {
+      await harness.pool.end();
+    }
+  });
+
+  it("applies fidelity downgrades immediately and preserves only scope-bound revocation events", async () => {
+    const harness = await createSharedMemoryAuthorizationHarness();
+    try {
+      const scope = await harness.createScope();
+      const memoryEvent = await harness.addRepresentationEvent(
+        scope,
+        "memory_events"
+      );
+      const leafEvent = await harness.addRepresentationEvent(
+        scope,
+        "lcm_leaves"
+      );
+      const rollupEvent = await harness.addRepresentationEvent(
+        scope,
+        "lcm_rollups"
+      );
+      const isAuthorized = (event: { eventId: string; cursor: number }) =>
+        harness.repository.isEventAuthorized(actor(harness.actorUserId), {
+          eventId: event.eventId,
+          cursor: event.cursor,
+          scope: "team",
+          teamId: harness.teamId
+        });
+
+      await expect(isAuthorized(memoryEvent)).resolves.toBe(true);
+      await harness.setFidelity(scope, "lcm_leaves");
+      await expect(isAuthorized(memoryEvent)).resolves.toBe(false);
+      await expect(isAuthorized(leafEvent)).resolves.toBe(true);
+      await expect(isAuthorized(rollupEvent)).resolves.toBe(true);
+      await expect(
+        harness.repository.getThread(actor(harness.actorUserId), {
+          threadId: scope.threadId
+        })
+      ).resolves.not.toBeNull();
+
+      const downgrade = await harness.addGrantEvent(scope, "fidelity_changed");
+      await expect(isAuthorized(downgrade)).resolves.toBe(true);
+
+      await harness.pool.query(
+        `update team_session_share_grants
+            set lifecycle='revoked',revoked_at=now()
+          where id=$1`,
+        [scope.shareGrantId]
+      );
+      await expect(isAuthorized(memoryEvent)).resolves.toBe(false);
+      await expect(isAuthorized(leafEvent)).resolves.toBe(false);
+      await expect(isAuthorized(rollupEvent)).resolves.toBe(false);
+      await expect(
+        harness.repository.getThread(actor(harness.actorUserId), {
+          threadId: scope.threadId
+        })
+      ).resolves.toBeNull();
+
+      const revocation = await harness.addGrantEvent(scope, "access_revoked");
+      await expect(isAuthorized(revocation)).resolves.toBe(true);
+      const replay = await harness.repository.replayEvents(
+        actor(harness.actorUserId),
+        { scope: "team", teamId: harness.teamId, afterCursor: 0 }
+      );
+      expect(replay?.events.map((event) => event.id)).toEqual([
+        downgrade.eventId,
+        revocation.eventId
+      ]);
+    } finally {
+      await harness.pool.end();
+    }
+  });
+
+  it("denies cross-Workspace Shared Memory threads, representations, and lifecycle events", async () => {
+    const harness = await createSharedMemoryAuthorizationHarness();
+    try {
+      const first = await harness.createScope({
+        maximumFidelity: "lcm_rollups"
+      });
+      const second = await harness.createScope({
+        maximumFidelity: "lcm_rollups"
+      });
+      const validSecond = await harness.addRepresentationEvent(
+        second,
+        "lcm_rollups"
+      );
+      const crossedRepresentation = await harness.addRepresentationEvent(
+        second,
+        "lcm_rollups",
+        {
+          eventTeamWorkspaceId: first.teamWorkspaceId,
+          eventLogicalMemoryId: first.logicalMemoryId,
+          eventShareGrantId: first.shareGrantId
+        }
+      );
+      const crossedLifecycle = await harness.addGrantEvent(
+        second,
+        "share_grant_lifecycle",
+        {
+          eventTeamWorkspaceId: first.teamWorkspaceId,
+          eventLogicalMemoryId: first.logicalMemoryId
+        }
+      );
+      const isAuthorized = (event: { eventId: string; cursor: number }) =>
+        harness.repository.isEventAuthorized(actor(harness.actorUserId), {
+          eventId: event.eventId,
+          cursor: event.cursor,
+          scope: "team",
+          teamId: harness.teamId
+        });
+
+      await expect(isAuthorized(validSecond)).resolves.toBe(true);
+      await expect(isAuthorized(crossedRepresentation)).resolves.toBe(false);
+      await expect(isAuthorized(crossedLifecycle)).resolves.toBe(false);
+
+      await harness.pool.query(
+        `update collaboration_threads
+            set team_workspace_id=$2
+          where id=$1`,
+        [second.threadId, first.teamWorkspaceId]
+      );
+      await expect(
+        harness.repository.getThread(actor(harness.actorUserId), {
+          threadId: second.threadId
+        })
+      ).resolves.toBeNull();
+
+      const replay = await harness.repository.replayEvents(
+        actor(harness.actorUserId),
+        { scope: "team", teamId: harness.teamId, afterCursor: 0 }
+      );
+      expect(replay?.events.map((event) => event.id)).toEqual([
+        validSecond.eventId
+      ]);
+    } finally {
+      await harness.pool.end();
+    }
   });
 
   it("materializes Personal Memory only for its current owner", async () => {

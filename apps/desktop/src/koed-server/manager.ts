@@ -9,6 +9,7 @@ import {
   isApprovalReviewTranscriptEnvelopeText,
   isLoopbackHostname,
   readDesktopLocalCredentialAuthorization,
+  resolveTeamCollaborationEnabled,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   MEMORY_ANSWER_TIMEOUT_MAX_MS,
   MEMORY_ANSWER_TRANSPORT_OVERHEAD_MS,
@@ -493,6 +494,7 @@ const personalProjectsData = (payload: Record<string, unknown>) => {
           id: thread.id,
           name: thread.name,
           sessionId: thread.sessionId,
+          logicalMemoryId: thread.logicalMemoryId,
           sourceAiClient: thread.sourceAiClient,
           projectId: thread.projectId,
           projectName: thread.projectName,
@@ -1436,11 +1438,51 @@ export const createKoedServerManager = ({
     );
   };
 
-  const runModelJson = () =>
-    runJson(["models", "status", "--kind", "embedding"], 60_000);
+  const requiredModelKinds = resolveTeamCollaborationEnabled(environment)
+    ? (["embedding", "privacy"] as const)
+    : (["embedding"] as const);
 
-  const runModelInstallJson = () =>
-    runJson(["models", "install", "--kind", "embedding"], 600_000);
+  const aggregateRequiredModels = (
+    results: Array<{
+      kind: (typeof requiredModelKinds)[number];
+      value: unknown;
+    }>
+  ) => {
+    const models = Object.fromEntries(
+      results.map(({ kind, value }) => [kind, value])
+    );
+    const installed = results.every(
+      ({ value }) => resultOk(value) && resultState(value) === "installed"
+    );
+    return {
+      ok: installed,
+      state: installed ? "installed" : "missing",
+      message: installed
+        ? "Required local models are installed and verified."
+        : "One or more required local models need to be installed.",
+      models
+    };
+  };
+
+  const runModelJson = async () =>
+    aggregateRequiredModels(
+      await Promise.all(
+        requiredModelKinds.map(async (kind) => ({
+          kind,
+          value: await runJson(["models", "status", "--kind", kind], 60_000)
+        }))
+      )
+    );
+
+  const runModelInstallJson = async () =>
+    aggregateRequiredModels(
+      await Promise.all(
+        requiredModelKinds.map(async (kind) => ({
+          kind,
+          value: await runJson(["models", "install", "--kind", kind], 600_000)
+        }))
+      )
+    );
 
   const runPackageStatusJson = () => runJson(["package", "status"], 60_000);
 
@@ -3342,10 +3384,10 @@ export const createKoedServerManager = ({
               complete: resultState(modelStatus) === "installed",
               message:
                 resultState(modelStatus) === "installed"
-                  ? "Embedding model is verified."
+                  ? "Embedding and Privacy Filter models are verified."
                   : resultMessage(
                       modelStatus,
-                      "Embedding model needs to be downloaded."
+                      "Required local models need to be downloaded."
                     )
             },
             services: {
@@ -3512,7 +3554,8 @@ export const createKoedServerManager = ({
     const effectiveEnvironment = hardwareAccelerationEnvironment();
     return Boolean(
       effectiveEnvironment.KOED_HARDWARE_ACCELERATION?.trim() ||
-      effectiveEnvironment.KOED_EMBEDDING_ACCELERATION?.trim()
+      effectiveEnvironment.KOED_EMBEDDING_ACCELERATION?.trim() ||
+      effectiveEnvironment.PRIVACY_RUNTIME_PROVIDER?.trim()
     );
   };
 
@@ -3525,11 +3568,14 @@ export const createKoedServerManager = ({
       );
       const explicitEmbeddingPolicy =
         effectiveEnvironment.KOED_EMBEDDING_ACCELERATION?.trim() || undefined;
+      const explicitPrivacyPolicy =
+        effectiveEnvironment.PRIVACY_RUNTIME_PROVIDER?.trim() || undefined;
+      const embeddingPolicy =
+        explicitEmbeddingPolicy ?? config.hardwareAcceleration;
+      const privacyPolicy =
+        explicitPrivacyPolicy ?? config.hardwareAcceleration;
       return {
-        enabled:
-          explicitEmbeddingPolicy === undefined
-            ? config.hardwareAcceleration === "auto"
-            : explicitEmbeddingPolicy !== "cpu",
+        enabled: embeddingPolicy !== "cpu" || privacyPolicy !== "cpu",
         managedByEnvironment: hardwareAccelerationManagedByEnvironment()
       };
     };

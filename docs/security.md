@@ -25,6 +25,25 @@ starter is for local source-checkout dependencies or an Operator-chosen
 container layout; do not run it on a public host without binding dependency
 ports to localhost or restricting them with a firewall.
 
+The Privacy Service is also an authenticated internal component. Keep it off
+public networks and pin its model revision, tokenizer, constrained decoder,
+calibration, input contract, and deterministic detector generation. Team mode
+must fail closed when that identity, its output offsets, encryption, or the
+effective content policy cannot be validated. The outage must not block
+Personal capture, Projection, LCM, embedding, or Recall.
+
+Privacy Filter accelerator activation is an authenticated internal control.
+The replacement provider loads and proves final-mask parity before new work is
+switched to it; in-flight work drains on the previous provider. Failed load,
+parity, or capacity checks leave the active provider unchanged. Public health
+reports only coarse Privacy Filter provider state. Detailed warm calibration,
+fallback, and shared accelerator capacity observations require the internal
+runtime-control token and remain explicitly separate from Embedding Service runtime
+diagnostics. Classification and runtime-control credentials are distinct; the
+Worker cannot trigger provider reloads. Active accelerator inference failure
+retries once through a verified CPU runtime without acknowledging or removing
+the durable classification job prematurely.
+
 Public health probes are intentionally coarse. `/health` and `/ready` do not expose local paths, model details, dependency exception messages, or secret values.
 
 Diagnostics are redacted by design: they report whether secrets are configured, but not their values. Detailed diagnostic endpoints are not intended for public reverse-proxy exposure.
@@ -34,7 +53,8 @@ networks. Docker Compose passes `EMBEDDING_SERVICE_TOKEN` to the Embedding
 Service, API, and Worker so embedding and reranking requests require a shared
 internal header. API requests to that Operator-configured service use a
 separate trusted internal-service transport. They do not pass through the
-local-edge upstream transport or its user-configured remote URL policy.
+local-edge upstream transport or its user-configured remote URL policy, and
+remote upstream URLs cannot use that transport to gain private-network access.
 
 Team Shared Memory embedding keeps the exact Share Grant, representation,
 consent, policy, source-artifact, semantic-item, and encrypted-chunk
@@ -234,6 +254,23 @@ outbox failures fail closed. The route and credential rules are enumerated in
 and the complete service boundary is in
 [Team Collaboration Architecture](team-collaboration.md).
 
+The exact Personal Conversation Source Journal and Personal derived artifacts
+remain unchanged and owner-only. Every decryptable Team surface uses a
+separately encrypted sanitized derivative, including Conversation Source
+Artifacts, Memory Events, LCM titles and summaries, lexical anchors, Curated
+Memory fields, evidence and expansion material, and embedding inputs. Source
+snapshot and continuous reads, exports, and fork snapshots return sanitized
+artifacts, never exact Personal source.
+
+The effective content policy is versioned and covers `account_number`,
+`private_address`, `private_email`, `private_person`, `private_phone`,
+`private_url`, `private_date`, and `secret`. The contextual classifier is
+best-effort and its spans are unioned with deterministic structured-key and
+credential-format detection. This reduces exposure but does not guarantee
+anonymization, compliance, or complete secret detection. A missing or invalid
+classifier result, policy binding, sanitized representation, or Team-safe
+vector is unavailable; Team paths never substitute Personal originals.
+
 ## Tiered Desktop Action Approval
 
 Koed separates exact Action Grant issuance from the User-facing approval
@@ -271,21 +308,20 @@ provenance, Workspace Access, source-owner consent, Share Grant authority, and
 materialized representations as separate checks. Preview admission verifies the
 exact owner-private replica and destination policies. It remains Direct only
 and persists only an inactive, artifact-bound source-owner policy proposal.
-The final reviewed bundle revalidates and activates that exact proposal in the
-same transaction as consent and grant mutation; only then can replacement pause
-active consents and invalidate affected Share Grants. Share and
-representation-change admission validate the persisted preview, proposed
-three-policy intersection, current share permission, and exact grant version.
+The final reviewed bundle revalidates that exact proposal. Acceptance creates
+a durable Pending Share and no Workspace access. Publication atomically
+activates the consent, representation, and Share Grant. Initial and replacement
+admission validate the persisted preview, effective layer intersection,
+current share permission, and exact grant version.
 First-time raw `memory_events` shares use one Step-up at the final share
 decision; their preview remains Direct. Derived shares use Native review.
 Representation fidelity increases remain Step-up, while fidelity decreases and
 owner revocation remain Native review.
-Consent is not a requestable catalog action: supported Desktop flows bind it
-inside the exact share or representation-change bundle and consume the one-use
-Action Grant atomically with both repository stages. Revocation is authorized
-by the exact source-owned Share Grant and deliberately remains possible after
-destination access, policy, sync, consent, or representation availability is
-lost.
+Consent is not a requestable catalog action. Supported Desktop flows bind it
+inside the exact Pending Share or fidelity-change bundle. Acceptance consumes
+the one-use Action Grant. Revocation uses the exact source-owned Share Grant.
+It remains possible after destination access, policy, sync, consent, or
+representation availability is lost.
 
 Commercial entitlement and billing-seat definitions require current Team owner
 authority at admission as well as execution, then bind lifecycle and the exact

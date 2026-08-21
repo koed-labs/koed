@@ -6,7 +6,10 @@
     "outDir": "dist-electron",
     "rootDir": "src",
     "paths": {
-      "@koed/shared": ["packages/shared/dist/index.d.ts"]
+      "@koed/shared": ["packages/shared/dist/index.d.ts"],
+      "@koed/shared/private-network": [
+        "packages/shared/dist/private-network.d.ts"
+      ]
     },
     "types": ["node"]
   },

@@ -662,6 +662,69 @@ const createPdsWorkerRuntimeFromSecret = (
           }
           if (result.inserted) staged += 1;
         }
+        const claimedLcmWorkIntents =
+          await input.repository.listClaimedPdsLcmWorkIntents({
+            userId: secret.userId,
+            groupId: secret.groupId,
+            deviceId: runtime.recipient.deviceId,
+            limit: 50
+          });
+        for (const intent of claimedLcmWorkIntents) {
+          if (
+            !intent.claimGeneration ||
+            !(await relay.renewSemanticWorkClaim({
+              workIdentity: intent.workIdentity,
+              claimGeneration: intent.claimGeneration,
+              leaseSeconds: 3600
+            })) ||
+            !(await input.repository.renewPdsSemanticWorkClaim({
+              userId: secret.userId,
+              groupId: secret.groupId,
+              deviceId: runtime.recipient.deviceId,
+              workIdentity: intent.workIdentity,
+              claimGeneration: intent.claimGeneration,
+              leaseSeconds: 3600
+            }))
+          ) {
+            throw new Error("PdsRelayRetryableError");
+          }
+        }
+        const lcmWorkIntents =
+          await input.repository.listPendingPdsLcmWorkIntents({
+            userId: secret.userId,
+            groupId: secret.groupId,
+            limit: 50
+          });
+        for (const intent of lcmWorkIntents) {
+          const claim = await relay.acquireSemanticWorkClaim({
+            workIdentity: intent.workIdentity,
+            workClass: intent.workClass,
+            compatibilityContractHash: intent.compatibilityContractHash,
+            leaseSeconds: 3600
+          });
+          if (!claim) continue;
+          if (
+            claim.claimantDeviceId !== runtime.recipient.deviceId ||
+            claim.workIdentity !== intent.workIdentity ||
+            claim.compatibilityContractHash !==
+              intent.compatibilityContractHash ||
+            !(await input.repository.recordPdsSemanticWorkClaim({
+              userId: secret.userId,
+              groupId: secret.groupId,
+              claim
+            })) ||
+            !(await input.repository.markPdsLcmWorkIntentClaimed({
+              userId: secret.userId,
+              groupId: secret.groupId,
+              deviceId: runtime.recipient.deviceId,
+              localMemoryNodeId: intent.localMemoryNodeId,
+              workIdentity: intent.workIdentity,
+              claimGeneration: claim.claimGeneration
+            }))
+          ) {
+            throw new Error("PdsCryptoAuthorityError");
+          }
+        }
         const lcmCandidates =
           await input.repository.listPdsPortableLcmNodeCandidates({
             userId: secret.userId,
@@ -669,25 +732,7 @@ const createPdsWorkerRuntimeFromSecret = (
             limit: 50
           });
         for (const candidate of lcmCandidates) {
-          const compatibilityContractHash = pdsArtifactCompatibilityHash(
-            candidate.compatibilityContract
-          );
-          const claim = await relay.acquireSemanticWorkClaim({
-            workIdentity: candidate.workIdentity,
-            workClass: candidate.workClass,
-            compatibilityContractHash
-          });
-          if (!claim) continue;
-          if (
-            claim.claimantDeviceId !== runtime.recipient.deviceId ||
-            claim.workIdentity !== candidate.workIdentity ||
-            claim.compatibilityContractHash !== compatibilityContractHash ||
-            !(await input.repository.recordPdsSemanticWorkClaim({
-              userId: secret.userId,
-              groupId: secret.groupId,
-              claim
-            }))
-          ) {
+          if (candidate.claimantDeviceId !== runtime.recipient.deviceId) {
             throw new Error("PdsCryptoAuthorityError");
           }
           const record = createPdsArtifactRecord({
@@ -699,7 +744,7 @@ const createPdsWorkerRuntimeFromSecret = (
             sourceClosureHash: candidate.sourceClosureHash,
             producerDeviceId: runtime.recipient.deviceId,
             producerSigningKeyId: runtime.recipient.signingKeyId,
-            claimGeneration: claim.claimGeneration,
+            claimGeneration: candidate.claimGeneration,
             compatibilityContract: candidate.compatibilityContract,
             payload: {
               artifactClass: "lcm_node/v1",
@@ -754,15 +799,15 @@ const createPdsWorkerRuntimeFromSecret = (
           });
           if (
             !(await relay.completeSemanticWorkClaim({
-              workIdentity: claim.workIdentity,
-              claimGeneration: claim.claimGeneration
+              workIdentity: candidate.workIdentity,
+              claimGeneration: candidate.claimGeneration
             })) ||
             !(await input.repository.markPdsArtifactClaimCompleted({
               userId: secret.userId,
               groupId: secret.groupId,
               artifactId: record.manifest.artifactId,
               producerDeviceId: runtime.recipient.deviceId,
-              claimGeneration: claim.claimGeneration
+              claimGeneration: candidate.claimGeneration
             }))
           ) {
             throw new Error("PdsRelayRetryableError");

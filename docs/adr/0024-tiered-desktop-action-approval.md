@@ -63,38 +63,36 @@ closed.
 
 ## Accepted Action Matrix
 
-| Action                                     | Tier                                                                                                            |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `team.create`                              | Direct                                                                                                          |
-| `team.invite.accept`                       | Native review                                                                                                   |
-| `team.workspace.create`                    | Direct                                                                                                          |
-| `team.invite.create`                       | Native review                                                                                                   |
-| `team.invite.revoke`                       | Native review                                                                                                   |
-| `team.member.role_update`                  | Step-up for promotion to admin or owner; Native review for a privilege decrease                                 |
-| `team.member.disable`                      | Step-up                                                                                                         |
-| `team.leave`                               | Native review, with authoritative last-owner protection                                                         |
-| `team.workspace.archive`                   | Native review                                                                                                   |
-| `team.workspace.restore`                   | Direct                                                                                                          |
-| `team.workspace.access_update`             | Step-up when access expands or becomes disabled; Native review when write decreases to read                     |
-| `shared_memory.candidate_preview`          | Direct; validates destination and policy for a bounded local candidate without starting sync                    |
-| `shared_memory.preview`                    | Direct; persists an owner-private policy proposal and preview but activates no Workspace access                 |
-| `shared_memory.consent`                    | Bundled stage of the exact share or representation-change decision                                              |
-| `shared_memory.share`                      | Native review for derived representations; Step-up for raw `memory_events`; acceptance creates a Pending Share  |
-| `shared_memory.pending_share`              | Same reviewed tier as `shared_memory.share`; exact internal action used when acceptance creates a Pending Share |
-| `shared_memory.revoke`                     | Native review                                                                                                   |
-| `shared_memory.change_representation`      | Step-up when fidelity increases; Native review when it decreases                                                |
-| `shared_memory.conversation_source_grant`  | Step-up because it exposes exact source records independently of semantic fidelity                              |
-| `shared_memory.conversation_source_revoke` | Native review                                                                                                   |
-| `managed_conversation.handoff`             | Native review; Step-up for an untrusted or newly enrolled target                                                |
-| `managed_conversation.fork`                | Native review; Step-up for an untrusted or newly enrolled target                                                |
-| `conversation_source.discover`             | Direct only within an enrolled sync relationship; otherwise fail closed                                         |
-| `conversation_source.download`             | Bundled into an exact reviewed transfer/restore/sync; standalone downloads use Step-up                          |
-| `team.entitlement.update`                  | Step-up                                                                                                         |
-| `team.billing_seats.update`                | Step-up                                                                                                         |
-| `team.retention.delete_request`            | Step-up                                                                                                         |
-| `team.legal_hold.place`                    | Step-up                                                                                                         |
-| `team.legal_hold.release_request`          | Step-up                                                                                                         |
-| `team.legal_hold.release_confirm`          | Separate Step-up decision                                                                                       |
+| Action                                     | Tier                                                                                                           |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `team.create`                              | Direct                                                                                                         |
+| `team.invite.accept`                       | Native review                                                                                                  |
+| `team.workspace.create`                    | Direct                                                                                                         |
+| `team.invite.create`                       | Native review                                                                                                  |
+| `team.invite.revoke`                       | Native review                                                                                                  |
+| `team.member.role_update`                  | Step-up for promotion to admin or owner; Native review for a privilege decrease                                |
+| `team.member.disable`                      | Step-up                                                                                                        |
+| `team.leave`                               | Native review, with authoritative last-owner protection                                                        |
+| `team.workspace.archive`                   | Native review                                                                                                  |
+| `team.workspace.restore`                   | Direct                                                                                                         |
+| `team.workspace.access_update`             | Step-up when access expands or becomes disabled; Native review when write decreases to read                    |
+| `shared_memory.candidate_preview`          | Direct; validates destination and policy for a bounded local candidate without starting sync                   |
+| `shared_memory.preview`                    | Direct; persists an owner-private policy proposal and preview but activates no Workspace access                |
+| `shared_memory.pending_share`              | Native review for derived representations; Step-up for raw `memory_events`; acceptance creates a Pending Share |
+| `shared_memory.revoke`                     | Native review                                                                                                  |
+| `shared_memory.change_fidelity`            | Step-up when fidelity increases or Curated Memory is enabled; Native review when fidelity decreases            |
+| `shared_memory.conversation_source_grant`  | Step-up because it exposes exact source records independently of semantic fidelity                             |
+| `shared_memory.conversation_source_revoke` | Native review                                                                                                  |
+| `managed_conversation.handoff`             | Native review; Step-up for an untrusted or newly enrolled target                                               |
+| `managed_conversation.fork`                | Native review; Step-up for an untrusted or newly enrolled target                                               |
+| `conversation_source.discover`             | Direct only within an enrolled sync relationship; otherwise fail closed                                        |
+| `conversation_source.download`             | Bundled into an exact reviewed transfer/restore/sync; standalone downloads use Step-up                         |
+| `team.entitlement.update`                  | Step-up                                                                                                        |
+| `team.billing_seats.update`                | Step-up                                                                                                        |
+| `team.retention.delete_request`            | Step-up                                                                                                        |
+| `team.legal_hold.place`                    | Step-up                                                                                                        |
+| `team.legal_hold.release_request`          | Step-up                                                                                                        |
+| `team.legal_hold.release_confirm`          | Separate Step-up decision                                                                                      |
 
 The representation fidelity order is `lcm_rollups`, `lcm_leaves`, then
 `memory_events`. Unknown actions, missing current state needed for a conditional

@@ -43,7 +43,8 @@ import {
   retentionPolicySnapshotHash
 } from "./retention-lifecycle-repository.js";
 import {
-  defaultSharedMemoryRepresentations,
+  defaultSharedMemoryIncludesCuratedMemory,
+  defaultSharedMemoryMaximumFidelity,
   sharedMemoryPolicyHash
 } from "./shared-memory-policy.js";
 import type {
@@ -583,20 +584,23 @@ export const createTeamAccessRepository = (
       includeTeam: boolean;
     }
   ): Promise<void> => {
-    const allowedRepresentations = [...defaultSharedMemoryRepresentations];
+    const maximumFidelity = defaultSharedMemoryMaximumFidelity;
+    const includeCuratedMemory = defaultSharedMemoryIncludesCuratedMemory;
     if (input.includeTeam) {
       const policyId = randomUUID();
       await tx.insert(teamRepresentationPolicies).values({
         policyId,
         teamId: input.teamId,
         version: 1,
-        allowedRepresentations,
+        maximumFidelity,
+        includeCuratedMemory,
         policyHash: sharedMemoryPolicyHash({
           scope: "team",
           scopeId: input.teamId,
           policyId,
           version: 1,
-          allowedRepresentations
+          maximumFidelity,
+          includeCuratedMemory
         }),
         createdByUserId: input.actorUserId,
         effectiveAt: sql`now()`
@@ -608,13 +612,15 @@ export const createTeamAccessRepository = (
       teamId: input.teamId,
       teamWorkspaceId: input.workspaceId,
       version: 1,
-      allowedRepresentations,
+      maximumFidelity,
+      includeCuratedMemory,
       policyHash: sharedMemoryPolicyHash({
         scope: "workspace",
         scopeId: `${input.teamId}:${input.workspaceId}`,
         policyId: workspacePolicyId,
         version: 1,
-        allowedRepresentations
+        maximumFidelity,
+        includeCuratedMemory
       }),
       createdByUserId: input.actorUserId,
       effectiveAt: sql`now()`

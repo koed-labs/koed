@@ -155,6 +155,93 @@ describe("PDS relay routes", () => {
     await app.close();
   });
 
+  it("renews only the requested semantic work generation", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const publicKey = keys.publicKey.export({ format: "jwk" }).x!;
+    const workIdentity = Buffer.alloc(32, 7).toString("base64url");
+    const renewPdsRelaySemanticWorkClaim = vi.fn(async () => ({
+      workIdentity,
+      claimGeneration: "9",
+      expiresAt: new Date(Date.now() + 60_000).toISOString()
+    }));
+    const repository = {
+      authenticatePdsRelayRequest: vi.fn(async () => ({
+        groupDbId: "group-db",
+        groupId: "group",
+        headHash: "head",
+        epoch: "1",
+        deviceId,
+        signingKeyId,
+        signingPublicKey: publicKey,
+        recipientDeviceIds: [deviceId],
+        certificate: {}
+      })),
+      consumePdsRelayRequestNonce: vi.fn(async () => undefined),
+      renewPdsRelaySemanticWorkClaim
+    };
+    const app = Fastify();
+    registerPersonalDeviceSyncRelayRoutes(app, relayContext(repository));
+    const target = "/v1/personal-device-sync/relay/semantic-work/claims/renew";
+    const payload = canonicalizePdsJson({
+      workIdentity,
+      claimGeneration: "9",
+      leaseSeconds: "120"
+    });
+    const body = Buffer.from(payload, "utf8");
+    const response = await app.inject({
+      method: "POST",
+      url: target,
+      payload,
+      headers: {
+        "content-type": "application/json",
+        "x-pds-membership-certificate": certificate,
+        "x-pds-relay-proof": relayProof({
+          privateKey: keys.privateKey,
+          target,
+          nonce: Buffer.alloc(32, 8).toString("base64url"),
+          method: "POST",
+          body
+        })
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(renewPdsRelaySemanticWorkClaim).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deviceId,
+        workIdentity,
+        claimGeneration: "9",
+        leaseSeconds: 120
+      })
+    );
+
+    const invalidPayload = canonicalizePdsJson({
+      workIdentity,
+      claimGeneration: "09",
+      leaseSeconds: "120"
+    });
+    const invalidBody = Buffer.from(invalidPayload, "utf8");
+    const invalid = await app.inject({
+      method: "POST",
+      url: target,
+      payload: invalidPayload,
+      headers: {
+        "content-type": "application/json",
+        "x-pds-membership-certificate": certificate,
+        "x-pds-relay-proof": relayProof({
+          privateKey: keys.privateKey,
+          target,
+          nonce: Buffer.alloc(32, 9).toString("base64url"),
+          method: "POST",
+          body: invalidBody
+        })
+      }
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(renewPdsRelaySemanticWorkClaim).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
   it("rejects browser, API-token, and legacy credential bypasses", async () => {
     const app = Fastify();
     registerPersonalDeviceSyncRelayRoutes(app, relayContext({}));

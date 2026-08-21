@@ -1031,11 +1031,18 @@ export const routeIdentityContracts = [
     "Submit local captured-session title."
   ),
   route(
-    "GET",
-    "/v1/memory/lcm/summaries/pending",
+    "POST",
+    "/v1/memory/lcm/summary-claims",
     "api_token",
     "local_synthesis",
-    "Local LCM Summary work queue."
+    "Claim fenced local LCM Summary work."
+  ),
+  route(
+    "PUT",
+    "/v1/memory/lcm/summary-claims/{claimId}/renew",
+    "api_token",
+    "local_synthesis",
+    "Renew a fenced local LCM Summary work claim."
   ),
   route(
     "POST",
@@ -1624,40 +1631,40 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
-    "/v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/consents",
-    "session_or_device_credential",
+    "/v1/shared-memory/candidate-previews",
+    "device_credential",
     "shared_memory",
-    "Create source-owner consent for Team Workspace sharing.",
+    "Create a reviewed Shared Memory candidate preview.",
     "request_time_shared_memory_owner",
     "implemented",
     teamDeploymentModes
   ),
   route(
     "POST",
-    "/v1/shared-memory/share-grants",
+    "/v1/shared-memory/pending-shares",
     "session_or_device_credential",
     "shared_memory",
-    "Create a Shared Memory Share Grant.",
+    "Accept a reviewed source into the durable Pending Share workflow.",
     "request_time_shared_memory_owner",
     "implemented",
     teamDeploymentModes
   ),
   route(
     "PUT",
-    "/v1/shared-memory/share-grants/{shareGrantId}/representation",
-    "session_or_device_credential",
+    "/v1/shared-memory/pending-shares/{pendingShareId}/personal-note-source",
+    "device_credential",
     "shared_memory",
-    "Select a Share Grant representation.",
+    "Upload the exact owner-private source for a pending Personal Note share.",
     "request_time_shared_memory_owner",
     "implemented",
     teamDeploymentModes
   ),
   route(
     "PUT",
-    "/v1/shared-memory/share-grants/{shareGrantId}/representations/{representation}",
+    "/v1/shared-memory/share-grants/{shareGrantId}/fidelity-bundle",
     "session_or_device_credential",
     "shared_memory",
-    "Materialize a Share Grant representation.",
+    "Queue a reviewed fidelity replacement through the durable Pending Share workflow.",
     "request_time_shared_memory_owner",
     "implemented",
     teamDeploymentModes
@@ -1688,6 +1695,46 @@ export const routeIdentityContracts = [
     "session_or_device_credential",
     "shared_memory",
     "Revoke independent Conversation Source access.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/owned-shares",
+    "session_or_device_credential",
+    "shared_memory",
+    "List the source owner's active and pending shares.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/shared-memory/owned-shares/{kind}/{id}",
+    "session_or_device_credential",
+    "shared_memory",
+    "Read one source-owned active or pending share.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PATCH",
+    "/v1/shared-memory/owned-shares/{kind}/{id}/title",
+    "session_or_device_credential",
+    "shared_memory",
+    "Rename one source-owned active or pending share.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/pending-shares/{pendingShareId}/control",
+    "session_or_device_credential",
+    "shared_memory",
+    "Retry, pause, resume, or revoke a durable Pending Share.",
     "request_time_shared_memory_owner",
     "implemented",
     teamDeploymentModes
@@ -2015,6 +2062,26 @@ export const routeIdentityContracts = [
     "none",
     "implemented",
     remoteEnrollmentDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/personal-semantic-artifacts/resolve",
+    "device_credential",
+    "personal_memory",
+    "Return a recipient-encrypted compatible Personal embedding artifact to its enrolled source replica.",
+    "none",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/personal-semantic-artifacts/import",
+    "api_token",
+    "personal_memory",
+    "Resolve and import the hosted Personal embedding artifact selected by explicit source-replication policy.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
   ),
   route(
     "GET",

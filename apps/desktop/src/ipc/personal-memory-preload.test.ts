@@ -57,6 +57,7 @@ describe("Personal Memory preload bridge", () => {
   it("creates a Personal Note through the protected IPC operation", async () => {
     const note = {
       noteId: "11111111-1111-4111-8111-111111111111",
+      logicalMemoryId: "33333333-3333-4333-8333-333333333333",
       title: "Local note",
       titleVersion: 1,
       memoryEventId: "22222222-2222-4222-8222-222222222222",

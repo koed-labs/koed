@@ -199,12 +199,22 @@ const remoteWorkspace = {
 };
 
 const remoteSharedGrant = {
+  source: {
+    kind: "captured_session" as const,
+    sessionId: ids.session,
+    logicalMemoryId: ids.sharedLogicalMemory
+  },
+  sourceCapabilities: ["memory_events" as const],
+  activationRepresentation: "memory_events" as const,
   id: ids.sharedGrant,
   logicalMemoryId: ids.sharedLogicalMemory,
   ownerUserId: ids.participant,
+  maximumFidelity: "memory_events",
+  includeCuratedMemory: false,
+  title: "Shared Memory",
   activeRepresentation: "memory_events",
   representationState: "available",
-  representationSourceRevision: 7,
+  representationSourceRevision: 1,
   representationUpdatedAt: iso,
   lifecycle: "active",
   createdAt: iso,
@@ -2034,11 +2044,19 @@ describe("local-edge collaboration command route", () => {
       requestId: randomUUID(),
       command: "collaboration.preview_shared_memory",
       input: {
+        source: {
+          kind: "captured_session",
+          sessionId: ids.session,
+          logicalMemoryId: ids.sharedLogicalMemory
+        },
         logicalMemoryId: ids.sharedLogicalMemory,
         teamId: ids.team,
         workspaceId: ids.workspace,
-        representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
+        mode: "continuous",
         actionGrant: { id: randomUUID() }
       }
     };
@@ -2094,8 +2112,13 @@ describe("local-edge collaboration command route", () => {
       requestId: randomUUID(),
       command: "collaboration.preview_shared_memory_candidate",
       input: {
-        sessionId: ids.session,
-        representation: "memory_events"
+        source: {
+          kind: "captured_session",
+          sessionId: ids.session,
+          logicalMemoryId: ids.sharedLogicalMemory
+        },
+        activationRepresentation: "memory_events",
+        mode: "continuous"
       }
     };
     const dispatches: unknown[] = [];
@@ -2114,9 +2137,12 @@ describe("local-edge collaboration command route", () => {
             ok: true,
             data: {
               candidate: {
-                sessionId: ids.session,
+                source: command.input.source,
                 logicalMemoryId: ids.sharedLogicalMemory,
-                representation: "memory_events",
+                sourceCapabilities: ["memory_events"],
+                activationRepresentation: "memory_events",
+                mode: "continuous",
+                expiresAt: null,
                 sourceRevision: 0,
                 candidateHash: "a".repeat(64),
                 itemCount: 0,
@@ -2138,7 +2164,11 @@ describe("local-edge collaboration command route", () => {
       requestId: command.requestId,
       command: command.command,
       ok: true,
-      data: { candidate: { sessionId: ids.session } }
+      data: {
+        candidate: {
+          source: { kind: "captured_session", sessionId: ids.session }
+        }
+      }
     });
     expect(dispatches).toEqual([
       {
@@ -3213,7 +3243,8 @@ describe("local-edge collaboration command route", () => {
             kind: "shared_session",
             session: {
               id: ids.sharedGrant,
-              representation: "memory_events",
+              maximumFidelity: "memory_events",
+              includeCuratedMemory: false,
               companionThreadId: ids.sharedDiscussionThread,
               unreadCompanionCount: 1
             },

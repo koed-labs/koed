@@ -5,6 +5,8 @@ import { createDbPool } from "../src/connection.js";
 import { runDbMigrations } from "../src/migrate.js";
 import {
   createRetentionLifecycleRepository,
+  lockShareGrantRetentionScopeWithClient,
+  scheduleShareGrantRevocationRetentionWithClient,
   type AuthorizeHoldActor,
   type RetentionLifecycleRepository
 } from "../src/retention-lifecycle-repository.js";
@@ -29,9 +31,10 @@ interface SharedMemoryFixture extends Fixture {
   syncRelationshipId: string;
   deploymentIdentityId: string;
   sourceArtifactId: string;
+  semanticPreviewId: string;
   shareGrantId: string;
   representationId: string;
-  representation: "memory_events";
+  representation: "memory_events" | "lcm_rollups";
   sourceRevision: number;
 }
 
@@ -109,7 +112,8 @@ describeDb("retention lifecycle repository", () => {
   };
 
   const createSharedMemoryFixture = async (
-    existingFixture?: Fixture
+    existingFixture?: Fixture,
+    requestedRepresentation: "memory_events" | "lcm_rollups" = "memory_events"
   ): Promise<SharedMemoryFixture> => {
     const fixture = existingFixture ?? (await createFixture());
     const ownerPrincipalId = randomUUID();
@@ -210,8 +214,9 @@ describeDb("retention lifecycle repository", () => {
     await pool.query(
       `insert into source_owner_representation_policies (
          policy_id, logical_memory_id, source_owner_principal_id, version,
-         allowed_representations, policy_hash, created_by_user_id, effective_at
-       ) values ($1, $2, $3, 1, array['memory_events']::shared_memory_representation[], $4, $5, $6)`,
+         maximum_fidelity, include_curated_memory, policy_hash,
+         created_by_user_id, effective_at
+       ) values ($1, $2, $3, 1, 'memory_events', false, $4, $5, $6)`,
       [
         sourceOwnerPolicyId,
         logicalMemory.rows[0]!.id,
@@ -223,9 +228,9 @@ describeDb("retention lifecycle repository", () => {
     );
     await pool.query(
       `insert into team_representation_policies (
-         policy_id, team_id, version, allowed_representations, policy_hash,
-         created_by_user_id, effective_at
-       ) values ($1, $2, 1, array['memory_events']::shared_memory_representation[], $3, $4, $5)`,
+         policy_id, team_id, version, maximum_fidelity,
+         include_curated_memory, policy_hash, created_by_user_id, effective_at
+       ) values ($1, $2, 1, 'memory_events', false, $3, $4, $5)`,
       [
         teamPolicyId,
         fixture.teamId,
@@ -237,8 +242,9 @@ describeDb("retention lifecycle repository", () => {
     await pool.query(
       `insert into workspace_representation_policies (
          policy_id, team_id, team_workspace_id, version,
-         allowed_representations, policy_hash, created_by_user_id, effective_at
-       ) values ($1, $2, $3, 1, array['memory_events']::shared_memory_representation[], $4, $5, $6)`,
+         maximum_fidelity, include_curated_memory, policy_hash,
+         created_by_user_id, effective_at
+       ) values ($1, $2, $3, 1, 'memory_events', false, $4, $5, $6)`,
       [
         workspacePolicyId,
         fixture.teamId,
@@ -252,15 +258,45 @@ describeDb("retention lifecycle repository", () => {
     const sharedMemoryFixtureKey = logicalMemory.rows[0]!.id;
     const sourceHash = hash(`source:${sharedMemoryFixtureKey}`);
     const previewHash = hash(`preview:${sharedMemoryFixtureKey}`);
-    const redactedContentHash = hash(
+    const manifestHash = hash(`manifest:${sharedMemoryFixtureKey}`);
+    const artifactHash = hash(`artifact:${sharedMemoryFixtureKey}`);
+    const sourceContentHash = hash(
       `redacted-content:${sharedMemoryFixtureKey}`
     );
+    const desiredClassifierHash = hash("classifier");
+    const privacyPolicyHash = hash("effective-privacy-policy");
+    const sanitizedContentHash = hash("sanitized-content");
+    const classifierGeneration = await pool.query<{
+      id: string;
+      classifierHash: string;
+    }>(
+      `insert into privacy_classifier_generations (
+         version, classifier_hash, model_key, model_revision,
+         artifact_sha256, tokenizer_sha256, decoder_sha256,
+         calibration_sha256, deterministic_detector_version,
+         input_contract_version, status
+       ) values (
+         1, $1, 'fixture-privacy-model', 'fixture-revision',
+         $2, $3, $4, $5, 'fixture-detector-v1', 'fixture-input-v1', 'staged'
+       )
+       on conflict (version) do update set version = excluded.version
+       returning id, classifier_hash as "classifierHash"`,
+      [
+        desiredClassifierHash,
+        hash("classifier-artifact"),
+        hash("classifier-tokenizer"),
+        hash("classifier-decoder"),
+        hash("classifier-calibration")
+      ]
+    );
+    const classifierHash = classifierGeneration.rows[0]!.classifierHash;
     const sourceArtifact = await pool.query<{ id: string }>(
       `insert into shared_source_artifacts (
          logical_memory_id, remote_replica_id, sync_relationship_id,
          owner_user_id, owner_principal_id, team_id, team_workspace_id,
-         representation, source_revision, source_cursor, package_sequence,
-         source_hash, manifest_hash, artifact_hash, redacted_content_hash,
+         representation, maximum_fidelity, include_curated_memory,
+         source_revision, source_cursor, package_sequence,
+         source_hash, manifest_hash, artifact_hash, source_content_hash,
          source_owner_policy_id, source_owner_policy_version,
          team_policy_id, team_policy_version, workspace_policy_id,
          workspace_policy_version, representation_policy_revision,
@@ -269,7 +305,8 @@ describeDb("retention lifecycle repository", () => {
          source_deployment_identity_id, remote_user_identity_id,
          device_credential_id, device_provenance_hash
        ) values (
-         $1, $2, $3, $4, $5, $6, $7, 'memory_events', 7, 7, 7,
+         $1, $2, $3, $4, $5, $6, $7,
+         $22::shared_memory_representation, 'memory_events', false, 7, 7, 7,
          $8, $9, $10, $11, $12, 1, $13, 1, $14, 1, 1, $15, 1,
          $16, 1, $17, $18, $19, $20, $21
        ) returning id`,
@@ -282,19 +319,20 @@ describeDb("retention lifecycle repository", () => {
         fixture.teamId,
         fixture.teamWorkspaceId,
         sourceHash,
-        hash(`manifest:${sharedMemoryFixtureKey}`),
-        hash(`artifact:${sharedMemoryFixtureKey}`),
-        redactedContentHash,
+        manifestHash,
+        artifactHash,
+        sourceContentHash,
         sourceOwnerPolicyId,
         teamPolicyId,
         workspacePolicyId,
         hash("representation-policy"),
         hash("content-policy"),
-        hash("classifier"),
+        classifierHash,
         deployment.rows[0]!.id,
         remoteIdentity.rows[0]!.id,
         deviceCredential.rows[0]!.id,
-        hash("device-provenance")
+        hash("device-provenance"),
+        requestedRepresentation
       ]
     );
     const sourcePreview = await pool.query<{ id: string }>(
@@ -302,9 +340,10 @@ describeDb("retention lifecycle repository", () => {
          source_artifact_id, logical_memory_id, remote_replica_id,
          owner_user_id, owner_principal_id, team_id, team_workspace_id,
          representation, preview_revision, preview_hash, source_revision,
-         source_hash, redacted_content_hash
+         source_hash, source_content_hash
        ) values (
-         $1, $2, $3, $4, $5, $6, $7, 'memory_events', 1, $8, 7, $9, $10
+         $1, $2, $3, $4, $5, $6, $7,
+         $11::shared_memory_representation, 1, $8, 7, $9, $10
        ) returning id`,
       [
         sourceArtifact.rows[0]!.id,
@@ -316,7 +355,38 @@ describeDb("retention lifecycle repository", () => {
         fixture.teamWorkspaceId,
         previewHash,
         sourceHash,
-        redactedContentHash
+        sourceContentHash,
+        requestedRepresentation
+      ]
+    );
+    const semanticPreview = await pool.query<{ id: string }>(
+      `insert into shared_source_semantic_previews (
+         source_preview_id, source_artifact_id, source_preview_revision,
+         source_preview_hash, source_artifact_hash, source_manifest_hash,
+         source_revision, source_hash, logical_memory_id, owner_user_id,
+         owner_principal_id, team_id, team_workspace_id, representation,
+         classifier_generation_id, classifier_version, classifier_hash,
+         effective_privacy_policy_hash, status
+       ) values (
+         $1, $2, 1, $3, $4, $5, 7, $6, $7, $8, $9, $10, $11,
+         $15::shared_memory_representation, $12, 1, $13, $14, 'pending'
+       ) returning id`,
+      [
+        sourcePreview.rows[0]!.id,
+        sourceArtifact.rows[0]!.id,
+        previewHash,
+        artifactHash,
+        manifestHash,
+        sourceHash,
+        logicalMemory.rows[0]!.id,
+        fixture.userId,
+        ownerPrincipalId,
+        fixture.teamId,
+        fixture.teamWorkspaceId,
+        classifierGeneration.rows[0]!.id,
+        classifierHash,
+        privacyPolicyHash,
+        requestedRepresentation
       ]
     );
 
@@ -327,16 +397,16 @@ describeDb("retention lifecycle repository", () => {
          team_id, team_workspace_id, source_owner_policy_id,
          source_owner_policy_version, team_policy_id, team_policy_version,
          workspace_policy_id, workspace_policy_version, mode, state,
-         allowed_representations, selected_representation, preview_revision,
+         maximum_fidelity, include_curated_memory, preview_revision,
          preview_hash, source_revision, maximum_authorized_source_revision,
-         source_hash, representation_policy_revision,
-         representation_policy_hash, content_policy_version,
+         source_hash, fidelity_policy_revision,
+         fidelity_policy_hash, content_policy_version,
          content_policy_hash, classifier_version, classifier_hash,
-         redacted_content_hash, activated_at
+         source_content_hash, activated_at
        ) values (
          $1, $2, $3, $4, $5, $6, $7, 1, $8, 1, $9, 1, 'snapshot', 'active',
-         array['memory_events']::shared_memory_representation[],
-         'memory_events', 1, $10, 7, 7, $11, 1, $12, 1, $13, 1, $14, $15, $16
+         'memory_events', false, 1, $10, 7, 7, $11, 1, $12, 1, $13, 1,
+         $14, $15, $16
        ) returning id`,
       [
         logicalMemory.rows[0]!.id,
@@ -363,14 +433,13 @@ describeDb("retention lifecycle repository", () => {
          owner_principal_id, session_id, team_id, team_workspace_id,
          consent_id, source_owner_policy_id, source_owner_policy_version,
          team_policy_id, team_policy_version, workspace_policy_id,
-         workspace_policy_version, owner_allowed_representations,
-         active_representation, representation_policy_revision,
+         workspace_policy_version, maximum_fidelity, include_curated_memory,
+         fidelity_policy_revision,
          content_policy_version, classifier_version, source_revision,
          creator_authority, granted_by_user_id
        ) values (
          $1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10, 1, $11, 1,
-         array['memory_events']::shared_memory_representation[],
-         'memory_events', 1, 1, 1, 7, 'fixture', $3
+         'memory_events', false, 1, 1, 1, 7, 'fixture', $3
        ) returning id`,
       [
         logicalMemory.rows[0]!.id,
@@ -389,22 +458,31 @@ describeDb("retention lifecycle repository", () => {
     const representation = await pool.query<{ id: string }>(
       `insert into team_memory_representations (
          share_grant_id, consent_id, source_preview_id, source_artifact_id,
-         team_id, team_workspace_id,
+         sanitized_source_preview_id, privacy_classifier_generation_id,
+         privacy_classifier_hash, effective_privacy_policy_hash,
+         source_manifest_hash, sanitized_content_hash, team_id, team_workspace_id,
          logical_memory_id, representation, source_revision,
          source_revision_hash, provenance_hash, source_owner_policy_id,
          source_owner_policy_version, team_policy_id, team_policy_version,
          workspace_policy_id, workspace_policy_version,
-         representation_policy_revision, content_policy_version,
+         fidelity_policy_revision, content_policy_version,
          classifier_version
        ) values (
-         $1, $2, $3, $4, $5, $6, $7, 'memory_events', 7, $8, $9, $10, 1,
-         $11, 1, $12, 1, 1, 1, 1
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+         $19::shared_memory_representation, 7, $14, $15, $16, 1, $17, 1,
+         $18, 1, 1, 1, 1
        ) returning id`,
       [
         shareGrant.rows[0]!.id,
         consent.rows[0]!.id,
         sourcePreview.rows[0]!.id,
         sourceArtifact.rows[0]!.id,
+        semanticPreview.rows[0]!.id,
+        classifierGeneration.rows[0]!.id,
+        classifierHash,
+        privacyPolicyHash,
+        manifestHash,
+        sanitizedContentHash,
         fixture.teamId,
         fixture.teamWorkspaceId,
         logicalMemory.rows[0]!.id,
@@ -412,7 +490,8 @@ describeDb("retention lifecycle repository", () => {
         hash("provenance"),
         sourceOwnerPolicyId,
         teamPolicyId,
-        workspacePolicyId
+        workspacePolicyId,
+        requestedRepresentation
       ]
     );
     await pool.query(
@@ -435,6 +514,22 @@ describeDb("retention lifecycle repository", () => {
         hash("ciphertext")
       ]
     );
+    await pool.query(
+      `insert into encrypted_field_payloads (
+         team_id, team_workspace_id, visibility, encryption_scope,
+         source_table, source_id, source_column, envelope_version,
+         provider_mode, key_id, key_version, scope, provenance, algorithm,
+         ciphertext, nonce, tag, wrapped_dek, ciphertext_location, aad,
+         envelope_created_at
+       ) values (
+         $1, $2, 'personal', 'team', 'shared_source_semantic_previews',
+         $3, 'items', 1, 'local_test_key', 'team-key', 1, '{}'::jsonb,
+         '{}'::jsonb, 'aes-256-gcm', 'semantic-ciphertext', 'nonce', 'tag',
+         '{"key":"wrapped"}'::jsonb, 'encrypted_field_payloads',
+         '{}'::jsonb, now()
+       )`,
+      [fixture.teamId, fixture.teamWorkspaceId, semanticPreview.rows[0]!.id]
+    );
 
     return {
       ...fixture,
@@ -445,11 +540,79 @@ describeDb("retention lifecycle repository", () => {
       syncRelationshipId: relationship.rows[0]!.id,
       deploymentIdentityId: deployment.rows[0]!.id,
       sourceArtifactId: sourceArtifact.rows[0]!.id,
+      semanticPreviewId: semanticPreview.rows[0]!.id,
       shareGrantId: shareGrant.rows[0]!.id,
       representationId: representation.rows[0]!.id,
-      representation: "memory_events",
+      representation: requestedRepresentation,
       sourceRevision: 7
     };
+  };
+
+  const seedTeamSemanticArtifacts = async (
+    fixture: SharedMemoryFixture
+  ): Promise<string[]> => {
+    const semanticItemIds: string[] = [];
+    for (const [sourceItemIndex, dimensions] of [
+      384, 1024, 1536, 3072
+    ].entries()) {
+      const item = await pool.query<{ id: string }>(
+        `insert into team_memory_semantic_items (
+           representation_id, share_grant_id, team_id, team_workspace_id,
+           logical_memory_id, pseudonymous_source_id, source_item_index,
+           encrypted_chunk_index, encrypted_chunk_item_index, item_type,
+           source_revision, representation_policy_revision,
+           content_policy_version, classifier_version, content_hash,
+           embedding_state, embedding_model, embedding_dimensions,
+           embedding_version, embedding_input_hash, embedded_at
+         ) values (
+           $1,$2,$3,$4,$5,$6,$7,0,$7,'memory_event',$8,1,1,1,$9,
+           'embedded','retention-fixture',$10,'1',$11,now()
+         ) returning id`,
+        [
+          fixture.representationId,
+          fixture.shareGrantId,
+          fixture.teamId,
+          fixture.teamWorkspaceId,
+          fixture.logicalMemoryId,
+          randomUUID(),
+          sourceItemIndex,
+          fixture.sourceRevision,
+          hash(`semantic-content-${fixture.shareGrantId}-${dimensions}`),
+          dimensions,
+          hash(`semantic-input-${fixture.shareGrantId}-${dimensions}`)
+        ]
+      );
+      const itemId = item.rows[0]!.id;
+      const vectorType = dimensions === 3072 ? "halfvec" : "vector";
+      await pool.query(
+        `insert into team_memory_semantic_vectors_${dimensions} (
+           semantic_item_id, embedding
+         ) values ($1, $2::${vectorType})`,
+        [itemId, `[${Array(dimensions).fill("0").join(",")}]`]
+      );
+      semanticItemIds.push(itemId);
+    }
+    return semanticItemIds;
+  };
+
+  const semanticArtifactCounts = async (
+    semanticItemIds: string[]
+  ): Promise<{ items: string; vectors: string }> => {
+    const counts = await pool.query<{ items: string; vectors: string }>(
+      `select
+         (select count(*) from team_memory_semantic_items
+           where id = any($1::uuid[])) as items,
+         ((select count(*) from team_memory_semantic_vectors_384
+             where semantic_item_id = any($1::uuid[]))
+          + (select count(*) from team_memory_semantic_vectors_1024
+             where semantic_item_id = any($1::uuid[]))
+          + (select count(*) from team_memory_semantic_vectors_1536
+             where semantic_item_id = any($1::uuid[]))
+          + (select count(*) from team_memory_semantic_vectors_3072
+             where semantic_item_id = any($1::uuid[])))::text as vectors`,
+      [semanticItemIds]
+    );
+    return counts.rows[0]!;
   };
 
   const createOwnerReplicaFixture = async (
@@ -678,10 +841,16 @@ describeDb("retention lifecycle repository", () => {
       `insert into memory_embeddings (
          memory_event_id, owner_user_id, visibility, embedding_model,
          embedding_dimensions, embedding_version, source_hash,
-         canonical_embedding_state
+         canonical_embedding_state, embedding_source_content_hash,
+         embedding_input_hash
        ) values ($1, $2, 'personal', 'fixture', 384, '1', $3,
-         'encrypted_payload') returning id`,
-      [event.rows[0]!.id, fixture.userId, hash(`embedding-${randomUUID()}`)]
+         'encrypted_payload', $4, $4) returning id`,
+      [
+        event.rows[0]!.id,
+        fixture.userId,
+        hash(`embedding-${randomUUID()}`),
+        hash("encrypted-event-embedding-input")
+      ]
     );
     await pool.query(
       `insert into memory_embeddings_384 (memory_embedding_id, embedding)
@@ -692,13 +861,15 @@ describeDb("retention lifecycle repository", () => {
       `insert into memory_embeddings (
          memory_node_id, owner_user_id, visibility, embedding_model,
          embedding_dimensions, embedding_version, source_hash,
-         canonical_embedding_state
+         canonical_embedding_state, embedding_source_content_hash,
+         embedding_input_hash
        ) values ($1, $2, 'personal', 'fixture', 384, '1', $3,
-         'encrypted_payload') returning id`,
+         'encrypted_payload', $4, $4) returning id`,
       [
         derivedParentNode.rows[0]!.id,
         fixture.userId,
-        hash(`derived-embedding-${randomUUID()}`)
+        hash(`derived-embedding-${randomUUID()}`),
+        hash("encrypted-derived-embedding-input")
       ]
     );
     await pool.query(
@@ -1530,34 +1701,9 @@ describeDb("retention lifecycle repository", () => {
   });
 
   it("keeps Team/grant holds separate from owner-private holds and applies broad hold precedence", async () => {
-    const fixture = await createSharedMemoryFixture();
-    const rollup = await pool.query<{ id: string; source_revision: string }>(
-      `insert into team_memory_representations (
-         share_grant_id, consent_id, source_preview_id, source_artifact_id,
-         team_id, team_workspace_id, logical_memory_id, representation,
-         source_revision, source_revision_hash, provenance_hash,
-         source_owner_policy_id, source_owner_policy_version, team_policy_id,
-         team_policy_version, workspace_policy_id, workspace_policy_version,
-         representation_policy_revision, content_policy_version,
-         classifier_version
-       )
-       select share_grant_id, consent_id, source_preview_id, source_artifact_id,
-              team_id, team_workspace_id, logical_memory_id, 'lcm_rollups',
-              source_revision + 1, $2, $3, source_owner_policy_id,
-              source_owner_policy_version, team_policy_id, team_policy_version,
-              workspace_policy_id, workspace_policy_version,
-              representation_policy_revision, content_policy_version,
-              classifier_version
-         from team_memory_representations where id = $1
-       returning id, source_revision`,
-      [
-        fixture.representationId,
-        hash(`rollup-revision:${fixture.representationId}`),
-        hash(`rollup-provenance:${fixture.representationId}`)
-      ]
-    );
-    const rollupRepresentationId = rollup.rows[0]!.id;
-    const rollupSourceRevision = Number(rollup.rows[0]!.source_revision);
+    const fixture = await createSharedMemoryFixture(undefined, "lcm_rollups");
+    const rollupRepresentationId = fixture.representationId;
+    const rollupSourceRevision = fixture.sourceRevision;
     now = new Date("2026-02-01T00:00:00.000Z");
     const authorizedScopes: string[] = [];
     resetRepository(async (context) => {
@@ -2598,6 +2744,194 @@ describeDb("retention lifecycle repository", () => {
     now = new Date(now.getTime() + 2);
     const claimed = await repository.claimNextPurgeJob();
     expect(claimed?.job.id).toBe(deletion?.purgeJob.id);
+  });
+
+  it("removes every Team semantic vector dimension and search item without touching another Team", async () => {
+    const fixture = await createFixture();
+    const sharedMemory = await createSharedMemoryFixture(fixture);
+    const unrelatedSharedMemory = await createSharedMemoryFixture();
+    const targetSemanticItemIds = await seedTeamSemanticArtifacts(sharedMemory);
+    const unrelatedSemanticItemIds = await seedTeamSemanticArtifacts(
+      unrelatedSharedMemory
+    );
+    now = new Date("2026-08-15T00:00:00.000Z");
+    resetRepository();
+    await repository.createPolicy({
+      target: { scope: "team", teamId: fixture.teamId },
+      retentionSeconds: 0,
+      effectiveAt: new Date("2026-08-01T00:00:00.000Z")
+    });
+    const deletion = await repository.requestRootTeamDeletion({
+      teamId: fixture.teamId,
+      actorUserId: fixture.userId,
+      expectedVersion: 1,
+      triggeredAt: now
+    });
+    const claimed = await repository.claimNextPurgeJob();
+    expect(claimed?.job.id).toBe(deletion?.purgeJob.id);
+
+    await repository.processClaimedPurgeJob({
+      purgeJobId: claimed!.job.id,
+      purgeAttemptId: claimed!.attempt.id
+    });
+    await expect(
+      repository.completePurgeJob(claimed!.job.id)
+    ).resolves.toMatchObject({ completed: true });
+
+    await expect(
+      semanticArtifactCounts(targetSemanticItemIds)
+    ).resolves.toEqual({ items: "0", vectors: "0" });
+    await expect(
+      semanticArtifactCounts(unrelatedSemanticItemIds)
+    ).resolves.toEqual({ items: "4", vectors: "4" });
+    const semanticPreviewPayloads = await pool.query<{
+      target_count: string;
+      unrelated_count: string;
+    }>(
+      `select
+         count(*) filter (where source_id=$1)::text as target_count,
+         count(*) filter (where source_id=$2)::text as unrelated_count
+       from encrypted_field_payloads
+       where source_table='shared_source_semantic_previews'`,
+      [sharedMemory.semanticPreviewId, unrelatedSharedMemory.semanticPreviewId]
+    );
+    expect(semanticPreviewPayloads.rows[0]).toEqual({
+      target_count: "0",
+      unrelated_count: "1"
+    });
+    const evidence = await pool.query<{
+      artifact_kind: string;
+      removed_record_count: string;
+      state: string;
+    }>(
+      `select artifact_kind, removed_record_count, state
+         from purge_job_evidence
+        where purge_job_id=$1 and artifact_kind in ('vector','search_index')
+        order by artifact_kind`,
+      [claimed!.job.id]
+    );
+    expect(evidence.rows).toEqual([
+      {
+        artifact_kind: "search_index",
+        removed_record_count: "6",
+        state: "verified"
+      },
+      {
+        artifact_kind: "vector",
+        removed_record_count: "4",
+        state: "verified"
+      }
+    ]);
+  });
+
+  it("removes every Share Grant semantic vector dimension and search item without touching another grant", async () => {
+    const sharedMemory = await createSharedMemoryFixture();
+    const unrelatedSharedMemory = await createSharedMemoryFixture();
+    const targetSemanticItemIds = await seedTeamSemanticArtifacts(sharedMemory);
+    const unrelatedSemanticItemIds = await seedTeamSemanticArtifacts(
+      unrelatedSharedMemory
+    );
+    now = new Date("2026-08-20T00:00:00.000Z");
+    resetRepository();
+    await repository.createPolicy({
+      target: {
+        scope: "share_grant",
+        teamId: sharedMemory.teamId,
+        teamWorkspaceId: sharedMemory.teamWorkspaceId,
+        shareGrantId: sharedMemory.shareGrantId,
+        logicalMemoryId: sharedMemory.logicalMemoryId
+      },
+      retentionSeconds: 0,
+      effectiveAt: new Date("2026-08-01T00:00:00.000Z")
+    });
+    const mutationId = randomUUID();
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      expect(
+        await lockShareGrantRetentionScopeWithClient(
+          client,
+          sharedMemory.shareGrantId
+        )
+      ).toBe(true);
+      await client.query(
+        `update team_session_share_grants
+            set lifecycle='revoked', revoked_at=$2, revocation_epoch=1
+          where id=$1`,
+        [sharedMemory.shareGrantId, now]
+      );
+      await scheduleShareGrantRevocationRetentionWithClient(client, {
+        shareGrantId: sharedMemory.shareGrantId,
+        actorUserId: sharedMemory.userId,
+        mutationId,
+        revocationEpoch: 1,
+        triggeredAt: now
+      });
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const claimed = await repository.claimNextPurgeJob();
+    expect(claimed?.job.target).toMatchObject({
+      kind: "share_grant",
+      shareGrantId: sharedMemory.shareGrantId
+    });
+    await repository.processClaimedPurgeJob({
+      purgeJobId: claimed!.job.id,
+      purgeAttemptId: claimed!.attempt.id
+    });
+    await expect(
+      repository.completePurgeJob(claimed!.job.id)
+    ).resolves.toMatchObject({ completed: true });
+
+    await expect(
+      semanticArtifactCounts(targetSemanticItemIds)
+    ).resolves.toEqual({ items: "0", vectors: "0" });
+    await expect(
+      semanticArtifactCounts(unrelatedSemanticItemIds)
+    ).resolves.toEqual({ items: "4", vectors: "4" });
+    const semanticPreviewPayloads = await pool.query<{
+      target_count: string;
+      unrelated_count: string;
+    }>(
+      `select
+         count(*) filter (where source_id=$1)::text as target_count,
+         count(*) filter (where source_id=$2)::text as unrelated_count
+       from encrypted_field_payloads
+       where source_table='shared_source_semantic_previews'`,
+      [sharedMemory.semanticPreviewId, unrelatedSharedMemory.semanticPreviewId]
+    );
+    expect(semanticPreviewPayloads.rows[0]).toEqual({
+      target_count: "0",
+      unrelated_count: "1"
+    });
+    const evidence = await pool.query<{
+      artifact_kind: string;
+      removed_record_count: string;
+      state: string;
+    }>(
+      `select artifact_kind, removed_record_count, state
+         from purge_job_evidence
+        where purge_job_id=$1 and artifact_kind in ('vector','search_index')
+        order by artifact_kind`,
+      [claimed!.job.id]
+    );
+    expect(evidence.rows).toEqual([
+      {
+        artifact_kind: "search_index",
+        removed_record_count: "4",
+        state: "verified"
+      },
+      {
+        artifact_kind: "vector",
+        removed_record_count: "4",
+        state: "verified"
+      }
+    ]);
   });
 
   it("processes root Team purge artifacts, schedules backup expiry, and verifies completion", async () => {

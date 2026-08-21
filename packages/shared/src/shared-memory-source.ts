@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { crossIdentitySyncDigest } from "./cross-identity-sync.js";
+import type { SharedMemoryFidelityCeiling } from "./shared-memory-fidelity.js";
 
 export const sharedMemorySourceKinds = [
   "captured_session",
@@ -54,17 +55,17 @@ export const personalNoteSourceRevisionHash = (input: {
 export interface SharedMemorySourceSelection {
   source: SharedMemorySourceRef;
   mode: "snapshot" | "continuous";
-  representation:
-    | "memory_events"
-    | "lcm_leaves"
-    | "lcm_rollups"
-    | "curated_assertions";
-  allowedRepresentations: Array<
-    "memory_events" | "lcm_leaves" | "lcm_rollups" | "curated_assertions"
-  >;
+  sourceCapabilities: SharedMemoryRepresentationCapability[];
+  activationRepresentation: SharedMemoryRepresentationCapability;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
   sourceRevision: number;
   manifest: Array<{ sourceId: string; revisionHash: string }>;
 }
+
+export type SharedMemoryRepresentationCapability =
+  | SharedMemoryFidelityCeiling
+  | "curated_assertions";
 
 export const personalNoteSourceSelectionIssues = (
   input: SharedMemorySourceSelection
@@ -75,12 +76,20 @@ export const personalNoteSourceSelectionIssues = (
     issues.push("Personal Note sharing requires snapshot mode");
   }
   if (
-    input.representation !== "memory_events" ||
-    input.allowedRepresentations.length !== 1 ||
-    input.allowedRepresentations[0] !== "memory_events"
+    input.sourceCapabilities.length !== 1 ||
+    input.sourceCapabilities[0] !== "memory_events"
   ) {
     issues.push(
-      "Personal Note sharing permits only the memory_events representation"
+      "Personal Note source capabilities must contain only memory_events"
+    );
+  }
+  if (
+    input.activationRepresentation !== "memory_events" ||
+    input.maximumFidelity !== "memory_events" ||
+    input.includeCuratedMemory
+  ) {
+    issues.push(
+      "Personal Note sharing requires Memory Event activation and consent"
     );
   }
   if (input.sourceRevision !== 1) {

@@ -142,6 +142,15 @@ Conversation Source Access grant. Semantic expansion level and raw-source
 access are independent controls. See
 [Team Conversation Source Sharing](team-conversation-source-sharing.md).
 
+Unshared Personal capture, Projection, LCM, embedding, and Recall remain
+full-fidelity and do not invoke the Privacy Service. When content becomes
+eligible for a decryptable non-owner boundary, Team materialization classifies
+each shareable output independently, combines the pinned classifier spans with
+deterministic secret detection, applies the effective versioned content policy,
+and writes only sanitized encrypted derivatives. Classifier, offset, schema,
+policy, or encryption failure leaves Team material pending or unavailable
+without blocking Personal capture or Projection.
+
 Codex approval-specific provider records are **Approval Activity**, not Memory.
 The trusted adapter classifies approval requests, decisions, automatic
 decisions and rationales, approval-specific tool results, and helper

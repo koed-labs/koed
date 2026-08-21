@@ -216,8 +216,10 @@ const sharedFixture = (): CollaborationSnapshot => {
     owner: participant(ids.remoteUser),
     title: "Shared capture",
     latestActivityAt: timestamp,
-    representation: "memory_events" as const,
-    representationState: "current" as const,
+    sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"] as const,
+    activationRepresentation: "memory_events" as const,
+    maximumFidelity: "memory_events" as const,
+    includeCuratedMemory: false,
     liveState: "live" as const,
     sourceState: "ready" as const,
     sourceRevision: revision,
@@ -347,17 +349,25 @@ const personalMemoryEntry = () => ({
 });
 
 const sharedPreview = () => ({
+  source: {
+    kind: "captured_session" as const,
+    sessionId: ids.capturedSession,
+    logicalMemoryId: ids.logicalMemory
+  },
   logicalMemoryId: ids.logicalMemory,
   teamId: ids.team,
   workspaceId: ids.workspace,
-  representation: "memory_events" as const,
-  allowedRepresentations: ["memory_events" as const],
+  sourceCapabilities: ["memory_events" as const],
+  activationRepresentation: "memory_events" as const,
+  mode: "continuous" as const,
+  maximumFidelity: "memory_events" as const,
+  includeCuratedMemory: false,
   previewRevision: 1,
   sourceRevision: 12,
   policyRevision: 1,
   contentPolicyVersion: 1,
   classifierVersion: 1,
-  redactedContentHash: "a".repeat(64),
+  sourceContentHash: "a".repeat(64),
   previewHash: "b".repeat(64),
   itemCount: 1,
   items: [
@@ -541,9 +551,12 @@ const success = (
       const candidate = sharedPreview();
       data = {
         candidate: {
-          sessionId: command.input.sessionId,
+          source: command.input.source,
           logicalMemoryId: ids.logicalMemory,
-          representation: command.input.representation,
+          sourceCapabilities: candidate.sourceCapabilities,
+          activationRepresentation: command.input.activationRepresentation,
+          mode: command.input.mode,
+          expiresAt: null,
           sourceRevision: candidate.sourceRevision,
           candidateHash: candidate.previewHash,
           itemCount: candidate.itemCount,
@@ -564,24 +577,34 @@ const success = (
       break;
     case "collaboration.share_memory":
       data = {
-        grant: {
+        pendingShare: {
+          source: command.input.source,
+          sourceCapabilities: command.input.sourceCapabilities,
+          activationRepresentation: command.input.activationRepresentation,
           id: ids.shareGrant,
+          mutationId: command.input.mutationId,
           logicalGrantId: command.input.logicalGrantId,
+          consentId: command.input.consentId,
           logicalMemoryId: command.input.logicalMemoryId,
-          ownerUserId: ids.remoteUser,
           teamId: command.input.teamId,
           workspaceId: command.input.workspaceId,
-          consentId: command.input.consentId,
-          ownerAllowedRepresentations: ["memory_events"],
-          activeRepresentation: "memory_events",
-          representationPolicyRevision: 1,
+          maximumFidelity: command.input.maximumFidelity,
+          includeCuratedMemory: command.input.includeCuratedMemory,
+          mode: command.input.mode,
           sourceRevision: 12,
-          grantVersion: 1,
-          lifecycle: "active",
+          state: "preparing",
+          stage: "accepted",
+          workspaceAccessState: "none",
+          sourceUpdateState: "preparing",
+          operationVersion: 1,
+          attemptCount: 0,
+          redactedFailureCode: null,
+          lastProgressAt: timestamp,
           createdAt: timestamp,
           updatedAt: timestamp,
+          activatedAt: null,
           revokedAt: null,
-          companionThreadId: ids.discussion
+          grantId: null
         }
       };
       break;
@@ -1775,18 +1798,27 @@ describe("collaboration renderer client", () => {
     await client.load();
 
     const candidate = await client.previewSharedMemoryCandidate({
-      sessionId: ids.capturedSession,
-      representation: "memory_events"
+      source: {
+        kind: "captured_session",
+        sessionId: ids.capturedSession,
+        logicalMemoryId: ids.logicalMemory
+      },
+      activationRepresentation: "memory_events",
+      mode: "continuous"
     });
     const entry = await client.prepareSharedMemorySource({
       sessionId: ids.capturedSession
     });
     const preview = await client.previewSharedMemory({
+      source: candidate.source,
+      sourceCapabilities: candidate.sourceCapabilities,
       logicalMemoryId: entry.logicalMemoryId!,
       teamId: ids.team,
       workspaceId: ids.workspace,
-      representation: "memory_events",
-      allowedRepresentations: ["memory_events"]
+      activationRepresentation: "memory_events",
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      mode: "continuous"
     });
     await client.shareMemory({
       source: {
@@ -1794,6 +1826,8 @@ describe("collaboration renderer client", () => {
         sessionId: ids.capturedSession,
         logicalMemoryId: ids.logicalMemory
       },
+      sourceCapabilities: candidate.sourceCapabilities,
+      activationRepresentation: candidate.activationRepresentation,
       mutationId: ids.message,
       logicalGrantId: ids.logicalGrant,
       consentId: ids.consent,
@@ -1801,8 +1835,8 @@ describe("collaboration renderer client", () => {
       teamId: ids.team,
       workspaceId: ids.workspace,
       mode: "continuous",
-      allowedRepresentations: ["memory_events"],
-      selectedRepresentation: "memory_events",
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
       previewRevision: preview.previewRevision,
       previewHash: preview.previewHash,
       expiresAt: null,
@@ -1811,7 +1845,7 @@ describe("collaboration renderer client", () => {
 
     const commands = mock.command.mock.calls.map(([command]) => command);
     expect(candidate).toMatchObject({
-      sessionId: ids.capturedSession,
+      source: { sessionId: ids.capturedSession },
       itemCount: 1,
       excludedItemCount: 0
     });
@@ -2655,7 +2689,7 @@ describe("collaboration renderer client", () => {
     client.dispose();
   });
 
-  it("purges an open higher-fidelity source before applying a representation downgrade", async () => {
+  it("purges an open higher-fidelity source before applying a fidelity downgrade", async () => {
     const initial = sharedFixture();
     const mock = createBridge(initial);
     const client = createCollaborationRendererClient(mock.bridge);
@@ -2665,7 +2699,7 @@ describe("collaboration renderer client", () => {
     }
     const downgradedSession = {
       ...initial.view.session,
-      representation: "lcm_leaves" as const,
+      maximumFidelity: "lcm_leaves" as const,
       sourceRevision: "snapshot.revision-000002",
       version: 2
     };
@@ -2716,7 +2750,7 @@ describe("collaboration renderer client", () => {
       deliveryId: delivery(30),
       eventId: id(30),
       occurredAt: timestamp,
-      family: "representation_changed",
+      family: "fidelity_changed",
       resource: {
         scope: "team",
         teamId: ids.team,
@@ -2735,7 +2769,7 @@ describe("collaboration renderer client", () => {
       const current = client.current();
       expect(current?.view.kind).toBe("shared_session");
       if (current?.view.kind !== "shared_session") return;
-      expect(current.view.session.representation).toBe("lcm_leaves");
+      expect(current.view.session.maximumFidelity).toBe("lcm_leaves");
       expect(current.view.source.representation).toBe("lcm_leaves");
       expect(current.view.source.items).toHaveLength(1);
       expect(JSON.stringify(current.view)).not.toContain(
@@ -2750,7 +2784,7 @@ describe("collaboration renderer client", () => {
     client.dispose();
   });
 
-  it("preserves the Shared Memory shell and companion while a representation is unavailable", async () => {
+  it("preserves the Shared Memory shell and companion while fidelity is unavailable", async () => {
     const initial = sharedFixture();
     const mock = createBridge(initial);
     const client = createCollaborationRendererClient(mock.bridge);
@@ -2763,7 +2797,7 @@ describe("collaboration renderer client", () => {
       deliveryId: delivery(31),
       eventId: id(31),
       occurredAt: timestamp,
-      family: "representation_changed",
+      family: "fidelity_changed",
       resource: {
         scope: "team",
         teamId: ids.team,
@@ -2785,7 +2819,6 @@ describe("collaboration renderer client", () => {
       expect(current?.view.kind).toBe("shared_session");
       if (current?.view.kind !== "shared_session") return;
       expect(current.view.session).toMatchObject({
-        representationState: "unavailable",
         sourceState: "unavailable"
       });
       expect(current.view.source.items).toEqual([]);
@@ -3993,7 +4026,7 @@ describe("collaboration renderer client", () => {
     client.dispose();
   });
 
-  it("restores an open Shared Memory view after a transient representation transition", async () => {
+  it("restores an open Shared Memory view after a transient fidelity transition", async () => {
     const initial = sharedFixture();
     const mock = createBridge(initial);
     const client = createCollaborationRendererClient(mock.bridge);

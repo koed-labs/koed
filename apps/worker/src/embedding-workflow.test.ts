@@ -90,7 +90,10 @@ describe("Team semantic embedding reconciliation", () => {
                 shareGrantId: "00000000-0000-4000-8000-000000000021",
                 sourceItemIndex: 0,
                 text: "first",
-                contentHash: "a".repeat(64)
+                contentHash: "a".repeat(64),
+                embeddingJobKey: "c".repeat(64),
+                computationReuseKey: "e".repeat(64),
+                personalEmbeddingReuse: null
               },
               {
                 semanticItemId: "00000000-0000-4000-8000-000000000002",
@@ -98,7 +101,10 @@ describe("Team semantic embedding reconciliation", () => {
                 shareGrantId: "00000000-0000-4000-8000-000000000021",
                 sourceItemIndex: 1,
                 text: "second",
-                contentHash: "b".repeat(64)
+                contentHash: "b".repeat(64),
+                embeddingJobKey: "d".repeat(64),
+                computationReuseKey: "f".repeat(64),
+                personalEmbeddingReuse: null
               }
             ];
             await input.duringAuthorizedLease?.(items);
@@ -106,6 +112,9 @@ describe("Team semantic embedding reconciliation", () => {
           }
         ),
       storeSharedMemorySemanticEmbedding: vi.fn().mockResolvedValue(true),
+      reusePersonalSharedMemorySemanticEmbedding: vi
+        .fn()
+        .mockResolvedValue(false),
       markSharedMemorySemanticEmbeddingFailed: vi
         .fn()
         .mockResolvedValue(undefined)
@@ -177,6 +186,127 @@ describe("Team semantic embedding reconciliation", () => {
       })
     );
   });
+
+  it("reuses an exact owner-scoped Personal embedding without inference", async () => {
+    const reuse = {
+      memoryEmbeddingId: "00000000-0000-4000-8000-000000000031",
+      model: "test-embedding-model",
+      dimensions: 1024 as const,
+      version: "personal-generation"
+    };
+    const item = {
+      semanticItemId: "00000000-0000-4000-8000-000000000001",
+      representationId: "00000000-0000-4000-8000-000000000011",
+      shareGrantId: "00000000-0000-4000-8000-000000000021",
+      sourceItemIndex: 0,
+      text: "unchanged sanitized text",
+      contentHash: "a".repeat(64),
+      personalEmbeddingReuse: reuse
+    };
+    const repository = {
+      listPendingSharedMemorySemanticItems: vi
+        .fn()
+        .mockImplementation(async (input) => {
+          await input.duringAuthorizedLease?.([item]);
+          return [item];
+        }),
+      reusePersonalSharedMemorySemanticEmbedding: vi
+        .fn()
+        .mockResolvedValue(true),
+      storeSharedMemorySemanticEmbedding: vi.fn(),
+      markSharedMemorySemanticEmbeddingFailed: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const fetchFn = vi.fn();
+
+    const result = await createEmbeddingWorkflow({
+      env: workerEnv,
+      fetchFn,
+      repository: () => repository
+    }).reconcileSharedMemorySemanticItems();
+
+    expect(result).toEqual({ processed: 1, embedded: 1, failed: 0 });
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(
+      repository.reusePersonalSharedMemorySemanticEmbedding
+    ).toHaveBeenCalledWith({
+      semanticItemId: item.semanticItemId,
+      contentHash: item.contentHash,
+      ...reuse
+    });
+    expect(
+      repository.storeSharedMemorySemanticEmbedding
+    ).not.toHaveBeenCalled();
+  });
+
+  it("embeds one changed input once for equivalent grant-scoped representations", async () => {
+    const items = [
+      {
+        semanticItemId: "00000000-0000-4000-8000-000000000001",
+        representationId: "00000000-0000-4000-8000-000000000011",
+        shareGrantId: "00000000-0000-4000-8000-000000000021",
+        sourceItemIndex: 0,
+        text: "same sanitized bytes",
+        contentHash: "a".repeat(64),
+        embeddingJobKey: "b".repeat(64),
+        computationReuseKey: "c".repeat(64),
+        personalEmbeddingReuse: null
+      },
+      {
+        semanticItemId: "00000000-0000-4000-8000-000000000002",
+        representationId: "00000000-0000-4000-8000-000000000012",
+        shareGrantId: "00000000-0000-4000-8000-000000000022",
+        sourceItemIndex: 0,
+        text: "same sanitized bytes",
+        contentHash: "a".repeat(64),
+        embeddingJobKey: "d".repeat(64),
+        computationReuseKey: "c".repeat(64),
+        personalEmbeddingReuse: null
+      }
+    ];
+    const repository = {
+      listPendingSharedMemorySemanticItems: vi
+        .fn()
+        .mockImplementation(async (input) => {
+          await input.duringAuthorizedLease?.(items);
+          return items;
+        }),
+      storeSharedMemorySemanticEmbedding: vi.fn().mockResolvedValue(true),
+      reusePersonalSharedMemorySemanticEmbedding: vi.fn(),
+      markSharedMemorySemanticEmbeddingFailed: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const fetchFn = vi.fn().mockResolvedValue(
+      jsonResponse({
+        model: "test-embedding-model",
+        dimensions: 3,
+        vectors: [[1, 0, 0]],
+        chunks: [
+          {
+            inputIndex: 0,
+            chunkIndex: 0,
+            chunkCount: 1,
+            text: "same sanitized bytes",
+            vector: [1, 0, 0]
+          }
+        ]
+      })
+    );
+
+    await expect(
+      createEmbeddingWorkflow({
+        env: workerEnv,
+        fetchFn,
+        repository: () => repository
+      }).reconcileSharedMemorySemanticItems()
+    ).resolves.toEqual({ processed: 2, embedded: 2, failed: 0 });
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body))).toEqual({
+      texts: ["same sanitized bytes"]
+    });
+    expect(repository.storeSharedMemorySemanticEmbedding).toHaveBeenCalledTimes(
+      2
+    );
+  });
 });
 
 const source: EmbeddableSourceRecord = {
@@ -215,6 +345,179 @@ const jsonResponse = (body: Record<string, unknown>, status = 200) => {
 };
 
 describe("embedding workflow", () => {
+  it("imports the hosted Personal artifact without local model inference", async () => {
+    const getCurrentSourceEmbeddingChunkCount = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(1);
+    const repository = {
+      getEmbeddableSource: vi.fn().mockResolvedValue(source),
+      getCurrentSourceEmbeddingChunkCount,
+      getPersonalSourceReplicationPolicy: vi.fn().mockResolvedValue({
+        enabled: true,
+        mode: "hosted_personal",
+        targetUpstreamId: "hosted"
+      })
+    } as unknown as MemorySourceRepository;
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({ state: "imported", chunks: 1, inserted: true })
+      );
+
+    await expect(
+      createEmbeddingWorkflow({
+        env: {
+          ...workerEnv,
+          managedConversationApiUrl: "http://memory.local:3300",
+          managedConversationApiToken: "local-worker-token"
+        },
+        fetchFn,
+        repository: () => repository
+      }).embedSource("memory_event", "event-1")
+    ).resolves.toEqual({ dimensions: 3, inserted: true, chunks: 1 });
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(String(fetchFn.mock.calls[0]?.[0])).toBe(
+      "http://memory.local:3300/v1/personal-semantic-artifacts/import"
+    );
+    expect(String(fetchFn.mock.calls[0]?.[0])).not.toContain("/embed");
+  });
+
+  it("does not fall back to local inference while hosted authority is pending", async () => {
+    const repository = {
+      getEmbeddableSource: vi.fn().mockResolvedValue(source),
+      getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
+      getPersonalSourceReplicationPolicy: vi.fn().mockResolvedValue({
+        enabled: true,
+        mode: "hosted_personal",
+        targetUpstreamId: "hosted"
+      }),
+      replaceSourceEmbeddings: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ state: "hosted_pending" }));
+
+    await expect(
+      createEmbeddingWorkflow({
+        env: {
+          ...workerEnv,
+          managedConversationApiUrl: "http://memory.local:3300",
+          managedConversationApiToken: "local-worker-token"
+        },
+        fetchFn,
+        repository: () => repository
+      }).embedSource("memory_event", "event-1")
+    ).rejects.toMatchObject({
+      name: "HostedSemanticAuthorityPendingError",
+      transient: true
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(repository.replaceSourceEmbeddings).not.toHaveBeenCalled();
+  });
+
+  it("restores local inference only after an explicit authority policy change", async () => {
+    const getPersonalSourceReplicationPolicy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        enabled: true,
+        mode: "hosted_personal",
+        targetUpstreamId: "hosted"
+      })
+      .mockResolvedValueOnce({
+        enabled: false,
+        mode: "hosted_personal",
+        targetUpstreamId: null
+      });
+    const repository = {
+      getEmbeddableSource: vi.fn().mockResolvedValue(source),
+      getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
+      getPersonalSourceReplicationPolicy,
+      replaceSourceEmbeddings: vi
+        .fn()
+        .mockResolvedValue({ ids: ["embedding-1"], inserted: true })
+    } as unknown as MemorySourceRepository;
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ state: "hosted_pending" }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          model: "test-embedding-model",
+          dimensions: 3,
+          vectors: [[1, 2, 3]],
+          chunks: [
+            {
+              inputIndex: 0,
+              chunkIndex: 0,
+              chunkCount: 1,
+              tokenCount: 2,
+              text: "Source text",
+              vector: [1, 2, 3]
+            }
+          ]
+        })
+      );
+    const workflow = createEmbeddingWorkflow({
+      env: {
+        ...workerEnv,
+        managedConversationApiUrl: "http://memory.local:3300",
+        managedConversationApiToken: "local-worker-token"
+      },
+      fetchFn,
+      repository: () => repository
+    });
+
+    await expect(
+      workflow.embedSource("memory_event", "event-1")
+    ).rejects.toMatchObject({
+      name: "HostedSemanticAuthorityPendingError"
+    });
+    await expect(
+      workflow.embedSource("memory_event", "event-1")
+    ).resolves.toEqual({
+      dimensions: 3,
+      inserted: true,
+      chunks: 1,
+      measuredTokens: 2
+    });
+
+    expect(getPersonalSourceReplicationPolicy).toHaveBeenCalledTimes(2);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(String(fetchFn.mock.calls[0]?.[0])).toContain(
+      "/v1/personal-semantic-artifacts/import"
+    );
+    expect(String(fetchFn.mock.calls[1]?.[0])).toContain("/embed");
+    expect(repository.replaceSourceEmbeddings).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails before inference when hosted authority lacks its local API bridge", async () => {
+    const repository = {
+      getEmbeddableSource: vi.fn().mockResolvedValue(source),
+      getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
+      getPersonalSourceReplicationPolicy: vi.fn().mockResolvedValue({
+        enabled: true,
+        mode: "hosted_personal",
+        targetUpstreamId: "hosted"
+      }),
+      replaceSourceEmbeddings: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const fetchFn = vi.fn();
+
+    await expect(
+      createEmbeddingWorkflow({
+        env: workerEnv,
+        fetchFn,
+        repository: () => repository
+      }).embedSource("memory_event", "event-1")
+    ).rejects.toMatchObject({
+      name: "HostedSemanticAuthorityConfigurationError",
+      transient: false
+    });
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(repository.replaceSourceEmbeddings).not.toHaveBeenCalled();
+  });
+
   it("uses validated chunk token counts when usage metadata is absent", async () => {
     const repository = {
       getEmbeddableSource: vi.fn().mockResolvedValue(source),

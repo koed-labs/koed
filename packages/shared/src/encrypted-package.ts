@@ -12,6 +12,7 @@ export const encryptedPackageObjectClasses = [
   "support_bundle",
   "memory_export",
   "sync_package",
+  "personal_embedding_artifact",
   "offload_package",
   "object_payload",
   "hosted_backup_archive"

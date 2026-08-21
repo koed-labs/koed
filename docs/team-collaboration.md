@@ -369,21 +369,20 @@ Grant is eligible only when its complete direct-source provenance is confined to
 the granted Captured Session; mixed-session or incomplete provenance fails
 closed.
 
-- A Share Grant stores immutable logical source identity, the source owner's
-  allowed representation set, one selected active representation, policy
-  revisions, lifecycle identity, and creating authority.
-- Team and Workspace policies each provide an allowed representation set. The
-  active representation must be in the intersection of all three sets.
+- A Share Grant stores immutable typed source identity, source capabilities,
+  maximum fidelity, the Curated Memory choice, one activation representation,
+  policy revisions, lifecycle identity, and creating authority.
+- Effective layers are the intersection of source capabilities, owner consent,
+  and current Team and Workspace policies.
 - No representation is assumed less sensitive than another. There is no
   inferred permission or fallback to whatever source rows exist.
-- Only the source owner selects the initial or replacement representation.
-  Higher fidelity or expansion of the owner's allowed set requires a new exact
-  preview and explicit consent.
+- Only the source owner selects the initial or replacement fidelity. Higher
+  fidelity requires a new exact preview and explicit consent.
 - Team and Workspace managers may reduce their policy sets or revoke the Share
   Grant. They cannot select a replacement, expand owner consent, or share
   another User's source.
-- A policy change that excludes the active representation makes the source view
-  unavailable until the owner explicitly selects an allowed replacement.
+- A policy change that excludes the active representation makes the source
+  view unavailable until an authorized replacement is published.
 - Derived leaves and rollups have complete provenance inside the one shared
   logical source. Cross-session summaries are not eligible.
 - Share-bound summaries are produced locally by the LCM Summary Service through
@@ -522,8 +521,8 @@ durable, push-based updates without polling application data.
 
 Realtime event families cover Team and Workspace lifecycle or access changes,
 thread creation and archive, Team Chat Message creation, current-User read
-state, Share Grant and representation changes, newly permitted Memory Events or
-LCM summaries, companion activity, and access revocation.
+state, Share Grant and fidelity changes, newly permitted Memory Events or LCM
+summaries, companion activity, and access revocation.
 
 ## Projection Boundary
 

@@ -241,6 +241,38 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     }
   );
   app.post(
+    "/v1/personal-device-sync/relay/semantic-work/claims/renew",
+    pre,
+    async (request) => {
+      if (!context.personalDeviceSync.authoritySigner)
+        throw error("Personal Device Sync relay is unavailable", 503);
+      const input = await authenticate(request as RawRequest, context);
+      const payload = body(request as RawRequest);
+      if (
+        typeof payload.claimGeneration !== "string" ||
+        !/^(0|[1-9][0-9]*)$/.test(payload.claimGeneration)
+      ) {
+        throw error("PDS semantic work generation is invalid");
+      }
+      const leaseSeconds = Number(payload.leaseSeconds ?? 60);
+      if (
+        !Number.isSafeInteger(leaseSeconds) ||
+        leaseSeconds < 5 ||
+        leaseSeconds > 3600
+      ) {
+        throw error("PDS semantic work lease is invalid");
+      }
+      return {
+        claim: await input.relay.renewPdsRelaySemanticWorkClaim({
+          ...input.auth,
+          workIdentity: b64hash(payload.workIdentity, "work identity"),
+          claimGeneration: payload.claimGeneration,
+          leaseSeconds
+        })
+      };
+    }
+  );
+  app.post(
     "/v1/personal-device-sync/relay/semantic-work/claims/complete",
     pre,
     async (request) => {

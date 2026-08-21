@@ -93,8 +93,9 @@ const snapshotFixture = (): CollaborationSnapshot =>
                   workspaceId: "workspace-a",
                   companionThreadId: "companion-a",
                   unreadCompanionCount: 3,
-                  representationState: "stale",
-                  sourceState: "ready"
+                  maximumFidelity: "memory_events",
+                  includeCuratedMemory: false,
+                  sourceState: "unavailable"
                 },
                 {
                   id: "pending-a",
@@ -103,7 +104,8 @@ const snapshotFixture = (): CollaborationSnapshot =>
                   workspaceId: "workspace-a",
                   companionThreadId: "companion-pending",
                   unreadCompanionCount: 0,
-                  representationState: "pending",
+                  maximumFidelity: "lcm_leaves",
+                  includeCuratedMemory: false,
                   sourceState: "loading"
                 }
               ]

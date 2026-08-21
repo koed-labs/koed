@@ -50,6 +50,7 @@ mkdirSync(runtimeRoot, { recursive: true });
 deploy("@koed/api", "api");
 deploy("@koed/worker", "worker");
 deploy("@koed/embedding-service", "embedding-service");
+deploy("@koed/privacy-service", "privacy-service");
 deploy("@koed/mcp-server", "mcp-server");
 const nativeRuntimeSource = process.env.KOED_NATIVE_RUNTIME_SOURCE_DIR?.trim();
 if (nativeRuntimeSource) {
@@ -74,6 +75,7 @@ const required = [
   "api/node_modules/@koed/db/drizzle/meta/_journal.json",
   "worker/dist/index.js",
   "embedding-service/dist/index.js",
+  "privacy-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
   "mcp-server/dist/prompts/mcp-server-instructions.md",

@@ -84,7 +84,45 @@ services:
       retries: 20
       start_period: 60s
 
+  privacy-service:
+    build:
+      context: ../..
+      dockerfile: packages/koed-server/Dockerfile
+    command:
+      - sh
+      - -ec
+      - >-
+        node packages/koed-server/dist/cli.js models install --kind privacy --json &&
+        exec node packages/koed-server/dist/privacy-service-bootstrap.js
+        apps/privacy-service/dist/index.js
+        /data/koed/models/privacy/transformers-cache
+    ports:
+      - "127.0.0.1:${PRIVACY_SERVICE_HOST_PORT:-8092}:8092"
+    environment:
+      KOED_HOME: /data/koed
+      KOED_REPO_ROOT: /app
+      KOED_DEPENDENCY_MODE: bundled-local
+      PRIVACY_SERVICE_HOST: 0.0.0.0
+      PRIVACY_SERVICE_PORT: 8092
+      PRIVACY_SERVICE_TOKEN: ${PRIVACY_SERVICE_TOKEN}
+      PRIVACY_RUNTIME_CONTROL_TOKEN: ${PRIVACY_RUNTIME_CONTROL_TOKEN}
+      PRIVACY_RUNTIME_PROVIDER: ${PRIVACY_RUNTIME_PROVIDER:-auto}
+      PRIVACY_GPU_IDLE_UNLOAD_SECONDS: ${PRIVACY_GPU_IDLE_UNLOAD_SECONDS:-300}
+    volumes:
+      - privacy-model-cache:/data/koed
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://127.0.0.1:8092/health'').then(async r=>process.exit(r.ok&&(await r.json()).status===''ok''?0:1)).catch(()=>process.exit(1))"'
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 120s
+
 volumes:
   postgres-data:
   redis-data:
   embedding-model-cache:
+  privacy-model-cache:

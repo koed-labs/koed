@@ -325,8 +325,13 @@ describe("Desktop collaboration local transport", () => {
       requestId,
       command: "collaboration.preview_shared_memory_candidate",
       input: {
-        sessionId: "00000000-0000-4000-8000-000000000008",
-        representation: "memory_events"
+        source: {
+          kind: "captured_session",
+          sessionId: "00000000-0000-4000-8000-000000000008",
+          logicalMemoryId: "00000000-0000-4000-8000-000000000009"
+        },
+        activationRepresentation: "memory_events",
+        mode: "continuous"
       }
     });
 

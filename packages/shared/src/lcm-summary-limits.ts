@@ -1,0 +1,2 @@
+export const LCM_LEXICAL_ANCHOR_MAX_COUNT = 12;
+export const LCM_LEXICAL_ANCHOR_MAX_LENGTH = 120;

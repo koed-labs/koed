@@ -1,11 +1,9 @@
 import type {
   CollaborationRepository,
   SharedMemoryAuthorityContext,
-  SharedMemoryConsentRecord,
   SharedMemoryGrantRecord,
   SharedMemoryPolicyRecord,
   SharedMemoryReadResult,
-  SharedMemoryRedactedSourceItemDto,
   SharedMemoryRepository,
   SharedMemoryRepresentationRecord,
   TeamConversationSourceGrantRecord,
@@ -18,23 +16,20 @@ import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
 import {
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
-  sharedMemoryConsentActionGrantBinding,
+  sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
-  sharedMemoryRepresentationBundleActionGrantBinding,
-  sharedMemoryRepresentationActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
-  sharedMemoryShareActionGrantBinding,
-  sharedMemoryShareBundleActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
+  validateSharedMemoryCanonicalSourceItem,
+  SharedMemoryConflictError,
+  SharedMemorySourceItemRejectedError,
+  type SharedMemoryCanonicalSourceItemDto,
   type SharedMemoryActionGrantBinding
 } from "@koed/shared";
 import {
-  redactEligibleSharedMemorySourceItem,
   SHARED_MEMORY_AUTHORITY,
   SharedMemoryAuthorizationError,
-  SharedMemoryConflictError,
-  SharedMemorySourceItemRejectedError,
   TeamConversationSourceAuthorizationError,
   TeamConversationSourceConflictError
 } from "@koed/db";
@@ -42,31 +37,24 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import type { ApiRouteContext } from "../server/context.js";
-import { createShareBundle } from "./bundles.js";
 import {
-  createShareGrantSchema,
+  changeSharedMemoryFidelityBundleSchema,
   createPendingShareSchema,
   createSharedMemoryCandidatePreviewSchema,
-  createSharedMemoryShareBundleSchema,
-  changeSharedMemoryRepresentationBundleSchema,
   createSharedMemoryPreviewSchema,
-  createSourceOwnerConsentSchema,
   controlPendingShareSchema,
   listOwnedSharesQuerySchema,
   ownedShareParamsSchema,
   personalNoteSourceArtifactUploadSchema,
   renameOwnedShareSchema,
   listWorkspaceSharedMemoryQuerySchema,
-  materializeGrantRepresentationSchema,
   putSharedMemoryPolicySchema,
   putTeamConversationSourceGrantSchema,
   readGrantRepresentationPageQuerySchema,
   readGrantRepresentationQuerySchema,
-  representationParamsSchema,
   revokeShareGrantSchema,
   revokeTeamConversationSourceGrantSchema,
   scopedShareGrantParamsSchema,
-  selectGrantRepresentationSchema,
   shareGrantParamsSchema,
   sharedMemoryItemDetailParamsSchema,
   sourceOwnerPolicyParamsSchema,
@@ -344,80 +332,6 @@ const authenticateReader = async (
   );
 };
 
-const secretOutputKeys = new Set([
-  "actiongrant",
-  "apikey",
-  "authorization",
-  "confirmationchallenge",
-  "cookie",
-  "credential",
-  "devicecredential",
-  "devicesecret",
-  "invitecode",
-  "invitesecret",
-  "invitetoken",
-  "password",
-  "privatekey",
-  "rawdevicesecret",
-  "rawinvitesecret",
-  "refreshtoken",
-  "secret",
-  "session",
-  "token"
-]);
-
-const encryptionEnvelopeKeys = new Set([
-  "ciphertext",
-  "encryptedenvelope",
-  "encryptedpayload",
-  "encryptionenvelope",
-  "keyenvelope",
-  "nonce",
-  "wrappedkey"
-]);
-
-const normalizedOutputKey = (key: string): string =>
-  key.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
-
-const sanitizeStructuredOutput = (
-  value: unknown,
-  state: { depth: number; keys: { count: number } } = {
-    depth: 0,
-    keys: { count: 0 }
-  }
-): unknown => {
-  if (state.depth > 16 || state.keys.count > 2_000) {
-    throw new SharedMemorySourceItemRejectedError("invalid_item_schema");
-  }
-  if (Array.isArray(value)) {
-    state.keys.count += value.length;
-    return value.map((item) =>
-      sanitizeStructuredOutput(item, {
-        depth: state.depth + 1,
-        keys: state.keys
-      })
-    );
-  }
-  if (typeof value !== "object" || value === null) return value;
-  const output: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    state.keys.count += 1;
-    const normalizedKey = normalizedOutputKey(key);
-    if (encryptionEnvelopeKeys.has(normalizedKey)) {
-      throw new SharedMemorySourceItemRejectedError(
-        "unsupported_protocol_item"
-      );
-    }
-    output[key] = secretOutputKeys.has(normalizedKey)
-      ? "[REDACTED]"
-      : sanitizeStructuredOutput(item, {
-          depth: state.depth + 1,
-          keys: state.keys
-        });
-  }
-  return output;
-};
-
 const policyDto = (policy: SharedMemoryPolicyRecord) => ({
   id: policy.id,
   policyId: policy.policyId,
@@ -426,14 +340,25 @@ const policyDto = (policy: SharedMemoryPolicyRecord) => ({
   teamId: policy.teamId,
   teamWorkspaceId: policy.teamWorkspaceId,
   version: policy.version,
-  allowedRepresentations: policy.allowedRepresentations,
+  maximumFidelity: policy.maximumFidelity,
+  includeCuratedMemory: policy.includeCuratedMemory,
   policyHash: policy.policyHash,
   effectiveAt: policy.effectiveAt,
   supersededAt: policy.supersededAt
 });
 
+const requiredSource = (
+  source: SharedMemoryPersistedPreviewRecord["source"]
+) => {
+  if (!source) throw conflict();
+  return source;
+};
+
 const persistedPreviewDto = (preview: SharedMemoryPersistedPreviewRecord) => ({
-  ...(preview.source ? { source: preview.source } : {}),
+  source: requiredSource(preview.source),
+  sourceCapabilities: preview.sourceCapabilities,
+  activationRepresentation: preview.activationRepresentation,
+  mode: preview.mode,
   previewId: preview.previewId,
   previewHash: preview.previewHash,
   previewRevision: preview.previewRevision,
@@ -441,51 +366,29 @@ const persistedPreviewDto = (preview: SharedMemoryPersistedPreviewRecord) => ({
   teamId: preview.teamId,
   teamWorkspaceId: preview.teamWorkspaceId,
   representation: preview.representation,
-  binding: preview.binding,
+  maximumFidelity: preview.maximumFidelity,
+  includeCuratedMemory: preview.includeCuratedMemory,
+  binding: {
+    sourceRevision: preview.binding.sourceRevision,
+    sourceHash: preview.binding.sourceHash,
+    fidelityPolicyRevision: preview.binding.fidelityPolicyRevision,
+    fidelityPolicyHash: preview.binding.fidelityPolicyHash,
+    contentPolicyVersion: preview.binding.contentPolicyVersion,
+    contentPolicyHash: preview.binding.contentPolicyHash,
+    classifierVersion: preview.binding.classifierVersion,
+    classifierHash: preview.binding.classifierHash
+  },
   items: preview.items,
-  redactedContentHash: preview.redactedContentHash,
+  sourceContentHash: preview.sourceContentHash,
   sourceRevision: preview.sourceRevision,
   sourceHash: preview.sourceHash,
   createdAt: preview.createdAt
 });
 
-const consentDto = (consent: SharedMemoryConsentRecord) => ({
-  ...(consent.source ? { source: consent.source } : {}),
-  id: consent.id,
-  logicalMemoryId: consent.logicalMemoryId,
-  teamId: consent.teamId,
-  teamWorkspaceId: consent.teamWorkspaceId,
-  sourceOwnerPolicyId: consent.sourceOwnerPolicyId,
-  sourceOwnerPolicyVersion: consent.sourceOwnerPolicyVersion,
-  teamPolicyId: consent.teamPolicyId,
-  teamPolicyVersion: consent.teamPolicyVersion,
-  workspacePolicyId: consent.workspacePolicyId,
-  workspacePolicyVersion: consent.workspacePolicyVersion,
-  mode: consent.mode,
-  state: consent.state,
-  consentVersion: consent.consentVersion,
-  allowedRepresentations: consent.allowedRepresentations,
-  selectedRepresentation: consent.selectedRepresentation,
-  previewRevision: consent.previewRevision,
-  previewHash: consent.previewHash,
-  sourceRevision: consent.sourceRevision,
-  maximumAuthorizedSourceRevision: consent.maximumAuthorizedSourceRevision,
-  sourceHash: consent.sourceHash,
-  representationPolicyRevision: consent.representationPolicyRevision,
-  representationPolicyHash: consent.representationPolicyHash,
-  contentPolicyVersion: consent.contentPolicyVersion,
-  contentPolicyHash: consent.contentPolicyHash,
-  classifierVersion: consent.classifierVersion,
-  classifierHash: consent.classifierHash,
-  redactedContentHash: consent.redactedContentHash,
-  createdAt: consent.createdAt,
-  updatedAt: consent.updatedAt,
-  activatedAt: consent.activatedAt,
-  revokedAt: consent.revokedAt
-});
-
 const grantDto = (grant: SharedMemoryGrantRecord) => ({
-  ...(grant.source ? { source: grant.source } : {}),
+  source: requiredSource(grant.source),
+  sourceCapabilities: grant.sourceCapabilities,
+  activationRepresentation: grant.activationRepresentation,
   id: grant.id,
   logicalGrantId: grant.logicalGrantId,
   logicalMemoryId: grant.logicalMemoryId,
@@ -499,9 +402,10 @@ const grantDto = (grant: SharedMemoryGrantRecord) => ({
   teamPolicyVersion: grant.teamPolicyVersion,
   workspacePolicyId: grant.workspacePolicyId,
   workspacePolicyVersion: grant.workspacePolicyVersion,
-  ownerAllowedRepresentations: grant.ownerAllowedRepresentations,
-  activeRepresentation: grant.activeRepresentation,
-  representationPolicyRevision: grant.representationPolicyRevision,
+  mode: grant.mode,
+  maximumFidelity: grant.maximumFidelity,
+  includeCuratedMemory: grant.includeCuratedMemory,
+  fidelityPolicyRevision: grant.fidelityPolicyRevision,
   contentPolicyVersion: grant.contentPolicyVersion,
   classifierVersion: grant.classifierVersion,
   sourceRevision: grant.sourceRevision,
@@ -516,8 +420,7 @@ const grantDto = (grant: SharedMemoryGrantRecord) => ({
 
 const pendingShareDto = (pendingShare: PendingShareRecord) => ({
   ...pendingShare,
-  workspaceId: pendingShare.teamWorkspaceId,
-  teamWorkspaceId: undefined
+  source: requiredSource(pendingShare.source)
 });
 
 const transcriptAccessDto = (grant: TeamConversationSourceGrantRecord) => ({
@@ -555,7 +458,7 @@ const representationDto = (
   teamPolicyVersion: representation.teamPolicyVersion,
   workspacePolicyId: representation.workspacePolicyId,
   workspacePolicyVersion: representation.workspacePolicyVersion,
-  representationPolicyRevision: representation.representationPolicyRevision,
+  fidelityPolicyRevision: representation.fidelityPolicyRevision,
   contentPolicyVersion: representation.contentPolicyVersion,
   classifierVersion: representation.classifierVersion,
   recordVersion: representation.recordVersion,
@@ -602,6 +505,8 @@ const workspaceIndexEntryDto = (entry: WorkspaceIndexEntry) => ({
   id: entry.shareGrantId,
   logicalMemoryId: entry.logicalMemoryId,
   ownerUserId: entry.ownerUserId,
+  maximumFidelity: entry.maximumFidelity,
+  includeCuratedMemory: entry.includeCuratedMemory,
   title: entry.title,
   activeRepresentation: entry.activeRepresentation,
   representationState: entry.representationState,
@@ -616,26 +521,20 @@ const workspaceIndexEntryDto = (entry: WorkspaceIndexEntry) => ({
 
 const validatedReadItems = (
   result: SharedMemoryReadResult
-): SharedMemoryRedactedSourceItemDto[] =>
+): SharedMemoryCanonicalSourceItemDto[] =>
   result.items.map((item) => {
-    const validated = redactEligibleSharedMemorySourceItem({
+    const validated = validateSharedMemoryCanonicalSourceItem({
       representation: result.representation.representation,
       logicalMemoryId: result.grant.logicalMemoryId,
       sourceRevision: result.representation.sourceRevision,
       item
     });
-    return {
-      ...validated,
-      content: sanitizeStructuredOutput(validated.content) as Record<
-        string,
-        unknown
-      >
-    };
+    return validated;
   });
 
 const readDto = (
   result: SharedMemoryReadResult,
-  items: SharedMemoryRedactedSourceItemDto[]
+  items: SharedMemoryCanonicalSourceItemDto[]
 ) => ({
   grant: grantDto(result.grant),
   representation: representationDto(result.representation),
@@ -649,7 +548,7 @@ const readScopedGrant = async (
   context: SharedMemoryRouteContext,
   actor: { id: string },
   scope: { teamId: string; teamWorkspaceId: string; shareGrantId: string },
-  representation?:
+  representation:
     | "memory_events"
     | "lcm_leaves"
     | "lcm_rollups"
@@ -674,8 +573,7 @@ const readScopedGrant = async (
     result.grant.teamWorkspaceId !== scope.teamWorkspaceId ||
     result.companionScope.teamId !== scope.teamId ||
     result.companionScope.teamWorkspaceId !== scope.teamWorkspaceId ||
-    (representation !== undefined &&
-      result.representation.representation !== representation)
+    result.representation.representation !== representation
   ) {
     throw forbidden();
   }
@@ -772,7 +670,10 @@ export const registerSharedMemoryRoutes = (
             const admission =
               await repository.createSharedMemoryCandidatePreview(
                 { userId: authenticated.actor.id },
-                { ...input, authority: authenticated.authority }
+                {
+                  ...input,
+                  authority: authenticated.authority
+                }
               );
             if (!admission) return null;
             return {
@@ -802,12 +703,16 @@ export const registerSharedMemoryRoutes = (
       );
       const binding = sharedMemoryPreviewActionGrantBinding({
         referenceId: authenticated.authority.referenceId,
+        source: input.source,
+        sourceCapabilities: input.sourceCapabilities,
         logicalMemoryId: input.logicalMemoryId,
         remoteReplicaId: input.remoteReplicaId,
         teamId: input.teamId,
         teamWorkspaceId: input.teamWorkspaceId,
-        representation: input.representation,
-        allowedRepresentations: input.allowedRepresentations
+        activationRepresentation: input.activationRepresentation,
+        maximumFidelity: input.maximumFidelity,
+        includeCuratedMemory: input.includeCuratedMemory,
+        mode: input.mode
       });
       const result = await executeRepositoryOperation(() =>
         runHighRiskSharedMemoryWrite(
@@ -822,8 +727,11 @@ export const registerSharedMemoryRoutes = (
                 remoteReplicaId: input.remoteReplicaId,
                 teamId: input.teamId,
                 teamWorkspaceId: input.teamWorkspaceId,
-                representation: input.representation,
-                allowedRepresentations: input.allowedRepresentations,
+                sourceCapabilities: input.sourceCapabilities,
+                activationRepresentation: input.activationRepresentation,
+                mode: input.mode,
+                maximumFidelity: input.maximumFidelity,
+                includeCuratedMemory: input.includeCuratedMemory,
                 authority: authenticated.authority
               }
             );
@@ -832,7 +740,9 @@ export const registerSharedMemoryRoutes = (
               preview.remoteReplicaId !== input.remoteReplicaId ||
               preview.teamId !== input.teamId ||
               preview.teamWorkspaceId !== input.teamWorkspaceId ||
-              preview.representation !== input.representation
+              preview.representation !== input.activationRepresentation ||
+              preview.maximumFidelity !== input.maximumFidelity ||
+              preview.includeCuratedMemory !== input.includeCuratedMemory
             ) {
               return null;
             }
@@ -844,75 +754,6 @@ export const registerSharedMemoryRoutes = (
         )
       );
       return result.body;
-    }
-  );
-
-  app.post(
-    "/v1/shared-memory/teams/:teamId/workspaces/:teamWorkspaceId/consents",
-    {
-      preHandler: context.writeRateLimit,
-      bodyLimit: SMALL_BODY_LIMIT_BYTES
-    },
-    async (request, reply) => {
-      rejectApiToken(request);
-      const params = workspacePolicyParamsSchema.parse(request.params);
-      const input = createSourceOwnerConsentSchema.parse(request.body);
-      const authenticated = await authenticateSourceOwnerAuthority(
-        request,
-        context,
-        input.authority
-      );
-      const binding = sharedMemoryConsentActionGrantBinding({
-        referenceId: authenticated.authority.referenceId,
-        source: input.source,
-        consentId: input.consentId,
-        logicalMemoryId: input.logicalMemoryId,
-        teamId: params.teamId,
-        teamWorkspaceId: params.teamWorkspaceId,
-        previewId: input.preview.previewId,
-        mode: input.mode,
-        allowedRepresentations: input.allowedRepresentations,
-        selectedRepresentation: input.selectedRepresentation,
-        previewRevision: input.previewRevision,
-        previewHash: input.preview.previewHash,
-        expiresAt: input.expiresAt
-      });
-      const result = await executeRepositoryOperation(() =>
-        runHighRiskSharedMemoryWrite(
-          context,
-          authenticated,
-          binding,
-          async (repository) => {
-            const consent = await repository.createSourceOwnerConsent(
-              { userId: authenticated.actor.id },
-              {
-                consentId: input.consentId,
-                preview: input.preview,
-                mode: input.mode,
-                allowedRepresentations: input.allowedRepresentations,
-                selectedRepresentation: input.selectedRepresentation,
-                expiresAt: input.expiresAt,
-                authority: authenticated.authority
-              }
-            );
-            if (
-              consent.logicalMemoryId !== input.logicalMemoryId ||
-              consent.teamId !== params.teamId ||
-              consent.teamWorkspaceId !== params.teamWorkspaceId ||
-              consent.previewId !== input.preview.previewId ||
-              consent.previewRevision !== input.previewRevision ||
-              consent.previewHash !== input.preview.previewHash
-            ) {
-              return null;
-            }
-            return {
-              statusCode: 201,
-              body: { consent: consentDto(consent) }
-            };
-          }
-        )
-      );
-      return reply.status(result.statusCode).send(result.body);
     }
   );
 
@@ -930,6 +771,8 @@ export const registerSharedMemoryRoutes = (
       const binding = sharedMemoryPendingShareActionGrantBinding({
         referenceId: authenticated.authority.referenceId,
         source: input.source,
+        sourceCapabilities: input.sourceCapabilities,
+        activationRepresentation: input.activationRepresentation,
         mutationId: input.mutationId,
         logicalGrantId: input.logicalGrantId,
         consentId: input.consentId,
@@ -940,8 +783,8 @@ export const registerSharedMemoryRoutes = (
         previewRevision: input.previewRevision,
         previewHash: input.preview.previewHash,
         mode: input.mode,
-        allowedRepresentations: input.allowedRepresentations,
-        selectedRepresentation: input.selectedRepresentation,
+        maximumFidelity: input.maximumFidelity,
+        includeCuratedMemory: input.includeCuratedMemory,
         expiresAt: input.expiresAt,
         title: input.title
       });
@@ -962,14 +805,16 @@ export const registerSharedMemoryRoutes = (
                     consentId: input.consentId,
                     logicalMemoryId: input.logicalMemoryId,
                     source: input.source,
+                    sourceCapabilities: input.sourceCapabilities,
+                    activationRepresentation: input.activationRepresentation,
                     teamId: input.teamId,
                     teamWorkspaceId: input.teamWorkspaceId,
                     preview: input.preview,
                     previewRevision: input.previewRevision,
                     title: input.title,
                     mode: input.mode,
-                    allowedRepresentations: input.allowedRepresentations,
-                    selectedRepresentation: input.selectedRepresentation,
+                    maximumFidelity: input.maximumFidelity,
+                    includeCuratedMemory: input.includeCuratedMemory,
                     expiresAt: input.expiresAt,
                     authority: authenticated.authority
                   }
@@ -1022,158 +867,23 @@ export const registerSharedMemoryRoutes = (
     }
   );
 
-  app.post(
-    "/v1/shared-memory/share-bundles",
-    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
-    async (request, reply) => {
-      rejectApiToken(request);
-      const input = createSharedMemoryShareBundleSchema.parse(request.body);
-      const authenticated = await authenticateSourceOwnerAuthority(
-        request,
-        context,
-        input.authority
-      );
-      const binding = sharedMemoryShareBundleActionGrantBinding({
-        referenceId: authenticated.authority.referenceId,
-        source: input.source,
-        mutationId: input.mutationId,
-        logicalGrantId: input.logicalGrantId,
-        consentId: input.consentId,
-        logicalMemoryId: input.logicalMemoryId,
-        teamId: input.teamId,
-        teamWorkspaceId: input.teamWorkspaceId,
-        previewId: input.preview.previewId,
-        previewRevision: input.previewRevision,
-        previewHash: input.preview.previewHash,
-        mode: input.mode,
-        allowedRepresentations: input.allowedRepresentations,
-        selectedRepresentation: input.selectedRepresentation,
-        expiresAt: input.expiresAt,
-        title: input.title
-      });
-      const result = await executeRepositoryOperation(() =>
-        runHighRiskSharedMemoryWrite(
-          context,
-          authenticated,
-          binding,
-          async (repository) => {
-            const bundle = await createShareBundle(
-              repository,
-              { userId: authenticated.actor.id },
-              {
-                consent: {
-                  consentId: input.consentId,
-                  preview: input.preview,
-                  mode: input.mode,
-                  allowedRepresentations: input.allowedRepresentations,
-                  selectedRepresentation: input.selectedRepresentation,
-                  expiresAt: input.expiresAt,
-                  authority: authenticated.authority
-                },
-                grant: {
-                  mutationId: input.mutationId,
-                  logicalGrantId: input.logicalGrantId,
-                  consentId: input.consentId,
-                  displayTitle: input.title,
-                  authority: authenticated.authority
-                },
-                expected: {
-                  consentId: input.consentId,
-                  logicalMemoryId: input.logicalMemoryId,
-                  teamId: input.teamId,
-                  teamWorkspaceId: input.teamWorkspaceId,
-                  previewId: input.preview.previewId,
-                  previewRevision: input.previewRevision,
-                  previewHash: input.preview.previewHash
-                }
-              }
-            );
-            if (!bundle) return null;
-            return {
-              statusCode: 201,
-              body: {
-                consent: consentDto(bundle.consent),
-                grant: grantDto(bundle.grant)
-              }
-            };
-          }
-        )
-      );
-      return reply.status(result.statusCode).send(result.body);
-    }
-  );
-
-  app.post(
-    "/v1/shared-memory/share-grants",
-    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
-    async (request, reply) => {
-      rejectApiToken(request);
-      const input = createShareGrantSchema.parse(request.body);
-      const authenticated = await authenticateSourceOwnerAuthority(
-        request,
-        context,
-        input.authority
-      );
-      const binding = sharedMemoryShareActionGrantBinding({
-        referenceId: authenticated.authority.referenceId,
-        source: input.source,
-        mutationId: input.mutationId,
-        logicalGrantId: input.logicalGrantId,
-        logicalMemoryId: input.logicalMemoryId,
-        teamId: input.teamId,
-        teamWorkspaceId: input.teamWorkspaceId,
-        consentId: input.consentId
-      });
-      const result = await executeRepositoryOperation(() =>
-        runHighRiskSharedMemoryWrite(
-          context,
-          authenticated,
-          binding,
-          async (repository) => {
-            const grant = await repository.createShareGrant(
-              { userId: authenticated.actor.id },
-              {
-                mutationId: input.mutationId,
-                logicalGrantId: input.logicalGrantId,
-                consentId: input.consentId,
-                authority: authenticated.authority
-              }
-            );
-            if (
-              grant.logicalMemoryId !== input.logicalMemoryId ||
-              grant.teamId !== input.teamId ||
-              grant.teamWorkspaceId !== input.teamWorkspaceId
-            ) {
-              return null;
-            }
-            return {
-              statusCode: 201,
-              body: { grant: grantDto(grant) }
-            };
-          }
-        )
-      );
-      return reply.status(result.statusCode).send(result.body);
-    }
-  );
-
   app.put(
-    "/v1/shared-memory/share-grants/:shareGrantId/representation-bundle",
+    "/v1/shared-memory/share-grants/:shareGrantId/fidelity-bundle",
     { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
     async (request) => {
       rejectApiToken(request);
       const params = shareGrantParamsSchema.parse(request.params);
-      const input = changeSharedMemoryRepresentationBundleSchema.parse(
-        request.body
-      );
+      const input = changeSharedMemoryFidelityBundleSchema.parse(request.body);
       const authenticated = await authenticateSourceOwnerAuthority(
         request,
         context,
         input.authority
       );
-      const binding = sharedMemoryRepresentationBundleActionGrantBinding({
+      const binding = sharedMemoryFidelityBundleActionGrantBinding({
         referenceId: authenticated.authority.referenceId,
         source: input.source,
+        sourceCapabilities: input.sourceCapabilities,
+        activationRepresentation: input.activationRepresentation,
         mutationId: input.mutationId,
         consentId: input.consentId,
         logicalMemoryId: input.logicalMemoryId,
@@ -1184,8 +894,8 @@ export const registerSharedMemoryRoutes = (
         previewRevision: input.previewRevision,
         previewHash: input.preview.previewHash,
         mode: input.mode,
-        allowedRepresentations: input.allowedRepresentations,
-        representation: input.representation,
+        maximumFidelity: input.maximumFidelity,
+        includeCuratedMemory: input.includeCuratedMemory,
         expectedGrantVersion: input.expectedGrantVersion,
         expiresAt: input.expiresAt
       });
@@ -1195,26 +905,28 @@ export const registerSharedMemoryRoutes = (
           authenticated,
           binding,
           async (repository) => {
-            const pendingShare =
-              await repository.createPendingRepresentationChange(
-                { userId: authenticated.actor.id },
-                {
-                  mutationId: input.mutationId,
-                  consentId: input.consentId,
-                  logicalMemoryId: input.logicalMemoryId,
-                  teamId: input.teamId,
-                  teamWorkspaceId: input.teamWorkspaceId,
-                  shareGrantId: params.shareGrantId,
-                  expectedGrantVersion: input.expectedGrantVersion,
-                  preview: input.preview,
-                  previewRevision: input.previewRevision,
-                  mode: input.mode,
-                  allowedRepresentations: input.allowedRepresentations,
-                  representation: input.representation,
-                  expiresAt: input.expiresAt,
-                  authority: authenticated.authority
-                }
-              );
+            const pendingShare = await repository.createPendingFidelityChange(
+              { userId: authenticated.actor.id },
+              {
+                source: input.source,
+                sourceCapabilities: input.sourceCapabilities,
+                activationRepresentation: input.activationRepresentation,
+                mutationId: input.mutationId,
+                shareGrantId: params.shareGrantId,
+                consentId: input.consentId,
+                logicalMemoryId: input.logicalMemoryId,
+                teamId: input.teamId,
+                teamWorkspaceId: input.teamWorkspaceId,
+                expectedGrantVersion: input.expectedGrantVersion,
+                preview: input.preview,
+                previewRevision: input.previewRevision,
+                maximumFidelity: input.maximumFidelity,
+                includeCuratedMemory: input.includeCuratedMemory,
+                mode: input.mode,
+                expiresAt: input.expiresAt,
+                authority: authenticated.authority
+              }
+            );
             return {
               statusCode: 202,
               body: {
@@ -1225,93 +937,6 @@ export const registerSharedMemoryRoutes = (
         )
       );
       return result.body;
-    }
-  );
-
-  app.put(
-    "/v1/shared-memory/share-grants/:shareGrantId/representation",
-    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
-    async (request) => {
-      rejectApiToken(request);
-      const params = shareGrantParamsSchema.parse(request.params);
-      const input = selectGrantRepresentationSchema.parse(request.body);
-      const authenticated = await authenticateSourceOwnerAuthority(
-        request,
-        context,
-        input.authority
-      );
-      const binding = sharedMemoryRepresentationActionGrantBinding({
-        referenceId: authenticated.authority.referenceId,
-        mutationId: input.mutationId,
-        teamId: input.teamId,
-        teamWorkspaceId: input.teamWorkspaceId,
-        shareGrantId: params.shareGrantId,
-        consentId: input.consentId,
-        representation: input.representation,
-        expectedGrantVersion: input.expectedGrantVersion
-      });
-      const result = await executeRepositoryOperation(() =>
-        runHighRiskSharedMemoryWrite(
-          context,
-          authenticated,
-          binding,
-          async (repository) => {
-            const grant = await repository.selectGrantRepresentation(
-              { userId: authenticated.actor.id },
-              {
-                mutationId: input.mutationId,
-                shareGrantId: params.shareGrantId,
-                consentId: input.consentId,
-                representation: input.representation,
-                expectedGrantVersion: input.expectedGrantVersion,
-                authority: authenticated.authority
-              }
-            );
-            if (
-              grant.teamId !== input.teamId ||
-              grant.teamWorkspaceId !== input.teamWorkspaceId ||
-              grant.activeRepresentation !== input.representation
-            ) {
-              return null;
-            }
-            return { statusCode: 200, body: { grant: grantDto(grant) } };
-          }
-        )
-      );
-      return result.body;
-    }
-  );
-
-  app.put(
-    "/v1/shared-memory/share-grants/:shareGrantId/representations/:representation",
-    {
-      preHandler: context.writeRateLimit,
-      bodyLimit: SMALL_BODY_LIMIT_BYTES
-    },
-    async (request) => {
-      const actor = await authenticateSourceOwner(request, context);
-      const params = representationParamsSchema.parse(request.params);
-      const input = materializeGrantRepresentationSchema.parse(request.body);
-      const representation = await executeRepositoryOperation(() =>
-        context.requireSharedMemoryRepository().materializeGrantRepresentation(
-          { userId: actor.id },
-          {
-            mutationId: input.mutationId,
-            shareGrantId: params.shareGrantId,
-            consentId: input.consentId,
-            expectedGrantVersion: input.expectedGrantVersion,
-            expectedRepresentationVersion: input.expectedRepresentationVersion,
-            preview: input.preview
-          }
-        )
-      );
-      if (
-        representation.shareGrantId !== params.shareGrantId ||
-        representation.representation !== params.representation
-      ) {
-        throw forbidden();
-      }
-      return { representation: representationDto(representation) };
     }
   );
 
@@ -1625,8 +1250,6 @@ export const registerSharedMemoryRoutes = (
         page.entries.some(
           (entry) =>
             entry.lifecycle !== "active" ||
-            (entry.representationState !== "available" &&
-              entry.representationState !== "stale") ||
             entry.companionScope.teamId !== params.teamId ||
             entry.companionScope.teamWorkspaceId !== params.teamWorkspaceId ||
             entry.companionScope.logicalMemoryId !== entry.logicalMemoryId ||

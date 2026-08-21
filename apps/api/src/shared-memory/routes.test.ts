@@ -16,9 +16,13 @@ import type {
 } from "@koed/db";
 import {
   SHARED_MEMORY_AUTHORITY,
-  SharedMemoryAuthorizationError,
-  SharedMemoryConflictError
+  SharedMemoryAuthorizationError
 } from "@koed/db";
+import {
+  sharedMemoryCeilingAuthorizes,
+  sharedMemoryRepresentationsForCeiling,
+  SharedMemoryConflictError
+} from "@koed/shared";
 import Fastify, { type FastifyRequest } from "fastify";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -86,10 +90,23 @@ const createFixture = () => {
     logicalMemoryId: ids.logicalMemory,
     shareGrantId: ids.grant
   };
+  const capturedSource = {
+    kind: "captured_session" as const,
+    sessionId: ids.sourceSession,
+    logicalMemoryId: ids.logicalMemory
+  };
+  const capturedSourceCapabilities = [
+    "lcm_rollups" as const,
+    "lcm_leaves" as const,
+    "memory_events" as const,
+    "curated_assertions" as const
+  ];
 
   let grantVersion = 1;
   let revoked = false;
-  let representationAvailable = true;
+  let maximumFidelity: "memory_events" | "lcm_leaves" | "lcm_rollups" =
+    "memory_events";
+  let includeCuratedMemory = false;
   let repositoryCalls = 0;
   let personalNoteUpload:
     | Parameters<SharedMemoryRepository["persistPersonalNoteSourceArtifact"]>[1]
@@ -108,10 +125,20 @@ const createFixture = () => {
     | { logicalMemoryId: string; limit: number; offset: number }
     | undefined;
   const browserAuthorityReferenceIds: string[] = [];
+  const cumulativeMaterializations: string[][] = [];
+
+  const materializedLayers = (
+    ceiling: "memory_events" | "lcm_leaves" | "lcm_rollups",
+    curated: boolean
+  ) => [
+    ...sharedMemoryRepresentationsForCeiling(ceiling),
+    ...(curated ? (["curated_assertions"] as const) : [])
+  ];
 
   const policyRecord = (
     scope: SharedMemoryPolicyRecord["scope"],
-    allowedRepresentations: SharedMemoryPolicyRecord["allowedRepresentations"]
+    nextMaximumFidelity: SharedMemoryPolicyRecord["maximumFidelity"],
+    nextIncludeCuratedMemory: boolean
   ): SharedMemoryPolicyRecord => ({
     id: randomUUID(),
     policyId: randomUUID(),
@@ -122,13 +149,18 @@ const createFixture = () => {
     teamId: scope === "source_owner" ? null : ids.teamA,
     teamWorkspaceId: scope === "workspace" ? ids.workspaceA : null,
     version: 1,
-    allowedRepresentations,
+    maximumFidelity: nextMaximumFidelity,
+    includeCuratedMemory: nextIncludeCuratedMemory,
     policyHash: hash,
     effectiveAt: iso,
     supersededAt: null
   });
 
   const grantRecord = (): SharedMemoryGrantRecord => ({
+    source: capturedSource,
+    sourceCapabilities: capturedSourceCapabilities,
+    activationRepresentation: "memory_events",
+    mode: "continuous",
     id: ids.grant,
     logicalGrantId: ids.logicalGrant,
     logicalMemoryId: ids.logicalMemory,
@@ -146,9 +178,9 @@ const createFixture = () => {
     teamPolicyVersion: 1,
     workspacePolicyId: randomUUID(),
     workspacePolicyVersion: 1,
-    ownerAllowedRepresentations: ["memory_events", "lcm_leaves"],
-    activeRepresentation: "memory_events",
-    representationPolicyRevision: 1,
+    maximumFidelity,
+    includeCuratedMemory,
+    fidelityPolicyRevision: 1,
     contentPolicyVersion: 1,
     classifierVersion: 1,
     sourceRevision: 1,
@@ -162,16 +194,24 @@ const createFixture = () => {
     companionScope
   });
 
-  const representationRecord = (): SharedMemoryRepresentationRecord => ({
+  const representationRecord = (
+    representation: SharedMemoryRepresentationRecord["representation"] = "memory_events"
+  ): SharedMemoryRepresentationRecord => ({
     id: ids.representation,
     shareGrantId: ids.grant,
     consentId: ids.consent,
     sourcePreviewId: ids.preview,
     sourceArtifactId: randomUUID(),
+    sanitizedSourcePreviewId: randomUUID(),
+    privacyClassifierGenerationId: randomUUID(),
+    privacyClassifierHash: hash,
+    effectivePrivacyPolicyHash: hash,
+    sourceManifestHash: hash,
+    sanitizedContentHash: hash,
     teamId: ids.teamA,
     teamWorkspaceId: ids.workspaceA,
     logicalMemoryId: ids.logicalMemory,
-    representation: "memory_events",
+    representation,
     sourceRevision: 1,
     sourceRevisionHash: hash,
     provenanceHash: hash,
@@ -181,7 +221,7 @@ const createFixture = () => {
     teamPolicyVersion: 1,
     workspacePolicyId: randomUUID(),
     workspacePolicyVersion: 1,
-    representationPolicyRevision: 1,
+    fidelityPolicyRevision: 1,
     contentPolicyVersion: 1,
     classifierVersion: 1,
     recordVersion: 1,
@@ -202,14 +242,22 @@ const createFixture = () => {
       teamId: string;
       teamWorkspaceId: string;
       representation: SharedMemoryPersistedPreviewRecord["representation"];
+      maximumFidelity: SharedMemoryPersistedPreviewRecord["maximumFidelity"];
+      includeCuratedMemory: boolean;
     } = {
       logicalMemoryId: ids.logicalMemory,
       remoteReplicaId: ids.remoteReplica,
       teamId: ids.teamA,
       teamWorkspaceId: ids.workspaceA,
-      representation: "memory_events"
+      representation: "memory_events",
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false
     }
   ): SharedMemoryPersistedPreviewRecord => ({
+    source: capturedSource,
+    sourceCapabilities: capturedSourceCapabilities,
+    activationRepresentation: input.representation,
+    mode: "continuous",
     previewId:
       input.representation === "lcm_leaves" ? ids.lcmPreview : ids.preview,
     previewHash: hash,
@@ -222,6 +270,8 @@ const createFixture = () => {
     teamId: input.teamId,
     teamWorkspaceId: input.teamWorkspaceId,
     representation: input.representation,
+    maximumFidelity: input.maximumFidelity,
+    includeCuratedMemory: input.includeCuratedMemory,
     previewRevision: 1,
     binding: binding(),
     manifest: [
@@ -294,7 +344,7 @@ const createFixture = () => {
                 : { text: "server-loaded source" }
       }
     ],
-    redactedContentHash: hash,
+    sourceContentHash: hash,
     sourceRevision: 1,
     sourceHash: hash,
     syncRelationshipId: randomUUID(),
@@ -302,11 +352,14 @@ const createFixture = () => {
     createdAt: iso
   });
 
-  const readResult = (page?: {
-    direction: "older" | "newer";
-    boundary?: number;
-    limit: number;
-  }): SharedMemoryReadResult => {
+  const readResult = (
+    representation: SharedMemoryRepresentationRecord["representation"],
+    page?: {
+      direction: "older" | "newer";
+      boundary?: number;
+      limit: number;
+    }
+  ): SharedMemoryReadResult => {
     const itemCount = 1;
     const boundary =
       page?.boundary ?? (page?.direction === "newer" ? 0 : itemCount);
@@ -323,23 +376,45 @@ const createFixture = () => {
         : boundary;
     return {
       grant: grantRecord(),
-      representation: representationRecord(),
+      representation: representationRecord(representation),
       items: [
         {
-          itemType: "tool_result" as const,
+          itemType:
+            representation === "lcm_leaves"
+              ? ("lcm_leaf" as const)
+              : representation === "lcm_rollups"
+                ? ("lcm_rollup" as const)
+                : representation === "curated_assertions"
+                  ? ("curated_assertion" as const)
+                  : ("tool_result" as const),
           schemaVersion: 1 as const,
           sourceId: ids.source,
           sourceLogicalMemoryId: ids.logicalMemory,
           sourceRevision: 1,
           occurredAt: iso,
-          content: {
-            toolName: "fixture_tool",
-            toolCallId: "call-shared-route-fixture",
-            payload: {
-              authorization: "raw-device-secret",
-              note: "Bearer secret-value-with-enough-length"
-            }
-          }
+          content:
+            representation === "lcm_leaves" || representation === "lcm_rollups"
+              ? {
+                  title: "Fixture summary",
+                  summaryText: "A complete sanitized summary.",
+                  lexicalAnchors: ["complete summary"],
+                  sourceIds: [ids.source]
+                }
+              : representation === "curated_assertions"
+                ? {
+                    assertionText: "A curated fixture assertion.",
+                    topicTitle: "Fixture",
+                    tags: ["fixture"],
+                    sourceCount: 1
+                  }
+                : {
+                    toolName: "fixture_tool",
+                    toolCallId: "call-shared-route-fixture",
+                    payload: {
+                      authorization: "[SECRET]",
+                      note: "Bearer [SECRET]"
+                    }
+                  }
         }
       ].slice(itemOffset, itemEnd),
       sourcePage: { itemOffset, itemCount },
@@ -349,6 +424,9 @@ const createFixture = () => {
   };
 
   const consentRecord = (): SharedMemoryConsentRecord => ({
+    source: capturedSource,
+    sourceCapabilities: capturedSourceCapabilities,
+    activationRepresentation: "memory_events",
     id: ids.consent,
     previewId: ids.preview,
     logicalMemoryId: ids.logicalMemory,
@@ -365,20 +443,20 @@ const createFixture = () => {
     mode: "snapshot",
     state: "active",
     consentVersion: 1,
-    allowedRepresentations: ["memory_events"],
-    selectedRepresentation: "memory_events",
+    maximumFidelity,
+    includeCuratedMemory,
     previewRevision: 1,
     previewHash: hash,
     sourceRevision: 1,
     maximumAuthorizedSourceRevision: 1,
     sourceHash: hash,
-    representationPolicyRevision: 1,
-    representationPolicyHash: hash,
+    fidelityPolicyRevision: 1,
+    fidelityPolicyHash: hash,
     contentPolicyVersion: 1,
     contentPolicyHash: hash,
     classifierVersion: 1,
     classifierHash: hash,
-    redactedContentHash: hash,
+    sourceContentHash: hash,
     createdAt: iso,
     updatedAt: iso,
     activatedAt: iso,
@@ -389,11 +467,81 @@ const createFixture = () => {
     async createSharedMemoryCandidatePreview() {
       return null;
     },
-    async createPendingShare() {
-      throw new SharedMemoryAuthorizationError();
+    async createPendingShare(actor, input) {
+      if (actor.userId !== ids.alice) {
+        throw new SharedMemoryAuthorizationError();
+      }
+      return {
+        source: input.source,
+        sourceCapabilities: input.sourceCapabilities,
+        activationRepresentation: input.activationRepresentation,
+        id: randomUUID(),
+        mutationId: input.mutationId,
+        logicalGrantId: input.logicalGrantId,
+        consentId: input.consentId,
+        logicalMemoryId: input.logicalMemoryId,
+        teamId: input.teamId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        representation: input.activationRepresentation,
+        maximumFidelity: input.maximumFidelity,
+        includeCuratedMemory: input.includeCuratedMemory,
+        mode: input.mode,
+        sourceRevision: 1,
+        state: "preparing",
+        stage: "accepted",
+        workspaceAccessState: "none",
+        sourceUpdateState: "preparing",
+        operationVersion: 1,
+        attemptCount: 0,
+        redactedFailureCode: null,
+        lastProgressAt: iso,
+        createdAt: iso,
+        updatedAt: iso,
+        activatedAt: null,
+        revokedAt: null,
+        grantId: null
+      };
     },
-    async createPendingRepresentationChange() {
-      throw new SharedMemoryAuthorizationError();
+    async createPendingFidelityChange(actor, input) {
+      if (
+        actor.userId !== ids.alice ||
+        input.shareGrantId !== ids.grant ||
+        input.expectedGrantVersion !== grantVersion
+      ) {
+        throw new SharedMemoryAuthorizationError();
+      }
+      maximumFidelity = input.maximumFidelity;
+      includeCuratedMemory = input.includeCuratedMemory;
+      return {
+        source: input.source,
+        sourceCapabilities: input.sourceCapabilities,
+        activationRepresentation: input.activationRepresentation,
+        id: randomUUID(),
+        mutationId: input.mutationId,
+        logicalGrantId: ids.logicalGrant,
+        consentId: input.consentId,
+        logicalMemoryId: input.logicalMemoryId,
+        teamId: input.teamId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        representation: input.maximumFidelity,
+        maximumFidelity: input.maximumFidelity,
+        includeCuratedMemory: input.includeCuratedMemory,
+        mode: input.mode,
+        sourceRevision: 1,
+        state: "preparing",
+        stage: "accepted",
+        workspaceAccessState: "active",
+        sourceUpdateState: "preparing",
+        operationVersion: 1,
+        attemptCount: 0,
+        redactedFailureCode: null,
+        lastProgressAt: iso,
+        createdAt: iso,
+        updatedAt: iso,
+        activatedAt: null,
+        revokedAt: null,
+        grantId: ids.grant
+      };
     },
     async processPendingShares() {
       return { claimed: 0, activated: 0, waiting: 0, failed: 0 };
@@ -431,11 +579,38 @@ const createFixture = () => {
     async getSharedMemoryPendingShareReview() {
       return null;
     },
-    async getSharedMemoryRepresentationChangeReview() {
+    async getSharedMemoryFidelityChangeReview() {
       return null;
     },
     async getSharedMemoryRevokeReview() {
       return null;
+    },
+    async listPendingSemanticPrivacyTargets() {
+      return [];
+    },
+    async readPendingSemanticPrivacyTarget() {
+      return null;
+    },
+    async storeSanitizedSemanticPreview() {
+      throw new Error("not used by route tests");
+    },
+    async markSemanticPrivacyTargetFailed() {
+      return false;
+    },
+    async deferSemanticPrivacyTarget() {
+      return null;
+    },
+    async getNextSemanticPrivacyRetryAt() {
+      return null;
+    },
+    async invalidateSemanticPreview() {
+      return false;
+    },
+    async invalidateStaleSemanticPreviews() {
+      return { invalidated: 0 };
+    },
+    async reconcileReadySemanticRepresentations() {
+      return { materialized: 0, skipped: 0 };
     },
     async rewrapTeamRepresentationChunkBatch() {
       return {
@@ -461,7 +636,10 @@ const createFixture = () => {
       if (input.authority.source === "browser_session") {
         browserAuthorityReferenceIds.push(input.authority.referenceId);
       }
-      return previewRecord(input);
+      return previewRecord({
+        ...input,
+        representation: input.activationRepresentation
+      });
     },
     async persistPersonalNoteSourceArtifact(actor, input) {
       repositoryCalls += 1;
@@ -489,16 +667,24 @@ const createFixture = () => {
       if (actor.userId !== ids.alice) {
         throw new SharedMemoryAuthorizationError("private owner detail");
       }
-      return policyRecord("source_owner", input.allowedRepresentations);
+      return policyRecord(
+        "source_owner",
+        input.maximumFidelity,
+        input.includeCuratedMemory
+      );
     },
     async putTeamPolicy(actor, input) {
       repositoryCalls += 1;
       if (actor.userId !== ids.alice) {
         throw new SharedMemoryAuthorizationError("private manager detail");
       }
-      representationAvailable =
-        input.allowedRepresentations.includes("memory_events");
-      return policyRecord("team", input.allowedRepresentations);
+      maximumFidelity = input.maximumFidelity;
+      includeCuratedMemory = input.includeCuratedMemory;
+      return policyRecord(
+        "team",
+        input.maximumFidelity,
+        input.includeCuratedMemory
+      );
     },
     async putWorkspacePolicy(actor, input) {
       repositoryCalls += 1;
@@ -509,9 +695,13 @@ const createFixture = () => {
       ) {
         throw new SharedMemoryAuthorizationError("private workspace detail");
       }
-      representationAvailable =
-        input.allowedRepresentations.includes("memory_events");
-      return policyRecord("workspace", input.allowedRepresentations);
+      maximumFidelity = input.maximumFidelity;
+      includeCuratedMemory = input.includeCuratedMemory;
+      return policyRecord(
+        "workspace",
+        input.maximumFidelity,
+        input.includeCuratedMemory
+      );
     },
     async createSourceOwnerConsent(actor, input) {
       repositoryCalls += 1;
@@ -527,6 +717,8 @@ const createFixture = () => {
       if (input.authority.source === "browser_session") {
         browserAuthorityReferenceIds.push(input.authority.referenceId);
       }
+      maximumFidelity = input.maximumFidelity;
+      includeCuratedMemory = input.includeCuratedMemory;
       return consentRecord();
     },
     async createShareGrant(actor, input) {
@@ -537,13 +729,16 @@ const createFixture = () => {
       if (input.authority.source === "browser_session") {
         browserAuthorityReferenceIds.push(input.authority.referenceId);
       }
+      cumulativeMaterializations.push(
+        materializedLayers(maximumFidelity, includeCuratedMemory)
+      );
       return grantRecord();
     },
-    async selectGrantRepresentation(actor, input) {
+    async selectGrantFidelity(actor, input) {
       repositoryCalls += 1;
       if (actor.userId !== ids.alice) {
         throw new SharedMemoryAuthorizationError(
-          "Only the private source owner may select this representation"
+          "Only the private source owner may select this fidelity"
         );
       }
       if (input.expectedGrantVersion !== grantVersion) {
@@ -551,6 +746,11 @@ const createFixture = () => {
           "Private optimistic state and policy detail"
         );
       }
+      maximumFidelity = input.maximumFidelity;
+      includeCuratedMemory = input.includeCuratedMemory;
+      cumulativeMaterializations.push(
+        materializedLayers(maximumFidelity, includeCuratedMemory)
+      );
       grantVersion += 1;
       return grantRecord();
     },
@@ -562,15 +762,12 @@ const createFixture = () => {
       const grant = await repository.createShareGrant(actor, input.grant);
       return { consent, grant };
     },
-    async changeRepresentationBundle(actor, input) {
+    async changeFidelityBundle(actor, input) {
       const consent = await repository.createSourceOwnerConsent(
         actor,
         input.consent
       );
-      const grant = await repository.selectGrantRepresentation(
-        actor,
-        input.representation
-      );
+      const grant = await repository.selectGrantFidelity(actor, input.fidelity);
       return { consent, grant };
     },
     async revokeShareGrant(actor, input) {
@@ -596,11 +793,11 @@ const createFixture = () => {
         throw new SharedMemoryAuthorizationError("private owner detail");
       }
       return {
-        ...representationRecord(),
-        representation:
+        ...representationRecord(
           input.preview.previewId === ids.lcmPreview
             ? "lcm_leaves"
             : "memory_events"
+        )
       };
     },
     async advanceContinuousGrantRepresentations() {
@@ -612,7 +809,13 @@ const createFixture = () => {
     async listPendingSharedMemorySemanticItems() {
       return [];
     },
+    async getNextSharedMemorySemanticEmbeddingRetryAt() {
+      return null;
+    },
     async storeSharedMemorySemanticEmbedding() {
+      return false;
+    },
+    async reusePersonalSharedMemorySemanticEmbedding() {
       return false;
     },
     async markSharedMemorySemanticEmbeddingFailed() {},
@@ -649,7 +852,9 @@ const createFixture = () => {
         title: "Shared Memory",
         logicalMemoryId: ids.logicalMemory,
         ownerUserId: ids.alice,
-        activeRepresentation: "memory_events" as const,
+        maximumFidelity,
+        includeCuratedMemory,
+        activeRepresentation: maximumFidelity,
         representationState: "available" as const,
         representationSourceRevision: 1,
         representationUpdatedAt: iso,
@@ -663,7 +868,7 @@ const createFixture = () => {
         creatorAuthority: `browser_session:${ids.sessionAuthority}`,
         ciphertext: "encrypted-content-must-not-leak"
       };
-      const all = revoked || !representationAvailable ? [] : [entry];
+      const all = revoked ? [] : [entry];
       return {
         entries: all.slice(input.offset, input.offset + input.limit),
         limit: input.limit,
@@ -693,13 +898,17 @@ const createFixture = () => {
         (actor.userId !== ids.alice && actor.userId !== ids.bob) ||
         input.shareGrantId !== ids.grant ||
         revoked ||
-        !representationAvailable
+        !sharedMemoryCeilingAuthorizes(
+          maximumFidelity,
+          input.representation,
+          includeCuratedMemory
+        )
       ) {
         throw new SharedMemoryAuthorizationError(
           "Private Team, Workspace, and lifecycle detail"
         );
       }
-      return readResult(input.page);
+      return readResult(input.representation, input.page);
     }
   };
 
@@ -798,6 +1007,12 @@ const createFixture = () => {
     },
     restoreRepresentation() {
       representationAvailable = true;
+    },
+    get cumulativeMaterializations() {
+      return cumulativeMaterializations;
+    },
+    restoreMaximumFidelity() {
+      maximumFidelity = "memory_events";
     }
   };
 };
@@ -1013,6 +1228,30 @@ const authority = () => ({
   source: "browser_session" as const
 });
 
+const capturedIntent = (
+  fixture: ReturnType<typeof createFixture>,
+  activationRepresentation:
+    | "memory_events"
+    | "lcm_leaves"
+    | "lcm_rollups"
+    | "curated_assertions" = "memory_events",
+  mode: "snapshot" | "continuous" = "continuous"
+) => ({
+  source: {
+    kind: "captured_session" as const,
+    sessionId: fixture.ids.sourceSession,
+    logicalMemoryId: fixture.ids.logicalMemory
+  },
+  sourceCapabilities: [
+    "lcm_rollups" as const,
+    "lcm_leaves" as const,
+    "memory_events" as const,
+    "curated_assertions" as const
+  ],
+  activationRepresentation,
+  mode
+});
+
 const sourceItem = (ids: ReturnType<typeof createFixture>["ids"]) => ({
   itemType: "user_message" as const,
   schemaVersion: 1 as const,
@@ -1026,21 +1265,27 @@ const sourceItem = (ids: ReturnType<typeof createFixture>["ids"]) => ({
 const binding = () => ({
   sourceRevision: 1,
   sourceHash: hash,
-  representationPolicyRevision: 1,
-  representationPolicyHash: hash,
+  fidelityPolicyRevision: 1,
+  fidelityPolicyHash: hash,
   contentPolicyVersion: 1,
   contentPolicyHash: hash,
   classifierVersion: 1,
   classifierHash: hash
 });
 
-const selectionBody = (fixture: ReturnType<typeof createFixture>) => ({
+const fidelityBody = (fixture: ReturnType<typeof createFixture>) => ({
+  ...capturedIntent(fixture, "memory_events", "continuous"),
   mutationId: randomUUID(),
+  logicalMemoryId: fixture.ids.logicalMemory,
   teamId: fixture.ids.teamA,
   teamWorkspaceId: fixture.ids.workspaceA,
   consentId: fixture.ids.consent,
-  representation: "memory_events" as const,
+  maximumFidelity: "memory_events" as const,
+  includeCuratedMemory: false,
   expectedGrantVersion: 1,
+  preview: { previewId: fixture.ids.preview, previewHash: hash },
+  previewRevision: 1,
+  expiresAt: null,
   authority: authority()
 });
 
@@ -1158,8 +1403,11 @@ describe("Shared Memory HTTP routes", () => {
     };
     const candidate = {
       source,
+      sourceCapabilities: ["memory_events" as const],
+      activationRepresentation: "memory_events" as const,
+      mode: "snapshot" as const,
+      expiresAt: null,
       logicalMemoryId,
-      representation: "memory_events" as const,
       sourceRevision: 1,
       candidateHash: "c".repeat(64),
       itemCount: 1,
@@ -1251,27 +1499,28 @@ describe("Shared Memory HTTP routes", () => {
 
     const selection = await app.inject({
       method: "PUT",
-      url: `/v1/shared-memory/share-grants/${fixture.ids.grant}/representation`,
+      url: `/v1/shared-memory/share-grants/${fixture.ids.grant}/fidelity-bundle`,
       headers: bearer,
-      payload: selectionBody(fixture)
+      payload: fidelityBody(fixture)
     });
     const preview = await app.inject({
       method: "POST",
       url: "/v1/shared-memory/previews",
       headers: bearer,
       payload: {
+        ...capturedIntent(fixture),
         logicalMemoryId: fixture.ids.logicalMemory,
         remoteReplicaId: fixture.ids.remoteReplica,
         teamId: fixture.ids.teamA,
         teamWorkspaceId: fixture.ids.workspaceA,
-        representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         authority: authority()
       }
     });
     const read = await app.inject({
       method: "GET",
-      url: scopedGrantUrl(fixture),
+      url: `${scopedGrantUrl(fixture)}?representation=memory_events`,
       headers: bearer
     });
     const index = await app.inject({
@@ -1350,12 +1599,13 @@ describe("Shared Memory HTTP routes", () => {
       url: "/v1/shared-memory/previews",
       headers: sessionHeaders(fixture.ids.alice),
       payload: {
+        ...capturedIntent(fixture),
         logicalMemoryId: fixture.ids.logicalMemory,
         remoteReplicaId: fixture.ids.remoteReplica,
         teamId: fixture.ids.teamA,
         teamWorkspaceId: fixture.ids.workspaceA,
-        representation: "memory_events",
-        allowedRepresentations: ["memory_events"],
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         authority: authority()
       }
     });
@@ -1370,7 +1620,7 @@ describe("Shared Memory HTTP routes", () => {
       teamId: fixture.ids.teamA,
       teamWorkspaceId: fixture.ids.workspaceA,
       representation: "memory_events",
-      redactedContentHash: hash,
+      sourceContentHash: hash,
       sourceRevision: 1,
       sourceHash: hash
     });
@@ -1385,7 +1635,62 @@ describe("Shared Memory HTTP routes", () => {
     await app.close();
   });
 
-  it("activates referenced consent and creates a Share Grant with explicit authority", async () => {
+  it("authorizes hierarchical previews cumulatively and Curated Memory separately", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const headers = sessionHeaders(fixture.ids.alice);
+    const base = {
+      ...capturedIntent(fixture),
+      logicalMemoryId: fixture.ids.logicalMemory,
+      remoteReplicaId: fixture.ids.remoteReplica,
+      teamId: fixture.ids.teamA,
+      teamWorkspaceId: fixture.ids.workspaceA,
+      authority: authority()
+    };
+    const cumulative = await app.inject({
+      method: "POST",
+      url: "/v1/shared-memory/previews",
+      headers,
+      payload: {
+        ...base,
+        activationRepresentation: "lcm_rollups",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false
+      }
+    });
+    const curatedDenied = await app.inject({
+      method: "POST",
+      url: "/v1/shared-memory/previews",
+      headers,
+      payload: {
+        ...base,
+        activationRepresentation: "curated_assertions",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false
+      }
+    });
+    const curatedAllowed = await app.inject({
+      method: "POST",
+      url: "/v1/shared-memory/previews",
+      headers,
+      payload: {
+        ...base,
+        activationRepresentation: "curated_assertions",
+        maximumFidelity: "lcm_rollups",
+        includeCuratedMemory: true
+      }
+    });
+
+    expect([
+      cumulative.statusCode,
+      curatedDenied.statusCode,
+      curatedAllowed.statusCode
+    ]).toEqual([200, 400, 200]);
+    expect(fixture.repositoryCalls).toBe(2);
+    await app.close();
+  });
+
+  it("removes standalone consent and direct Share Grant activation endpoints", async () => {
     const fixture = createFixture();
     const app = await buildTestServer(fixture);
     const preview = { previewId: fixture.ids.preview, previewHash: hash };
@@ -1395,13 +1700,14 @@ describe("Shared Memory HTTP routes", () => {
       url: `/v1/shared-memory/teams/${fixture.ids.teamA}/workspaces/${fixture.ids.workspaceA}/consents`,
       headers: sessionHeaders(fixture.ids.alice),
       payload: {
+        ...capturedIntent(fixture, "memory_events", "snapshot"),
         consentId: fixture.ids.consent,
         logicalMemoryId: fixture.ids.logicalMemory,
         preview,
         previewRevision: 1,
         mode: "snapshot",
-        allowedRepresentations: ["memory_events"],
-        selectedRepresentation: "memory_events",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         authority: authority()
       }
     });
@@ -1413,12 +1719,15 @@ describe("Shared Memory HTTP routes", () => {
         "x-koed-action-grant": "hrg_test_shared_memory_secret"
       },
       payload: {
+        ...capturedIntent(fixture, "memory_events", "continuous"),
         mutationId: randomUUID(),
         logicalGrantId: fixture.ids.logicalGrant,
         logicalMemoryId: fixture.ids.logicalMemory,
         teamId: fixture.ids.teamA,
         teamWorkspaceId: fixture.ids.workspaceA,
         consentId: fixture.ids.consent,
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         authority: {
           action: SHARED_MEMORY_AUTHORITY,
           source: "device_action_grant",
@@ -1431,6 +1740,7 @@ describe("Shared Memory HTTP routes", () => {
       url: "/v1/shared-memory/share-grants",
       headers: sessionHeaders(fixture.ids.alice),
       payload: {
+        ...capturedIntent(fixture, "memory_events", "snapshot"),
         mutationId: randomUUID(),
         logicalGrantId: randomUUID(),
         logicalMemoryId: fixture.ids.logicalMemory,
@@ -1448,15 +1758,76 @@ describe("Shared Memory HTTP routes", () => {
       consent.statusCode,
       grant.statusCode,
       browserReferenceId.statusCode
-    ]).toEqual([201, 201, 400]);
-    expect(fixture.browserAuthorityReferenceIds).toEqual([
-      fixture.ids.sessionAuthority
-    ]);
+    ]).toEqual([404, 404, 404]);
+    expect(fixture.browserAuthorityReferenceIds).toEqual([]);
     expect(consent.body).not.toContain("remoteReplicaId");
     expect(consent.body).not.toContain("previewId");
     expect(consent.body).not.toContain(fixture.ids.remoteReplica);
     expect(grant.body).not.toContain("creatorAuthority");
-    expect(grant.body).toContain("companionScope");
+    await app.close();
+  });
+
+  it("creates a share and queues a cumulative fidelity change", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const headers = sessionHeaders(fixture.ids.alice);
+    const preview = { previewId: fixture.ids.preview, previewHash: hash };
+    const share = await app.inject({
+      method: "POST",
+      url: "/v1/shared-memory/pending-shares",
+      headers,
+      payload: {
+        ...capturedIntent(fixture, "memory_events", "snapshot"),
+        mutationId: randomUUID(),
+        logicalGrantId: fixture.ids.logicalGrant,
+        consentId: fixture.ids.consent,
+        logicalMemoryId: fixture.ids.logicalMemory,
+        teamId: fixture.ids.teamA,
+        teamWorkspaceId: fixture.ids.workspaceA,
+        preview,
+        previewRevision: 1,
+        mode: "snapshot",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: true,
+        authority: authority()
+      }
+    });
+    const change = await app.inject({
+      method: "PUT",
+      url: `/v1/shared-memory/share-grants/${fixture.ids.grant}/fidelity-bundle`,
+      headers,
+      payload: {
+        ...capturedIntent(fixture, "lcm_leaves", "continuous"),
+        mutationId: randomUUID(),
+        consentId: fixture.ids.consent,
+        logicalMemoryId: fixture.ids.logicalMemory,
+        teamId: fixture.ids.teamA,
+        teamWorkspaceId: fixture.ids.workspaceA,
+        preview,
+        previewRevision: 1,
+        mode: "continuous",
+        maximumFidelity: "lcm_leaves",
+        includeCuratedMemory: false,
+        expectedGrantVersion: 1,
+        authority: authority()
+      }
+    });
+    expect([share.statusCode, change.statusCode]).toEqual([202, 200]);
+    expect(fixture.cumulativeMaterializations).toEqual([]);
+    expect(change.json()).toMatchObject({
+      pendingShare: {
+        activationRepresentation: "lcm_leaves",
+        maximumFidelity: "lcm_leaves",
+        includeCuratedMemory: false,
+        state: "preparing",
+        stage: "accepted"
+      }
+    });
+    for (const response of [share, change]) {
+      expect(response.body).not.toContain("allowedRepresentations");
+      expect(response.body).not.toContain("selectedRepresentation");
+      expect(response.body).not.toContain("activeRepresentation");
+    }
     await app.close();
   });
 
@@ -1465,12 +1836,13 @@ describe("Shared Memory HTTP routes", () => {
     const app = await buildTestServer(fixture);
     const headers = sessionHeaders(fixture.ids.alice);
     const base = {
+      ...capturedIntent(fixture),
       logicalMemoryId: fixture.ids.logicalMemory,
       remoteReplicaId: fixture.ids.remoteReplica,
       teamId: fixture.ids.teamA,
       teamWorkspaceId: fixture.ids.workspaceA,
-      representation: "memory_events",
-      allowedRepresentations: ["memory_events"],
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
       authority: authority()
     };
     const inlineItems = await app.inject({
@@ -1516,6 +1888,7 @@ describe("Shared Memory HTTP routes", () => {
       url: `/v1/shared-memory/teams/${fixture.ids.teamA}/workspaces/${fixture.ids.workspaceA}/consents`,
       headers,
       payload: {
+        ...capturedIntent(fixture, "memory_events", "snapshot"),
         consentId: fixture.ids.consent,
         logicalMemoryId: fixture.ids.logicalMemory,
         preview: {
@@ -1526,8 +1899,8 @@ describe("Shared Memory HTTP routes", () => {
         },
         previewRevision: 1,
         mode: "snapshot",
-        allowedRepresentations: ["memory_events"],
-        selectedRepresentation: "memory_events",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         authority: authority()
       }
     });
@@ -1555,7 +1928,7 @@ describe("Shared Memory HTTP routes", () => {
         preview: { previewId: fixture.ids.preview, previewHash: "not-a-hash" }
       }
     });
-    const representationCeiling = await app.inject({
+    const legacyPolicyAliases = await app.inject({
       method: "PUT",
       url: `/v1/shared-memory/source-owner-policies/${fixture.ids.logicalMemory}`,
       headers,
@@ -1575,27 +1948,27 @@ describe("Shared Memory HTTP routes", () => {
       consentInlinePreview.statusCode,
       materializeInlineItems.statusCode,
       malformedReference.statusCode,
-      representationCeiling.statusCode
-    ]).toEqual([400, 400, 400, 400]);
+      legacyPolicyAliases.statusCode
+    ]).toEqual([404, 404, 404, 400]);
     await app.close();
   });
 
-  it("maps owner authorization and optimistic conflicts without repository detail", async () => {
+  it("maps owner authorization and stale replacement authority without repository detail", async () => {
     const fixture = createFixture();
     const app = await buildTestServer(fixture);
-    const url = `/v1/shared-memory/share-grants/${fixture.ids.grant}/representation`;
+    const url = `/v1/shared-memory/share-grants/${fixture.ids.grant}/fidelity-bundle`;
 
     const denied = await app.inject({
       method: "PUT",
       url,
       headers: sessionHeaders(fixture.ids.bob),
-      payload: selectionBody(fixture)
+      payload: fidelityBody(fixture)
     });
     const conflicted = await app.inject({
       method: "PUT",
       url,
       headers: sessionHeaders(fixture.ids.alice),
-      payload: { ...selectionBody(fixture), expectedGrantVersion: 999 }
+      payload: { ...fidelityBody(fixture), expectedGrantVersion: 999 }
     });
 
     expect(denied.statusCode).toBe(403);
@@ -1603,9 +1976,9 @@ describe("Shared Memory HTTP routes", () => {
       "Shared Memory operation is not authorized"
     );
     expect(denied.body).not.toContain("private source owner");
-    expect(conflicted.statusCode).toBe(409);
+    expect(conflicted.statusCode).toBe(403);
     expect(jsonBody<{ error: string }>(conflicted).error).toBe(
-      "Shared Memory state conflict"
+      "Shared Memory operation is not authorized"
     );
     expect(conflicted.body).not.toContain("policy detail");
     await app.close();
@@ -1614,7 +1987,7 @@ describe("Shared Memory HTTP routes", () => {
   it("requires exact device scopes while repository reads re-evaluate access", async () => {
     const fixture = createFixture();
     const app = await buildTestServer(fixture);
-    const url = scopedGrantUrl(fixture);
+    const url = `${scopedGrantUrl(fixture)}?representation=memory_events`;
 
     const allowed = await app.inject({
       method: "GET",
@@ -1632,12 +2005,40 @@ describe("Shared Memory HTTP routes", () => {
     await app.close();
   });
 
+  it("requires and preserves the concrete layer requested for a read", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const headers = sessionHeaders(fixture.ids.bob);
+    const baseUrl = scopedGrantUrl(fixture);
+    const omitted = await app.inject({ method: "GET", url: baseUrl, headers });
+    const rollups = await app.inject({
+      method: "GET",
+      url: `${baseUrl}?representation=lcm_rollups`,
+      headers
+    });
+    const curated = await app.inject({
+      method: "GET",
+      url: `${baseUrl}?representation=curated_assertions`,
+      headers
+    });
+
+    expect(omitted.statusCode).toBe(400);
+    expect(rollups.statusCode).toBe(200);
+    expect(
+      jsonBody<{
+        sharedMemory: { representation: { representation: string } };
+      }>(rollups).sharedMemory.representation.representation
+    ).toBe("lcm_rollups");
+    expect(curated.statusCode).toBe(403);
+    await app.close();
+  });
+
   it("returns the initial Shared Memory source and companion discussion under one authorization boundary", async () => {
     const fixture = createFixture();
     const app = await buildTestServer(fixture);
     const response = await app.inject({
       method: "GET",
-      url: `${scopedGrantUrl(fixture)}/initial-view`,
+      url: `${scopedGrantUrl(fixture)}/initial-view?representation=memory_events`,
       headers: { authorization: "Koed-Device reader:secret" }
     });
 
@@ -1673,12 +2074,12 @@ describe("Shared Memory HTTP routes", () => {
     const app = await buildTestServer(fixture);
     const page = await app.inject({
       method: "GET",
-      url: `${scopedGrantUrl(fixture)}/page?direction=older&limit=1`,
+      url: `${scopedGrantUrl(fixture)}/page?representation=memory_events&direction=older&limit=1`,
       headers: { authorization: "Koed-Device reader:secret" }
     });
     const outOfRange = await app.inject({
       method: "GET",
-      url: `${scopedGrantUrl(fixture)}/page?direction=older&boundary=2&limit=1`,
+      url: `${scopedGrantUrl(fixture)}/page?representation=memory_events&direction=older&boundary=2&limit=1`,
       headers: { authorization: "Koed-Device reader:secret" }
     });
 
@@ -1693,7 +2094,7 @@ describe("Shared Memory HTTP routes", () => {
     await app.close();
   });
 
-  it("denies wrong preview references and consent path bindings", async () => {
+  it("keeps removed consent and materialization endpoints unavailable", async () => {
     const fixture = createFixture();
     const app = await buildTestServer(fixture);
     const headers = sessionHeaders(fixture.ids.alice);
@@ -1703,13 +2104,14 @@ describe("Shared Memory HTTP routes", () => {
       url: `/v1/shared-memory/teams/${fixture.ids.teamA}/workspaces/${fixture.ids.workspaceA}/consents`,
       headers,
       payload: {
+        ...capturedIntent(fixture, "memory_events", "snapshot"),
         consentId: fixture.ids.consent,
         logicalMemoryId: fixture.ids.logicalMemory,
         preview: { previewId: randomUUID(), previewHash: "b".repeat(64) },
         previewRevision: 1,
         mode: "snapshot",
-        allowedRepresentations: ["memory_events"],
-        selectedRepresentation: "memory_events",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         authority: authority()
       }
     });
@@ -1718,13 +2120,14 @@ describe("Shared Memory HTTP routes", () => {
       url: `/v1/shared-memory/teams/${fixture.ids.teamB}/workspaces/${fixture.ids.workspaceA}/consents`,
       headers,
       payload: {
+        ...capturedIntent(fixture, "memory_events", "snapshot"),
         consentId: fixture.ids.consent,
         logicalMemoryId: fixture.ids.logicalMemory,
         preview: { previewId: fixture.ids.preview, previewHash: hash },
         previewRevision: 1,
         mode: "snapshot",
-        allowedRepresentations: ["memory_events"],
-        selectedRepresentation: "memory_events",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
         authority: authority()
       }
     });
@@ -1756,16 +2159,15 @@ describe("Shared Memory HTTP routes", () => {
       wrongPath.statusCode,
       wrongMaterializationPreview.statusCode,
       wrongRepresentationBinding.statusCode
-    ]).toEqual([403, 403, 403, 403]);
+    ]).toEqual([404, 404, 404, 404]);
+    for (const response of [wrongPreview, wrongPath]) {
+      expect(jsonBody<{ error: string }>(response).error).toBe("Not Found");
+    }
     for (const response of [
-      wrongPreview,
-      wrongPath,
       wrongMaterializationPreview,
       wrongRepresentationBinding
     ]) {
-      expect(jsonBody<{ error: string }>(response).error).toBe(
-        "Shared Memory operation is not authorized"
-      );
+      expect(jsonBody<{ error: string }>(response).error).toBe("Not Found");
     }
     await app.close();
   });
@@ -1774,14 +2176,14 @@ describe("Shared Memory HTTP routes", () => {
     const fixture = createFixture();
     const app = await buildTestServer(fixture);
     const headers = sessionHeaders(fixture.ids.bob);
-    const wrongTeam = scopedGrantUrl(fixture).replace(
+    const wrongTeam = `${scopedGrantUrl(fixture).replace(
       fixture.ids.teamA,
       fixture.ids.teamB
-    );
-    const wrongWorkspace = scopedGrantUrl(fixture).replace(
+    )}?representation=memory_events`;
+    const wrongWorkspace = `${scopedGrantUrl(fixture).replace(
       fixture.ids.workspaceA,
       fixture.ids.workspaceB
-    );
+    )}?representation=memory_events`;
     const wrongTeamIndex = workspaceGrantIndexUrl(fixture).replace(
       fixture.ids.teamA,
       fixture.ids.teamB
@@ -1845,6 +2247,8 @@ describe("Shared Memory HTTP routes", () => {
       title: "Shared Memory",
       logicalMemoryId: fixture.ids.logicalMemory,
       ownerUserId: fixture.ids.alice,
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
       activeRepresentation: "memory_events",
       representationState: "available",
       representationSourceRevision: 1,
@@ -1908,21 +2312,25 @@ describe("Shared Memory HTTP routes", () => {
     await app.close();
   });
 
-  it("returns redacted read, index, and detail DTOs with companion scope", async () => {
+  it("returns the repository-authorized sanitized read without exposing source bindings", async () => {
     const fixture = createFixture();
     const app = await buildTestServer(fixture);
     const headers = sessionHeaders(fixture.ids.bob);
     const url = scopedGrantUrl(fixture);
 
-    const read = await app.inject({ method: "GET", url, headers });
+    const read = await app.inject({
+      method: "GET",
+      url: `${url}?representation=memory_events`,
+      headers
+    });
     const index = await app.inject({
       method: "GET",
-      url: `${url}/items`,
+      url: `${url}/items?representation=memory_events`,
       headers
     });
     const detail = await app.inject({
       method: "GET",
-      url: `${url}/items/${fixture.ids.source}`,
+      url: `${url}/items/${fixture.ids.source}?representation=memory_events`,
       headers
     });
 
@@ -1938,23 +2346,30 @@ describe("Shared Memory HTTP routes", () => {
       expect(response.body).not.toContain("creatorAuthority");
       expect(response.body).not.toContain(fixture.ids.remoteReplica);
     }
+    expect(read.body).toContain("[SECRET]");
     expect(
       jsonBody<{ items: Array<{ content?: unknown }> }>(index).items[0]
     ).not.toHaveProperty("content");
     await app.close();
   });
 
-  it("makes downgraded and revoked representations unavailable to future reads", async () => {
+  it("keeps cumulative lower-fidelity layers readable without substituting unavailable layers", async () => {
     const fixture = createFixture();
     const app = await buildTestServer(fixture);
     const readHeaders = sessionHeaders(fixture.ids.bob);
     const ownerHeaders = sessionHeaders(fixture.ids.alice);
-    const url = scopedGrantUrl(fixture);
+    const eventUrl = `${scopedGrantUrl(fixture)}?representation=memory_events`;
+    const leafUrl = `${scopedGrantUrl(fixture)}?representation=lcm_leaves`;
     const indexUrl = workspaceGrantIndexUrl(fixture);
 
     expect(
-      (await app.inject({ method: "GET", url, headers: readHeaders }))
-        .statusCode
+      (
+        await app.inject({
+          method: "GET",
+          url: eventUrl,
+          headers: readHeaders
+        })
+      ).statusCode
     ).toBe(200);
     expect(
       jsonBody<{ shareGrants: unknown[] }>(
@@ -1968,21 +2383,31 @@ describe("Shared Memory HTTP routes", () => {
       payload: {
         mutationId: randomUUID(),
         expectedCurrentVersion: 1,
-        allowedRepresentations: ["lcm_leaves"]
+        maximumFidelity: "lcm_leaves",
+        includeCuratedMemory: false
       }
     });
     expect(downgrade.statusCode).toBe(200);
     expect(
-      (await app.inject({ method: "GET", url, headers: readHeaders }))
-        .statusCode
+      (
+        await app.inject({
+          method: "GET",
+          url: eventUrl,
+          headers: readHeaders
+        })
+      ).statusCode
     ).toBe(403);
+    expect(
+      (await app.inject({ method: "GET", url: leafUrl, headers: readHeaders }))
+        .statusCode
+    ).toBe(200);
     expect(
       jsonBody<{ shareGrants: unknown[] }>(
         await app.inject({ method: "GET", url: indexUrl, headers: readHeaders })
       ).shareGrants
-    ).toEqual([]);
+    ).toHaveLength(1);
 
-    fixture.restoreRepresentation();
+    fixture.restoreMaximumFidelity();
     const revoke = await app.inject({
       method: "POST",
       url: `/v1/shared-memory/share-grants/${fixture.ids.grant}/revoke`,
@@ -1998,7 +2423,7 @@ describe("Shared Memory HTTP routes", () => {
     });
     expect(revoke.statusCode).toBe(200);
     expect(
-      (await app.inject({ method: "GET", url, headers: readHeaders }))
+      (await app.inject({ method: "GET", url: leafUrl, headers: readHeaders }))
         .statusCode
     ).toBe(403);
     const revokedIndex = await app.inject({
@@ -2013,7 +2438,7 @@ describe("Shared Memory HTTP routes", () => {
     await app.close();
   });
 
-  it("materializes an LCM representation from a persisted preview reference", async () => {
+  it("does not expose direct representation materialization", async () => {
     const fixture = createFixture();
     const app = await buildTestServer(fixture);
     const response = await app.inject({
@@ -2028,8 +2453,28 @@ describe("Shared Memory HTTP routes", () => {
       }
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(fixture.repositoryCalls).toBe(1);
+    expect(response.statusCode).toBe(404);
+    expect(fixture.repositoryCalls).toBe(0);
+    await app.close();
+  });
+
+  it("does not expose direct materialization while privacy work is pending", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const response = await app.inject({
+      method: "PUT",
+      url: `/v1/shared-memory/share-grants/${fixture.ids.grant}/representations/memory_events`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: {
+        mutationId: randomUUID(),
+        consentId: fixture.ids.consent,
+        expectedGrantVersion: 1,
+        preview: { previewId: fixture.ids.preview, previewHash: hash }
+      }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(fixture.repositoryCalls).toBe(0);
     await app.close();
   });
 });

@@ -3,11 +3,101 @@ import { describe, expect, it } from "vitest";
 
 import {
   sharedMemoryCandidatePreviewActionGrantBinding,
-  sharedMemoryConsentActionGrantBinding,
+  sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
+  sharedMemoryPreviewActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding
 } from "./shared-memory-action-grant.js";
+
+describe("Shared Memory fidelity action grant bindings", () => {
+  const base = () => ({
+    referenceId: randomUUID(),
+    mutationId: randomUUID(),
+    consentId: randomUUID(),
+    logicalGrantId: randomUUID(),
+    logicalMemoryId: randomUUID(),
+    remoteReplicaId: randomUUID(),
+    teamId: randomUUID(),
+    teamWorkspaceId: randomUUID(),
+    shareGrantId: randomUUID(),
+    previewId: randomUUID(),
+    previewRevision: 2,
+    previewHash: "a".repeat(64),
+    source: {
+      kind: "captured_session" as const,
+      sessionId: randomUUID(),
+      logicalMemoryId: randomUUID()
+    },
+    sourceCapabilities: [
+      "memory_events" as const,
+      "lcm_leaves" as const,
+      "lcm_rollups" as const,
+      "curated_assertions" as const
+    ],
+    activationRepresentation: "lcm_rollups" as const,
+    mode: "continuous" as const,
+    maximumFidelity: "lcm_leaves" as const,
+    includeCuratedMemory: false,
+    expectedGrantVersion: 3
+  });
+
+  it("binds preview consent to the ceiling and independent Curated Memory choice", () => {
+    const input = base();
+    const baseline = sharedMemoryPreviewActionGrantBinding({
+      ...input
+    });
+
+    expect(baseline.body).toMatchObject({
+      source: input.source,
+      sourceCapabilities: input.sourceCapabilities,
+      activationRepresentation: "lcm_rollups",
+      maximumFidelity: "lcm_leaves",
+      includeCuratedMemory: false
+    });
+    expect(
+      sharedMemoryPreviewActionGrantBinding({
+        ...input,
+        maximumFidelity: "memory_events"
+      }).requestHash
+    ).not.toBe(baseline.requestHash);
+    expect(
+      sharedMemoryPreviewActionGrantBinding({
+        ...input,
+        includeCuratedMemory: true
+      }).requestHash
+    ).not.toBe(baseline.requestHash);
+  });
+
+  it("uses maximum fidelity fields throughout Pending Shares", () => {
+    const input = base();
+    const binding = sharedMemoryPendingShareActionGrantBinding(input);
+    expect(binding.body).toMatchObject({
+      maximumFidelity: "lcm_leaves",
+      includeCuratedMemory: false
+    });
+    expect(binding.body).not.toHaveProperty("allowedRepresentations");
+    expect(binding.body).not.toHaveProperty("selectedRepresentation");
+  });
+
+  it("binds fidelity changes without conflating Conversation Source Access", () => {
+    const input = base();
+    const fidelity = sharedMemoryFidelityBundleActionGrantBinding(input);
+    const source = sharedMemoryTranscriptAccessActionGrantBinding({
+      ...input,
+      expectedVersion: input.expectedGrantVersion
+    });
+
+    expect(fidelity).toMatchObject({
+      path: `/v1/shared-memory/share-grants/${input.shareGrantId}/fidelity-bundle`
+    });
+    expect(fidelity.action).toMatch(/^shared_memory\.change_fidelity\./);
+    expect(source.path).toBe(
+      `/v1/shared-memory/share-grants/${input.shareGrantId}/transcript-access`
+    );
+    expect(source.requestHash).not.toBe(fidelity.requestHash);
+  });
+});
 
 describe("Team Conversation source action grant bindings", () => {
   it("binds source access to the exact grant, Team, mode, version, and mutation", () => {
@@ -100,8 +190,10 @@ describe("Shared Memory source action grant bindings", () => {
       manifest,
       teamId,
       teamWorkspaceId,
-      representation: "memory_events" as const,
-      allowedRepresentations: ["memory_events" as const],
+      sourceCapabilities: ["memory_events" as const],
+      activationRepresentation: "memory_events" as const,
+      maximumFidelity: "memory_events" as const,
+      includeCuratedMemory: false,
       mode: "snapshot" as const,
       source: boundSource
     };
@@ -128,8 +220,9 @@ describe("Shared Memory source action grant bindings", () => {
       },
       {
         ...candidateInput,
-        representation: "lcm_leaves" as const,
-        allowedRepresentations: ["lcm_leaves" as const]
+        sourceCapabilities: ["lcm_leaves" as const],
+        activationRepresentation: "lcm_leaves" as const,
+        maximumFidelity: "lcm_leaves" as const
       },
       { ...candidateInput, mode: "continuous" as const }
     ]) {
@@ -146,25 +239,18 @@ describe("Shared Memory source action grant bindings", () => {
       teamWorkspaceId,
       previewId: randomUUID(),
       mode: "snapshot" as const,
-      allowedRepresentations: ["memory_events" as const],
-      selectedRepresentation: "memory_events" as const,
+      sourceCapabilities: ["memory_events" as const],
+      activationRepresentation: "memory_events" as const,
+      maximumFidelity: "memory_events" as const,
+      includeCuratedMemory: false,
       previewRevision: 1,
       previewHash: "c".repeat(64),
       source: boundSource
     };
-    const consent = sharedMemoryConsentActionGrantBinding(consentInput);
-    expect(
-      sharedMemoryConsentActionGrantBinding({
-        ...consentInput,
-        source: { ...boundSource, noteId: randomUUID() }
-      }).requestHash
-    ).not.toBe(consent.requestHash);
-
     const pendingInput = {
       ...consentInput,
       mutationId: randomUUID(),
-      logicalGrantId: randomUUID(),
-      selectedRepresentation: "memory_events" as const
+      logicalGrantId: randomUUID()
     };
     const pending = sharedMemoryPendingShareActionGrantBinding(pendingInput);
     expect(

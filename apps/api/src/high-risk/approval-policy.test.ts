@@ -171,7 +171,8 @@ const matrixCases: Array<{
       teamId: uuid(1),
       teamWorkspaceId: uuid(2),
       representation: "lcm_rollups",
-      allowedRepresentations: ["lcm_rollups"]
+      maximumFidelity: "lcm_rollups",
+      includeCuratedMemory: false
     },
     expected: "direct"
   },
@@ -189,31 +190,12 @@ const matrixCases: Array<{
       teamId: uuid(1),
       teamWorkspaceId: uuid(2),
       representation: "lcm_rollups",
-      allowedRepresentations: ["lcm_rollups"],
+      maximumFidelity: "lcm_rollups",
+      includeCuratedMemory: false,
       mode: "snapshot",
       expiresAt: null
     },
     expected: "direct"
-  },
-  {
-    intent: {
-      action: "shared_memory.share",
-      source: capturedSource,
-      mutationId: uuid(6),
-      logicalGrantId: uuid(7),
-      logicalMemoryId: uuid(3),
-      teamId: uuid(1),
-      teamWorkspaceId: uuid(2),
-      consentId: uuid(8),
-      previewId: uuid(9),
-      mode: "snapshot",
-      allowedRepresentations: ["lcm_rollups"],
-      selectedRepresentation: "lcm_rollups",
-      previewRevision: 1,
-      previewHash: "b".repeat(64),
-      expiresAt: null
-    },
-    expected: "native_review"
   },
   {
     intent: {
@@ -227,8 +209,8 @@ const matrixCases: Array<{
       consentId: uuid(8),
       previewId: uuid(9),
       mode: "snapshot",
-      allowedRepresentations: ["lcm_rollups"],
-      selectedRepresentation: "lcm_rollups",
+      maximumFidelity: "lcm_rollups",
+      includeCuratedMemory: false,
       previewRevision: 1,
       previewHash: "b".repeat(64),
       expiresAt: null
@@ -271,7 +253,7 @@ const matrixCases: Array<{
   },
   {
     intent: {
-      action: "shared_memory.change_representation",
+      action: "shared_memory.change_fidelity",
       source: capturedSource,
       mutationId: uuid(6),
       logicalMemoryId: uuid(3),
@@ -280,10 +262,10 @@ const matrixCases: Array<{
       shareGrantId: uuid(7),
       consentId: uuid(8),
       previewId: uuid(9),
-      representation: "lcm_rollups",
+      maximumFidelity: "lcm_rollups",
+      includeCuratedMemory: true,
       expectedGrantVersion: 1,
       mode: "continuous",
-      allowedRepresentations: ["lcm_rollups", "memory_events"],
       previewRevision: 1,
       previewHash: "c".repeat(64),
       expiresAt: null

@@ -21,6 +21,7 @@ export const requiredRuntimeFiles = [
   "api/dist/browser-approval/index.html",
   "worker/dist/index.js",
   "embedding-service/dist/index.js",
+  "privacy-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
   "api/node_modules/@koed/db/dist/index.js",
@@ -150,13 +151,14 @@ const deployedManifestFileDependencyErrors = (root) =>
   });
 
 const pnpmWorkspaceSelfSymlinkPattern =
-  /^(?<root>koed-server|koed-runtime\/api|koed-runtime\/worker|koed-runtime\/embedding-service|koed-runtime\/mcp-server)\/node_modules\/\.pnpm\/node_modules\/@koed\/(?<name>[^/]+)$/;
+  /^(?<root>koed-server|koed-runtime\/api|koed-runtime\/worker|koed-runtime\/embedding-service|koed-runtime\/privacy-service|koed-runtime\/mcp-server)\/node_modules\/\.pnpm\/node_modules\/@koed\/(?<name>[^/]+)$/;
 
 const packageSelfNames = {
   "koed-server": "koed-server",
   "koed-runtime/api": "api",
   "koed-runtime/worker": "worker",
   "koed-runtime/embedding-service": "embedding-service",
+  "koed-runtime/privacy-service": "privacy-service",
   "koed-runtime/mcp-server": "mcp-server"
 };
 

@@ -482,7 +482,8 @@ const buildCapabilities = (input: {
           ? [
               "/v1/conversation-source-replication/intake/context",
               "/v1/conversation-source-replication/generations",
-              "/v1/conversation-source-replication/generations/{sourceGenerationId}/segments"
+              "/v1/conversation-source-replication/generations/{sourceGenerationId}/segments",
+              "/v1/personal-semantic-artifacts/resolve"
             ]
           : undefined,
       requiresAuthentication: true

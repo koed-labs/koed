@@ -50,8 +50,10 @@ describe("Shared Memory source binding", () => {
     const valid = {
       source,
       mode: "snapshot" as const,
-      representation: "memory_events" as const,
-      allowedRepresentations: ["memory_events" as const],
+      sourceCapabilities: ["memory_events" as const],
+      activationRepresentation: "memory_events" as const,
+      maximumFidelity: "memory_events" as const,
+      includeCuratedMemory: false,
       sourceRevision: 1,
       manifest: [
         { sourceId: source.memoryEventId, revisionHash: "0".repeat(64) }
@@ -64,7 +66,7 @@ describe("Shared Memory source binding", () => {
     expect(() =>
       assertPersonalNoteSourceSelection({
         ...valid,
-        allowedRepresentations: ["memory_events", "lcm_leaves"]
+        sourceCapabilities: ["memory_events", "lcm_leaves"]
       })
     ).toThrow("memory_events");
     expect(() =>

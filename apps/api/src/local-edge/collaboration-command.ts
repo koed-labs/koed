@@ -524,6 +524,25 @@ const remoteSharedGrantIndexSchema = z
     id: z.uuid(),
     logicalMemoryId: z.uuid(),
     ownerUserId: z.uuid().nullable(),
+    sourceCapabilities: z
+      .array(
+        z.enum([
+          "memory_events",
+          "lcm_leaves",
+          "lcm_rollups",
+          "curated_assertions"
+        ])
+      )
+      .min(1)
+      .max(4),
+    activationRepresentation: z.enum([
+      "memory_events",
+      "lcm_leaves",
+      "lcm_rollups",
+      "curated_assertions"
+    ]),
+    maximumFidelity: z.enum(["memory_events", "lcm_leaves", "lcm_rollups"]),
+    includeCuratedMemory: z.boolean(),
     title: z.string().min(1).max(80).optional().default("Shared Memory"),
     activeRepresentation: z.enum([
       "memory_events",
@@ -2000,14 +2019,13 @@ const loadRemoteTeamNavigation = async (input: {
             },
             title: grant.title,
             latestActivityAt: grant.updatedAt,
-            representation: grant.activeRepresentation,
-            representationState:
-              grant.representationState === "stale" ? "stale" : "current",
+            sourceCapabilities: grant.sourceCapabilities,
+            activationRepresentation: grant.activationRepresentation,
+            maximumFidelity: grant.maximumFidelity,
+            includeCuratedMemory: grant.includeCuratedMemory,
             liveState: "live",
             sourceState: "ready",
-            sourceRevision: `ssr1.${sha256(
-              `${grant.id}:${grant.representationSourceRevision}`
-            )}`,
+            sourceRevision: null,
             companionThreadId: companion.id,
             unreadCompanionCount: companion.unreadCount,
             version: 1
@@ -3611,7 +3629,7 @@ export const registerCollaborationCommandRoute = (
                   input.command.input.intent.intent ===
                     "collaboration.share_memory" ||
                   input.command.input.intent.intent ===
-                    "collaboration.change_shared_memory_representation"
+                    "collaboration.change_shared_memory_fidelity"
                 ) {
                   return ["share_grant_management"] as const;
                 }
@@ -3841,7 +3859,7 @@ export const registerCollaborationCommandRoute = (
                     teamId: session.teamId,
                     workspaceId: session.workspaceId,
                     sharedSessionId: session.id,
-                    representation: session.representation,
+                    representation: session.maximumFidelity,
                     limit: COLLABORATION_SOURCE_PAGE_MAX_ITEMS
                   },
                   {
@@ -3862,7 +3880,7 @@ export const registerCollaborationCommandRoute = (
                 if (
                   result.command !== "collaboration.load_shared_source_page" ||
                   result.data.page.sharedSessionId !== session.id ||
-                  result.data.page.representation !== session.representation ||
+                  result.data.page.representation !== session.maximumFidelity ||
                   !companion.thread ||
                   !companion.messages
                 ) {

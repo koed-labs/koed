@@ -107,6 +107,37 @@ describe("collaboration receipt migration", () => {
   });
 });
 
+describe("selective PII migration boundary", () => {
+  it("requires an explicit alpha Team-sharing reset and translates durable fidelity events", async () => {
+    const journalText = await readDrizzleFile("meta/_journal.json");
+    const journal = JSON.parse(journalText) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+    const migrationTag = journal.entries.find((entry) =>
+      entry.tag.startsWith("0034_")
+    )?.tag;
+    expect(migrationTag).toBe("0034_young_silvermane");
+    const migrationSql = await readDrizzleFile(`${migrationTag}.sql`);
+    const resetBoundary = migrationSql.indexOf(
+      "Migration 0034 requires a disposable-alpha Team sharing reset"
+    );
+    const firstRequiredColumn = migrationSql.indexOf(
+      'ADD COLUMN "maximum_fidelity" "shared_memory_representation" NOT NULL'
+    );
+    const eventTranslation = migrationSql.indexOf(
+      "SET \"family\" = 'fidelity_changed'"
+    );
+    const eventEnumRecast = migrationSql.indexOf(
+      'ALTER COLUMN "family" SET DATA TYPE "public"."collaboration_event_family"'
+    );
+
+    expect(resetBoundary).toBeGreaterThan(-1);
+    expect(firstRequiredColumn).toBeGreaterThan(resetBoundary);
+    expect(eventTranslation).toBeGreaterThan(-1);
+    expect(eventEnumRecast).toBeGreaterThan(eventTranslation);
+  });
+});
+
 describe("Pi AI Client migration", () => {
   it("adds Pi to the persisted source runtime enum idempotently", async () => {
     const [journalText, migrationSql] = await Promise.all([
@@ -226,8 +257,8 @@ describe("Claude AI Client migration", () => {
 });
 
 describe("Personal Note Share Grant migrations", () => {
-  it("backfills existing grants as Captured Session sources and constrains both source shapes", async () => {
-    const migrationSql = await readDrizzleFile("0034_broken_morlocks.sql");
+  it("adds typed Captured Session defaults and constrains both source shapes after the alpha reset", async () => {
+    const migrationSql = await readDrizzleFile("0035_concerned_the_twelve.sql");
 
     expect(migrationSql).toContain("ENUM('captured_session', 'personal_note')");
     expect(migrationSql).toContain(
@@ -244,26 +275,22 @@ describe("Personal Note Share Grant migrations", () => {
     );
   });
 
-  it("preserves historical source work and fails ambiguous in-flight work for re-review", async () => {
-    const migrationSql = await readDrizzleFile("0034_broken_morlocks.sql");
-    const addNullable = migrationSql.indexOf(
-      'ADD COLUMN "logical_memory_id" uuid;'
-    );
-    const backfill = migrationSql.indexOf(
-      'SET "logical_memory_id" = "local_session_id"'
-    );
-    const enforceNotNull = migrationSql.indexOf(
-      'ALTER COLUMN "logical_memory_id" SET NOT NULL'
-    );
+  it("requires complete typed source work because 0034 already rejects populated alpha sharing state", async () => {
+    const migrationSql = await readDrizzleFile("0035_concerned_the_twelve.sql");
 
-    expect(addNullable).toBeGreaterThan(-1);
-    expect(backfill).toBeGreaterThan(addNullable);
-    expect(enforceNotNull).toBeGreaterThan(backfill);
-    expect(migrationSql).toContain("source_binding_migration_review_required");
+    expect(migrationSql).toContain(
+      'ADD COLUMN "logical_memory_id" uuid NOT NULL'
+    );
+    expect(migrationSql).toContain(
+      'ADD COLUMN "source_kind" "shared_memory_source_kind" DEFAULT \'captured_session\' NOT NULL'
+    );
+    expect(migrationSql).not.toContain(
+      "source_binding_migration_review_required"
+    );
   });
 
   it("does not constrain cross-deployment source identities to local rows", async () => {
-    const migrationSql = await readDrizzleFile("0034_broken_morlocks.sql");
+    const migrationSql = await readDrizzleFile("0035_concerned_the_twelve.sql");
 
     expect(migrationSql).toContain(
       'ALTER TABLE "shared_source_artifacts" ADD COLUMN "source_memory_event_id" uuid'

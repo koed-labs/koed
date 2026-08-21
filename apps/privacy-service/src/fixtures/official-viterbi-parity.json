@@ -1,0 +1,68 @@
+{
+  "source": {
+    "repository": "openai/privacy-filter",
+    "revision": "f7f00ca7fb869683eb732c010299d901457f19c3",
+    "module": "opf/_core/decoding.py"
+  },
+  "cases": [
+    {
+      "name": "background wins an all-zero one-token tie",
+      "biases": {
+        "transition_bias_background_stay": 0,
+        "transition_bias_background_to_start": 0,
+        "transition_bias_inside_to_continue": 0,
+        "transition_bias_inside_to_end": 0,
+        "transition_bias_end_to_background": 0,
+        "transition_bias_end_to_start": 0
+      },
+      "emissions": [{}],
+      "expected": ["O"]
+    },
+    {
+      "name": "complete paths beat an invalid independent argmax",
+      "biases": {
+        "transition_bias_background_stay": 0,
+        "transition_bias_background_to_start": 0,
+        "transition_bias_inside_to_continue": 0,
+        "transition_bias_inside_to_end": 0,
+        "transition_bias_end_to_background": 0,
+        "transition_bias_end_to_start": 0
+      },
+      "emissions": [
+        { "B-private_email": 10, "S-private_email": 9 },
+        { "O": 10, "E-private_email": 8 }
+      ],
+      "expected": ["S-private_email", "O"]
+    },
+    {
+      "name": "adjacent complete spans remain distinct",
+      "biases": {
+        "transition_bias_background_stay": 0,
+        "transition_bias_background_to_start": 0,
+        "transition_bias_inside_to_continue": 0,
+        "transition_bias_inside_to_end": 0,
+        "transition_bias_end_to_background": 0,
+        "transition_bias_end_to_start": 0
+      },
+      "emissions": [
+        { "B-private_person": 10 },
+        { "E-private_person": 10 },
+        { "S-private_email": 10 }
+      ],
+      "expected": ["B-private_person", "E-private_person", "S-private_email"]
+    },
+    {
+      "name": "calibration biases can favor a complete singleton span",
+      "biases": {
+        "transition_bias_background_stay": -1,
+        "transition_bias_background_to_start": 0,
+        "transition_bias_inside_to_continue": 0,
+        "transition_bias_inside_to_end": 0,
+        "transition_bias_end_to_background": 1,
+        "transition_bias_end_to_start": 0
+      },
+      "emissions": [{ "O": 0, "S-secret": -0.4 }, { "O": 0 }],
+      "expected": ["S-secret", "O"]
+    }
+  ]
+}
