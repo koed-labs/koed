@@ -76,7 +76,8 @@ const required = [
   "embedding-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
-  "mcp-server/dist/prompts/mcp-server-instructions.md"
+  "mcp-server/dist/prompts/mcp-server-instructions.md",
+  "mcp-server/dist/prompts/codex-global-agent-guidance.md"
 ];
 const missing = required.filter(
   (entry) => !existsSync(resolve(runtimeRoot, entry))

@@ -112,6 +112,8 @@ Commands:
   personal-sync conflict resolve --json
   setup core --json      Prepare Koed core services and local credential
   setup codex --json     Configure the supported Codex integration
+    --without-memory-guidance  Do not install the recommended global guidance
+    --with-memory-guidance     Install the recommended global guidance (default)
   setup claude --json    Configure the supported Claude Code integration
   setup pi --json        Configure the supported Pi integration
   check <client> --json  Check one AI Client integration without mutation
@@ -631,7 +633,22 @@ export const runKoedServerCli = async (
     }
 
     if (command === "setup" && subcommand === "codex") {
-      const result = await setup();
+      const withoutGuidance = args.includes("--without-memory-guidance");
+      const withGuidance = args.includes("--with-memory-guidance");
+      if (withoutGuidance && withGuidance) {
+        throw new Error(
+          "Use only one of --with-memory-guidance or --without-memory-guidance."
+        );
+      }
+      const result = await setup({
+        environment:
+          withoutGuidance || withGuidance
+            ? {
+                ...process.env,
+                KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: String(withGuidance)
+              }
+            : process.env
+      });
       if (wantsJson) {
         printJson(stdout, result);
       } else {

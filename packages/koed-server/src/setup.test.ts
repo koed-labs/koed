@@ -92,6 +92,24 @@ const runSetupCodex = (
     ...options
   });
 
+const writeMcpRuntimeArtifacts = (
+  root: string,
+  includeGuidance = true
+): void => {
+  const dist = resolve(root, "packages/mcp-server/dist");
+  mkdirSync(dist, { recursive: true });
+  writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
+  writeFileSync(resolve(dist, "cli.js"), "");
+  writeFileSync(resolve(dist, "capture-hook.js"), "");
+  if (includeGuidance) {
+    mkdirSync(resolve(dist, "prompts"), { recursive: true });
+    writeFileSync(
+      resolve(dist, "prompts/codex-global-agent-guidance.md"),
+      "# Koed Memory\n\nConsult Koed before substantive work.\n"
+    );
+  }
+};
+
 afterEach(() => {
   for (const path of temps.splice(0)) {
     rmSync(path, { recursive: true, force: true });
@@ -102,13 +120,14 @@ describe("Codex setup wrapper", () => {
   it("removes only valid Koed-owned Codex block and preserves unrelated profile", () => {
     const root = tempDir();
     const runtimeRoot = resolve(root, "runtime");
+    const codexHome = resolve(root, "codex");
     const mcpCli = resolve(runtimeRoot, "mcp-server/dist/cli.js");
     const captureHook = resolve(runtimeRoot, "mcp-server/dist/capture-hook.js");
     mkdirSync(resolve(runtimeRoot, "mcp-server/dist"), { recursive: true });
     writeFileSync(mcpCli, "");
     writeFileSync(captureHook, "");
     const configPath = resolve(root, "codex/config.toml");
-    mkdirSync(resolve(root, "codex"), { recursive: true });
+    mkdirSync(codexHome, { recursive: true });
     const hooks = [
       "SessionStart",
       "UserPromptSubmit",
@@ -123,12 +142,20 @@ describe("Codex setup wrapper", () => {
       .join("\n");
     const original = `profile = "operator"\n# >>> koed\n[mcp_servers.koed]\ncommand = "node"\nargs = ["${mcpCli}"]\n[mcp_servers.koed.env]\nKOED_HOME = "${root}"\n${hooks}\n# <<< koed\nother = true\n`;
     writeFileSync(configPath, original);
+    const userInstructions =
+      "# User rules  \nKeep this indentation:\n    exact\n";
+    writeFileSync(
+      resolve(codexHome, "AGENTS.md"),
+      `${userInstructions}\n\n<!-- >>> koed-memory-guidance -->\nmanaged\n<!-- <<< koed-memory-guidance -->\n`,
+      { mode: 0o640 }
+    );
 
     const result = removeCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
         KOED_JS_RUNTIME_ROOT: runtimeRoot,
+        CODEX_HOME: codexHome,
         CODEX_CONFIG_PATH: configPath,
         MEMORY_NODE_COMMAND: "node"
       }
@@ -137,6 +164,9 @@ describe("Codex setup wrapper", () => {
     expect(result).toMatchObject({ ok: true, state: "healthy" });
     expect(readFileSync(configPath, "utf8")).toBe(
       'profile = "operator"\nother = true\n'
+    );
+    expect(readFileSync(resolve(codexHome, "AGENTS.md"), "utf8")).toBe(
+      userInstructions
     );
   });
 
@@ -317,6 +347,30 @@ describe("Codex setup wrapper", () => {
     expect(call!.args[0]).toBe(resolve(root, "scripts/clients-bootstrap.mjs"));
     expect(call!.env?.KOED_HOME).toBe(root);
     expect(call!.env?.KOED_SERVER_MANAGED).toBe("1");
+    expect(call!.env?.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED).toBe("true");
+  });
+
+  it("persists an explicit global memory guidance opt-out", async () => {
+    const root = tempDir();
+    const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+
+    const result = await runSetupCodex({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "false"
+      },
+      spawnSync: (_command, _args, options) => {
+        calls.push(options?.env);
+        return spawnResult();
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(calls[0]?.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED).toBe("false");
+    expect(
+      JSON.parse(readFileSync(resolve(root, "config/server.json"), "utf8"))
+    ).toMatchObject({ codexGlobalMemoryGuidanceEnabled: false });
   });
 
   it("persists the token created by bootstrap and redacts it from JSON output", async () => {
@@ -679,13 +733,7 @@ describe("Codex setup wrapper", () => {
       resolve(root, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "desktop_token" })
     );
-    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
-    writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
-    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
-    writeFileSync(
-      resolve(root, "packages/mcp-server/dist/capture-hook.js"),
-      ""
-    );
+    writeMcpRuntimeArtifacts(root);
     const codexConfigPath = resolve(root, "codex.toml");
 
     const result = repairCodexIntegration({
@@ -711,6 +759,9 @@ describe("Codex setup wrapper", () => {
     expect(readFileSync(codexConfigPath, "utf8")).toContain(
       `\\"--koed-home\\" \\"${root}\\"`
     );
+    expect(readFileSync(resolve(root, "AGENTS.md"), "utf8")).toContain(
+      "Consult Koed before substantive work."
+    );
     expect(
       JSON.parse(
         readFileSync(resolve(root, "run/last-verification.json"), "utf8")
@@ -728,13 +779,7 @@ describe("Codex setup wrapper", () => {
       resolve(root, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "desktop_token" })
     );
-    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
-    writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
-    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
-    writeFileSync(
-      resolve(root, "packages/mcp-server/dist/capture-hook.js"),
-      ""
-    );
+    writeMcpRuntimeArtifacts(root);
     const codexConfigPath = resolve(root, "codex.toml");
     const profile = '[mcp_servers.other]\ncommand = "other"\n';
     writeFileSync(codexConfigPath, profile);
@@ -760,26 +805,27 @@ describe("Codex setup wrapper", () => {
 
   it("rolls back Codex profile when registry registration fails", () => {
     const root = tempDir();
+    const codexHome = resolve(root, "isolated-codex");
     mkdirSync(resolve(root, "config"), { recursive: true });
     writeFileSync(
       resolve(root, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "desktop_token" })
     );
-    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
-    writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
-    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
-    writeFileSync(
-      resolve(root, "packages/mcp-server/dist/capture-hook.js"),
-      ""
-    );
+    writeMcpRuntimeArtifacts(root);
     const codexConfigPath = resolve(root, "codex.toml");
     const profile = '[mcp_servers.other]\ncommand = "other"\n';
     writeFileSync(codexConfigPath, profile, { mode: 0o640 });
+    mkdirSync(codexHome, { recursive: true });
+    const userInstructions = "# Existing User instructions  \n    exact\n";
+    writeFileSync(resolve(codexHome, "AGENTS.md"), userInstructions, {
+      mode: 0o640
+    });
 
     const result = repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
+        CODEX_HOME: codexHome,
         CODEX_CONFIG_PATH: codexConfigPath,
         MEMORY_CODEX_APP_SERVER_BINARY: "/bin/sh"
       },
@@ -789,6 +835,9 @@ describe("Codex setup wrapper", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("registration failed");
     expect(readFileSync(codexConfigPath, "utf8")).toBe(profile);
+    expect(readFileSync(resolve(codexHome, "AGENTS.md"), "utf8")).toBe(
+      userInstructions
+    );
   });
 
   it("writes isolated device configuration beneath CODEX_HOME", async () => {
@@ -799,13 +848,7 @@ describe("Codex setup wrapper", () => {
       resolve(root, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "desktop_token" })
     );
-    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
-    writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
-    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
-    writeFileSync(
-      resolve(root, "packages/mcp-server/dist/capture-hook.js"),
-      ""
-    );
+    writeMcpRuntimeArtifacts(root);
 
     const result = repairCodexIntegration({
       environment: {
@@ -829,6 +872,74 @@ describe("Codex setup wrapper", () => {
     expect(readFileSync(resolve(codexHome, "config.toml"), "utf8")).toContain(
       `\\"--koed-home\\" \\"${root}\\"`
     );
+    expect(readFileSync(resolve(codexHome, "AGENTS.md"), "utf8")).toContain(
+      "Consult Koed before substantive work."
+    );
+  });
+
+  it("repair honors the persisted global memory guidance opt-out", () => {
+    const root = tempDir();
+    const codexHome = resolve(root, "isolated-codex");
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "desktop_token" })
+    );
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({ codexGlobalMemoryGuidanceEnabled: false })
+    );
+    writeMcpRuntimeArtifacts(root, false);
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(
+      resolve(codexHome, "AGENTS.md"),
+      "# User rules\n\n<!-- >>> koed-memory-guidance -->\nold\n<!-- <<< koed-memory-guidance -->\n"
+    );
+
+    const result = repairCodexIntegration({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        CODEX_HOME: codexHome,
+        MEMORY_CODEX_APP_SERVER_BINARY: process.execPath
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readFileSync(resolve(codexHome, "AGENTS.md"), "utf8")).toBe(
+      "# User rules"
+    );
+  });
+
+  it("fails closed without rewriting malformed global instructions", () => {
+    const root = tempDir();
+    const codexHome = resolve(root, "isolated-codex");
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "desktop_token" })
+    );
+    writeMcpRuntimeArtifacts(root);
+    mkdirSync(codexHome, { recursive: true });
+    const malformed =
+      "# User rules\n\n<!-- >>> koed-memory-guidance -->\nbroken\n";
+    writeFileSync(resolve(codexHome, "AGENTS.md"), malformed);
+
+    const result = repairCodexIntegration({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        CODEX_HOME: codexHome,
+        MEMORY_CODEX_APP_SERVER_BINARY: process.execPath
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("malformed Koed guidance markers");
+    expect(readFileSync(resolve(codexHome, "AGENTS.md"), "utf8")).toBe(
+      malformed
+    );
+    expect(() => readFileSync(resolve(codexHome, "config.toml"))).toThrow();
   });
 
   it("uses the supervisor credential for an active automatic-port runtime", async () => {
@@ -841,13 +952,7 @@ describe("Codex setup wrapper", () => {
       JSON.stringify({ apiToken: "desktop_token" })
     );
     writeFileSync(resolve(root, ".env"), "MEMORY_API_TOKEN=repo_token\n");
-    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
-    writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
-    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
-    writeFileSync(
-      resolve(root, "packages/mcp-server/dist/capture-hook.js"),
-      ""
-    );
+    writeMcpRuntimeArtifacts(root);
 
     const result = repairCodexIntegration({
       environment: {
@@ -885,13 +990,7 @@ describe("Codex setup wrapper", () => {
       resolve(root, "config/local-app-credential.json"),
       JSON.stringify({ apiToken: "desktop_token" })
     );
-    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
-    writeFileSync(resolve(root, "packages/mcp-server/package.json"), "{}");
-    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
-    writeFileSync(
-      resolve(root, "packages/mcp-server/dist/capture-hook.js"),
-      ""
-    );
+    writeMcpRuntimeArtifacts(root);
     const codexConfigPath = resolve(root, "codex.toml");
     const checkedPids: number[] = [];
 

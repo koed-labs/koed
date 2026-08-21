@@ -7,15 +7,33 @@ const repoRoot = process.cwd();
 const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
 const mcpName = process.env.MEMORY_MCP_NAME ?? "koed";
 const codexConfigPath = resolve(
-  process.env.CODEX_CONFIG_PATH ?? `${homedir()}/.codex/config.toml`
+  process.env.CODEX_CONFIG_PATH ??
+    `${process.env.CODEX_HOME ?? `${homedir()}/.codex`}/config.toml`
 );
+const codexHome = resolve(
+  process.env.CODEX_HOME ??
+    (process.env.CODEX_CONFIG_PATH
+      ? dirname(codexConfigPath)
+      : `${homedir()}/.codex`)
+);
+const codexInstructionsPath = join(codexHome, "AGENTS.md");
 const mcpCliPath = resolve(repoRoot, "packages/mcp-server/dist/cli.js");
 const captureHookPath = resolve(
   repoRoot,
   "packages/mcp-server/dist/capture-hook.js"
 );
+const guidancePath = resolve(
+  repoRoot,
+  "prompts/codex-global-agent-guidance.md"
+);
+const memoryGuidanceEnabled =
+  process.env.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED !== "false";
 
-for (const filePath of [mcpCliPath, captureHookPath]) {
+for (const filePath of [
+  mcpCliPath,
+  captureHookPath,
+  ...(memoryGuidanceEnabled ? [guidancePath] : [])
+]) {
   if (!existsSync(filePath)) {
     console.error(
       `${filePath} does not exist. Run pnpm --filter @koed/mcp-server build first.`
@@ -23,6 +41,57 @@ for (const filePath of [mcpCliPath, captureHookPath]) {
     process.exit(1);
   }
 }
+
+const guidanceMarkerStart = "<!-- >>> koed-memory-guidance -->";
+const guidanceMarkerEnd = "<!-- <<< koed-memory-guidance -->";
+const guidance = memoryGuidanceEnabled
+  ? readFileSync(guidancePath, "utf8").trim()
+  : "";
+const managedGuidance = `${guidanceMarkerStart}\n${guidance}\n${guidanceMarkerEnd}`;
+const reconcileGuidance = (content) => {
+  const startCount = content.split(guidanceMarkerStart).length - 1;
+  const endCount = content.split(guidanceMarkerEnd).length - 1;
+  if (startCount === 0 && endCount === 0) {
+    return `${content}${content ? "\n\n" : ""}${managedGuidance}\n`;
+  }
+  if (startCount !== 1 || endCount !== 1) {
+    throw new Error(
+      "Codex global AGENTS.md contains malformed Koed guidance markers. Repair or remove the Koed-managed marker block, then retry."
+    );
+  }
+  const start = content.indexOf(guidanceMarkerStart);
+  const end = content.indexOf(guidanceMarkerEnd, start);
+  if (end < start) {
+    throw new Error(
+      "Codex global AGENTS.md contains malformed Koed guidance markers. Repair or remove the Koed-managed marker block, then retry."
+    );
+  }
+  return `${content.slice(0, start)}${managedGuidance}${content.slice(end + guidanceMarkerEnd.length)}`;
+};
+const removeGuidance = (content) => {
+  const startCount = content.split(guidanceMarkerStart).length - 1;
+  const endCount = content.split(guidanceMarkerEnd).length - 1;
+  if (startCount === 0 && endCount === 0) return content;
+  if (startCount !== 1 || endCount !== 1) {
+    throw new Error(
+      "Codex global AGENTS.md contains malformed Koed guidance markers. Repair or remove the Koed-managed marker block, then retry."
+    );
+  }
+  const start = content.indexOf(guidanceMarkerStart);
+  const end = content.indexOf(guidanceMarkerEnd, start);
+  if (end < start) {
+    throw new Error(
+      "Codex global AGENTS.md contains malformed Koed guidance markers. Repair or remove the Koed-managed marker block, then retry."
+    );
+  }
+  const markerEnd = end + guidanceMarkerEnd.length;
+  const ownedStart =
+    start >= 2 && content.slice(start - 2, start) === "\n\n"
+      ? start - 2
+      : start;
+  const ownedEnd = content[markerEnd] === "\n" ? markerEnd + 1 : markerEnd;
+  return `${content.slice(0, ownedStart)}${content.slice(ownedEnd)}`;
+};
 
 const markerStart = "# >>> koed";
 const markerEnd = "# <<< koed";
@@ -95,13 +164,28 @@ const existing = existsSync(codexConfigPath)
   ? readFileSync(codexConfigPath, "utf8")
   : "";
 const withoutPrevious = stripOwnedBlock(existing);
+const existingInstructions = existsSync(codexInstructionsPath)
+  ? readFileSync(codexInstructionsPath, "utf8")
+  : "";
+const nextInstructions = memoryGuidanceEnabled
+  ? reconcileGuidance(existingInstructions)
+  : removeGuidance(existingInstructions);
 mkdirSync(dirname(codexConfigPath), { recursive: true, mode: 0o700 });
 writeFileSync(codexConfigPath, `${withoutPrevious.trimEnd()}\n\n${koedBlock}`);
+mkdirSync(dirname(codexInstructionsPath), { recursive: true, mode: 0o700 });
+if (nextInstructions !== existingInstructions) {
+  writeFileSync(codexInstructionsPath, nextInstructions, { mode: 0o600 });
+}
 
 console.log("Codex integration configured.");
 console.log(`Detected Node command: ${nodeCommand}`);
 console.log(`Detected Koed home: ${koedHome}`);
 console.log(`Wrote Codex MCP config: ${codexConfigPath}`);
+console.log(
+  memoryGuidanceEnabled
+    ? `Reconciled Codex global instructions: ${codexInstructionsPath}`
+    : `Koed global memory guidance disabled: ${codexInstructionsPath}`
+);
 console.log(
   "Next: restart Codex, then run `pnpm codex:verify-capture` or `pnpm codex:doctor` to confirm the integration is healthy."
 );

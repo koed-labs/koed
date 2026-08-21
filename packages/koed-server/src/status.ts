@@ -59,6 +59,11 @@ import type {
   KoedAiClientFlowReadiness,
   KoedAiClientReadiness
 } from "./types.js";
+import {
+  inspectManagedCodexGuidance,
+  resolveCodexGlobalInstructionsPath,
+  resolveCodexGuidancePath
+} from "./codex-global-instructions.js";
 
 type SpawnSyncLike = (
   command: string,
@@ -644,7 +649,10 @@ const koedServerConfigEnvironment = (
     repoEnv.KOED_EXTERNAL_EMBEDDING_SERVICE_URL,
   MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED:
     environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED ??
-    repoEnv.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED
+    repoEnv.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED,
+  KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED:
+    environment.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED ??
+    repoEnv.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED
 });
 
 const inspectApiToken = async (
@@ -768,7 +776,8 @@ const tomlSection = (content: string, sectionName: string): string => {
 const inspectCodex = (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
-  deps: Required<KoedServerStatusDependencies>
+  deps: Required<KoedServerStatusDependencies>,
+  memoryGuidanceEnabled: boolean
 ): KoedServerStatus["codex"] => {
   const codexConfigPath = resolve(
     environment.CODEX_CONFIG_PATH ??
@@ -831,11 +840,72 @@ const inspectCodex = (
       configured: true
     };
   }
+  const codexInstructionsPath = resolveCodexGlobalInstructionsPath(environment);
+  const guidancePath = resolveCodexGuidancePath(runtime.mcpCli);
+  const instructions = deps.existsSync(codexInstructionsPath)
+    ? String(deps.readFileSync(codexInstructionsPath, "utf8"))
+    : "";
+  if (!memoryGuidanceEnabled) {
+    const guidanceState = inspectManagedCodexGuidance(instructions, "");
+    if (guidanceState === "missing") {
+      return {
+        ...healthy(
+          "Codex Koed integration is configured; global memory guidance is disabled.",
+          {
+            configuredKoedHome,
+            mcpAdapter: runtime.mcpCli,
+            codexConfigPath,
+            codexInstructionsPath,
+            guidanceState: "disabled"
+          }
+        ),
+        configured: true
+      };
+    }
+    return {
+      ...needsAttention(
+        guidanceState === "malformed"
+          ? "Codex global AGENTS.md contains malformed Koed guidance markers."
+          : "Codex global Koed memory guidance remains installed while disabled.",
+        guidanceState === "malformed"
+          ? "Repair or remove the malformed Koed marker block in Codex global AGENTS.md, then run Fix Codex integration."
+          : "Run Fix Codex integration to remove the disabled guidance, then restart Codex.",
+        { codexInstructionsPath, guidanceState }
+      ),
+      configured: true
+    };
+  }
+  if (!deps.existsSync(guidancePath)) {
+    return {
+      ...needsAttention(
+        "Packaged Codex memory guidance is missing.",
+        "Rebuild Koed, then run Fix Codex integration.",
+        { guidancePath, codexInstructionsPath }
+      ),
+      configured: true
+    };
+  }
+  const guidance = String(deps.readFileSync(guidancePath, "utf8"));
+  const guidanceState = inspectManagedCodexGuidance(instructions, guidance);
+  if (guidanceState !== "current") {
+    return {
+      ...needsAttention(
+        `Codex global Koed memory guidance is ${guidanceState}.`,
+        guidanceState === "malformed"
+          ? "Repair or remove the malformed Koed marker block in Codex global AGENTS.md, then run Fix Codex integration."
+          : "Run Fix Codex integration, then restart Codex.",
+        { codexInstructionsPath, guidancePath, guidanceState }
+      ),
+      configured: true
+    };
+  }
   return {
     ...healthy("Codex Koed integration is configured.", {
       configuredKoedHome,
       mcpAdapter: runtime.mcpCli,
-      codexConfigPath
+      codexConfigPath,
+      codexInstructionsPath,
+      guidanceState
     }),
     configured: true
   };
@@ -1981,7 +2051,13 @@ export const collectKoedServerStatus = async (
   );
   const codex = inspectSafely(
     "Codex",
-    () => inspectCodex(runtimeEnvironment, paths, deps),
+    () =>
+      inspectCodex(
+        runtimeEnvironment,
+        paths,
+        deps,
+        serverConfig.codexGlobalMemoryGuidanceEnabled
+      ),
     { state: "needs_attention", configured: false }
   );
   const claudeCode = inspectSafely(
