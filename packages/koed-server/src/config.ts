@@ -173,9 +173,9 @@ export const resolveKoedServerConfig = (
   };
 };
 
-export const writeKoedServerConfig = (
+const writeServerConfigAtomically = (
   paths: KoedServerPaths,
-  config: KoedServerConfig,
+  config: unknown,
   deps: Pick<
     KoedServerConfigDeps,
     "writeFileSync" | "renameSync" | "rmSync"
@@ -194,6 +194,17 @@ export const writeKoedServerConfig = (
     (deps.rmSync ?? rmSync)(temporary, { force: true });
     throw error;
   }
+};
+
+export const writeKoedServerConfig = (
+  paths: KoedServerPaths,
+  config: KoedServerConfig,
+  deps: Pick<
+    KoedServerConfigDeps,
+    "writeFileSync" | "renameSync" | "rmSync"
+  > = {}
+): void => {
+  writeServerConfigAtomically(paths, config, deps);
 };
 
 export const writeCodexGlobalMemoryGuidancePreference = (
@@ -221,14 +232,9 @@ export const writeCodexGlobalMemoryGuidancePreference = (
       );
     }
   }
-  mkdirSync(dirname(paths.serverConfigPath), { recursive: true, mode: 0o700 });
-  (deps.writeFileSync ?? writeFileSync)(
-    paths.serverConfigPath,
-    `${JSON.stringify(
-      { ...existing, codexGlobalMemoryGuidanceEnabled: enabled },
-      null,
-      2
-    )}\n`,
-    { mode: 0o600 }
+  writeServerConfigAtomically(
+    paths,
+    { ...existing, codexGlobalMemoryGuidanceEnabled: enabled },
+    deps
   );
 };

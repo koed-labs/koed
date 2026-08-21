@@ -186,6 +186,30 @@ describe("koed-server config", () => {
     );
   });
 
+  it("preserves server config when guidance replacement fails", () => {
+    const root = tempDir();
+    const resolvedPaths = paths(root);
+    const original =
+      '{\n  "dependencyMode": "bundled-local",\n  "hardwareAcceleration": "cpu",\n  "custom": "preserved"\n}\n';
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(resolvedPaths.serverConfigPath, original);
+
+    expect(() =>
+      writeCodexGlobalMemoryGuidancePreference(resolvedPaths, false, {
+        renameSync: () => {
+          throw new Error("replacement failed");
+        }
+      })
+    ).toThrow("replacement failed");
+
+    expect(readFileSync(resolvedPaths.serverConfigPath, "utf8")).toBe(original);
+    expect(
+      readdirSync(resolve(root, "config")).filter((name) =>
+        name.endsWith(".tmp")
+      )
+    ).toEqual([]);
+  });
+
   it("rejects malformed persisted hardware acceleration", () => {
     const root = tempDir();
     mkdirSync(resolve(root, "config"), { recursive: true });
