@@ -463,7 +463,7 @@ const createFixture = (
         pendingShareId: input.pendingShareId,
         mutationId: input.mutationId,
         source: input.source as typeof capturedSource,
-        localSessionId: input.localSessionId
+        localSessionId: input.localSessionId ?? capturedSource.sessionId
       });
       return overrides.persistPendingSourceWork ?? true;
     },
@@ -1865,7 +1865,6 @@ describe("collaboration Shared Memory control", () => {
         ...shareCommand(),
         input: {
           ...shareCommand().input,
-          mutationId
           mutationId,
           candidateSessionId: ids.localSession
         }
@@ -1911,7 +1910,6 @@ describe("collaboration Shared Memory control", () => {
       {
         ...shareCommand(),
         input: {
-          ...shareCommand().input
           ...shareCommand().input,
           candidateSessionId: ids.localSession
         }

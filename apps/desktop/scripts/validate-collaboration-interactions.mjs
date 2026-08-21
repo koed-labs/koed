@@ -943,7 +943,6 @@ const run = async () => {
 
     process.stdout.write(
       "Collaboration interaction validation passed: Personal Note create/load/rename/responsive sharing, owner-wide Shares access and accessibility, trusted Team switching, invitations, channel/DM delivery, Shared Memory layouts, reconnect/replay/backpressure recovery, and stale-event access purge.\n"
-      "Collaboration interaction validation passed: owner-wide Shares access and accessibility, trusted Team switching, invitations, channel/DM delivery, Shared Memory layouts, reconnect/replay/backpressure recovery, and stale-event access purge.\n"
     );
   } finally {
     for (const window of windows) {

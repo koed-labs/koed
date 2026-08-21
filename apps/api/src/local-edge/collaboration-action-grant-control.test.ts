@@ -450,8 +450,7 @@ describe("collaboration Action Grant control", () => {
         selectedRepresentation: "memory_events",
         previewRevision: 2,
         previewHash: "b".repeat(64),
-        expiresAt: null,
-        candidateSessionId: ids.localSession
+        expiresAt: null
       })
     ).toBeNull();
 
@@ -505,8 +504,7 @@ describe("collaboration Action Grant control", () => {
         allowedRepresentations: ["lcm_leaves"],
         previewRevision: 2,
         previewHash: "b".repeat(64),
-        expiresAt: null,
-        candidateSessionId: ids.localSession
+        expiresAt: null
       })
     ).toBeNull();
   });

@@ -651,13 +651,15 @@ const validPersistedPreview = (
   ) {
     return false;
   }
+  const firstItem: unknown = value.items[0];
   if (
     source.success &&
     source.data.kind === "personal_note" &&
     (value.representation !== "memory_events" ||
       value.sourceRevision !== 1 ||
       value.items.length !== 1 ||
-      value.items[0]?.sourceId !== source.data.memoryEventId)
+      !isObject(firstItem) ||
+      firstItem.sourceId !== source.data.memoryEventId)
   ) {
     return false;
   }

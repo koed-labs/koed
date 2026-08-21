@@ -2794,9 +2794,8 @@ describe("memory answer worker", () => {
     });
 
     expect(result.evidence).toEqual([]);
-    expect(requests).toEqual([
-      expect.not.objectContaining({ retrieval_stage: expect.anything() })
-    ]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).not.toHaveProperty("retrieval_stage");
     expect(result.searches).toEqual([
       expect.objectContaining({ retrievalStage: "all_stages" })
     ]);

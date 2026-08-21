@@ -175,6 +175,7 @@ describe("MemoryToolExecutor", () => {
       observedContext = options?.conversationContext;
       return {
         ...payload,
+        retrieval: { evidenceCount: 0 },
         localMemoryWorker: {
           jobId: "desktop-answer-job",
           model: null,
@@ -275,6 +276,7 @@ describe("MemoryToolExecutor", () => {
       return {
         ...payload,
         markdown: "You chose the Ask welcome page.",
+        retrieval: { evidenceCount: 0 },
         localMemoryWorker: {
           jobId: "desktop-answer-job",
           model: "gpt-test",

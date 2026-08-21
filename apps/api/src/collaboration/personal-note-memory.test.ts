@@ -1,6 +1,5 @@
 import type {
   CollaborationMessageRecord,
-  MemoryEventRecord,
   MemorySourceRepository,
   PersonalNoteProjectionCursorRecord
 } from "@koed/db";
@@ -39,7 +38,7 @@ describe("Personal Note memory Projection", () => {
       async () =>
         ({
           id: "44444444-4444-4444-8444-444444444444"
-        }) as MemoryEventRecord
+        }) as Awaited<ReturnType<MemorySourceRepository["createMemoryEvent"]>>
     );
     const enqueueEmbedding = vi.fn(async () => ({
       queued: true,

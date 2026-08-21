@@ -10,6 +10,12 @@ import {
 const uuid = (suffix: number) =>
   `00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
 
+const capturedSource = {
+  kind: "captured_session" as const,
+  sessionId: uuid(4),
+  logicalMemoryId: uuid(3)
+};
+
 const matrixCases: Array<{
   intent: HighRiskActionGrantIntent;
   expected: "direct" | "native_review" | "step_up";
@@ -172,6 +178,7 @@ const matrixCases: Array<{
   {
     intent: {
       action: "shared_memory.candidate_preview",
+      source: capturedSource,
       logicalMemoryId: uuid(3),
       candidateHash: "a".repeat(64),
       sourceRevision: 1,
@@ -191,6 +198,7 @@ const matrixCases: Array<{
   {
     intent: {
       action: "shared_memory.share",
+      source: capturedSource,
       mutationId: uuid(6),
       logicalGrantId: uuid(7),
       logicalMemoryId: uuid(3),
@@ -210,6 +218,7 @@ const matrixCases: Array<{
   {
     intent: {
       action: "shared_memory.pending_share",
+      source: capturedSource,
       mutationId: uuid(6),
       logicalGrantId: uuid(7),
       logicalMemoryId: uuid(3),
@@ -263,6 +272,7 @@ const matrixCases: Array<{
   {
     intent: {
       action: "shared_memory.change_representation",
+      source: capturedSource,
       mutationId: uuid(6),
       logicalMemoryId: uuid(3),
       teamId: uuid(1),

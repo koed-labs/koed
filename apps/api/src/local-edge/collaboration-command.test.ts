@@ -690,6 +690,11 @@ const createPersonalRepository = (): CommandRepository => {
       : null;
 
   return {
+    getOrCreatePersonalNoteProjectionCursor: async () => null,
+    advancePersonalNoteProjectionCursor: async () => null,
+    listPersonalNotes: async () => ({ notes: [], nextBeforeSequence: null }),
+    getPersonalNote: async () => null,
+    renamePersonalNote: async () => null,
     listTeamParticipants: async () => null,
     createThread: async (actor, input) => {
       if (actor.userId !== ids.actor) return null;

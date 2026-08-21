@@ -1,3 +1,4 @@
+import type { MemorySourceRepository } from "@koed/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   createLocalSharedMemoryCandidatePreparation,
@@ -64,8 +65,12 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     getLocalSyncDeployment: vi.fn(async () => ({
       protocolDeploymentId: "deployment-1"
     })),
-    getPersonalNote: vi.fn(async () => null),
-    getPersonalNoteMemoryEvent: vi.fn(async () => null),
+    getPersonalNote: vi.fn<MemorySourceRepository["getPersonalNote"]>(
+      async () => null
+    ),
+    getPersonalNoteMemoryEvent: vi.fn<
+      MemorySourceRepository["getPersonalNoteMemoryEvent"]
+    >(async () => null),
     listCuratedMemoryAssertions: vi.fn(
       async (): Promise<Array<Record<string, unknown>>> => []
     ),
@@ -134,14 +139,39 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     const eventId = "00000000-0000-4000-8000-000000000012";
     candidateRepository.getPersonalNote.mockResolvedValue({
       noteId,
+      threadId: "00000000-0000-4000-8000-000000000013",
       title: "Mutable title",
-      titleVersion: 2
+      titleVersion: 2,
+      body: "Immutable Note body",
+      createdAt: "2026-08-18T12:00:00.000Z",
+      sourceSequence: 7
     });
     candidateRepository.getPersonalNoteMemoryEvent.mockResolvedValue({
       id: eventId,
+      actor: "user",
+      eventType: "message",
+      sourceRuntime: "codex",
+      captureMethod: "api",
+      model: null,
+      projectId: null,
+      projectName: null,
+      projectPath: null,
+      sessionId: null,
+      threadId: null,
+      threadName: null,
       content: "Immutable Note body",
+      contentPreview: "Immutable Note body",
+      rawContent: undefined,
+      metadata: {},
+      linkedNodeIds: [],
       timestamp: "2026-08-18T12:00:00.000Z",
-      sourceSequence: 7
+      sourceEventTime: "2026-08-18T12:00:00.000Z",
+      sourceSequence: 7,
+      capturedAt: "2026-08-18T12:00:00.000Z",
+      createdAt: "2026-08-18T12:00:00.000Z",
+      visibility: "personal",
+      invalidatedAt: null,
+      invalidationReason: null
     });
     const preparation = createLocalSharedMemoryCandidatePreparation({
       repository: candidateRepository as never,
@@ -155,8 +185,12 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     const first = await preparation.loadPersonalNoteCandidatePreview(input);
     candidateRepository.getPersonalNote.mockResolvedValue({
       noteId,
+      threadId: "00000000-0000-4000-8000-000000000013",
       title: "Renamed after review",
-      titleVersion: 3
+      titleVersion: 3,
+      body: "Immutable Note body",
+      createdAt: "2026-08-18T12:00:00.000Z",
+      sourceSequence: 7
     });
     const renamed = await preparation.loadPersonalNoteCandidatePreview(input);
 

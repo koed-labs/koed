@@ -35,6 +35,11 @@ const source = {
   title: "Architecture review",
   ownerPrincipalId: ids.actor
 };
+const capturedSource = {
+  kind: "captured_session" as const,
+  sessionId: ids.replica,
+  logicalMemoryId: ids.logicalMemory
+};
 const destination = {
   team: { id: ids.team, name: "Koed Team" },
   workspace: { id: ids.workspace, name: "Engineering" }
@@ -152,6 +157,7 @@ const shareIntent = (
 ) =>
   ({
     action: "shared_memory.share",
+    source: capturedSource,
     mutationId: ids.mutation,
     logicalGrantId: ids.logicalGrant,
     logicalMemoryId: ids.logicalMemory,
@@ -176,6 +182,7 @@ const representationIntent = (
 ) =>
   ({
     action: "shared_memory.change_representation",
+    source: capturedSource,
     mutationId: ids.mutation,
     logicalMemoryId: ids.logicalMemory,
     teamId: ids.team,
@@ -304,6 +311,7 @@ describe("Shared Memory action definitions", () => {
     expect(admittedDerived).toMatchObject({
       operation: sharedMemoryShareBundleActionGrantBinding({
         referenceId: ids.request,
+        source: capturedSource,
         mutationId: ids.mutation,
         logicalGrantId: ids.logicalGrant,
         consentId: ids.consent,
@@ -443,6 +451,7 @@ describe("Shared Memory action definitions", () => {
     expect(increase).toMatchObject({
       operation: sharedMemoryRepresentationBundleActionGrantBinding({
         referenceId: ids.request,
+        source: capturedSource,
         mutationId: ids.mutation,
         consentId: ids.consent,
         logicalMemoryId: ids.logicalMemory,
