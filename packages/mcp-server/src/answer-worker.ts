@@ -2098,7 +2098,6 @@ const createMemoryAnswerDynamicToolHandler = (
               : undefined,
             retrieval_stage: stage,
             parent_node_ids: stringArrayArg(args, "parent_node_ids"),
-            strict_limit: true,
             limit
           })
         );

@@ -4,6 +4,7 @@ import {
   createWriteStream,
   existsSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   renameSync,
   rmSync,
@@ -59,6 +60,40 @@ const cachePath = (paths: PrivacyModelPaths, file: PrivacyModelFile): string =>
 const blobPath = (paths: PrivacyModelPaths, file: PrivacyModelFile): string =>
   resolve(paths.blobsDir, file.sha256);
 
+const isSameFile = (left: string, right: string): boolean => {
+  try {
+    const leftStat = statSync(left);
+    const rightStat = lstatSync(right);
+    return (
+      rightStat.isFile() &&
+      leftStat.dev === rightStat.dev &&
+      leftStat.ino === rightStat.ino
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+};
+
+export const materializePrivacyModelCacheEntry = (
+  blob: string,
+  target: string
+): void => {
+  if (isSameFile(blob, target)) return;
+  rmSync(target, { force: true });
+  try {
+    linkSync(blob, target);
+  } catch (error) {
+    if (
+      (error as NodeJS.ErrnoException).code === "EEXIST" &&
+      isSameFile(blob, target)
+    ) {
+      return;
+    }
+    throw error;
+  }
+};
+
 const sha256File = async (path: string): Promise<string> => {
   const hash = createHash("sha256");
   await pipeline(createReadStream(path), hash);
@@ -71,8 +106,7 @@ const materializeCacheEntry = (
 ): void => {
   const target = cachePath(paths, file);
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-  rmSync(target, { force: true });
-  linkSync(blobPath(paths, file), target);
+  materializePrivacyModelCacheEntry(blobPath(paths, file), target);
 };
 
 export const collectPrivacyModelStatus = async (

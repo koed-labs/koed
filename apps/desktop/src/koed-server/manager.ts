@@ -32,7 +32,6 @@ import {
   type PersonalDesktopResult
 } from "@koed/shared";
 import {
-  installLocalModel,
   loadRepoEnv,
   resolveKoedServerConfig,
   resolveKoedServerPaths,
@@ -3462,30 +3461,15 @@ export const createKoedServerManager = ({
         );
       }
       case "model": {
-        const result = await installLocalModel(
-          resolveKoedServerPaths(environment),
-          "embedding",
-          environment,
-          {
-            fetch: personalMemoryFetch,
-            onProgress: (progress) => {
-              onProgress({
-                completedBytes: progress.completedBytes,
-                message:
-                  progress.phase === "downloading"
-                    ? "Downloading embedding model…"
-                    : progress.phase === "verifying"
-                      ? "Verifying embedding model…"
-                      : "Embedding model verified.",
-                totalBytes: progress.totalBytes
-              });
-            }
-          }
+        onProgress({
+          completedBytes: null,
+          message: "Installing required local models…",
+          totalBytes: null
+        });
+        return setupActionResult(
+          await runModelInstallJson(),
+          "Required local model installation failed."
         );
-        return {
-          ok: result.ok,
-          message: result.message
-        };
       }
       case "services": {
         onProgress({

@@ -259,6 +259,7 @@ describe("SetupChecklist", () => {
 
     expect(inspect).toHaveBeenCalledOnce();
     expect(container.textContent).toContain("Koed package");
+    expect(container.textContent).toContain("Local models");
     expect(container.textContent).toContain("Claude Code detected");
     expect(container.textContent).toContain("Pi detected");
     expect(container.textContent).toContain("Complete");

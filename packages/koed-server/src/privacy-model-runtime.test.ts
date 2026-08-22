@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,6 +14,7 @@ import type { KoedServerPaths } from "./paths.js";
 import {
   collectPrivacyModelStatus,
   installPrivacyModel,
+  materializePrivacyModelCacheEntry,
   PRIVACY_MODEL_FILES,
   PRIVACY_MODEL_REVISION,
   resolvePrivacyModelPaths
@@ -66,6 +75,26 @@ describe("Privacy Filter model assets", () => {
         state: "checksum_mismatch"
       }
     );
+  });
+
+  it("leaves an existing verified cache hard link untouched", () => {
+    const serverPaths = paths();
+    const blob = resolve(serverPaths.modelsDir, "blob");
+    const cacheDir = resolve(serverPaths.modelsDir, "cache");
+    const target = resolve(cacheDir, "model.onnx");
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(blob, "verified model");
+    linkSync(blob, target);
+    chmodSync(cacheDir, 0o500);
+
+    try {
+      expect(() =>
+        materializePrivacyModelCacheEntry(blob, target)
+      ).not.toThrow();
+      expect(statSync(target).ino).toBe(statSync(blob).ino);
+    } finally {
+      chmodSync(cacheDir, 0o700);
+    }
   });
 
   it("does not download model assets in external dependency mode", async () => {

@@ -104,9 +104,9 @@ export const setupStepsFromStatus = (status: KoedServerStatus): SetupStep[] => {
     }),
     step({
       id: "model",
-      title: "Embedding model",
+      title: "Local models",
       description:
-        "Install the verified local model used to index and recall Memory.",
+        "Install the verified local models used to protect, index, and recall Memory.",
       components: [
         { label: "Embedding Service", status: status.embeddingService }
       ],

@@ -114,6 +114,7 @@ const writeFakeDynamicMemoryAnswerAppServer = (
       | "expandSuccess"
       | "invalidThenValid"
       | "expandBudget"
+      | "emptySearchNotFound"
       | "partialStageNotFound"
       | "refineSearch"
       | "scanLoop"
@@ -267,6 +268,14 @@ lineReader.on("line", (line) => {
         process.exit(69);
       }
       sendFinal(answer);
+      return;
+    }
+    if (mode === "emptySearchNotFound") {
+      if (!text.includes("search_result")) {
+        console.error("expected empty search result, got " + text.slice(0, 200));
+        process.exit(71);
+      }
+      sendFinal(notFoundAnswer);
       return;
     }
     if (!text.includes("KOE144_DYNAMIC_TOOL_EVIDENCE")) {
@@ -1035,19 +1044,22 @@ describe("memory answer worker", () => {
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
             MEMORY_ANSWER_MAX_SEARCHES: "3",
+            KOED_HOME: directory,
             MEMORY_ANSWER_MAX_CANDIDATES: "2"
           })
         }
       );
 
-      expect(searches).toHaveLength(3);
-      expect(searches[2]).toMatchObject({
+      const refinedSearch = searches.find(
+        (search) => search.query === "deployment sentinel configuration"
+      );
+      expect(refinedSearch).toMatchObject({
         query: "deployment sentinel configuration",
         retrieval_stage: "leaf_search",
         exact_hints: ["DEPLOYMENT_MODE"],
-        strict_limit: true,
         limit: 50
       });
+      expect(refinedSearch).not.toHaveProperty("strict_limit");
       expect(response.localMemoryWorker).toMatchObject({
         usedFallback: false,
         memoryStatus: "found",
@@ -1074,6 +1086,70 @@ describe("memory answer worker", () => {
           }
         }
       });
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts an empty worker-refined search as a valid not-found result", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
+    try {
+      const appServerBinary = writeFakeDynamicMemoryAnswerAppServer(directory, {
+        mode: "emptySearchNotFound"
+      });
+      const searches: Record<string, unknown>[] = [];
+      const client: MemoryAnswerRetrievalClient = {
+        async search(input) {
+          searches.push(input);
+          if (input.retrieval_stage === "score_scan") {
+            return { retrieval: { stages: [] } };
+          }
+          expect(input).not.toHaveProperty("strict_limit");
+          return {
+            hits: [],
+            retrieval: { stage: input.retrieval_stage }
+          };
+        },
+        async expand() {
+          throw new Error("empty search should not require expansion");
+        }
+      };
+
+      const response = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What is my nickname?",
+            evidence: [],
+            retrieval: { mode: "app_server_dynamic_tools" }
+          }
+        },
+        {
+          client,
+          retrievalScope: "personal",
+          searchDomain: "global",
+          config: resolveMemoryAnswerWorkerConfig({
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
+            MEMORY_ANSWER_MAX_ATTEMPTS: "2",
+            MEMORY_ANSWER_MAX_SEARCHES: "3",
+            KOED_HOME: directory
+          })
+        }
+      );
+
+      const workerSearch = searches.find(
+        (search) =>
+          search.query === "koed docker" &&
+          search.retrieval_stage === "leaf_search"
+      );
+      expect(workerSearch).toBeDefined();
+      expect(workerSearch).not.toHaveProperty("strict_limit");
+      expect(response.localMemoryWorker).toMatchObject({
+        usedFallback: false,
+        memoryStatus: "not_found",
+        searchCount: 3
+      });
+      expect(response.localMemoryWorker.errorMessage).toBeUndefined();
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

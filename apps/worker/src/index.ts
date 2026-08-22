@@ -71,24 +71,33 @@ const privacyInitializationErrorName = (error: unknown): string =>
     ? error.name
     : "UnknownError";
 
-const pool = workerEnv.databaseUrl
-  ? createDbPool({
-      connectionString: workerEnv.databaseUrl,
-      onPoolError: (error) => {
-        logger.warn(
-          {
-            event: {
-              name: "database.pool_connection_interrupted",
-              category: "database"
-            },
-            component: "database",
-            database: { error_code: databaseErrorCode(error) }
-          },
-          "database pool connection interrupted"
-        );
-      }
-    })
-  : null;
+const onPoolError = (error: Error): void => {
+  logger.warn(
+    {
+      event: {
+        name: "database.pool_connection_interrupted",
+        category: "database"
+      },
+      component: "database",
+      database: { error_code: databaseErrorCode(error) }
+    },
+    "database pool connection interrupted"
+  );
+};
+
+const createWorkerPool = () =>
+  workerEnv.databaseUrl
+    ? createDbPool({
+        connectionString: workerEnv.databaseUrl,
+        onPoolError
+      })
+    : null;
+
+// LISTEN clients hold a connection for their full lifetime. Keep those
+// subscriptions out of the operational pool so notification growth cannot
+// starve queue claims, embeddings, or repository work.
+const pool = createWorkerPool();
+const notificationPool = createWorkerPool();
 if (pool) {
   await waitForCurrentDbMigrations(pool);
 }
@@ -137,7 +146,7 @@ const embeddingWorkflow = createEmbeddingWorkflow({
 const sharedMemoryEmbeddingService = repository
   ? createSharedMemoryEmbeddingService({
       embeddingWorkflow,
-      wakePool: pool!,
+      wakePool: notificationPool!,
       logger
     })
   : null;
@@ -311,7 +320,7 @@ const rawProjectionService =
         historicalImport: workerEnv.historicalImport,
         logger,
         repository,
-        wakePool: pool ?? undefined
+        wakePool: notificationPool ?? undefined
       })
     : null;
 
@@ -359,7 +368,7 @@ const conversationSourceReplicationService =
         repository,
         koedHome: workerEnv.koedHome,
         envelopeEncryptionProvider,
-        wakePool: pool,
+        wakePool: notificationPool!,
         logger
       })
     : null;
@@ -403,7 +412,7 @@ const privacyMaterializationService =
               workerEnv.privacyMaterializationMaxFrontierBytes ??
               64 * 1024 * 1024,
             maxRecords: workerEnv.privacyMaterializationMaxRecords ?? 20_000,
-            wakePool: pool,
+            wakePool: notificationPool!,
             logger
           })
         )
@@ -434,7 +443,7 @@ const sharedMemoryPrivacyMaterializationService =
         privacyRepository: privacyClassificationRepository,
         privacyService: privacyServiceClient,
         classificationEncryptionProvider: envelopeEncryptionProvider,
-        wakePool: pool,
+        wakePool: notificationPool!,
         targetLimit: workerEnv.privacyMaterializationTargetLimit ?? 25,
         logger
       })
@@ -475,7 +484,7 @@ const managedConversationService =
         reasoningEffort: workerEnv.managedConversationReasoningEffort,
         koedHome: workerEnv.koedHome,
         envelopeEncryptionProvider,
-        commandWakePool: pool,
+        commandWakePool: notificationPool!,
         deviceId: workerDeviceIdentity.deviceInstanceId,
         deploymentId: workerDeviceIdentity.deploymentId,
         logger
@@ -511,7 +520,7 @@ const pdsLocalSyncService =
     ? createPdsLocalSyncService({
         repository,
         secureRuntime: pdsSecureRuntime,
-        wakePool: pool!,
+        wakePool: notificationPool!,
         logger
       })
     : null;
@@ -538,7 +547,7 @@ const shutdown = (): Promise<void> => {
       memoryEmbedQueue.close(),
       lcmCompactQueue.close()
     ]);
-    await pool?.end();
+    await Promise.all([pool?.end(), notificationPool?.end()]);
     logger.info(
       {
         event: {

@@ -37,8 +37,8 @@ const stageCopy: Record<
     description: "Prepare storage and embedding dependencies."
   },
   model: {
-    title: "Embedding model",
-    description: "Download and verify the local model."
+    title: "Local models",
+    description: "Download and verify the required local models."
   },
   services: {
     title: "Local services",

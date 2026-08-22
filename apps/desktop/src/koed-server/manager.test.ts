@@ -2485,6 +2485,68 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     ]);
   });
 
+  it("installs every required local model during Team Desktop setup", async () => {
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_TEAM_COLLABORATION_ENABLED: "true" },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        const isModelStatus =
+          args.includes("models") && args.includes("status");
+        const payload =
+          isModelStatus && args.includes("privacy")
+            ? { ok: false, state: "missing" }
+            : args[1] === "status"
+              ? {
+                  ...healthyLocalServiceStatus(),
+                  localAiRuntime: { state: "healthy" },
+                  mcpServer: { state: "healthy" },
+                  lastVerification: { state: "healthy" }
+                }
+              : { ok: true, state: "installed" };
+        callback(null, JSON.stringify(payload), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    const result = await manager.handlers.setup_run!(
+      { operatorConsented: true },
+      {
+        ownerId: "setup-test",
+        signal: new AbortController().signal,
+        emitCollaborationEvent: () => undefined,
+        emitSetupProgress: () => undefined
+      }
+    );
+
+    expect(result).toMatchObject({ state: "complete" });
+    expect(calls).toContainEqual([
+      "/repo/cli.js",
+      "models",
+      "install",
+      "--kind",
+      "embedding",
+      "--json"
+    ]);
+    expect(calls).toContainEqual([
+      "/repo/cli.js",
+      "models",
+      "install",
+      "--kind",
+      "privacy",
+      "--json"
+    ]);
+  });
+
   it("runs standalone package install through koed-server with configured source metadata", async () => {
     const calls: string[][] = [];
     const manager = createKoedServerManager({
