@@ -100,7 +100,7 @@ describe("Shared Memory source binding", () => {
         classifierHash: "4".repeat(64)
       },
       items: [],
-      redactedContentHash: "5".repeat(64)
+      sourceContentHash: "5".repeat(64)
     };
 
     expect(sharedSourcePreviewHash(preview)).not.toBe(

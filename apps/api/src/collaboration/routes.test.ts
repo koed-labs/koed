@@ -307,7 +307,7 @@ const createCollaborationFixture = () => {
         id: ids.deployment,
         protocolDeploymentId: ids.deployment,
         locality: "local",
-        profile: "self_hosted",
+        profile: "local_personal",
         baseUrl: null,
         upstreamBackendId: null
       };

@@ -1156,8 +1156,8 @@ describe("high-risk action grant routes", () => {
           },
           maximumFidelity: input.maximumFidelity,
           includeCuratedMemory: input.includeCuratedMemory,
-          sourceOwnerPolicyWillActivate: false,
-          sourceOwnerPolicyWillReplace: false
+          sourceOwnerPolicyWillActivate: true as const,
+          sourceOwnerPolicyWillReplace: false as const
         }))
       }
     });

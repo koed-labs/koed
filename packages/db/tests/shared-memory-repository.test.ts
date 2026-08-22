@@ -1827,7 +1827,6 @@ describeDb("Shared Memory repository", () => {
         remoteReplicaId: source.remoteReplicaId,
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
-        representation,
         mode,
         ...fidelityConsent(representations),
         authority: authority(fixture)
@@ -2649,7 +2648,6 @@ describeDb("Shared Memory repository", () => {
         byteCount: 128,
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
-        representation: "memory_events",
         ...fidelityConsent(allRepresentations),
         mode: "continuous",
         authority: shareAuthority
@@ -2786,7 +2784,6 @@ describeDb("Shared Memory repository", () => {
           byteCount: 128,
           teamId: fixture.teamId,
           teamWorkspaceId: fixture.teamWorkspaceId,
-          representation: "memory_events",
           ...fidelityConsent(allRepresentations),
           mode: "continuous",
           authority: browserAuthority
@@ -2866,7 +2863,6 @@ describeDb("Shared Memory repository", () => {
         byteCount: 128,
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
-        representation: "memory_events",
         ...fidelityConsent(allRepresentations),
         mode: "continuous",
         authority: shareAuthority
@@ -3252,7 +3248,7 @@ describeDb("Shared Memory repository", () => {
 
     const recalled = await repository.readGrantRepresentation(
       actor(fixture.readerUserId),
-      { shareGrantId }
+      { shareGrantId, representation: "memory_events" }
     );
     expect(recalled?.grant).toMatchObject({
       source,
@@ -3282,7 +3278,8 @@ describeDb("Shared Memory repository", () => {
     expect(revoked.lifecycle).toBe("revoked");
     await expect(
       repository.readGrantRepresentation(actor(fixture.readerUserId), {
-        shareGrantId
+        shareGrantId,
+        representation: "memory_events"
       })
     ).resolves.toBeNull();
     const retainedSource = await pool.query<{ count: string }>(
@@ -3311,7 +3308,6 @@ describeDb("Shared Memory repository", () => {
         byteCount: 128,
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
-        representation: "memory_events",
         ...fidelityConsent(allRepresentations),
         mode: "continuous",
         authority: shareAuthority
@@ -3399,7 +3395,6 @@ describeDb("Shared Memory repository", () => {
           byteCount: 128,
           teamId: fixture.teamId,
           teamWorkspaceId: fixture.teamWorkspaceId,
-          representation: "memory_events",
           ...fidelityConsent(allRepresentations),
           mode: "continuous",
           authority: shareAuthority
@@ -3534,7 +3529,6 @@ describeDb("Shared Memory repository", () => {
           remoteReplicaId: source.remoteReplicaId,
           teamId: fixture.teamId,
           teamWorkspaceId: fixture.teamWorkspaceId,
-          representation: "memory_events",
           mode: "continuous",
           ...fidelityConsent(allRepresentations),
           authority: shareAuthority
@@ -3555,7 +3549,6 @@ describeDb("Shared Memory repository", () => {
         byteCount: 128,
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
-        representation: "memory_events",
         ...fidelityConsent(allRepresentations),
         mode: "continuous",
         authority: shareAuthority
@@ -3635,7 +3628,6 @@ describeDb("Shared Memory repository", () => {
         byteCount: 128,
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
-        representation: "memory_events",
         ...fidelityConsent(allRepresentations),
         mode: "continuous",
         authority: shareAuthority
@@ -3717,7 +3709,6 @@ describeDb("Shared Memory repository", () => {
           byteCount: 128,
           teamId: fixture.teamId,
           teamWorkspaceId: fixture.teamWorkspaceId,
-          representation,
           ...fidelityConsent(allRepresentations),
           mode: "continuous",
           authority: browserAuthority
@@ -4081,7 +4072,6 @@ describeDb("Shared Memory repository", () => {
         byteCount: 128,
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
-        representation: "memory_events",
         ...fidelityConsent(allRepresentations),
         mode: "continuous",
         authority: authority(fixture)
@@ -4229,7 +4219,6 @@ describeDb("Shared Memory repository", () => {
         byteCount: 128,
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
-        representation: "memory_events",
         ...fidelityConsent(allRepresentations),
         mode: "continuous",
         authority: authority(fixture)
@@ -4762,7 +4751,6 @@ describeDb("Shared Memory repository", () => {
         remoteReplicaId: source.remoteReplicaId,
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
-        representation: "memory_events",
         mode: "continuous",
         ...fidelityConsent(allRepresentations),
         authority: authority(fixture)
@@ -6973,7 +6961,6 @@ describeDb("Shared Memory repository", () => {
         remoteReplicaId: source.remoteReplicaId,
         teamId: first.teamId,
         teamWorkspaceId: first.teamWorkspaceId,
-        representation: "memory_events",
         mode: "continuous",
         ...fidelityConsent(allRepresentations),
         authority: authority(first)
@@ -7100,7 +7087,6 @@ describeDb("Shared Memory repository", () => {
         remoteReplicaId: source.remoteReplicaId,
         teamId: fixture.teamId,
         teamWorkspaceId: fixture.teamWorkspaceId,
-        representation: "memory_events",
         mode: "continuous",
         ...fidelityConsent(allRepresentations),
         authority: authority(fixture)

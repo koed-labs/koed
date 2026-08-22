@@ -653,7 +653,9 @@ const createFixture = () => {
           remoteReplicaId: ids.remoteReplica,
           teamId: ids.teamA,
           teamWorkspaceId: ids.workspaceA,
-          representation: "memory_events"
+          representation: "memory_events",
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false
         }),
         source: input.candidate.source,
         logicalMemoryId: input.candidate.logicalMemoryId,
@@ -854,6 +856,8 @@ const createFixture = () => {
         ownerUserId: ids.alice,
         maximumFidelity,
         includeCuratedMemory,
+        sourceCapabilities: capturedSourceCapabilities,
+        activationRepresentation: maximumFidelity,
         activeRepresentation: maximumFidelity,
         representationState: "available" as const,
         representationSourceRevision: 1,
@@ -1004,9 +1008,6 @@ const createFixture = () => {
     },
     get personalNoteUpload() {
       return personalNoteUpload;
-    },
-    restoreRepresentation() {
-      representationAvailable = true;
     },
     get cumulativeMaterializations() {
       return cumulativeMaterializations;

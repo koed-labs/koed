@@ -131,6 +131,9 @@ const loadedFor = (
 ): SharedMemoryDecryptedSemanticTarget => ({
   target,
   preview: {
+    sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+    activationRepresentation: "memory_events",
+    mode: "continuous",
     previewId: ids.preview,
     previewHash: sourcePreviewHash,
     artifactId: ids.artifact,

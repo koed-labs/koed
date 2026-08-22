@@ -12,7 +12,8 @@ import type {
 } from "@koed/db";
 import {
   COLLABORATION_CONTRACT_VERSION,
-  collaborationRealtimeEventFamilySchema
+  collaborationRealtimeEventFamilySchema,
+  type SharedMemoryRepresentation
 } from "@koed/shared";
 import Fastify, { type FastifyRequest } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1745,6 +1746,12 @@ describe("collaboration realtime protocol", () => {
       getOwnerShare: vi.fn(async () => ({
         kind: "pending" as const,
         pendingShare: {
+          sourceCapabilities: [
+            "lcm_rollups",
+            "lcm_leaves",
+            "memory_events"
+          ] as SharedMemoryRepresentation[],
+          activationRepresentation: "memory_events" as const,
           id: pendingShareId,
           mutationId: randomUUID(),
           logicalGrantId: randomUUID(),

@@ -243,15 +243,22 @@ describeDb("Collaboration Shared Memory authority store", () => {
     fixture: Fixture,
     overrides: Partial<CollaborationRemoteSharedMemoryPreview> = {}
   ): CollaborationRemoteSharedMemoryPreview => ({
+    source: {
+      kind: "captured_session",
+      sessionId: fixture.sessionId,
+      logicalMemoryId: fixture.logicalMemoryId
+    },
+    sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+    activationRepresentation: "memory_events",
     previewId: randomUUID(),
     previewHash: hash("a"),
     previewRevision: 1,
     logicalMemoryId: fixture.logicalMemoryId,
     teamId: fixture.teamId,
     teamWorkspaceId: fixture.workspaceId,
-    representation: "memory_events",
     maximumFidelity: "memory_events",
     includeCuratedMemory: false,
+    mode: "continuous",
     binding: {
       sourceRevision: 7,
       sourceHash: hash("b"),
@@ -289,6 +296,13 @@ describeDb("Collaboration Shared Memory authority store", () => {
     },
     overrides: Partial<CollaborationRemoteSharedMemoryConsent> = {}
   ): CollaborationRemoteSharedMemoryConsent => ({
+    source: {
+      kind: "captured_session",
+      sessionId: fixture.sessionId,
+      logicalMemoryId: fixture.logicalMemoryId
+    },
+    sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+    activationRepresentation: "memory_events",
     id: randomUUID(),
     logicalMemoryId: fixture.logicalMemoryId,
     teamId: fixture.teamId,
@@ -315,6 +329,13 @@ describeDb("Collaboration Shared Memory authority store", () => {
   ): CollaborationRemoteSharedMemoryGrant => {
     const id = overrides.id ?? randomUUID();
     return {
+      source: {
+        kind: "captured_session",
+        sessionId: fixture.sessionId,
+        logicalMemoryId: fixture.logicalMemoryId
+      },
+      sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+      activationRepresentation: "memory_events",
       id,
       logicalGrantId: randomUUID(),
       logicalMemoryId: fixture.logicalMemoryId,
@@ -322,6 +343,7 @@ describeDb("Collaboration Shared Memory authority store", () => {
       teamId: fixture.teamId,
       teamWorkspaceId: fixture.workspaceId,
       consentId,
+      mode: "continuous",
       maximumFidelity: "memory_events",
       includeCuratedMemory: false,
       fidelityPolicyRevision: 3,
@@ -556,8 +578,8 @@ describeDb("Collaboration Shared Memory authority store", () => {
       binding: {
         sourceRevision: 1,
         sourceHash: hash("b"),
-        representationPolicyRevision: 3,
-        representationPolicyHash: hash("c"),
+        fidelityPolicyRevision: 3,
+        fidelityPolicyHash: hash("c"),
         contentPolicyVersion: 4,
         contentPolicyHash: hash("d"),
         classifierVersion: 5,
@@ -718,7 +740,7 @@ describeDb("Collaboration Shared Memory authority store", () => {
           ...remote,
           previewId: randomUUID(),
           previewHash: hash("6"),
-          representation: "curated_assertions",
+          activationRepresentation: "curated_assertions",
           includeCuratedMemory: false
         }
       })
@@ -730,7 +752,7 @@ describeDb("Collaboration Shared Memory authority store", () => {
           ...remote,
           previewId: randomUUID(),
           previewHash: hash("7"),
-          representation: "memory_events",
+          activationRepresentation: "memory_events",
           maximumFidelity: "lcm_rollups"
         }
       })
@@ -1082,14 +1104,14 @@ describeDb("Collaboration Shared Memory authority store", () => {
     const fixture = await createFixture();
     await bindFixture(fixture);
     const { consent } = await persistPreviewAndConsent(fixture);
-    const ownerAllowedRepresentations = [
+    const sourceCapabilities = [
       "memory_events",
       "lcm_leaves",
       "lcm_rollups",
       "curated_assertions"
     ] as const;
     const remoteGrant = grantFor(fixture, consent.consent.id, {
-      ownerAllowedRepresentations: [...ownerAllowedRepresentations]
+      sourceCapabilities: [...sourceCapabilities]
     });
 
     await expect(
@@ -1102,7 +1124,7 @@ describeDb("Collaboration Shared Memory authority store", () => {
     ).resolves.toMatchObject({
       grant: {
         id: remoteGrant.id,
-        ownerAllowedRepresentations
+        sourceCapabilities
       }
     });
   });

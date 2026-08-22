@@ -106,7 +106,11 @@ const sourceItemForRepresentation = (
 
 const previewResponse = (items: PreviewItem[] = [sourceItem()]) => ({
   source: capturedSource,
-  sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"] as const,
+  sourceCapabilities: [
+    "lcm_rollups",
+    "lcm_leaves",
+    "memory_events"
+  ] as CollaborationPersistedSharedMemoryPreview["sourceCapabilities"],
   activationRepresentation: "memory_events" as const,
   mode: "continuous" as const,
   previewId: ids.preview,
@@ -449,6 +453,8 @@ const createFixture = (
         previewId: input.previewId,
         consent: {
           source: remote.source,
+          sourceCapabilities: remote.sourceCapabilities,
+          activationRepresentation: remote.activationRepresentation,
           id: remote.id,
           logicalMemoryId: remote.logicalMemoryId,
           teamId: remote.teamId,

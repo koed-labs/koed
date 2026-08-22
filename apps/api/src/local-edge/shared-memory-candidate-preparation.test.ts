@@ -119,7 +119,8 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     const input = {
       localOwnerUserId: "owner-1",
       sessionId: "session-1",
-      representation: "memory_events" as const
+      representation: "memory_events" as const,
+      mode: "continuous" as const
     };
     const first = await preparation.loadCandidatePreview(input);
     const second = await preparation.loadCandidatePreview(input);
@@ -233,7 +234,8 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
       preparation.loadCandidatePreview({
         localOwnerUserId: "owner-1",
         sessionId: "session-1",
-        representation: "curated_assertions"
+        representation: "curated_assertions",
+        mode: "continuous"
       })
     ).resolves.toMatchObject({
       itemCount: 1,
@@ -281,7 +283,8 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
       preparation.loadCandidatePreview({
         localOwnerUserId: "owner-1",
         sessionId: "session-1",
-        representation: "memory_events"
+        representation: "memory_events",
+        mode: "continuous"
       })
     ).resolves.toBeNull();
   });
@@ -308,7 +311,8 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     const candidate = await preparation.loadCandidatePreview({
       localOwnerUserId: "owner-1",
       sessionId: "session-1",
-      representation: "memory_events"
+      representation: "memory_events",
+      mode: "continuous"
     });
 
     expect(candidate).toMatchObject({
@@ -341,7 +345,8 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
       preparation.loadCandidatePreview({
         localOwnerUserId: "owner-1",
         sessionId: "session-1",
-        representation: "memory_events"
+        representation: "memory_events",
+        mode: "continuous"
       })
     ).resolves.toBeNull();
   });
@@ -373,7 +378,8 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
       preparation.loadCandidatePreview({
         localOwnerUserId: "owner-1",
         sessionId: "session-1",
-        representation: "lcm_leaves"
+        representation: "lcm_leaves",
+        mode: "continuous"
       })
     ).resolves.toMatchObject({
       items: [{ lexicalAnchors: ["Approval Activity"] }]

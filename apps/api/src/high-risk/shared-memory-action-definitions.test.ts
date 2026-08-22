@@ -45,7 +45,7 @@ const destination = {
   workspace: { id: ids.workspace, name: "Engineering" }
 };
 
-const repository = () => ({
+const repository = (options?: { sourceOwnerPolicyWillReplace?: boolean }) => ({
   getSharedMemoryCandidatePreviewAdmission: vi.fn(async (_actor, input) => ({
     effectiveMaximumFidelity: input.maximumFidelity,
     effectiveIncludeCuratedMemory: input.includeCuratedMemory,
@@ -78,7 +78,7 @@ const repository = () => ({
     maximumFidelity: input.maximumFidelity,
     includeCuratedMemory: input.includeCuratedMemory,
     sourceOwnerPolicyWillActivate: true as const,
-    sourceOwnerPolicyWillReplace: false as const
+    sourceOwnerPolicyWillReplace: options?.sourceOwnerPolicyWillReplace === true
   })),
   getSharedMemoryRevokeReview: vi.fn(async (_actor, input) => ({
     source: {
@@ -258,8 +258,6 @@ describe("Shared Memory action definitions", () => {
       sharedMemoryPreviewActionGrantBinding({
         referenceId: ids.request,
         source: capturedSource,
-        sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
-        activationRepresentation: "memory_events",
         sourceCapabilities: [
           "lcm_rollups",
           "lcm_leaves",
@@ -328,14 +326,7 @@ describe("Shared Memory action definitions", () => {
   it("binds consent and Share Grant creation in one decision and steps up raw Memory", async () => {
     const derived = shareIntent("lcm_rollups");
     const raw = shareIntent("memory_events");
-    const rawRepository = repository();
-    rawRepository.getSharedMemoryPendingShareReview.mockImplementationOnce(
-      async (actor, input) => ({
-        ...(await repository().getSharedMemoryPendingShareReview(actor, input)),
-        sourceOwnerPolicyWillActivate: true,
-        sourceOwnerPolicyWillReplace: true
-      })
-    );
+    const rawRepository = repository({ sourceOwnerPolicyWillReplace: true });
 
     const admittedDerived = await admit(derived);
     const admittedRaw = await admit(raw, rawRepository);

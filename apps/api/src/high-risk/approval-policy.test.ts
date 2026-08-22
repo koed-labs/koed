@@ -166,11 +166,14 @@ const matrixCases: Array<{
   {
     intent: {
       action: "shared_memory.preview",
+      source: capturedSource,
+      sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+      activationRepresentation: "lcm_rollups",
+      mode: "continuous",
       logicalMemoryId: uuid(3),
       remoteReplicaId: uuid(4),
       teamId: uuid(1),
       teamWorkspaceId: uuid(2),
-      representation: "lcm_rollups",
       maximumFidelity: "lcm_rollups",
       includeCuratedMemory: false
     },
@@ -180,6 +183,8 @@ const matrixCases: Array<{
     intent: {
       action: "shared_memory.candidate_preview",
       source: capturedSource,
+      sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+      activationRepresentation: "lcm_rollups",
       logicalMemoryId: uuid(3),
       candidateHash: "a".repeat(64),
       sourceRevision: 1,
@@ -189,7 +194,6 @@ const matrixCases: Array<{
       byteCount: 128,
       teamId: uuid(1),
       teamWorkspaceId: uuid(2),
-      representation: "lcm_rollups",
       maximumFidelity: "lcm_rollups",
       includeCuratedMemory: false,
       mode: "snapshot",
@@ -201,6 +205,8 @@ const matrixCases: Array<{
     intent: {
       action: "shared_memory.pending_share",
       source: capturedSource,
+      sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+      activationRepresentation: "lcm_rollups",
       mutationId: uuid(6),
       logicalGrantId: uuid(7),
       logicalMemoryId: uuid(3),
@@ -255,6 +261,8 @@ const matrixCases: Array<{
     intent: {
       action: "shared_memory.change_fidelity",
       source: capturedSource,
+      sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+      activationRepresentation: "lcm_rollups",
       mutationId: uuid(6),
       logicalMemoryId: uuid(3),
       teamId: uuid(1),

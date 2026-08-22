@@ -853,12 +853,15 @@ describeDb("memory repository visibility", () => {
            representation_policy_hash, content_policy_version,
            content_policy_hash, classifier_version, classifier_hash,
            source_deployment_identity_id, remote_user_identity_id,
-           device_credential_id, device_provenance_hash
+           device_credential_id, device_provenance_hash, source_session_id,
+           source_capabilities, activation_representation
          ) values (
            $1, $2, $3, $4, $5, $6, $7, $8, 'memory_events',
            $9, $9, 0, $10, $11, $12, $13, 'memory_events', false,
            $14, $15, $16, $17,
-           $18, $19, 1, $20, 1, $21, 1, $22, $23, $24, $25, $26
+           $18, $19, 1, $20, 1, $21, 1, $22, $23, $24, $25, $26,
+           $27, array['lcm_rollups','lcm_leaves','memory_events']::shared_memory_representation[],
+           'memory_events'
          )`,
         [
           sourceArtifactId,
@@ -886,7 +889,8 @@ describeDb("memory repository visibility", () => {
           provenance.source_deployment_identity_id,
           provenance.remote_user_identity_id,
           provenance.device_credential_id,
-          hash()
+          hash(),
+          input.sessionId
         ]
       );
       const previewId = randomUUID();
@@ -896,10 +900,13 @@ describeDb("memory repository visibility", () => {
            id, source_artifact_id, logical_memory_id, remote_replica_id,
            owner_user_id, owner_principal_id, team_id, team_workspace_id,
            representation, preview_revision, preview_hash, source_revision,
-           source_hash, source_content_hash
+           source_hash, source_content_hash, source_session_id,
+           source_capabilities, activation_representation, mode
          ) values (
            $1, $2, $3, $4, $5, $6, $7, $8, 'memory_events', 1,
-           $9, $10, $11, $12
+           $9, $10, $11, $12, $13,
+           array['lcm_rollups','lcm_leaves','memory_events']::shared_memory_representation[],
+           'memory_events', 'continuous'
          )`,
         [
           previewId,
@@ -913,7 +920,8 @@ describeDb("memory repository visibility", () => {
           previewHash,
           logicalMemory.source_revision,
           sourceHash,
-          sourceContentHash
+          sourceContentHash,
+          input.sessionId
         ]
       );
 
@@ -931,12 +939,15 @@ describeDb("memory repository visibility", () => {
            source_hash, fidelity_policy_revision,
            fidelity_policy_hash, content_policy_version,
            content_policy_hash, classifier_version, classifier_hash,
-           source_content_hash, activated_at
+           source_content_hash, activated_at, source_session_id,
+           source_capabilities, activation_representation
          ) values (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
            'continuous', 'active', 1, 'memory_events', false,
            $13, 1, $14, $15, null, $16, 1, $17, 1,
-           $18, 1, $19, $20, now()
+           $18, 1, $19, $20, now(), $21,
+           array['lcm_rollups','lcm_leaves','memory_events']::shared_memory_representation[],
+           'memory_events'
          )`,
         [
           consentId,
@@ -958,7 +969,8 @@ describeDb("memory repository visibility", () => {
           representationPolicyHash,
           contentPolicyHash,
           classifierHash,
-          sourceContentHash
+          sourceContentHash,
+          input.sessionId
         ]
       );
 
@@ -973,14 +985,17 @@ describeDb("memory repository visibility", () => {
            fidelity_policy_revision, content_policy_version,
            classifier_version, source_revision, grant_version, lifecycle,
            creator_authority, granted_by_user_id, revoked_at,
-           revoked_by_user_id, revocation_reason
+           revoked_by_user_id, revocation_reason, source_capabilities,
+           activation_representation, mode
          ) values (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
            $14, $15, 'memory_events', false, 1, 1, 1, $16, 1, $17,
            'repository_test_fixture', $4,
            case when $18::boolean then now() else null end,
            case when $18::boolean then $4::uuid else null end,
-           case when $18::boolean then $19::text else null end
+           case when $18::boolean then $19::text else null end,
+           array['lcm_rollups','lcm_leaves','memory_events']::shared_memory_representation[],
+           'memory_events', 'continuous'
          ) returning id`,
         [
           randomUUID(),
