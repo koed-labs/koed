@@ -124,6 +124,11 @@ describe("experience replay database template guards", () => {
     expect(statements).toContain(
       `DROP DATABASE IF EXISTS "${template}" WITH (FORCE)`
     );
+    expect(
+      statements.indexOf(`DROP DATABASE IF EXISTS "${clone}" WITH (FORCE)`)
+    ).toBeLessThan(
+      statements.indexOf(`DROP DATABASE IF EXISTS "${template}" WITH (FORCE)`)
+    );
     expect(statements).not.toContain(
       `DROP DATABASE IF EXISTS "${source}" WITH (FORCE)`
     );

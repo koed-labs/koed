@@ -532,15 +532,19 @@ export class ExperienceReplayDatabaseTemplates {
       ...this.ephemeral,
       ...(preserveTemplates ? [] : [...this.templates])
     ];
-    const cleanupResults = await Promise.allSettled(
-      cleanupNames.map((name) => this.dropRunOwned(name))
-    );
-    for (const result of cleanupResults) {
-      if (result.status === "rejected") {
-        const error: unknown = result.reason;
-        failures.push(
-          error instanceof Error ? error : new Error(String(error))
-        );
+    const cleanupGroups = [
+      [...this.ephemeral],
+      preserveTemplates ? [] : [...this.templates]
+    ];
+    for (const group of cleanupGroups) {
+      for (const name of group) {
+        try {
+          await this.dropRunOwned(name);
+        } catch (error) {
+          failures.push(
+            error instanceof Error ? error : new Error(String(error))
+          );
+        }
       }
     }
     if (cleanupNames.length > 0) {
