@@ -88,7 +88,7 @@ export interface SharedSourceArtifactV1 {
   source?: SharedMemorySourceRef;
   representation: SharedSourceArtifactRepresentation;
   binding: SharedSourceArtifactBindingV1;
-  /** Present only for Captured Session sources. Personal Note snapshots are standalone. */
+  /** Present only for Captured Session sources. Personal Note revisions are standalone. */
   sync?: SharedSourceArtifactSyncBindingV1;
   policies: SharedSourceArtifactPolicyBindingV1;
   manifest: SharedSourceArtifactManifestEntryV1[];

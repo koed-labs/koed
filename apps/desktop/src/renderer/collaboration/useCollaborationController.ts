@@ -41,10 +41,9 @@ const authorizedThread = (
       return null;
     }
     return (
-      [
-        snapshot.navigation.personal.notesToSelf,
-        ...snapshot.navigation.personal.channels
-      ].find(({ id }) => id === authority.threadId) ?? null
+      snapshot.navigation.personal.channels.find(
+        ({ id }) => id === authority.threadId
+      ) ?? null
     );
   }
   if (

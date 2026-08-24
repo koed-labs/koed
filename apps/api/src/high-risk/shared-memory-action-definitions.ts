@@ -172,8 +172,7 @@ export const bindSharedMemoryPendingShareOperation = (
     includeCuratedMemory: intent.includeCuratedMemory,
     previewRevision: intent.previewRevision,
     previewHash: intent.previewHash,
-    expiresAt: intent.expiresAt,
-    title: intent.title
+    expiresAt: intent.expiresAt
   });
 
 export const bindSharedMemoryRevokeOperation = (
@@ -341,23 +340,35 @@ const fidelityChangeReview = (
     fidelityRank[intent.maximumFidelity] >
       fidelityRank[review.grant.maximumFidelity] ||
     (!review.grant.includeCuratedMemory && intent.includeCuratedMemory);
+  const changesFidelity =
+    review.grant.maximumFidelity !== intent.maximumFidelity ||
+    review.grant.includeCuratedMemory !== intent.includeCuratedMemory;
+  const updatesSourceOnly = review.sourceRevisionChanged && !changesFidelity;
   return reviewed(increases ? "step_up" : "native_review", {
     title: review.willReactivate
       ? "Reactivate Shared Memory with this fidelity?"
-      : "Change the Shared Memory fidelity?",
+      : updatesSourceOnly
+        ? "Share this newer Memory revision?"
+        : "Change the Shared Memory fidelity?",
     description: review.sourceOwnerPolicyWillActivate
       ? "Compare the current and proposed detail. This decision also activates the reviewed source policy."
-      : "Compare the current and proposed level of Memory detail.",
+      : updatesSourceOnly
+        ? "Replace the Workspace copy with the reviewed newer source revision."
+        : "Compare the current and proposed level of Memory detail.",
     consequence: review.sourceOwnerPolicyWillReplace
       ? "The new source policy pauses existing consent and invalidates other affected Share Grants while this Share Grant changes fidelity."
       : review.willReactivate
         ? "This reactivates the Share Grant and restores the approved cumulative Memory layers."
-        : increases
-          ? "This makes more detailed Memory or Curated Memory available to the Workspace."
-          : "This reduces the detail available and purges unauthorized higher-fidelity cached content.",
+        : updatesSourceOnly
+          ? "The existing Share Grant keeps its identity while the Workspace copy advances to this revision."
+          : increases
+            ? "This makes more detailed Memory or Curated Memory available to the Workspace."
+            : "This reduces the detail available and purges unauthorized higher-fidelity cached content.",
     confirmLabel: review.willReactivate
       ? "Reactivate Share Grant"
-      : "Change fidelity",
+      : updatesSourceOnly
+        ? "Share newer revision"
+        : "Change fidelity",
     details: [
       { label: "Personal Memory", value: sourceName(review) },
       { label: "Logical Memory", value: review.source.logicalMemoryId },
@@ -379,6 +390,18 @@ const fidelityChangeReview = (
         label: "New Curated Memory",
         value: curatedMemoryLabel(intent.includeCuratedMemory)
       },
+      ...(review.sourceRevisionChanged
+        ? [
+            {
+              label: "Current source revision",
+              value: String(review.grant.sourceRevision)
+            },
+            {
+              label: "New source revision",
+              value: String(review.preview.sourceRevision)
+            }
+          ]
+        : []),
       { label: "Mode", value: intent.mode },
       { label: "Expiry", value: intent.expiresAt ?? "No expiry" }
     ]

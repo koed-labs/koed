@@ -291,11 +291,6 @@ export interface CollaborationRendererClient {
     kind: "pending" | "grant";
     id: string;
   }): Promise<OwnedShareItem>;
-  renameOwnedShare(input: {
-    kind: "pending" | "grant";
-    id: string;
-    title: string;
-  }): Promise<OwnedShareItem>;
   controlPendingShare(input: {
     pendingShareId: string;
     expectedOperationVersion: number;
@@ -374,7 +369,6 @@ export interface CollaborationRendererClient {
     previewRevision: number;
     previewHash: string;
     expiresAt: string | null;
-    title?: string;
   }): Promise<SharedMemoryGrant | PendingShare>;
   revokeSharedMemory(input: {
     mutationId: string;
@@ -454,7 +448,6 @@ const teamIdForSelection = (
 const selectionIdentity = (selection: CollaborationSelection): string => {
   switch (selection.kind) {
     case "personal_memory":
-    case "notes_to_self":
       return selection.kind;
     case "personal_channel":
       return `${selection.kind}:${selection.threadId}`;
@@ -474,19 +467,10 @@ const selectionIdentity = (selection: CollaborationSelection): string => {
 const personalFallback = (
   snapshot: CollaborationSnapshot
 ): Pick<CollaborationSnapshot, "selection" | "view"> => ({
-  selection: { kind: "notes_to_self" },
+  selection: { kind: "personal_memory" },
   view: {
-    kind: "thread",
-    thread: snapshot.navigation.personal.notesToSelf,
-    messages: {
-      snapshotRevision: snapshot.snapshotRevision,
-      threadId: snapshot.navigation.personal.notesToSelf.id,
-      items: [],
-      olderCursor: null,
-      newerCursor: null,
-      hasOlder: false,
-      hasNewer: false
-    }
+    kind: "personal_memory",
+    entries: snapshot.navigation.personal.memory
   }
 });
 
@@ -528,17 +512,6 @@ const optimisticSelection = (
       view: {
         kind: "personal_memory",
         entries: snapshot.navigation.personal.memory
-      }
-    };
-  }
-  if (selection.kind === "notes_to_self") {
-    const thread = snapshot.navigation.personal.notesToSelf;
-    return {
-      selection,
-      view: {
-        kind: "thread",
-        thread,
-        messages: emptyMessagePage(snapshot, thread)
       }
     };
   }
@@ -615,6 +588,124 @@ const optimisticSelection = (
   return null;
 };
 
+const selectionAvailableAfterNavigation = (
+  snapshot: CollaborationSnapshot,
+  selection: CollaborationSelection
+): boolean => {
+  if (selection.kind !== "shared_session") {
+    return optimisticSelection(snapshot, selection) !== null;
+  }
+  const team = snapshot.navigation.teams.find(
+    (candidate) => candidate.id === selection.teamId
+  );
+  const workspace = team?.workspaces.find(
+    (candidate) => candidate.id === selection.workspaceId
+  );
+  return (
+    team?.lifecycle === "active" &&
+    workspace?.lifecycle === "active" &&
+    workspace.sharedMemory.some(
+      (session) => session.id === selection.sharedSessionId
+    )
+  );
+};
+
+const selectionAuthorityFingerprint = (
+  snapshot: CollaborationSnapshot,
+  selection: CollaborationSelection
+): string | null => {
+  if (selection.kind === "personal_memory") return "personal_memory";
+  if (selection.kind === "personal_channel") {
+    const thread = snapshot.navigation.personal.channels.find(
+      (candidate) => candidate.id === selection.threadId
+    );
+    return thread ? `${thread.lifecycle}:${thread.canPost}` : null;
+  }
+  const team = snapshot.navigation.teams.find(
+    (candidate) => candidate.id === selection.teamId
+  );
+  if (!team) return null;
+  const teamAuthority = `${team.lifecycle}:${team.role}`;
+  if (selection.kind === "team_people") return teamAuthority;
+  if (selection.kind === "team_direct_message") {
+    const thread = team.directMessages.find(
+      (candidate) => candidate.id === selection.threadId
+    );
+    return thread
+      ? `${teamAuthority}:${thread.lifecycle}:${thread.canPost}`
+      : null;
+  }
+  const workspace = team.workspaces.find(
+    (candidate) => candidate.id === selection.workspaceId
+  );
+  if (!workspace) return null;
+  const workspaceAuthority = `${teamAuthority}:${workspace.lifecycle}:${workspace.access}`;
+  if (selection.kind === "workspace_shared_memory") return workspaceAuthority;
+  if (selection.kind === "workspace_channel") {
+    const thread = workspace.channels.find(
+      (candidate) => candidate.id === selection.threadId
+    );
+    return thread
+      ? `${workspaceAuthority}:${thread.lifecycle}:${thread.canPost}`
+      : null;
+  }
+  const session = workspace.sharedMemory.find(
+    (candidate) => candidate.id === selection.sharedSessionId
+  );
+  return session ? `${workspaceAuthority}:${session.sourceState}` : null;
+};
+
+const reconcileNavigation = (
+  current: CollaborationSnapshot,
+  navigation: CollaborationSnapshot["navigation"],
+  fallback: Pick<CollaborationSnapshot, "selection" | "view">
+): CollaborationSnapshot => {
+  const selection = current.selection;
+  const next = { ...current, navigation };
+  if (
+    !selectionAvailableAfterNavigation(next, selection) ||
+    selectionAuthorityFingerprint(current, selection) !==
+      selectionAuthorityFingerprint(next, selection)
+  ) {
+    return { ...next, ...fallback };
+  }
+  const optimistic = optimisticSelection(next, current.selection);
+  if (
+    selection.kind === "personal_memory" ||
+    selection.kind === "team_people" ||
+    selection.kind === "workspace_shared_memory"
+  ) {
+    return optimistic ? { ...next, ...optimistic } : { ...next, ...fallback };
+  }
+  if (
+    selection.kind === "shared_session" &&
+    current.view.kind === "shared_session"
+  ) {
+    const team = navigation.teams.find(
+      (candidate) => candidate.id === selection.teamId
+    );
+    const workspace = team?.workspaces.find(
+      (candidate) => candidate.id === selection.workspaceId
+    );
+    const session = workspace?.sharedMemory.find(
+      (candidate) => candidate.id === selection.sharedSessionId
+    );
+    return session
+      ? { ...next, view: { ...current.view, session } }
+      : { ...next, ...fallback };
+  }
+  if (current.view.kind === "thread") {
+    const selected = optimistic;
+    return selected?.view.kind === "thread"
+      ? {
+          ...next,
+          view: { ...current.view, thread: selected.view.thread }
+        }
+      : { ...next, ...fallback };
+  }
+  return { ...next, ...fallback };
+};
+
 const threadReference = (
   thread: CollaborationThread
 ): CollaborationThreadReference =>
@@ -626,8 +717,6 @@ const selectionForThread = (
   thread: CollaborationThread
 ): CollaborationSelection => {
   switch (thread.kind) {
-    case "notes_to_self":
-      return { kind: "notes_to_self" };
     case "personal_channel":
       return { kind: "personal_channel", threadId: thread.id };
     case "workspace_channel":
@@ -660,10 +749,6 @@ const mapThread = (
   update: (thread: CollaborationThread) => CollaborationThread
 ): CollaborationSnapshot => {
   const personal = snapshot.navigation.personal;
-  const notesToSelf =
-    personal.notesToSelf.id === threadId
-      ? (update(personal.notesToSelf) as typeof personal.notesToSelf)
-      : personal.notesToSelf;
   const channels = personal.channels.map((thread) =>
     thread.id === threadId ? (update(thread) as typeof thread) : thread
   );
@@ -698,7 +783,7 @@ const mapThread = (
     ...snapshot,
     navigation: {
       ...snapshot.navigation,
-      personal: { ...personal, notesToSelf, channels },
+      personal: { ...personal, channels },
       teams
     },
     view
@@ -774,18 +859,6 @@ const upsertThread = (
   snapshot: CollaborationSnapshot,
   thread: CollaborationThread
 ): CollaborationSnapshot => {
-  if (thread.kind === "notes_to_self") {
-    return {
-      ...snapshot,
-      navigation: {
-        ...snapshot.navigation,
-        personal: {
-          ...snapshot.navigation.personal,
-          notesToSelf: thread
-        }
-      }
-    };
-  }
   if (thread.kind === "personal_channel") {
     const channels = snapshot.navigation.personal.channels.filter(
       (candidate) => candidate.id !== thread.id
@@ -1066,11 +1139,9 @@ const threadAuthorityIsCurrent = (
   if (authority.scope === "personal") {
     return (
       authority.ownerUserId === snapshot.navigation.personalOwner.id &&
-      ((snapshot.navigation.personal.notesToSelf.id === authority.threadId &&
-        snapshot.navigation.personal.notesToSelf.canPost) ||
-        snapshot.navigation.personal.channels.some(
-          (thread) => thread.id === authority.threadId && thread.canPost
-        ))
+      snapshot.navigation.personal.channels.some(
+        (thread) => thread.id === authority.threadId && thread.canPost
+      )
     );
   }
   if (
@@ -2235,18 +2306,19 @@ export const createCollaborationRendererClient = (
     if (!snapshot) return;
     const realtime = event.snapshot;
     if (realtime.scope === "personal") {
-      const personalSelected = teamIdForSelection(snapshot.selection) === null;
+      const navigation = {
+        ...snapshot.navigation,
+        personal: realtime.personal
+      };
+      const reconciled = reconcileNavigation(snapshot, navigation, {
+        selection: realtime.selection,
+        view: realtime.view
+      });
       await publish(
         {
-          ...snapshot,
+          ...reconciled,
           snapshotRevision: realtime.snapshotRevision,
-          navigation: {
-            ...snapshot.navigation,
-            personal: realtime.personal
-          },
-          ...(personalSelected
-            ? { selection: realtime.selection, view: realtime.view }
-            : {})
+          navigation
         },
         { kind: "realtime" }
       );
@@ -2258,15 +2330,16 @@ export const createCollaborationRendererClient = (
       ),
       realtime.team
     ];
-    const selected = teamIdForSelection(snapshot.selection) === realtime.teamId;
+    const navigation = { ...snapshot.navigation, teams };
+    const reconciled = reconcileNavigation(snapshot, navigation, {
+      selection: realtime.selection,
+      view: realtime.view
+    });
     await publish(
       {
-        ...snapshot,
+        ...reconciled,
         snapshotRevision: realtime.snapshotRevision,
-        navigation: { ...snapshot.navigation, teams },
-        ...(selected
-          ? { selection: realtime.selection, view: realtime.view }
-          : {})
+        navigation
       },
       { kind: "realtime" }
     );
@@ -2340,13 +2413,10 @@ export const createCollaborationRendererClient = (
       case "managed_conversation_upserted":
         break;
       case "navigation_snapshot":
-        clearTeamSelectionViews();
-        next = {
-          ...next,
-          navigation: update.navigation,
+        next = reconcileNavigation(next, update.navigation, {
           selection: update.selection,
           view: update.view
-        };
+        });
         break;
       case "thread_upserted":
         clearThreadSelectionViews(update.thread.id);
@@ -2484,6 +2554,7 @@ export const createCollaborationRendererClient = (
         const transientFidelityRemoval =
           selected &&
           (event.family === "fidelity_changed" ||
+            event.family === "source_revision_changed" ||
             event.family === "memory_event_available" ||
             event.family === "lcm_leaf_available" ||
             event.family === "lcm_rollup_available");
@@ -2632,6 +2703,10 @@ export const createCollaborationRendererClient = (
         (snapshot.connection.state === "reconnecting" ||
           snapshot.connection.state === "unavailable") &&
         teamIdForSelection(snapshot.selection) !== null;
+      const recoverySelection =
+        teamIdForSelection(snapshot.selection) !== null
+          ? snapshot.selection
+          : undefined;
       const requiresLiveRecovery =
         becameLive &&
         !backendChanged &&
@@ -2651,7 +2726,9 @@ export const createCollaborationRendererClient = (
           { kind: "connection", announcement: event.error?.userMessage }
         );
       }
-      if (requiresLiveRecovery) await reloadAuthoritativeSnapshot?.();
+      if (requiresLiveRecovery) {
+        await reloadAuthoritativeSnapshot?.(recoverySelection);
+      }
       return;
     }
     if (event.type === "control") {
@@ -3116,7 +3193,7 @@ export const createCollaborationRendererClient = (
       const fallbackConnection = snapshot?.connection;
       const generation = ++selectionRequestGeneration;
       const result = await command("collaboration.select", {
-        selection: { kind: "notes_to_self" }
+        selection: { kind: "personal_memory" }
       });
       if (!result.ok || result.command !== "collaboration.select") {
         throw new Error("Unexpected collaboration result.");
@@ -3124,9 +3201,8 @@ export const createCollaborationRendererClient = (
       const hydrated = result.data.snapshot;
       if (
         generation !== selectionRequestGeneration ||
-        hydrated.selection.kind !== "notes_to_self" ||
-        hydrated.view.kind !== "thread" ||
-        hydrated.view.thread.scope !== "personal"
+        hydrated.selection.kind !== "personal_memory" ||
+        hydrated.view.kind !== "personal_memory"
       ) {
         return;
       }
@@ -3814,13 +3890,6 @@ export const createCollaborationRendererClient = (
     async getOwnedShare(input) {
       const result = await command("collaboration.get_owned_share", input);
       if (!result.ok || result.command !== "collaboration.get_owned_share") {
-        throw new Error("Unexpected collaboration result.");
-      }
-      return result.data.share;
-    },
-    async renameOwnedShare(input) {
-      const result = await command("collaboration.rename_owned_share", input);
-      if (!result.ok || result.command !== "collaboration.rename_owned_share") {
         throw new Error("Unexpected collaboration result.");
       }
       return result.data.share;

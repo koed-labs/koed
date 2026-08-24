@@ -167,6 +167,7 @@ export const modalIsAuthorized = (
   if (modal.kind === "share_personal_note") {
     return (
       modal.note.noteId.length > 0 &&
+      modal.note.event !== null &&
       modal.note.memoryEventId === modal.note.event.id &&
       modal.note.event.invalidatedAt === null
     );
@@ -269,7 +270,6 @@ const threadTitle = (
   thread: CollaborationThread,
   currentUserId: string
 ): string => {
-  if (thread.kind === "notes_to_self") return "Notes to self";
   if (thread.name) return thread.name;
   if (thread.kind === "dm" || thread.kind === "group_dm") {
     const names = thread.participants
@@ -356,71 +356,15 @@ function Modal({
 
 function ModalHeader({
   title,
-  onClose,
-  onTitleChange,
-  titleChangeDisabled = false
+  onClose
 }: {
   title: string;
   onClose: () => void;
-  onTitleChange?: (title: string) => void;
-  titleChangeDisabled?: boolean;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(title);
-  const commit = () => {
-    const next = normalizedText(draft);
-    if (!next || codePointLength(next) > 80) return;
-    onTitleChange?.(next);
-    setEditing(false);
-  };
   return (
     <header className="collab-modal-header">
       <div className="collab-modal-title">
-        {editing ? (
-          <input
-            aria-label="Share name"
-            autoFocus
-            disabled={titleChangeDisabled}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") commit();
-              if (event.key === "Escape") {
-                setDraft(title);
-                setEditing(false);
-              }
-            }}
-            value={draft}
-          />
-        ) : (
-          <h2>{title}</h2>
-        )}
-        {onTitleChange ? (
-          <button
-            aria-label={editing ? "Save Share name" : "Rename Share"}
-            className="collab-icon-button collab-title-edit-button"
-            disabled={
-              titleChangeDisabled ||
-              (editing &&
-                (!normalizedText(draft) ||
-                  codePointLength(normalizedText(draft)) > 80))
-            }
-            onClick={() => {
-              if (editing) commit();
-              else {
-                setDraft(title);
-                setEditing(true);
-              }
-            }}
-            title={editing ? "Save name" : "Rename"}
-            type="button"
-          >
-            {editing ? (
-              <Check aria-hidden="true" />
-            ) : (
-              <Pencil aria-hidden="true" />
-            )}
-          </button>
-        ) : null}
+        <h2>{title}</h2>
       </div>
       <button
         type="button"
@@ -871,6 +815,9 @@ function OwnedSharesWorkspace({
   const selectedShare = ownedShares.find(
     (item) => ownedShareKey(item) === selectedShareKey
   );
+  const selectedSharePreviewRevision = selectedShare
+    ? `${selectedShare.summary.authorizedPreview?.previewHash ?? "none"}:${ownedShareRecord(selectedShare).sourceRevision}`
+    : "none";
 
   useEffect(() => {
     if (!selectedShareKey) {
@@ -945,7 +892,12 @@ function OwnedSharesWorkspace({
     return () => {
       active = false;
     };
-  }, [client, selectedShareKey, snapshot.snapshotRevision]);
+  }, [
+    client,
+    selectedShareKey,
+    selectedSharePreviewRevision,
+    snapshot.snapshotRevision
+  ]);
 
   const runOperation = useCallback(async (operation: () => Promise<void>) => {
     setOperationBusy(true);
@@ -1447,27 +1399,7 @@ function OwnedSharesWorkspace({
         >
           <ModalHeader
             onClose={() => setModifyShareKey(null)}
-            onTitleChange={(title) =>
-              void runOperation(async () => {
-                const updated = await client.renameOwnedShare({
-                  kind: modifiedShare.kind,
-                  id: ownedShareRecord(modifiedShare).id,
-                  title
-                });
-                setOwnedShares((current) =>
-                  current.map((item) =>
-                    ownedShareKey(item) === ownedShareKey(modifiedShare)
-                      ? updated
-                      : item
-                  )
-                );
-                setShareAnnouncement(
-                  `${updated.summary.sourceTitle}: Share renamed`
-                );
-              })
-            }
             title={modifiedShare.summary.sourceTitle}
-            titleChangeDisabled={operationBusy}
           />
           <div className="collab-form collab-modify-share-form">
             <div className="collab-modify-share-context">
@@ -3570,7 +3502,7 @@ function SharedMemoryOwnerModal({
     detailChange?.mode ?? "continuous"
   );
   const [currentEntry, setCurrentEntry] = useState(entry);
-  const [shareTitle, setShareTitle] = useState(entry.title);
+  const shareTitle = entry.title;
   const [ownerGrants, setOwnerGrants] = useState<SharedMemoryGrant[]>([]);
   const [ownerPendingShares, setOwnerPendingShares] = useState<PendingShare[]>(
     []
@@ -4026,8 +3958,7 @@ function SharedMemoryOwnerModal({
           includeCuratedMemory,
           previewRevision: preview.previewRevision,
           previewHash: preview.previewHash,
-          expiresAt: null,
-          title: shareTitle
+          expiresAt: null
         });
         if ("grantVersion" in shared) {
           setOwnerGrants((current) => [shared, ...current]);
@@ -4077,9 +4008,6 @@ function SharedMemoryOwnerModal({
       <ModalHeader
         title={focusedDetailChange ? "Change shared detail" : shareTitle}
         onClose={onClose}
-        onTitleChange={
-          completedShare || focusedDetailChange ? undefined : setShareTitle
-        }
       />
       <div
         className={`collab-form collab-share-memory-form${focusedDetailChange ? " collab-change-detail-form" : ""}`}
@@ -4639,6 +4567,7 @@ function PersonalNoteShareModal({
   const [candidate, setCandidate] =
     useState<BoundSharedMemoryCandidatePreview | null>(null);
   const [preview, setPreview] = useState<SharedMemoryPreview | null>(null);
+  const [mode, setMode] = useState<"snapshot" | "continuous">("continuous");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [pendingKey, setPendingKey] = useState<string | null>(null);
@@ -4668,22 +4597,29 @@ function PersonalNoteShareModal({
           "Choose an available Team Workspace."
         );
       }
+      if (!note.memoryEventId || note.projectionState !== "available") {
+        throw new CollaborationInputError(
+          "This Note is still being prepared for sharing."
+        );
+      }
       const source = {
         kind: "personal_note" as const,
         noteId: note.noteId,
+        noteRevision: note.revision,
         memoryEventId: note.memoryEventId,
         logicalMemoryId: note.logicalMemoryId
       };
       const nextCandidate = await client.previewSharedMemoryCandidate({
         source,
         activationRepresentation: "memory_events",
-        mode: "snapshot"
+        mode
       });
       if (
         nextCandidate.source?.kind !== "personal_note" ||
         nextCandidate.source.noteId !== note.noteId ||
+        nextCandidate.source.noteRevision !== note.revision ||
         nextCandidate.source.memoryEventId !== note.memoryEventId ||
-        nextCandidate.sourceRevision !== 1 ||
+        nextCandidate.sourceRevision !== note.revision ||
         nextCandidate.itemCount !== 1 ||
         nextCandidate.items.length !== 1
       ) {
@@ -4700,7 +4636,7 @@ function PersonalNoteShareModal({
         activationRepresentation: "memory_events",
         maximumFidelity: "memory_events",
         includeCuratedMemory: false,
-        mode: "snapshot",
+        mode,
         candidate: {
           source: nextCandidate.source,
           sourceCapabilities: nextCandidate.sourceCapabilities,
@@ -4711,7 +4647,7 @@ function PersonalNoteShareModal({
           excludedItemCount: nextCandidate.excludedItemCount,
           manifest: nextCandidate.manifest,
           byteCount: nextCandidate.byteCount,
-          mode: "snapshot",
+          mode,
           expiresAt: null
         }
       });
@@ -4731,24 +4667,60 @@ function PersonalNoteShareModal({
   const share = () =>
     run(async () => {
       if (!candidate || !preview || !selectedWorkspace) return;
-      const result = await client.shareMemory({
-        source: candidate.source,
-        sourceCapabilities: ["memory_events"],
-        activationRepresentation: "memory_events",
-        mutationId: crypto.randomUUID(),
-        logicalGrantId: crypto.randomUUID(),
-        consentId: crypto.randomUUID(),
-        logicalMemoryId: candidate.logicalMemoryId,
-        teamId,
-        workspaceId,
-        mode: "snapshot",
-        maximumFidelity: "memory_events",
-        includeCuratedMemory: false,
-        previewRevision: preview.previewRevision,
-        previewHash: preview.previewHash,
-        expiresAt: null,
-        title: note.title
-      });
+      const existingGrant = (
+        await client.listOwnedSharedMemoryGrants({
+          logicalMemoryId: candidate.logicalMemoryId
+        })
+      ).find(
+        (grant) =>
+          grant.lifecycle === "active" &&
+          grant.teamId === teamId &&
+          grant.workspaceId === workspaceId
+      );
+      if (
+        existingGrant &&
+        existingGrant.sourceRevision >= candidate.sourceRevision
+      ) {
+        throw new CollaborationInputError(
+          "This Note revision is already shared with this Workspace."
+        );
+      }
+      const result = existingGrant
+        ? await client.changeSharedMemoryFidelity({
+            source: candidate.source,
+            sourceCapabilities: ["memory_events"],
+            activationRepresentation: "memory_events",
+            mutationId: crypto.randomUUID(),
+            logicalMemoryId: candidate.logicalMemoryId,
+            teamId,
+            workspaceId,
+            shareGrantId: existingGrant.id,
+            consentId: crypto.randomUUID(),
+            maximumFidelity: "memory_events",
+            includeCuratedMemory: false,
+            expectedGrantVersion: existingGrant.grantVersion,
+            mode,
+            previewRevision: preview.previewRevision,
+            previewHash: preview.previewHash,
+            expiresAt: null
+          })
+        : await client.shareMemory({
+            source: candidate.source,
+            sourceCapabilities: ["memory_events"],
+            activationRepresentation: "memory_events",
+            mutationId: crypto.randomUUID(),
+            logicalGrantId: crypto.randomUUID(),
+            consentId: crypto.randomUUID(),
+            logicalMemoryId: candidate.logicalMemoryId,
+            teamId,
+            workspaceId,
+            mode,
+            maximumFidelity: "memory_events",
+            includeCuratedMemory: false,
+            previewRevision: preview.previewRevision,
+            previewHash: preview.previewHash,
+            expiresAt: null
+          });
       setPendingKey(
         "grantVersion" in result ? `grant:${result.id}` : `pending:${result.id}`
       );
@@ -4806,6 +4778,33 @@ function PersonalNoteShareModal({
                     ))}
                   </select>
                 </label>
+                <fieldset>
+                  <legend>Updates</legend>
+                  <label className="collab-check">
+                    <input
+                      type="radio"
+                      checked={mode === "continuous"}
+                      onChange={() => {
+                        setMode("continuous");
+                        setCandidate(null);
+                        setPreview(null);
+                      }}
+                    />
+                    Keep this Note up to date
+                  </label>
+                  <label className="collab-check">
+                    <input
+                      type="radio"
+                      checked={mode === "snapshot"}
+                      onChange={() => {
+                        setMode("snapshot");
+                        setCandidate(null);
+                        setPreview(null);
+                      }}
+                    />
+                    Share only this revision
+                  </label>
+                </fieldset>
               </>
             ) : null}
             {preview ? (
@@ -4824,7 +4823,9 @@ function PersonalNoteShareModal({
               </>
             ) : null}
             <p className="collab-form-context collab-note-share-context">
-              Later edits or renames will not change this shared copy.
+              {mode === "continuous"
+                ? "Later edits will replace the Team copy after privacy checks finish."
+                : "Later edits will not change this shared copy."}
             </p>
             {availableTeams.length === 0 ? (
               <p className="collab-form-error" role="alert">
@@ -5202,7 +5203,7 @@ function ModalLayer({
                   await client.archiveThread({ thread: channel });
                   await client.select(
                     modal.kind === "edit_personal_channel"
-                      ? { kind: "notes_to_self" }
+                      ? { kind: "personal_memory" }
                       : {
                           kind: "workspace_shared_memory",
                           teamId: modal.teamId,
@@ -5584,10 +5585,9 @@ const threadForDraftAuthority = (
       return null;
     }
     return (
-      [
-        snapshot.navigation.personal.notesToSelf,
-        ...snapshot.navigation.personal.channels
-      ].find((thread) => thread.id === authority.threadId) ?? null
+      snapshot.navigation.personal.channels.find(
+        (thread) => thread.id === authority.threadId
+      ) ?? null
     );
   }
   if (

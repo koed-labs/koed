@@ -220,6 +220,7 @@ const requiredOperationFamiliesForEvent = (
     case "share_grant_lifecycle":
       return ["share_grant_management"];
     case "fidelity_changed":
+    case "source_revision_changed":
     case "memory_event_available":
     case "lcm_leaf_available":
     case "lcm_rollup_available":
@@ -610,35 +611,16 @@ const rendererThreadFromRecord = (
   if (
     thread.scope === "personal" &&
     thread.personalOwnerUserId === user.id &&
-    thread.teamId === null
+    thread.teamId === null &&
+    thread.kind === "personal_channel" &&
+    thread.name
   ) {
-    candidate =
-      thread.kind === "notes_to_self"
-        ? {
-            ...base,
-            kind: "notes_to_self",
-            ownerUserId: user.id,
-            name: null,
-            topic: null,
-            participants: [
-              {
-                id: user.id,
-                displayName: displayName(
-                  user.displayName,
-                  user.email.split("@", 1)[0] || "Koed User"
-                ),
-                membershipState: "enabled"
-              }
-            ]
-          }
-        : thread.kind === "personal_channel" && thread.name
-          ? {
-              ...base,
-              kind: "personal_channel",
-              ownerUserId: user.id,
-              name: thread.name
-            }
-          : null;
+    candidate = {
+      ...base,
+      kind: "personal_channel",
+      ownerUserId: user.id,
+      name: thread.name
+    };
   } else if (thread.scope === "team" && thread.teamId) {
     const teamBase = { ...base, teamId: thread.teamId };
     if (
@@ -1103,6 +1085,7 @@ const materializeEvent = async (
     }
     case "share_grant_lifecycle":
     case "fidelity_changed":
+    case "source_revision_changed":
     case "memory_event_available":
     case "lcm_leaf_available":
     case "lcm_rollup_available": {
@@ -1132,7 +1115,10 @@ const materializeEvent = async (
           return { action: "skip" };
         }
         update = sharedSession;
-      } else if (family === "fidelity_changed") {
+      } else if (
+        family === "fidelity_changed" ||
+        family === "source_revision_changed"
+      ) {
         const sharedSession = grant
           ? await rendererSharedSessionFrom(client, event, grant, repository)
           : null;

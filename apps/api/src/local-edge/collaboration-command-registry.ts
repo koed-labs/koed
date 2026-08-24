@@ -283,18 +283,6 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: write
   },
-  "collaboration.create_notes_to_self": {
-    scope: "personal",
-    desktopOperationFamily: write,
-    personalOperation: (command) => ({
-      operationFamily: write,
-      method: "POST",
-      path: "/v1/collaboration/personal/notes-to-self",
-      body: {},
-      resultKey: "thread",
-      idempotencyKey: command.requestId
-    })
-  },
   "collaboration.create_personal_channel": {
     scope: "personal",
     desktopOperationFamily: write,
@@ -587,10 +575,6 @@ export const collaborationCommandRegistry = {
   "collaboration.get_owned_share": {
     scope: "team",
     desktopOperationFamily: read
-  },
-  "collaboration.rename_owned_share": {
-    scope: "team",
-    desktopOperationFamily: write
   },
   "collaboration.control_pending_share": {
     scope: "team",

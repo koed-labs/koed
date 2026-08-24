@@ -2894,12 +2894,18 @@ export const createKoedServerManager = ({
       4 * 1_024 * 1_024
     );
     const note = objectValue(payload.note);
-    const event = objectValue(note?.event);
-    if (!note || !event) {
+    if (!note) {
       throw new PersonalMemoryBoundaryError("invalid_response", false);
     }
-    const mappedEvent = personalEventsData({ events: [event] }).events[0];
-    if (!mappedEvent || mappedEvent.id !== note.memoryEventId) {
+    const event = note.event === null ? null : objectValue(note.event);
+    const mappedEvent = event
+      ? personalEventsData({ events: [event] }).events[0]
+      : null;
+    if (
+      (note.memoryEventId === null && note.event !== null) ||
+      (note.memoryEventId !== null &&
+        (!mappedEvent || mappedEvent.id !== note.memoryEventId))
+    ) {
       throw new PersonalMemoryBoundaryError("invalid_response", false);
     }
     return personalDesktopNoteDataSchema.parse({
@@ -2928,12 +2934,18 @@ export const createKoedServerManager = ({
       4 * 1_024 * 1_024
     );
     const note = objectValue(payload.note);
-    const event = objectValue(note?.event);
-    if (!note || !event) {
+    if (!note) {
       throw new PersonalMemoryBoundaryError("invalid_response", false);
     }
-    const mappedEvent = personalEventsData({ events: [event] }).events[0];
-    if (!mappedEvent || mappedEvent.id !== note.memoryEventId) {
+    const event = note.event === null ? null : objectValue(note.event);
+    const mappedEvent = event
+      ? personalEventsData({ events: [event] }).events[0]
+      : null;
+    if (
+      (note.memoryEventId === null && note.event !== null) ||
+      (note.memoryEventId !== null &&
+        (!mappedEvent || mappedEvent.id !== note.memoryEventId))
+    ) {
       throw new PersonalMemoryBoundaryError("invalid_response", false);
     }
     return personalDesktopNoteDataSchema.parse({
@@ -2965,6 +2977,52 @@ export const createKoedServerManager = ({
       1 * 1_024 * 1_024
     );
     return personalDesktopNoteRenameDataSchema.parse({ note: payload.note });
+  };
+
+  const updatePersonalNote = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.notes.update" }
+    >["input"]
+  ) => {
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/collaboration/personal/notes/${encodeURIComponent(input.noteId)}/body`,
+          apiOrigin
+        ),
+        init: {
+          method: "PATCH",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": input.idempotencyKey
+          },
+          body: JSON.stringify({
+            expectedRevision: input.expectedRevision,
+            bodyText: input.body
+          })
+        }
+      }),
+      4 * 1_024 * 1_024
+    );
+    const note = objectValue(payload.note);
+    if (!note) {
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    }
+    const event = note.event === null ? null : objectValue(note.event);
+    const mappedEvent = event
+      ? personalEventsData({ events: [event] }).events[0]
+      : null;
+    if (
+      (note.memoryEventId === null && note.event !== null) ||
+      (note.memoryEventId !== null &&
+        (!mappedEvent || mappedEvent.id !== note.memoryEventId))
+    ) {
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    }
+    return personalDesktopNoteDataSchema.parse({
+      note: { ...note, event: mappedEvent }
+    });
   };
 
   const localAiClientReadModel = async () => {
@@ -3055,14 +3113,18 @@ export const createKoedServerManager = ({
                     ? await createPersonalNote(request.input)
                     : request.operation === "personal.notes.rename"
                       ? await renamePersonalNote(request.input)
-                      : request.operation === "personal.projects.list"
-                        ? await listPersonalProjects()
-                        : request.operation === "personal.events.load_page"
-                          ? await loadPersonalEventPage(request.input)
-                          : request.operation ===
-                              "personal.sessions.assign_project"
-                            ? await assignPersonalSessionProject(request.input)
-                            : await updatePersonalSessionTitle(request.input);
+                      : request.operation === "personal.notes.update"
+                        ? await updatePersonalNote(request.input)
+                        : request.operation === "personal.projects.list"
+                          ? await listPersonalProjects()
+                          : request.operation === "personal.events.load_page"
+                            ? await loadPersonalEventPage(request.input)
+                            : request.operation ===
+                                "personal.sessions.assign_project"
+                              ? await assignPersonalSessionProject(
+                                  request.input
+                                )
+                              : await updatePersonalSessionTitle(request.input);
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,
@@ -3268,11 +3330,15 @@ export const createKoedServerManager = ({
         "policy",
         "--id",
         backendId,
+        "--personal-collaboration",
+        "enabled",
         "--team-workspace-read",
         "enabled",
         "--share-grant-management",
         "enabled",
         "--sync",
+        "enabled",
+        "--managed-execution",
         "enabled",
         "--admin",
         "enabled"

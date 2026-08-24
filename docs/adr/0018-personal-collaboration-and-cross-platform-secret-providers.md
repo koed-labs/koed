@@ -1,6 +1,7 @@
 # Personal Collaboration Sync And Cross-Platform Secret Providers
 
-Status: Accepted.
+Status: Accepted; Personal Notes are superseded by
+[ADR 0032](./0032-first-class-revisioned-personal-notes.md).
 
 Related decisions:
 
@@ -10,8 +11,8 @@ Related decisions:
 
 ## Context
 
-Personal notes-to-self and Personal channels currently live only in the local
-collaboration store. A User therefore sees different Personal conversations on
+Personal channels currently live only in the local collaboration store. A User
+therefore sees different Personal conversations on
 two devices. Personal Device Sync cannot solve mutable collaboration replication:
 its V1 contract transports immutable, closed Captured Session source packages
 and compatible derived artifacts, not mutable notes or channel event streams.
@@ -26,8 +27,9 @@ Electron-main-process closure.
 ### Personal collaboration
 
 When a User has enrolled a local edge with a remote Koed backend, that backend
-is the authority for the User's Personal collaboration data: notes-to-self,
-Personal channels, messages, and their durable collaboration event stream.
+is the authority for the User's Personal collaboration data: Personal channels,
+messages, and their durable collaboration event stream. Personal Notes use the
+separate first-class revision contract in ADR 0032.
 Local edges keep encrypted durable pending sends for messages. Channel and
 thread lifecycle mutations require the remote authority to be reachable and
 fail closed without creating speculative local state. Each local edge persists

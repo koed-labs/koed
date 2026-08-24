@@ -12628,6 +12628,7 @@ describe("account and access flows", () => {
         source: {
           kind: "personal_note",
           noteId: teamNoteId,
+          noteRevision: 1,
           memoryEventId: teamMemoryEventId,
           logicalMemoryId: teamLogicalMemoryId
         },

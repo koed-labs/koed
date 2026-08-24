@@ -269,8 +269,7 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       includeCuratedMemory: createPendingShareSchema.shape.includeCuratedMemory,
       previewRevision: z.number().int().safe().positive(),
       previewHash: z.string().regex(/^[a-f0-9]{64}$/),
-      expiresAt: z.string().datetime({ offset: true }).nullable(),
-      title: createPendingShareSchema.shape.title
+      expiresAt: z.string().datetime({ offset: true }).nullable()
     })
     .strict(),
   z
@@ -703,8 +702,7 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             includeCuratedMemory: intent.includeCuratedMemory,
             previewRevision: intent.previewRevision,
             previewHash: intent.previewHash,
-            expiresAt: intent.expiresAt,
-            ...(intent.title ? { title: intent.title } : {})
+            expiresAt: intent.expiresAt
           }
         : null;
     case "collaboration.revoke_shared_memory":

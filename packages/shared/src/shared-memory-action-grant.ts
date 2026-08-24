@@ -68,6 +68,7 @@ const shareIntentScope = <T extends { referenceId: string }>(
 ): string => {
   const scope = { ...input };
   Reflect.deleteProperty(scope, "referenceId");
+  Reflect.deleteProperty(scope, "authority");
   return highRiskActionGrantCanonicalHash(
     HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.sharedMemoryScope,
     scope
@@ -127,10 +128,11 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
   includeCuratedMemory: boolean;
   mode: "snapshot" | "continuous";
   expiresAt?: string | null;
-}): SharedMemoryActionGrantBinding =>
-  withHashes({
+}): SharedMemoryActionGrantBinding => {
+  const normalizedInput = { ...input, expiresAt: input.expiresAt ?? null };
+  return withHashes({
     operationFamily: "share_grant_management",
-    action: `shared_memory.candidate_preview.${shareIntentScope(input)}`,
+    action: `shared_memory.candidate_preview.${shareIntentScope(normalizedInput)}`,
     teamId: input.teamId,
     targetId: input.logicalMemoryId,
     method: "POST",
@@ -155,6 +157,7 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
       authority: authorityBody(input.referenceId)
     }
   });
+};
 
 export const sharedMemoryPendingShareActionGrantBinding = (input: {
   referenceId: string;
@@ -174,11 +177,11 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
   maximumFidelity: SharedMemoryFidelityCeiling;
   includeCuratedMemory: boolean;
   expiresAt?: string | null;
-  title?: string;
-}): SharedMemoryActionGrantBinding =>
-  withHashes({
+}): SharedMemoryActionGrantBinding => {
+  const normalizedInput = { ...input, expiresAt: input.expiresAt ?? null };
+  return withHashes({
     operationFamily: "share_grant_management",
-    action: `shared_memory.pending_share.${shareIntentScope(input)}`,
+    action: `shared_memory.pending_share.${shareIntentScope(normalizedInput)}`,
     teamId: input.teamId,
     targetId: input.logicalGrantId,
     method: "POST",
@@ -202,10 +205,10 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
       maximumFidelity: input.maximumFidelity,
       includeCuratedMemory: input.includeCuratedMemory,
       expiresAt: input.expiresAt ?? null,
-      ...(input.title ? { title: input.title } : {}),
       authority: authorityBody(input.referenceId)
     }
   });
+};
 
 export const sharedMemoryRevokeActionGrantBinding = (input: {
   referenceId: string;
@@ -300,10 +303,11 @@ export const sharedMemoryFidelityBundleActionGrantBinding = (input: {
   includeCuratedMemory: boolean;
   expectedGrantVersion: number;
   expiresAt?: string | null;
-}): SharedMemoryActionGrantBinding =>
-  withHashes({
+}): SharedMemoryActionGrantBinding => {
+  const normalizedInput = { ...input, expiresAt: input.expiresAt ?? null };
+  return withHashes({
     operationFamily: "share_grant_management",
-    action: `shared_memory.change_fidelity.${shareIntentScope(input)}`,
+    action: `shared_memory.change_fidelity.${shareIntentScope(normalizedInput)}`,
     teamId: input.teamId,
     targetId: input.shareGrantId,
     method: "PUT",
@@ -330,3 +334,4 @@ export const sharedMemoryFidelityBundleActionGrantBinding = (input: {
       authority: authorityBody(input.referenceId)
     }
   });
+};

@@ -235,8 +235,14 @@ describe("Personal Notes", () => {
       noteId: "11111111-1111-4111-8111-111111111111",
       title: "Recovered Note",
       titleVersion: 1,
+      revisionId: "22222222-2222-4222-8222-222222222222",
+      revision: 1,
+      contentHash: "a".repeat(64),
       memoryEventId: "44444444-4444-4444-8444-444444444444",
+      projectionState: "available" as const,
+      projectionFailureCode: null,
       createdAt: "2026-08-17T12:00:00.000Z",
+      updatedAt: "2026-08-17T12:00:00.000Z",
       sourceSequence: 1
     };
     const listNotes = vi
@@ -280,7 +286,7 @@ describe("Personal Notes", () => {
     expect(container.textContent).not.toContain("Notes could not be refreshed");
   });
 
-  it("searches, opens, and creates immutable Notes-to-self messages", async () => {
+  it("searches, opens, edits, and creates revisioned Personal Notes", async () => {
     let noteChangeListener:
       | Parameters<PersonalDesktopApi["subscribe"]>[0]
       | undefined;
@@ -288,17 +294,24 @@ describe("Personal Notes", () => {
       noteId: "11111111-1111-4111-8111-111111111111",
       title: "Launch note",
       titleVersion: 1,
+      revisionId: "22222222-2222-4222-8222-222222222222",
+      revision: 1,
+      contentHash: "a".repeat(64),
       memoryEventId: "44444444-4444-4444-8444-444444444444",
+      projectionState: "available" as const,
+      projectionFailureCode: null,
       createdAt: "2026-08-17T12:00:00.000Z",
+      updatedAt: "2026-08-17T12:00:00.000Z",
       sourceSequence: 1
     };
     const note = {
       ...summary,
+      body: "# Launch note\nKeep the Ask page focused.",
       logicalMemoryId: "55555555-5555-4555-8555-555555555555",
       event: {
         id: summary.memoryEventId,
         actor: "user",
-        eventType: "personal_note_created",
+        eventType: "personal_note_revision",
         timestamp: summary.createdAt,
         sourceEventTime: summary.createdAt,
         sourceSequence: 1,
@@ -319,6 +332,16 @@ describe("Personal Notes", () => {
       })),
       loadNote: vi.fn(async () => note),
       renameNote: vi.fn(async ({ title }) => ({ ...summary, title })),
+      updateNote: vi.fn(async ({ body }) => ({
+        ...note,
+        body,
+        revisionId: "33333333-3333-4333-8333-333333333333",
+        revision: 2,
+        contentHash: "b".repeat(64),
+        memoryEventId: null,
+        projectionState: "pending" as const,
+        event: null
+      })),
       subscribe: vi.fn((listener) => {
         noteChangeListener = listener;
         return () => undefined;
@@ -371,7 +394,24 @@ describe("Personal Notes", () => {
     expect(onNew).toHaveBeenCalledOnce();
     expect(container.textContent).toContain("Keep the Ask page focused.");
     expect(container.textContent).not.toContain("Delete");
-    expect(container.textContent).not.toContain("Edit");
+    await click(container.querySelector('button[aria-label="Edit Note"]'));
+    const bodyEditor = container.querySelector(
+      'textarea[aria-label="Note content"]'
+    ) as HTMLTextAreaElement;
+    await enterText(bodyEditor, "Updated launch guidance");
+    await click(
+      [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Save"
+      ) ?? null
+    );
+    await vi.waitFor(() =>
+      expect(api.updateNote).toHaveBeenCalledWith({
+        noteId: summary.noteId,
+        expectedRevision: 1,
+        body: "Updated launch guidance",
+        idempotencyKey: expect.any(String)
+      })
+    );
     await act(async () =>
       noteChangeListener?.({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
@@ -379,7 +419,7 @@ describe("Personal Notes", () => {
         noteIds: [summary.noteId]
       })
     );
-    await vi.waitFor(() => expect(api.listNotes).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(api.listNotes).toHaveBeenCalledTimes(3));
 
     await act(async () => {
       root.render(

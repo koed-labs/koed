@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 6;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 7;
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
 
@@ -434,16 +434,23 @@ export const personalDesktopNoteSummarySchema = z
     noteId: z.uuid(),
     title: z.string().trim().min(1).max(80),
     titleVersion: z.number().int().safe().positive(),
-    memoryEventId: z.uuid(),
+    revisionId: z.uuid(),
+    revision: z.number().int().safe().positive(),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    memoryEventId: z.uuid().nullable(),
+    projectionState: z.enum(["pending", "available", "failed"]),
+    projectionFailureCode: z.string().max(80).nullable(),
     createdAt: timestampSchema,
+    updatedAt: timestampSchema,
     sourceSequence: z.number().int().safe().positive()
   })
   .strict();
 
 export const personalDesktopNoteSchema = personalDesktopNoteSummarySchema
   .extend({
+    body: z.string().min(1).max(32_768),
     logicalMemoryId: z.uuid(),
-    event: personalDesktopConversationEventSchema
+    event: personalDesktopConversationEventSchema.nullable()
   })
   .strict();
 
@@ -470,6 +477,15 @@ export const personalDesktopNoteRenameInputSchema = z
     noteId: z.uuid(),
     expectedTitleVersion: z.number().int().safe().positive(),
     title: z.string().trim().min(1).max(80)
+  })
+  .strict();
+
+export const personalDesktopNoteUpdateInputSchema = z
+  .object({
+    noteId: z.uuid(),
+    expectedRevision: z.number().int().safe().positive(),
+    body: z.string().trim().min(1).max(32_768),
+    idempotencyKey: z.string().trim().min(1).max(500)
   })
   .strict();
 
@@ -549,6 +565,13 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       operation: z.literal("personal.notes.rename"),
       input: personalDesktopNoteRenameInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.notes.update"),
+      input: personalDesktopNoteUpdateInputSchema
     })
     .strict()
 ]);
@@ -733,7 +756,16 @@ export const personalDesktopResultSchema = z.union([
       data: personalDesktopNoteRenameDataSchema
     })
     .strict(),
-  failedResult("personal.notes.rename")
+  failedResult("personal.notes.rename"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.notes.update"),
+      ok: z.literal(true),
+      data: personalDesktopNoteDataSchema
+    })
+    .strict(),
+  failedResult("personal.notes.update")
 ]);
 
 export type PersonalDesktopProjectThread = z.infer<
@@ -797,6 +829,9 @@ export type PersonalDesktopNoteCreateInput = z.infer<
 >;
 export type PersonalDesktopNoteRenameInput = z.infer<
   typeof personalDesktopNoteRenameInputSchema
+>;
+export type PersonalDesktopNoteUpdateInput = z.infer<
+  typeof personalDesktopNoteUpdateInputSchema
 >;
 export type PersonalDesktopRequest = z.infer<
   typeof personalDesktopRequestSchema
@@ -902,5 +937,8 @@ export interface PersonalDesktopApi {
   renameNote?: (
     input: PersonalDesktopNoteRenameInput
   ) => Promise<PersonalDesktopNoteSummary>;
+  updateNote?: (
+    input: PersonalDesktopNoteUpdateInput
+  ) => Promise<PersonalDesktopNote>;
   subscribe: (listener: (change: PersonalDesktopChange) => void) => () => void;
 }

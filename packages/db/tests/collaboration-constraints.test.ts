@@ -120,7 +120,7 @@ describeDb("collaboration participant database invariants", () => {
     await pool.end();
   });
 
-  it("accepts repository-created notes, DMs, and group DMs", async () => {
+  it("accepts repository-created Personal channels, DMs, and group DMs", async () => {
     const fixture = await createFixture();
     const repository = createCollaborationRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
@@ -128,9 +128,13 @@ describeDb("collaboration participant database invariants", () => {
       )
     });
 
-    const notes = await repository.createThread(
+    const personalChannel = await repository.createThread(
       { userId: fixture.ownerId },
-      { kind: "notes_to_self", idempotencyKey: randomUUID() }
+      {
+        kind: "personal_channel",
+        idempotencyKey: randomUUID(),
+        name: "Private scratch"
+      }
     );
     const directMessage = await repository.createThread(
       { userId: fixture.ownerId },
@@ -151,7 +155,7 @@ describeDb("collaboration participant database invariants", () => {
       }
     );
 
-    expect(notes).not.toBeNull();
+    expect(personalChannel).not.toBeNull();
     expect(directMessage).not.toBeNull();
     expect(groupDirectMessage).not.toBeNull();
     const counts = await pool.query<{ thread_id: string; count: string }>(
@@ -159,17 +163,19 @@ describeDb("collaboration participant database invariants", () => {
          from collaboration_participants
         where thread_id = any($1::uuid[])
         group by thread_id`,
-      [[notes!.id, directMessage!.id, groupDirectMessage!.id]]
+      [[personalChannel!.id, directMessage!.id, groupDirectMessage!.id]]
     );
     expect(
       new Map(counts.rows.map((row) => [row.thread_id, row.count]))
     ).toEqual(
       new Map([
-        [notes!.id, "1"],
         [directMessage!.id, "2"],
         [groupDirectMessage!.id, "3"]
       ])
     );
+    expect(
+      counts.rows.some((row) => row.thread_id === personalChannel!.id)
+    ).toBe(false);
   });
 
   it("rejects participant deletion, addition, and participant-key tampering at commit", async () => {
@@ -179,10 +185,6 @@ describeDb("collaboration participant database invariants", () => {
         Buffer.alloc(32, 42).toString("base64")
       )
     });
-    const notes = await repository.createThread(
-      { userId: fixture.ownerId },
-      { kind: "notes_to_self", idempotencyKey: randomUUID() }
-    );
     const directMessage = await repository.createThread(
       { userId: fixture.ownerId },
       {
@@ -202,13 +204,6 @@ describeDb("collaboration participant database invariants", () => {
       }
     );
 
-    await expectDeferredConstraintViolation((client) =>
-      client
-        .query("delete from collaboration_participants where thread_id = $1", [
-          notes!.id
-        ])
-        .then(() => undefined)
-    );
     await expectDeferredConstraintViolation((client) =>
       client
         .query(

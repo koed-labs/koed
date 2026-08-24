@@ -64,11 +64,11 @@ export const commandEntriesForSnapshot = (
 
   commands.splice(2, 0, {
     destination: {
-      kind: "selection",
-      selection: { kind: "notes_to_self" }
+      kind: "route",
+      route: { kind: "personal-memory-notes" }
     },
-    id: "selection:notes-to-self",
-    label: "Notes to self",
+    id: "route:personal-memory-notes",
+    label: "Notes",
     scope: "Personal"
   });
   for (const thread of snapshot.navigation.personal.channels) {

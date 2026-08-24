@@ -8,7 +8,8 @@ const SECRET_PATTERNS = [
   /\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,255}\b/g,
   /\bsk-[A-Za-z0-9_-]{20,}\b/g,
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g,
-  /\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*["']?([^\s"']{8,})/gi
+  /\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password|passphrase|passcode)\s*[:=]\s*["']?([^\s"']{8,})/gi,
+  /\b(?:password|passphrase|passcode)\s+(?:is|was)\s+["']?((?=[^\s"']{8,})(?=[^\s"']*[0-9_~!@#$%^&*()+={}[\]|;:?<>./-])[A-Za-z0-9_~!@#$%^&*()+={}[\]|;:?<>./-]{7,}[A-Za-z0-9])/gi
 ] as const;
 
 export const detectDeterministicSecrets = (text: string): SecretSpan[] => {

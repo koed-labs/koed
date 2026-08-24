@@ -41,13 +41,64 @@ const ids = {
   source: uuidFor(100),
   remoteDevice: uuidFor(101),
   syncRelationship: uuidFor(102),
-  localSession: uuidFor(103)
+  localSession: uuidFor(103),
+  note: uuidFor(104),
+  noteEventV1: uuidFor(105),
+  noteEventV2: uuidFor(106)
 };
 
 const capturedSource = {
   kind: "captured_session" as const,
   sessionId: ids.localSession,
   logicalMemoryId: ids.logicalMemory
+};
+
+const noteSourceV1 = {
+  kind: "personal_note" as const,
+  noteId: ids.note,
+  noteRevision: 1,
+  memoryEventId: ids.noteEventV1,
+  logicalMemoryId: ids.logicalMemory
+};
+
+const noteSourceV2 = {
+  ...noteSourceV1,
+  noteRevision: 2,
+  memoryEventId: ids.noteEventV2
+};
+
+const noteCandidateV2 = {
+  source: noteSourceV2,
+  sourceCapabilities: ["memory_events" as const],
+  activationRepresentation: "memory_events" as const,
+  mode: "continuous" as const,
+  expiresAt: null,
+  logicalMemoryId: ids.logicalMemory,
+  sourceRevision: 2,
+  candidateHash: hashC,
+  itemCount: 1,
+  excludedItemCount: 0,
+  manifest: [{ sourceId: ids.noteEventV2, revisionHash: hashB }],
+  byteCount: 128,
+  items: [
+    {
+      id: ids.noteEventV2,
+      representation: "memory_events" as const,
+      sequence: 2,
+      occurredAt: iso,
+      sourceItems: [
+        {
+          id: ids.noteEventV2,
+          sourceKind: "user_message" as const,
+          occurredAt: iso,
+          body: "Personal Note revision two",
+          actorName: null,
+          toolName: null,
+          toolCallId: null
+        }
+      ]
+    }
+  ]
 };
 
 const binding = () => ({
@@ -119,6 +170,7 @@ const previewResponse = (items: PreviewItem[] = [sourceItem()]) => ({
   logicalMemoryId: ids.logicalMemory,
   teamId: ids.team,
   teamWorkspaceId: ids.workspace,
+  representation: "memory_events" as const,
   maximumFidelity: "memory_events" as const,
   includeCuratedMemory: false,
   binding: binding(),
@@ -357,8 +409,14 @@ const createFixture = (
     prepareLocalLcmRepresentation?: NonNullable<
       CollaborationSharedMemoryControlOptions["prepareLocalLcmRepresentation"]
     >;
-    preparePendingShareSource?: NonNullable<
-      CollaborationSharedMemoryControlOptions["preparePendingShareSource"]
+    requestPendingShareSourceWork?: NonNullable<
+      CollaborationSharedMemoryControlOptions["requestPendingShareSourceWork"]
+    >;
+    requestContinuousNoteAdvancementWork?: NonNullable<
+      CollaborationSharedMemoryControlOptions["requestContinuousNoteAdvancementWork"]
+    >;
+    loadPersonalNoteCandidatePreview?: NonNullable<
+      CollaborationSharedMemoryControlOptions["loadPersonalNoteCandidatePreview"]
     >;
     loadLocalCandidatePreview?: NonNullable<
       CollaborationSharedMemoryControlOptions["loadLocalCandidatePreview"]
@@ -366,6 +424,7 @@ const createFixture = (
     remoteRead?: RemoteReadResponse;
     remoteOwnerGrants?: ReturnType<typeof grantResponse>[];
     remoteOwnedShares?: Record<string, unknown>[];
+    remotePendingShareControl?: Record<string, unknown>;
     deniedDiscussionLogicalMemoryIds?: string[];
     mutateResponse?: (
       request: RecordedRequest,
@@ -381,8 +440,11 @@ const createFixture = (
   const pendingSourceWork: Array<{
     pendingShareId: string;
     mutationId: string;
-    source: typeof capturedSource;
-    localSessionId: string;
+    mode: "snapshot" | "continuous";
+    source: NonNullable<
+      CollaborationPersistedSharedMemoryGrant["grant"]["source"]
+    >;
+    localSessionId?: string;
   }> = [];
   const previews = new Map<string, CollaborationPersistedSharedMemoryPreview>();
   const consents = new Map<string, CollaborationPersistedSharedMemoryConsent>();
@@ -399,6 +461,9 @@ const createFixture = (
   const readAuthoritativeGrants = vi.fn(
     async (_identity: unknown, shareGrantIds: string[]) =>
       shareGrantIds.map((shareGrantId) => grants.get(shareGrantId) ?? null)
+  );
+  const requeueLatestContinuousPersonalNoteAdvancementWork = vi.fn(
+    async () => true
   );
   const initialPreview: CollaborationPersistedSharedMemoryPreview = {
     ...previewResponse(previewItems),
@@ -514,8 +579,11 @@ const createFixture = (
       pendingSourceWork.push({
         pendingShareId: input.pendingShareId,
         mutationId: input.mutationId,
-        source: input.source as typeof capturedSource,
-        localSessionId: input.localSessionId ?? capturedSource.sessionId
+        mode: input.mode,
+        source: input.source,
+        ...(input.localSessionId
+          ? { localSessionId: input.localSessionId }
+          : {})
       });
       return overrides.persistPendingSourceWork ?? true;
     },
@@ -524,7 +592,14 @@ const createFixture = (
     },
     async finishPendingShareSourceWork() {
       return true;
-    }
+    },
+    async claimContinuousPersonalNoteAdvancementWork() {
+      return [];
+    },
+    async finishContinuousPersonalNoteAdvancementWork() {
+      return true;
+    },
+    requeueLatestContinuousPersonalNoteAdvancementWork
   };
 
   const defaultRead = remoteReadResponse();
@@ -557,6 +632,47 @@ const createFixture = (
         };
       } else if (
         recorded.method === "POST" &&
+        url.pathname.endsWith(
+          "/v1/shared-memory/personal-note-revisions/advance"
+        )
+      ) {
+        response = {
+          pendingShares: [
+            {
+              source: recorded.body?.candidate
+                ? (recorded.body.candidate as Record<string, unknown>).source
+                : undefined,
+              sourceCapabilities: ["memory_events"],
+              activationRepresentation: "memory_events",
+              id: uuidFor(720),
+              mutationId: recorded.body?.mutationId,
+              logicalGrantId: ids.logicalGrant,
+              consentId: ids.consent,
+              logicalMemoryId: ids.logicalMemory,
+              teamId: ids.team,
+              workspaceId: ids.workspace,
+              maximumFidelity: "memory_events",
+              includeCuratedMemory: false,
+              mode: "continuous",
+              sourceRevision: 2,
+              state: "preparing",
+              stage: "accepted",
+              workspaceAccessState: "active",
+              sourceUpdateState: "preparing",
+              operationVersion: 2,
+              attemptCount: 0,
+              redactedFailureCode: null,
+              lastProgressAt: iso,
+              createdAt: iso,
+              updatedAt: iso,
+              activatedAt: iso,
+              revokedAt: null,
+              grantId: ids.grant
+            }
+          ]
+        };
+      } else if (
+        recorded.method === "POST" &&
         url.pathname.endsWith("/v1/shared-memory/candidate-previews")
       ) {
         response = {
@@ -570,6 +686,7 @@ const createFixture = (
             logicalMemoryId: ids.logicalMemory,
             teamId: ids.team,
             teamWorkspaceId: ids.workspace,
+            representation: recorded.body?.activationRepresentation,
             maximumFidelity: recorded.body?.maximumFidelity,
             includeCuratedMemory: recorded.body?.includeCuratedMemory,
             sourceRevision: 4,
@@ -636,6 +753,9 @@ const createFixture = (
         recorded.method === "PUT" &&
         url.pathname.endsWith("/fidelity-bundle")
       ) {
+        const requestedSource = recorded.body?.source as
+          | Record<string, unknown>
+          | undefined;
         response = {
           pendingShare: {
             source: recorded.body?.source,
@@ -648,10 +768,13 @@ const createFixture = (
             logicalMemoryId: recorded.body?.logicalMemoryId,
             teamId: recorded.body?.teamId,
             workspaceId: recorded.body?.teamWorkspaceId,
-            maximumFidelity: "lcm_leaves",
-            includeCuratedMemory: false,
+            maximumFidelity: recorded.body?.maximumFidelity,
+            includeCuratedMemory: recorded.body?.includeCuratedMemory,
             mode: recorded.body?.mode,
-            sourceRevision: 4,
+            sourceRevision:
+              requestedSource?.kind === "personal_note"
+                ? requestedSource.noteRevision
+                : 4,
             state: "preparing",
             stage: "accepted",
             workspaceAccessState: "active",
@@ -667,6 +790,52 @@ const createFixture = (
             grantId: ids.grant
           }
         };
+      } else if (
+        recorded.method === "POST" &&
+        url.pathname.includes("/v1/shared-memory/pending-shares/") &&
+        url.pathname.endsWith("/control")
+      ) {
+        response =
+          overrides.remotePendingShareControl ??
+          ({
+            pendingShare: {
+              source: capturedSource,
+              sourceCapabilities: [
+                "lcm_rollups",
+                "lcm_leaves",
+                "memory_events"
+              ],
+              activationRepresentation: "memory_events",
+              id: url.pathname.split("/").at(-2),
+              mutationId: recorded.body?.mutationId,
+              logicalGrantId: ids.logicalGrant,
+              consentId: ids.consent,
+              logicalMemoryId: ids.logicalMemory,
+              teamId: ids.team,
+              workspaceId: ids.workspace,
+              maximumFidelity: "memory_events",
+              includeCuratedMemory: false,
+              mode: "continuous",
+              sourceRevision: 4,
+              state:
+                recorded.body?.action === "revoke" ? "revoked" : "preparing",
+              stage:
+                recorded.body?.action === "revoke" ? "complete" : "accepted",
+              workspaceAccessState:
+                recorded.body?.action === "revoke" ? "revoked" : "active",
+              sourceUpdateState:
+                recorded.body?.action === "revoke" ? "stopped" : "preparing",
+              operationVersion: 2,
+              attemptCount: 1,
+              redactedFailureCode: null,
+              lastProgressAt: iso,
+              createdAt: iso,
+              updatedAt: iso,
+              activatedAt: null,
+              revokedAt: recorded.body?.action === "revoke" ? iso : null,
+              grantId: null
+            }
+          } as Record<string, unknown>);
       } else if (
         recorded.method === "POST" &&
         url.pathname.endsWith("/v1/shared-memory/share-grants")
@@ -838,7 +1007,11 @@ const createFixture = (
     prepareLocalLcmRepresentation:
       overrides.prepareLocalLcmRepresentation ?? (async () => "ready"),
     loadLocalCandidatePreview: overrides.loadLocalCandidatePreview,
-    preparePendingShareSource: overrides.preparePendingShareSource,
+    loadPersonalNoteCandidatePreview:
+      overrides.loadPersonalNoteCandidatePreview,
+    requestPendingShareSourceWork: overrides.requestPendingShareSourceWork,
+    requestContinuousNoteAdvancementWork:
+      overrides.requestContinuousNoteAdvancementWork,
     ensureEnrollmentBinding: overrides.bindEnrollment
       ? async (input) => {
           enrollmentBindings.push(input);
@@ -908,6 +1081,7 @@ const createFixture = (
     enrollmentBindings,
     grantPersistenceModes,
     pendingSourceWork,
+    requeueLatestContinuousPersonalNoteAdvancementWork,
     resolvePreviewTargets,
     readAuthoritativeGrants
   };
@@ -943,6 +1117,254 @@ const loadInitialSource = async (
 };
 
 describe("collaboration Shared Memory control", () => {
+  it("queues an exact continuous Personal Note revision through the scoped device path", async () => {
+    const wake = vi.fn();
+    const fixture = createFixture({
+      requestPendingShareSourceWork: wake,
+      loadPersonalNoteCandidatePreview: async () => noteCandidateV2
+    });
+
+    await expect(
+      fixture.control.advanceContinuousPersonalNoteRevision({
+        localOwnerUserId: ids.localOwner,
+        noteId: ids.note,
+        noteRevision: 2
+      })
+    ).resolves.toEqual({ queued: 1 });
+
+    const request = fixture.requests.find((entry) =>
+      entry.pathname.endsWith(
+        "/v1/shared-memory/personal-note-revisions/advance"
+      )
+    );
+    expect(request).toMatchObject({
+      method: "POST",
+      authorization: "Koed-Device upstream-key:upstream-secret",
+      body: { candidate: noteCandidateV2 }
+    });
+    expect(fixture.pendingSourceWork).toEqual([
+      {
+        pendingShareId: uuidFor(720),
+        mutationId: expect.any(String),
+        mode: "continuous",
+        source: noteSourceV2
+      }
+    ]);
+    expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it("requeues the latest continuous Personal Note revision when its Share resumes", async () => {
+    const wake = vi.fn();
+    const pendingShareId = uuidFor(721);
+    const fixture = createFixture({
+      requestContinuousNoteAdvancementWork: wake,
+      remotePendingShareControl: {
+        pendingShare: {
+          source: noteSourceV2,
+          sourceCapabilities: ["memory_events"],
+          activationRepresentation: "memory_events",
+          id: pendingShareId,
+          mutationId: uuidFor(722),
+          logicalGrantId: ids.logicalGrant,
+          consentId: ids.consent,
+          logicalMemoryId: ids.logicalMemory,
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          mode: "continuous",
+          sourceRevision: 2,
+          state: "preparing",
+          stage: "accepted",
+          workspaceAccessState: "active",
+          sourceUpdateState: "preparing",
+          operationVersion: 4,
+          attemptCount: 1,
+          redactedFailureCode: null,
+          lastProgressAt: iso,
+          createdAt: iso,
+          updatedAt: iso,
+          activatedAt: iso,
+          revokedAt: null,
+          grantId: ids.grant
+        }
+      }
+    });
+
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.control_pending_share"),
+        input: {
+          pendingShareId,
+          mutationId: uuidFor(723),
+          expectedOperationVersion: 3,
+          action: "resume"
+        }
+      },
+      context()
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { pendingShare: { source: noteSourceV2, mode: "continuous" } }
+    });
+    expect(
+      fixture.requeueLatestContinuousPersonalNoteAdvancementWork
+    ).toHaveBeenCalledWith({
+      identity: {
+        backendId: "team-backend",
+        localOwnerUserId: ids.localOwner,
+        upstreamUserId: ids.upstreamUser
+      },
+      noteId: ids.note
+    });
+    expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it("re-enqueues the effective Personal Note revision when retrying source preparation", async () => {
+    const pendingShareId = uuidFor(710);
+    const sourceMutationId = uuidFor(711);
+    const wake = vi.fn();
+    const fixture = createFixture({
+      requestPendingShareSourceWork: wake,
+      remotePendingShareControl: {
+        pendingShare: {
+          source: noteSourceV2,
+          sourceCapabilities: ["memory_events"],
+          activationRepresentation: "memory_events",
+          id: pendingShareId,
+          mutationId: sourceMutationId,
+          logicalGrantId: ids.logicalGrant,
+          consentId: ids.consent,
+          logicalMemoryId: ids.logicalMemory,
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          mode: "snapshot",
+          sourceRevision: 2,
+          state: "preparing",
+          stage: "accepted",
+          workspaceAccessState: "active",
+          sourceUpdateState: "preparing",
+          operationVersion: 4,
+          attemptCount: 2,
+          redactedFailureCode: null,
+          lastProgressAt: iso,
+          createdAt: iso,
+          updatedAt: iso,
+          activatedAt: null,
+          revokedAt: null,
+          grantId: ids.grant
+        }
+      }
+    });
+
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.control_pending_share"),
+        input: {
+          pendingShareId,
+          mutationId: uuidFor(712),
+          expectedOperationVersion: 3,
+          action: "retry"
+        }
+      },
+      context()
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { pendingShare: { source: noteSourceV2, operationVersion: 4 } }
+    });
+    expect(fixture.pendingSourceWork).toEqual([
+      {
+        pendingShareId,
+        mutationId: sourceMutationId,
+        mode: "snapshot",
+        source: noteSourceV2
+      }
+    ]);
+    expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it("does not enqueue source preparation for non-retry pending Share controls", async () => {
+    const pendingShareId = uuidFor(713);
+    const fixture = createFixture();
+
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.control_pending_share"),
+        input: {
+          pendingShareId,
+          mutationId: uuidFor(714),
+          expectedOperationVersion: 1,
+          action: "revoke"
+        }
+      },
+      context()
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { pendingShare: { state: "revoked" } }
+    });
+    expect(fixture.pendingSourceWork).toEqual([]);
+  });
+
+  it("fails closed when a retry does not return a preparable source update", async () => {
+    const pendingShareId = uuidFor(715);
+    const fixture = createFixture({
+      remotePendingShareControl: {
+        pendingShare: {
+          source: noteSourceV2,
+          sourceCapabilities: ["memory_events"],
+          activationRepresentation: "memory_events",
+          id: pendingShareId,
+          mutationId: uuidFor(716),
+          logicalGrantId: ids.logicalGrant,
+          consentId: ids.consent,
+          logicalMemoryId: ids.logicalMemory,
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          mode: "snapshot",
+          sourceRevision: 2,
+          state: "needs_attention",
+          stage: "processing",
+          workspaceAccessState: "active",
+          sourceUpdateState: "failed",
+          operationVersion: 4,
+          attemptCount: 2,
+          redactedFailureCode: "source_upload_failed",
+          lastProgressAt: iso,
+          createdAt: iso,
+          updatedAt: iso,
+          activatedAt: null,
+          revokedAt: null,
+          grantId: ids.grant
+        }
+      }
+    });
+
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.control_pending_share"),
+        input: {
+          pendingShareId,
+          mutationId: uuidFor(717),
+          expectedOperationVersion: 3,
+          action: "retry"
+        }
+      },
+      context()
+    );
+
+    expectFailure(result, "conflict");
+    expect(fixture.pendingSourceWork).toEqual([]);
+  });
+
   it("resolves a consent preview only for its exact persisted source", async () => {
     const fixture = createFixture();
     const input = {
@@ -1590,49 +2012,6 @@ describe("collaboration Shared Memory control", () => {
     });
   });
 
-  it("renames an owned Share and returns the refreshed local detail", async () => {
-    const ownedGrant = {
-      kind: "grant",
-      grant: grantResponse(),
-      sourceAccess: null,
-      summary: {
-        sourceSessionId: ids.localSession,
-        sourceTitle: "Owner preview",
-        teamName: "Atlas Research",
-        workspaceName: "Launch Plans",
-        mode: "continuous",
-        authorizedPreview: null,
-        lastReadyRevision: 4,
-        lastSuccessfulUpdateAt: iso
-      }
-    };
-    const fixture = createFixture({ remoteOwnedShares: [ownedGrant] });
-
-    const result = await fixture.control.dispatch(
-      {
-        ...commandBase("collaboration.rename_owned_share"),
-        input: { kind: "grant", id: ids.grant, title: "Launch review" }
-      },
-      context()
-    );
-
-    expect(result).toMatchObject({
-      ok: true,
-      command: "collaboration.rename_owned_share",
-      data: {
-        share: { summary: { sourceTitle: "Launch review" } }
-      }
-    });
-    expect(fixture.requests).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          method: "PATCH",
-          body: { title: "Launch review" }
-        })
-      ])
-    );
-  });
-
   it("creates an authoritative preview without accepting renderer content or secrets", async () => {
     const fixture = createFixture();
     const result = await fixture.control.dispatch(previewCommand(), context());
@@ -1964,9 +2343,161 @@ describe("collaboration Shared Memory control", () => {
     });
   });
 
+  it("advances a Personal Note grant only to its exact newer source revision", async () => {
+    const fixture = createFixture();
+    fixture.grants.set(ids.grant, {
+      ...collaborationGrant({ sourceRevision: 1 }),
+      grant: {
+        ...collaborationGrant({ sourceRevision: 1 }).grant,
+        source: noteSourceV1,
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events",
+        maximumFidelity: "memory_events",
+        sourceRevision: 1
+      }
+    });
+    fixture.previews.set(hashC, {
+      ...previewResponse([
+        {
+          ...sourceItem(),
+          sourceId: ids.noteEventV2,
+          sourceRevision: 2,
+          content: { text: "privacy-filtered Personal Note revision two" }
+        }
+      ]),
+      source: noteSourceV2,
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      mode: "snapshot",
+      previewHash: hashC,
+      maximumFidelity: "memory_events",
+      sourceRevision: 2,
+      binding: { ...binding(), sourceRevision: 2 },
+      backendId: "team-backend",
+      localOwnerUserId: ids.localOwner,
+      upstreamUserId: ids.upstreamUser
+    });
+
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.change_shared_memory_fidelity"),
+        input: {
+          source: noteSourceV2,
+          sourceCapabilities: ["memory_events"],
+          activationRepresentation: "memory_events",
+          mutationId: randomUUID(),
+          logicalMemoryId: ids.logicalMemory,
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          shareGrantId: ids.grant,
+          consentId: uuidFor(500),
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          expectedGrantVersion: 1,
+          mode: "snapshot",
+          previewRevision: 1,
+          previewHash: hashC,
+          expiresAt: null,
+          actionGrant: { id: ids.actionGrant }
+        }
+      },
+      context()
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        pendingShare: {
+          source: noteSourceV2,
+          sourceRevision: 2,
+          grantId: ids.grant,
+          state: "preparing"
+        }
+      }
+    });
+    expect(
+      fixture.requests.filter((request) =>
+        request.pathname.endsWith("/fidelity-bundle")
+      )
+    ).toHaveLength(1);
+    expect(fixture.pendingSourceWork.at(-1)).toEqual(
+      expect.objectContaining({
+        pendingShareId: uuidFor(701),
+        source: noteSourceV2
+      })
+    );
+    expect(fixture.pendingSourceWork.at(-1)).not.toHaveProperty(
+      "localSessionId"
+    );
+  });
+
+  it.each([
+    ["the current revision", noteSourceV1, ids.logicalMemory],
+    [
+      "a different note",
+      { ...noteSourceV2, noteId: uuidFor(107) },
+      ids.logicalMemory
+    ],
+    [
+      "a different logical memory",
+      { ...noteSourceV2, logicalMemoryId: uuidFor(108) },
+      uuidFor(108)
+    ],
+    ["a Captured Session substitution", capturedSource, ids.logicalMemory]
+  ])(
+    "rejects %s before replacing a Personal Note grant",
+    async (_, source, logicalMemoryId) => {
+      const fixture = createFixture();
+      fixture.grants.set(ids.grant, {
+        ...collaborationGrant({ sourceRevision: 1 }),
+        grant: {
+          ...collaborationGrant({ sourceRevision: 1 }).grant,
+          source: noteSourceV1,
+          sourceCapabilities: ["memory_events"],
+          activationRepresentation: "memory_events",
+          maximumFidelity: "memory_events",
+          sourceRevision: 1
+        }
+      });
+
+      const result = await fixture.control.dispatch(
+        {
+          ...commandBase("collaboration.change_shared_memory_fidelity"),
+          input: {
+            source,
+            sourceCapabilities: ["memory_events"],
+            activationRepresentation: "memory_events",
+            mutationId: randomUUID(),
+            logicalMemoryId,
+            teamId: ids.team,
+            workspaceId: ids.workspace,
+            shareGrantId: ids.grant,
+            consentId: uuidFor(500),
+            maximumFidelity: "memory_events",
+            includeCuratedMemory: false,
+            expectedGrantVersion: 1,
+            mode: source.kind === "personal_note" ? "snapshot" : "continuous",
+            previewRevision: 1,
+            previewHash: hash,
+            expiresAt: null,
+            actionGrant: { id: ids.actionGrant }
+          }
+        },
+        context()
+      );
+
+      expectFailure(result, "conflict");
+      expect(
+        fixture.requests.some((request) =>
+          request.pathname.endsWith("/fidelity-bundle")
+        )
+      ).toBe(false);
+      expect(fixture.pendingSourceWork).toHaveLength(0);
+    }
+  );
+
   it("durably records local source preparation before accepting a Pending Share", async () => {
-    const preparePendingShareSource = vi.fn(async () => undefined);
-    const fixture = createFixture({ preparePendingShareSource });
+    const requestPendingShareSourceWork = vi.fn();
+    const fixture = createFixture({ requestPendingShareSourceWork });
     const mutationId = randomUUID();
     const result = await fixture.control.dispatch(
       {
@@ -1994,29 +2525,24 @@ describe("collaboration Shared Memory control", () => {
       {
         pendingShareId: uuidFor(700),
         mutationId,
+        mode: "continuous",
         source: capturedSource,
         localSessionId: ids.localSession
       }
     ]);
-    expect(preparePendingShareSource).toHaveBeenCalledWith({
-      backendId: "team-backend",
-      localOwnerUserId: ids.localOwner,
-      sessionId: ids.localSession,
-      pendingShareId: uuidFor(700),
-      mutationId
-    });
+    expect(requestPendingShareSourceWork).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when Pending Share source work cannot be persisted", async () => {
-    const preparePendingShareSource = vi.fn(async () => undefined);
+    const requestPendingShareSourceWork = vi.fn();
     const fixture = createFixture({
       persistPendingSourceWork: false,
-      preparePendingShareSource
+      requestPendingShareSourceWork
     });
     const result = await fixture.control.dispatch(shareCommand(), context());
 
     expectFailure(result, "not_available");
-    expect(preparePendingShareSource).not.toHaveBeenCalled();
+    expect(requestPendingShareSourceWork).not.toHaveBeenCalled();
   });
 
   it("keeps acceptance pending while semantic privacy materialization continues asynchronously", async () => {

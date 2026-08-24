@@ -57,7 +57,6 @@ of the operation; it does not relax any credential or authorization predicate.
 | Operation                                                         | State          | Allowed                                                             | Denied                                | Authority | High-risk or consent | Authorization notes                                                                 | Fail closed |
 | ----------------------------------------------------------------- | -------------- | ------------------------------------------------------------------- | ------------------------------------- | --------- | -------------------- | ----------------------------------------------------------------------------------- | ----------- |
 | `GET /v1/collaboration/personal/threads`                          | Current target | `BS` on local server; target Desktop uses `RT` through local broker | `PAT`, `LEC`, `UDC`, direct `RT` HTTP | Local     | No                   | List only the authenticated Personal owner's threads.                               | `FC-P`      |
-| `POST /v1/collaboration/personal/notes-to-self`                   | Current target | `BS` local; target `RT` through local broker                        | `PAT`, `LEC`, `UDC`, direct `RT` HTTP | Local     | No                   | One idempotent notes-to-self thread per Personal owner.                             | `FC-P`      |
 | `POST /v1/collaboration/personal/channels`                        | Current target | `BS` local; target `RT` through local broker                        | `PAT`, `LEC`, `UDC`, direct `RT` HTTP | Local     | No                   | Personal owner, normalized-name uniqueness, channel limits, and idempotency.        | `FC-P`      |
 | `GET /v1/collaboration/personal/threads/:threadId`                | Current target | `BS` local; target `RT` through local broker                        | `PAT`, `LEC`, `UDC`, direct `RT` HTTP | Local     | No                   | Path thread must belong to the current Personal owner; archived reads are explicit. | `FC-P`      |
 | `PATCH /v1/collaboration/personal/threads/:threadId/name`         | Current target | `BS` local; target `RT` through local broker                        | `PAT`, `LEC`, `UDC`, direct `RT` HTTP | Local     | No                   | Owner, kind, normalized name, and expected version.                                 | `FC-P`      |
@@ -68,6 +67,21 @@ of the operation; it does not relax any credential or authorization predicate.
 | `POST /v1/collaboration/personal/threads/:threadId/messages`      | Current target | `BS` local; target `RT` through local broker                        | `PAT`, `LEC`, `UDC`, direct `RT` HTTP | Local     | No                   | Owner, active thread, bounded body, admission limits, and idempotency.              | `FC-P`      |
 | `PUT /v1/collaboration/personal/threads/:threadId/read-state`     | Current target | `BS` local; target `RT` through local broker                        | `PAT`, `LEC`, `UDC`, direct `RT` HTTP | Local     | No                   | Owner-only monotonic cursor referencing the same thread.                            | `FC-P`      |
 | `PUT /v1/collaboration/personal/threads/:threadId/delivery-state` | Current target | `BS` local; target `RT` through local broker                        | `PAT`, `LEC`, `UDC`, direct `RT` HTTP | Local     | No                   | Owner-only monotonic delivery cursor referencing the same thread.                   | `FC-P`      |
+
+### Personal Notes
+
+Personal Notes are Personal Memory objects rather than collaboration threads.
+Their fixed routes accept the owning User through a browser session, a scoped
+device credential, or a Personal API Token. The Personal API Token grants no
+Personal chat or Team authority.
+
+| Operation                                              | State          | Allowed                                          | Denied                  | Authority | High-risk or consent | Authorization notes                                                                                         | Fail closed |
+| ------------------------------------------------------ | -------------- | ------------------------------------------------ | ----------------------- | --------- | -------------------- | ----------------------------------------------------------------------------------------------------------- | ----------- |
+| `GET /v1/collaboration/personal/notes`                 | Current target | `BS`, `PAT`, `UDC(personal_collaboration_read)`  | `LEC`, direct `RT` HTTP | Personal  | No                   | List only the authenticated owner's Notes using a bounded owner-scoped cursor.                              | `FC-P`      |
+| `POST /v1/collaboration/personal/notes`                | Current target | `BS`, `PAT`, `UDC(personal_collaboration_write)` | `LEC`, direct `RT` HTTP | Personal  | No                   | Create one encrypted Note revision with bounded input, admission control, and idempotency.                  | `FC-P`      |
+| `GET /v1/collaboration/personal/notes/:noteId`         | Current target | `BS`, `PAT`, `UDC(personal_collaboration_read)`  | `LEC`, direct `RT` HTTP | Personal  | No                   | Rejoin the path id to the authenticated owner before decrypting the current immutable revision.             | `FC-P`      |
+| `PATCH /v1/collaboration/personal/notes/:noteId/title` | Current target | `BS`, `PAT`, `UDC(personal_collaboration_write)` | `LEC`, direct `RT` HTTP | Personal  | No                   | Rename only the owner's Note with an expected title version; stale writes conflict.                         | `FC-P`      |
+| `PATCH /v1/collaboration/personal/notes/:noteId/body`  | Current target | `BS`, `PAT`, `UDC(personal_collaboration_write)` | `LEC`, direct `RT` HTTP | Personal  | No                   | Create the next immutable revision using expected revision and idempotency; Projection proceeds separately. | `FC-P`      |
 
 ### Team Chat And Companion Discussion
 
@@ -228,6 +242,16 @@ Opaque invitation text and bounded action-grant references are the only
 operation-specific authority artifacts allowed by the shared command schema;
 neither is a reusable remote credential.
 
+### Personal Memory IPC
+
+The fixed `koed:personal-memory:command` channel exposes
+`personal.notes.list`, `personal.notes.load`, `personal.notes.create`,
+`personal.notes.rename`, and `personal.notes.update`. Each operation accepts
+only a trusted renderer sender and its exact schema. Electron main owns the
+Personal API Token, maps each request to one fixed route and method, and never
+accepts a renderer-supplied URL, header, credential, owner, Memory Event id, or
+source revision.
+
 ### Collaboration IPC
 
 The generic `team_read`, `team_chat`, `team_chat_subscribe`, and
@@ -245,7 +269,6 @@ the strict command channel below.
 | `collaboration.create_team`                     | Implemented | `RT`                                         | Renderer-supplied credentials                             | Remote                                            | Fresh `BS` or exact `AG` required       | Use the browser-confirmed action-grant flow; the remote server revalidates the exact request and deployment Team-creation capability.                                                            | `FC-IPC`, `FC-ADM`          |
 | `collaboration.join_team`                       | Implemented | `RT` with explicit invitation                | Renderer-supplied credentials                             | Remote                                            | Explicit invite acceptance through `BS` | Treat invitation text as sensitive transient input; enforce the backend's advertised local-session or WorkOS/AuthKit identity contract, matching email, backend origin, and one-time acceptance. | `FC-IPC`, `FC-ADM`          |
 | `collaboration.create_workspace`                | Implemented | `RT` with bounded `AG` reference             | Renderer-supplied credentials                             | Remote                                            | Exact `team.workspace.create` `AG`      | Map to the Team-scoped Workspace route and re-evaluate role/version; command grant reference must resolve to the enrolled device and exact request.                                              | `FC-IPC`, `FC-ADM`          |
-| `collaboration.create_notes_to_self`            | Implemented | `RT`                                         | Renderer-supplied credentials                             | Local                                             | No                                      | Map to Personal owner idempotent creation.                                                                                                                                                       | `FC-IPC`, `FC-P`            |
 | `collaboration.create_personal_channel`         | Implemented | `RT`                                         | Renderer-supplied credentials                             | Local                                             | No                                      | Map to Personal owner creation with bounds, normalized uniqueness, and admission limits.                                                                                                         | `FC-IPC`, `FC-P`            |
 | `collaboration.create_workspace_channel`        | Implemented | `RT`                                         | Renderer-supplied credentials                             | Remote                                            | No                                      | Use local broker with `LEC(team_chat_write)` and stored `UDC(team_chat_write)`; remote Workspace write authority decides.                                                                        | `FC-IPC`, `FC-LE`, `FC-TW`  |
 | `collaboration.start_direct_message`            | Implemented | `RT`                                         | Renderer-supplied credentials                             | Remote                                            | No                                      | Both Users must be enabled Team members; server derives canonical pair.                                                                                                                          | `FC-IPC`, `FC-LE`, `FC-TW`  |

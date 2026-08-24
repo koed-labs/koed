@@ -19,6 +19,7 @@ import {
   SharedMemoryAuthorizationError
 } from "@koed/db";
 import {
+  pendingShareSchema,
   sharedMemoryCeilingAuthorizes,
   sharedMemoryRepresentationsForCeiling,
   SharedMemoryConflictError
@@ -110,6 +111,11 @@ const createFixture = () => {
   let repositoryCalls = 0;
   let personalNoteUpload:
     | Parameters<SharedMemoryRepository["persistPersonalNoteSourceArtifact"]>[1]
+    | null = null;
+  let continuousNoteAdvancement:
+    | Parameters<
+        SharedMemoryRepository["advanceContinuousPersonalNoteRevision"]
+      >[1]
     | null = null;
   let sourceGrantVersion = 0;
   let sourceGrantLifecycle: "active" | "revoked" = "active";
@@ -561,9 +567,6 @@ const createFixture = () => {
     async getOwnerShare() {
       return null;
     },
-    async renameOwnerShare() {
-      throw new SharedMemoryAuthorizationError();
-    },
     async readOwnerSharePreview() {
       return null;
     },
@@ -663,6 +666,45 @@ const createFixture = () => {
         syncRelationshipId: null,
         sourceRevision: 1
       };
+    },
+    async advanceContinuousPersonalNoteRevision(actor, input) {
+      repositoryCalls += 1;
+      if (actor.userId !== ids.alice) {
+        throw new SharedMemoryAuthorizationError();
+      }
+      continuousNoteAdvancement = input;
+      return [
+        {
+          source: input.candidate.source,
+          sourceCapabilities: input.candidate.sourceCapabilities,
+          activationRepresentation: input.candidate.activationRepresentation,
+          id: randomUUID(),
+          mutationId: input.mutationId,
+          logicalGrantId: ids.logicalGrant,
+          consentId: ids.consent,
+          logicalMemoryId: input.candidate.logicalMemoryId,
+          teamId: ids.teamA,
+          teamWorkspaceId: ids.workspaceA,
+          representation: "memory_events",
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          mode: "continuous",
+          sourceRevision: input.candidate.sourceRevision,
+          state: "preparing",
+          stage: "accepted",
+          workspaceAccessState: "active",
+          sourceUpdateState: "preparing",
+          operationVersion: 2,
+          attemptCount: 0,
+          redactedFailureCode: null,
+          lastProgressAt: iso,
+          createdAt: iso,
+          updatedAt: iso,
+          activatedAt: iso,
+          revokedAt: null,
+          grantId: ids.grant
+        }
+      ];
     },
     async putSourceOwnerPolicy(actor, input) {
       repositoryCalls += 1;
@@ -1008,6 +1050,9 @@ const createFixture = () => {
     },
     get personalNoteUpload() {
       return personalNoteUpload;
+    },
+    get continuousNoteAdvancement() {
+      return continuousNoteAdvancement;
     },
     get cumulativeMaterializations() {
       return cumulativeMaterializations;
@@ -1399,6 +1444,7 @@ describe("Shared Memory HTTP routes", () => {
     const source = {
       kind: "personal_note" as const,
       noteId,
+      noteRevision: 1,
       memoryEventId,
       logicalMemoryId
     };
@@ -1467,6 +1513,112 @@ describe("Shared Memory HTTP routes", () => {
       sourceOwnerPrincipalId: payload.sourceOwnerPrincipalId,
       candidate: { source, itemCount: 1, sourceRevision: 1 }
     });
+    await app.close();
+  });
+
+  it("advances a continuous Personal Note only through its scoped owner device", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const noteId = randomUUID();
+    const memoryEventId = randomUUID();
+    const logicalMemoryId = randomUUID();
+    const mutationId = randomUUID();
+    const candidate = {
+      source: {
+        kind: "personal_note" as const,
+        noteId,
+        noteRevision: 2,
+        memoryEventId,
+        logicalMemoryId
+      },
+      sourceCapabilities: ["memory_events" as const],
+      activationRepresentation: "memory_events" as const,
+      mode: "continuous" as const,
+      expiresAt: null,
+      logicalMemoryId,
+      sourceRevision: 2,
+      candidateHash: "c".repeat(64),
+      itemCount: 1,
+      excludedItemCount: 0,
+      manifest: [{ sourceId: memoryEventId, revisionHash: "d".repeat(64) }],
+      byteCount: 128,
+      items: [
+        {
+          id: memoryEventId,
+          representation: "memory_events" as const,
+          sequence: 2,
+          occurredAt: iso,
+          sourceItems: [
+            {
+              id: memoryEventId,
+              sourceKind: "user_message" as const,
+              occurredAt: iso,
+              body: "Updated Personal Note.",
+              actorName: null,
+              toolName: null,
+              toolCallId: null
+            }
+          ]
+        }
+      ]
+    };
+    const payload = { mutationId, candidate };
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/v1/shared-memory/personal-note-revisions/advance",
+      headers: { authorization: "Koed-Device owner-share:secret" },
+      payload
+    });
+    const apiToken = await app.inject({
+      method: "POST",
+      url: "/v1/shared-memory/personal-note-revisions/advance",
+      headers: { authorization: "Bearer personal-api-token" },
+      payload
+    });
+    const reader = await app.inject({
+      method: "POST",
+      url: "/v1/shared-memory/personal-note-revisions/advance",
+      headers: { authorization: "Koed-Device reader:secret" },
+      payload
+    });
+    const unrelatedOwner = await app.inject({
+      method: "POST",
+      url: "/v1/shared-memory/personal-note-revisions/advance",
+      headers: { authorization: "Koed-Device share:secret" },
+      payload
+    });
+    const malformed = await app.inject({
+      method: "POST",
+      url: "/v1/shared-memory/personal-note-revisions/advance",
+      headers: { authorization: "Koed-Device owner-share:secret" },
+      payload: {
+        mutationId: randomUUID(),
+        candidate: { ...candidate, mode: "snapshot" }
+      }
+    });
+
+    expect(accepted.statusCode).toBe(200);
+    expect(
+      jsonBody<{ pendingShares: unknown[] }>(accepted).pendingShares
+    ).toHaveLength(1);
+    expect([
+      apiToken.statusCode,
+      reader.statusCode,
+      unrelatedOwner.statusCode
+    ]).toEqual([403, 403, 403]);
+    expect(malformed.statusCode).toBe(400);
+    expect(fixture.continuousNoteAdvancement).toMatchObject({
+      mutationId,
+      candidate: {
+        source: candidate.source,
+        sourceRevision: 2,
+        mode: "continuous"
+      }
+    });
+    expect(fixture.continuousNoteAdvancement?.deviceCredentialId).toEqual(
+      expect.any(String)
+    );
+    expect(fixture.repositoryCalls).toBe(2);
     await app.close();
   });
 
@@ -1825,6 +1977,10 @@ describe("Shared Memory HTTP routes", () => {
       }
     });
     for (const response of [share, change]) {
+      const pendingShare = response.json().pendingShare;
+      expect(pendingShareSchema.safeParse(pendingShare).success).toBe(true);
+      expect(pendingShare).not.toHaveProperty("teamWorkspaceId");
+      expect(pendingShare).not.toHaveProperty("representation");
       expect(response.body).not.toContain("allowedRepresentations");
       expect(response.body).not.toContain("selectedRepresentation");
       expect(response.body).not.toContain("activeRepresentation");

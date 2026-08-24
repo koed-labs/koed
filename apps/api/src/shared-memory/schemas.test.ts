@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  changeSharedMemoryFidelityBundleSchema,
   createSharedMemoryCandidatePreviewSchema,
   createPendingShareSchema
 } from "./schemas.js";
@@ -19,6 +20,7 @@ const personalNoteCandidate = () => {
     source: {
       kind: "personal_note" as const,
       noteId: randomUUID(),
+      noteRevision: 1,
       memoryEventId,
       logicalMemoryId
     },
@@ -41,21 +43,21 @@ const personalNoteCandidate = () => {
 };
 
 describe("Shared Memory source schemas", () => {
-  it("accepts a fixed one-event Personal Note candidate", () => {
+  it("accepts snapshot and continuous one-event Personal Note candidates", () => {
     expect(
       createSharedMemoryCandidatePreviewSchema.parse(personalNoteCandidate())
         .source?.kind
     ).toBe("personal_note");
+    expect(
+      createSharedMemoryCandidatePreviewSchema.parse({
+        ...personalNoteCandidate(),
+        mode: "continuous"
+      }).mode
+    ).toBe("continuous");
   });
 
   it("rejects invalid Personal Note selection and source bindings", () => {
     const candidate = personalNoteCandidate();
-    expect(() =>
-      createSharedMemoryCandidatePreviewSchema.parse({
-        ...candidate,
-        mode: "continuous"
-      })
-    ).toThrow("snapshot mode");
     expect(() =>
       createSharedMemoryCandidatePreviewSchema.parse({
         ...candidate,
@@ -88,7 +90,7 @@ describe("Shared Memory source schemas", () => {
     ).toThrow();
   });
 
-  it("fixes Personal Note share bundles to snapshot memory_events", () => {
+  it("fixes Personal Note share bundles to one Memory Event at either update mode", () => {
     const candidate = personalNoteCandidate();
     const bundle = {
       source: candidate.source,
@@ -110,11 +112,49 @@ describe("Shared Memory source schemas", () => {
     expect(createPendingShareSchema.parse(bundle).source?.kind).toBe(
       "personal_note"
     );
+    expect(
+      createPendingShareSchema.parse({ ...bundle, mode: "continuous" }).mode
+    ).toBe("continuous");
     expect(() =>
       createPendingShareSchema.parse({
         ...bundle,
         sourceCapabilities: ["memory_events", "lcm_leaves"]
       })
     ).toThrow("Memory Event source capability");
+  });
+
+  it("accepts a Personal Note revision replacement under the fixed selection", () => {
+    const candidate = personalNoteCandidate();
+    const replacement = {
+      source: {
+        ...candidate.source,
+        noteRevision: 2,
+        memoryEventId: randomUUID()
+      },
+      mutationId: randomUUID(),
+      consentId: randomUUID(),
+      logicalMemoryId: candidate.logicalMemoryId,
+      teamId: candidate.teamId,
+      teamWorkspaceId: candidate.teamWorkspaceId,
+      preview: { previewId: randomUUID(), previewHash: "c".repeat(64) },
+      previewRevision: 1,
+      mode: "snapshot" as const,
+      sourceCapabilities: ["memory_events" as const],
+      activationRepresentation: "memory_events" as const,
+      maximumFidelity: "memory_events" as const,
+      includeCuratedMemory: false,
+      expectedGrantVersion: 1,
+      authority
+    };
+
+    expect(
+      changeSharedMemoryFidelityBundleSchema.parse(replacement).source.kind
+    ).toBe("personal_note");
+    expect(
+      changeSharedMemoryFidelityBundleSchema.parse({
+        ...replacement,
+        mode: "continuous"
+      }).mode
+    ).toBe("continuous");
   });
 });

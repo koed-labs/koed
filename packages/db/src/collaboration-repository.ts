@@ -21,6 +21,8 @@ const THREAD_TOPIC_MARKER = "[koed encrypted collaboration topic]";
 const MESSAGE_BODY_MARKER = "[koed encrypted collaboration message]";
 const MESSAGE_METADATA_MARKER = "[koed encrypted collaboration metadata]";
 const MESSAGE_PROVENANCE_MARKER = "[koed encrypted collaboration provenance]";
+const PERSONAL_NOTE_TITLE_MARKER = "[koed encrypted personal note title]";
+const PERSONAL_NOTE_BODY_MARKER = "[koed encrypted personal note body]";
 const OUTBOX_REPLAY_DAYS = 30;
 const MAX_THREAD_NAME_CODE_POINTS = 80;
 const MAX_THREAD_TOPIC_BYTES = 1_024;
@@ -34,9 +36,7 @@ const MAX_REALTIME_RECEIPT_UPDATES = 250;
 
 export type CollaborationScope = "personal" | "team";
 
-export type PersonalCollaborationThreadKind =
-  | "notes_to_self"
-  | "personal_channel";
+export type PersonalCollaborationThreadKind = "personal_channel";
 
 export type TeamCollaborationThreadKind =
   | "workspace_channel"
@@ -65,6 +65,7 @@ export type CollaborationEventFamily =
   | "receipt_state_updated"
   | "share_grant_lifecycle"
   | "fidelity_changed"
+  | "source_revision_changed"
   | "memory_event_available"
   | "lcm_leaf_available"
   | "lcm_rollup_available"
@@ -140,26 +141,19 @@ export interface CollaborationMessagePageRecord {
   nextAfterSequence: number | null;
 }
 
-export interface PersonalNoteProjectionCursorRecord {
-  ownerUserId: string;
-  threadId: string;
-  lastThreadSequence: number;
-  scannedCount: number;
-  existingCount: number;
-  createdCount: number;
-  embeddingQueuedCount: number;
-  failureCount: number;
-  lastFailureCode: string | null;
-  updatedAt: string;
-}
-
 export interface PersonalNoteRecord {
   noteId: string;
-  threadId: string;
   title: string;
   titleVersion: number;
   body: string;
+  revisionId: string;
+  revision: number;
+  contentHash: string;
+  memoryEventId: string | null;
+  projectionState: "pending" | "available" | "failed" | "superseded";
+  projectionFailureCode: string | null;
   createdAt: string;
+  updatedAt: string;
   sourceSequence: number;
 }
 
@@ -308,10 +302,6 @@ export type RevokeCollaborationSubscriptionsInput =
 
 export type CreateCollaborationThreadInput =
   | {
-      kind: "notes_to_self";
-      idempotencyKey: string;
-    }
-  | {
       kind: "personal_channel";
       idempotencyKey: string;
       name: string;
@@ -368,9 +358,6 @@ export interface CollaborationRepository {
           limit?: number;
         }
   ): Promise<CollaborationThreadRecord[] | null>;
-  getPersonalNotesThread(
-    actor: ActorContext
-  ): Promise<CollaborationThreadRecord | null>;
   renameThread(
     actor: ActorContext,
     input: { threadId: string; expectedVersion: number; name: string }
@@ -410,24 +397,10 @@ export interface CollaborationRepository {
       limit?: number;
     }
   ): Promise<CollaborationMessagePageRecord | null>;
-  getOrCreatePersonalNoteProjectionCursor(
+  createPersonalNote(
     actor: ActorContext,
-    input: { threadId: string }
-  ): Promise<PersonalNoteProjectionCursorRecord | null>;
-  advancePersonalNoteProjectionCursor(
-    actor: ActorContext,
-    input: {
-      threadId: string;
-      expectedSequence: number;
-      nextSequence: number;
-      outcome: "existing" | "created" | "failed";
-      embeddingQueued?: boolean;
-      failureCode?: string;
-    }
-  ): Promise<PersonalNoteProjectionCursorRecord | null>;
-  listPersonalNoteProjectionActors(input?: {
-    limit?: number;
-  }): Promise<ActorContext[]>;
+    input: { body: string; idempotencyKey: string }
+  ): Promise<PersonalNoteRecord>;
   listPersonalNotes(
     actor: ActorContext,
     input?: { beforeSequence?: number; limit?: number }
@@ -440,6 +413,26 @@ export interface CollaborationRepository {
     actor: ActorContext,
     input: { noteId: string; expectedTitleVersion: number; title: string }
   ): Promise<PersonalNoteRecord | null>;
+  updatePersonalNoteBody(
+    actor: ActorContext,
+    input: {
+      noteId: string;
+      expectedRevision: number;
+      body: string;
+      idempotencyKey: string;
+    }
+  ): Promise<PersonalNoteRecord | null>;
+  listPendingPersonalNoteRevisions(input?: {
+    limit?: number;
+  }): Promise<Array<{ ownerUserId: string; noteId: string; revision: number }>>;
+  markPersonalNoteProjectionAvailable(
+    actor: ActorContext,
+    input: { noteId: string; revision: number; memoryEventId: string }
+  ): Promise<PersonalNoteRecord | null>;
+  markPersonalNoteProjectionFailed(
+    actor: ActorContext,
+    input: { noteId: string; revision: number; failureCode: string }
+  ): Promise<void>;
   advanceReadState(
     actor: ActorContext,
     input: { threadId: string; messageId: string }
@@ -634,23 +627,24 @@ type SubscriptionRow = {
   revoked_at: Date | null;
 };
 
-const iso = (value: Date | null): string | null => value?.toISOString() ?? null;
+type PersonalNoteRow = {
+  id: string;
+  owner_user_id: string;
+  sequence: number | string;
+  title_version: number;
+  current_revision: number;
+  lifecycle: "active" | "archived" | "deleted";
+  created_at: Date;
+  updated_at: Date;
+  revision_id: string;
+  revision: number;
+  content_hash: string;
+  memory_event_id: string | null;
+  projection_state: "pending" | "available" | "failed" | "superseded";
+  projection_failure_code: string | null;
+};
 
-const mapPersonalNoteProjectionCursor = (
-  row: Record<string, unknown>
-): PersonalNoteProjectionCursorRecord => ({
-  ownerUserId: String(row.owner_user_id),
-  threadId: String(row.thread_id),
-  lastThreadSequence: Number(row.last_thread_sequence),
-  scannedCount: Number(row.scanned_count),
-  existingCount: Number(row.existing_count),
-  createdCount: Number(row.created_count),
-  embeddingQueuedCount: Number(row.embedding_queued_count),
-  failureCount: Number(row.failure_count),
-  lastFailureCode:
-    typeof row.last_failure_code === "string" ? row.last_failure_code : null,
-  updatedAt: iso(row.updated_at as Date)!
-});
+const iso = (value: Date | null): string | null => value?.toISOString() ?? null;
 
 const normalizePersonalNoteTitle = (value: string): string => {
   const title = value.trim().normalize("NFC");
@@ -660,41 +654,69 @@ const normalizePersonalNoteTitle = (value: string): string => {
   return title;
 };
 
-const personalNoteFromMessage = (
-  message: CollaborationMessageRecord
-): PersonalNoteRecord => {
-  const namespace =
-    typeof message.metadata.personalNote === "object" &&
-    message.metadata.personalNote !== null &&
-    !Array.isArray(message.metadata.personalNote)
-      ? (message.metadata.personalNote as Record<string, unknown>)
-      : null;
-  const explicitTitle =
-    typeof namespace?.title === "string" ? namespace.title : null;
-  const explicitVersion =
-    typeof namespace?.titleVersion === "number" &&
-    Number.isSafeInteger(namespace.titleVersion) &&
-    namespace.titleVersion >= 2
-      ? namespace.titleVersion
-      : null;
-  const firstLine = message.bodyText
+const derivePersonalNoteTitle = (body: string): string => {
+  const firstLine = body
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .find(Boolean);
-  const derived = Array.from(firstLine ?? "Untitled Note")
-    .slice(0, 80)
-    .join("");
+  return (
+    Array.from(firstLine ?? "Untitled Note")
+      .slice(0, 80)
+      .join("") || "Untitled Note"
+  );
+};
+
+const selectPersonalNoteSql = `
+  select note.id,note.owner_user_id,note.sequence,note.title_version,
+         note.current_revision,note.lifecycle,note.created_at,note.updated_at,
+         revision.id as revision_id,revision.revision,revision.content_hash,
+         revision.memory_event_id,revision.projection_state,
+         revision.projection_failure_code
+    from personal_notes note
+    join personal_note_revisions revision
+      on revision.note_id=note.id
+     and revision.owner_user_id=note.owner_user_id
+     and revision.revision=note.current_revision
+`;
+
+const decryptPersonalNote = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  provider: EnvelopeEncryptionProvider,
+  row: PersonalNoteRow
+): Promise<PersonalNoteRecord> => {
+  const [titlePayload, bodyPayload] = await Promise.all([
+    decryptAuthorizedEncryptedFieldPayloadWithClient(client, actor, provider, {
+      sourceTable: "personal_notes",
+      sourceId: row.id,
+      sourceColumn: "title"
+    }),
+    decryptAuthorizedEncryptedFieldPayloadWithClient(client, actor, provider, {
+      sourceTable: "personal_note_revisions",
+      sourceId: row.revision_id,
+      sourceColumn: "body"
+    })
+  ]);
+  if (
+    typeof titlePayload?.plaintext !== "string" ||
+    typeof bodyPayload?.plaintext !== "string"
+  ) {
+    throw new Error("Personal Note encrypted payload is unavailable");
+  }
   return {
-    noteId: message.id,
-    threadId: message.threadId,
-    title:
-      explicitTitle && explicitVersion
-        ? normalizePersonalNoteTitle(explicitTitle)
-        : derived || "Untitled Note",
-    titleVersion: explicitTitle && explicitVersion ? explicitVersion : 1,
-    body: message.bodyText,
-    createdAt: message.createdAt,
-    sourceSequence: message.threadSequence
+    noteId: row.id,
+    title: normalizePersonalNoteTitle(titlePayload.plaintext),
+    titleVersion: row.title_version,
+    body: bodyPayload.plaintext,
+    revisionId: row.revision_id,
+    revision: row.revision,
+    contentHash: row.content_hash,
+    memoryEventId: row.memory_event_id,
+    projectionState: row.projection_state,
+    projectionFailureCode: row.projection_failure_code,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+    sourceSequence: Number(row.sequence)
   };
 };
 
@@ -1067,7 +1089,7 @@ const activeShareGrant = async (
         join source_owner_representation_consents consent
           on consent.id = sg.consent_id
          and consent.logical_memory_id = sg.logical_memory_id
-         and consent.remote_replica_id = sg.remote_replica_id
+         and consent.remote_replica_id is not distinct from sg.remote_replica_id
          and consent.source_owner_principal_id = sg.owner_principal_id
          and consent.team_id = sg.team_id
          and consent.team_workspace_id = sg.team_workspace_id
@@ -1187,7 +1209,7 @@ const authorizedThreadJoinsSql = `
   left join source_owner_representation_consents share_consent
     on share_consent.id = share_grant.consent_id
    and share_consent.logical_memory_id = share_grant.logical_memory_id
-   and share_consent.remote_replica_id = share_grant.remote_replica_id
+   and share_consent.remote_replica_id is not distinct from share_grant.remote_replica_id
    and share_consent.source_owner_principal_id = share_grant.owner_principal_id
    and share_consent.team_id = share_grant.team_id
    and share_consent.team_workspace_id = share_grant.team_workspace_id
@@ -1231,7 +1253,7 @@ const authorizedThreadPredicate = (required: "read" | "write"): string => `
     (
       ct.scope = 'personal'
       and ct.personal_owner_user_id = $1
-      and ct.kind in ('notes_to_self', 'personal_channel')
+      and ct.kind = 'personal_channel'
     )
     or (
       ct.scope = 'team'
@@ -1976,6 +1998,7 @@ const sharedMemoryScopedEventSql = `(
   event.family in (
     'share_grant_lifecycle',
     'fidelity_changed',
+    'source_revision_changed',
     'memory_event_available',
     'lcm_leaf_available',
     'lcm_rollup_available'
@@ -1989,7 +2012,7 @@ const activeSharedMemoryGrantEventAuthorizationSql = `exists (
   join source_owner_representation_consents realtime_consent
     on realtime_consent.id = realtime_grant.consent_id
    and realtime_consent.logical_memory_id = realtime_grant.logical_memory_id
-   and realtime_consent.remote_replica_id = realtime_grant.remote_replica_id
+   and realtime_consent.remote_replica_id is not distinct from realtime_grant.remote_replica_id
    and realtime_consent.source_owner_principal_id = realtime_grant.owner_principal_id
    and realtime_consent.team_id = realtime_grant.team_id
    and realtime_consent.team_workspace_id = realtime_grant.team_workspace_id
@@ -2048,7 +2071,7 @@ const sharedMemoryRepresentationEventAuthorizationSql = `exists (
   join source_owner_representation_consents realtime_consent
     on realtime_consent.id = realtime_grant.consent_id
    and realtime_consent.logical_memory_id = realtime_grant.logical_memory_id
-   and realtime_consent.remote_replica_id = realtime_grant.remote_replica_id
+   and realtime_consent.remote_replica_id is not distinct from realtime_grant.remote_replica_id
    and realtime_consent.source_owner_principal_id = realtime_grant.owner_principal_id
    and realtime_consent.team_id = realtime_grant.team_id
    and realtime_consent.team_workspace_id = realtime_grant.team_workspace_id
@@ -2142,7 +2165,7 @@ const threadlessTeamEventAuthorizationSql = `
       and ${sharedMemoryRepresentationEventAuthorizationSql}
     )
     or (
-      event.family = 'fidelity_changed'
+      event.family in ('fidelity_changed', 'source_revision_changed')
       and ${sharedMemoryRepresentationEventAuthorizationSql}
     )
     or (
@@ -2152,7 +2175,7 @@ const threadlessTeamEventAuthorizationSql = `
       and ${activeSharedMemoryGrantEventAuthorizationSql}
     )
     or (
-      event.family = 'fidelity_changed'
+      event.family in ('fidelity_changed', 'source_revision_changed')
       and event.resource_type in (
         'team_session_share_grant',
         'team_memory_representation'
@@ -2865,24 +2888,20 @@ const prepareThreadCreation = async (
   let participants: string[] = [];
   let participantSetKey: string | null = null;
 
-  if (input.kind === "notes_to_self" || input.kind === "personal_channel") {
+  if (input.kind === "personal_channel") {
     if (!(await activeUser(client, actor))) return null;
     scope = "personal";
     personalOwnerUserId = actor.userId;
-    if (input.kind === "notes_to_self") {
-      participants = [actor.userId];
-    } else {
-      name = requireBoundedCodePoints(
-        input.name,
-        "name",
-        MAX_THREAD_NAME_CODE_POINTS
-      );
-      normalizedNameHash = hashDomain("thread-name", normalizeName(name));
-      topic =
-        input.topic === undefined || input.topic === null
-          ? null
-          : requireBoundedUtf8(input.topic, "topic", MAX_THREAD_TOPIC_BYTES);
-    }
+    name = requireBoundedCodePoints(
+      input.name,
+      "name",
+      MAX_THREAD_NAME_CODE_POINTS
+    );
+    normalizedNameHash = hashDomain("thread-name", normalizeName(name));
+    topic =
+      input.topic === undefined || input.topic === null
+        ? null
+        : requireBoundedUtf8(input.topic, "topic", MAX_THREAD_TOPIC_BYTES);
   } else {
     scope = "team";
     teamId = input.teamId;
@@ -3020,12 +3039,7 @@ const findNaturalThreadId = async (
   input: PreparedThreadCreation
 ): Promise<string | null> => {
   let result: pg.QueryResult<{ id: string }>;
-  if (input.kind === "notes_to_self") {
-    result = await client.query(
-      `select id from collaboration_threads where kind = 'notes_to_self' and personal_owner_user_id = $1 limit 1`,
-      [input.personalOwnerUserId]
-    );
-  } else if (input.kind === "personal_channel") {
+  if (input.kind === "personal_channel") {
     result = await client.query(
       `select id from collaboration_threads where kind = 'personal_channel' and personal_owner_user_id = $1 and normalized_name_hash = $2 and lifecycle = 'active' limit 1`,
       [input.personalOwnerUserId, input.normalizedNameHash]
@@ -4307,28 +4321,6 @@ export const createCollaborationRepository = (
         : mapThreadRows(pool, actor, requireProvider(input.scope), rows);
     },
 
-    async getPersonalNotesThread(actor) {
-      const result = await pool.query<{ id: string }>(
-        `select id from collaboration_threads
-          where scope='personal'
-            and kind='notes_to_self'
-            and personal_owner_user_id=$1
-          limit 1`,
-        [actor.userId]
-      );
-      const threadId = result.rows[0]?.id;
-      if (!threadId) return null;
-      const row = await getAuthorizedThreadRow(pool, actor, threadId, {
-        required: "read",
-        includeArchived: true
-      });
-      return row
-        ? (
-            await mapThreadRows(pool, actor, requireProvider("personal"), [row])
-          )[0]!
-        : null;
-    },
-
     async renameThread(actor, input) {
       return withTransaction(pool, async (client) =>
         updateThreadName(
@@ -4395,168 +4387,202 @@ export const createCollaborationRepository = (
       );
     },
 
-    async getOrCreatePersonalNoteProjectionCursor(actor, input) {
-      const thread = await getAuthorizedThreadRow(pool, actor, input.threadId, {
-        required: "read",
-        includeArchived: true
-      });
-      if (
-        !thread ||
-        thread.scope !== "personal" ||
-        thread.kind !== "notes_to_self" ||
-        thread.personal_owner_user_id !== actor.userId
-      ) {
-        return null;
-      }
-      const result = await pool.query<Record<string, unknown>>(
-        `insert into personal_note_projection_cursors (owner_user_id,thread_id)
-         values ($1,$2)
-         on conflict (owner_user_id) do nothing
-         returning *`,
-        [actor.userId, thread.id]
+    async createPersonalNote(actor, input) {
+      const body = requireBoundedText(
+        input.body,
+        "Personal Note body",
+        MAX_MESSAGE_BODY_BYTES
       );
-      const row =
-        result.rows[0] ??
-        (
-          await pool.query<Record<string, unknown>>(
-            `select * from personal_note_projection_cursors
-             where owner_user_id=$1 and thread_id=$2`,
-            [actor.userId, thread.id]
+      const idempotencyKey = requireBoundedText(
+        input.idempotencyKey,
+        "idempotencyKey",
+        MAX_IDEMPOTENCY_KEY_LENGTH
+      );
+      const idempotencyKeyHash = hashDomain(
+        "personal-note-idempotency",
+        idempotencyKey
+      );
+      const creationRequestHash = requestHash({ body });
+      const contentHash = hashDomain("personal-note-body", body);
+      const title = derivePersonalNoteTitle(body);
+      return withTransaction(pool, async (client) => {
+        const existing = await client.query<PersonalNoteRow>(
+          `${selectPersonalNoteSql}
+            where note.owner_user_id=$1
+              and note.idempotency_key_hash=$2
+              and note.lifecycle='active'
+            limit 1
+            for update of note`,
+          [actor.userId, idempotencyKeyHash]
+        );
+        if (existing.rows[0]) {
+          const hash = await client.query<{ request_hash: string }>(
+            `select request_hash from personal_notes where id=$1`,
+            [existing.rows[0].id]
+          );
+          if (hash.rows[0]?.request_hash !== creationRequestHash) {
+            throw new CollaborationStateConflictError(
+              "Personal Note idempotency key was reused with different content"
+            );
+          }
+          return decryptPersonalNote(
+            client,
+            actor,
+            requireProvider(),
+            existing.rows[0]
+          );
+        }
+        const noteId = randomUUID();
+        const revisionId = randomUUID();
+        const inserted = await client.query<{ id: string }>(
+          `insert into personal_notes (
+             id,owner_user_id,title_marker,title_version,current_revision,
+             idempotency_key_hash,request_hash
+           ) values ($1,$2,$3,1,1,$4,$5)
+           on conflict (owner_user_id,idempotency_key_hash) do nothing
+           returning id`,
+          [
+            noteId,
+            actor.userId,
+            PERSONAL_NOTE_TITLE_MARKER,
+            idempotencyKeyHash,
+            creationRequestHash
+          ]
+        );
+        if (!inserted.rows[0]) {
+          const raced = await client.query<PersonalNoteRow>(
+            `${selectPersonalNoteSql}
+              where note.owner_user_id=$1
+                and note.idempotency_key_hash=$2
+                and note.lifecycle='active'
+              limit 1
+              for update of note`,
+            [actor.userId, idempotencyKeyHash]
+          );
+          const racedHash = await client.query<{ request_hash: string }>(
+            `select request_hash from personal_notes where id=$1`,
+            [raced.rows[0]?.id]
+          );
+          if (
+            !raced.rows[0] ||
+            racedHash.rows[0]?.request_hash !== creationRequestHash
+          ) {
+            throw new CollaborationStateConflictError(
+              "Personal Note idempotency key was reused with different content"
+            );
+          }
+          return decryptPersonalNote(
+            client,
+            actor,
+            requireProvider(),
+            raced.rows[0]
+          );
+        }
+        await client.query(
+          `insert into personal_note_revisions (
+             id,note_id,owner_user_id,revision,idempotency_key_hash,
+             request_hash,body_marker,content_hash
+           ) values ($1,$2,$3,1,$4,$5,$6,$7)`,
+          [
+            revisionId,
+            noteId,
+            actor.userId,
+            idempotencyKeyHash,
+            creationRequestHash,
+            PERSONAL_NOTE_BODY_MARKER,
+            contentHash
+          ]
+        );
+        await Promise.all([
+          upsertEncryptedFieldPayloadWithClient(
+            client,
+            actor,
+            requireProvider(),
+            {
+              sourceTable: "personal_notes",
+              sourceId: noteId,
+              sourceColumn: "title",
+              plaintext: title,
+              scope: { objectClass: "personal_note" },
+              rowFamily: "personal_note",
+              aad: { noteId, ownerUserId: actor.userId }
+            }
+          ),
+          upsertEncryptedFieldPayloadWithClient(
+            client,
+            actor,
+            requireProvider(),
+            {
+              sourceTable: "personal_note_revisions",
+              sourceId: revisionId,
+              sourceColumn: "body",
+              plaintext: body,
+              scope: { objectClass: "personal_note_revision" },
+              rowFamily: "personal_note_revision",
+              aad: { noteId, revision: 1, ownerUserId: actor.userId }
+            }
           )
-        ).rows[0];
-      return row ? mapPersonalNoteProjectionCursor(row) : null;
-    },
-
-    async advancePersonalNoteProjectionCursor(actor, input) {
-      const expectedSequence = requireNonNegativeInteger(
-        input.expectedSequence,
-        "expectedSequence"
-      );
-      const nextSequence = requirePositiveInteger(
-        input.nextSequence,
-        "nextSequence"
-      );
-      if (nextSequence <= expectedSequence) {
-        throw new TypeError("nextSequence must advance the Projection cursor");
-      }
-      const failureCode =
-        input.outcome === "failed"
-          ? (input.failureCode ?? "projection_failed").trim().slice(0, 80)
-          : null;
-      const result = await pool.query<Record<string, unknown>>(
-        `update personal_note_projection_cursors cursor
-            set last_thread_sequence=$4,
-                scanned_count=scanned_count+1,
-                existing_count=existing_count+($5='existing')::int,
-                created_count=created_count+($5='created')::int,
-                embedding_queued_count=embedding_queued_count+$6::int,
-                failure_count=failure_count+($5='failed')::int,
-                last_failure_code=$7,
-                updated_at=now()
-           from collaboration_threads thread
-          where cursor.owner_user_id=$1
-            and cursor.thread_id=$2
-            and cursor.last_thread_sequence=$3
-            and thread.id=cursor.thread_id
-            and thread.scope='personal'
-            and thread.kind='notes_to_self'
-            and thread.personal_owner_user_id=$1
-          returning cursor.*`,
-        [
-          actor.userId,
-          input.threadId,
-          expectedSequence,
-          nextSequence,
-          input.outcome,
-          input.embeddingQueued ? 1 : 0,
-          failureCode
-        ]
-      );
-      return result.rows[0]
-        ? mapPersonalNoteProjectionCursor(result.rows[0])
-        : null;
-    },
-
-    async listPersonalNoteProjectionActors(input = {}) {
-      const limit = Math.min(Math.max(input.limit ?? 10, 1), 100);
-      const result = await pool.query<{ user_id: string }>(
-        `select ct.personal_owner_user_id as user_id
-           from collaboration_threads ct
-           join collaboration_messages cm on cm.thread_id=ct.id
-           left join personal_note_projection_cursors cursor
-             on cursor.owner_user_id=ct.personal_owner_user_id
-            and cursor.thread_id=ct.id
-          where ct.scope='personal'
-            and ct.kind='notes_to_self'
-            and ct.personal_owner_user_id is not null
-            and cm.scope='personal'
-            and cm.personal_owner_user_id=ct.personal_owner_user_id
-            and cm.thread_sequence > coalesce(cursor.last_thread_sequence,0)
-          group by ct.personal_owner_user_id
-          order by min(cm.created_at),ct.personal_owner_user_id
-          limit $1`,
-        [limit]
-      );
-      return result.rows.map((row) => ({ userId: row.user_id }));
+        ]);
+        await client.query(`select pg_notify('koed_graph_updates',$1)`, [
+          JSON.stringify({
+            table: "personal_notes",
+            operation: "INSERT",
+            id: noteId,
+            ownerUserId: actor.userId,
+            visibility: "personal",
+            changedAt: new Date().toISOString()
+          })
+        ]);
+        const created = await client.query<PersonalNoteRow>(
+          `${selectPersonalNoteSql} where note.id=$1 and note.owner_user_id=$2`,
+          [noteId, actor.userId]
+        );
+        return decryptPersonalNote(
+          client,
+          actor,
+          requireProvider(),
+          created.rows[0]!
+        );
+      });
     },
 
     async listPersonalNotes(actor, input = {}) {
-      const thread = await pool.query<{ id: string }>(
-        `select id from collaboration_threads
-          where scope='personal' and kind='notes_to_self'
-            and personal_owner_user_id=$1
-          limit 1`,
-        [actor.userId]
+      const limit = boundedLimit(input.limit, 50, 50);
+      const result = await pool.query<PersonalNoteRow>(
+        `${selectPersonalNoteSql}
+          where note.owner_user_id=$1
+            and note.lifecycle='active'
+            and ($2::bigint is null or note.sequence < $2)
+          order by note.sequence desc
+          limit $3`,
+        [actor.userId, input.beforeSequence ?? null, limit + 1]
       );
-      if (!thread.rows[0]) return { notes: [], nextBeforeSequence: null };
-      const page = await listCollaborationMessages(
-        pool,
-        actor,
-        requireProvider(),
-        {
-          threadId: thread.rows[0].id,
-          ...(input.beforeSequence !== undefined
-            ? { beforeSequence: input.beforeSequence }
-            : {}),
-          limit: input.limit
-        }
+      const hasMore = result.rows.length > limit;
+      const rows = result.rows.slice(0, limit);
+      const notes = await Promise.all(
+        rows.map((row) =>
+          decryptPersonalNote(pool, actor, requireProvider(), row)
+        )
       );
-      if (!page) return { notes: [], nextBeforeSequence: null };
       return {
-        notes: [...page.messages]
-          .reverse()
-          .filter(
-            (message) =>
-              message.senderKind === "user" &&
-              message.senderUserId === actor.userId
-          )
-          .map(personalNoteFromMessage),
-        nextBeforeSequence: page.hasMore ? page.nextBeforeSequence : null
+        notes,
+        nextBeforeSequence: hasMore
+          ? (notes.at(-1)?.sourceSequence ?? null)
+          : null
       };
     },
 
     async getPersonalNote(actor, input) {
-      const result = await pool.query<MessageRow>(
-        `select ${selectMessageColumnsSql}
-           from collaboration_messages cm
-           join collaboration_threads ct on ct.id=cm.thread_id
-           left join users sender on sender.id=cm.sender_user_id
-          where cm.id=$1
-            and ct.scope='personal'
-            and ct.kind='notes_to_self'
-            and ct.personal_owner_user_id=$2
-            and cm.scope='personal'
-            and cm.personal_owner_user_id=$2
-            and cm.sender_kind='user'
-            and cm.sender_user_id=$2
+      const result = await pool.query<PersonalNoteRow>(
+        `${selectPersonalNoteSql}
+          where note.id=$1 and note.owner_user_id=$2
+            and note.lifecycle='active'
           limit 1`,
         [input.noteId, actor.userId]
       );
-      if (!result.rows[0]) return null;
-      await attachRecipientStatuses(pool, actor, result.rows);
-      return personalNoteFromMessage(
-        await mapMessageRow(pool, actor, requireProvider(), result.rows[0])
-      );
+      return result.rows[0]
+        ? decryptPersonalNote(pool, actor, requireProvider(), result.rows[0])
+        : null;
     },
 
     async renamePersonalNote(actor, input) {
@@ -4566,91 +4592,53 @@ export const createCollaborationRepository = (
         "expectedTitleVersion"
       );
       return withTransaction(pool, async (client) => {
-        const result = await client.query<MessageRow>(
-          `select ${selectMessageColumnsSql}
-             from collaboration_messages cm
-             join collaboration_threads ct on ct.id=cm.thread_id
-             left join users sender on sender.id=cm.sender_user_id
-            where cm.id=$1
-              and ct.scope='personal'
-              and ct.kind='notes_to_self'
-              and ct.personal_owner_user_id=$2
-              and cm.scope='personal'
-              and cm.personal_owner_user_id=$2
-              and cm.sender_kind='user'
-              and cm.sender_user_id=$2
+        const result = await client.query<PersonalNoteRow>(
+          `${selectPersonalNoteSql}
+            where note.id=$1 and note.owner_user_id=$2
+              and note.lifecycle='active'
             limit 1
-            for update of cm`,
+            for update of note`,
           [input.noteId, actor.userId]
         );
         if (!result.rows[0]) return null;
-        await attachRecipientStatuses(client, actor, result.rows);
-        const message = await mapMessageRow(
+        const current = await decryptPersonalNote(
           client,
           actor,
           requireProvider(),
           result.rows[0]
         );
-        const current = personalNoteFromMessage(message);
-        if (current.title === title) return current;
         if (current.titleVersion !== expectedTitleVersion) {
           throw new CollaborationStateConflictError(
             "Personal Note title version conflict"
           );
         }
+        if (current.title === title) return current;
         const nextVersion = current.titleVersion + 1;
-        const metadata = {
-          ...message.metadata,
-          personalNote: { title, titleVersion: nextVersion }
-        };
         await upsertEncryptedFieldPayloadWithClient(
           client,
           actor,
           requireProvider(),
           {
-            sourceTable: "collaboration_messages",
-            sourceId: message.id,
-            sourceColumn: "metadata",
-            plaintext: metadata,
-            visibility: "personal",
-            teamId: null,
-            teamWorkspaceId: null,
-            scope: { objectClass: "collaboration_message" },
-            rowFamily: "collaboration_message",
-            aad: {
-              threadId: message.threadId,
-              threadSequence: message.threadSequence,
-              collaborationScope: "personal",
-              threadKind: "notes_to_self"
-            }
+            sourceTable: "personal_notes",
+            sourceId: current.noteId,
+            sourceColumn: "title",
+            plaintext: title,
+            scope: { objectClass: "personal_note" },
+            rowFamily: "personal_note",
+            aad: { noteId: current.noteId, ownerUserId: actor.userId }
           }
         );
         await client.query(
-          `update collaboration_messages set updated_at=now() where id=$1`,
-          [message.id]
+          `update personal_notes
+              set title_version=$3,updated_at=now()
+            where id=$1 and owner_user_id=$2`,
+          [current.noteId, actor.userId, nextVersion]
         );
-        await appendCollaborationOutboxEventWithClient(client, {
-          family: "message_created",
-          scope: "personal",
-          personalOwnerUserId: actor.userId,
-          teamId: null,
-          teamWorkspaceId: null,
-          threadId: message.threadId,
-          messageId: message.id,
-          shareGrantId: null,
-          logicalMemoryId: null,
-          resourceType: "collaboration_message",
-          resourceId: message.id,
-          actorPrincipalId: actor.userId,
-          mutationId: uuidFromHash(
-            `personal-note-title:${message.id}:${nextVersion}:${title}`
-          )
-        });
         await client.query(`select pg_notify('koed_graph_updates',$1)`, [
           JSON.stringify({
             table: "personal_notes",
             operation: "UPDATE",
-            id: message.id,
+            id: current.noteId,
             ownerUserId: actor.userId,
             visibility: "personal",
             changedAt: new Date().toISOString()
@@ -4658,6 +4646,279 @@ export const createCollaborationRepository = (
         ]);
         return { ...current, title, titleVersion: nextVersion };
       });
+    },
+
+    async updatePersonalNoteBody(actor, input) {
+      const body = requireBoundedText(
+        input.body,
+        "Personal Note body",
+        MAX_MESSAGE_BODY_BYTES
+      );
+      const expectedRevision = requirePositiveInteger(
+        input.expectedRevision,
+        "expectedRevision"
+      );
+      const idempotencyKey = requireBoundedText(
+        input.idempotencyKey,
+        "idempotencyKey",
+        MAX_IDEMPOTENCY_KEY_LENGTH
+      );
+      const idempotencyKeyHash = hashDomain(
+        "personal-note-revision-idempotency",
+        idempotencyKey
+      );
+      const revisionRequestHash = requestHash({ body });
+      const contentHash = hashDomain("personal-note-body", body);
+      return withTransaction(pool, async (client) => {
+        const existing = await client.query<{
+          request_hash: string;
+        }>(
+          `select revision.request_hash
+             from personal_note_revisions revision
+            where revision.note_id=$1
+              and revision.owner_user_id=$2
+              and revision.idempotency_key_hash=$3
+            limit 1`,
+          [input.noteId, actor.userId, idempotencyKeyHash]
+        );
+        if (existing.rows[0]) {
+          if (existing.rows[0].request_hash !== revisionRequestHash) {
+            throw new CollaborationStateConflictError(
+              "Personal Note revision idempotency key was reused with different content"
+            );
+          }
+          const current = await client.query<PersonalNoteRow>(
+            `${selectPersonalNoteSql}
+              where note.id=$1 and note.owner_user_id=$2
+                and note.lifecycle='active'
+              limit 1`,
+            [input.noteId, actor.userId]
+          );
+          if (!current.rows[0]) return null;
+          return decryptPersonalNote(
+            client,
+            actor,
+            requireProvider(),
+            current.rows[0]
+          );
+        }
+        const locked = await client.query<PersonalNoteRow>(
+          `${selectPersonalNoteSql}
+            where note.id=$1 and note.owner_user_id=$2
+              and note.lifecycle='active'
+            limit 1
+            for update of note`,
+          [input.noteId, actor.userId]
+        );
+        if (!locked.rows[0]) return null;
+        const current = locked.rows[0];
+        if (current.current_revision !== expectedRevision) {
+          throw new CollaborationStateConflictError(
+            "Personal Note body revision conflict"
+          );
+        }
+        if (current.content_hash === contentHash) {
+          return decryptPersonalNote(client, actor, requireProvider(), current);
+        }
+        const nextRevision = current.current_revision + 1;
+        const revisionId = randomUUID();
+        await client.query(
+          `insert into personal_note_revisions (
+             id,note_id,owner_user_id,revision,idempotency_key_hash,
+             request_hash,body_marker,content_hash
+           ) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [
+            revisionId,
+            input.noteId,
+            actor.userId,
+            nextRevision,
+            idempotencyKeyHash,
+            revisionRequestHash,
+            PERSONAL_NOTE_BODY_MARKER,
+            contentHash
+          ]
+        );
+        await upsertEncryptedFieldPayloadWithClient(
+          client,
+          actor,
+          requireProvider(),
+          {
+            sourceTable: "personal_note_revisions",
+            sourceId: revisionId,
+            sourceColumn: "body",
+            plaintext: body,
+            scope: { objectClass: "personal_note_revision" },
+            rowFamily: "personal_note_revision",
+            aad: {
+              noteId: input.noteId,
+              revision: nextRevision,
+              ownerUserId: actor.userId
+            }
+          }
+        );
+        await client.query(
+          `update personal_notes
+              set current_revision=$3,updated_at=now()
+            where id=$1 and owner_user_id=$2`,
+          [input.noteId, actor.userId, nextRevision]
+        );
+        await client.query(`select pg_notify('koed_graph_updates',$1)`, [
+          JSON.stringify({
+            table: "personal_notes",
+            operation: "UPDATE",
+            id: input.noteId,
+            ownerUserId: actor.userId,
+            visibility: "personal",
+            changedAt: new Date().toISOString()
+          })
+        ]);
+        const updated = await client.query<PersonalNoteRow>(
+          `${selectPersonalNoteSql} where note.id=$1 and note.owner_user_id=$2`,
+          [input.noteId, actor.userId]
+        );
+        return decryptPersonalNote(
+          client,
+          actor,
+          requireProvider(),
+          updated.rows[0]!
+        );
+      });
+    },
+
+    async listPendingPersonalNoteRevisions(input = {}) {
+      const limit = boundedLimit(input.limit, 100, 50);
+      const result = await pool.query<{
+        owner_user_id: string;
+        note_id: string;
+        revision: number;
+      }>(
+        `select revision.owner_user_id,revision.note_id,revision.revision
+           from personal_note_revisions revision
+           join personal_notes note
+             on note.id=revision.note_id
+            and note.owner_user_id=revision.owner_user_id
+            and note.current_revision=revision.revision
+          where note.lifecycle='active'
+            and revision.projection_state in ('pending','failed')
+          order by revision.created_at,revision.id
+          limit $1`,
+        [limit]
+      );
+      return result.rows.map((row) => ({
+        ownerUserId: row.owner_user_id,
+        noteId: row.note_id,
+        revision: row.revision
+      }));
+    },
+
+    async markPersonalNoteProjectionAvailable(actor, input) {
+      return withTransaction(pool, async (client) => {
+        const updated = await client.query<{ note_id: string }>(
+          `update personal_note_revisions revision
+              set projection_state='available',memory_event_id=$4,
+                  projection_failure_code=null,projected_at=now(),
+                  superseded_at=null
+             from personal_notes note
+            where revision.note_id=$1 and revision.owner_user_id=$2
+              and revision.revision=$3
+              and note.id=revision.note_id
+              and note.owner_user_id=revision.owner_user_id
+              and note.current_revision=revision.revision
+              and note.lifecycle='active'
+              and revision.projection_state in ('pending','failed','available')
+            returning revision.note_id`,
+          [input.noteId, actor.userId, input.revision, input.memoryEventId]
+        );
+        if (!updated.rows[0]) return null;
+        await client.query(
+          `update memory_events event
+              set invalidated_at=coalesce(event.invalidated_at,now()),
+                  invalidation_reason='personal_note_revision_superseded',
+                  updated_at=now()
+             from personal_note_revisions revision
+            where revision.note_id=$1
+              and revision.owner_user_id=$2
+              and revision.revision < $3
+              and revision.memory_event_id=event.id
+              and event.owner_user_id=$2
+              and event.visibility='personal'`,
+          [input.noteId, actor.userId, input.revision]
+        );
+        await client.query(
+          `update personal_note_revisions
+              set projection_state='superseded',superseded_at=now(),
+                  projection_failure_code=null
+            where note_id=$1 and owner_user_id=$2
+              and revision < $3
+              and projection_state in ('pending','available','failed')`,
+          [input.noteId, actor.userId, input.revision]
+        );
+        await client.query(
+          `update collaboration_continuous_note_advancement_work work
+              set state='completed',locked_at=null,completed_at=now(),
+                  redacted_failure_code='superseded',updated_at=now()
+             from collaboration_shared_memory_enrollments enrollment
+            where work.enrollment_id=enrollment.id
+              and enrollment.local_owner_user_id=$2
+              and enrollment.revoked_at is null
+              and work.local_note_id=$1 and work.local_note_revision<$3
+              and work.state in ('pending','failed')`,
+          [input.noteId, actor.userId, input.revision]
+        );
+        await client.query(
+          `insert into collaboration_continuous_note_advancement_work
+             (enrollment_id,local_owner_user_id,local_note_id,
+              local_note_revision,local_memory_event_id)
+           select enrollment.id,$2,$1,$3,$4
+             from collaboration_shared_memory_enrollments enrollment
+            where enrollment.local_owner_user_id=$2
+              and enrollment.revoked_at is null
+           on conflict (enrollment_id,local_note_id,local_note_revision)
+           do nothing`,
+          [input.noteId, actor.userId, input.revision, input.memoryEventId]
+        );
+        await client.query(`select pg_notify('koed_graph_updates',$1)`, [
+          JSON.stringify({
+            table: "personal_notes",
+            operation: "UPDATE",
+            id: input.noteId,
+            ownerUserId: actor.userId,
+            visibility: "personal",
+            changedAt: new Date().toISOString()
+          })
+        ]);
+        const current = await client.query<PersonalNoteRow>(
+          `${selectPersonalNoteSql}
+           where note.id=$1 and note.owner_user_id=$2 and note.lifecycle='active'`,
+          [input.noteId, actor.userId]
+        );
+        if (!current.rows[0]) return null;
+        return decryptPersonalNote(
+          client,
+          actor,
+          requireProvider(),
+          current.rows[0]
+        );
+      });
+    },
+
+    async markPersonalNoteProjectionFailed(actor, input) {
+      const failureCode = input.failureCode.trim().slice(0, 80);
+      if (!failureCode) throw new TypeError("failureCode is required");
+      await pool.query(
+        `update personal_note_revisions revision
+            set projection_state='failed',projection_failure_code=$4,
+                memory_event_id=null,projected_at=null
+           from personal_notes note
+          where revision.note_id=$1 and revision.owner_user_id=$2
+            and revision.revision=$3
+            and note.id=revision.note_id
+            and note.owner_user_id=revision.owner_user_id
+            and note.current_revision=revision.revision
+            and note.lifecycle='active'
+            and revision.projection_state in ('pending','failed')`,
+        [input.noteId, actor.userId, input.revision, failureCode]
+      );
     },
 
     async getMessageForRealtime(actor, input) {

@@ -247,8 +247,6 @@ const selectionRoute = (selection: CollaborationSelection): DesktopRoute => {
   switch (selection.kind) {
     case "personal_memory":
       return { kind: "personal-memory-projects" };
-    case "notes_to_self":
-      return { kind: "personal-memory-notes" };
     case "personal_channel":
       return { kind: "personal-chat", threadId: selection.threadId };
     case "team_people":
@@ -913,7 +911,16 @@ export function App({
             route: { kind: "personal-memory-ask" }
           })
         }
-        onOpenNotes={() => choose({ kind: "notes_to_self" })}
+        onOpenNotes={() =>
+          navigate({
+            authority: {
+              backendId: null,
+              principalId:
+                snapshot?.navigation.personalOwner.id ?? "local-personal"
+            },
+            route: { kind: "personal-memory-notes" }
+          })
+        }
         onOpenProjects={() =>
           navigate({
             authority: {
@@ -1038,12 +1045,6 @@ export function App({
       return <StaticBreadcrumb labels={["Inbox"]} />;
     }
     if (route.kind === "personal-chat") {
-      if (
-        route.threadId === "notes-to-self" ||
-        snapshot?.selection.kind === "notes_to_self"
-      ) {
-        return <StaticBreadcrumb labels={["Notes to self"]} />;
-      }
       const channel = snapshot?.navigation.personal.channels.find(
         ({ id }) => id === route.threadId
       );
@@ -1244,10 +1245,7 @@ export function App({
           selectedNoteId={route.noteId}
         />
       ) : (
-        <EmptyRoute
-          description="Loading your existing Notes-to-self messages."
-          title="Opening Notes"
-        />
+        <EmptyRoute description="Loading your Notes." title="Opening Notes" />
       );
   } else if (route.kind === "personal-memory-shares") {
     if (currentSharesStatus.state !== "ready") {
@@ -1583,8 +1581,7 @@ export function App({
         }
         personalUnreadCount={
           snapshot
-            ? snapshot.navigation.personal.notesToSelf.unreadCount +
-              snapshot.navigation.personal.channels.reduce(
+            ? snapshot.navigation.personal.channels.reduce(
                 (total, channel) => total + channel.unreadCount,
                 0
               )

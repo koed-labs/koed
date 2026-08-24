@@ -472,6 +472,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     typeof createSecureUpstreamFetch
   > | null = null;
   let pendingShareSourceWorkerTimer: NodeJS.Timeout | null = null;
+  let continuousNoteAdvancementWorkerTimer: NodeJS.Timeout | null = null;
+  let requestPendingShareSourceWork: (() => void) | null = null;
+  let requestContinuousNoteAdvancementWork: (() => void) | null = null;
   let personalNoteMemoryRepairService: ReturnType<
     typeof createPersonalNoteMemoryRepairService
   > | null = null;
@@ -585,6 +588,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     if (pendingShareWorkerTimer) clearInterval(pendingShareWorkerTimer);
     if (pendingShareSourceWorkerTimer) {
       clearInterval(pendingShareSourceWorkerTimer);
+    }
+    if (continuousNoteAdvancementWorkerTimer) {
+      clearInterval(continuousNoteAdvancementWorkerTimer);
     }
     await personalNoteMemoryRepairService?.close();
     await Promise.all([
@@ -808,6 +814,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     sessionId?: string;
     pendingShareId: string;
     mutationId: string;
+    mode: "snapshot" | "continuous";
   }): Promise<void> => {
     if (!repository) return;
     const deploymentId = resolveVerifiedDeploymentId();
@@ -822,7 +829,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         await localSharedMemoryCandidatePreparation.loadPersonalNoteCandidatePreview(
           {
             localOwnerUserId: input.localOwnerUserId,
-            noteId: input.source.noteId
+            noteId: input.source.noteId,
+            noteRevision: input.source.noteRevision,
+            mode: input.mode
           }
         );
       if (
@@ -906,7 +915,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           resolveUpstreamAuthorization: localEdgeResolveUpstreamAuthorization,
           actionGrantLifecycle: collaborationActionGrantLifecycle,
           authorityStore: sharedMemoryAuthorityRepository,
-          preparePendingShareSource,
+          requestPendingShareSourceWork: () =>
+            requestPendingShareSourceWork?.(),
+          requestContinuousNoteAdvancementWork: () =>
+            requestContinuousNoteAdvancementWork?.(),
           loadLocalCandidatePreview:
             localSharedMemoryCandidatePreparation?.loadCandidatePreview,
           loadPersonalNoteCandidatePreview:
@@ -922,35 +934,72 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       : undefined);
   if (config.teamCollaborationEnabled && sharedMemoryAuthorityRepository) {
     let sourceWorkerRunning = false;
+    let sourceWorkerRequested = false;
     const drainPendingShareSourceWork = () => {
+      sourceWorkerRequested = true;
       if (sourceWorkerRunning) return;
       sourceWorkerRunning = true;
       void (async () => {
-        const work =
-          await sharedMemoryAuthorityRepository.claimPendingShareSourceWork({
-            limit: 10
-          });
-        for (const item of work) {
-          try {
-            await preparePendingShareSource({
-              backendId: item.backendId,
-              localOwnerUserId: item.localOwnerUserId,
-              source: item.source,
-              pendingShareId: item.pendingShareId,
-              mutationId: item.mutationId
+        do {
+          sourceWorkerRequested = false;
+          const work =
+            await sharedMemoryAuthorityRepository.claimPendingShareSourceWork({
+              limit: 10
             });
-            await sharedMemoryAuthorityRepository.finishPendingShareSourceWork({
-              workId: item.workId,
-              outcome: "completed"
-            });
-          } catch {
-            await sharedMemoryAuthorityRepository.finishPendingShareSourceWork({
-              workId: item.workId,
-              outcome: "retry",
-              redactedFailureCode: "source_preparation_failed"
-            });
+          for (const item of work) {
+            try {
+              await preparePendingShareSource({
+                backendId: item.backendId,
+                localOwnerUserId: item.localOwnerUserId,
+                source: item.source,
+                pendingShareId: item.pendingShareId,
+                mutationId: item.mutationId,
+                mode: item.mode
+              });
+              await sharedMemoryAuthorityRepository.finishPendingShareSourceWork(
+                {
+                  workId: item.workId,
+                  outcome: "completed"
+                }
+              );
+            } catch (error) {
+              const statusCode =
+                typeof error === "object" &&
+                error !== null &&
+                "statusCode" in error &&
+                typeof error.statusCode === "number"
+                  ? error.statusCode
+                  : null;
+              const redactedFailureCode =
+                statusCode === 401 || statusCode === 403
+                  ? "source_preparation_unauthorized"
+                  : statusCode === 409
+                    ? "source_preparation_conflict"
+                    : statusCode === 422
+                      ? "source_preparation_rejected"
+                      : "source_preparation_failed";
+              app.log.warn(
+                {
+                  event: { name: "pending_share.source_work.retry" },
+                  pendingShareId: item.pendingShareId,
+                  backendId: item.backendId,
+                  errorClass:
+                    error instanceof Error ? error.name : "UnknownError",
+                  statusCode
+                },
+                "Pending Share source work will retry"
+              );
+              await sharedMemoryAuthorityRepository.finishPendingShareSourceWork(
+                {
+                  workId: item.workId,
+                  outcome: "retry",
+                  redactedFailureCode
+                }
+              );
+            }
           }
-        }
+          if (work.length === 10) sourceWorkerRequested = true;
+        } while (sourceWorkerRequested);
       })()
         .catch((error: unknown) => {
           app.log.error(
@@ -963,14 +1012,91 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         })
         .finally(() => {
           sourceWorkerRunning = false;
+          if (sourceWorkerRequested) drainPendingShareSourceWork();
         });
     };
+    requestPendingShareSourceWork = drainPendingShareSourceWork;
     pendingShareSourceWorkerTimer = setInterval(
       drainPendingShareSourceWork,
       5_000
     );
     pendingShareSourceWorkerTimer.unref();
     drainPendingShareSourceWork();
+
+    let noteAdvancementWorkerRunning = false;
+    let noteAdvancementWorkerRequested = false;
+    const drainContinuousNoteAdvancementWork = () => {
+      noteAdvancementWorkerRequested = true;
+      if (noteAdvancementWorkerRunning || !collaborationSharedMemoryControl) {
+        return;
+      }
+      noteAdvancementWorkerRunning = true;
+      void (async () => {
+        do {
+          noteAdvancementWorkerRequested = false;
+          const work =
+            await sharedMemoryAuthorityRepository.claimContinuousPersonalNoteAdvancementWork(
+              { limit: 10 }
+            );
+          for (const item of work) {
+            try {
+              await collaborationSharedMemoryControl.advanceContinuousPersonalNoteRevision(
+                {
+                  localOwnerUserId: item.localOwnerUserId,
+                  noteId: item.noteId,
+                  noteRevision: item.noteRevision
+                }
+              );
+              await sharedMemoryAuthorityRepository.finishContinuousPersonalNoteAdvancementWork(
+                { workId: item.workId, outcome: "completed" }
+              );
+            } catch (error) {
+              app.log.warn(
+                {
+                  event: { name: "personal_note.continuous_share.retry" },
+                  noteId: item.noteId,
+                  noteRevision: item.noteRevision,
+                  backendId: item.backendId,
+                  errorClass:
+                    error instanceof Error ? error.name : "UnknownError"
+                },
+                "Continuous Personal Note Share advancement will retry"
+              );
+              await sharedMemoryAuthorityRepository.finishContinuousPersonalNoteAdvancementWork(
+                {
+                  workId: item.workId,
+                  outcome: "retry",
+                  redactedFailureCode: "note_advancement_failed"
+                }
+              );
+            }
+          }
+          if (work.length === 10) noteAdvancementWorkerRequested = true;
+        } while (noteAdvancementWorkerRequested);
+      })()
+        .catch((error: unknown) => {
+          app.log.error(
+            {
+              err: error,
+              event: { name: "personal_note.continuous_share_worker.failed" }
+            },
+            "Continuous Personal Note Share worker failed"
+          );
+        })
+        .finally(() => {
+          noteAdvancementWorkerRunning = false;
+          if (noteAdvancementWorkerRequested) {
+            drainContinuousNoteAdvancementWork();
+          }
+        });
+    };
+    requestContinuousNoteAdvancementWork = drainContinuousNoteAdvancementWork;
+    continuousNoteAdvancementWorkerTimer = setInterval(
+      drainContinuousNoteAdvancementWork,
+      5_000
+    );
+    continuousNoteAdvancementWorkerTimer.unref();
+    drainContinuousNoteAdvancementWork();
   }
   const collaborationActionGrantControl =
     options.collaborationActionGrantControl ??
@@ -984,14 +1110,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     (backendId: string) => void
   >();
   const personalNoteRepository = repository;
-  if (
-    personalNoteRepository &&
-    typeof personalNoteRepository.listPersonalNoteProjectionActors ===
-      "function"
-  ) {
+  if (personalNoteRepository) {
     personalNoteMemoryRepairService = createPersonalNoteMemoryRepairService({
       repository: personalNoteRepository,
       enqueueEmbedding,
+      requestContinuousShareAdvancement: () =>
+        requestContinuousNoteAdvancementWork?.(),
       onError: (error) => {
         app.log.error(
           {
@@ -1016,7 +1140,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         await projectPersonalNoteToMemory(
           {
             repository: requireRepository(),
-            enqueueEmbedding
+            enqueueEmbedding,
+            requestContinuousShareAdvancement: () =>
+              requestContinuousNoteAdvancementWork?.()
           },
           input
         );

@@ -126,14 +126,6 @@ const personalChannel = () => ({
   archivedAt: null
 });
 
-const notesToSelf = () => ({
-  ...personalChannel(),
-  kind: "notes_to_self" as const,
-  name: null,
-  topic: null,
-  participants: [participant()]
-});
-
 const workspaceChannel = () => ({
   ...personalChannel(),
   scope: "team" as const,
@@ -367,7 +359,6 @@ const snapshot = () => ({
     teamPrincipal: null,
     personal: {
       memory: [],
-      notesToSelf: notesToSelf(),
       channels: [personalChannel()]
     },
     teams: []
@@ -566,7 +557,6 @@ describe("collaboration renderer commands", () => {
   it("classifies every selection scope from the shared contract", () => {
     const personal = [
       { kind: "personal_memory" as const },
-      { kind: "notes_to_self" as const },
       { kind: "personal_channel" as const, threadId: ids.thread }
     ];
     const team = [
@@ -1006,6 +996,67 @@ describe("collaboration renderer commands", () => {
           mutationId: ids.mutation,
           expectedOperationVersion: 1,
           action: "revoke"
+        }
+      }).success
+    ).toBe(true);
+  });
+
+  it("accepts replacing a Personal Note grant with a newer Note revision", () => {
+    const input = {
+      source: {
+        kind: "personal_note" as const,
+        noteId: ids.sourceItem,
+        noteRevision: 2,
+        memoryEventId: ids.event,
+        logicalMemoryId: ids.logicalMemory
+      },
+      sourceCapabilities: ["memory_events" as const],
+      activationRepresentation: "memory_events" as const,
+      mutationId: ids.mutation,
+      logicalMemoryId: ids.logicalMemory,
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      shareGrantId: ids.shareGrant,
+      consentId: ids.consent,
+      maximumFidelity: "memory_events" as const,
+      includeCuratedMemory: false,
+      expectedGrantVersion: 1,
+      mode: "snapshot" as const,
+      previewRevision: 1,
+      previewHash: "b".repeat(64),
+      expiresAt: null
+    };
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.change_shared_memory_fidelity",
+        input: { ...input, actionGrant: actionGrant() }
+      }).success
+    ).toBe(true);
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.change_shared_memory_fidelity",
+        input: {
+          ...input,
+          mode: "continuous",
+          actionGrant: actionGrant()
+        }
+      }).success
+    ).toBe(true);
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.request_action_grant",
+        input: {
+          intent: {
+            intent: "collaboration.change_shared_memory_fidelity",
+            commandRequestId: ids.request,
+            ...input
+          }
         }
       }).success
     ).toBe(true);
@@ -1647,12 +1698,6 @@ describe("collaboration snapshots and DTOs", () => {
           participant(ids.user, "Alice"),
           participant(ids.user, "Alice again")
         ]
-      }).success
-    ).toBe(false);
-    expect(
-      collaborationThreadSchema.safeParse({
-        ...notesToSelf(),
-        participants: [participant(ids.otherUser, "Bob")]
       }).success
     ).toBe(false);
   });

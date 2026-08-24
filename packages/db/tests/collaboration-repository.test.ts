@@ -25,6 +25,7 @@ import {
 } from "../src/collaboration-repository.js";
 import { createDbPool } from "../src/connection.js";
 import { createCapturedSessionRepository } from "../src/captured-session-repository.js";
+import { createCollaborationSharedMemoryAuthorityStore } from "../src/collaboration-shared-memory-authority-store.js";
 import { createEncryptedPayloadRepository } from "../src/encrypted-payload-repository.js";
 import { runDbMigrations } from "../src/migrate.js";
 import { createTeamAccessRepository } from "../src/team-access-repository.js";
@@ -1399,30 +1400,67 @@ describeDb("Collaboration repository", () => {
     });
   });
 
-  it("keeps Personal notes and channels owner-only, encrypted, idempotent, and replayable", async () => {
+  it("keeps Personal Notes and channels owner-only, encrypted, idempotent, and replayable", async () => {
     const ownerUserId = await createUser("Personal Owner");
     const outsiderUserId = await createUser("Personal Outsider");
+    const noteIdempotencyKey = `note:${randomUUID()}`;
     const concurrentNotes = await Promise.all(
       Array.from({ length: 4 }, () =>
-        repository.createThread(actor(ownerUserId), {
-          kind: "notes_to_self",
-          idempotencyKey: `notes:${randomUUID()}`
+        repository.createPersonalNote(actor(ownerUserId), {
+          body: "Concurrent private Note",
+          idempotencyKey: noteIdempotencyKey
         })
       )
     );
     const notes = concurrentNotes[0];
-    expect(new Set(concurrentNotes.map((thread) => thread?.id)).size).toBe(1);
+    if (!notes) throw new Error("Expected one replayed Personal Note");
+    expect(new Set(concurrentNotes.map((note) => note.noteId)).size).toBe(1);
     expect(notes).toMatchObject({
-      scope: "personal",
-      kind: "notes_to_self",
-      personalOwnerUserId: ownerUserId,
-      participants: [{ userId: ownerUserId }]
+      title: "Concurrent private Note",
+      body: "Concurrent private Note",
+      revision: 1,
+      projectionState: "pending"
     });
-    const notesAgain = await repository.createThread(actor(ownerUserId), {
-      kind: "notes_to_self",
-      idempotencyKey: `notes:${randomUUID()}`
+    await expect(
+      repository.createPersonalNote(actor(ownerUserId), {
+        body: "Conflicting private Note",
+        idempotencyKey: noteIdempotencyKey
+      })
+    ).rejects.toBeInstanceOf(CollaborationStateConflictError);
+
+    const encryptedNote = await pool.query<{
+      body_marker: string;
+      body_payload_count: string;
+      title_marker: string;
+      title_payload_count: string;
+    }>(
+      `select note.title_marker, revision.body_marker,
+         (select count(*)::text from encrypted_field_payloads payload
+           where payload.source_table='personal_notes'
+             and payload.source_id=note.id
+             and payload.source_column='title'
+             and payload.invalidated_at is null) as title_payload_count,
+         (select count(*)::text from encrypted_field_payloads payload
+           where payload.source_table='personal_note_revisions'
+             and payload.source_id=revision.id
+             and payload.source_column='body'
+             and payload.invalidated_at is null) as body_payload_count
+       from personal_notes note
+       join personal_note_revisions revision
+         on revision.note_id=note.id
+        and revision.revision=note.current_revision
+      where note.id=$1`,
+      [notes.noteId]
+    );
+    expect(encryptedNote.rows[0]).toEqual({
+      body_marker: "[koed encrypted personal note body]",
+      body_payload_count: "1",
+      title_marker: "[koed encrypted personal note title]",
+      title_payload_count: "1"
     });
-    expect(notesAgain?.id).toBe(notes?.id);
+    expect(JSON.stringify(encryptedNote.rows[0])).not.toContain(
+      "Concurrent private Note"
+    );
 
     const channel = await repository.createThread(actor(ownerUserId), {
       kind: "personal_channel",
@@ -1442,103 +1480,104 @@ describeDb("Collaboration repository", () => {
       })
     ).toBeNull();
 
-    const noteMessages = await Promise.all(
-      Array.from({ length: 4 }, (_, index) =>
-        repository.sendMessage(actor(ownerUserId), {
-          threadId: notes!.id,
-          idempotencyKey: `note-message:${index}:${randomUUID()}`,
-          bodyText: `Concurrent private note ${index}`
+    const additionalNotes = await Promise.all(
+      Array.from({ length: 3 }, (_, index) =>
+        repository.createPersonalNote(actor(ownerUserId), {
+          body: `Additional private Note ${index}`,
+          idempotencyKey: `note:${index}:${randomUUID()}`
         })
       )
     );
-    expect(noteMessages.every(Boolean)).toBe(true);
     await expect(
-      repository.listPersonalNoteProjectionActors({ limit: 10 })
-    ).resolves.toContainEqual({ userId: ownerUserId });
-    expect(
-      new Set(noteMessages.map((message) => message?.threadSequence))
-    ).toEqual(new Set([1, 2, 3, 4]));
+      repository.listPendingPersonalNoteRevisions({ limit: 10 })
+    ).resolves.toContainEqual({
+      ownerUserId,
+      noteId: notes.noteId,
+      revision: 1
+    });
     const notePage = await repository.listPersonalNotes(actor(ownerUserId), {
       limit: 2
     });
-    expect(notePage.notes.map((note) => note.sourceSequence)).toEqual([4, 3]);
-    const latestNoteMessage = noteMessages.find(
-      (message) => message?.threadSequence === 4
+    expect(notePage.notes).toHaveLength(2);
+    expect(notePage.nextBeforeSequence).toBe(
+      notePage.notes.at(-1)?.sourceSequence
     );
-    expect(latestNoteMessage).toBeDefined();
-    expect(notePage.notes[0]).toMatchObject({
-      title: latestNoteMessage!.bodyText,
-      titleVersion: 1,
-      body: latestNoteMessage!.bodyText
+    const olderPage = await repository.listPersonalNotes(actor(ownerUserId), {
+      beforeSequence: notePage.nextBeforeSequence!,
+      limit: 2
     });
-    expect(notePage.nextBeforeSequence).toBe(3);
+    expect([...notePage.notes, ...olderPage.notes]).toHaveLength(4);
+    expect(
+      new Set(
+        [...notePage.notes, ...olderPage.notes].map((note) => note.noteId)
+      )
+    ).toEqual(
+      new Set([notes.noteId, ...additionalNotes.map((note) => note.noteId)])
+    );
     expect(
       await repository.listPersonalNotes(actor(outsiderUserId), { limit: 10 })
     ).toEqual({ notes: [], nextBeforeSequence: null });
     expect(
       await repository.getPersonalNote(actor(outsiderUserId), {
-        noteId: noteMessages[0]!.id
+        noteId: notes.noteId
       })
     ).toBeNull();
     const renamed = await repository.renamePersonalNote(actor(ownerUserId), {
-      noteId: noteMessages[0]!.id,
+      noteId: notes.noteId,
       expectedTitleVersion: 1,
       title: "Release decision"
     });
     expect(renamed).toMatchObject({
       title: "Release decision",
       titleVersion: 2,
-      body: "Concurrent private note 0"
+      body: "Concurrent private Note"
     });
     await expect(
       repository.renamePersonalNote(actor(ownerUserId), {
-        noteId: noteMessages[0]!.id,
-        expectedTitleVersion: 1,
+        noteId: notes.noteId,
+        expectedTitleVersion: 2,
         title: "Release decision"
       })
     ).resolves.toMatchObject({ title: "Release decision", titleVersion: 2 });
     await expect(
       repository.renamePersonalNote(actor(ownerUserId), {
-        noteId: noteMessages[0]!.id,
+        noteId: notes.noteId,
         expectedTitleVersion: 1,
         title: "Conflicting title"
       })
     ).rejects.toBeInstanceOf(CollaborationStateConflictError);
-    expect(
-      await repository.listMessages(actor(outsiderUserId), {
-        threadId: notes!.id,
-        limit: 10
-      })
-    ).toBeNull();
-    expect(
-      await repository.advanceReadState(actor(outsiderUserId), {
-        threadId: notes!.id,
-        messageId: noteMessages[0]!.id
-      })
-    ).toBeNull();
-
-    let projectionCursor =
-      await repository.getOrCreatePersonalNoteProjectionCursor(
-        actor(ownerUserId),
-        { threadId: notes!.id }
-      );
-    for (const noteMessage of [...noteMessages].sort(
-      (left, right) => left!.threadSequence - right!.threadSequence
-    )) {
-      projectionCursor = await repository.advancePersonalNoteProjectionCursor(
-        actor(ownerUserId),
-        {
-          threadId: notes!.id,
-          expectedSequence: projectionCursor!.lastThreadSequence,
-          nextSequence: noteMessage!.threadSequence,
-          outcome: "existing",
-          embeddingQueued: true
-        }
-      );
-    }
+    const revisionIdempotencyKey = `note-revision:${randomUUID()}`;
+    const revised = await repository.updatePersonalNoteBody(
+      actor(ownerUserId),
+      {
+        noteId: notes.noteId,
+        expectedRevision: 1,
+        body: "Revised private Note",
+        idempotencyKey: revisionIdempotencyKey
+      }
+    );
+    expect(revised).toMatchObject({
+      noteId: notes.noteId,
+      body: "Revised private Note",
+      revision: 2,
+      projectionState: "pending"
+    });
     await expect(
-      repository.listPersonalNoteProjectionActors({ limit: 10 })
-    ).resolves.not.toContainEqual({ userId: ownerUserId });
+      repository.updatePersonalNoteBody(actor(ownerUserId), {
+        noteId: notes.noteId,
+        expectedRevision: 1,
+        body: "Revised private Note",
+        idempotencyKey: revisionIdempotencyKey
+      })
+    ).resolves.toMatchObject({ noteId: notes.noteId, revision: 2 });
+    await expect(
+      repository.updatePersonalNoteBody(actor(ownerUserId), {
+        noteId: notes.noteId,
+        expectedRevision: 1,
+        body: "Conflicting revision",
+        idempotencyKey: `note-revision:${randomUUID()}`
+      })
+    ).rejects.toBeInstanceOf(CollaborationStateConflictError);
 
     const idempotencyKey = `personal-message:${randomUUID()}`;
     const first = await repository.sendMessage(actor(ownerUserId), {
@@ -1627,9 +1666,7 @@ describeDb("Collaboration repository", () => {
       actor(ownerUserId),
       { scope: "personal" }
     );
-    expect(snapshot?.threads.map((thread) => thread.id)).toEqual(
-      expect.arrayContaining([notes!.id, channel!.id])
-    );
+    expect(snapshot?.threads.map((thread) => thread.id)).toEqual([channel!.id]);
     const events = await repository.replayEvents(actor(ownerUserId), {
       scope: "personal",
       afterCursor: 0,
@@ -1675,20 +1712,221 @@ describeDb("Collaboration repository", () => {
       archivedAt: null,
       version: archived!.version + 1
     });
+  });
 
-    for (let index = 0; index < 101; index += 1) {
-      await repository.createThread(actor(ownerUserId), {
-        kind: "personal_channel",
-        idempotencyKey: `newer-personal-channel:${index}:${randomUUID()}`,
-        name: `Newer Personal channel ${index}`
+  it("durably coalesces projected Personal Note revisions for continuous sharing", async () => {
+    const ownerUserId = await createUser("Continuous Note Owner");
+    const identity = {
+      backendId: "team-backend",
+      localOwnerUserId: ownerUserId,
+      upstreamUserId: randomUUID()
+    };
+    const remoteDeviceId = randomUUID();
+    await pool.query(
+      `insert into collaboration_shared_memory_enrollments
+         (backend_id,local_owner_user_id,upstream_user_id,remote_device_id)
+       values ($1,$2,$3,$4)`,
+      [
+        identity.backendId,
+        identity.localOwnerUserId,
+        identity.upstreamUserId,
+        remoteDeviceId
+      ]
+    );
+    const note = await repository.createPersonalNote(actor(ownerUserId), {
+      body: "First continuous revision",
+      idempotencyKey: `continuous-note:${randomUUID()}`
+    });
+    const insertEvent = async (revision: number): Promise<string> => {
+      const result = await pool.query<{ id: string }>(
+        `insert into memory_events
+           (owner_user_id,visibility,event_type,capture_method,payload,
+            idempotency_key,source_sequence)
+         values ($1,'personal','captured','api','{}'::jsonb,$2,$3)
+         returning id`,
+        [
+          ownerUserId,
+          `personal-note:${note.noteId}:revision:${revision}`,
+          revision
+        ]
+      );
+      return result.rows[0]!.id;
+    };
+    const firstEventId = await insertEvent(1);
+    await expect(
+      repository.markPersonalNoteProjectionAvailable(actor(ownerUserId), {
+        noteId: note.noteId,
+        revision: 1,
+        memoryEventId: firstEventId
+      })
+    ).resolves.toMatchObject({ revision: 1, memoryEventId: firstEventId });
+
+    const revised = await repository.updatePersonalNoteBody(
+      actor(ownerUserId),
+      {
+        noteId: note.noteId,
+        expectedRevision: 1,
+        body: "Second continuous revision",
+        idempotencyKey: `continuous-note-revision:${randomUUID()}`
+      }
+    );
+    const secondEventId = await insertEvent(2);
+    await expect(
+      repository.markPersonalNoteProjectionAvailable(actor(ownerUserId), {
+        noteId: note.noteId,
+        revision: revised!.revision,
+        memoryEventId: secondEventId
+      })
+    ).resolves.toMatchObject({ revision: 2, memoryEventId: secondEventId });
+
+    await expect(
+      pool.query<{
+        local_note_revision: number;
+        state: string;
+        redacted_failure_code: string | null;
+      }>(
+        `select local_note_revision,state,redacted_failure_code
+           from collaboration_continuous_note_advancement_work
+          where local_note_id=$1 order by local_note_revision`,
+        [note.noteId]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          local_note_revision: 1,
+          state: "completed",
+          redacted_failure_code: "superseded"
+        },
+        {
+          local_note_revision: 2,
+          state: "pending",
+          redacted_failure_code: null
+        }
+      ]
+    });
+
+    const authorityStore = createCollaborationSharedMemoryAuthorityStore(pool, {
+      envelopeEncryptionProvider: provider
+    });
+    const claimed =
+      await authorityStore.claimContinuousPersonalNoteAdvancementWork({
+        limit: 50
       });
-    }
+    const claimedRevision = claimed.find((item) => item.noteId === note.noteId);
+    expect(claimedRevision).toEqual(
+      expect.objectContaining({
+        backendId: identity.backendId,
+        localOwnerUserId: ownerUserId,
+        noteId: note.noteId,
+        noteRevision: 2
+      })
+    );
+    await Promise.all(
+      claimed.map((item) =>
+        authorityStore.finishContinuousPersonalNoteAdvancementWork({
+          workId: item.workId,
+          outcome: "completed"
+        })
+      )
+    );
     await expect(
-      repository.getPersonalNotesThread(actor(ownerUserId))
-    ).resolves.toMatchObject({ id: notes?.id, kind: "notes_to_self" });
+      authorityStore.requeueLatestContinuousPersonalNoteAdvancementWork({
+        identity,
+        noteId: note.noteId
+      })
+    ).resolves.toBe(true);
+    const reclaimed =
+      await authorityStore.claimContinuousPersonalNoteAdvancementWork({
+        limit: 50
+      });
+    expect(reclaimed).toContainEqual(
+      expect.objectContaining({ noteId: note.noteId, noteRevision: 2 })
+    );
+    await Promise.all(
+      reclaimed.map((item) =>
+        authorityStore.finishContinuousPersonalNoteAdvancementWork({
+          workId: item.workId,
+          outcome: "completed"
+        })
+      )
+    );
+
+    const pendingShareId = randomUUID();
+    const firstMutationId = randomUUID();
+    const secondMutationId = randomUUID();
+    const logicalMemoryId = randomUUID();
     await expect(
-      repository.getPersonalNotesThread(actor(outsiderUserId))
-    ).resolves.toBeNull();
+      authorityStore.persistPendingShareSourceWork({
+        identity,
+        pendingShareId,
+        mutationId: firstMutationId,
+        mode: "continuous",
+        source: {
+          kind: "personal_note",
+          noteId: note.noteId,
+          noteRevision: 1,
+          memoryEventId: firstEventId,
+          logicalMemoryId
+        }
+      })
+    ).resolves.toBe(true);
+    const firstSourceClaims = await authorityStore.claimPendingShareSourceWork({
+      limit: 50
+    });
+    expect(firstSourceClaims).toContainEqual(
+      expect.objectContaining({
+        pendingShareId,
+        mutationId: firstMutationId,
+        mode: "continuous"
+      })
+    );
+    await expect(
+      authorityStore.persistPendingShareSourceWork({
+        identity,
+        pendingShareId,
+        mutationId: secondMutationId,
+        mode: "continuous",
+        source: {
+          kind: "personal_note",
+          noteId: note.noteId,
+          noteRevision: 2,
+          memoryEventId: secondEventId,
+          logicalMemoryId
+        }
+      })
+    ).resolves.toBe(true);
+    await expect(
+      pool.query<{ mutation_id: string; state: string }>(
+        `select mutation_id,state
+           from collaboration_pending_share_source_work
+          where pending_share_id=$1
+          order by local_note_revision`,
+        [pendingShareId]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        { mutation_id: firstMutationId, state: "completed" },
+        { mutation_id: secondMutationId, state: "pending" }
+      ]
+    });
+    const secondSourceClaims = await authorityStore.claimPendingShareSourceWork(
+      { limit: 50 }
+    );
+    expect(secondSourceClaims).toContainEqual(
+      expect.objectContaining({
+        pendingShareId,
+        mutationId: secondMutationId,
+        mode: "continuous"
+      })
+    );
+    await Promise.all(
+      [...firstSourceClaims, ...secondSourceClaims].map((item) =>
+        authorityStore.finishPendingShareSourceWork({
+          workId: item.workId,
+          outcome: "completed"
+        })
+      )
+    );
   });
 
   it("keeps encrypted collaboration metadata out of structural and JSON payload records", async () => {

@@ -132,7 +132,7 @@ fallback.
 
 ## Collaboration Truth Sheet
 
-All six collaboration threads and their messages have deterministic physical
+All five collaboration threads and their messages have deterministic physical
 IDs derived from fixture idempotency keys. Thread names, topics, message bodies,
 metadata, and full provenance values are stored through the production
 encryption path. The collaboration tables retain only required markers,
@@ -140,7 +140,6 @@ authorization/routing IDs, an opaque provenance ID, and outbox routing fields.
 
 | Thread             | Scope                  | Kind                        | Participants/access                                      | Expected history                                          |
 | ------------------ | ---------------------- | --------------------------- | -------------------------------------------------------- | --------------------------------------------------------- |
-| Alice notes        | Personal               | `notes_to_self`             | Alice only                                               | One self message                                          |
 | Release notes      | Personal               | `personal_channel`          | Alice only                                               | One private channel message                               |
 | Product            | Electron Workspace     | `workspace_channel`         | Workspace readers can read; writers can post             | Two messages                                              |
 | Alice/Bob          | Team                   | `dm`                        | Alice and Bob                                            | Two messages                                              |

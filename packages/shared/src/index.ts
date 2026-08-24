@@ -736,6 +736,7 @@ export {
   assertPersonalNoteSourceSelection,
   personalNoteSourceRevisionHash,
   personalNoteSourceSelectionIssues,
+  sharedMemorySourceCanReplace,
   sharedMemorySourceKinds,
   sharedMemorySourceRefSchema
 } from "./shared-memory-source.js";

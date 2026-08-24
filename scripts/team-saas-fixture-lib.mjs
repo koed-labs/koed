@@ -484,15 +484,6 @@ const fixtureConversationSourcePrivateKey = () => {
 
 export const fixtureThreads = [
   {
-    key: "alice-notes",
-    kind: "notes_to_self",
-    scope: "personal",
-    actor: "alice",
-    messages: [
-      ["alice", "Remember to compare the Team fixture against the truth sheet."]
-    ]
-  },
-  {
     key: "alice-personal-release-notes",
     kind: "personal_channel",
     scope: "personal",
@@ -1909,43 +1900,41 @@ const seedCollaborationFixture = async (repository) => {
       idempotencyKey: `${FIXTURE_VERSION}:thread:${thread.key}`
     };
     const input =
-      thread.kind === "notes_to_self"
-        ? base
-        : thread.kind === "personal_channel"
-          ? { ...base, name: thread.name, topic: thread.topic }
-          : thread.kind === "workspace_channel"
+      thread.kind === "personal_channel"
+        ? { ...base, name: thread.name, topic: thread.topic }
+        : thread.kind === "workspace_channel"
+          ? {
+              ...base,
+              teamId: fixtureTeam.id,
+              teamWorkspaceId: fixtureWorkspaces[thread.workspace].id,
+              name: thread.name,
+              topic: thread.topic
+            }
+          : thread.kind === "dm" || thread.kind === "group_dm"
             ? {
                 ...base,
                 teamId: fixtureTeam.id,
-                teamWorkspaceId: fixtureWorkspaces[thread.workspace].id,
-                name: thread.name,
-                topic: thread.topic
+                participantUserIds: thread.participants.map(
+                  (userKey) => fixtureUsers[userKey].id
+                )
               }
-            : thread.kind === "dm" || thread.kind === "group_dm"
-              ? {
+            : (() => {
+                const memory = fixtureMemoryRows.find(
+                  (candidate) => candidate.key === thread.memory
+                );
+                if (!memory) {
+                  throw new Error(
+                    `Fixture companion thread is missing memory ${thread.memory}`
+                  );
+                }
+                return {
                   ...base,
                   teamId: fixtureTeam.id,
-                  participantUserIds: thread.participants.map(
-                    (userKey) => fixtureUsers[userKey].id
-                  )
-                }
-              : (() => {
-                  const memory = fixtureMemoryRows.find(
-                    (candidate) => candidate.key === thread.memory
-                  );
-                  if (!memory) {
-                    throw new Error(
-                      `Fixture companion thread is missing memory ${thread.memory}`
-                    );
-                  }
-                  return {
-                    ...base,
-                    teamId: fixtureTeam.id,
-                    teamWorkspaceId: fixtureWorkspaces[thread.workspace].id,
-                    sharedLogicalMemoryId: memory.logicalMemoryId,
-                    shareGrantId: memory.shareGrantId
-                  };
-                })();
+                  teamWorkspaceId: fixtureWorkspaces[thread.workspace].id,
+                  sharedLogicalMemoryId: memory.logicalMemoryId,
+                  shareGrantId: memory.shareGrantId
+                };
+              })();
     const created = await repository.createThread(actor, input);
     if (!created) {
       throw new Error(`Fixture collaboration thread ${thread.key} was denied`);
@@ -4727,7 +4716,7 @@ export const validateFixture = async (client, runtime) => {
   }
   assertDeepEqual(
     [...new Set(personalThreads.map((thread) => thread.kind))].sort(),
-    ["notes_to_self", "personal_channel"],
+    ["personal_channel"],
     "Personal collaboration thread kinds"
   );
   assertDeepEqual(
@@ -4788,7 +4777,6 @@ export const validateFixture = async (client, runtime) => {
   for (const [userKey, threadKey] of [
     ["carol", "alice-bob-dm"],
     ["david", "launch-group-dm"],
-    ["bob", "alice-notes"],
     ["bob", "alice-personal-release-notes"]
   ]) {
     const actor = { userId: fixtureUsers[userKey].id };

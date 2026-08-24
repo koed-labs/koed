@@ -1,7 +1,7 @@
 import type {
-  CollaborationMessageRecord,
   CollaborationRepository,
-  MemorySourceRepository
+  MemorySourceRepository,
+  PersonalNoteRecord
 } from "@koed/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { crossIdentitySyncDeterministicUuid } from "@koed/shared";
@@ -20,7 +20,6 @@ import {
   createCollaborationGroupDmSchema,
   createCollaborationMessageSchema,
   createSharedSessionDiscussionSchema,
-  emptyCollaborationBodySchema,
   listCollaborationMessagesQuerySchema,
   listCollaborationThreadsQuerySchema,
   listPersonalNotesQuerySchema,
@@ -31,6 +30,7 @@ import {
   teamCollaborationParamsSchema,
   teamCollaborationThreadParamsSchema,
   transitionCollaborationThreadSchema,
+  updatePersonalNoteBodySchema,
   updateCollaborationTopicSchema,
   workspaceCollaborationParamsSchema
 } from "./schemas.js";
@@ -48,14 +48,11 @@ export interface CollaborationRouteContext {
   requireCollaborationRepository(): CollaborationRepository &
     Pick<
       MemorySourceRepository,
-      | "findPersonalNoteMemoryEventId"
-      | "getPersonalNoteMemoryEvent"
-      | "getLocalSyncDeployment"
+      "getPersonalNoteMemoryEvent" | "getLocalSyncDeployment"
     >;
   projectPersonalNote(input: {
     ownerUserId: string;
-    threadKind: "notes_to_self";
-    message: CollaborationMessageRecord;
+    note: PersonalNoteRecord;
   }): Promise<void>;
   authenticateSessionOrDeviceCredential: ApiRouteContext["auth"]["authenticateSessionOrDeviceCredential"];
   authenticateApiToken: ApiRouteContext["auth"]["authenticateApiToken"];
@@ -189,30 +186,6 @@ export const registerCollaborationRoutes = (
         .listThreads({ userId: user.id }, { scope: "personal", ...query });
       if (!threads) throw forbidden();
       return { threads };
-    }
-  );
-
-  app.post(
-    "/v1/collaboration/personal/notes-to-self",
-    { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
-    async (request, reply) => {
-      const user = await authenticatePersonalCollaboration(
-        request,
-        context,
-        "personal_collaboration_write"
-      );
-      emptyCollaborationBodySchema.parse(request.body);
-      const thread = await context
-        .requireCollaborationRepository()
-        .createThread(
-          { userId: user.id },
-          {
-            kind: "notes_to_self",
-            idempotencyKey: parseIdempotencyKey(request)
-          }
-        );
-      if (!thread) throw forbidden();
-      return reply.status(201).send({ thread });
     }
   );
 
@@ -789,10 +762,9 @@ export const registerCollaborationRoutes = (
         const params = parseScopedParams(request.params);
         const input = createCollaborationMessageSchema.parse(request.body);
         const repository = context.requireCollaborationRepository();
-        const personalThread =
-          scope === "personal"
-            ? await requirePersonalThread(repository, user.id, params.threadId)
-            : null;
+        if (scope === "personal") {
+          await requirePersonalThread(repository, user.id, params.threadId);
+        }
         if (scope !== "personal") {
           await requireTeamThread(
             repository,
@@ -817,13 +789,6 @@ export const registerCollaborationRoutes = (
           }
         );
         if (!message) throw forbidden();
-        if (personalThread?.kind === "notes_to_self") {
-          await context.projectPersonalNote({
-            ownerUserId: user.id,
-            threadKind: personalThread.kind,
-            message
-          });
-        }
         return reply.status(201).send({ message });
       }
     );
@@ -941,27 +906,20 @@ export const registerCollaborationRoutes = (
         { userId: user.id },
         input
       );
-      const notes = (
-        await Promise.all(
-          page.notes.map(async (note) => {
-            const memoryEventId =
-              await repository.findPersonalNoteMemoryEventId(
-                { userId: user.id },
-                note.noteId
-              );
-            return memoryEventId
-              ? {
-                  noteId: note.noteId,
-                  title: note.title,
-                  titleVersion: note.titleVersion,
-                  memoryEventId,
-                  createdAt: note.createdAt,
-                  sourceSequence: note.sourceSequence
-                }
-              : null;
-          })
-        )
-      ).filter((note) => note !== null);
+      const notes = page.notes.map((note) => ({
+        noteId: note.noteId,
+        title: note.title,
+        titleVersion: note.titleVersion,
+        revisionId: note.revisionId,
+        revision: note.revision,
+        contentHash: note.contentHash,
+        memoryEventId: note.memoryEventId,
+        projectionState: note.projectionState,
+        projectionFailureCode: note.projectionFailureCode,
+        createdAt: note.createdAt,
+        updatedAt: note.updatedAt,
+        sourceSequence: note.sourceSequence
+      }));
       return { notes, nextBeforeSequence: page.nextBeforeSequence };
     }
   );
@@ -977,54 +935,51 @@ export const registerCollaborationRoutes = (
       );
       const input = createCollaborationMessageSchema.parse(request.body);
       const repository = context.requireCollaborationRepository();
-      const thread = await repository.createThread(
-        { userId: user.id },
-        {
-          kind: "notes_to_self",
-          idempotencyKey: `personal-notes-to-self:${user.id}`
-        }
-      );
-      if (!thread || thread.kind !== "notes_to_self") throw forbidden();
       await enforceCollaborationAdmission(
         reply,
         context.admission.admitMessage({ userId: user.id })
       );
-      const message = await repository.sendMessage(
+      const created = await repository.createPersonalNote(
         { userId: user.id },
         {
-          threadId: thread.id,
-          idempotencyKey: parseIdempotencyKey(request),
-          bodyText: input.bodyText
+          body: input.bodyText,
+          idempotencyKey: parseIdempotencyKey(request)
         }
       );
-      if (!message) throw forbidden();
-      await context.projectPersonalNote({
-        ownerUserId: user.id,
-        threadKind: "notes_to_self",
-        message
-      });
+      await context
+        .projectPersonalNote({ ownerUserId: user.id, note: created })
+        .catch(() => undefined);
       const [note, event, deployment] = await Promise.all([
-        repository.getPersonalNote({ userId: user.id }, { noteId: message.id }),
-        repository.getPersonalNoteMemoryEvent({ userId: user.id }, message.id),
+        repository.getPersonalNote(
+          { userId: user.id },
+          { noteId: created.noteId }
+        ),
+        repository.getPersonalNoteMemoryEvent(
+          { userId: user.id },
+          created.noteId
+        ),
         repository.getLocalSyncDeployment()
       ]);
-      if (!note || !event || !deployment) {
-        throw Object.assign(new Error("Personal Note projection failed"), {
-          statusCode: 503
-        });
-      }
+      if (!note || !deployment) throw new Error("Personal Note was not stored");
       return reply.status(201).send({
         note: {
           noteId: note.noteId,
           title: note.title,
           titleVersion: note.titleVersion,
-          memoryEventId: event.id,
+          revisionId: note.revisionId,
+          revision: note.revision,
+          contentHash: note.contentHash,
+          memoryEventId: note.memoryEventId,
+          projectionState: note.projectionState,
+          projectionFailureCode: note.projectionFailureCode,
+          body: note.body,
           logicalMemoryId: personalNoteLogicalMemoryId({
             sourceDeploymentId: deployment.protocolDeploymentId,
             ownerUserId: user.id,
             noteId: note.noteId
           }),
           createdAt: note.createdAt,
+          updatedAt: note.updatedAt,
           sourceSequence: note.sourceSequence,
           event
         }
@@ -1048,7 +1003,7 @@ export const registerCollaborationRoutes = (
         repository.getPersonalNoteMemoryEvent({ userId: user.id }, noteId),
         repository.getLocalSyncDeployment()
       ]);
-      if (!note || !event || !deployment) {
+      if (!note || !deployment) {
         return reply.status(404).send({ message: "Personal Note not found" });
       }
       return {
@@ -1056,13 +1011,20 @@ export const registerCollaborationRoutes = (
           noteId: note.noteId,
           title: note.title,
           titleVersion: note.titleVersion,
-          memoryEventId: event.id,
+          revisionId: note.revisionId,
+          revision: note.revision,
+          contentHash: note.contentHash,
+          memoryEventId: note.memoryEventId,
+          projectionState: note.projectionState,
+          projectionFailureCode: note.projectionFailureCode,
+          body: note.body,
           logicalMemoryId: personalNoteLogicalMemoryId({
             sourceDeploymentId: deployment.protocolDeploymentId,
             ownerUserId: user.id,
             noteId: note.noteId
           }),
           createdAt: note.createdAt,
+          updatedAt: note.updatedAt,
           sourceSequence: note.sourceSequence,
           event
         }
@@ -1086,13 +1048,7 @@ export const registerCollaborationRoutes = (
         { userId: user.id },
         { noteId, ...input }
       );
-      const memoryEventId = note
-        ? await repository.findPersonalNoteMemoryEventId(
-            { userId: user.id },
-            note.noteId
-          )
-        : null;
-      if (!note || !memoryEventId) {
+      if (!note) {
         return reply.status(404).send({ message: "Personal Note not found" });
       }
       return {
@@ -1100,9 +1056,76 @@ export const registerCollaborationRoutes = (
           noteId: note.noteId,
           title: note.title,
           titleVersion: note.titleVersion,
-          memoryEventId,
+          revisionId: note.revisionId,
+          revision: note.revision,
+          contentHash: note.contentHash,
+          memoryEventId: note.memoryEventId,
+          projectionState: note.projectionState,
+          projectionFailureCode: note.projectionFailureCode,
           createdAt: note.createdAt,
+          updatedAt: note.updatedAt,
           sourceSequence: note.sourceSequence
+        }
+      };
+    }
+  );
+
+  app.patch(
+    "/v1/collaboration/personal/notes/:noteId/body",
+    { preHandler: context.writeRateLimit, bodyLimit: MESSAGE_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      const user = await authenticatePersonalNote(
+        request,
+        context,
+        "personal_collaboration_write"
+      );
+      const { noteId } = personalNoteParamsSchema.parse(request.params);
+      const input = updatePersonalNoteBodySchema.parse(request.body);
+      const repository = context.requireCollaborationRepository();
+      const updated = await repository.updatePersonalNoteBody(
+        { userId: user.id },
+        {
+          noteId,
+          expectedRevision: input.expectedRevision,
+          body: input.bodyText,
+          idempotencyKey: parseIdempotencyKey(request)
+        }
+      );
+      if (!updated) {
+        return reply.status(404).send({ message: "Personal Note not found" });
+      }
+      await context
+        .projectPersonalNote({ ownerUserId: user.id, note: updated })
+        .catch(() => undefined);
+      const [note, event, deployment] = await Promise.all([
+        repository.getPersonalNote({ userId: user.id }, { noteId }),
+        repository.getPersonalNoteMemoryEvent({ userId: user.id }, noteId),
+        repository.getLocalSyncDeployment()
+      ]);
+      if (!note || !deployment) {
+        throw new Error("Personal Note revision was not stored");
+      }
+      return {
+        note: {
+          noteId: note.noteId,
+          title: note.title,
+          titleVersion: note.titleVersion,
+          revisionId: note.revisionId,
+          revision: note.revision,
+          contentHash: note.contentHash,
+          memoryEventId: note.memoryEventId,
+          projectionState: note.projectionState,
+          projectionFailureCode: note.projectionFailureCode,
+          body: note.body,
+          logicalMemoryId: personalNoteLogicalMemoryId({
+            sourceDeploymentId: deployment.protocolDeploymentId,
+            ownerUserId: user.id,
+            noteId: note.noteId
+          }),
+          createdAt: note.createdAt,
+          updatedAt: note.updatedAt,
+          sourceSequence: note.sourceSequence,
+          event
         }
       };
     }

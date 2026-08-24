@@ -573,7 +573,6 @@ describe("route identity contract", () => {
         "POST /v1/shared-memory/share-grants/{shareGrantId}/transcript-access/revoke",
         "GET /v1/shared-memory/owned-shares",
         "GET /v1/shared-memory/owned-shares/{kind}/{id}",
-        "PATCH /v1/shared-memory/owned-shares/{kind}/{id}/title",
         "POST /v1/shared-memory/pending-shares/{pendingShareId}/control",
         "GET /v1/shared-memory/share-grants/{shareGrantId}/transcript/manifest",
         "GET /v1/shared-memory/share-grants/{shareGrantId}/transcript/segments/{segmentId}",

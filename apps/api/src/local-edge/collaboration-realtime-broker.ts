@@ -117,7 +117,7 @@ const remoteThreadSchema = z.discriminatedUnion("scope", [
   remoteThreadCommonSchema
     .extend({
       scope: z.literal("personal"),
-      kind: z.enum(["notes_to_self", "personal_channel"]),
+      kind: z.literal("personal_channel"),
       personalOwnerUserId: z.uuid(),
       teamId: z.null(),
       teamWorkspaceId: z.null(),

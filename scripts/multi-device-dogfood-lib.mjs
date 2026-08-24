@@ -149,14 +149,6 @@ export const runMultiDeviceElectronDogfood = async ({
       );
     }
 
-    const notesA = snapshotA.navigation.personal.notesToSelf;
-    const notesB = snapshotB.navigation.personal.notesToSelf;
-    if (!notesA || !notesB || notesA.id !== notesB.id) {
-      throw new Error(
-        "Electron devices do not resolve the same Notes-to-self thread."
-      );
-    }
-
     for (const [device, label] of [
       [deviceA, "Device A"],
       [deviceB, "Device B"]
@@ -173,23 +165,6 @@ export const runMultiDeviceElectronDogfood = async ({
         id: subscribed.data.subscription.id
       });
     }
-
-    const aToB = await sendAndObserve({
-      flow: "notes A to B",
-      sender: deviceA,
-      receiver: deviceB,
-      threadId: notesA.id,
-      marker: `${markerPrefix}-a-to-b`,
-      timeoutMs
-    });
-    const bToA = await sendAndObserve({
-      flow: "notes B to A",
-      sender: deviceB,
-      receiver: deviceA,
-      threadId: notesA.id,
-      marker: `${markerPrefix}-b-to-a`,
-      timeoutMs
-    });
 
     const channelName = `dogfood-${randomUUID().slice(0, 8)}`;
     const channelEvent = waitForMarker(deviceB, channelName, timeoutMs);
@@ -224,12 +199,20 @@ export const runMultiDeviceElectronDogfood = async ({
       );
     }
 
-    const channelBToA = await sendAndObserve({
+    const aToB = await sendAndObserve({
+      flow: "Personal channel A to B",
+      sender: deviceA,
+      receiver: deviceB,
+      threadId: channel.id,
+      marker: `${markerPrefix}-a-to-b`,
+      timeoutMs
+    });
+    const bToA = await sendAndObserve({
       flow: "Personal channel B to A",
       sender: deviceB,
       receiver: deviceA,
       threadId: channel.id,
-      marker: `${markerPrefix}-channel-b-to-a`,
+      marker: `${markerPrefix}-b-to-a`,
       timeoutMs
     });
 
@@ -263,38 +246,27 @@ export const runMultiDeviceElectronDogfood = async ({
           )
         )
       );
-    const notesSnapshots = await selectOnBoth({ kind: "notes_to_self" });
-    for (const marker of [aToB.marker, bToA.marker]) {
-      if (
-        notesSnapshots.some(
-          (result) => !JSON.stringify(result.data.snapshot).includes(marker)
-        )
-      ) {
-        throw new Error(
-          `Persisted Notes snapshot is missing marker ${marker}.`
-        );
-      }
-    }
     const channelSnapshots = await selectOnBoth({
       kind: "personal_channel",
       threadId: channel.id
     });
-    if (
-      channelSnapshots.some(
-        (result) =>
-          !JSON.stringify(result.data.snapshot).includes(channelBToA.marker)
-      )
-    ) {
-      throw new Error(
-        `Persisted Personal channel snapshot is missing marker ${channelBToA.marker}.`
-      );
+    for (const marker of [aToB.marker, bToA.marker]) {
+      if (
+        channelSnapshots.some(
+          (result) => !JSON.stringify(result.data.snapshot).includes(marker)
+        )
+      ) {
+        throw new Error(
+          `Persisted Personal channel snapshot is missing marker ${marker}.`
+        );
+      }
     }
 
     const catchUpMarker = `${markerPrefix}-renderer-reload-catch-up`;
     const reload = deviceB.reload(timeoutMs);
     const catchUpSend = requireSuccess(
       await collaborationCommand(deviceA, "collaboration.send_message", {
-        thread: personalThreadReference(notesA.id),
+        thread: personalThreadReference(channel.id),
         clientMessageId: randomUUID(),
         body: catchUpMarker
       }),
@@ -305,7 +277,7 @@ export const runMultiDeviceElectronDogfood = async ({
     await ensureSetup(deviceB, { timeoutMs });
     const caughtUp = requireSuccess(
       await collaborationCommand(deviceB, "collaboration.select", {
-        selection: { kind: "notes_to_self" }
+        selection: { kind: "personal_channel", threadId: channel.id }
       }),
       "collaboration.select",
       "renderer reload catch-up: collaboration.select"
@@ -337,7 +309,6 @@ export const runMultiDeviceElectronDogfood = async ({
       markerPrefix,
       backendId: backendIdA,
       isolatedCodexProfiles,
-      notesThreadId: notesA.id,
       personalChannel: {
         id: channel.id,
         name: channelName,
@@ -346,7 +317,6 @@ export const runMultiDeviceElectronDogfood = async ({
       flows: {
         aToB,
         bToA,
-        channelBToA,
         rendererReloadCatchUp: {
           marker: catchUpMarker,
           initialDeliveryState:

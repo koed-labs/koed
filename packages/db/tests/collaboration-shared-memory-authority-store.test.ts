@@ -256,6 +256,7 @@ describeDb("Collaboration Shared Memory authority store", () => {
     logicalMemoryId: fixture.logicalMemoryId,
     teamId: fixture.teamId,
     teamWorkspaceId: fixture.workspaceId,
+    representation: "memory_events",
     maximumFidelity: "memory_events",
     includeCuratedMemory: false,
     mode: "continuous",
@@ -571,9 +572,12 @@ describeDb("Collaboration Shared Memory authority store", () => {
       source: {
         kind: "personal_note",
         noteId,
+        noteRevision: 1,
         memoryEventId,
         logicalMemoryId: fixture.logicalMemoryId
       },
+      sourceCapabilities: ["memory_events"],
+      mode: "snapshot",
       sourceRevision: 1,
       binding: {
         sourceRevision: 1,

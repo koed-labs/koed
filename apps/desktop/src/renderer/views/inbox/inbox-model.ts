@@ -49,7 +49,6 @@ const threadTitle = (
   },
   fallback: string
 ): string => {
-  if (thread.kind === "notes_to_self") return "Notes to self";
   if (thread.name) return thread.name;
   if (thread.participants?.length) {
     return thread.participants.map(({ displayName }) => displayName).join(", ");
@@ -112,12 +111,6 @@ export const inboxModelFromSnapshot = (
     });
   };
 
-  addUnread(
-    snapshot.navigation.personal.notesToSelf,
-    "Personal",
-    { kind: "notes_to_self" },
-    "Notes to self"
-  );
   for (const thread of snapshot.navigation.personal.channels) {
     addUnread(
       thread,

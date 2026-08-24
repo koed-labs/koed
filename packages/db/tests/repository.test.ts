@@ -1103,6 +1103,91 @@ describeDb("memory repository visibility", () => {
     ).resolves.toEqual(expect.any(Array));
   });
 
+  it("always stores Personal Note Memory Events through encrypted companions", async () => {
+    const owner = await repo.createUser({
+      email: `personal-note-memory-${randomUUID()}@example.com`
+    });
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 32).toString("base64")
+      )
+    });
+    const content = `private-note-${randomUUID()}`;
+    const event = await encryptedRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        projectId: "unassigned",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "personal_note_revision",
+        content,
+        metadata: {
+          semanticUnitType: "personal_note",
+          personalNoteId: randomUUID(),
+          personalNoteRevision: 1,
+          includeInEmbedding: true,
+          includeInLcm: false
+        },
+        visibility: "personal",
+        captureMethod: "api",
+        idempotencyKey: `personal-note-test:${randomUUID()}`
+      }
+    );
+
+    expect(event.content).toBe(content);
+    const stored = await pool.query<{
+      payload: Record<string, unknown>;
+      encrypted_payloads: string;
+    }>(
+      `select event.payload,
+              count(encrypted.id)::text as encrypted_payloads
+         from memory_events event
+         left join encrypted_field_payloads encrypted
+           on encrypted.source_table='memory_events'
+          and encrypted.source_id=event.id
+          and encrypted.source_column='payload'
+          and encrypted.invalidated_at is null
+        where event.id=$1
+        group by event.id`,
+      [event.id]
+    );
+    expect(stored.rows[0]).toMatchObject({ encrypted_payloads: "1" });
+    expect(stored.rows[0]?.payload).toMatchObject({
+      contentEncrypted: true,
+      rawEventType: "personal_note_revision"
+    });
+    expect(JSON.stringify(stored.rows[0]?.payload)).not.toContain(content);
+  });
+
+  it("fails closed when Personal Note Projection has no encryption provider", async () => {
+    const owner = await repo.createUser({
+      email: `personal-note-no-provider-${randomUUID()}@example.com`
+    });
+
+    await expect(
+      repo.createMemoryEvent(
+        { userId: owner.id },
+        {
+          projectId: "unassigned",
+          actor: "user",
+          eventType: "captured",
+          rawEventType: "personal_note_revision",
+          content: "must not be stored",
+          metadata: {
+            semanticUnitType: "personal_note",
+            includeInEmbedding: true,
+            includeInLcm: false
+          },
+          visibility: "personal",
+          captureMethod: "api",
+          idempotencyKey: `personal-note-no-provider:${randomUUID()}`
+        }
+      )
+    ).rejects.toThrow(
+      "Envelope encryption provider is required when plaintext Memory Event payload storage is disabled"
+    );
+  });
+
   it("queues registration before ordinary captured source replication", async () => {
     const owner = await repo.createUser({
       email: `source-registration-${randomUUID()}@example.com`
@@ -11030,15 +11115,6 @@ describeDb("memory repository visibility", () => {
       await protectedRepo.createThread(
         { userId: owner.id },
         {
-          kind: "notes_to_self",
-          idempotencyKey: `notes-${randomUUID()}`
-        }
-      )
-    );
-    threads.push(
-      await protectedRepo.createThread(
-        { userId: owner.id },
-        {
           kind: "personal_channel",
           idempotencyKey: `personal-channel-${randomUUID()}`,
           name: "Personal planning",
@@ -11108,23 +11184,10 @@ describeDb("memory repository visibility", () => {
       );
     }
     const personalThreads: unknown[] = personalThreadsValue;
-    const personalNotesThreadId = threads[0]?.id as unknown;
-    const personalChannelThreadId = threads[1]?.id as unknown;
-    if (
-      typeof personalNotesThreadId !== "string" ||
-      typeof personalChannelThreadId !== "string"
-    ) {
+    const personalChannelThreadId = threads[0]?.id as unknown;
+    if (typeof personalChannelThreadId !== "string") {
       throw new TypeError("Created collaboration threads must have string IDs");
     }
-    const personalNotesThread = personalThreads.find(
-      (thread): thread is Record<string, unknown> =>
-        typeof thread === "object" &&
-        thread !== null &&
-        "id" in thread &&
-        thread.id === personalNotesThreadId
-    );
-    expect(personalNotesThread?.["kind"]).toBe("notes_to_self");
-    expect(personalNotesThread?.["latestSequence"]).toBe(1);
     const personalChannelThread = personalThreads.find(
       (thread): thread is Record<string, unknown> =>
         typeof thread === "object" &&
@@ -11143,7 +11206,7 @@ describeDb("memory repository visibility", () => {
     if (!teamSnapshot) {
       throw new Error("Expected an authorized Team collaboration snapshot");
     }
-    for (const thread of threads.slice(2)) {
+    for (const thread of threads.slice(1)) {
       expect(
         teamSnapshot.threads.some(
           (candidate) =>
@@ -11162,7 +11225,7 @@ describeDb("memory repository visibility", () => {
           (select count(*) from collaboration_outbox)::text as events
       `);
     expect(collaborationCounts.rows).toHaveLength(1);
-    expect(collaborationCounts.rows[0]?.messages).toBe("5");
+    expect(collaborationCounts.rows[0]?.messages).toBe("4");
     expect(collaborationCounts.rows[0]?.events).toMatch(/^[1-9][0-9]*$/);
   });
 

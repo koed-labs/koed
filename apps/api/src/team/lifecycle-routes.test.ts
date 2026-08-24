@@ -399,6 +399,65 @@ describe("Team lifecycle routes", () => {
     await fixture.app.close();
   });
 
+  it("preserves the source contract for active Shared Memory grants", async () => {
+    const logicalMemoryId = randomUUID();
+    const shareGrantId = randomUUID();
+    const updatedAt = now();
+    const fixture = await createFixture({
+      repository: {
+        listWorkspaceGrants: vi.fn(async () => ({
+          entries: [
+            {
+              shareGrantId,
+              logicalMemoryId,
+              ownerUserId: user.id,
+              sourceCapabilities: ["memory_events"],
+              activationRepresentation: "memory_events",
+              maximumFidelity: "memory_events",
+              includeCuratedMemory: false,
+              title: "Shared Note",
+              activeRepresentation: "memory_events",
+              representationState: "available",
+              representationSourceRevision: 1,
+              representationUpdatedAt: updatedAt,
+              freshness: "fresh",
+              lifecycle: "active",
+              createdAt: updatedAt,
+              updatedAt,
+              companionScope: {
+                scope: "team",
+                kind: "shared_session_discussion",
+                teamId,
+                teamWorkspaceId: workspaceId,
+                logicalMemoryId,
+                shareGrantId
+              }
+            }
+          ],
+          limit: 100,
+          offset: 0,
+          hasMore: false
+        }))
+      }
+    });
+
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/v1/teams/navigation"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().teams[0].workspaces[0].shareGrants[0]).toMatchObject(
+      {
+        id: shareGrantId,
+        logicalMemoryId,
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events"
+      }
+    );
+    await fixture.app.close();
+  });
+
   it("requires both Team Workspace and Team Chat read scopes for aggregate navigation", async () => {
     const fixture = await createFixture({
       deviceOperationFamilies: ["team_workspace_read"]

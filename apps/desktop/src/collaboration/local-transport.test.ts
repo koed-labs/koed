@@ -214,33 +214,6 @@ describe("Desktop collaboration broker transport", () => {
               teamPrincipal: null,
               personal: {
                 memory: [],
-                notesToSelf: {
-                  id: "00000000-0000-4000-8000-000000000002",
-                  logicalId: "00000000-0000-4000-8000-000000000003",
-                  scope: "personal",
-                  ownerUserId: "00000000-0000-4000-8000-000000000001",
-                  kind: "notes_to_self",
-                  name: null,
-                  topic: null,
-                  participants: [
-                    {
-                      id: "00000000-0000-4000-8000-000000000001",
-                      displayName: "Mark",
-                      membershipState: "enabled"
-                    }
-                  ],
-                  version: 1,
-                  lifecycle: "active",
-                  canPost: true,
-                  latestSequence: 0,
-                  unreadCount: 0,
-                  lastReadMessageId: null,
-                  lastReadSequence: 0,
-                  createdAt: "2026-07-17T08:30:00.000Z",
-                  updatedAt: "2026-07-17T08:30:00.000Z",
-                  lastActivityAt: "2026-07-17T08:30:00.000Z",
-                  archivedAt: null
-                },
                 channels: []
               },
               teams: []
@@ -253,12 +226,14 @@ describe("Desktop collaboration broker transport", () => {
     });
     await pending;
     controller.abort();
-    await Promise.resolve();
-
-    expect(child.sent.at(-1)).toMatchObject({
-      type: "release_owner",
-      ownerId: "renderer-7"
-    });
+    await vi.waitFor(() =>
+      expect(child.sent).toContainEqual(
+        expect.objectContaining({
+          type: "release_owner",
+          ownerId: "renderer-7"
+        })
+      )
+    );
   });
 
   it("restarts after a command timeout and recovers on the next request", async () => {

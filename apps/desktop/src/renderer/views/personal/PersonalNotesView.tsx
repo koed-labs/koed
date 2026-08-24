@@ -54,10 +54,13 @@ export function PersonalNotesView({
   const [detail, setDetail] = useState<PersonalDesktopNote | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameTitle, setRenameTitle] = useState("");
+  const [editingBody, setEditingBody] = useState(false);
+  const [bodyDraft, setBodyDraft] = useState("");
+  const [updatingBody, setUpdatingBody] = useState(false);
   const [changeRevision, setChangeRevision] = useState(0);
   const listHeadingRef = useRef<HTMLHeadingElement>(null);
   const detailHeadingRef = useRef<HTMLHeadingElement>(null);
-  const { listNotes, loadNote, renameNote } = api;
+  const { listNotes, loadNote, renameNote, updateNote } = api;
 
   const refresh = useCallback(async () => {
     if (!listNotes) return;
@@ -98,6 +101,8 @@ export function PersonalNotesView({
         if (!active) return;
         setDetail(note);
         setRenameTitle(note.title);
+        setBodyDraft(note.body);
+        setEditingBody(false);
         setError(null);
       })
       .catch(() => {
@@ -157,6 +162,33 @@ export function PersonalNotesView({
       setError(null);
     } catch {
       setError("The Note title changed elsewhere. Refresh and try again.");
+    }
+  };
+
+  const submitBody = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!detail || !updateNote || updatingBody) return;
+    const body = bodyDraft.trim();
+    if (!body) return;
+    setUpdatingBody(true);
+    setError(null);
+    try {
+      const updated = await updateNote({
+        noteId: detail.noteId,
+        expectedRevision: detail.revision,
+        body,
+        idempotencyKey: crypto.randomUUID()
+      });
+      setDetail(updated);
+      setBodyDraft(updated.body);
+      setEditingBody(false);
+      await refresh();
+    } catch {
+      setError(
+        "The Note changed elsewhere or could not be saved. Refresh and try again."
+      );
+    } finally {
+      setUpdatingBody(false);
     }
   };
 
@@ -319,9 +351,17 @@ export function PersonalNotesView({
               </div>
               <div className="personal-note-header-actions">
                 <button
+                  aria-label="Edit Note"
+                  disabled={!updateNote || editingBody}
+                  onClick={() => setEditingBody(true)}
+                  type="button"
+                >
+                  <Pencil aria-hidden="true" /> Edit
+                </button>
+                <button
                   aria-label="Share Note"
                   className="personal-note-share"
-                  disabled={!onShare}
+                  disabled={!onShare || detail.projectionState !== "available"}
                   onClick={() => onShare?.(detail)}
                   type="button"
                 >
@@ -329,11 +369,48 @@ export function PersonalNotesView({
                 </button>
               </div>
             </header>
-            <SecureMarkdown
-              adapters={markdownAdapters}
-              className="personal-note-markdown"
-              source={detail.event.content ?? detail.event.contentPreview}
-            />
+            {detail.projectionState !== "available" ? (
+              <p className="personal-note-processing" role="status">
+                {detail.projectionState === "failed"
+                  ? "Memory processing will retry in the background."
+                  : "Preparing this Note for Memory…"}
+              </p>
+            ) : null}
+            {editingBody ? (
+              <form onSubmit={(event) => void submitBody(event)}>
+                <textarea
+                  aria-label="Note content"
+                  autoFocus
+                  onChange={(event) => setBodyDraft(event.target.value)}
+                  rows={16}
+                  value={bodyDraft}
+                />
+                <div className="personal-note-edit-actions">
+                  <button
+                    disabled={updatingBody || !bodyDraft.trim()}
+                    type="submit"
+                  >
+                    {updatingBody ? "Saving…" : "Save"}
+                  </button>
+                  <button
+                    disabled={updatingBody}
+                    onClick={() => {
+                      setBodyDraft(detail.body);
+                      setEditingBody(false);
+                    }}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <SecureMarkdown
+                adapters={markdownAdapters}
+                className="personal-note-markdown"
+                source={detail.body}
+              />
+            )}
           </article>
         ) : selectedNoteId ? (
           <div className="personal-note-empty">

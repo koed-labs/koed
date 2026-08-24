@@ -40,10 +40,6 @@ const snapshotFixture = (): CollaborationSnapshot =>
       personalOwner: { id: "personal-a", displayName: "Personal" },
       teamPrincipal: { id: "team-user-a", displayName: "Ari" },
       personal: {
-        notesToSelf: {
-          ...thread("notes", "personal", "notes_to_self", null, 0),
-          ownerUserId: "personal-a"
-        },
         channels: [
           {
             ...thread(

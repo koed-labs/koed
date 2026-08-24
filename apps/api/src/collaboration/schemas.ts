@@ -209,6 +209,13 @@ export const renamePersonalNoteSchema = z
   })
   .strict();
 
+export const updatePersonalNoteBodySchema = z
+  .object({
+    expectedRevision: z.number().int().safe().positive(),
+    bodyText: messageBodySchema
+  })
+  .strict();
+
 export const collaborationRealtimeScopeSchema = z.discriminatedUnion("scope", [
   z.object({ scope: z.literal("personal") }).strict(),
   z.object({ scope: z.literal("team"), teamId: strictUuidSchema }).strict()

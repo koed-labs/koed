@@ -434,6 +434,8 @@ export const registerTeamRoutes = (
                   id: grant.shareGrantId,
                   logicalMemoryId: grant.logicalMemoryId,
                   ownerUserId: grant.ownerUserId,
+                  sourceCapabilities: grant.sourceCapabilities,
+                  activationRepresentation: grant.activationRepresentation,
                   maximumFidelity: grant.maximumFidelity,
                   includeCuratedMemory: grant.includeCuratedMemory,
                   title: grant.title,

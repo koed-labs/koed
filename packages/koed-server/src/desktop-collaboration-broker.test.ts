@@ -77,34 +77,28 @@ const snapshot = collaborationSnapshotSchema.parse({
     teamPrincipal: null,
     personal: {
       memory: [],
-      notesToSelf: {
-        id: "00000000-0000-4000-8000-000000000002",
-        logicalId: "00000000-0000-4000-8000-000000000003",
-        scope: "personal",
-        ownerUserId: "00000000-0000-4000-8000-000000000001",
-        kind: "notes_to_self",
-        name: null,
-        topic: null,
-        participants: [
-          {
-            id: "00000000-0000-4000-8000-000000000001",
-            displayName: "Mark",
-            membershipState: "enabled"
-          }
-        ],
-        version: 1,
-        lifecycle: "active",
-        canPost: true,
-        latestSequence: 0,
-        unreadCount: 0,
-        lastReadMessageId: null,
-        lastReadSequence: 0,
-        createdAt: "2026-07-17T08:30:00.000Z",
-        updatedAt: "2026-07-17T08:30:00.000Z",
-        lastActivityAt: "2026-07-17T08:30:00.000Z",
-        archivedAt: null
-      },
-      channels: []
+      channels: [
+        {
+          id: "00000000-0000-4000-8000-000000000002",
+          logicalId: "00000000-0000-4000-8000-000000000003",
+          scope: "personal",
+          ownerUserId: "00000000-0000-4000-8000-000000000001",
+          kind: "personal_channel",
+          name: "scratch",
+          topic: null,
+          version: 1,
+          lifecycle: "active",
+          canPost: true,
+          latestSequence: 0,
+          unreadCount: 0,
+          lastReadMessageId: null,
+          lastReadSequence: 0,
+          createdAt: "2026-07-17T08:30:00.000Z",
+          updatedAt: "2026-07-17T08:30:00.000Z",
+          lastActivityAt: "2026-07-17T08:30:00.000Z",
+          archivedAt: null
+        }
+      ]
     },
     teams: []
   },
@@ -908,7 +902,7 @@ describe("desktop collaboration broker", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it("uses the active runtime API URL instead of a stale automatic port", async () => {
+  it("uses the active runtime API URL instead of stale generated environment values", async () => {
     const koedHome = tempRoot();
     storeDesktopLocalCredential(koedHome, {
       ownerUserId: "11111111-1111-4111-8111-111111111111",
@@ -929,10 +923,10 @@ describe("desktop collaboration broker", () => {
         pid: process.pid,
         startedAt: "2026-07-31T07:00:44.560Z",
         repoRoot: koedHome,
-        apiUrl: "http://localhost:3300",
+        apiUrl: "http://localhost:3301",
         runtimeMode: "developer",
         dependencyMode: "bundled-local",
-        automaticPorts: false,
+        automaticPorts: true,
         services: ["api"],
         processes: { api: process.pid }
       })}\n`
@@ -941,7 +935,7 @@ describe("desktop collaboration broker", () => {
       .fn<typeof fetch>()
       .mockImplementation(async (url, init) => {
         expect(String(url)).toBe(
-          "http://localhost:3300/v1/local-edge/collaboration/command"
+          "http://localhost:3301/v1/local-edge/collaboration/command"
         );
         const body = JSON.parse(String(init?.body)) as {
           command: { requestId: string; command: string };
@@ -957,6 +951,8 @@ describe("desktop collaboration broker", () => {
     const broker = createDesktopCollaborationBroker({
       environment: {
         KOED_AUTO_PORTS: "1",
+        API_HOST_PORT: "3300",
+        MEMORY_API_URL: "http://localhost:3300",
         KOED_HOME: koedHome,
         KOED_REPO_ROOT: koedHome,
         KOED_DESKTOP_COLLABORATION_BROKER_SESSION_TOKEN: sessionToken
@@ -1150,7 +1146,7 @@ describe("desktop collaboration broker", () => {
       command: collaborationRendererCommandSchema.parse({
         ...command,
         command: "collaboration.select",
-        input: { selection: { kind: "notes_to_self" } }
+        input: { selection: { kind: "personal_memory" } }
       })
     });
 
@@ -1222,7 +1218,7 @@ describe("desktop collaboration broker", () => {
       contractVersion: COLLABORATION_CONTRACT_VERSION,
       requestId: "7c595752-8f99-41ca-b18a-cf6972010218",
       command: "collaboration.select",
-      input: { selection: { kind: "notes_to_self" } }
+      input: { selection: { kind: "personal_memory" } }
     });
     const message = (envelopeId: string) => ({
       protocolVersion: DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,

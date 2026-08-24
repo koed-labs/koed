@@ -94,7 +94,6 @@ const commandRequiresTeamBackend = (
     case "collaboration.connect_backend":
     case "collaboration.reconnect_backend":
     case "collaboration.disconnect_backend":
-    case "collaboration.create_notes_to_self":
     case "collaboration.create_personal_channel":
     case "collaboration.preview_shared_memory_candidate":
       return false;
@@ -1095,7 +1094,6 @@ export const createDesktopCollaborationBrokerLocalTransport = (
   ): Extract<CollaborationRendererEvent, { type: "snapshot" }>["snapshot"] => {
     if (scope === "personal") {
       const personalSelection = !("teamId" in full.selection);
-      const notes = full.navigation.personal.notesToSelf;
       return {
         scope: "personal",
         snapshotRevision: full.snapshotRevision,
@@ -1103,21 +1101,12 @@ export const createDesktopCollaborationBrokerLocalTransport = (
         personal: full.navigation.personal,
         selection: personalSelection
           ? full.selection
-          : { kind: "notes_to_self" },
+          : { kind: "personal_memory" },
         view: personalSelection
           ? full.view
           : {
-              kind: "thread",
-              thread: notes,
-              messages: {
-                snapshotRevision: full.snapshotRevision,
-                threadId: notes.id,
-                items: [],
-                olderCursor: null,
-                newerCursor: null,
-                hasOlder: false,
-                hasNewer: false
-              }
+              kind: "personal_memory",
+              entries: full.navigation.personal.memory
             }
       };
     }

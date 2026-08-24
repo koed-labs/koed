@@ -30,8 +30,8 @@ const ids = {
   other: id(2),
   team: id(3),
   workspace: id(4),
-  notes: id(5),
-  notesLogical: id(6),
+  personalChannel: id(5),
+  personalChannelLogical: id(6),
   channel: id(7),
   channelLogical: id(8),
   message: id(9),
@@ -106,16 +106,6 @@ const baseThread = {
   archivedAt: null
 };
 
-const notes = () => ({
-  ...baseThread,
-  id: ids.notes,
-  logicalId: ids.notesLogical,
-  scope: "personal" as const,
-  ownerUserId: ids.user,
-  kind: "notes_to_self" as const,
-  participants: [participant()]
-});
-
 const channel = () => ({
   ...baseThread,
   id: ids.channel,
@@ -125,6 +115,16 @@ const channel = () => ({
   workspaceId: ids.workspace,
   kind: "workspace_channel" as const,
   name: "general"
+});
+
+const personalChannel = () => ({
+  ...baseThread,
+  id: ids.personalChannel,
+  logicalId: ids.personalChannelLogical,
+  scope: "personal" as const,
+  ownerUserId: ids.user,
+  kind: "personal_channel" as const,
+  name: "scratch"
 });
 
 const emptyPage = (threadId: string) => ({
@@ -165,7 +165,7 @@ const fixture = (options?: {
     navigation: {
       personalOwner: person(),
       teamPrincipal: person(options?.teamPrincipalId ?? ids.remoteUser),
-      personal: { memory: [], notesToSelf: notes(), channels: [] },
+      personal: { memory: [], channels: [personalChannel()] },
       teams: [
         {
           id: ids.team,
@@ -198,10 +198,23 @@ const fixture = (options?: {
           workspaceId: ids.workspace,
           threadId: ids.channel
         }
-      : { kind: "notes_to_self" },
+      : { kind: "personal_channel", threadId: ids.personalChannel },
     view: selectedTeam
       ? { kind: "thread", thread: channel(), messages: emptyPage(ids.channel) }
-      : { kind: "thread", thread: notes(), messages: emptyPage(ids.notes) }
+      : {
+          kind: "thread",
+          thread: personalChannel(),
+          messages: emptyPage(ids.personalChannel)
+        }
+  });
+};
+
+const personalMemoryFixture = (): CollaborationSnapshot => {
+  const current = fixture();
+  return collaborationSnapshotSchema.parse({
+    ...current,
+    selection: { kind: "personal_memory" },
+    view: { kind: "personal_memory", entries: [] }
   });
 };
 
@@ -755,6 +768,12 @@ const createBridge = (initial = fixture()) => {
               people: team.people
             }
           });
+        } else if (selection.kind === "personal_memory") {
+          current = collaborationSnapshotSchema.parse({
+            ...current,
+            selection,
+            view: { kind: "personal_memory", entries: [] }
+          });
         }
       }
     }
@@ -790,11 +809,10 @@ describe("collaboration renderer client", () => {
     const prepared = sharedFixture();
     const initial = collaborationSnapshotSchema.parse({
       ...prepared,
-      selection: { kind: "notes_to_self" },
+      selection: { kind: "personal_memory" },
       view: {
-        kind: "thread",
-        thread: notes(),
-        messages: emptyPage(ids.notes)
+        kind: "personal_memory",
+        entries: []
       }
     });
     const versions = new Map<string, number>();
@@ -850,11 +868,10 @@ describe("collaboration renderer client", () => {
     const prepared = sharedFixture();
     const initial = collaborationSnapshotSchema.parse({
       ...prepared,
-      selection: { kind: "notes_to_self" },
+      selection: { kind: "personal_memory" },
       view: {
-        kind: "thread",
-        thread: notes(),
-        messages: emptyPage(ids.notes)
+        kind: "personal_memory",
+        entries: []
       }
     });
     const versions = new Map<string, number>();
@@ -901,7 +918,7 @@ describe("collaboration renderer client", () => {
     const client = createCollaborationRendererClient(mock.bridge);
     await client.load();
     const input = {
-      thread: { scope: "personal" as const, threadId: ids.notes },
+      thread: { scope: "personal" as const, threadId: ids.personalChannel },
       clientMessageId: id(90),
       body: "Persist before transport."
     };
@@ -910,7 +927,7 @@ describe("collaboration renderer client", () => {
       authority: {
         scope: "personal" as const,
         ownerUserId: ids.user,
-        threadId: ids.notes
+        threadId: ids.personalChannel
       },
       body: input.body,
       localCreationOrder: 1,
@@ -937,7 +954,7 @@ describe("collaboration renderer client", () => {
     const confirmedMessage = {
       id: ids.message,
       clientMessageId: input.clientMessageId,
-      threadId: ids.notes,
+      threadId: ids.personalChannel,
       scope: "personal" as const,
       teamId: null,
       sequence: 1,
@@ -986,7 +1003,7 @@ describe("collaboration renderer client", () => {
           authority: {
             scope: "personal",
             ownerUserId: ids.user,
-            threadId: ids.notes
+            threadId: ids.personalChannel
           },
           body: "Survive renderer recreation.",
           localCreationOrder: 7,
@@ -1025,7 +1042,7 @@ describe("collaboration renderer client", () => {
     const client = createCollaborationRendererClient(mock.bridge);
     await client.load();
     const input = {
-      thread: { scope: "personal" as const, threadId: ids.notes },
+      thread: { scope: "personal" as const, threadId: ids.personalChannel },
       clientMessageId: id(91),
       body: "Retry this exact body."
     };
@@ -1165,6 +1182,12 @@ describe("collaboration renderer client", () => {
           releaseTeamSubscription = resolve;
         });
       }
+      if (
+        command.command === "collaboration.select" &&
+        command.input.selection.kind === "personal_memory"
+      ) {
+        return success(command, personalMemoryFixture(), new Map());
+      }
       return originalCommand(command);
     });
 
@@ -1184,12 +1207,12 @@ describe("collaboration renderer client", () => {
     const older = client.select({ kind: "team_people", teamId: ids.team });
     await waitFor(() => expect(releaseTeamSubscription).not.toBeNull());
 
-    mock.setSnapshot(fixture());
-    await client.select({ kind: "notes_to_self" });
+    mock.setSnapshot(personalMemoryFixture());
+    await client.select({ kind: "personal_memory" });
     releaseTeamSubscription!();
     await older;
 
-    expect(client.currentSelection()).toEqual({ kind: "notes_to_self" });
+    expect(client.currentSelection()).toEqual({ kind: "personal_memory" });
     expect(
       mock.command.mock.calls.filter(
         ([command]) =>
@@ -1839,8 +1862,7 @@ describe("collaboration renderer client", () => {
       includeCuratedMemory: false,
       previewRevision: preview.previewRevision,
       previewHash: preview.previewHash,
-      expiresAt: null,
-      title: "Launch review"
+      expiresAt: null
     });
 
     const commands = mock.command.mock.calls.map(([command]) => command);
@@ -1867,7 +1889,6 @@ describe("collaboration renderer client", () => {
     );
     expect(previewGrant).not.toHaveProperty("input.intent.remoteReplicaId");
     expect(shareGrant).not.toHaveProperty("input.intent.previewId");
-    expect(shareGrant).toHaveProperty("input.intent.title", "Launch review");
     const protectedCommands = commands.filter(
       (command) =>
         command.command === "collaboration.preview_shared_memory" ||
@@ -2042,7 +2063,7 @@ describe("collaboration renderer client", () => {
     const eventId = id(20);
     const message = {
       id: ids.message,
-      threadId: ids.notes,
+      threadId: ids.personalChannel,
       scope: "personal" as const,
       teamId: null,
       sequence: 1,
@@ -2069,7 +2090,7 @@ describe("collaboration renderer client", () => {
         scope: "personal",
         teamId: null,
         workspaceId: null,
-        threadId: ids.notes,
+        threadId: ids.personalChannel,
         messageId: ids.message,
         sharedSessionId: null,
         shareGrantId: null
@@ -2083,7 +2104,7 @@ describe("collaboration renderer client", () => {
         expect.objectContaining({
           command: "collaboration.mark_delivered",
           input: {
-            thread: { scope: "personal", threadId: ids.notes },
+            thread: { scope: "personal", threadId: ids.personalChannel },
             messageId: ids.message
           }
         })
@@ -2141,7 +2162,7 @@ describe("collaboration renderer client", () => {
         scope: "personal",
         teamId: null,
         workspaceId: null,
-        threadId: ids.notes,
+        threadId: ids.personalChannel,
         messageId: ids.message,
         sharedSessionId: null,
         shareGrantId: null
@@ -2150,7 +2171,7 @@ describe("collaboration renderer client", () => {
         type: "message_created",
         message: {
           id: ids.message,
-          threadId: ids.notes,
+          threadId: ids.personalChannel,
           scope: "personal",
           teamId: null,
           sequence: 1,
@@ -2196,11 +2217,11 @@ describe("collaboration renderer client", () => {
     await client.load();
 
     const delivered = client.markDelivered({
-      thread: { scope: "personal", threadId: ids.notes },
+      thread: { scope: "personal", threadId: ids.personalChannel },
       messageId: ids.message
     });
     const read = client.markRead({
-      thread: { scope: "personal", threadId: ids.notes },
+      thread: { scope: "personal", threadId: ids.personalChannel },
       messageId: ids.message
     });
     await waitFor(() => {
@@ -2222,7 +2243,7 @@ describe("collaboration renderer client", () => {
         ok: true,
         data: {
           readState: {
-            threadId: ids.notes,
+            threadId: ids.personalChannel,
             deliveredMessageId: ids.message,
             deliveredSequence: 1,
             deliveredAt: timestamp,
@@ -2389,6 +2410,60 @@ describe("collaboration renderer client", () => {
         ? current.view.people[0]?.management
         : null
     ).toEqual(management);
+    client.dispose();
+  });
+
+  it("keeps the active Team view when a newly available Share refreshes navigation", async () => {
+    const initial = fixture();
+    const people = initial.navigation.teams[0]!.people;
+    const selected = collaborationSnapshotSchema.parse({
+      ...initial,
+      selection: { kind: "team_people", teamId: ids.team },
+      view: { kind: "team_people", teamId: ids.team, people }
+    });
+    const navigation = sharedFixture().navigation;
+    const mock = createBridge(selected);
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+
+    mock.emit({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      type: "update",
+      subscriptionId: ids.teamSubscription,
+      deliveryId: delivery(40),
+      eventId: id(40),
+      occurredAt: timestamp,
+      family: "workspace_lifecycle_access",
+      resource: {
+        scope: "team",
+        teamId: ids.team,
+        workspaceId: ids.workspace,
+        threadId: null,
+        messageId: null,
+        sharedSessionId: null,
+        shareGrantId: null
+      },
+      update: {
+        type: "navigation_snapshot",
+        navigation,
+        selection: { kind: "personal_memory" },
+        view: { kind: "personal_memory", entries: [] }
+      }
+    });
+
+    await waitFor(() =>
+      expect(
+        client.current()?.navigation.teams[0]?.workspaces[0]?.sharedMemory
+      ).toHaveLength(1)
+    );
+    expect(client.current()?.selection).toEqual({
+      kind: "team_people",
+      teamId: ids.team
+    });
+    expect(client.current()?.view).toMatchObject({
+      kind: "team_people",
+      teamId: ids.team
+    });
     client.dispose();
   });
 
@@ -2644,7 +2719,7 @@ describe("collaboration renderer client", () => {
         scope: "personal",
         teamId: null,
         workspaceId: null,
-        threadId: ids.notes,
+        threadId: ids.personalChannel,
         messageId,
         sharedSessionId: null,
         shareGrantId: null
@@ -2653,7 +2728,7 @@ describe("collaboration renderer client", () => {
         type: "message_created",
         message: {
           id: messageId,
-          threadId: ids.notes,
+          threadId: ids.personalChannel,
           scope: "personal",
           teamId: null,
           sequence,
@@ -3058,7 +3133,7 @@ describe("collaboration renderer client", () => {
     });
     const message = {
       id: ids.message,
-      threadId: ids.notes,
+      threadId: ids.personalChannel,
       scope: "personal" as const,
       teamId: null,
       sequence: 1,
@@ -3085,7 +3160,7 @@ describe("collaboration renderer client", () => {
         scope: "personal",
         teamId: null,
         workspaceId: null,
-        threadId: ids.notes,
+        threadId: ids.personalChannel,
         messageId: ids.message,
         sharedSessionId: null,
         shareGrantId: null
@@ -3144,48 +3219,17 @@ describe("collaboration renderer client", () => {
     });
     expect(client.currentSelection().kind).toBe("workspace_channel");
 
-    const personal = fixture();
-    if (personal.view.kind !== "thread") {
-      throw new Error("Expected Personal thread fixture");
-    }
-    const personalWithHistory = collaborationSnapshotSchema.parse({
-      ...personal,
-      view: {
-        ...personal.view,
-        messages: {
-          ...personal.view.messages,
-          items: [
-            {
-              id: ids.message,
-              threadId: ids.notes,
-              scope: "personal",
-              teamId: null,
-              sequence: 1,
-              sender: participant(),
-              senderKind: "user",
-              body: "Personal history survives Team revocation.",
-              createdAt: timestamp,
-              updatedAt: timestamp,
-              editedAt: null,
-              deletedAt: null,
-              delivery: "sent",
-              recipientStatus: "sent",
-              failure: null
-            }
-          ]
-        }
-      }
-    });
+    const personalFallback = personalMemoryFixture();
     const originalCommand = mock.command.getMockImplementation()!;
     let returnedPersonalHistory = false;
     mock.command.mockImplementation(async (command) => {
       if (
         command.command === "collaboration.select" &&
-        command.input.selection.kind === "notes_to_self" &&
+        command.input.selection.kind === "personal_memory" &&
         !returnedPersonalHistory
       ) {
         returnedPersonalHistory = true;
-        return success(command, personalWithHistory, new Map());
+        return success(command, personalFallback, new Map());
       }
       return originalCommand(command);
     });
@@ -3200,11 +3244,8 @@ describe("collaboration renderer client", () => {
     await waitFor(() => {
       expect(client.current()?.navigation.teams).toEqual([]);
       const current = client.current();
-      expect(
-        current?.view.kind === "thread"
-          ? current.view.messages.items[0]?.body
-          : null
-      ).toBe("Personal history survives Team revocation.");
+      expect(current?.view.kind).toBe("personal_memory");
+      expect(current?.navigation.personal.channels).toHaveLength(1);
     });
     expect(
       mock.command.mock.calls.some(
@@ -3213,7 +3254,7 @@ describe("collaboration renderer client", () => {
           command.input.subscriptionId === ids.teamSubscription
       )
     ).toBe(false);
-    expect(client.currentSelection().kind).toBe("notes_to_self");
+    expect(client.currentSelection().kind).toBe("personal_memory");
     await client.load();
     expect(client.current()?.navigation.teams).toHaveLength(1);
     mock.emit({
@@ -3309,7 +3350,7 @@ describe("collaboration renderer client", () => {
 
     expect(client.currentRemoteUrl()).toBeNull();
     expect(client.current()?.navigation.teams).toEqual([]);
-    expect(client.currentSelection().kind).toBe("notes_to_self");
+    expect(client.currentSelection().kind).toBe("personal_memory");
     releaseHistory();
     await expect(delayedHistory).rejects.toMatchObject({
       code: "access_revoked"
@@ -3559,7 +3600,7 @@ describe("collaboration renderer client", () => {
       code: "access_revoked"
     });
     expect(client.current()?.navigation.teams).toEqual([]);
-    expect(client.currentSelection().kind).toBe("notes_to_self");
+    expect(client.currentSelection().kind).toBe("personal_memory");
     client.dispose();
   });
 
@@ -3660,7 +3701,7 @@ describe("collaboration renderer client", () => {
     expect(client.current()?.navigation.personalOwner).toEqual(
       initial.navigation.personalOwner
     );
-    expect(client.currentSelection()).toEqual({ kind: "notes_to_self" });
+    expect(client.currentSelection()).toEqual({ kind: "personal_memory" });
     expect(client.current()?.connection.state).toBe("access_revoked");
 
     mock.emit({
@@ -3837,7 +3878,7 @@ describe("collaboration renderer client", () => {
         )
       ).toHaveLength(2);
       expect(recoveredSelections).not.toContainEqual({
-        kind: "notes_to_self"
+        kind: "personal_memory"
       });
       client.dispose();
     }
@@ -3931,6 +3972,12 @@ describe("collaboration renderer client", () => {
           releaseRecoverySelection = resolve;
         });
       }
+      if (
+        command.command === "collaboration.select" &&
+        command.input.selection.kind === "personal_memory"
+      ) {
+        return success(command, personalMemoryFixture(), new Map());
+      }
       return originalCommand(command);
     });
 
@@ -3943,16 +3990,14 @@ describe("collaboration renderer client", () => {
     });
     await waitFor(() => expect(releaseRecoverySelection).not.toBeNull());
 
-    await client.select({ kind: "notes_to_self" });
+    mock.setSnapshot(personalMemoryFixture());
+    await client.select({ kind: "personal_memory" });
     releaseRecoverySelection!();
     await waitFor(() =>
-      expect(client.currentSelection()).toEqual({ kind: "notes_to_self" })
+      expect(client.currentSelection()).toEqual({ kind: "personal_memory" })
     );
     const current = client.current();
-    expect(current?.view.kind).toBe("thread");
-    if (current?.view.kind === "thread") {
-      expect(current.view.thread.scope).toBe("personal");
-    }
+    expect(current?.view.kind).toBe("personal_memory");
     client.dispose();
   });
 
@@ -4249,7 +4294,7 @@ describe("collaboration renderer client", () => {
       workspaceId: ids.workspace,
       threadId: ids.channel
     });
-    await client.select({ kind: "notes_to_self" });
+    await client.select({ kind: "personal_memory" });
     await client.select({
       kind: "workspace_channel",
       teamId: ids.team,
@@ -4362,6 +4407,16 @@ describe("collaboration renderer client", () => {
       ).toHaveLength(loadsBeforeRecovery + 1)
     );
     expect(client.current()?.connection.state).toBe("live");
+    expect(client.currentSelection()).toEqual({
+      kind: "workspace_channel",
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      threadId: ids.channel
+    });
+    expect(client.current()?.view).toMatchObject({
+      kind: "thread",
+      thread: { id: ids.channel }
+    });
     client.dispose();
   });
 

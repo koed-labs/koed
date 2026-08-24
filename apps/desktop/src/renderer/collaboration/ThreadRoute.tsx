@@ -92,7 +92,6 @@ export const collaborationThreadTitle = (
   thread: CollaborationThread,
   currentUserId: string
 ): string => {
-  if (thread.kind === "notes_to_self") return "Notes to self";
   if (thread.name) return thread.name;
   if (thread.kind === "dm" || thread.kind === "group_dm") {
     const names = thread.participants
@@ -596,7 +595,7 @@ export function MessageComposer({
           ) : null}
         </div>
       ) : null}
-      {thread.scope === "personal" && thread.kind !== "notes_to_self" ? (
+      {thread.scope === "personal" ? (
         <div className="collab-composer-scope">
           <span>Personal · Private to you</span>
         </div>

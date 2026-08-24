@@ -33,7 +33,7 @@ const connection = {
 const personalConnection = { ...connection, backendId: null };
 const userId = "00000000-0000-4000-8000-000000000001";
 const workspaceId = "00000000-0000-4000-8000-000000000002";
-const notesId = "00000000-0000-4000-8000-000000000003";
+const personalChannelId = "00000000-0000-4000-8000-000000000003";
 const channelId = "00000000-0000-4000-8000-000000000004";
 const teamPrincipalId = "00000000-0000-4000-8000-000000000007";
 const timestamp = "2026-07-17T01:00:00.000Z";
@@ -73,20 +73,14 @@ const fullSnapshot = (selectedTeam: boolean): CollaborationSnapshot => {
     lastActivityAt: timestamp,
     archivedAt: null
   };
-  const notes = {
+  const personalChannel = {
     ...baseThread,
-    id: notesId,
+    id: personalChannelId,
     logicalId: "00000000-0000-4000-8000-000000000005",
     scope: "personal" as const,
     ownerUserId: userId,
-    kind: "notes_to_self" as const,
-    participants: [
-      {
-        id: userId,
-        displayName: "Mark",
-        membershipState: "enabled" as const
-      }
-    ]
+    kind: "personal_channel" as const,
+    name: "scratch"
   };
   const channel = {
     ...baseThread,
@@ -105,8 +99,8 @@ const fullSnapshot = (selectedTeam: boolean): CollaborationSnapshot => {
         workspaceId,
         threadId: channelId
       } as const)
-    : ({ kind: "notes_to_self" } as const);
-  const thread = selectedTeam ? channel : notes;
+    : ({ kind: "personal_channel", threadId: personalChannelId } as const);
+  const thread = selectedTeam ? channel : personalChannel;
   return collaborationSnapshotSchema.parse({
     contractVersion: COLLABORATION_CONTRACT_VERSION,
     snapshotRevision: "snapshot.revision-000001",
@@ -123,7 +117,7 @@ const fullSnapshot = (selectedTeam: boolean): CollaborationSnapshot => {
     navigation: {
       personalOwner: person,
       teamPrincipal,
-      personal: { memory: [], notesToSelf: notes, channels: [] },
+      personal: { memory: [], channels: [personalChannel] },
       teams: [
         {
           id: teamId,
@@ -260,10 +254,11 @@ describe("Desktop collaboration local transport", () => {
     );
   });
 
-  it.each([
-    { kind: "notes_to_self" as const },
-    { kind: "personal_channel" as const, threadId: notesId }
-  ])("keeps $kind selection on the Personal local path", async (selection) => {
+  it("keeps Personal channel selection on the Personal local path", async () => {
+    const selection = {
+      kind: "personal_channel" as const,
+      threadId: personalChannelId
+    };
     const resolveConnection = vi.fn(async (requiresTeamBackend: boolean) =>
       requiresTeamBackend ? connection : personalConnection
     );
@@ -369,7 +364,7 @@ describe("Desktop collaboration local transport", () => {
       kind: "shared_session" as const,
       teamId,
       workspaceId,
-      sharedSessionId: notesId
+      sharedSessionId: personalChannelId
     }
   ])(
     "routes $kind selection through the active Team backend",

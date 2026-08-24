@@ -9,7 +9,6 @@ const snapshot = {
   navigation: {
     personalOwner: { id: "personal-user" },
     personal: {
-      notesToSelf: {},
       channels: [
         {
           id: "personal-active",
@@ -73,6 +72,15 @@ const ids = (commands: readonly DesktopCommand[]) =>
 describe("commandEntriesForSnapshot", () => {
   it("uses only currently authorized snapshot destinations", () => {
     const commands = commandEntriesForSnapshot(snapshot as never);
+    expect(
+      commands.find(({ id }) => id === "route:personal-memory-notes")
+    ).toMatchObject({
+      destination: {
+        kind: "route",
+        route: { kind: "personal-memory-notes" }
+      },
+      label: "Notes"
+    });
     expect(ids(commands)).toContain("selection:team:team-active:people");
     expect(ids(commands)).toContain(
       "selection:team:team-active:workspace:workspace-active:channel:channel-active"

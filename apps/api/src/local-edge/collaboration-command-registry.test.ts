@@ -38,11 +38,6 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
   "collaboration.create_team": { scope: "team", desktop: write },
   "collaboration.join_team": { scope: "team", desktop: write },
   "collaboration.create_workspace": { scope: "team", desktop: write },
-  "collaboration.create_notes_to_self": {
-    scope: "personal",
-    desktop: write,
-    personalOperation: true
-  },
   "collaboration.create_personal_channel": {
     scope: "personal",
     desktop: write,
@@ -144,7 +139,6 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
   },
   "collaboration.list_owned_shares": { scope: "team", desktop: read },
   "collaboration.get_owned_share": { scope: "team", desktop: read },
-  "collaboration.rename_owned_share": { scope: "team", desktop: write },
   "collaboration.control_pending_share": { scope: "team", desktop: write },
   "collaboration.share_conversation_source": {
     scope: "team",

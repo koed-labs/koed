@@ -9,6 +9,7 @@ import {
   personalDesktopNoteListInputSchema,
   personalDesktopNoteLoadInputSchema,
   personalDesktopNoteRenameInputSchema,
+  personalDesktopNoteUpdateInputSchema,
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
   personalDesktopSessionProjectInputSchema,
@@ -165,6 +166,22 @@ export const createPersonalMemoryPreloadApi = (
       );
       if (result.operation !== "personal.notes.rename") {
         throw new Error("Invalid Personal Note rename result.");
+      }
+      return result.data.note;
+    },
+    updateNote: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["updateNote"]>>[0]
+    ) => {
+      const input = personalDesktopNoteUpdateInputSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.notes.update",
+          input
+        })
+      );
+      if (result.operation !== "personal.notes.update") {
+        throw new Error("Invalid Personal Note update result.");
       }
       return result.data.note;
     },

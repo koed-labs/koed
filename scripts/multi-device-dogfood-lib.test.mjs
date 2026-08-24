@@ -2,11 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { runMultiDeviceElectronDogfood } from "./multi-device-dogfood-lib.mjs";
 
-const personalThread = {
-  id: "10000000-0000-4000-8000-000000000001",
-  kind: "notes_to_self"
-};
-
 const createHarness = ({
   backendByPort = {},
   codexConfigByPort = {
@@ -44,7 +39,6 @@ const createHarness = ({
                 },
                 navigation: {
                   personal: {
-                    notesToSelf: personalThread,
                     channels: [...channels]
                   }
                 },
@@ -86,7 +80,6 @@ const createHarness = ({
               snapshot: {
                 navigation: {
                   personal: {
-                    notesToSelf: personalThread,
                     channels: [...channels]
                   }
                 },
@@ -127,7 +120,7 @@ const createHarness = ({
   return { connect, clients };
 };
 
-test("multi-device dogfood proves bidirectional Personal realtime and channels", async () => {
+test("multi-device dogfood proves bidirectional Personal channel realtime", async () => {
   const harness = createHarness();
   const result = await runMultiDeviceElectronDogfood({
     deviceAPort: 9224,
@@ -143,7 +136,6 @@ test("multi-device dogfood proves bidirectional Personal realtime and channels",
   assert.equal(result.isolatedCodexProfiles, true);
   assert.equal(result.flows.aToB.eventType, "update");
   assert.equal(result.flows.bToA.eventType, "update");
-  assert.equal(result.flows.channelBToA.eventType, "update");
   assert.equal(result.flows.rendererReloadCatchUp.recovered, true);
   assert.equal(result.personalChannel.observedEventType, "update");
   assert.equal(harness.clients.get(9224).closed, true);

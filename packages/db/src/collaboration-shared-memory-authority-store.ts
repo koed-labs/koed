@@ -28,7 +28,8 @@ export interface CollaborationSharedMemoryCanonicalSourceItem {
     | "tool_call"
     | "tool_result"
     | "lcm_leaf"
-    | "lcm_rollup";
+    | "lcm_rollup"
+    | "curated_assertion";
   schemaVersion: 1;
   sourceId: string;
   sourceLogicalMemoryId: string;
@@ -58,6 +59,7 @@ export interface CollaborationRemoteSharedMemoryPreview {
   teamId: string;
   teamWorkspaceId: string;
   activationRepresentation: SharedMemoryRepresentation;
+  representation: SharedMemoryRepresentation;
   maximumFidelity: SharedMemoryFidelityCeiling;
   includeCuratedMemory: boolean;
   mode: "snapshot" | "continuous";
@@ -231,6 +233,7 @@ export interface CollaborationSharedMemoryAuthorityStore {
     identity: CollaborationSharedMemoryAuthorityIdentity;
     pendingShareId: string;
     mutationId: string;
+    mode: "snapshot" | "continuous";
     source: SharedMemorySourceRef;
   }): Promise<boolean>;
   claimPendingShareSourceWork(input?: { limit?: number }): Promise<
@@ -241,6 +244,7 @@ export interface CollaborationSharedMemoryAuthorityStore {
       upstreamUserId: string;
       pendingShareId: string;
       mutationId: string;
+      mode: "snapshot" | "continuous";
       source: SharedMemorySourceRef;
     }>
   >;
@@ -248,6 +252,26 @@ export interface CollaborationSharedMemoryAuthorityStore {
     workId: string;
     outcome: "completed" | "retry";
     redactedFailureCode?: string;
+  }): Promise<boolean>;
+  claimContinuousPersonalNoteAdvancementWork(input?: {
+    limit?: number;
+  }): Promise<
+    Array<{
+      workId: string;
+      backendId: string;
+      localOwnerUserId: string;
+      noteId: string;
+      noteRevision: number;
+    }>
+  >;
+  finishContinuousPersonalNoteAdvancementWork(input: {
+    workId: string;
+    outcome: "completed" | "retry";
+    redactedFailureCode?: string;
+  }): Promise<boolean>;
+  requeueLatestContinuousPersonalNoteAdvancementWork(input: {
+    identity: CollaborationSharedMemoryAuthorityIdentity;
+    noteId: string;
   }): Promise<boolean>;
 }
 
@@ -642,6 +666,8 @@ const validPersistedPreview = (
     !Array.isArray(value.sourceCapabilities) ||
     !validRepresentations(value.sourceCapabilities) ||
     !isRepresentation(value.activationRepresentation) ||
+    !isRepresentation(value.representation) ||
+    value.representation !== value.activationRepresentation ||
     !isFidelity(value.maximumFidelity) ||
     typeof value.includeCuratedMemory !== "boolean" ||
     (value.mode !== "snapshot" && value.mode !== "continuous") ||
@@ -692,7 +718,7 @@ const validPersistedPreview = (
       value.maximumFidelity !== "memory_events" ||
       value.includeCuratedMemory ||
       value.mode !== "snapshot" ||
-      value.sourceRevision !== 1 ||
+      value.sourceRevision !== source.data.noteRevision ||
       value.items.length !== 1 ||
       !isObject(firstItem) ||
       firstItem.sourceId !== source.data.memoryEventId)
@@ -709,7 +735,8 @@ const validPersistedPreview = (
         "tool_call",
         "tool_result",
         "lcm_leaf",
-        "lcm_rollup"
+        "lcm_rollup",
+        "curated_assertion"
       ].includes(String(item.itemType)) &&
       item.schemaVersion === 1 &&
       isUuid(item.sourceId) &&
@@ -805,6 +832,7 @@ const previewMatchesRow = (
   value.teamId === row.team_id &&
   value.teamWorkspaceId === row.team_workspace_id &&
   value.activationRepresentation === row.representation &&
+  value.representation === row.representation &&
   value.maximumFidelity === row.maximum_fidelity &&
   value.includeCuratedMemory === row.include_curated_memory &&
   value.sourceRevision === Number(row.source_revision) &&
@@ -1337,10 +1365,11 @@ export const createCollaborationSharedMemoryAuthorityStore = (
             `insert into collaboration_shared_memory_previews
                (enrollment_id, sync_relationship_id, preview_id, preview_hash,
                 preview_revision, logical_memory_id, team_id, team_workspace_id,
-                representation, source_revision, source_hash,
-                redacted_content_hash, item_count, protected_dto_hash, protected_dto,
+                representation, maximum_fidelity, include_curated_memory,
+                source_revision, source_hash,
+                source_content_hash, item_count, protected_dto_hash, protected_dto,
                 expires_at)
-             values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+             values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
             [
               enrollment.id,
               preview.previewId,
@@ -1350,6 +1379,8 @@ export const createCollaborationSharedMemoryAuthorityStore = (
               preview.teamId,
               preview.teamWorkspaceId,
               preview.activationRepresentation,
+              preview.maximumFidelity,
+              preview.includeCuratedMemory,
               preview.sourceRevision,
               preview.sourceHash,
               preview.sourceContentHash,
@@ -1903,6 +1934,7 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         !validIdentity(input.identity) ||
         !isUuid(input.pendingShareId) ||
         !isUuid(input.mutationId) ||
+        !["snapshot", "continuous"].includes(input.mode) ||
         !parsedSource.success
       ) {
         return false;
@@ -1926,22 +1958,23 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         } else {
           const note = await client.query(
             `select 1
-               from collaboration_messages message
-               join collaboration_threads thread on thread.id=message.thread_id
+               from personal_notes note
+               join personal_note_revisions revision
+                 on revision.note_id=note.id and revision.owner_user_id=note.owner_user_id
                join memory_events event
                  on event.id=$2 and event.owner_user_id=$3
                 and event.visibility='personal' and event.session_id is null
-                and event.invalidated_at is null
                 and event.idempotency_key=$4
-              where message.id=$1 and message.personal_owner_user_id=$3
-                and message.sender_user_id=$3 and message.sender_kind='user'
-                and thread.kind='notes_to_self'
+              where note.id=$1 and note.owner_user_id=$3
+                and revision.revision=$5
+                and revision.memory_event_id=event.id
               limit 1`,
             [
               source.noteId,
               source.memoryEventId,
               input.identity.localOwnerUserId,
-              `personal-note:${source.noteId}`
+              `personal-note:${source.noteId}:revision:${source.noteRevision}`,
+              source.noteRevision
             ]
           );
           if (!note.rowCount) return false;
@@ -1953,14 +1986,16 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         const existing = await client.query<{
           mutation_id: string;
           pending_share_id: string;
+          mode: "snapshot" | "continuous";
           logical_memory_id: string;
           source_kind: "captured_session" | "personal_note";
           local_session_id: string | null;
           local_note_id: string | null;
+          local_note_revision: number | null;
           local_memory_event_id: string | null;
         }>(
-          `select mutation_id,pending_share_id,logical_memory_id,source_kind,local_session_id,
-                  local_note_id,local_memory_event_id
+          `select mutation_id,pending_share_id,mode,logical_memory_id,source_kind,local_session_id,
+                  local_note_id,local_note_revision,local_memory_event_id
              from collaboration_pending_share_source_work
             where enrollment_id=$1 and mutation_id=$2
             limit 1`,
@@ -1970,30 +2005,53 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           return (
             existing.rows[0].mutation_id === input.mutationId &&
             existing.rows[0].pending_share_id === input.pendingShareId &&
+            existing.rows[0].mode === input.mode &&
             existing.rows[0].logical_memory_id === source.logicalMemoryId &&
             existing.rows[0].source_kind === source.kind &&
             existing.rows[0].local_session_id ===
               (source.kind === "captured_session" ? source.sessionId : null) &&
             existing.rows[0].local_note_id ===
               (source.kind === "personal_note" ? source.noteId : null) &&
+            existing.rows[0].local_note_revision ===
+              (source.kind === "personal_note" ? source.noteRevision : null) &&
             existing.rows[0].local_memory_event_id ===
               (source.kind === "personal_note" ? source.memoryEventId : null)
+          );
+        }
+        if (source.kind === "personal_note" && input.mode === "continuous") {
+          await client.query(
+            `update collaboration_pending_share_source_work
+                set state='completed',locked_at=null,completed_at=now(),
+                    redacted_failure_code=null,updated_at=now()
+              where enrollment_id=$1 and pending_share_id=$2
+                and mode='continuous' and source_kind='personal_note'
+                and local_note_id=$3 and local_note_revision<$4
+                and state<>'completed'`,
+            [
+              enrollment.id,
+              input.pendingShareId,
+              source.noteId,
+              source.noteRevision
+            ]
           );
         }
         try {
           await client.query(
             `insert into collaboration_pending_share_source_work
-               (enrollment_id,pending_share_id,mutation_id,source_kind,
-                logical_memory_id,local_session_id,local_note_id,local_memory_event_id)
-             values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+               (enrollment_id,pending_share_id,mutation_id,mode,source_kind,
+                logical_memory_id,local_session_id,local_note_id,
+                local_note_revision,local_memory_event_id)
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
             [
               enrollment.id,
               input.pendingShareId,
               input.mutationId,
+              input.mode,
               source.kind,
               source.logicalMemoryId,
               source.kind === "captured_session" ? source.sessionId : null,
               source.kind === "personal_note" ? source.noteId : null,
+              source.kind === "personal_note" ? source.noteRevision : null,
               source.kind === "personal_note" ? source.memoryEventId : null
             ]
           );
@@ -2015,10 +2073,12 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           upstream_user_id: string;
           pending_share_id: string;
           mutation_id: string;
+          mode: "snapshot" | "continuous";
           logical_memory_id: string;
           source_kind: "captured_session" | "personal_note";
           local_session_id: string | null;
           local_note_id: string | null;
+          local_note_revision: number | null;
           local_memory_event_id: string | null;
         }>(
           `with candidates as (
@@ -2043,9 +2103,10 @@ export const createCollaborationSharedMemoryAuthorityStore = (
            )
            select claimed.id as work_id,enrollment.backend_id,
                   enrollment.local_owner_user_id,enrollment.upstream_user_id,
-                  claimed.pending_share_id,claimed.mutation_id,
+                  claimed.pending_share_id,claimed.mutation_id,claimed.mode,
                   claimed.logical_memory_id,claimed.source_kind,claimed.local_session_id,
-                  claimed.local_note_id,claimed.local_memory_event_id
+                  claimed.local_note_id,claimed.local_note_revision,
+                  claimed.local_memory_event_id
              from claimed
              join collaboration_shared_memory_enrollments enrollment
                on enrollment.id=claimed.enrollment_id`,
@@ -2058,11 +2119,13 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           upstreamUserId: row.upstream_user_id,
           pendingShareId: row.pending_share_id,
           mutationId: row.mutation_id,
+          mode: row.mode,
           source:
             row.source_kind === "personal_note"
               ? {
                   kind: "personal_note" as const,
                   noteId: row.local_note_id!,
+                  noteRevision: row.local_note_revision!,
                   memoryEventId: row.local_memory_event_id!,
                   logicalMemoryId: row.logical_memory_id
                 }
@@ -2090,16 +2153,148 @@ export const createCollaborationSharedMemoryAuthorityStore = (
                 set state='completed',locked_at=null,completed_at=now(),
                     redacted_failure_code=null,updated_at=now()
               where id=$1 and state='processing'`
-          : `update collaboration_pending_share_source_work
+          : `with target as (
+               select work.id,
+                      exists (
+                        select 1
+                          from collaboration_pending_share_source_work newer
+                         where newer.enrollment_id=work.enrollment_id
+                           and newer.pending_share_id=work.pending_share_id
+                           and newer.mode='continuous'
+                           and newer.source_kind='personal_note'
+                           and newer.local_note_id=work.local_note_id
+                           and newer.local_note_revision>work.local_note_revision
+                      ) as superseded
+                 from collaboration_pending_share_source_work work
+                where work.id=$1 and work.state='processing'
+             )
+             update collaboration_pending_share_source_work work
+                set state=case when target.superseded then 'completed' else 'failed' end,
+                    locked_at=null,
+                    completed_at=case when target.superseded then now() else completed_at end,
+                    available_at=case when target.superseded
+                      then available_at else now()+interval '30 seconds' end,
+                    redacted_failure_code=case when target.superseded then null else $2 end,
+                    updated_at=now()
+               from target
+              where work.id=target.id`,
+        input.outcome === "completed"
+          ? [input.workId]
+          : [input.workId, failureCode ?? "source_preparation_failed"]
+      );
+      return result.rowCount === 1;
+    },
+
+    async claimContinuousPersonalNoteAdvancementWork(input = {}) {
+      const limit = Math.max(1, Math.min(50, input.limit ?? 10));
+      return withTransaction(pool, async (client) => {
+        const result = await client.query<{
+          work_id: string;
+          backend_id: string;
+          local_owner_user_id: string;
+          local_note_id: string;
+          local_note_revision: number;
+        }>(
+          `with candidates as (
+             select work.id
+               from collaboration_continuous_note_advancement_work work
+               join collaboration_shared_memory_enrollments enrollment
+                 on enrollment.id=work.enrollment_id
+                and enrollment.local_owner_user_id=work.local_owner_user_id
+                and enrollment.revoked_at is null
+              where ((work.state in ('pending','failed') and work.available_at<=now())
+                 or (work.state='processing' and
+                     work.locked_at<now()-interval '5 minutes'))
+                and not exists (
+                  select 1
+                    from collaboration_continuous_note_advancement_work newer
+                   where newer.enrollment_id=work.enrollment_id
+                     and newer.local_note_id=work.local_note_id
+                     and newer.local_note_revision>work.local_note_revision
+                     and newer.state in ('pending','processing','failed')
+                )
+              order by work.available_at,work.id
+              for update of work skip locked
+              limit $1
+           ), claimed as (
+             update collaboration_continuous_note_advancement_work work
+                set state='processing',locked_at=now(),updated_at=now(),
+                    attempt_count=attempt_count+1
+               from candidates
+              where work.id=candidates.id
+            returning work.*
+           )
+           select claimed.id as work_id,enrollment.backend_id,
+                  claimed.local_owner_user_id,claimed.local_note_id,
+                  claimed.local_note_revision
+             from claimed
+             join collaboration_shared_memory_enrollments enrollment
+               on enrollment.id=claimed.enrollment_id
+              and enrollment.local_owner_user_id=claimed.local_owner_user_id
+              and enrollment.revoked_at is null`,
+          [limit]
+        );
+        return result.rows.map((row) => ({
+          workId: row.work_id,
+          backendId: row.backend_id,
+          localOwnerUserId: row.local_owner_user_id,
+          noteId: row.local_note_id,
+          noteRevision: row.local_note_revision
+        }));
+      });
+    },
+
+    async finishContinuousPersonalNoteAdvancementWork(input) {
+      if (!isUuid(input.workId)) return false;
+      const failureCode = input.redactedFailureCode ?? null;
+      if (
+        failureCode !== null &&
+        !/^[A-Za-z0-9_.:-]{1,120}$/.test(failureCode)
+      ) {
+        return false;
+      }
+      const result = await pool.query(
+        input.outcome === "completed"
+          ? `update collaboration_continuous_note_advancement_work
+                set state='completed',locked_at=null,completed_at=now(),
+                    redacted_failure_code=null,updated_at=now()
+              where id=$1 and state='processing'`
+          : `update collaboration_continuous_note_advancement_work
                 set state='failed',locked_at=null,
                     available_at=now()+interval '30 seconds',
                     redacted_failure_code=$2,updated_at=now()
               where id=$1 and state='processing'`,
         input.outcome === "completed"
           ? [input.workId]
-          : [input.workId, failureCode ?? "source_preparation_failed"]
+          : [input.workId, failureCode ?? "note_advancement_failed"]
       );
       return result.rowCount === 1;
+    },
+
+    async requeueLatestContinuousPersonalNoteAdvancementWork(input) {
+      if (!validIdentity(input.identity) || !isUuid(input.noteId)) return false;
+      return withTransaction(pool, async (client) => {
+        const enrollment = await activeEnrollment(
+          client,
+          input.identity,
+          "update"
+        );
+        if (!enrollment) return false;
+        const result = await client.query(
+          `update collaboration_continuous_note_advancement_work work
+              set state='pending',available_at=now(),locked_at=null,
+                  completed_at=null,redacted_failure_code=null,updated_at=now()
+            where work.id=(
+              select latest.id
+                from collaboration_continuous_note_advancement_work latest
+               where latest.enrollment_id=$1 and latest.local_note_id=$2
+               order by latest.local_note_revision desc
+               limit 1
+            ) and work.state in ('completed','failed','pending')`,
+          [enrollment.id, input.noteId]
+        );
+        return result.rowCount === 1;
+      });
     },
 
     async readSharedSessionBinding(input) {

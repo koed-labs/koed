@@ -615,12 +615,9 @@ export const createDesktopCollaborationBroker = (
     let authority: CollaborationDurableSend["authority"];
     let bodyAuthorized = overrides.bodyAuthorized ?? true;
     if (record.thread.scope === "personal") {
-      const thread =
-        snapshot?.navigation.personal.notesToSelf.id === record.thread.threadId
-          ? snapshot.navigation.personal.notesToSelf
-          : snapshot?.navigation.personal.channels.find(
-              (candidate) => candidate.id === record.thread.threadId
-            );
+      const thread = snapshot?.navigation.personal.channels.find(
+        (candidate) => candidate.id === record.thread.threadId
+      );
       if (snapshot && (!thread || !thread.canPost)) return null;
       authority = {
         scope: "personal",
@@ -865,13 +862,17 @@ export const createDesktopCollaborationBroker = (
           ? (findBackendIdentity(paths, preferredBackendId)?.id ?? null)
           : null;
         if (requiresTeamBackend && !backendId) return Promise.resolve(null);
+        const activeRuntime = readActiveRuntimeState(paths.runtimeStatePath);
         return Promise.resolve({
-          apiUrl: resolveApiUrl(
-            applyActiveRuntimeUrls(
-              applyPersistedLocalPorts(paths, environment, { force: true }),
-              readActiveRuntimeState(paths.runtimeStatePath)
-            ),
-            repoEnv
+          apiUrl: (
+            activeRuntime?.apiUrl ??
+            resolveApiUrl(
+              applyActiveRuntimeUrls(
+                applyPersistedLocalPorts(paths, environment, { force: true }),
+                activeRuntime
+              ),
+              repoEnv
+            )
           ).replace(/\/$/, ""),
           backendId,
           authorization: credential.authorization

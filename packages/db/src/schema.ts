@@ -171,7 +171,6 @@ export const collaborationScope = pgEnum("collaboration_scope", [
   "team"
 ]);
 export const collaborationThreadKind = pgEnum("collaboration_thread_kind", [
-  "notes_to_self",
   "personal_channel",
   "workspace_channel",
   "dm",
@@ -200,6 +199,7 @@ export const collaborationEventFamily = pgEnum("collaboration_event_family", [
   "receipt_state_updated",
   "share_grant_lifecycle",
   "fidelity_changed",
+  "source_revision_changed",
   "memory_event_available",
   "lcm_leaf_available",
   "lcm_rollup_available",
@@ -1768,6 +1768,131 @@ export const memoryEvents = pgTable(
   ]
 );
 
+export const personalNotes = pgTable(
+  "personal_notes",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sequence: bigserial("sequence", { mode: "number" }).notNull(),
+    titleMarker: text("title_marker")
+      .notNull()
+      .default("[koed encrypted personal note title]"),
+    titleVersion: integer("title_version").notNull().default(1),
+    currentRevision: integer("current_revision").notNull().default(1),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    requestHash: text("request_hash").notNull(),
+    lifecycle: text("lifecycle").notNull().default("active"),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    deletedAt: timestamp("deleted_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("personal_notes_id_owner_unique").on(table.id, table.ownerUserId),
+    unique("personal_notes_sequence_unique").on(table.sequence),
+    unique("personal_notes_owner_idempotency_unique").on(
+      table.ownerUserId,
+      table.idempotencyKeyHash
+    ),
+    index("personal_notes_owner_sequence_idx").on(
+      table.ownerUserId,
+      table.sequence.desc()
+    ),
+    check(
+      "personal_notes_marker_check",
+      sql`${table.titleMarker} = '[koed encrypted personal note title]'`
+    ),
+    check(
+      "personal_notes_versions_check",
+      sql`${table.titleVersion} > 0 and ${table.currentRevision} > 0`
+    ),
+    check(
+      "personal_notes_hashes_check",
+      sql`length(${table.idempotencyKeyHash}) = 64 and length(${table.requestHash}) = 64`
+    ),
+    check(
+      "personal_notes_lifecycle_check",
+      sql`(${table.lifecycle} = 'active' and ${table.archivedAt} is null and ${table.deletedAt} is null)
+        or (${table.lifecycle} = 'archived' and ${table.archivedAt} is not null and ${table.deletedAt} is null)
+        or (${table.lifecycle} = 'deleted' and ${table.deletedAt} is not null)`
+    )
+  ]
+);
+
+export const personalNoteRevisions = pgTable(
+  "personal_note_revisions",
+  {
+    id: id(),
+    noteId: uuid("note_id")
+      .notNull()
+      .references(() => personalNotes.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    revision: integer("revision").notNull(),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    requestHash: text("request_hash").notNull(),
+    bodyMarker: text("body_marker")
+      .notNull()
+      .default("[koed encrypted personal note body]"),
+    contentHash: text("content_hash").notNull(),
+    memoryEventId: uuid("memory_event_id").references(() => memoryEvents.id, {
+      onDelete: "restrict"
+    }),
+    projectionState: text("projection_state").notNull().default("pending"),
+    projectionFailureCode: text("projection_failure_code"),
+    projectedAt: timestamp("projected_at", { withTimezone: true }),
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    createdByDeviceCredentialId: uuid("created_by_device_credential_id"),
+    createdAt: now()
+  },
+  (table) => [
+    unique("personal_note_revisions_note_revision_unique").on(
+      table.noteId,
+      table.revision
+    ),
+    unique("personal_note_revisions_note_idempotency_unique").on(
+      table.noteId,
+      table.idempotencyKeyHash
+    ),
+    unique("personal_note_revisions_id_owner_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    uniqueIndex("personal_note_revisions_memory_event_unique")
+      .on(table.memoryEventId)
+      .where(sql`${table.memoryEventId} is not null`),
+    foreignKey({
+      columns: [table.noteId, table.ownerUserId],
+      foreignColumns: [personalNotes.id, personalNotes.ownerUserId],
+      name: "personal_note_revisions_note_owner_fk"
+    }).onDelete("cascade"),
+    index("personal_note_revisions_owner_pending_idx")
+      .on(table.ownerUserId, table.createdAt)
+      .where(sql`${table.projectionState} in ('pending','failed')`),
+    check(
+      "personal_note_revisions_values_check",
+      sql`${table.revision} > 0 and length(${table.contentHash}) = 64
+        and length(${table.idempotencyKeyHash}) = 64 and length(${table.requestHash}) = 64`
+    ),
+    check(
+      "personal_note_revisions_marker_check",
+      sql`${table.bodyMarker} = '[koed encrypted personal note body]'`
+    ),
+    check(
+      "personal_note_revisions_projection_check",
+      sql`(${table.projectionState} = 'pending' and ${table.memoryEventId} is null and ${table.projectedAt} is null and ${table.projectionFailureCode} is null)
+        or (${table.projectionState} = 'available' and ${table.memoryEventId} is not null and ${table.projectedAt} is not null and ${table.projectionFailureCode} is null)
+        or (${table.projectionState} = 'failed' and ${table.memoryEventId} is null and ${table.projectedAt} is null and length(trim(${table.projectionFailureCode})) > 0)
+        or (${table.projectionState} = 'superseded' and ${table.supersededAt} is not null
+          and ((${table.memoryEventId} is null and ${table.projectedAt} is null)
+            or (${table.memoryEventId} is not null and ${table.projectedAt} is not null)))`
+    )
+  ]
+);
+
 export const memoryNodes = pgTable(
   "memory_nodes",
   {
@@ -2760,6 +2885,8 @@ export const encryptedFieldPayloads = pgTable(
         'memory_events',
         'memory_nodes',
         'memory_questions',
+        'personal_notes',
+        'personal_note_revisions',
         'memory_replica_revisions',
         'messages',
         'privacy_classification_results',
@@ -5884,8 +6011,8 @@ export const sharedSourceArtifacts = pgTable(
           and ${table.remoteReplicaId} is null
           and ${table.syncRelationshipId} is null
           and ${table.representation} = 'memory_events'
-          and ${table.sourceRevision} = 1
-          and ${table.sourceCursor} = 1
+          and ${table.sourceRevision} > 0
+          and ${table.sourceCursor} = ${table.sourceRevision}
           and ${table.packageSequence} = 1
           and ${table.sourceCapabilities} = array['memory_events']::shared_memory_representation[]
           and ${table.activationRepresentation} = 'memory_events'))`
@@ -5996,7 +6123,7 @@ export const sharedSourcePreviews = pgTable(
           and ${table.sourceMemoryEventId} is not null
           and ${table.remoteReplicaId} is null
           and ${table.representation} = 'memory_events'
-          and ${table.sourceRevision} = 1
+          and ${table.sourceRevision} > 0
           and ${table.sourceCapabilities} = array['memory_events']::shared_memory_representation[]
           and ${table.activationRepresentation} = 'memory_events'))`
     )
@@ -6295,7 +6422,7 @@ export const sharedMemoryCandidatePreviews = pgTable(
     check(
       "shared_memory_candidate_previews_values_check",
       sql`${table.previewRevision} = 1
-        and ${table.authoritySource} in ('browser_session','device_action_grant')
+        and ${table.authoritySource} in ('browser_session','device_action_grant','continuous_consent')
         and ${table.sourceRevision} >= 0
         and ${table.itemCount} between 1 and 100
         and ${table.excludedItemCount} >= 0
@@ -6333,11 +6460,11 @@ export const sharedMemoryCandidatePreviews = pgTable(
           and ${table.sourceSessionId} is null
           and ${table.sourceNoteId} is not null
           and ${table.sourceMemoryEventId} is not null
-          and ${table.mode} = 'snapshot'
+          and ${table.mode} in ('snapshot','continuous')
           and ${table.representation} = 'memory_events'
           and ${table.maximumFidelity} = 'memory_events'
           and ${table.includeCuratedMemory} = false
-          and ${table.sourceRevision} = 1
+          and ${table.sourceRevision} > 0
           and ${table.itemCount} = 1
           and ${table.excludedItemCount} = 0
           and ${table.sourceCapabilities} = array['memory_events']::shared_memory_representation[]
@@ -6553,7 +6680,7 @@ export const pendingShareOperations = pgTable(
         or (${table.replacementMutationId} is not null and
              length(${table.replacementRequestHash}) = 64 and
              ${table.replacementConsentId} is not null and
-             ${table.replacementAuthoritySource} in ('browser_session','device_action_grant') and
+             ${table.replacementAuthoritySource} in ('browser_session','device_action_grant','continuous_consent') and
              ${table.replacementAuthorityReferenceId} is not null and
              ${table.replacementPreviewId} is not null and
              length(${table.replacementPreviewHash}) = 64 and
@@ -6582,11 +6709,11 @@ export const pendingShareOperations = pgTable(
           and ${table.sourceSessionId} is null
           and ${table.sourceNoteId} is not null
           and ${table.sourceMemoryEventId} is not null
-          and ${table.mode} = 'snapshot'
+          and ${table.mode} in ('snapshot','continuous')
           and ${table.representation} = 'memory_events'
           and ${table.maximumFidelity} = 'memory_events'
           and ${table.includeCuratedMemory} = false
-          and ${table.sourceRevision} = 1
+          and ${table.sourceRevision} > 0
           and ${table.sourceCapabilities} = array['memory_events']::shared_memory_representation[]
           and ${table.activationRepresentation} = 'memory_events'))`
     )
@@ -6813,11 +6940,9 @@ export const sourceOwnerRepresentationConsents = pgTable(
           and ${table.sourceNoteId} is not null
           and ${table.sourceMemoryEventId} is not null
           and ${table.remoteReplicaId} is null
-          and ${table.mode} = 'snapshot'
           and ${table.maximumFidelity} = 'memory_events'
           and ${table.includeCuratedMemory} = false
-          and ${table.sourceRevision} = 1
-          and ${table.maximumAuthorizedSourceRevision} = 1
+          and ${table.sourceRevision} > 0
           and ${table.sourceCapabilities} = array['memory_events']::shared_memory_representation[]
           and ${table.activationRepresentation} = 'memory_events'))`
     ),
@@ -6876,6 +7001,9 @@ export const teamSessionShareGrants = pgTable(
       onDelete: "set null"
     }),
     displayTitle: text("display_title"),
+    displayTitleSourceRevision: bigint("display_title_source_revision", {
+      mode: "number"
+    }),
     teamId: uuid("team_id")
       .notNull()
       .references(() => teams.id, { onDelete: "restrict" }),
@@ -7078,7 +7206,7 @@ export const teamSessionShareGrants = pgTable(
         and (${table.sourceKind} <> 'personal_note'
           or (${table.maximumFidelity} = 'memory_events'
             and ${table.includeCuratedMemory} = false
-            and ${table.sourceRevision} = 1))`
+          and ${table.sourceRevision} > 0))`
     ),
     check(
       "team_session_share_grants_version_check",
@@ -7425,7 +7553,7 @@ export const teamMemoryRepresentations = pgTable(
           and ${table.sourceNoteId} is not null
           and ${table.sourceMemoryEventId} is not null
           and ${table.representation} = 'memory_events'
-          and ${table.sourceRevision} = 1)`
+            and ${table.sourceRevision} > 0)`
     ),
     check(
       "team_memory_representations_lifecycle_check",
@@ -7807,9 +7935,6 @@ export const collaborationThreads = pgTable(
       ],
       name: "collaboration_threads_share_scope_fk"
     }).onDelete("restrict"),
-    uniqueIndex("collaboration_threads_notes_owner_unique")
-      .on(table.personalOwnerUserId)
-      .where(sql`${table.kind} = 'notes_to_self'`),
     uniqueIndex("collaboration_threads_participant_key_unique")
       .on(table.teamId, table.participantKey)
       .where(sql`${table.kind} in ('dm', 'group_dm')`),
@@ -7840,19 +7965,6 @@ export const collaborationThreads = pgTable(
     check(
       "collaboration_threads_shape_check",
       sql`(
-        ${table.scope} = 'personal'
-        and ${table.kind} = 'notes_to_self'
-        and ${table.personalOwnerUserId} is not null
-        and ${table.teamId} is null
-        and ${table.teamWorkspaceId} is null
-        and ${table.systemKey} is null
-        and ${table.nameMarker} is null
-        and ${table.topicMarker} is null
-        and ${table.normalizedNameHash} is null
-        and ${table.participantKey} is null
-        and ${table.sharedLogicalMemoryId} is null
-        and ${table.shareGrantId} is null
-      ) or (
         ${table.scope} = 'personal'
         and ${table.kind} = 'personal_channel'
         and ${table.personalOwnerUserId} is not null
@@ -8005,12 +8117,6 @@ export const collaborationParticipants = pgTable(
     check(
       "collaboration_participants_shape_check",
       sql`(
-        ${table.scope} = 'personal'
-        and ${table.threadKind} = 'notes_to_self'
-        and ${table.personalOwnerUserId} = ${table.userId}
-        and ${table.teamId} is null
-        and ${table.ordinal} = 0
-      ) or (
         ${table.scope} = 'team'
         and ${table.threadKind} in ('dm', 'group_dm')
         and ${table.personalOwnerUserId} is null
@@ -8212,59 +8318,6 @@ export const collaborationMessages = pgTable(
       "collaboration_messages_retention_check",
       sql`(${table.retentionPolicyId} is null and ${table.retentionPolicyVersion} is null)
         or (${table.retentionPolicyId} is not null and ${table.retentionPolicyVersion} > 0)`
-    )
-  ]
-);
-
-export const personalNoteProjectionCursors = pgTable(
-  "personal_note_projection_cursors",
-  {
-    ownerUserId: uuid("owner_user_id")
-      .primaryKey()
-      .references(() => users.id, { onDelete: "cascade" }),
-    threadId: uuid("thread_id")
-      .notNull()
-      .references(() => collaborationThreads.id, { onDelete: "restrict" }),
-    lastThreadSequence: bigint("last_thread_sequence", { mode: "number" })
-      .notNull()
-      .default(0),
-    scannedCount: bigint("scanned_count", { mode: "number" })
-      .notNull()
-      .default(0),
-    existingCount: bigint("existing_count", { mode: "number" })
-      .notNull()
-      .default(0),
-    createdCount: bigint("created_count", { mode: "number" })
-      .notNull()
-      .default(0),
-    embeddingQueuedCount: bigint("embedding_queued_count", { mode: "number" })
-      .notNull()
-      .default(0),
-    failureCount: bigint("failure_count", { mode: "number" })
-      .notNull()
-      .default(0),
-    lastFailureCode: text("last_failure_code"),
-    updatedAt: updatedNow()
-  },
-  (table) => [
-    unique("personal_note_projection_cursors_thread_unique").on(table.threadId),
-    foreignKey({
-      columns: [table.threadId, table.ownerUserId],
-      foreignColumns: [
-        collaborationThreads.id,
-        collaborationThreads.personalOwnerUserId
-      ],
-      name: "personal_note_projection_cursors_owner_thread_fk"
-    }).onDelete("restrict"),
-    check(
-      "personal_note_projection_cursors_counts_check",
-      sql`${table.lastThreadSequence} >= 0
-        and ${table.scannedCount} >= 0
-        and ${table.existingCount} >= 0
-        and ${table.createdCount} >= 0
-        and ${table.embeddingQueuedCount} >= 0
-        and ${table.failureCount} >= 0
-        and ${table.existingCount} + ${table.createdCount} + ${table.failureCount} = ${table.scannedCount}`
     )
   ]
 );
@@ -10799,6 +10852,10 @@ export const collaborationSharedMemoryEnrollments = pgTable(
       table.localOwnerUserId,
       table.upstreamUserId
     ),
+    unique("csm_enrollments_id_owner_unique").on(
+      table.id,
+      table.localOwnerUserId
+    ),
     check(
       "csm_enrollments_backend_id_check",
       sql`${table.backendId} ~ '^[A-Za-z0-9][A-Za-z0-9_-]{1,63}$'`
@@ -11100,6 +11157,7 @@ export const collaborationPendingShareSourceWork = pgTable(
       }),
     pendingShareId: uuid("pending_share_id").notNull(),
     mutationId: uuid("mutation_id").notNull(),
+    mode: sharedMemoryConsentMode("mode").notNull(),
     logicalMemoryId: uuid("logical_memory_id").notNull(),
     sourceKind: sharedMemorySourceKind("source_kind")
       .notNull()
@@ -11107,10 +11165,10 @@ export const collaborationPendingShareSourceWork = pgTable(
     localSessionId: uuid("local_session_id").references(() => sessions.id, {
       onDelete: "restrict"
     }),
-    localNoteId: uuid("local_note_id").references(
-      () => collaborationMessages.id,
-      { onDelete: "restrict" }
-    ),
+    localNoteId: uuid("local_note_id").references(() => personalNotes.id, {
+      onDelete: "restrict"
+    }),
+    localNoteRevision: integer("local_note_revision"),
     localMemoryEventId: uuid("local_memory_event_id").references(
       () => memoryEvents.id,
       { onDelete: "restrict" }
@@ -11146,11 +11204,76 @@ export const collaborationPendingShareSourceWork = pgTable(
       sql`(${table.sourceKind} = 'captured_session'
           and ${table.localSessionId} is not null
           and ${table.localNoteId} is null
+          and ${table.localNoteRevision} is null
           and ${table.localMemoryEventId} is null)
         or (${table.sourceKind} = 'personal_note'
           and ${table.localSessionId} is null
           and ${table.localNoteId} is not null
+          and ${table.localNoteRevision} > 0
           and ${table.localMemoryEventId} is not null)`
+    )
+  ]
+);
+
+export const collaborationContinuousNoteAdvancementWork = pgTable(
+  "collaboration_continuous_note_advancement_work",
+  {
+    id: id(),
+    enrollmentId: uuid("enrollment_id")
+      .notNull()
+      .references(() => collaborationSharedMemoryEnrollments.id, {
+        onDelete: "cascade"
+      }),
+    localOwnerUserId: uuid("local_owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    localNoteId: uuid("local_note_id")
+      .notNull()
+      .references(() => personalNotes.id, { onDelete: "cascade" }),
+    localNoteRevision: integer("local_note_revision").notNull(),
+    localMemoryEventId: uuid("local_memory_event_id")
+      .notNull()
+      .references(() => memoryEvents.id, { onDelete: "restrict" }),
+    state: text("state").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    redactedFailureCode: text("redacted_failure_code"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.enrollmentId, table.localOwnerUserId],
+      foreignColumns: [
+        collaborationSharedMemoryEnrollments.id,
+        collaborationSharedMemoryEnrollments.localOwnerUserId
+      ],
+      name: "csm_note_advancement_enrollment_owner_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.localNoteId, table.localOwnerUserId],
+      foreignColumns: [personalNotes.id, personalNotes.ownerUserId],
+      name: "csm_note_advancement_note_owner_fk"
+    }).onDelete("cascade"),
+    unique("csm_note_advancement_revision_unique").on(
+      table.enrollmentId,
+      table.localNoteId,
+      table.localNoteRevision
+    ),
+    index("csm_note_advancement_claim_idx").on(
+      table.state,
+      table.availableAt,
+      table.id
+    ),
+    check(
+      "csm_note_advancement_state_check",
+      sql`${table.state} in ('pending','processing','completed','failed')
+        and ${table.localNoteRevision} > 0
+        and ${table.attemptCount} >= 0`
     )
   ]
 );

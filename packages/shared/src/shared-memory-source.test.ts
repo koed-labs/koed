@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertPersonalNoteSourceSelection,
   personalNoteSourceRevisionHash,
+  sharedMemorySourceCanReplace,
   sharedMemorySourceRefSchema
 } from "./shared-memory-source.js";
 import { sharedSourcePreviewHash } from "./shared-source-artifact.js";
@@ -11,6 +12,7 @@ import { sharedSourcePreviewHash } from "./shared-source-artifact.js";
 const noteSource = () => ({
   kind: "personal_note" as const,
   noteId: randomUUID(),
+  noteRevision: 1,
   memoryEventId: randomUUID(),
   logicalMemoryId: randomUUID()
 });
@@ -45,7 +47,40 @@ describe("Shared Memory source binding", () => {
     ).toThrow();
   });
 
-  it("fixes Personal Note sharing to one snapshot Memory Event", () => {
+  it("allows only identical Captured Sessions or a newer revision of the same Personal Note", () => {
+    const session = {
+      kind: "captured_session" as const,
+      sessionId: randomUUID(),
+      logicalMemoryId: randomUUID()
+    };
+    expect(sharedMemorySourceCanReplace(session, session)).toBe(true);
+    expect(
+      sharedMemorySourceCanReplace(session, {
+        ...session,
+        sessionId: randomUUID()
+      })
+    ).toBe(false);
+
+    const note = noteSource();
+    const newer = {
+      ...note,
+      noteRevision: note.noteRevision + 1,
+      memoryEventId: randomUUID()
+    };
+    expect(sharedMemorySourceCanReplace(note, newer)).toBe(true);
+    expect(sharedMemorySourceCanReplace(note, note)).toBe(false);
+    expect(
+      sharedMemorySourceCanReplace(note, { ...newer, noteId: randomUUID() })
+    ).toBe(false);
+    expect(
+      sharedMemorySourceCanReplace(note, {
+        ...newer,
+        logicalMemoryId: randomUUID()
+      })
+    ).toBe(false);
+  });
+
+  it("fixes Personal Note sharing to one selected Memory Event revision", () => {
     const source = noteSource();
     const valid = {
       source,
@@ -62,7 +97,7 @@ describe("Shared Memory source binding", () => {
     expect(() => assertPersonalNoteSourceSelection(valid)).not.toThrow();
     expect(() =>
       assertPersonalNoteSourceSelection({ ...valid, mode: "continuous" })
-    ).toThrow("snapshot mode");
+    ).not.toThrow();
     expect(() =>
       assertPersonalNoteSourceSelection({
         ...valid,
@@ -71,7 +106,7 @@ describe("Shared Memory source binding", () => {
     ).toThrow("memory_events");
     expect(() =>
       assertPersonalNoteSourceSelection({ ...valid, sourceRevision: 2 })
-    ).toThrow("source revision 1");
+    ).toThrow("selected revision");
     expect(() =>
       assertPersonalNoteSourceSelection({
         ...valid,

@@ -165,11 +165,6 @@ interface CollaborationCommandRouteOptions {
   requireCollaborationRepository: () => CollaborationRepository &
     Pick<CapturedSessionRepository, "listCapturedSessionSummaries"> &
     SourceSyncRelationshipRepository;
-  projectPersonalNote?(input: {
-    ownerUserId: string;
-    threadKind: "notes_to_self";
-    message: CollaborationMessageRecord;
-  }): Promise<void>;
   resolveActiveLocalUser: (userId: string) => Promise<ActiveLocalUser | null>;
   actionGrantControl?: CollaborationActionGrantControl;
   actionGrantLifecycle?: Pick<CollaborationActionGrantLifecycle, "resolve">;
@@ -188,7 +183,6 @@ type PersonalCommand = Extract<
   CollaborationRendererCommand,
   | { command: "collaboration.load" }
   | { command: "collaboration.select" }
-  | { command: "collaboration.create_notes_to_self" }
   | { command: "collaboration.create_personal_channel" }
   | { command: "collaboration.rename_thread" }
   | { command: "collaboration.update_thread_topic" }
@@ -290,7 +284,6 @@ const canonicalThreadSchema = z
     logicalId: z.uuid(),
     scope: z.enum(["personal", "team"]),
     kind: z.enum([
-      "notes_to_self",
       "personal_channel",
       "workspace_channel",
       "dm",
@@ -754,7 +747,7 @@ const personalThreadFromRecord = (
     thread.scope !== "personal" ||
     thread.personalOwnerUserId !== sourceOwnerUserId ||
     thread.teamId !== null ||
-    (thread.kind !== "notes_to_self" && thread.kind !== "personal_channel")
+    thread.kind !== "personal_channel"
   ) {
     return null;
   }
@@ -777,26 +770,11 @@ const personalThreadFromRecord = (
     lastActivityAt: thread.lastActivityAt,
     archivedAt: thread.archivedAt
   };
-  const candidate =
-    thread.kind === "notes_to_self"
-      ? {
-          ...base,
-          kind: "notes_to_self" as const,
-          name: null,
-          topic: null,
-          participants: [
-            {
-              id: user.id,
-              displayName: normalizedDisplayName(user),
-              membershipState: "enabled" as const
-            }
-          ]
-        }
-      : {
-          ...base,
-          kind: "personal_channel" as const,
-          name: thread.name
-        };
+  const candidate = {
+    ...base,
+    kind: "personal_channel" as const,
+    name: thread.name
+  };
   const parsed = collaborationThreadSchema.safeParse(candidate);
   return parsed.success ? parsed.data : null;
 };
@@ -1329,7 +1307,7 @@ const requirePersonalThreadRecord = async (
   return thread?.scope === "personal" &&
     thread.personalOwnerUserId === userId &&
     thread.teamId === null &&
-    (thread.kind === "notes_to_self" || thread.kind === "personal_channel")
+    thread.kind === "personal_channel"
     ? thread
     : null;
 };
@@ -1582,52 +1560,15 @@ const loadPersonalSnapshot = async (input: {
   credential: DesktopLocalCredentialAuthorization;
   user: ActiveLocalUser;
 }): Promise<Record<string, unknown> | null> => {
-  let snapshot = await input.repository.getAuthorizedSnapshot(
+  const snapshot = await input.repository.getAuthorizedSnapshot(
     { userId: input.user.id },
     { scope: "personal", includeArchived: true }
   );
   if (!snapshot) return null;
-  let notes = snapshot.threads.find(
-    (thread) => thread.kind === "notes_to_self"
-  );
-  if (!notes) {
-    if (
-      !input.credential.operationFamilies.includes(
-        "personal_collaboration_write"
-      )
-    ) {
-      return null;
-    }
-    await input.repository.createThread(
-      { userId: input.user.id },
-      {
-        kind: "notes_to_self",
-        idempotencyKey: `desktop-notes-${input.user.id}`
-      }
-    );
-    snapshot = await input.repository.getAuthorizedSnapshot(
-      { userId: input.user.id },
-      { scope: "personal", includeArchived: true }
-    );
-    notes = snapshot?.threads.find((thread) => thread.kind === "notes_to_self");
-  }
-  if (!snapshot || !notes) return null;
   const mapped = snapshot.threads.map((thread) =>
     personalThreadFromRecord(thread, input.user)
   );
   if (mapped.some((thread) => thread === null)) return null;
-  const mappedNotes = mapped.find((thread) => thread?.kind === "notes_to_self");
-  if (!mappedNotes) return null;
-  const messages = await personalMessagePage({
-    repository: input.repository,
-    credential: input.credential,
-    user: input.user,
-    thread: notes,
-    direction: "older",
-    cursor: null,
-    limit: COLLABORATION_DEFAULT_LIMITS.historyPageMaxItems
-  });
-  if (!messages) return null;
   const personalMemory = await input.repository.listCapturedSessionSummaries(
     { userId: input.user.id },
     { limit: COLLABORATION_DEFAULT_LIMITS.historyPageMaxItems }
@@ -1659,13 +1600,15 @@ const loadPersonalSnapshot = async (input: {
       teamPrincipal: null,
       personal: {
         memory: personalMemory.map(personalMemoryEntryFromSummary),
-        notesToSelf: mappedNotes,
         channels: mapped.filter((thread) => thread?.kind === "personal_channel")
       },
       teams: []
     },
-    selection: { kind: "notes_to_self" },
-    view: { kind: "thread", thread: mappedNotes, messages }
+    selection: { kind: "personal_memory" },
+    view: {
+      kind: "personal_memory",
+      entries: personalMemory.map(personalMemoryEntryFromSummary)
+    }
   };
 };
 
@@ -1790,27 +1733,8 @@ const loadRemotePersonalSnapshot = async (input: {
         path: "/v1/collaboration/personal/snapshot"
       })
     ).snapshot;
-  let snapshot = await readSnapshot();
-  let notes = snapshot.threads.find(
-    (thread) => thread.kind === "notes_to_self"
-  );
-  if (
-    !notes &&
-    input.context.operationFamilies.has("personal_collaboration_write")
-  ) {
-    await requireRemoteJson(input.fetcher, {
-      backend: input.context.backend,
-      upstreamAuthorization: input.context.upstreamAuthorization,
-      operationFamily: "personal_collaboration_write",
-      method: "POST",
-      path: "/v1/collaboration/personal/notes-to-self",
-      body: {},
-      idempotencyKey: `desktop-notes-${input.context.principal.id}`
-    });
-    snapshot = await readSnapshot();
-    notes = snapshot.threads.find((thread) => thread.kind === "notes_to_self");
-  }
-  if (snapshot.personalOwnerUserId !== input.context.principal.id || !notes) {
+  const snapshot = await readSnapshot();
+  if (snapshot.personalOwnerUserId !== input.context.principal.id) {
     return null;
   }
   const mapped = snapshot.threads.map((thread) =>
@@ -1821,19 +1745,6 @@ const loadRemotePersonalSnapshot = async (input: {
     )
   );
   if (mapped.some((thread) => thread === null)) return null;
-  const mappedNotes = mapped.find((thread) => thread?.kind === "notes_to_self");
-  if (!mappedNotes) return null;
-  const messages = await remotePersonalMessagePage({
-    fetcher: input.fetcher,
-    credential: input.credential,
-    context: input.context,
-    user: input.user,
-    thread: notes,
-    direction: "older",
-    cursor: null,
-    limit: COLLABORATION_DEFAULT_LIMITS.historyPageMaxItems
-  });
-  if (!messages) return null;
   const navigation =
     input.localSnapshot.navigation &&
     typeof input.localSnapshot.navigation === "object" &&
@@ -1867,12 +1778,14 @@ const loadRemotePersonalSnapshot = async (input: {
       ...navigation,
       personal: {
         ...personal,
-        notesToSelf: mappedNotes,
         channels: mapped.filter((thread) => thread?.kind === "personal_channel")
       }
     },
-    selection: { kind: "notes_to_self" },
-    view: { kind: "thread", thread: mappedNotes, messages }
+    selection: { kind: "personal_memory" },
+    view: {
+      kind: "personal_memory",
+      entries: Array.isArray(personal.memory) ? personal.memory : []
+    }
   };
 };
 
@@ -2109,11 +2022,9 @@ const loadPersonalSelection = async (input: {
     };
   }
   const threadId =
-    input.selection.kind === "notes_to_self"
-      ? input.snapshot.navigation.personal.notesToSelf.id
-      : input.selection.kind === "personal_channel"
-        ? input.selection.threadId
-        : null;
+    input.selection.kind === "personal_channel"
+      ? input.selection.threadId
+      : null;
   if (!threadId) return null;
   const thread = await requirePersonalThreadRecord(
     input.repository,
@@ -2125,8 +2036,6 @@ const loadPersonalSelection = async (input: {
   const mapped = personalThreadFromRecord(thread, input.user);
   if (
     !mapped ||
-    (input.selection.kind === "notes_to_self" &&
-      mapped.kind !== "notes_to_self") ||
     (input.selection.kind === "personal_channel" &&
       mapped.kind !== "personal_channel")
   ) {
@@ -2159,11 +2068,9 @@ const loadRemotePersonalSelection = async (input: {
     };
   }
   const threadId =
-    input.selection.kind === "notes_to_self"
-      ? input.snapshot.navigation.personal.notesToSelf.id
-      : input.selection.kind === "personal_channel"
-        ? input.selection.threadId
-        : null;
+    input.selection.kind === "personal_channel"
+      ? input.selection.threadId
+      : null;
   if (!threadId) return null;
   const payload = await requireRemoteJson(input.fetcher, {
     backend: input.context.backend,
@@ -2187,8 +2094,6 @@ const loadRemotePersonalSelection = async (input: {
   );
   if (
     !mapped ||
-    (input.selection.kind === "notes_to_self" &&
-      mapped.kind !== "notes_to_self") ||
     (input.selection.kind === "personal_channel" &&
       mapped.kind !== "personal_channel")
   ) {
@@ -2653,7 +2558,6 @@ const dispatchRemotePersonalCommand = async (input: {
       value =
         parsed.success &&
         parsed.data.scope === "personal" &&
-        input.command.command !== "collaboration.create_notes_to_self" &&
         "thread" in input.command.input
           ? personalMessageFromRecord(
               parsed.data as CollaborationMessageRecord,
@@ -2692,7 +2596,6 @@ const dispatchPersonalCommand = async (input: {
   command: PersonalCommand;
   repository: CollaborationRepository &
     Pick<CapturedSessionRepository, "listCapturedSessionSummaries">;
-  projectPersonalNote?: CollaborationCommandRouteOptions["projectPersonalNote"];
   credential: DesktopLocalCredentialAuthorization;
   user: ActiveLocalUser;
 }): Promise<CollaborationCommandResult> => {
@@ -2715,27 +2618,23 @@ const dispatchPersonalCommand = async (input: {
       }
       case "collaboration.select":
         return unavailable();
-      case "collaboration.create_notes_to_self":
       case "collaboration.create_personal_channel": {
         const thread = await repository.createThread(
           { userId: user.id },
-          command.command === "collaboration.create_notes_to_self"
-            ? { kind: "notes_to_self", idempotencyKey: command.requestId }
-            : {
-                kind: "personal_channel",
-                idempotencyKey: command.requestId,
-                name: command.input.name,
-                topic: command.input.topic
-              }
+          {
+            kind: "personal_channel",
+            idempotencyKey: command.requestId,
+            name: command.input.name,
+            topic: command.input.topic
+          }
         );
         if (!thread) return unavailable();
         const mapped = personalThreadFromRecord(thread, user);
         if (
           !mapped ||
-          (command.command === "collaboration.create_personal_channel" &&
-            (mapped.kind !== "personal_channel" ||
-              mapped.name !== command.input.name ||
-              mapped.topic !== command.input.topic))
+          mapped.kind !== "personal_channel" ||
+          mapped.name !== command.input.name ||
+          mapped.topic !== command.input.topic
         ) {
           return invalidResult();
         }
@@ -2824,13 +2723,6 @@ const dispatchPersonalCommand = async (input: {
           }
         );
         if (!message) return unavailable();
-        if (existing.kind === "notes_to_self") {
-          await input.projectPersonalNote?.({
-            ownerUserId: user.id,
-            threadKind: existing.kind,
-            message
-          });
-        }
         const mapped = personalMessageFromRecord(message, user, existing.id);
         return mapped?.body === command.input.body
           ? (personalSuccessResult(command, { message: mapped }) ??
@@ -3510,7 +3402,6 @@ export const registerCollaborationCommandRoute = (
         return dispatchPersonalCommand({
           command,
           repository: options.requireCollaborationRepository(),
-          projectPersonalNote: options.projectPersonalNote,
           credential,
           user
         });

@@ -681,25 +681,6 @@ const teamThreadBaseShape = {
   teamId: z.uuid()
 } as const;
 
-const notesToSelfThreadSchema = z
-  .object({
-    ...personalThreadBaseShape,
-    kind: z.literal("notes_to_self"),
-    name: z.null(),
-    topic: z.null(),
-    participants: distinctParticipantsSchema.length(1)
-  })
-  .strict()
-  .superRefine((thread, context) => {
-    if (thread.participants[0]?.id !== thread.ownerUserId) {
-      context.addIssue({
-        code: "custom",
-        path: ["participants"],
-        message: "Notes-to-self participant must be the Personal owner"
-      });
-    }
-  });
-
 const personalChannelThreadSchema = z
   .object({
     ...personalThreadBaseShape,
@@ -748,7 +729,6 @@ const sharedSessionDiscussionThreadSchema = z
   .strict();
 
 export const collaborationThreadSchema = z.discriminatedUnion("kind", [
-  notesToSelfThreadSchema,
   personalChannelThreadSchema,
   workspaceChannelThreadSchema,
   directMessageThreadSchema,
@@ -1033,6 +1013,7 @@ const sharedMemorySourcesEqual = (
     left.kind !== "personal_note" ||
     (right.kind === "personal_note" &&
       left.noteId === right.noteId &&
+      left.noteRevision === right.noteRevision &&
       left.memoryEventId === right.memoryEventId)
   );
 };
@@ -1071,14 +1052,13 @@ const validateSharedMemorySelection = (
       input.sourceCapabilities[0] !== "memory_events" ||
       input.activationRepresentation !== "memory_events" ||
       input.maximumFidelity !== "memory_events" ||
-      input.includeCuratedMemory ||
-      input.mode !== "snapshot")
+      input.includeCuratedMemory)
   ) {
     context.addIssue({
       code: "custom",
       path: [...pathPrefix, "source"],
       message:
-        "Personal Note sharing requires snapshot Memory Event source capability, activation, and consent"
+        "Personal Note sharing requires one Memory Event source capability and activation"
     });
   }
 };
@@ -1248,7 +1228,6 @@ export const sharedMemorySourcePageSchema = z
 
 export const collaborationSelectionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("personal_memory") }).strict(),
-  z.object({ kind: z.literal("notes_to_self") }).strict(),
   z
     .object({ kind: z.literal("personal_channel"), threadId: z.uuid() })
     .strict(),
@@ -1288,9 +1267,7 @@ export const collaborationSelectionSchema = z.discriminatedUnion("kind", [
 export const isPersonalCollaborationSelection = (
   selection: z.infer<typeof collaborationSelectionSchema>
 ): boolean =>
-  selection.kind === "personal_memory" ||
-  selection.kind === "notes_to_self" ||
-  selection.kind === "personal_channel";
+  selection.kind === "personal_memory" || selection.kind === "personal_channel";
 
 export const isTeamCollaborationSelection = (
   selection: z.infer<typeof collaborationSelectionSchema>
@@ -1374,7 +1351,6 @@ const collaborationNavigationSchema = z
         memory: z
           .array(personalMemoryEntrySchema)
           .max(MAX_PERSONAL_MEMORY_ENTRIES),
-        notesToSelf: notesToSelfThreadSchema,
         channels: z
           .array(personalChannelThreadSchema)
           .max(MAX_PERSONAL_CHANNELS)
@@ -1385,8 +1361,6 @@ const collaborationNavigationSchema = z
   .strict()
   .superRefine((navigation, context) => {
     if (
-      navigation.personal.notesToSelf.ownerUserId !==
-        navigation.personalOwner.id ||
       navigation.personal.channels.some(
         (thread) => thread.ownerUserId !== navigation.personalOwner.id
       )
@@ -1566,9 +1540,6 @@ export const collaborationSnapshotSchema = z
     const valid =
       (selection.kind === "personal_memory" &&
         view.kind === "personal_memory") ||
-      (selection.kind === "notes_to_self" &&
-        view.kind === "thread" &&
-        view.thread.kind === "notes_to_self") ||
       (selection.kind === "personal_channel" &&
         view.kind === "thread" &&
         view.thread.scope === "personal" &&
@@ -1774,8 +1745,7 @@ export const collaborationActionGrantIntentSchema = z
       includeCuratedMemory: z.boolean(),
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
-      expiresAt: collaborationTimestampSchema.nullable(),
-      title: collaborationNameSchema.optional()
+      expiresAt: collaborationTimestampSchema.nullable()
     }),
     actionGrantIntent("collaboration.revoke_shared_memory", {
       mutationId: z.uuid(),
@@ -1849,16 +1819,6 @@ export const collaborationActionGrantIntentSchema = z
       intent.intent === "collaboration.change_shared_memory_fidelity"
     ) {
       validateSharedMemorySelection(intent, context);
-    }
-    if (
-      intent.intent === "collaboration.change_shared_memory_fidelity" &&
-      intent.source.kind === "personal_note"
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["source"],
-        message: "Personal Note shares do not support fidelity replacement"
-      });
     }
     if (
       intent.intent === "collaboration.preview_shared_memory" &&
@@ -2196,8 +2156,7 @@ export const sharedMemoryCandidatePreviewSchema = z
         candidate.sourceCapabilities.length !== 1 ||
         candidate.sourceCapabilities[0] !== "memory_events" ||
         candidate.activationRepresentation !== "memory_events" ||
-        candidate.mode !== "snapshot" ||
-        candidate.sourceRevision !== 1 ||
+        candidate.sourceRevision !== candidate.source.noteRevision ||
         candidate.itemCount !== 1 ||
         candidate.manifest[0]?.sourceId !== candidate.source.memoryEventId
       ) {
@@ -2205,7 +2164,7 @@ export const sharedMemoryCandidatePreviewSchema = z
           code: "custom",
           path: ["source"],
           message:
-            "Personal Note candidates require one Memory Event at revision 1"
+            "Personal Note candidates require one Memory Event from the pinned revision"
         });
       }
     }
@@ -2497,7 +2456,6 @@ export const collaborationRendererCommandSchema = z
       description: collaborationTopicDescriptionSchema.nullable(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
-    command("collaboration.create_notes_to_self", {}),
     command("collaboration.create_personal_channel", {
       name: collaborationNameSchema,
       topic: collaborationTopicDescriptionSchema.nullable()
@@ -2651,11 +2609,6 @@ export const collaborationRendererCommandSchema = z
       kind: z.enum(["pending", "grant"]),
       id: z.uuid()
     }),
-    command("collaboration.rename_owned_share", {
-      kind: z.enum(["pending", "grant"]),
-      id: z.uuid(),
-      title: collaborationNameSchema
-    }),
     command("collaboration.control_pending_share", {
       pendingShareId: z.uuid(),
       mutationId: z.uuid(),
@@ -2734,7 +2687,6 @@ export const collaborationRendererCommandSchema = z
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable(),
-      title: collaborationNameSchema.optional(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.revoke_shared_memory", {
@@ -2795,17 +2747,6 @@ export const collaborationRendererCommandSchema = z
       rendererCommand.command === "collaboration.change_shared_memory_fidelity"
     ) {
       validateSharedMemorySelection(rendererCommand.input, context, ["input"]);
-    }
-    if (
-      rendererCommand.command ===
-        "collaboration.change_shared_memory_fidelity" &&
-      rendererCommand.input.source.kind === "personal_note"
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["input", "source"],
-        message: "Personal Note shares do not support fidelity replacement"
-      });
     }
     if (
       rendererCommand.command === "collaboration.preview_shared_memory" &&
@@ -2899,7 +2840,6 @@ export const collaborationCommandReturnsSnapshot = (
 ): boolean => collaborationSnapshotResultCommandSet.has(commandName);
 
 const threadResultCommands = [
-  "collaboration.create_notes_to_self",
   "collaboration.create_personal_channel",
   "collaboration.create_workspace_channel",
   "collaboration.start_direct_message",
@@ -2950,7 +2890,6 @@ const commandNameSchema = z.enum([
   "collaboration.list_owned_shared_memory_grants",
   "collaboration.list_owned_shares",
   "collaboration.get_owned_share",
-  "collaboration.rename_owned_share",
   "collaboration.control_pending_share",
   "collaboration.share_conversation_source",
   "collaboration.revoke_conversation_source",
@@ -3112,10 +3051,6 @@ export const collaborationCommandResultSchema = z.union([
   ),
   successResult(
     "collaboration.get_owned_share",
-    z.object({ share: ownedShareItemSchema }).strict()
-  ),
-  successResult(
-    "collaboration.rename_owned_share",
     z.object({ share: ownedShareItemSchema }).strict()
   ),
   successResult(
@@ -3364,6 +3299,7 @@ export const collaborationRealtimeEventFamilySchema = z.enum([
   "receipt_state_updated",
   "share_grant_lifecycle",
   "fidelity_changed",
+  "source_revision_changed",
   "memory_event_available",
   "lcm_leaf_available",
   "lcm_rollup_available",
@@ -3387,7 +3323,6 @@ const personalRealtimeSnapshotSchema = z
   .superRefine((snapshot, context) => {
     if (
       snapshot.selection.kind !== "personal_memory" &&
-      snapshot.selection.kind !== "notes_to_self" &&
       snapshot.selection.kind !== "personal_channel"
     ) {
       context.addIssue({
@@ -3510,6 +3445,10 @@ const realtimeUpdateDeliverySchema = z
         "shared_session_removed"
       ]),
       fidelity_changed: new Set([
+        "shared_session_upserted",
+        "shared_session_removed"
+      ]),
+      source_revision_changed: new Set([
         "shared_session_upserted",
         "shared_session_removed"
       ]),

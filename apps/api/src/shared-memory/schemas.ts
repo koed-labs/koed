@@ -1,6 +1,5 @@
 import {
   COLLABORATION_SOURCE_PAGE_MAX_ITEMS,
-  collaborationNameSchema,
   personalNoteSourceSelectionIssues,
   sharedMemoryCandidatePreviewSchema,
   sharedMemoryCeilingAuthorizes,
@@ -32,7 +31,7 @@ export const personalNoteSourceArtifactUploadSchema = z
     if (
       input.candidate.source.kind !== "personal_note" ||
       input.candidate.activationRepresentation !== "memory_events" ||
-      input.candidate.sourceRevision !== 1 ||
+      input.candidate.sourceRevision !== input.candidate.source.noteRevision ||
       input.candidate.itemCount !== 1 ||
       input.candidate.items.length !== 1 ||
       input.candidate.manifest.length !== 1
@@ -41,6 +40,30 @@ export const personalNoteSourceArtifactUploadSchema = z
         code: "custom",
         path: ["candidate"],
         message: "A source upload must contain one Personal Note Memory Event"
+      });
+    }
+  });
+
+export const advanceContinuousPersonalNoteRevisionSchema = z
+  .object({
+    mutationId: uuidSchema,
+    candidate: sharedMemoryCandidatePreviewSchema
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (
+      input.candidate.source.kind !== "personal_note" ||
+      input.candidate.mode !== "continuous" ||
+      input.candidate.sourceRevision !== input.candidate.source.noteRevision ||
+      input.candidate.itemCount !== 1 ||
+      input.candidate.items.length !== 1 ||
+      input.candidate.manifest.length !== 1
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["candidate"],
+        message:
+          "Continuous Personal Note advancement requires one exact selected revision"
       });
     }
   });
@@ -109,13 +132,6 @@ const validatePersonalNoteConsent = (
 ) => {
   validateSourceLogicalMemory(input, context);
   if (input.source.kind !== "personal_note") return;
-  if (input.mode !== "snapshot") {
-    context.addIssue({
-      code: "custom",
-      path: ["mode"],
-      message: "Personal Note sharing requires snapshot mode"
-    });
-  }
   if (
     input.activationRepresentation !== "memory_events" ||
     input.sourceCapabilities.length !== 1 ||
@@ -244,10 +260,6 @@ export const ownedShareParamsSchema = z
   .object({ kind: z.enum(["pending", "grant"]), id: uuidSchema })
   .strict();
 
-export const renameOwnedShareSchema = z
-  .object({ title: collaborationNameSchema })
-  .strict();
-
 export const controlPendingShareSchema = z
   .object({
     mutationId: uuidSchema,
@@ -343,7 +355,6 @@ export const createPendingShareSchema = z
     mode: z.enum(["snapshot", "continuous"]),
     ...fidelityConsentShape,
     expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
-    title: collaborationNameSchema.optional(),
     authority: sharedMemoryAuthoritySchema
   })
   .strict()
@@ -374,13 +385,6 @@ export const changeSharedMemoryFidelityBundleSchema = z
   .superRefine((input, context) => {
     validateEffectiveSelection(input, context);
     validatePersonalNoteConsent(input, context);
-    if (input.source.kind === "personal_note") {
-      context.addIssue({
-        code: "custom",
-        path: ["source"],
-        message: "Personal Note shares do not support fidelity replacement"
-      });
-    }
   });
 
 export const shareGrantParamsSchema = z

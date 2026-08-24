@@ -1,6 +1,7 @@
 # Team Collaboration Uses Device-Mediated, Server-Authorized Operations
 
-Status: Accepted design.
+Status: Accepted design; Personal Notes are superseded by
+[ADR 0032](./0032-first-class-revisioned-personal-notes.md).
 
 Related decisions:
 
@@ -43,8 +44,8 @@ credentials, and stored collaboration data are in use.
 Personal and Team collaboration are separate scopes.
 
 - Personal is not represented as a synthetic Team.
-- Personal notes-to-self and Personal channels belong to one local User and
-  remain usable without a remote Team backend.
+- Personal Notes and Personal channels belong to one local User and remain
+  usable without a remote Team backend. Notes are not collaboration threads.
 - A Team is the membership and communication boundary. A Workspace is the
   Team subdivision for Workspace channels and Team-shared Memory.
 - Team direct messages belong to one Team and do not inherit Workspace Access.
@@ -99,8 +100,8 @@ Personal API Tokens remain Personal Memory compatibility credentials.
 - API Tokens cannot authorize Team catalog or roster access, Team channels,
   direct messages, companion discussions, Team-shared Memory, Team realtime,
   Share Grants, invitations, Workspaces, or Team administration.
-- API Tokens do not authorize Personal notes-to-self or Personal-channel UI
-  operations.
+- API Tokens do not authorize Personal-channel UI operations. The fixed
+  owner-scoped Personal Note API is a separate Personal Memory boundary.
 - API Token denials are explicit in HTTP, local-broker, IPC, and realtime
   operation matrices and are covered by negative tests.
 

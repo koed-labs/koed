@@ -24,7 +24,7 @@ environment and its StatusNotifierItem or legacy tray support.
 The left rail changes the current principal:
 
 - **Personal** is private to the current local User. It contains Personal
-  Memory, Projects, Captured Sessions, notes to self, and Personal channels.
+  Memory, Projects, Captured Sessions, Personal Notes, and Personal channels.
 - A **Team** is a remote identity and membership boundary. Its navigation
   contains people, Team-scoped direct messages, and Workspaces.
 - A **Workspace** is the Team subdivision that contains channels and

@@ -97,6 +97,37 @@ describe("Shared Memory fidelity action grant bindings", () => {
     );
     expect(source.requestHash).not.toBe(fidelity.requestHash);
   });
+
+  it("canonicalizes omitted Share expiry as no expiry", () => {
+    const input = base();
+    const candidateInput = {
+      ...input,
+      candidateHash: "b".repeat(64),
+      sourceRevision: 1,
+      itemCount: 1,
+      byteCount: 100,
+      excludedItemCount: 0,
+      manifest: [{ sourceId: randomUUID(), revisionHash: "c".repeat(64) }]
+    };
+
+    for (const bind of [
+      (expiresAt?: string | null) =>
+        sharedMemoryCandidatePreviewActionGrantBinding({
+          ...candidateInput,
+          expiresAt
+        }),
+      (expiresAt?: string | null) =>
+        sharedMemoryPendingShareActionGrantBinding({ ...input, expiresAt }),
+      (expiresAt?: string | null) =>
+        sharedMemoryFidelityBundleActionGrantBinding({ ...input, expiresAt })
+    ]) {
+      const omitted = bind();
+      const explicit = bind(null);
+      expect(omitted.action).toBe(explicit.action);
+      expect(omitted.scopeHash).toBe(explicit.scopeHash);
+      expect(omitted.requestHash).toBe(explicit.requestHash);
+    }
+  });
 });
 
 describe("Team Conversation source action grant bindings", () => {
@@ -167,6 +198,7 @@ describe("Shared Memory source action grant bindings", () => {
   const source = () => ({
     kind: "personal_note" as const,
     noteId: randomUUID(),
+    noteRevision: 1,
     memoryEventId: randomUUID(),
     logicalMemoryId: randomUUID()
   });

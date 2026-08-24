@@ -96,7 +96,6 @@ export {
   type PersonalCollaborationThreadKind,
   type PersonalNotePageRecord,
   type PersonalNoteRecord,
-  type PersonalNoteProjectionCursorRecord,
   type TeamCollaborationThreadKind
 } from "./collaboration-repository.js";
 export {

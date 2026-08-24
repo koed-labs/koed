@@ -1,8 +1,5 @@
 import type { Visibility } from "@koed/core";
-import type {
-  CollaborationMessageRecord,
-  MemorySourceRepository
-} from "@koed/db";
+import type { MemorySourceRepository, PersonalNoteRecord } from "@koed/db";
 import type {
   DeviceIdentityInspection,
   EnvelopeEncryptionProvider,
@@ -38,8 +35,7 @@ export interface ApiRouteContext {
     admission: CollaborationAdmissionController;
     projectPersonalNote?(input: {
       ownerUserId: string;
-      threadKind: "notes_to_self";
-      message: CollaborationMessageRecord;
+      note: PersonalNoteRecord;
     }): Promise<void>;
     actionGrantLifecycle?: CollaborationActionGrantLifecycle;
     actionGrantControl?: CollaborationActionGrantControl;

@@ -299,11 +299,10 @@ This drives the actual Electron renderer bridges and verifies:
 - each device uses a distinct synthetic Codex profile and neither device uses
   the Operator's default `~/.codex/config.toml`;
 - both devices use the same live remote Personal authority;
-- Notes-to-self messages move from A to B and B to A through unsolicited
-  realtime updates;
 - a Personal channel created on A appears on B;
-- B can post to that channel and A receives the update;
-- B reloads its renderer and catches up a message sent during reconnection;
+- A and B can post to that channel and receive unsolicited realtime updates;
+- B reloads its renderer and catches up a channel message sent during
+  reconnection;
 - no renderer exception or non-canceled network failure occurred during the
   run.
 

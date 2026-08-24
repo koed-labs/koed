@@ -45,6 +45,7 @@ describe("Personal Memory preload bridge", () => {
       "renameNote",
       "submitAsk",
       "subscribe",
+      "updateNote",
       "updateSessionTitle"
     ]);
     expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
@@ -60,13 +61,20 @@ describe("Personal Memory preload bridge", () => {
       logicalMemoryId: "33333333-3333-4333-8333-333333333333",
       title: "Local note",
       titleVersion: 1,
+      body: "Local note",
+      revisionId: "44444444-4444-4444-8444-444444444444",
+      revision: 1,
+      contentHash: "a".repeat(64),
       memoryEventId: "22222222-2222-4222-8222-222222222222",
+      projectionState: "available",
+      projectionFailureCode: null,
       createdAt: "2026-08-20T12:00:00.000Z",
+      updatedAt: "2026-08-20T12:00:00.000Z",
       sourceSequence: 1,
       event: {
         id: "22222222-2222-4222-8222-222222222222",
         actor: "user",
-        eventType: "personal_note_created",
+        eventType: "personal_note_revision",
         timestamp: "2026-08-20T12:00:00.000Z",
         sourceEventTime: "2026-08-20T12:00:00.000Z",
         sourceSequence: 1,

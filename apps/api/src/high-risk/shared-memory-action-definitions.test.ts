@@ -116,10 +116,12 @@ const repository = (options?: { sourceOwnerPolicyWillReplace?: boolean }) => ({
       teamWorkspaceId: input.teamWorkspaceId,
       grantVersion: input.expectedGrantVersion,
       lifecycle: "active" as const,
+      sourceRevision: 3,
       maximumFidelity: "lcm_leaves" as const,
       includeCuratedMemory: false
     },
-    willReactivate: false
+    willReactivate: false,
+    sourceRevisionChanged: true
   })),
   getTeamConversationSourceGrantReview: vi.fn(async (_actor, input) => ({
     shareGrantId: input.shareGrantId,
@@ -521,6 +523,22 @@ describe("Shared Memory action definitions", () => {
       policy: {
         disposition: "native_review",
         review: { title: "Reactivate Shared Memory with this fidelity?" }
+      }
+    });
+  });
+
+  it("reviews a newer source revision without pretending fidelity changed", async () => {
+    await expect(admit(fidelityIntent("lcm_leaves"))).resolves.toMatchObject({
+      policy: {
+        disposition: "native_review",
+        review: {
+          title: "Share this newer Memory revision?",
+          confirmLabel: "Share newer revision",
+          details: expect.arrayContaining([
+            { label: "Current source revision", value: "3" },
+            { label: "New source revision", value: "4" }
+          ])
+        }
       }
     });
   });

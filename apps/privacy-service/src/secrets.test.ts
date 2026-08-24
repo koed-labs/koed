@@ -6,6 +6,8 @@ describe("deterministic secret detector", () => {
     const text = [
       "aws=AKIAABCDEFGHIJKLMNOP",
       "password: correct-horse-battery",
+      "My password is LaunchPass1234",
+      "The old passphrase was winter-rainbow-2025",
       "github=ghp_abcdefghijklmnopqrstuvwxyz"
     ].join("\n");
     const values = detectDeterministicSecrets(text).map((span) =>
@@ -15,6 +17,8 @@ describe("deterministic secret detector", () => {
       expect.arrayContaining([
         "AKIAABCDEFGHIJKLMNOP",
         "correct-horse-battery",
+        "LaunchPass1234",
+        "winter-rainbow-2025",
         "ghp_abcdefghijklmnopqrstuvwxyz"
       ])
     );
@@ -23,6 +27,11 @@ describe("deterministic secret detector", () => {
   it("does not classify ordinary prose as a secret", () => {
     expect(
       detectDeterministicSecrets("Alice discussed the API design.")
+    ).toEqual([]);
+    expect(
+      detectDeterministicSecrets(
+        "The password is important, but no credential was provided."
+      )
     ).toEqual([]);
   });
 });

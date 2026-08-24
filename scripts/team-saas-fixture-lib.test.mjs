@@ -98,7 +98,10 @@ test("Team SaaS fixture definition is deterministic and realistic", () => {
       .size,
     fixtureMemoryRows.length
   );
-  assert.equal(new Set(fixtureThreadRows.map((thread) => thread.id)).size, 6);
+  assert.equal(
+    new Set(fixtureThreadRows.map((thread) => thread.id)).size,
+    fixtureThreadRows.length
+  );
   for (const idField of [
     "logicalMemoryId",
     "ownerPrincipalId",
@@ -173,7 +176,6 @@ test("Team SaaS fixture covers required access states", () => {
     [
       "dm",
       "group_dm",
-      "notes_to_self",
       "personal_channel",
       "shared_session_discussion",
       "workspace_channel"

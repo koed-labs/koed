@@ -46,8 +46,7 @@ type CandidateRepository = Pick<
   | "createLcmNodes"
   | "getSharedMemoryLcmSyncState"
   | "getLocalSyncDeployment"
-  | "getPersonalNote"
-  | "getPersonalNoteMemoryEvent"
+  | "getPersonalNoteRevisionMemoryEvent"
   | "listCuratedMemoryAssertions"
   | "listLcmGraphEvents"
   | "listLcmGraphNodes"
@@ -291,15 +290,18 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
   const loadPersonalNoteCandidatePreview = async (input: {
     localOwnerUserId: string;
     noteId: string;
+    noteRevision: number;
+    mode: "snapshot" | "continuous";
   }): Promise<SharedMemoryCandidatePreview | null> => {
     const actor = { userId: input.localOwnerUserId };
-    const [note, event, deployment] = await Promise.all([
-      options.repository.getPersonalNote(actor, { noteId: input.noteId }),
-      options.repository.getPersonalNoteMemoryEvent(actor, input.noteId),
+    const [event, deployment] = await Promise.all([
+      options.repository.getPersonalNoteRevisionMemoryEvent(actor, {
+        noteId: input.noteId,
+        revision: input.noteRevision
+      }),
       options.repository.getLocalSyncDeployment()
     ]);
     if (
-      !note ||
       !event ||
       !deployment ||
       typeof event.content !== "string" ||
@@ -312,12 +314,13 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
       protocol: "koed.personal-note-share/v1",
       sourceDeploymentId: deployment.protocolDeploymentId,
       sourceOwnerPrincipalId: input.localOwnerUserId,
-      noteId: note.noteId,
+      noteId: input.noteId,
       identity: "logical-memory"
     });
     const source = {
       kind: "personal_note" as const,
-      noteId: note.noteId,
+      noteId: input.noteId,
+      noteRevision: input.noteRevision,
       memoryEventId: event.id,
       logicalMemoryId
     };
@@ -357,8 +360,8 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
       sourceOwnerPrincipalId: input.localOwnerUserId,
       sourceCapabilities,
       activationRepresentation: "memory_events",
-      mode: "snapshot",
-      sourceRevision: 1,
+      mode: input.mode,
+      sourceRevision: input.noteRevision,
       itemCount: 1,
       byteCount,
       excludedItemCount: 0,
@@ -370,9 +373,9 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
       logicalMemoryId,
       sourceCapabilities,
       activationRepresentation: "memory_events",
-      mode: "snapshot" as const,
+      mode: input.mode,
       expiresAt: null,
-      sourceRevision: 1,
+      sourceRevision: input.noteRevision,
       candidateHash,
       itemCount: 1,
       excludedItemCount: 0,

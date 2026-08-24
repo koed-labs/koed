@@ -53,8 +53,6 @@ const ids = {
   clientMessage: randomUUID(),
   personalThread: randomUUID(),
   personalLogicalThread: randomUUID(),
-  notesThread: randomUUID(),
-  notesLogicalThread: randomUUID(),
   personalMessageTwo: randomUUID(),
   sharedGrant: randomUUID(),
   sharedLogicalMemory: randomUUID(),
@@ -683,35 +681,28 @@ type CommandRepository = CollaborationRepository &
 
 const createPersonalRepository = (): CommandRepository => {
   let channel = personalThreadRecord();
-  const notes = personalThreadRecord({
-    id: ids.notesThread,
-    logicalId: ids.notesLogicalThread,
-    kind: "notes_to_self",
-    name: null,
-    topic: null,
-    latestSequence: 0,
-    unreadCount: 0,
-    participants: [{ userId: ids.actor, displayName: "Alice" }]
-  });
   const messages = [1, 2, 3].map((sequence) => personalMessageRecord(sequence));
   const ownedThread = (actor: { userId: string }, threadId: string) =>
     actor.userId === ids.actor
-      ? ([notes, channel].find((thread) => thread.id === threadId) ?? null)
+      ? channel.id === threadId
+        ? channel
+        : null
       : null;
 
   return {
-    getPersonalNotesThread: async (actor) =>
-      actor.userId === ids.actor ? notes : null,
-    listPersonalNoteProjectionActors: async () => [],
-    getOrCreatePersonalNoteProjectionCursor: async () => null,
-    advancePersonalNoteProjectionCursor: async () => null,
+    createPersonalNote: async () => {
+      throw new Error("Personal Notes use the Personal Desktop API");
+    },
     listPersonalNotes: async () => ({ notes: [], nextBeforeSequence: null }),
     getPersonalNote: async () => null,
     renamePersonalNote: async () => null,
+    updatePersonalNoteBody: async () => null,
+    listPendingPersonalNoteRevisions: async () => [],
+    markPersonalNoteProjectionAvailable: async () => null,
+    markPersonalNoteProjectionFailed: async () => undefined,
     listTeamParticipants: async () => null,
     createThread: async (actor, input) => {
       if (actor.userId !== ids.actor) return null;
-      if (input.kind === "notes_to_self") return notes;
       if (input.kind !== "personal_channel") return null;
       channel = personalThreadRecord({
         name: input.name,
@@ -722,7 +713,7 @@ const createPersonalRepository = (): CommandRepository => {
     getThread: async (actor, input) => ownedThread(actor, input.threadId),
     listThreads: async (actor, input) =>
       actor.userId === ids.actor && input.scope === "personal"
-        ? [notes, channel]
+        ? [channel]
         : null,
     renameThread: async (actor, input) => {
       if (!ownedThread(actor, input.threadId)) return null;
@@ -769,14 +760,6 @@ const createPersonalRepository = (): CommandRepository => {
     listMessages: async (actor, input) => {
       const thread = ownedThread(actor, input.threadId);
       if (!thread) return null;
-      if (thread.kind === "notes_to_self") {
-        return {
-          messages: [],
-          hasMore: false,
-          nextBeforeSequence: null,
-          nextAfterSequence: null
-        };
-      }
       const ascending = input.afterSequence !== undefined;
       const filtered = messages.filter(
         (message) =>
@@ -834,7 +817,7 @@ const createPersonalRepository = (): CommandRepository => {
             personalOwnerUserId: ids.actor,
             teamId: null,
             highWaterCursor: 9,
-            threads: [notes, channel]
+            threads: [channel]
           }
         : null,
     getCapturedSessionSyncSource: async () => null,
@@ -908,14 +891,19 @@ interface HarnessOptions {
   upstreamAuthorization?: string | null;
   response?: (call: FetchCall) => Promise<Response> | Response;
   personalRepository?: CommandRepository;
-  projectPersonalNote?: (input: {
-    ownerUserId: string;
-    message: CollaborationMessageRecord;
-  }) => Promise<void>;
   desktopOwnerUserId?: string;
   activeUser?: { id: string; email: string; displayName: string | null } | null;
   actionGrantControl?: CollaborationActionGrantControl;
-  sharedMemoryControl?: CollaborationSharedMemoryControl;
+  sharedMemoryControl?: Omit<
+    CollaborationSharedMemoryControl,
+    "advanceContinuousPersonalNoteRevision"
+  > &
+    Partial<
+      Pick<
+        CollaborationSharedMemoryControl,
+        "advanceContinuousPersonalNoteRevision"
+      >
+    >;
 }
 
 const resultPayloadFor = (
@@ -985,6 +973,12 @@ const createHarness = (options: HarnessOptions = {}) => {
   const personalRepository =
     options.personalRepository ?? createPersonalRepository();
   const desktopOwnerUserId = options.desktopOwnerUserId ?? ids.actor;
+  const sharedMemoryControl = options.sharedMemoryControl
+    ? {
+        advanceContinuousPersonalNoteRevision: async () => ({ queued: 0 }),
+        ...options.sharedMemoryControl
+      }
+    : undefined;
   let navigationInvalidationListener: ((backendId: string) => void) | null =
     null;
 
@@ -1020,7 +1014,6 @@ const createHarness = (options: HarnessOptions = {}) => {
       repositoryRequests += 1;
       return personalRepository;
     },
-    projectPersonalNote: options.projectPersonalNote,
     resolveActiveLocalUser: async (userId) => {
       const activeUser =
         options.activeUser === undefined
@@ -1029,7 +1022,7 @@ const createHarness = (options: HarnessOptions = {}) => {
       return activeUser?.id === userId ? activeUser : null;
     },
     actionGrantControl: options.actionGrantControl,
-    sharedMemoryControl: options.sharedMemoryControl,
+    sharedMemoryControl,
     verifyDesktopLocalCredential: (_koedHome, authorization, family) =>
       authorization === desktopAuthorization
         ? {
@@ -2314,54 +2307,6 @@ describe("local-edge collaboration command route", () => {
     expect(harness.calls).toHaveLength(0);
   });
 
-  it("projects a local Desktop Note into Personal Memory", async () => {
-    const projected: Array<{
-      ownerUserId: string;
-      message: CollaborationMessageRecord;
-    }> = [];
-    const harness = createHarness({
-      backend: null,
-      upstreamAuthorization: null,
-      projectPersonalNote: async (input) => {
-        projected.push(input);
-      }
-    });
-    const clientMessageId = randomUUID();
-    const response = await injectPersonalCommand(harness.app, {
-      contractVersion: COLLABORATION_CONTRACT_VERSION,
-      requestId: randomUUID(),
-      command: "collaboration.send_message",
-      input: {
-        thread: { scope: "personal", threadId: ids.notesThread },
-        clientMessageId,
-        body: "The launch date is September 14."
-      }
-    });
-
-    expect(response.statusCode, response.body).toBe(200);
-    expect(parseResult(response.body)).toMatchObject({
-      ok: true,
-      data: {
-        message: {
-          id: clientMessageId,
-          body: "The launch date is September 14."
-        }
-      }
-    });
-    expect(projected).toEqual([
-      expect.objectContaining({
-        ownerUserId: ids.actor,
-        message: expect.objectContaining({
-          id: clientMessageId,
-          threadId: ids.notesThread,
-          bodyText: "The launch date is September 14."
-        })
-      })
-    ]);
-    expect(harness.calls).toHaveLength(0);
-    await harness.app.close();
-  });
-
   it("uses the remote Personal authority without creating a divergent local channel", async () => {
     const remoteChannel = personalThreadRecord({
       personalOwnerUserId: ids.remotePrincipal,
@@ -2511,7 +2456,7 @@ describe("local-edge collaboration command route", () => {
     });
 
     const tampered = `${cursor!.slice(0, -1)}${cursor!.endsWith("a") ? "b" : "a"}`;
-    const invalidCommands = [
+    const invalidCursorCommands = [
       {
         ...nextCommand,
         requestId: randomUUID(),
@@ -2520,22 +2465,27 @@ describe("local-edge collaboration command route", () => {
       {
         ...nextCommand,
         requestId: randomUUID(),
-        input: {
-          ...nextCommand.input,
-          thread: { scope: "personal", threadId: ids.notesThread }
-        }
-      },
-      {
-        ...nextCommand,
-        requestId: randomUUID(),
         input: { ...nextCommand.input, direction: "newer" }
       }
     ] as CollaborationRendererCommand[];
-    for (const command of invalidCommands) {
+    for (const command of invalidCursorCommands) {
       expect(
         parseResult((await injectPersonalCommand(harness.app, command)).body)
       ).toMatchObject({ ok: false, error: { code: "invalid_input" } });
     }
+    const unauthorizedThread = {
+      ...nextCommand,
+      requestId: randomUUID(),
+      input: {
+        ...nextCommand.input,
+        thread: { scope: "personal", threadId: randomUUID() }
+      }
+    } as CollaborationRendererCommand;
+    expect(
+      parseResult(
+        (await injectPersonalCommand(harness.app, unauthorizedThread)).body
+      )
+    ).toMatchObject({ ok: false, error: { code: "permission_denied" } });
   });
 
   it("composes Personal state with authorized remote Team catalog and Shared Memory indexes", async () => {

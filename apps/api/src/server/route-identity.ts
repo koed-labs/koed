@@ -1720,16 +1720,6 @@ export const routeIdentityContracts = [
     teamDeploymentModes
   ),
   route(
-    "PATCH",
-    "/v1/shared-memory/owned-shares/{kind}/{id}/title",
-    "session_or_device_credential",
-    "shared_memory",
-    "Rename one source-owned active or pending share.",
-    "request_time_shared_memory_owner",
-    "implemented",
-    teamDeploymentModes
-  ),
-  route(
     "POST",
     "/v1/shared-memory/pending-shares/{pendingShareId}/control",
     "session_or_device_credential",

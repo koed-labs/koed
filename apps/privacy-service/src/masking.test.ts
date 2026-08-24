@@ -57,6 +57,24 @@ describe("schema field masking", () => {
     ]);
   });
 
+  it("masks a credential declared in ordinary language", async () => {
+    const text = "My password is LaunchPass1234";
+    const result = maskClassification(
+      text,
+      await new DeterministicPrivacyRuntime().classify(text)
+    );
+
+    expect(result.maskedText).toBe("My password is [SECRET]");
+    expect(result.spans).toEqual([
+      {
+        label: "secret",
+        detectors: ["deterministic"],
+        startByte: Buffer.byteLength("My password is "),
+        endByte: Buffer.byteLength(text)
+      }
+    ]);
+  });
+
   it("fails closed when decoded text differs", () => {
     const raw: RawPrivacyClassification = {
       decodedText: "normalized",

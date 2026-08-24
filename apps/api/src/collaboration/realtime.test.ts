@@ -39,6 +39,7 @@ const realtimeFamilyCases = [
   ["receipt_state_updated", "collaboration_event", "receipt_state_updated"],
   ["share_grant_lifecycle", "collaboration_event", "shared_session_upserted"],
   ["fidelity_changed", "collaboration_event", "shared_session_upserted"],
+  ["source_revision_changed", "collaboration_event", "shared_session_upserted"],
   ["memory_event_available", "collaboration_event", "shared_session_upserted"],
   ["lcm_leaf_available", "collaboration_event", "shared_session_upserted"],
   ["lcm_rollup_available", "collaboration_event", "shared_session_upserted"],
@@ -315,17 +316,11 @@ const createRepositoryFixture = () => {
   };
 
   const repository: CollaborationRepository = {
-    async getPersonalNotesThread() {
-      return null;
+    async createPersonalNote() {
+      throw new Error("unused");
     },
-    async listPersonalNoteProjectionActors() {
+    async listPendingPersonalNoteRevisions() {
       return [];
-    },
-    async getOrCreatePersonalNoteProjectionCursor() {
-      throw new Error("unused");
-    },
-    async advancePersonalNoteProjectionCursor() {
-      throw new Error("unused");
     },
     async listPersonalNotes() {
       throw new Error("unused");
@@ -334,6 +329,15 @@ const createRepositoryFixture = () => {
       throw new Error("unused");
     },
     async renamePersonalNote() {
+      throw new Error("unused");
+    },
+    async updatePersonalNoteBody() {
+      throw new Error("unused");
+    },
+    async markPersonalNoteProjectionAvailable() {
+      throw new Error("unused");
+    },
+    async markPersonalNoteProjectionFailed() {
       throw new Error("unused");
     },
     async listTeamParticipants() {
@@ -1825,6 +1829,7 @@ describe("collaboration realtime protocol", () => {
       const sharedFamily = [
         "share_grant_lifecycle",
         "fidelity_changed",
+        "source_revision_changed",
         "memory_event_available",
         "lcm_leaf_available",
         "lcm_rollup_available"
@@ -1840,6 +1845,7 @@ describe("collaboration realtime protocol", () => {
                   family === "shared_session_discussion_activity"
                 ? "collaboration_message"
                 : family === "share_grant_lifecycle" ||
+                    family === "source_revision_changed" ||
                     family === "access_revoked"
                   ? "shared_memory_grant"
                   : sharedFamily

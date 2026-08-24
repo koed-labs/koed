@@ -19,6 +19,7 @@ const personalNoteSourceSchema = z
   .object({
     kind: z.literal("personal_note"),
     noteId: z.uuid(),
+    noteRevision: z.number().int().safe().positive(),
     memoryEventId: z.uuid(),
     logicalMemoryId: z.uuid()
   })
@@ -30,6 +31,27 @@ export const sharedMemorySourceRefSchema = z.discriminatedUnion("kind", [
 ]);
 
 export type SharedMemorySourceRef = z.infer<typeof sharedMemorySourceRefSchema>;
+
+export const sharedMemorySourceCanReplace = (
+  current: SharedMemorySourceRef | undefined,
+  replacement: SharedMemorySourceRef
+): boolean => {
+  if (!current || current.kind !== replacement.kind) return false;
+  if (current.kind === "captured_session") {
+    return (
+      replacement.kind === "captured_session" &&
+      current.sessionId === replacement.sessionId &&
+      current.logicalMemoryId === replacement.logicalMemoryId
+    );
+  }
+  return (
+    replacement.kind === "personal_note" &&
+    current.noteId === replacement.noteId &&
+    current.memoryEventId !== replacement.memoryEventId &&
+    current.logicalMemoryId === replacement.logicalMemoryId &&
+    replacement.noteRevision > current.noteRevision
+  );
+};
 
 export const personalNoteSourceRevisionHash = (input: {
   source: Extract<SharedMemorySourceRef, { kind: "personal_note" }>;
@@ -43,7 +65,7 @@ export const personalNoteSourceRevisionHash = (input: {
     version: 1,
     source: input.source,
     sourceOwnerPrincipalId: input.sourceOwnerPrincipalId,
-    sourceRevision: 1,
+    sourceRevision: input.source.noteRevision,
     memoryEvent: {
       id: input.source.memoryEventId,
       content: input.content,
@@ -72,9 +94,6 @@ export const personalNoteSourceSelectionIssues = (
 ): string[] => {
   if (input.source.kind !== "personal_note") return [];
   const issues: string[] = [];
-  if (input.mode !== "snapshot") {
-    issues.push("Personal Note sharing requires snapshot mode");
-  }
   if (
     input.sourceCapabilities.length !== 1 ||
     input.sourceCapabilities[0] !== "memory_events"
@@ -92,8 +111,10 @@ export const personalNoteSourceSelectionIssues = (
       "Personal Note sharing requires Memory Event activation and consent"
     );
   }
-  if (input.sourceRevision !== 1) {
-    issues.push("Personal Note sharing requires source revision 1");
+  if (input.sourceRevision !== input.source.noteRevision) {
+    issues.push(
+      "Personal Note source revision must match the selected revision"
+    );
   }
   if (
     input.manifest.length !== 1 ||

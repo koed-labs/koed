@@ -21,6 +21,7 @@ import {
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
+  pendingShareSchema,
   validateSharedMemoryCanonicalSourceItem,
   SharedMemoryConflictError,
   SharedMemorySourceItemRejectedError,
@@ -38,6 +39,7 @@ import { z } from "zod";
 
 import type { ApiRouteContext } from "../server/context.js";
 import {
+  advanceContinuousPersonalNoteRevisionSchema,
   changeSharedMemoryFidelityBundleSchema,
   createPendingShareSchema,
   createSharedMemoryCandidatePreviewSchema,
@@ -46,7 +48,6 @@ import {
   listOwnedSharesQuerySchema,
   ownedShareParamsSchema,
   personalNoteSourceArtifactUploadSchema,
-  renameOwnedShareSchema,
   listWorkspaceSharedMemoryQuerySchema,
   putSharedMemoryPolicySchema,
   putTeamConversationSourceGrantSchema,
@@ -418,10 +419,36 @@ const grantDto = (grant: SharedMemoryGrantRecord) => ({
   companionScope: grant.companionScope
 });
 
-const pendingShareDto = (pendingShare: PendingShareRecord) => ({
-  ...pendingShare,
-  source: requiredSource(pendingShare.source)
-});
+const pendingShareDto = (pendingShare: PendingShareRecord) =>
+  pendingShareSchema.parse({
+    source: requiredSource(pendingShare.source),
+    sourceCapabilities: pendingShare.sourceCapabilities,
+    id: pendingShare.id,
+    mutationId: pendingShare.mutationId,
+    logicalGrantId: pendingShare.logicalGrantId,
+    consentId: pendingShare.consentId,
+    logicalMemoryId: pendingShare.logicalMemoryId,
+    teamId: pendingShare.teamId,
+    workspaceId: pendingShare.teamWorkspaceId,
+    activationRepresentation: pendingShare.activationRepresentation,
+    maximumFidelity: pendingShare.maximumFidelity,
+    includeCuratedMemory: pendingShare.includeCuratedMemory,
+    mode: pendingShare.mode,
+    sourceRevision: pendingShare.sourceRevision,
+    state: pendingShare.state,
+    stage: pendingShare.stage,
+    workspaceAccessState: pendingShare.workspaceAccessState,
+    sourceUpdateState: pendingShare.sourceUpdateState,
+    operationVersion: pendingShare.operationVersion,
+    attemptCount: pendingShare.attemptCount,
+    redactedFailureCode: pendingShare.redactedFailureCode,
+    lastProgressAt: pendingShare.lastProgressAt,
+    createdAt: pendingShare.createdAt,
+    updatedAt: pendingShare.updatedAt,
+    activatedAt: pendingShare.activatedAt,
+    revokedAt: pendingShare.revokedAt,
+    grantId: pendingShare.grantId
+  });
 
 const transcriptAccessDto = (grant: TeamConversationSourceGrantRecord) => ({
   id: grant.id,
@@ -785,8 +812,7 @@ export const registerSharedMemoryRoutes = (
         mode: input.mode,
         maximumFidelity: input.maximumFidelity,
         includeCuratedMemory: input.includeCuratedMemory,
-        expiresAt: input.expiresAt,
-        title: input.title
+        expiresAt: input.expiresAt
       });
       const result = await executeRepositoryOperation(() =>
         runHighRiskSharedMemoryWrite(
@@ -811,7 +837,6 @@ export const registerSharedMemoryRoutes = (
                     teamWorkspaceId: input.teamWorkspaceId,
                     preview: input.preview,
                     previewRevision: input.previewRevision,
-                    title: input.title,
                     mode: input.mode,
                     maximumFidelity: input.maximumFidelity,
                     includeCuratedMemory: input.includeCuratedMemory,
@@ -864,6 +889,40 @@ export const registerSharedMemoryRoutes = (
           )
       );
       return { preview: persistedPreviewDto(preview) };
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/personal-note-revisions/advance",
+    {
+      preHandler: context.writeRateLimit,
+      bodyLimit: SOURCE_UPLOAD_BODY_LIMIT_BYTES
+    },
+    async (request) => {
+      rejectApiToken(request);
+      const input = advanceContinuousPersonalNoteRevisionSchema.parse(
+        request.body
+      );
+      const authenticated = await context.authenticateDeviceCredential(request);
+      if (
+        !authenticated.credential.operationFamilies.includes(
+          "share_grant_management"
+        )
+      ) {
+        throw forbidden();
+      }
+      const pendingShares = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .advanceContinuousPersonalNoteRevision(
+            { userId: authenticated.user.id },
+            {
+              ...input,
+              deviceCredentialId: authenticated.credential.id
+            }
+          )
+      );
+      return { pendingShares: pendingShares.map(pendingShareDto) };
     }
   );
 
@@ -1135,24 +1194,6 @@ export const registerSharedMemoryRoutes = (
     }
   );
 
-  app.patch(
-    "/v1/shared-memory/owned-shares/:kind/:id/title",
-    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
-    async (request, reply) => {
-      rejectApiToken(request);
-      const actor = await authenticateSourceOwner(request, context);
-      const params = ownedShareParamsSchema.parse(request.params);
-      const input = renameOwnedShareSchema.parse(request.body);
-      const share = await executeRepositoryOperation(() =>
-        context
-          .requireSharedMemoryRepository()
-          .renameOwnerShare({ userId: actor.id }, { ...params, ...input })
-      );
-      if (!share) return reply.status(404).send({ error: "not_found" });
-      return { share: ownedShareDto(share) };
-    }
-  );
-
   app.post(
     "/v1/shared-memory/pending-shares/:pendingShareId/control",
     { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
@@ -1170,13 +1211,7 @@ export const registerSharedMemoryRoutes = (
           .requireSharedMemoryRepository()
           .controlPendingShare({ userId: actor.id }, { ...params, ...input })
       );
-      return {
-        pendingShare: {
-          ...pendingShare,
-          workspaceId: pendingShare.teamWorkspaceId,
-          teamWorkspaceId: undefined
-        }
-      };
+      return { pendingShare: pendingShareDto(pendingShare) };
     }
   );
 

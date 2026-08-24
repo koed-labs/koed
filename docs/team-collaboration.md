@@ -21,7 +21,7 @@ User
 |
 +-- Personal
 |   +-- Personal Memory
-|   +-- Notes to self
+|   +-- Personal Notes
 |   +-- Personal channels
 |
 +-- Team
@@ -45,7 +45,8 @@ User
 - Every Team channel belongs to one Workspace.
 - Team direct messages and group direct messages belong to one Team and do not
   belong to a Workspace.
-- Personal channels and notes-to-self belong only to their Personal owner.
+- Personal Notes and Personal channels belong only to their Personal owner.
+  Notes are revisioned Personal Memory objects, not chat threads.
 - A shared Captured Session appears in the Workspace named by its Share Grant.
 - Its companion discussion is attached to the shared source and does not appear
   in the ordinary channel list.
@@ -140,7 +141,6 @@ Team Chat Threads express their scope and kind directly.
 
 | Kind                      | Scope    | Owner | Team | Workspace | Participants                   |
 | ------------------------- | -------- | ----- | ---- | --------- | ------------------------------ |
-| Notes to self             | Personal | yes   | no   | no        | owner                          |
 | Personal channel          | Personal | yes   | no   | no        | owner                          |
 | Team channel              | Team     | no    | yes  | yes       | current Workspace audience     |
 | Direct message            | Team     | no    | yes  | no        | two enabled Team members       |
@@ -149,7 +149,6 @@ Team Chat Threads express their scope and kind directly.
 
 The data model enforces valid scope combinations and durable identity:
 
-- one notes-to-self thread per Personal owner;
 - unique active normalized Personal-channel names per owner;
 - unique active normalized Team-channel names per Workspace;
 - one direct-message thread per normalized User pair and Team;
@@ -302,10 +301,11 @@ authorization and does not transfer ownership, copy the logical memory
 lifespan, or turn a Captured Session into Team Chat.
 
 A Share Grant has an explicit source binding. A Captured Session follows the
-Cross-Identity Sync flow below. A Personal Note follows a fixed one-event
-snapshot flow: authenticated source upload, standalone encrypted artifact, one
-Team `memory_events` representation, and the standard companion discussion.
-The Personal Note flow has no replica, sync relationship, continuous mode,
+Cross-Identity Sync flow below. A Personal Note follows a one-event-per-revision
+flow: authenticated source upload, standalone encrypted artifact, one Team
+`memory_events` representation, and the standard companion discussion. It may
+be an immutable Snapshot or a Continuous Share over strictly newer revisions of
+the same Note. The Personal Note flow has no replica, sync relationship,
 alternate representation, or Conversation Source Access.
 
 ### Cross-Deployment Flow
@@ -346,6 +346,13 @@ Workspace shared-source view and companion discussion
   Team representation becomes visible only after encrypted materialization
   commits; clients receive the normal Shared Memory realtime update rather than
   polling the source.
+- A Continuous Personal Note Share uses a durable local advancement queue after
+  Projection. It coalesces rapid edits per Share, uploads only the exact newest
+  eligible revision through the enrolled device credential, and runs privacy
+  classification before Team publication. The prior ready revision remains
+  readable until grant and representation switch atomically. Pause preserves
+  that revision and stops advancement; resume queues the latest revision;
+  revocation stops the flow.
 - `hasSynchronizedRevision` records whether at least one target revision has
   completed successfully; it is not a synonym for current sync readiness. It
   remains true while a later revision is processing and after sync revocation,
@@ -643,7 +650,7 @@ dashboard.
 - Selecting a Team opens one sidebar with Team people, Team-scoped direct
   messages, collapsible Workspaces, Workspace channels, and Team-shared Memory.
   The hierarchy does not add a third permanent navigation rail.
-- The main content shows Personal Memory, notes-to-self, a Personal channel, a
+- The main content shows Personal Memory, Personal Notes, a Personal channel, a
   Team channel or direct message, Team people, Workspace Team-shared Memory, or
   a shared-session split view.
 - Shared source content is visually distinct from Team Chat. LCM leaves and

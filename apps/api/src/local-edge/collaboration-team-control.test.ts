@@ -40,8 +40,6 @@ const ids = {
   workspaceTwo: randomUUID(),
   channel: randomUUID(),
   channelLogical: randomUUID(),
-  notes: randomUUID(),
-  notesLogical: randomUUID(),
   invitation: randomUUID(),
   invitationTwo: randomUUID(),
   membership: randomUUID(),
@@ -61,34 +59,6 @@ const backend = (
   },
   ...overrides
 });
-
-const notesThread = {
-  id: ids.notes,
-  logicalId: ids.notesLogical,
-  scope: "personal" as const,
-  kind: "notes_to_self" as const,
-  ownerUserId: ids.localOwner,
-  name: null,
-  topic: null,
-  participants: [
-    {
-      id: ids.localOwner,
-      displayName: "Local User",
-      membershipState: "enabled" as const
-    }
-  ],
-  version: 1,
-  lifecycle: "active" as const,
-  canPost: true,
-  latestSequence: 0,
-  unreadCount: 0,
-  lastReadMessageId: null,
-  lastReadSequence: 0,
-  createdAt: iso,
-  updatedAt: iso,
-  lastActivityAt: iso,
-  archivedAt: null
-};
 
 const workspaceChannel = (input: {
   id?: string;
@@ -161,7 +131,6 @@ const snapshot = (
             },
       personal: {
         memory: [],
-        notesToSelf: notesThread,
         channels: []
       },
       teams:
@@ -202,22 +171,13 @@ const snapshot = (
     },
     selection:
       input.includeTeam === false
-        ? ({ kind: "notes_to_self" } as const)
+        ? ({ kind: "personal_memory" } as const)
         : ({ kind: "team_people", teamId: ids.team } as const),
     view:
       input.includeTeam === false
         ? {
-            kind: "thread" as const,
-            thread: notesThread,
-            messages: {
-              snapshotRevision: "cmpr1.abcdefghijklmnop",
-              olderCursor: null,
-              newerCursor: null,
-              hasOlder: false,
-              hasNewer: false,
-              threadId: ids.notes,
-              items: []
-            }
+            kind: "personal_memory" as const,
+            entries: []
           }
         : {
             kind: "team_people" as const,

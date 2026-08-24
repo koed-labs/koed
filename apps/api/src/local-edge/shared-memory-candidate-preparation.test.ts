@@ -65,11 +65,8 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     getLocalSyncDeployment: vi.fn(async () => ({
       protocolDeploymentId: "deployment-1"
     })),
-    getPersonalNote: vi.fn<MemorySourceRepository["getPersonalNote"]>(
-      async () => null
-    ),
-    getPersonalNoteMemoryEvent: vi.fn<
-      MemorySourceRepository["getPersonalNoteMemoryEvent"]
+    getPersonalNoteRevisionMemoryEvent: vi.fn<
+      MemorySourceRepository["getPersonalNoteRevisionMemoryEvent"]
     >(async () => null),
     listCuratedMemoryAssertions: vi.fn(
       async (): Promise<Array<Record<string, unknown>>> => []
@@ -138,16 +135,7 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     const candidateRepository = repository();
     const noteId = "00000000-0000-4000-8000-000000000011";
     const eventId = "00000000-0000-4000-8000-000000000012";
-    candidateRepository.getPersonalNote.mockResolvedValue({
-      noteId,
-      threadId: "00000000-0000-4000-8000-000000000013",
-      title: "Mutable title",
-      titleVersion: 2,
-      body: "Immutable Note body",
-      createdAt: "2026-08-18T12:00:00.000Z",
-      sourceSequence: 7
-    });
-    candidateRepository.getPersonalNoteMemoryEvent.mockResolvedValue({
+    candidateRepository.getPersonalNoteRevisionMemoryEvent.mockResolvedValue({
       id: eventId,
       actor: "user",
       eventType: "message",
@@ -181,32 +169,36 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     });
     const input = {
       localOwnerUserId: "00000000-0000-4000-8000-000000000010",
-      noteId
+      noteId,
+      noteRevision: 4,
+      mode: "snapshot" as const
     };
     const first = await preparation.loadPersonalNoteCandidatePreview(input);
-    candidateRepository.getPersonalNote.mockResolvedValue({
-      noteId,
-      threadId: "00000000-0000-4000-8000-000000000013",
-      title: "Renamed after review",
-      titleVersion: 3,
-      body: "Immutable Note body",
-      createdAt: "2026-08-18T12:00:00.000Z",
-      sourceSequence: 7
-    });
-    const renamed = await preparation.loadPersonalNoteCandidatePreview(input);
+    const reloaded = await preparation.loadPersonalNoteCandidatePreview(input);
 
     expect(first).toMatchObject({
-      source: { kind: "personal_note", noteId, memoryEventId: eventId },
+      source: {
+        kind: "personal_note",
+        noteId,
+        noteRevision: 4,
+        memoryEventId: eventId
+      },
       sourceCapabilities: ["memory_events"],
       activationRepresentation: "memory_events",
       mode: "snapshot",
-      sourceRevision: 1,
+      sourceRevision: 4,
       itemCount: 1,
       excludedItemCount: 0,
       manifest: [{ sourceId: eventId }],
       items: [{ id: eventId, sequence: 1 }]
     });
-    expect(renamed?.candidateHash).toBe(first?.candidateHash);
+    expect(reloaded?.candidateHash).toBe(first?.candidateHash);
+    expect(
+      candidateRepository.getPersonalNoteRevisionMemoryEvent
+    ).toHaveBeenCalledWith(
+      { userId: input.localOwnerUserId },
+      { noteId, revision: 4 }
+    );
   });
 
   it("maps current curated assertions with eligible evidence", async () => {

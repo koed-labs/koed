@@ -45,46 +45,30 @@ Personal Project graph. Desktop keeps prior thread content if a refresh fails.
 
 ## Notes workflow
 
-Notes is a master-detail workspace under Shares. It presents existing
-Notes-to-self messages without a data migration.
+Notes is a first-class, owner-scoped master-detail workspace. A Note has one
+stable identity, encrypted title metadata, and immutable numbered body
+revisions. It is not a collaboration thread and does not participate in chat
+receipts, unread counts, message delivery, or thread lifecycle.
 
-Creating a Note uses the fixed owner-scoped Notes route. Electron main sends
-the body and an idempotency key to the local Personal API. The API creates or
-reuses the local Notes-to-self thread. It stores one message and projects one
-Personal Memory Event. The API returns the Note after Projection succeeds.
+Creating a Note commits the aggregate and revision before returning. Renaming
+uses an optimistic title version. Saving a body edit requires the expected
+current revision and creates the next immutable revision. A stale title or body
+write conflicts instead of overwriting another device. Idempotency keys make
+exact retries stable and reject divergent reuse. Desktop provides explicit
+Save and Cancel actions; a failed save preserves the draft for retry.
 
-The Note body is immutable in this release. Desktop does not provide body-edit
-or delete actions. If a save fails, Desktop keeps the body and shows an error.
+Each revision has durable Projection state. The API projects the current
+revision into one idempotent Personal Memory Event and admits its embedding to
+the interactive priority lane. A bounded repair service retries pending or
+failed revisions without blocking Note reads or edits. The previous projected
+revision remains current for recall until its replacement is available. The
+successful replacement then supersedes and invalidates older Note revisions
+atomically, so Personal recall never moves backwards or exposes two current
+versions.
 
-After the durable message is accepted, the Personal API projects it as one
-idempotent Personal Memory Event and schedules its embedding in the
-interactive priority lane. The Worker preserves this priority when it calls
-the Embedding Service. Background capture embedding uses bounded requests so
-an interactive search can run between them. The event keeps
-the Note's creation time and Notes-to-self message identity, is excluded from
-LCM summarization, and is available to the global Ask workflow after embedding
-completes. Personal-channel and Team collaboration messages do not use this
-Projection path.
-
-The API also reconciles historical Notes through a local background repair
-service. On startup and at bounded intervals, it discovers owners whose unique
-Notes-to-self thread has messages beyond its durable Projection cursor. Each
-run processes at most one bounded page per owner and prevents overlapping local
-runs. Historical embedding work uses the background priority class. Note list
-requests do not wait for this backlog, and creating a Note synchronously
-projects only the newly accepted Note in the interactive priority class.
-Projected historical Notes emit the normal change notification so Desktop can
-refresh when they become available.
-
-The durable per-owner cursor records the last processed Notes-to-self sequence
-and bounded counts for existing events, created events, embedding admission,
-and failures. One malformed Note advances as a recorded failure and does not
-block later Notes. Retryable Projection or embedding-admission failures do not
-advance the cursor. A concurrent cursor loser reloads durable progress and
-continues or exits successfully when another run completed the same work.
-Repeated work uses the Note message identity, so it resolves to the same Memory
-Event. Personal Note events and their embeddings stay out of Project graph
-counts, Project activity, session grouping, and LCM work.
+Personal Note events and embeddings remain outside Project counts, Project
+activity, Captured Session grouping, chat, and LCM summarization. The encrypted
+immutable revisions remain available for provenance and exact sharing.
 
 The full-width layout keeps the Note list beside the detail pane. The narrow
 layout uses a list, drill-in detail, and Back action.
@@ -93,17 +77,29 @@ layout uses a list, drill-in detail, and Back action.
 
 Share is available only after the Note has its exact projected Personal Memory
 Event and the User has an active writable Team Workspace. The review dialog
-shows one immutable Note snapshot. Its mode is always Snapshot, and its only
-representation is Memory Event. Continuous mode, LCM, Curated Assertions, and
-Conversation Source Access are not available for a Personal Note.
+shows one exact immutable Note revision and defaults to Continuous sharing. The
+User may instead select an immutable Snapshot. Memory Event is the only
+representation; LCM, Curated Assertions, and Conversation Source Access are
+not available for a Personal Note.
 
-Approval binds the Note id, Memory Event id, logical memory id, owner,
-destination, revision 1, current policies, one-item manifest, and protected
-hashes. The mutable Note title is not part of the immutable source revision.
-The activation-time title becomes independent Share Grant display metadata.
-Later Note renames and Share renames do not affect each other.
+Approval binds the Note id, positive immutable revision, exact Memory Event id,
+logical memory id, owner, destination, current policies, one-item manifest, and
+protected hashes. The mutable owner-local Note title is not part of the
+immutable source revision and never becomes Team-visible metadata. Koed derives
+the Team-visible label from the privacy-filtered representation for the pinned
+revision.
 
-The local source worker uploads one authenticated, bounded candidate. The Team
+Review and initial activation re-read the exact selected revision rather than
+silently retargeting to the current Note. A later body edit therefore neither
+changes nor invalidates a Snapshot. For a Continuous Share, successful
+Projection durably queues the exact newer revision. Rapid edits coalesce to the
+latest eligible revision. Privacy classification and Team materialization run
+before publication; teammates continue reading the prior sanitized revision
+until the new derivative replaces it atomically. Owner-private plaintext never
+becomes a fallback Team read.
+
+The local source worker uploads each authenticated, bounded candidate through
+the enrolled device credential. The Team
 Backend stores a standalone encrypted source artifact and materializes one
 encrypted Team Memory Event. This path creates no Captured Session, memory
 replica, Cross-Identity Sync relationship, LCM representation, Curated
@@ -114,10 +110,11 @@ access without changing the Personal Note, its Memory Event, or Personal Ask.
 
 ## Desktop and runtime boundary
 
-The renderer uses Personal Desktop contract version 6. It can request fixed
+The renderer uses Personal Desktop contract version 7. It can request fixed
 Ask list, detail, and submit operations. It can request fixed Note create,
-list, detail, and title-rename operations. Note creation supplies only the body
-and a generated idempotency key. The renderer cannot provide an owner id,
+list, detail, title-rename, and body-update operations. Note creation and body
+updates supply generated idempotency keys; updates also supply the expected
+revision. The renderer cannot provide an owner id,
 Memory Event id, URL, HTTP method, header, API Token, or runtime credential.
 
 Electron main authenticates the fixed Note routes with the owner-bound local
@@ -128,14 +125,14 @@ access grants no Personal chat or Team authority. The API Token never crosses
 the preload boundary into the renderer.
 
 Note lists are bounded and use newest-first source-sequence pagination. Exact
-Note reads return the existing projected Memory Event. Historical titles come
-from the first non-empty body line. Explicit title changes use the encrypted
-message metadata namespace and optimistic title versions; they do not change
-the immutable body or Memory Event. The protected change stream emits bounded
-`notes_changed` invalidations after Projection or title commits so open Desktop
-windows can refresh while retaining their last valid state after a failure. A
-visible retry action refreshes both the list and selected detail after a
-transient service failure.
+Note reads return the current revision, Projection state, and currently bound
+Memory Event when available. Initial titles come from the first non-empty body
+line. Explicit title changes use encrypted Note metadata and optimistic title
+versions; they do not alter revision content or an activated Share. The
+protected change stream emits bounded `notes_changed` invalidations after Note
+or Projection commits so open Desktop windows can refresh while retaining their
+last valid state after a failure. A visible retry action refreshes both the list
+and selected detail after a transient service failure.
 
 Electron main maps each operation to one fixed route. It reads the protected
 Local AI Runtime registration and calls only `POST /v1/desktop/ask`. The runtime
