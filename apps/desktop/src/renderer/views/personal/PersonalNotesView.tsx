@@ -38,7 +38,7 @@ export function PersonalNotesView({
   newNote: boolean;
   onBack: () => void;
   onNew: () => void;
-  onSave: (body: string) => Promise<void>;
+  onSave: (body: string, idempotencyKey: string) => Promise<void>;
   onSelect: (noteId: string) => void;
   onShare?: (note: PersonalDesktopNote) => void;
   selectedNoteId?: string;
@@ -58,6 +58,20 @@ export function PersonalNotesView({
   const [bodyDraft, setBodyDraft] = useState("");
   const [updatingBody, setUpdatingBody] = useState(false);
   const [changeRevision, setChangeRevision] = useState(0);
+  const createMutationRef = useRef<{
+    body: string;
+    idempotencyKey: string;
+  } | null>(null);
+  const updateMutationRef = useRef<{
+    body: string;
+    expectedRevision: number;
+    idempotencyKey: string;
+    noteId: string;
+  } | null>(null);
+  const editingBodyRef = useRef(false);
+  const renamingRef = useRef(false);
+  const selectionGenerationRef = useRef(0);
+  const selectedNoteIdRef = useRef(selectedNoteId);
   const listHeadingRef = useRef<HTMLHeadingElement>(null);
   const detailHeadingRef = useRef<HTMLHeadingElement>(null);
   const { listNotes, loadNote, renameNote, updateNote } = api;
@@ -91,6 +105,20 @@ export function PersonalNotesView({
   );
 
   useEffect(() => {
+    editingBodyRef.current = editingBody;
+  }, [editingBody]);
+
+  useEffect(() => {
+    renamingRef.current = renaming;
+  }, [renaming]);
+
+  useEffect(() => {
+    selectionGenerationRef.current += 1;
+    selectedNoteIdRef.current = selectedNoteId;
+    updateMutationRef.current = null;
+    setEditingBody(false);
+    setRenaming(false);
+    setUpdatingBody(false);
     if (!selectedNoteId || !loadNote) {
       setDetail(null);
       return;
@@ -107,6 +135,29 @@ export function PersonalNotesView({
       })
       .catch(() => {
         if (active) {
+          setError(
+            "This Note could not be refreshed. The last loaded detail remains visible."
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [loadNote, selectedNoteId]);
+
+  useEffect(() => {
+    if (changeRevision === 0 || !selectedNoteId || !loadNote) return;
+    let active = true;
+    void loadNote({ noteId: selectedNoteId })
+      .then((note) => {
+        if (!active || selectedNoteIdRef.current !== note.noteId) return;
+        setDetail(note);
+        if (!renamingRef.current) setRenameTitle(note.title);
+        if (!editingBodyRef.current) setBodyDraft(note.body);
+        setError(null);
+      })
+      .catch(() => {
+        if (active && selectedNoteIdRef.current === selectedNoteId) {
           setError(
             "This Note could not be refreshed. The last loaded detail remains visible."
           );
@@ -134,8 +185,16 @@ export function PersonalNotesView({
     if (!body || saving) return;
     setSaving(true);
     setError(null);
+    const mutation =
+      createMutationRef.current?.body === body
+        ? createMutationRef.current
+        : { body, idempotencyKey: crypto.randomUUID() };
+    createMutationRef.current = mutation;
     try {
-      await onSave(body);
+      await onSave(body, mutation.idempotencyKey);
+      if (createMutationRef.current === mutation) {
+        createMutationRef.current = null;
+      }
       setDraft("");
       await refresh();
     } catch {
@@ -148,20 +207,34 @@ export function PersonalNotesView({
   const submitRename = async (event: FormEvent) => {
     event.preventDefault();
     if (!detail || !renameNote) return;
+    const noteId = detail.noteId;
+    const selectionGeneration = selectionGenerationRef.current;
     try {
       const renamed = await renameNote({
-        noteId: detail.noteId,
+        noteId,
         expectedTitleVersion: detail.titleVersion,
         title: renameTitle
       });
-      setDetail({ ...detail, ...renamed });
+      if (
+        selectedNoteIdRef.current === noteId &&
+        selectionGenerationRef.current === selectionGeneration
+      ) {
+        setDetail((current) =>
+          current?.noteId === noteId ? { ...current, ...renamed } : current
+        );
+        setRenaming(false);
+        setError(null);
+      }
       setNotes((current) =>
         current.map((note) => (note.noteId === renamed.noteId ? renamed : note))
       );
-      setRenaming(false);
-      setError(null);
     } catch {
-      setError("The Note title changed elsewhere. Refresh and try again.");
+      if (
+        selectedNoteIdRef.current === noteId &&
+        selectionGenerationRef.current === selectionGeneration
+      ) {
+        setError("The Note title changed elsewhere. Refresh and try again.");
+      }
     }
   };
 
@@ -170,25 +243,59 @@ export function PersonalNotesView({
     if (!detail || !updateNote || updatingBody) return;
     const body = bodyDraft.trim();
     if (!body) return;
+    const noteId = detail.noteId;
+    const expectedRevision = detail.revision;
+    const selectionGeneration = selectionGenerationRef.current;
+    const mutation = updateMutationRef.current;
+    const attempt =
+      mutation?.noteId === noteId &&
+      mutation.expectedRevision === expectedRevision &&
+      mutation.body === body
+        ? mutation
+        : {
+            body,
+            expectedRevision,
+            idempotencyKey: crypto.randomUUID(),
+            noteId
+          };
+    updateMutationRef.current = attempt;
     setUpdatingBody(true);
     setError(null);
     try {
       const updated = await updateNote({
-        noteId: detail.noteId,
-        expectedRevision: detail.revision,
+        noteId,
+        expectedRevision,
         body,
-        idempotencyKey: crypto.randomUUID()
+        idempotencyKey: attempt.idempotencyKey
       });
-      setDetail(updated);
-      setBodyDraft(updated.body);
-      setEditingBody(false);
+      if (updateMutationRef.current === attempt) {
+        updateMutationRef.current = null;
+      }
+      if (
+        selectedNoteIdRef.current === noteId &&
+        selectionGenerationRef.current === selectionGeneration
+      ) {
+        setDetail(updated);
+        setBodyDraft(updated.body);
+        setEditingBody(false);
+      }
       await refresh();
     } catch {
-      setError(
-        "The Note changed elsewhere or could not be saved. Refresh and try again."
-      );
+      if (
+        selectedNoteIdRef.current === noteId &&
+        selectionGenerationRef.current === selectionGeneration
+      ) {
+        setError(
+          "The Note changed elsewhere or could not be saved. Refresh and try again."
+        );
+      }
     } finally {
-      setUpdatingBody(false);
+      if (
+        selectedNoteIdRef.current === noteId &&
+        selectionGenerationRef.current === selectionGeneration
+      ) {
+        setUpdatingBody(false);
+      }
     }
   };
 
@@ -283,7 +390,14 @@ export function PersonalNotesView({
             <textarea
               aria-label="Note content"
               autoFocus
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                if (
+                  createMutationRef.current?.body !== event.target.value.trim()
+                ) {
+                  createMutationRef.current = null;
+                }
+              }}
               placeholder="Write a Note…"
               rows={12}
               value={draft}
@@ -381,7 +495,15 @@ export function PersonalNotesView({
                 <textarea
                   aria-label="Note content"
                   autoFocus
-                  onChange={(event) => setBodyDraft(event.target.value)}
+                  onChange={(event) => {
+                    setBodyDraft(event.target.value);
+                    if (
+                      updateMutationRef.current?.body !==
+                      event.target.value.trim()
+                    ) {
+                      updateMutationRef.current = null;
+                    }
+                  }}
                   rows={16}
                   value={bodyDraft}
                 />
@@ -395,6 +517,7 @@ export function PersonalNotesView({
                   <button
                     disabled={updatingBody}
                     onClick={() => {
+                      updateMutationRef.current = null;
                       setBodyDraft(detail.body);
                       setEditingBody(false);
                     }}

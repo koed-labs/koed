@@ -1042,6 +1042,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             try {
               await collaborationSharedMemoryControl.advanceContinuousPersonalNoteRevision(
                 {
+                  backendId: item.backendId,
                   localOwnerUserId: item.localOwnerUserId,
                   noteId: item.noteId,
                   noteRevision: item.noteRevision

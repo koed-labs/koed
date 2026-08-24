@@ -4036,6 +4036,29 @@ const createFakeRepository = () => {
       memoryQuestions.set(completed.id, completed);
       return completed;
     },
+    async recoverPendingDesktopAsks(actor, input) {
+      let recovered = 0;
+      const now = new Date().toISOString();
+      for (const question of memoryQuestions.values()) {
+        if (
+          question.ownerUserId !== actor.userId ||
+          question.origin !== "desktop_ask" ||
+          question.status !== "pending"
+        ) {
+          continue;
+        }
+        memoryQuestions.set(question.id, {
+          ...question,
+          errorMessage: input.errorMessage,
+          status: "error",
+          updatedAt: now,
+          answeredAt: now,
+          attemptCount: Math.max(question.attemptCount, 1)
+        });
+        recovered += 1;
+      }
+      return { recovered };
+    },
     async listDesktopAskThreads(actor, input = {}) {
       const grouped = new Map<string, MemoryQuestionDetailRecord[]>();
       for (const question of memoryQuestions.values()) {
@@ -15678,6 +15701,12 @@ describe("account and access flows", () => {
       headers,
       payload: { status: "error", error_message: "must not replace answer" }
     });
+    const recovered = await app.inject({
+      method: "POST",
+      url: "/v1/memory/ask/questions/recover-pending",
+      headers,
+      payload: {}
+    });
     const threads = await app.inject({
       method: "GET",
       url: "/v1/memory/ask/threads?limit=50",
@@ -15748,6 +15777,9 @@ describe("account and access flows", () => {
     expect(
       jsonBody<MemoryQuestionResponse>(completedAgain).question.status
     ).toBe("answered");
+    expect(jsonBody<{ recovered: number }>(recovered)).toEqual({
+      recovered: 1
+    });
     expect(jsonBody<{ threads: unknown[] }>(threads).threads).toEqual([
       expect.objectContaining({
         askThreadId: initialQuestion.askThreadId,
@@ -15760,6 +15792,13 @@ describe("account and access flows", () => {
         thread
       ).questions.map((question) => question.askTurnIndex)
     ).toEqual([0, 1]);
+    expect(
+      jsonBody<{ questions: MemoryQuestionDetailRecord[] }>(thread).questions[1]
+    ).toMatchObject({
+      status: "error",
+      errorMessage:
+        "This Ask was interrupted when the Local AI Runtime stopped. Try again."
+    });
     expect(hidden.statusCode).toBe(404);
     expect(malformed.statusCode).toBe(400);
   });

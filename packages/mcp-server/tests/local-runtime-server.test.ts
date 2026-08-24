@@ -55,6 +55,39 @@ const defaultExecutor = (): LocalAiRuntimeToolExecutor => ({
 });
 
 describe("Local AI Runtime", () => {
+  it("recovers durable Desktop Ask turns before starting runtime services", async () => {
+    const callOrder: string[] = [];
+    const recoverPendingDesktopAsks = vi.fn(async () => {
+      callOrder.push("recover");
+      return { recovered: 1 };
+    });
+    const dependencies = {
+      recoverPendingDesktopAsks,
+      startLcmSummaryService: vi.fn(() => {
+        callOrder.push("services");
+        return null;
+      }),
+      watchKoedLocalWork: vi.fn(),
+      startCuratedMemoryReviewService: vi.fn(() => ({ stop: vi.fn() })),
+      startCodexTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      startClaudeTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      createExecutor: vi.fn(() => defaultExecutor())
+    } as unknown as LocalAiRuntimeServiceDependencies;
+    const apiClient = new MemoryApiClient({
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token"
+    });
+
+    const services = await startDefaultLocalAiRuntimeServices(
+      { apiClient, environment: {}, koedHome: tempHome() },
+      dependencies
+    );
+
+    expect(recoverPendingDesktopAsks).toHaveBeenCalledWith(apiClient);
+    expect(callOrder).toEqual(["recover", "services"]);
+    await services.close();
+  });
+
   it("owns and stops both transcript watchers", async () => {
     const lcmStop = vi.fn();
     const lcmWorkStop = vi.fn();

@@ -633,6 +633,7 @@ const readStoredDesktopCredential: DesktopCredentialReader = (koedHome) => {
 
 export interface CollaborationSharedMemoryControl {
   advanceContinuousPersonalNoteRevision(input: {
+    backendId: string;
     localOwnerUserId: string;
     noteId: string;
     noteRevision: number;
@@ -3292,6 +3293,7 @@ export const createCollaborationSharedMemoryControl = (
   async advanceContinuousPersonalNoteRevision(input) {
     const parsedInput = z
       .object({
+        backendId: z.string().trim().min(1),
         localOwnerUserId: uuidSchema,
         noteId: uuidSchema,
         noteRevision: z.number().int().safe().positive()
@@ -3315,7 +3317,9 @@ export const createCollaborationSharedMemoryControl = (
     const readRegistry =
       options.readUpstreamRegistry ?? readLocalEdgeUpstreamRegistry;
     const registry = readRegistry(options.upstreamBackendsPath);
-    if (!registry.activeBackendId) return { queued: 0 };
+    if (!upstreamBackendById(registry, parsedInput.backendId)) {
+      throw new ControlFailure("temporarily_unavailable");
+    }
     const readDesktop =
       options.readDesktopCredential ?? readStoredDesktopCredential;
     const desktop = readDesktop(options.koedHome);
@@ -3337,7 +3341,7 @@ export const createCollaborationSharedMemoryControl = (
       throw new ControlFailure("internal_error");
     }
     const authority = await resolveAuthority(options, command, {
-      upstreamBackendId: registry.activeBackendId,
+      upstreamBackendId: parsedInput.backendId,
       localOwnerUserId: parsedInput.localOwnerUserId,
       desktopCredentialKeyId: desktop.credentialKeyId
     });

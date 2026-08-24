@@ -16131,6 +16131,17 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       initial.askThreadId!
     );
+    const recovered = await questionRepo.recoverPendingDesktopAsks(
+      { userId: alice.id },
+      {
+        errorMessage:
+          "This Ask was interrupted when the Local AI Runtime stopped. Try again."
+      }
+    );
+    const recoveredThread = await questionRepo.getDesktopAskThread(
+      { userId: alice.id },
+      initial.askThreadId!
+    );
 
     expect(initial).toMatchObject({
       origin: "desktop_ask",
@@ -16161,6 +16172,11 @@ describeDb("memory repository visibility", () => {
       )
     ).toEqual(new Set([initial.askThreadId, secondThread.askThreadId]));
     expect(loadedThread.map((turn) => turn.askTurnIndex)).toEqual([0, 1, 2]);
+    expect(recovered).toEqual({ recovered: 3 });
+    expect(recoveredThread.slice(1)).toEqual([
+      expect.objectContaining({ status: "error", attemptCount: 1 }),
+      expect.objectContaining({ status: "error", attemptCount: 1 })
+    ]);
     await expect(
       questionRepo.createPendingDesktopAsk(
         { userId: bob.id },

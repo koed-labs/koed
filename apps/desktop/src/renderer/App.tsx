@@ -1206,10 +1206,10 @@ export function App({
               route: { kind: "personal-memory-notes", newNote: true }
             })
           }
-          onSave={async (body) => {
+          onSave={async (body, idempotencyKey) => {
             const created = await personalMemoryApi.createNote!({
               body,
-              idempotencyKey: crypto.randomUUID()
+              idempotencyKey
             });
             navigate({
               authority: currentNavigationEntry(navigation).authority,

@@ -421,6 +421,15 @@ const createFixture = (
     loadLocalCandidatePreview?: NonNullable<
       CollaborationSharedMemoryControlOptions["loadLocalCandidatePreview"]
     >;
+    readLocalEdgeClientCredential?: NonNullable<
+      CollaborationSharedMemoryControlOptions["readLocalEdgeClientCredential"]
+    >;
+    resolveUpstreamAuthorization?: NonNullable<
+      CollaborationSharedMemoryControlOptions["resolveUpstreamAuthorization"]
+    >;
+    readUpstreamRegistry?: NonNullable<
+      CollaborationSharedMemoryControlOptions["readUpstreamRegistry"]
+    >;
     remoteRead?: RemoteReadResponse;
     remoteOwnerGrants?: ReturnType<typeof grantResponse>[];
     remoteOwnedShares?: Record<string, unknown>[];
@@ -997,10 +1006,12 @@ const createFixture = (
     koedHome: "/tmp/koed-control-test",
     upstreamBackendsPath: "/tmp/upstreams.json",
     fetch: fetcher as typeof fetch,
-    resolveUpstreamAuthorization: () =>
-      overrides.upstreamAuthorization === undefined
-        ? "Koed-Device upstream-key:upstream-secret"
-        : overrides.upstreamAuthorization,
+    resolveUpstreamAuthorization:
+      overrides.resolveUpstreamAuthorization ??
+      (() =>
+        overrides.upstreamAuthorization === undefined
+          ? "Koed-Device upstream-key:upstream-secret"
+          : overrides.upstreamAuthorization),
     authorityStore: store,
     prepareLocalLcmRepresentation:
       overrides.prepareLocalLcmRepresentation ?? (async () => "ready"),
@@ -1026,41 +1037,45 @@ const createFixture = (
         "personal_collaboration_write"
       ]
     }),
-    readLocalEdgeClientCredential: () => ({
-      authorization:
-        overrides.lecAuthorization ?? "Koed-Device lec-key:lec-secret",
-      backendId: "team-backend",
-      credentialKeyId: "lec-key",
-      operationFamilies: overrides.lecFamilies ?? [
-        "team_workspace_read",
-        "share_grant_management"
-      ]
-    }),
-    readUpstreamRegistry: () => ({
-      schemaVersion: 2,
-      activeBackendId: "team-backend",
-      backends: [
-        {
-          id: "team-backend",
-          baseUrl: "https://team.example.test",
-          routePolicy: {
-            teamWorkspaceRead: "enabled",
-            shareGrantManagement: "enabled"
-          },
-          capabilities: {
-            state: "validated",
-            expiresAt: "2099-01-01T00:00:00.000Z",
-            schemaVersion: 6,
-            payload: {
-              capabilitySchemaVersion: 6,
-              capabilities: {
-                "memory.collaboration": { availability: "partial" }
+    readLocalEdgeClientCredential:
+      overrides.readLocalEdgeClientCredential ??
+      (() => ({
+        authorization:
+          overrides.lecAuthorization ?? "Koed-Device lec-key:lec-secret",
+        backendId: "team-backend",
+        credentialKeyId: "lec-key",
+        operationFamilies: overrides.lecFamilies ?? [
+          "team_workspace_read",
+          "share_grant_management"
+        ]
+      })),
+    readUpstreamRegistry:
+      overrides.readUpstreamRegistry ??
+      (() => ({
+        schemaVersion: 2,
+        activeBackendId: "team-backend",
+        backends: [
+          {
+            id: "team-backend",
+            baseUrl: "https://team.example.test",
+            routePolicy: {
+              teamWorkspaceRead: "enabled",
+              shareGrantManagement: "enabled"
+            },
+            capabilities: {
+              state: "validated",
+              expiresAt: "2099-01-01T00:00:00.000Z",
+              schemaVersion: 6,
+              payload: {
+                capabilitySchemaVersion: 6,
+                capabilities: {
+                  "memory.collaboration": { availability: "partial" }
+                }
               }
             }
           }
-        }
-      ]
-    }),
+        ]
+      })),
     actionGrantLifecycle: {
       resolve: () =>
         overrides.actionGrantSecret === undefined
@@ -1124,6 +1139,7 @@ describe("collaboration Shared Memory control", () => {
 
     await expect(
       fixture.control.advanceContinuousPersonalNoteRevision({
+        backendId: "team-backend",
         localOwnerUserId: ids.localOwner,
         noteId: ids.note,
         noteRevision: 2
@@ -1150,6 +1166,62 @@ describe("collaboration Shared Memory control", () => {
       }
     ]);
     expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it("advances continuous Personal Note work through its claimed non-active backend", async () => {
+    const fixture = createFixture({
+      loadPersonalNoteCandidatePreview: async () => noteCandidateV2,
+      resolveUpstreamAuthorization: (backend) =>
+        `Koed-Device ${backend.id}-key:${backend.id}-secret`,
+      readLocalEdgeClientCredential: (_koedHome, backendId) => ({
+        authorization: `Koed-Device ${backendId}-key:${backendId}-secret`,
+        backendId,
+        credentialKeyId: `${backendId}-key`,
+        operationFamilies: ["share_grant_management"]
+      }),
+      readUpstreamRegistry: () => ({
+        schemaVersion: 2,
+        activeBackendId: "active-backend",
+        backends: ["active-backend", "claimed-backend"].map((id) => ({
+          id,
+          baseUrl: `https://${id}.example.test`,
+          routePolicy: {
+            teamWorkspaceRead: "enabled",
+            shareGrantManagement: "enabled"
+          },
+          capabilities: {
+            state: "validated",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+            schemaVersion: 6,
+            payload: {
+              capabilitySchemaVersion: 6,
+              capabilities: {
+                "memory.collaboration": { availability: "partial" }
+              }
+            }
+          }
+        }))
+      })
+    });
+
+    await expect(
+      fixture.control.advanceContinuousPersonalNoteRevision({
+        backendId: "claimed-backend",
+        localOwnerUserId: ids.localOwner,
+        noteId: ids.note,
+        noteRevision: 2
+      })
+    ).resolves.toEqual({ queued: 1 });
+
+    expect(
+      fixture.requests.find((request) =>
+        request.pathname.endsWith(
+          "/v1/shared-memory/personal-note-revisions/advance"
+        )
+      )
+    ).toMatchObject({
+      authorization: "Koed-Device claimed-backend-key:claimed-backend-secret"
+    });
   });
 
   it("requeues the latest continuous Personal Note revision when its Share resumes", async () => {

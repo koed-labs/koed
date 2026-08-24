@@ -439,7 +439,10 @@ describe("Personal Notes", () => {
     ) as HTMLTextAreaElement;
     await enterText(textarea, "A new durable Note");
     await click(container.querySelector('button[type="submit"]'));
-    expect(onSave).toHaveBeenCalledWith("A new durable Note");
+    expect(onSave).toHaveBeenCalledWith(
+      "A new durable Note",
+      expect.any(String)
+    );
 
     await act(async () => {
       root.render(

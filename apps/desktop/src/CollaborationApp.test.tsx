@@ -3,6 +3,7 @@
 import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
+  PERSONAL_DESKTOP_CONTRACT_VERSION,
   collaborationSafeErrorMessages,
   collaborationSnapshotSchema,
   type CollaborationMessage,
@@ -1084,6 +1085,7 @@ const click = async (container: HTMLElement, label: string) => {
   const button = [...document.body.querySelectorAll("button")].find(
     (item) =>
       item.getAttribute("aria-label") === label ||
+      item.querySelector("strong")?.textContent?.trim() === label ||
       item.querySelector(".desktop-sidebar-nav-label")?.textContent?.trim() ===
         label ||
       item.textContent?.replace(/\s+/g, " ").trim() === label
@@ -4816,6 +4818,149 @@ pnpm test
     await vi.waitFor(() =>
       expect(document.body.textContent).toContain("Local durable Note")
     );
+  });
+
+  it("reuses Note mutation keys after ambiguous create and update failures", async () => {
+    const client = createClient();
+    const personalMemoryApi = createPersonalMemoryApi();
+    const savedNote = testNote(2, "Durable retry Note");
+    personalMemoryApi.createNote = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce(savedNote);
+    personalMemoryApi.listNotes = vi.fn(async () => ({
+      notes: [savedNote],
+      nextBeforeSequence: null
+    }));
+    personalMemoryApi.loadNote = vi.fn(async () => savedNote);
+    await render(client, personalMemoryApi);
+
+    await click(container, "Notes");
+    await click(container, "New Note");
+    const createEditor = document.body.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Note content"]'
+    )!;
+    await act(async () => setValue(createEditor, savedNote.body));
+    await click(container, "Save Note");
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("could not be saved")
+    );
+    await click(container, "Save Note");
+    await vi.waitFor(() =>
+      expect(personalMemoryApi.createNote).toHaveBeenCalledTimes(2)
+    );
+    const createCalls = vi.mocked(personalMemoryApi.createNote!).mock.calls;
+    expect(createCalls[1]?.[0].idempotencyKey).toBe(
+      createCalls[0]?.[0].idempotencyKey
+    );
+
+    personalMemoryApi.updateNote = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce({
+        ...savedNote,
+        body: "Updated retry body",
+        revision: 2
+      });
+    await click(container, "Edit Note");
+    const updateEditor = document.body.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Note content"]'
+    )!;
+    await act(async () => setValue(updateEditor, "Updated retry body"));
+    await click(container, "Save");
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("could not be saved")
+    );
+    await click(container, "Save");
+    await vi.waitFor(() =>
+      expect(personalMemoryApi.updateNote).toHaveBeenCalledTimes(2)
+    );
+    const updateCalls = vi.mocked(personalMemoryApi.updateNote!).mock.calls;
+    expect(updateCalls[1]?.[0].idempotencyKey).toBe(
+      updateCalls[0]?.[0].idempotencyKey
+    );
+  });
+
+  it("preserves an active Note draft across unrelated Note invalidations", async () => {
+    const client = createClient();
+    const personalMemoryApi = createPersonalMemoryApi();
+    let publishChange!: Parameters<PersonalDesktopApi["subscribe"]>[0];
+    personalMemoryApi.subscribe = vi.fn((listener) => {
+      publishChange = listener;
+      return () => undefined;
+    });
+    await render(client, personalMemoryApi);
+
+    await click(container, "Notes");
+    await click(container, "Check the Shared Memory split view.");
+    await click(container, "Edit Note");
+    const editor = document.body.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Note content"]'
+    )!;
+    await act(async () => setValue(editor, "Unsaved local draft"));
+    await act(async () =>
+      publishChange({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        type: "notes_changed",
+        noteIds: [uuid(9_999)]
+      })
+    );
+
+    await vi.waitFor(() =>
+      expect(
+        document.body.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Note content"]'
+        )?.value
+      ).toBe("Unsaved local draft")
+    );
+    expect(document.body.textContent).toContain("Save");
+  });
+
+  it("ignores a Note save completion after the editor selection changes", async () => {
+    const client = createClient();
+    const personalMemoryApi = createPersonalMemoryApi();
+    const noteA = testNote(10, "Note A body");
+    const noteB = testNote(11, "Note B body");
+    personalMemoryApi.listNotes = vi.fn(async () => ({
+      notes: [noteB, noteA],
+      nextBeforeSequence: null
+    }));
+    personalMemoryApi.loadNote = vi.fn(async ({ noteId }) =>
+      noteId === noteA.noteId ? noteA : noteB
+    );
+    let resolveUpdate!: (note: PersonalDesktopNote) => void;
+    personalMemoryApi.updateNote = vi.fn(
+      () =>
+        new Promise<PersonalDesktopNote>((resolve) => {
+          resolveUpdate = resolve;
+        })
+    );
+    await render(client, personalMemoryApi);
+
+    await click(container, "Notes");
+    await click(container, noteA.title);
+    await click(container, "Edit Note");
+    const editor = document.body.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Note content"]'
+    )!;
+    await act(async () => setValue(editor, "Note A saved body"));
+    await click(container, "Save");
+    await click(container, noteB.title);
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Note B body")
+    );
+    await click(container, noteA.title);
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Note A body")
+    );
+    await act(async () =>
+      resolveUpdate({ ...noteA, body: "Note A saved body", revision: 2 })
+    );
+
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Note A body")
+    );
+    expect(document.body.textContent).not.toContain("Note A saved body");
   });
 
   it("does not carry an unsaved Note draft across navigation", async () => {

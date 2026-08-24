@@ -51,6 +51,10 @@ export interface MemoryQuestionRepository {
       | { errorMessage: string; status: "error" }
     )
   ): Promise<MemoryQuestionDetailRecord>;
+  recoverPendingDesktopAsks(
+    actor: ActorContext,
+    input: { errorMessage: string }
+  ): Promise<{ recovered: number }>;
   listDesktopAskThreads(
     actor: ActorContext,
     input?: { cursor?: DesktopAskThreadCursor; limit?: number }
@@ -672,6 +676,63 @@ export const createMemoryQuestionRepository = (
         }
         await client.query("commit");
         return mapMemoryQuestionDetail(await hydrateQuestionRow(actor, row));
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async recoverPendingDesktopAsks(actor, input) {
+      const suppressPlaintextPayload =
+        memoryQuestionSensitiveFieldsRequireEncryption();
+      if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
+        throw new Error(
+          "Envelope encryption provider is required when plaintext Memory Question storage is disabled"
+        );
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const result = await client.query<{
+          id: string;
+          visibility: Visibility;
+        }>(
+          `
+            update memory_questions
+            set
+              status = 'error'::memory_question_status,
+              error_message = $2,
+              answered_at = now(),
+              updated_at = now(),
+              attempt_count = greatest(attempt_count, 1)
+            where owner_user_id = $1
+              and visibility = 'personal'
+              and origin = 'desktop_ask'
+              and status = 'pending'
+            returning id, visibility
+          `,
+          [
+            actor.userId,
+            suppressPlaintextPayload
+              ? ENCRYPTED_MEMORY_QUESTION_TEXT
+              : input.errorMessage
+          ]
+        );
+        if (suppressPlaintextPayload) {
+          for (const row of result.rows) {
+            await persistEncryptedQuestionFields(
+              client,
+              actor,
+              row.id,
+              row.visibility,
+              { error_message: input.errorMessage }
+            );
+          }
+        }
+        await client.query("commit");
+        return { recovered: result.rowCount ?? result.rows.length };
       } catch (error) {
         await client.query("rollback");
         throw error;

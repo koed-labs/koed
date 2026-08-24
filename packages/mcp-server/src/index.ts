@@ -811,6 +811,10 @@ export class MemoryApiClient {
     return this.request("POST", "/v1/memory/ask/questions", input);
   }
 
+  async recoverPendingDesktopAsks(): Promise<{ recovered: number }> {
+    return this.request("POST", "/v1/memory/ask/questions/recover-pending", {});
+  }
+
   async completePendingDesktopAsk(
     questionId: string,
     input: Record<string, unknown>
