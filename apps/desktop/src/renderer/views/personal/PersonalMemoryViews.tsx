@@ -480,7 +480,7 @@ function NewConversationButton({
   const owners = managedConversationOwners ?? [];
   const pickerDisabled = disabled || !owners.some((owner) => owner.ready);
   return (
-    <div className="personal-new-conversation-group">
+    <div className="personal-new-conversation-group" data-starting={starting}>
       <button
         className="personal-new-conversation"
         disabled={disabled || !managedConversationOwner?.ready || starting}

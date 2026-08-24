@@ -161,7 +161,7 @@ describe("Personal Ask", () => {
       [...container.querySelectorAll("button")].find(
         (button) => button.textContent?.trim() === "New"
       )?.classList
-    ).toContain("personal-new-conversation");
+    ).toContain("personal-new-conversation-standalone");
   });
 
   it("clears a stale thread-load error and presents AI Client failures clearly", async () => {
@@ -394,10 +394,26 @@ describe("Personal Notes", () => {
     expect(onNew).toHaveBeenCalledOnce();
     expect(container.textContent).toContain("Keep the Ask page focused.");
     expect(container.textContent).not.toContain("Delete");
-    await click(container.querySelector('button[aria-label="Edit Note"]'));
+    expect(
+      container.querySelector('button[aria-label="Edit Note"]')
+    ).toBeNull();
+    expect(
+      container.querySelector('button[aria-label="Share Note"]')
+    ).toBeNull();
+    await click(container.querySelector('[aria-label="Edit Note content"]'));
     const bodyEditor = container.querySelector(
       'textarea[aria-label="Note content"]'
     ) as HTMLTextAreaElement;
+    expect(
+      container.querySelector(
+        ".personal-note-edit-actions button[type='submit']"
+      )?.textContent
+    ).toBe("Save");
+    expect(
+      container.querySelector(
+        ".personal-note-edit-actions button[type='button']"
+      )?.textContent
+    ).toBe("Cancel");
     await enterText(bodyEditor, "Updated launch guidance");
     await click(
       [...container.querySelectorAll("button")].find(

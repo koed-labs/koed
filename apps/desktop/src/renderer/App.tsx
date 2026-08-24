@@ -1220,7 +1220,8 @@ export function App({
             });
           }}
           onShare={
-            (snapshot?.navigation.teams.some(
+            snapshot?.connection.state === "live" &&
+            snapshot.navigation.teams.some(
               (team) =>
                 team.lifecycle === "active" &&
                 team.workspaces.some(
@@ -1228,7 +1229,7 @@ export function App({
                     workspace.lifecycle === "active" &&
                     workspace.access === "write"
                 )
-            ) ?? false)
+            )
               ? (note) =>
                   collaboration.setModal({
                     kind: "share_personal_note",

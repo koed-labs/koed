@@ -217,7 +217,7 @@ export function PersonalAskView({
               className="personal-ask-conversation-heading"
             >
               <button
-                className="personal-new-conversation"
+                className="personal-new-conversation personal-new-conversation-standalone"
                 onClick={onNew}
                 type="button"
               >

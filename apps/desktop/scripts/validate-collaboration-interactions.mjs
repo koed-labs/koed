@@ -836,7 +836,7 @@ const run = async () => {
       "# Continuous browser revision two\nPrivacy-safe replacement content.";
     await trustedClick(
       alice,
-      `document.querySelector('[aria-label="Edit Note"]')`
+      `document.querySelector('[aria-label="Edit Note content"]')`
     );
     await waitFor(
       alice,
@@ -924,7 +924,7 @@ const run = async () => {
     );
     await trustedClick(
       alice,
-      `document.querySelector('[aria-label="Edit Note"]')`
+      `document.querySelector('[aria-label="Edit Note content"]')`
     );
     const revisionThreeBody =
       "# Continuous browser revision three\nCatch up only after updates resume.";

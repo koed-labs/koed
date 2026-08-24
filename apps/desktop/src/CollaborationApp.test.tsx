@@ -1094,6 +1094,14 @@ const click = async (container: HTMLElement, label: string) => {
   await act(async () => button.click());
 };
 
+const clickNoteBody = async () => {
+  const body = document.body.querySelector<HTMLElement>(
+    '[aria-label="Edit Note content"]'
+  );
+  if (!body) throw new Error("Missing Note body edit trigger");
+  await act(async () => body.click());
+};
+
 const setValue = (
   element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
   value: string
@@ -4862,7 +4870,7 @@ pnpm test
         body: "Updated retry body",
         revision: 2
       });
-    await click(container, "Edit Note");
+    await clickNoteBody();
     const updateEditor = document.body.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Note content"]'
     )!;
@@ -4893,7 +4901,7 @@ pnpm test
 
     await click(container, "Notes");
     await click(container, "Check the Shared Memory split view.");
-    await click(container, "Edit Note");
+    await clickNoteBody();
     const editor = document.body.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Note content"]'
     )!;
@@ -4939,7 +4947,7 @@ pnpm test
 
     await click(container, "Notes");
     await click(container, noteA.title);
-    await click(container, "Edit Note");
+    await clickNoteBody();
     const editor = document.body.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Note content"]'
     )!;

@@ -464,23 +464,17 @@ export function PersonalNotesView({
                 </time>
               </div>
               <div className="personal-note-header-actions">
-                <button
-                  aria-label="Edit Note"
-                  disabled={!updateNote || editingBody}
-                  onClick={() => setEditingBody(true)}
-                  type="button"
-                >
-                  <Pencil aria-hidden="true" /> Edit
-                </button>
-                <button
-                  aria-label="Share Note"
-                  className="personal-note-share"
-                  disabled={!onShare || detail.projectionState !== "available"}
-                  onClick={() => onShare?.(detail)}
-                  type="button"
-                >
-                  Share
-                </button>
+                {onShare ? (
+                  <button
+                    aria-label="Share Note"
+                    className="personal-note-share"
+                    disabled={detail.projectionState !== "available"}
+                    onClick={() => onShare(detail)}
+                    type="button"
+                  >
+                    Share
+                  </button>
+                ) : null}
               </div>
             </header>
             {detail.projectionState !== "available" ? (
@@ -528,11 +522,36 @@ export function PersonalNotesView({
                 </div>
               </form>
             ) : (
-              <SecureMarkdown
-                adapters={markdownAdapters}
-                className="personal-note-markdown"
-                source={detail.body}
-              />
+              <div
+                className="personal-note-body-trigger"
+                data-editable={Boolean(updateNote)}
+                onClick={(event) => {
+                  if (
+                    !updateNote ||
+                    (event.target instanceof Element &&
+                      event.target.closest("button"))
+                  ) {
+                    return;
+                  }
+                  setEditingBody(true);
+                }}
+              >
+                {updateNote ? (
+                  <button
+                    aria-label="Edit Note content"
+                    className="sr-only"
+                    onClick={() => setEditingBody(true)}
+                    type="button"
+                  >
+                    Edit Note content
+                  </button>
+                ) : null}
+                <SecureMarkdown
+                  adapters={markdownAdapters}
+                  className="personal-note-markdown"
+                  source={detail.body}
+                />
+              </div>
             )}
           </article>
         ) : selectedNoteId ? (
