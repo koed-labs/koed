@@ -1,3 +1,22 @@
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM "sessions" LIMIT 1)
+    OR EXISTS (SELECT 1 FROM "logical_memories" LIMIT 1)
+    OR EXISTS (SELECT 1 FROM "collaboration_pending_share_source_work" LIMIT 1)
+    OR EXISTS (SELECT 1 FROM "pending_share_operations" LIMIT 1)
+    OR EXISTS (SELECT 1 FROM "shared_memory_candidate_previews" LIMIT 1)
+    OR EXISTS (SELECT 1 FROM "shared_source_artifacts" LIMIT 1)
+    OR EXISTS (SELECT 1 FROM "shared_source_previews" LIMIT 1)
+    OR EXISTS (SELECT 1 FROM "source_owner_representation_consents" LIMIT 1)
+    OR EXISTS (SELECT 1 FROM "team_memory_representations" LIMIT 1)
+    OR EXISTS (SELECT 1 FROM "collaboration_shared_memory_grants" LIMIT 1)
+  THEN
+    RAISE EXCEPTION USING
+      MESSAGE = 'Koed alpha data reset required before enabling generic Shared Memory sources',
+      DETAIL = 'Migration 0035 replaces source identity and sharing records that cannot be inferred safely from the previous schema.',
+      HINT = 'Reset the disposable alpha database and restart Koed so migrations can run from an empty baseline.';
+  END IF;
+END $$;--> statement-breakpoint
 CREATE TYPE "public"."shared_memory_source_kind" AS ENUM('captured_session', 'personal_note');--> statement-breakpoint
 ALTER TYPE "public"."collaboration_event_family" ADD VALUE 'source_revision_changed' BEFORE 'memory_event_available';--> statement-breakpoint
 ALTER TYPE "public"."memory_question_status" ADD VALUE 'pending' BEFORE 'answered';--> statement-breakpoint
@@ -350,6 +369,7 @@ ALTER TABLE "shared_source_artifacts" ALTER COLUMN "sync_relationship_id" DROP N
 ALTER TABLE "shared_source_previews" ALTER COLUMN "remote_replica_id" DROP NOT NULL;--> statement-breakpoint
 ALTER TABLE "source_owner_representation_consents" ALTER COLUMN "remote_replica_id" DROP NOT NULL;--> statement-breakpoint
 ALTER TABLE "collaboration_pending_share_source_work" ADD COLUMN "mode" "shared_memory_consent_mode" NOT NULL;--> statement-breakpoint
+ALTER TABLE "collaboration_shared_memory_grants" ADD COLUMN "mode" "shared_memory_consent_mode" NOT NULL;--> statement-breakpoint
 ALTER TABLE "collaboration_pending_share_source_work" ADD COLUMN "logical_memory_id" uuid NOT NULL;--> statement-breakpoint
 ALTER TABLE "collaboration_pending_share_source_work" ADD COLUMN "source_revision_id" uuid NOT NULL;--> statement-breakpoint
 ALTER TABLE "logical_memories" ADD COLUMN "source_kind" "shared_memory_source_kind" NOT NULL;--> statement-breakpoint

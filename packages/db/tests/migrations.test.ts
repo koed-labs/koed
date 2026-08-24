@@ -257,6 +257,22 @@ describe("Claude AI Client migration", () => {
 });
 
 describe("Personal Note Share Grant migrations", () => {
+  it("requires an explicit alpha reset before replacing populated source identities", async () => {
+    const migrationSql = await readDrizzleFile("0035_concerned_the_twelve.sql");
+    const resetGuard = migrationSql.indexOf(
+      "Koed alpha data reset required before enabling generic Shared Memory sources"
+    );
+    const firstRequiredColumn = migrationSql.indexOf(
+      'ALTER TABLE "collaboration_pending_share_source_work" ADD COLUMN "mode"'
+    );
+
+    expect(resetGuard).toBeGreaterThan(-1);
+    expect(firstRequiredColumn).toBeGreaterThan(resetGuard);
+    expect(migrationSql).toContain(
+      "Migration 0035 replaces source identity and sharing records that cannot be inferred safely from the previous schema."
+    );
+  });
+
   it("creates generic immutable revisions with typed source bindings", async () => {
     const migrationSql = await readDrizzleFile("0035_concerned_the_twelve.sql");
 

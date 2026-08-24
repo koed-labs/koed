@@ -1897,6 +1897,76 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     expect(JSON.stringify(result)).not.toContain("must-strip");
   });
 
+  it("accepts a non-empty Personal Note summary list from the API", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "main_only_token" })
+    );
+    const updatedAt = "2026-08-20T12:00:00.000Z";
+    const personalMemoryFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          notes: [
+            {
+              noteId: "11111111-1111-4111-8111-111111111111",
+              title: "Durable Note",
+              titleVersion: 1,
+              revisionId: "22222222-2222-4222-8222-222222222222",
+              revision: 1,
+              contentHash: "a".repeat(64),
+              memoryEventId: null,
+              projectionState: "pending",
+              projectionFailureCode: null,
+              createdAt: updatedAt,
+              updatedAt,
+              sourceSequence: 1
+            }
+          ],
+          nextBeforeSequence: null
+        })
+      )
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://localhost:4170" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.notes.list",
+        input: { limit: 50 }
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        notes: [{ title: "Durable Note", projectionState: "pending" }]
+      }
+    });
+  });
+
   it("creates a Personal Note through the fixed local owner-scoped route", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
     mkdirSync(resolve(koedHome, "config"), { recursive: true });

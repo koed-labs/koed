@@ -899,7 +899,6 @@ export const registerCollaborationRoutes = (
         memoryEventId: note.memoryEventId,
         projectionState: note.projectionState,
         projectionFailureCode: note.projectionFailureCode,
-        logicalMemoryId: note.logicalMemoryId,
         createdAt: note.createdAt,
         updatedAt: note.updatedAt,
         sourceSequence: note.sourceSequence

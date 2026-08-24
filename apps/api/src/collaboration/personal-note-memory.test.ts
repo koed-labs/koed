@@ -141,6 +141,30 @@ describe("Personal Note memory Projection", () => {
     expect(enqueueEmbedding).not.toHaveBeenCalled();
   });
 
+  it("does not enqueue an embedding when the revision advances during projection", async () => {
+    const createMemoryEvent = vi.fn(async () => ({
+      id: projectedNote.memoryEventId
+    }));
+    const markPersonalNoteProjectionAvailable = vi.fn(async () => null);
+    const enqueueEmbedding = vi.fn();
+
+    await expect(
+      projectPersonalNoteToMemory(
+        {
+          repository: {
+            createMemoryEvent,
+            markPersonalNoteProjectionAvailable
+          } as unknown as Parameters<
+            typeof projectPersonalNoteToMemory
+          >[0]["repository"],
+          enqueueEmbedding
+        },
+        { ownerUserId, note }
+      )
+    ).rejects.toThrow("advanced while its revision was projected");
+    expect(enqueueEmbedding).not.toHaveBeenCalled();
+  });
+
   it("repairs a bounded pending revision set and records isolated failures", async () => {
     const failedNote = {
       ...note,

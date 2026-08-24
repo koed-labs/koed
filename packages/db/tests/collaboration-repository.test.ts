@@ -1727,10 +1727,10 @@ describeDb("Collaboration repository", () => {
       upstreamUserId: randomUUID()
     };
     const remoteDeviceId = randomUUID();
-    await pool.query(
+    const enrollment = await pool.query<{ id: string }>(
       `insert into collaboration_shared_memory_enrollments
          (backend_id,local_owner_user_id,upstream_user_id,remote_device_id)
-       values ($1,$2,$3,$4)`,
+       values ($1,$2,$3,$4) returning id`,
       [
         identity.backendId,
         identity.localOwnerUserId,
@@ -1765,6 +1765,58 @@ describeDb("Collaboration repository", () => {
         memoryEventId: firstEventId
       })
     ).resolves.toMatchObject({ revision: 1, memoryEventId: firstEventId });
+    await expect(
+      pool.query(
+        `select 1 from collaboration_continuous_note_advancement_work
+          where local_owner_user_id=$1`,
+        [ownerUserId]
+      )
+    ).resolves.toHaveProperty("rowCount", 0);
+
+    const companionBindingId = randomUUID();
+    const shareGrantId = randomUUID();
+    const logicalGrantId = randomUUID();
+    const consentId = randomUUID();
+    const teamId = randomUUID();
+    const workspaceId = randomUUID();
+    const companionThreadId = randomUUID();
+    const sharedSessionId = randomUUID();
+    await pool.query(
+      `insert into collaboration_shared_memory_companion_bindings
+         (id,enrollment_id,share_grant_id,logical_memory_id,team_id,
+          team_workspace_id,companion_thread_id,shared_session_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        companionBindingId,
+        enrollment.rows[0]!.id,
+        shareGrantId,
+        note.logicalMemoryId,
+        teamId,
+        workspaceId,
+        companionThreadId,
+        sharedSessionId
+      ]
+    );
+    await pool.query(
+      `insert into collaboration_shared_memory_grants
+         (enrollment_id,companion_binding_id,share_grant_id,logical_grant_id,
+          logical_memory_id,consent_id,team_id,team_workspace_id,
+          maximum_fidelity,include_curated_memory,mode,source_revision,
+          grant_version,lifecycle,protected_dto_hash,protected_dto)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,'memory_events',false,'continuous',1,
+               1,'active',$9,'{}'::jsonb)`,
+      [
+        enrollment.rows[0]!.id,
+        companionBindingId,
+        shareGrantId,
+        logicalGrantId,
+        note.logicalMemoryId,
+        consentId,
+        teamId,
+        workspaceId,
+        "a".repeat(64)
+      ]
+    );
 
     const revised = await repository.updatePersonalNoteBody(
       actor(ownerUserId),
@@ -1801,11 +1853,6 @@ describeDb("Collaboration repository", () => {
       )
     ).resolves.toMatchObject({
       rows: [
-        {
-          local_note_revision: 1,
-          state: "completed",
-          redacted_failure_code: "superseded"
-        },
         {
           local_note_revision: 2,
           state: "pending",
@@ -1946,6 +1993,63 @@ describeDb("Collaboration repository", () => {
         })
       )
     );
+  });
+
+  it("invalidates a stale Personal Note projection before it can be embedded", async () => {
+    const ownerUserId = await createUser("Racing Note Owner");
+    const note = await repository.createPersonalNote(actor(ownerUserId), {
+      body: "Original revision",
+      idempotencyKey: `racing-note:${randomUUID()}`
+    });
+    const event = await pool.query<{ id: string }>(
+      `insert into memory_events
+         (owner_user_id,visibility,event_type,capture_method,payload,
+          include_in_embedding,idempotency_key,source_sequence)
+       values ($1,'personal','captured','api',$2::jsonb,true,$3,1)
+       returning id`,
+      [
+        ownerUserId,
+        JSON.stringify({
+          rawEventType: "personal_note_revision",
+          metadata: {
+            personalNoteId: note.noteId,
+            personalNoteRevision: 1
+          }
+        }),
+        `personal-note:${note.noteId}:revision:1`
+      ]
+    );
+    await repository.updatePersonalNoteBody(actor(ownerUserId), {
+      noteId: note.noteId,
+      expectedRevision: 1,
+      body: "Winning revision",
+      idempotencyKey: `racing-note-update:${randomUUID()}`
+    });
+
+    await expect(
+      repository.markPersonalNoteProjectionAvailable(actor(ownerUserId), {
+        noteId: note.noteId,
+        revision: 1,
+        memoryEventId: event.rows[0]!.id
+      })
+    ).resolves.toBeNull();
+    await expect(
+      pool.query<{
+        include_in_embedding: boolean;
+        invalidation_reason: string | null;
+      }>(
+        `select include_in_embedding,invalidation_reason
+           from memory_events where id=$1`,
+        [event.rows[0]!.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          include_in_embedding: false,
+          invalidation_reason: "personal_note_projection_race"
+        }
+      ]
+    });
   });
 
   it("keeps encrypted collaboration metadata out of structural and JSON payload records", async () => {

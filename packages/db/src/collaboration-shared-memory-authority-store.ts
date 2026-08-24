@@ -721,7 +721,6 @@ const validPersistedPreview = (
       value.sourceCapabilities[0] !== "memory_events" ||
       value.maximumFidelity !== "memory_events" ||
       value.includeCuratedMemory ||
-      value.mode !== "snapshot" ||
       value.sourceRevision !== source.data.noteRevision ||
       value.items.length !== 1 ||
       !isObject(firstItem) ||
@@ -1769,12 +1768,14 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           const refreshed = await client.query(
             `update collaboration_shared_memory_grants
                 set source_revision = $1,
-                    protected_dto_hash = $2,
-                    protected_dto = $3
-              where enrollment_id = $4 and share_grant_id = $5
-                and grant_version = $6 and source_revision = $7`,
+                    mode = $2,
+                    protected_dto_hash = $3,
+                    protected_dto = $4
+              where enrollment_id = $5 and share_grant_id = $6
+                and grant_version = $7 and source_revision = $8`,
             [
               grant.sourceRevision,
+              grant.mode,
               protectedValue.hash,
               protectedValue.envelope,
               active.id,
@@ -1823,9 +1824,9 @@ export const createCollaborationSharedMemoryAuthorityStore = (
              (enrollment_id, companion_binding_id, share_grant_id,
               logical_grant_id, logical_memory_id, consent_id, team_id,
               team_workspace_id, maximum_fidelity, include_curated_memory,
-              source_revision,
+              mode, source_revision,
               grant_version, lifecycle, protected_dto_hash, protected_dto)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
           [
             active.id,
             companion.id,
@@ -1837,6 +1838,7 @@ export const createCollaborationSharedMemoryAuthorityStore = (
             grant.teamWorkspaceId,
             grant.maximumFidelity,
             grant.includeCuratedMemory,
+            grant.mode,
             grant.sourceRevision,
             grant.grantVersion,
             grant.lifecycle,

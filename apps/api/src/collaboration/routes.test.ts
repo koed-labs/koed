@@ -886,6 +886,9 @@ describe("collaboration HTTP routes", () => {
       memoryEventId: null,
       projectionState: "pending"
     });
+    expect(
+      jsonBody<{ notes: Array<Record<string, unknown>> }>(list).notes[0]
+    ).not.toHaveProperty("logicalMemoryId");
 
     const exact = await app.inject({
       method: "GET",

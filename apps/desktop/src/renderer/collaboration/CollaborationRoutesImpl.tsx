@@ -3701,7 +3701,7 @@ function SharedMemoryOwnerModal({
         requireDestination();
         if (!currentEntry.logicalMemoryId) {
           throw new CollaborationInputError(
-            "Prepare this Personal Memory before sharing it."
+            "This Personal Memory source is not ready yet."
           );
         }
         const source =

@@ -2917,6 +2917,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "mode": {
+          "name": "mode",
+          "type": "shared_memory_consent_mode",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
         "source_revision": {
           "name": "source_revision",
           "type": "bigint",

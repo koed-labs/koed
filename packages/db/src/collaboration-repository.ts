@@ -4887,7 +4887,26 @@ export const createCollaborationRepository = (
             returning revision.note_id,revision.id,revision.content_hash`,
           [input.noteId, actor.userId, input.revision, input.memoryEventId]
         );
-        if (!updated.rows[0]) return null;
+        if (!updated.rows[0]) {
+          await client.query(
+            `update memory_events
+                set invalidated_at=coalesce(invalidated_at,now()),
+                    invalidation_reason='personal_note_projection_race',
+                    include_in_embedding=false,
+                    updated_at=now()
+              where id=$1 and owner_user_id=$2 and visibility='personal'
+                and payload ->> 'rawEventType'='personal_note_revision'
+                and payload #>> '{metadata,personalNoteId}'=$3
+                and payload #>> '{metadata,personalNoteRevision}'=$4`,
+            [
+              input.memoryEventId,
+              actor.userId,
+              input.noteId,
+              String(input.revision)
+            ]
+          );
+          return null;
+        }
         const sourceRoot = await client.query<{ logical_memory_id: string }>(
           `select logical_memory_id
              from local_personal_note_logical_memories
@@ -5034,9 +5053,24 @@ export const createCollaborationRepository = (
              from collaboration_shared_memory_enrollments enrollment
             where enrollment.local_owner_user_id=$1
               and enrollment.revoked_at is null
+              and exists (
+                select 1
+                  from collaboration_shared_memory_grants active_grant
+                 where active_grant.enrollment_id=enrollment.id
+                   and active_grant.logical_memory_id=$3
+                   and active_grant.mode='continuous'
+                   and active_grant.lifecycle='active'
+                   and not exists (
+                     select 1
+                       from collaboration_shared_memory_grants newer_grant
+                      where newer_grant.enrollment_id=active_grant.enrollment_id
+                        and newer_grant.share_grant_id=active_grant.share_grant_id
+                        and newer_grant.grant_version>active_grant.grant_version
+                   )
+              )
            on conflict (enrollment_id,source_revision_id)
            do nothing`,
-          [actor.userId, sourceRevisionId]
+          [actor.userId, sourceRevisionId, logicalMemoryId]
         );
         await client.query(`select pg_notify('koed_graph_updates',$1)`, [
           JSON.stringify({

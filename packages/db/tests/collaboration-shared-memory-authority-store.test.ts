@@ -430,7 +430,7 @@ describeDb("Collaboration Shared Memory authority store", () => {
           )
           and column_name in (
             'maximum_fidelity', 'include_curated_memory',
-            'active_representation'
+            'active_representation', 'mode'
           )
         order by table_name, column_name`
     );
@@ -452,6 +452,10 @@ describeDb("Collaboration Shared Memory authority store", () => {
         column_name: "maximum_fidelity"
       },
       {
+        table_name: "collaboration_shared_memory_grants",
+        column_name: "mode"
+      },
+      {
         table_name: "collaboration_shared_memory_previews",
         column_name: "include_curated_memory"
       },
@@ -460,6 +464,52 @@ describeDb("Collaboration Shared Memory authority store", () => {
         column_name: "maximum_fidelity"
       }
     ]);
+  });
+
+  it("persists a Continuous Personal Note preview with one exact Memory Event", async () => {
+    const fixture = await createFixture();
+    await bindFixture(fixture);
+    const memoryEventId = randomUUID();
+    const preview = previewFor(fixture, {
+      source: {
+        kind: "personal_note",
+        noteId: randomUUID(),
+        noteRevision: 3,
+        memoryEventId,
+        logicalMemoryId: fixture.logicalMemoryId
+      },
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      mode: "continuous",
+      sourceRevision: 3,
+      binding: {
+        ...previewFor(fixture).binding,
+        sourceRevision: 3
+      },
+      items: [
+        {
+          itemType: "user_message",
+          schemaVersion: 1,
+          sourceId: memoryEventId,
+          sourceLogicalMemoryId: fixture.logicalMemoryId,
+          sourceRevision: 3,
+          occurredAt: timestamp,
+          content: { text: "privacy-filtered Personal Note" }
+        }
+      ]
+    });
+
+    await expect(
+      store.persistAuthoritativePreview({
+        identity: fixture.identity,
+        preview
+      })
+    ).resolves.toMatchObject({
+      mode: "continuous",
+      source: { kind: "personal_note", memoryEventId }
+    });
   });
 
   it("resolves preview authority from the exact active sync relationship", async () => {

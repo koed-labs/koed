@@ -1262,6 +1262,10 @@ describeDb("memory repository visibility", () => {
   });
 
   it("queues registration before ordinary captured source replication", async () => {
+    await repo.ensureLocalSyncDeployment({
+      profile: "local_personal",
+      protocolDeploymentId: randomUUID()
+    });
     const owner = await repo.createUser({
       email: `source-registration-${randomUUID()}@example.com`
     });
@@ -1284,6 +1288,16 @@ describeDb("memory repository visibility", () => {
         captureMethod: "transcript"
       }
     );
+    const summary = await repo.getCapturedSessionSummary(
+      { userId: owner.id },
+      session.id
+    );
+    expect(summary).toMatchObject({
+      sessionId: session.id,
+      syncState: "not_started"
+    });
+    expect(typeof summary?.logicalMemoryId).toBe("string");
+    expect(summary?.logicalMemoryId).toHaveLength(36);
     const sourceGenerationId = randomUUID();
     const artifact = await repo.ensureConversationSourceArtifact(
       { userId: owner.id },
@@ -7021,7 +7035,10 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         {
           relationshipId,
-          logicalMemoryId: randomUUID(),
+          logicalMemoryId: (await encryptedRepo.getCapturedSessionSummary(
+            { userId: owner.id },
+            session.id
+          ))!.logicalMemoryId!,
           localReplicaId: randomUUID(),
           sessionId: session.id,
           localDeploymentIdentityId: localDeployment.id,
@@ -7125,6 +7142,10 @@ describeDb("memory repository visibility", () => {
     const owner = await encryptedRepo.createUser({
       email: `sync-source-${randomUUID()}@example.com`
     });
+    const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
+      profile: "local_personal",
+      protocolDeploymentId: randomUUID()
+    });
     const session = await encryptedRepo.createCapturedSession(
       { userId: owner.id },
       {
@@ -7147,10 +7168,6 @@ describeDb("memory repository visibility", () => {
         idempotencyKey: `event-${randomUUID()}`
       }
     );
-    const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
-      profile: "local_personal",
-      protocolDeploymentId: randomUUID()
-    });
     const remoteDeployment = await encryptedRepo.upsertRemoteSyncDeployment({
       protocolDeploymentId: randomUUID(),
       profile: "team_self_hosted",
@@ -7206,7 +7223,10 @@ describeDb("memory repository visibility", () => {
     );
     const ids = {
       relationshipId: randomUUID(),
-      logicalMemoryId: randomUUID(),
+      logicalMemoryId: (await encryptedRepo.getCapturedSessionSummary(
+        { userId: owner.id },
+        session.id
+      ))!.logicalMemoryId!,
       localReplicaId: randomUUID(),
       remoteReplicaId: randomUUID()
     };
@@ -8025,6 +8045,10 @@ describeDb("memory repository visibility", () => {
     const owner = await encryptedRepo.createUser({
       email: `sync-lcm-source-${randomUUID()}@example.com`
     });
+    const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
+      profile: "local_personal",
+      protocolDeploymentId: randomUUID()
+    });
     const session = await encryptedRepo.createCapturedSession(
       { userId: owner.id },
       {
@@ -8069,10 +8093,6 @@ describeDb("memory repository visibility", () => {
         idempotencyKey: `sync-lcm-unrelated-event-${randomUUID()}`
       }
     );
-    const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
-      profile: "local_personal",
-      protocolDeploymentId: randomUUID()
-    });
     const remoteDeployment = await encryptedRepo.upsertRemoteSyncDeployment({
       protocolDeploymentId: randomUUID(),
       profile: "team_self_hosted",
@@ -8096,7 +8116,10 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         relationshipId,
-        logicalMemoryId: randomUUID(),
+        logicalMemoryId: (await encryptedRepo.getCapturedSessionSummary(
+          { userId: owner.id },
+          session.id
+        ))!.logicalMemoryId!,
         localReplicaId: randomUUID(),
         remoteReplicaId: randomUUID(),
         sessionId: session.id,

@@ -1081,6 +1081,13 @@ export const routeIdentityContracts = [
     "Rename one owner-authorized Personal Note."
   ),
   route(
+    "PATCH",
+    "/v1/collaboration/personal/notes/{noteId}/body",
+    "session_or_api_token_or_device_credential",
+    "collaboration",
+    "Create a new revision of one owner-authorized Personal Note."
+  ),
+  route(
     "GET",
     "/v1/memory/ask/threads",
     "api_token",
@@ -1655,6 +1662,16 @@ export const routeIdentityContracts = [
     "device_credential",
     "shared_memory",
     "Upload the exact owner-private source for a pending Personal Note share.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/personal-note-revisions/advance",
+    "device_credential",
+    "shared_memory",
+    "Advance active Continuous Personal Note shares to an exact new revision.",
     "request_time_shared_memory_owner",
     "implemented",
     teamDeploymentModes

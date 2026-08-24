@@ -11410,6 +11410,7 @@ export const collaborationSharedMemoryGrants = pgTable(
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
     maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
     includeCuratedMemory: boolean("include_curated_memory").notNull(),
+    mode: sharedMemoryConsentMode("mode").notNull(),
     sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
     grantVersion: integer("grant_version").notNull(),
     lifecycle: shareGrantLifecycle("lifecycle").notNull(),

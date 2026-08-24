@@ -89,11 +89,6 @@ export const projectPersonalNoteToMemory = async (
       sourceSequence: note.sourceSequence
     }
   );
-  const embedding = await options.enqueueEmbedding(
-    "memory_event",
-    event.id,
-    input.workClass ?? "interactive_recall_question"
-  );
   const projected =
     await options.repository.markPersonalNoteProjectionAvailable(
       { userId: input.ownerUserId },
@@ -106,6 +101,11 @@ export const projectPersonalNoteToMemory = async (
   if (!projected) {
     throw new Error("Personal Note advanced while its revision was projected");
   }
+  const embedding = await options.enqueueEmbedding(
+    "memory_event",
+    event.id,
+    input.workClass ?? "interactive_recall_question"
+  );
   options.requestContinuousShareAdvancement?.();
   await options.repository
     .notifyPersonalNoteChanged?.(
