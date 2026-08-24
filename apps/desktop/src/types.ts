@@ -39,6 +39,23 @@ export interface AiClientReadiness {
   snapshotState: "profile" | "current" | "stale" | "unknown";
 }
 
+export interface KoedServerStartupStatus {
+  ok: boolean;
+  state: ComponentState;
+  koedHome: string;
+  generatedAt: string;
+  runtimeMode: "local-personal" | "external" | "developer";
+  dependencyMode: "bundled-local" | "external";
+  api: ComponentStatus & { url: string };
+  database: ComponentStatus;
+  redis: ComponentStatus;
+  workerQueues: ComponentStatus;
+  embeddingService: ComponentStatus;
+  privacyService: ComponentStatus;
+  localAiRuntime: ComponentStatus;
+  apiToken: ComponentStatus & { configured: boolean };
+}
+
 export interface KoedServerStatus {
   ok: boolean;
   state: ComponentState;
@@ -51,6 +68,7 @@ export interface KoedServerStatus {
   redis: ComponentStatus;
   workerQueues: ComponentStatus;
   embeddingService: ComponentStatus;
+  privacyService?: ComponentStatus;
   localAiRuntime?: ComponentStatus;
   apiToken: ComponentStatus & { configured: boolean };
   mcpServer: ComponentStatus;

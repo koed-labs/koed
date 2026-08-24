@@ -53,6 +53,23 @@ export interface KoedServerComponentStatus {
   details?: Record<string, unknown>;
 }
 
+export interface KoedServerStartupStatus {
+  ok: boolean;
+  state: KoedServerComponentState;
+  koedHome: string;
+  generatedAt: string;
+  runtimeMode: "local-personal" | "external" | "developer";
+  dependencyMode: "bundled-local" | "external";
+  api: KoedServerComponentStatus & { url: string };
+  database: KoedServerComponentStatus;
+  redis: KoedServerComponentStatus;
+  workerQueues: KoedServerComponentStatus;
+  embeddingService: KoedServerComponentStatus;
+  privacyService: KoedServerComponentStatus;
+  localAiRuntime: KoedServerComponentStatus;
+  apiToken: KoedServerComponentStatus & { configured: boolean };
+}
+
 export interface KoedServerStatus {
   ok: boolean;
   state: KoedServerComponentState;

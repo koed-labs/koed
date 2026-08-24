@@ -29,6 +29,7 @@ import {
   type KoedServerManager
 } from "./koed-server/manager.js";
 import {
+  createNodeEntrypointInvocation,
   createKoedServerCliInvocation,
   resolveKoedServerPaths
 } from "./koed-server/runtime.js";
@@ -363,10 +364,23 @@ const bootstrap = async () => {
           persistentPdsStore,
           [PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE, runtimeReference]
         );
+        const providerPath = resolve(appDir, "pds-secret-bridge-provider.js");
+        const providerInvocation = createNodeEntrypointInvocation(
+          providerPath,
+          [],
+          {
+            appIsPackaged: app.isPackaged,
+            electronExecPath: process.execPath,
+            platform: process.platform,
+            resourcesPath: process.resourcesPath,
+            environment: koedEnvironment,
+            existsSync
+          }
+        );
         pdsSecretBridge = await startPdsSecretBridge({
           koedHome: koedEnvironment.KOED_HOME ?? app.getPath("userData"),
-          providerProgram: process.execPath,
-          providerArgs: [resolve(appDir, "pds-secret-bridge-provider.js")],
+          providerProgram: providerInvocation.command,
+          providerArgs: providerInvocation.args,
           store: pdsStore
         });
         Object.assign(koedEnvironment, pdsSecretBridge.environment);

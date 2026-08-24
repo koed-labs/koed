@@ -1341,6 +1341,74 @@ describe("CollaborationApp", () => {
     await vi.waitFor(() => expect(listProjects).toHaveBeenCalledOnce());
   });
 
+  it("refreshes an unready top-level health status until it becomes healthy", async () => {
+    vi.useFakeTimers();
+    const healthy = {
+      state: "healthy" as const,
+      message: "healthy"
+    };
+    const starting = {
+      state: "starting" as const,
+      message: "starting"
+    };
+    const status = (ready: boolean): KoedServerStatus => ({
+      ok: ready,
+      state: ready ? "healthy" : "starting",
+      koedHome: "/tmp/koed-home",
+      generatedAt: "2026-08-24T00:00:00.000Z",
+      runtimeMode: "local-personal",
+      dependencyMode: "bundled-local",
+      api: { ...(ready ? healthy : starting), url: "http://127.0.0.1:3300" },
+      database: ready ? healthy : starting,
+      redis: ready ? healthy : starting,
+      workerQueues: ready ? healthy : starting,
+      embeddingService: ready ? healthy : starting,
+      localAiRuntime: ready ? healthy : starting,
+      apiToken: { ...(ready ? healthy : starting), configured: true },
+      mcpServer: ready ? healthy : starting,
+      captureHook: healthy,
+      codex: { ...healthy, configured: true },
+      lcmSummaryService: healthy,
+      upstreamBackends: {
+        ...healthy,
+        registered: 0,
+        validated: 0,
+        stale: 0,
+        failed: 0,
+        notChecked: 0
+      },
+      lastVerification: {
+        ...healthy,
+        checkedAt: "2026-08-24T00:00:00.000Z"
+      },
+      serverPackage: healthy
+    });
+    let currentStatus = status(false);
+    const invoke = vi.fn(async () => currentStatus);
+    window.koedDesktop = {
+      invoke: async <T = unknown,>(): Promise<T> => (await invoke()) as T
+    };
+
+    await act(async () => {
+      root.render(
+        <App
+          collaborationClient={createClient()}
+          onboardingComplete
+          personalMemoryApi={createPersonalMemoryApi()}
+          statusStoreOverride={new DesktopStatusStore()}
+        />
+      );
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".lucide-loader-circle")).not.toBeNull();
+
+    currentStatus = status(true);
+    await act(async () => vi.advanceTimersByTimeAsync(1_500));
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(container.querySelector(".lucide-circle-check")).not.toBeNull();
+  });
+
   it("opens sharing for a local Captured Session before collaboration convergence", async () => {
     const localSessionId = uuid(307);
     const current = baseSnapshot();

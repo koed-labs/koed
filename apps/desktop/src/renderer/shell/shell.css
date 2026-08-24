@@ -606,6 +606,12 @@
   animation: desktop-spin 800ms linear infinite;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .desktop-health-trigger[data-state="starting"] svg {
+    animation: none;
+  }
+}
+
 .desktop-main-content {
   display: flex;
   flex-direction: column;

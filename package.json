@@ -27,6 +27,8 @@
     "desktop:package:smoke": "pnpm --filter @koed/desktop package:smoke",
     "desktop:package:smoke:mac": "pnpm --filter @koed/desktop package:smoke:mac",
     "desktop:start": "pnpm --filter @koed/desktop start",
+    "source-runtime:prepare": "node scripts/source-runtime-build.mjs prepare",
+    "source-runtime:check": "node scripts/source-runtime-build.mjs check",
     "native-runtime:stage:homebrew": "node scripts/stage-native-runtime-homebrew.mjs",
     "koed-server:package": "node scripts/build-koed-server-package.mjs",
     "codex:bootstrap": "node scripts/codex-bootstrap.mjs",

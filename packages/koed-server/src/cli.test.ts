@@ -16,7 +16,11 @@ import {
   shouldExitPackagedSupervisor,
   startKoedServerDaemon
 } from "./cli.js";
-import type { KoedServerDoctorResult, KoedServerStatus } from "./types.js";
+import type {
+  KoedServerDoctorResult,
+  KoedServerStartupStatus,
+  KoedServerStatus
+} from "./types.js";
 
 const writer = () => {
   let text = "";
@@ -70,6 +74,23 @@ const status: KoedServerStatus = {
   },
   lastVerification: { state: "healthy", checkedAt: "2026-01-01T00:00:00.000Z" },
   core: { state: "healthy", components: {} }
+};
+
+const startupStatus: KoedServerStartupStatus = {
+  ok: true,
+  state: "healthy",
+  koedHome: "/tmp/koed",
+  generatedAt: "2026-01-01T00:00:00.000Z",
+  runtimeMode: "developer",
+  dependencyMode: "external",
+  api: { state: "healthy", url: "http://localhost:3300" },
+  database: { state: "healthy" },
+  redis: { state: "healthy" },
+  workerQueues: { state: "healthy" },
+  embeddingService: { state: "healthy" },
+  privacyService: { state: "healthy" },
+  localAiRuntime: { state: "healthy" },
+  apiToken: { state: "healthy", configured: true }
 };
 
 const doctor: KoedServerDoctorResult = {
@@ -176,6 +197,24 @@ describe("koed-server detached supervisor", () => {
 });
 
 describe("JSON command output", () => {
+  it("prints lightweight startup status without collecting full status", async () => {
+    const stdout = writer();
+    let fullStatusCollected = false;
+
+    const exitCode = await runKoedServerCli(["status", "--startup", "--json"], {
+      stdout: stdout.stream,
+      collectStartupStatus: async () => startupStatus,
+      collectStatus: async () => {
+        fullStatusCollected = true;
+        return status;
+      }
+    });
+
+    expect(exitCode).toBe(0);
+    expect(fullStatusCollected).toBe(false);
+    expect(JSON.parse(stdout.text())).toEqual(startupStatus);
+  });
+
   it("prints models status --json", async () => {
     const stdout = writer();
 

@@ -51,6 +51,7 @@ import type {
   ComponentStatus,
   DesktopSetupSnapshot,
   DesktopSetupStageId,
+  KoedServerStartupStatus,
   KoedServerStatus
 } from "../types.js";
 import type { DesktopCommandName } from "../ipc/protocol.js";
@@ -265,6 +266,7 @@ const diagnosticStatus = ({
     redis: component(),
     workerQueues: component("Start Koed"),
     embeddingService: component("Install runtime assets"),
+    privacyService: component("Install runtime assets"),
     localAiRuntime: component("Start Koed"),
     apiToken: { ...component("Run setup"), configured: false },
     mcpServer: component("Run setup"),
@@ -409,6 +411,131 @@ const objectValue = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+
+const componentStates = new Set<ComponentState>([
+  "not_configured",
+  "starting",
+  "healthy",
+  "needs_attention"
+]);
+
+const isComponentStatus = (value: unknown): boolean => {
+  const component = objectValue(value);
+  return componentStates.has(component?.state as ComponentState);
+};
+
+const isRenderableKoedServerStatus = (
+  value: unknown
+): value is KoedServerStatus => {
+  const status = objectValue(value);
+  if (
+    !status ||
+    typeof status.ok !== "boolean" ||
+    !componentStates.has(status.state as ComponentState) ||
+    typeof status.koedHome !== "string" ||
+    typeof status.generatedAt !== "string" ||
+    !["local-personal", "external", "developer"].includes(
+      String(status.runtimeMode)
+    ) ||
+    !["bundled-local", "external"].includes(String(status.dependencyMode))
+  ) {
+    return false;
+  }
+
+  const requiredComponents = [
+    status.api,
+    status.database,
+    status.redis,
+    status.workerQueues,
+    status.embeddingService,
+    status.apiToken,
+    status.mcpServer,
+    status.captureHook,
+    status.codex,
+    status.lcmSummaryService,
+    status.upstreamBackends,
+    status.lastVerification
+  ];
+  if (!requiredComponents.every(isComponentStatus)) return false;
+
+  const api = objectValue(status.api);
+  const apiToken = objectValue(status.apiToken);
+  const codex = objectValue(status.codex);
+  const upstreamBackends = objectValue(status.upstreamBackends);
+  const lastVerification = objectValue(status.lastVerification);
+  return (
+    typeof api?.url === "string" &&
+    typeof apiToken?.configured === "boolean" &&
+    typeof codex?.configured === "boolean" &&
+    [
+      upstreamBackends?.registered,
+      upstreamBackends?.validated,
+      upstreamBackends?.stale,
+      upstreamBackends?.failed,
+      upstreamBackends?.notChecked
+    ].every((count) => typeof count === "number") &&
+    (lastVerification?.checkedAt === null ||
+      typeof lastVerification?.checkedAt === "string")
+  );
+};
+
+const isRenderableKoedServerStartupStatus = (
+  value: unknown
+): value is KoedServerStartupStatus => {
+  const status = objectValue(value);
+  if (
+    !status ||
+    typeof status.ok !== "boolean" ||
+    !componentStates.has(status.state as ComponentState) ||
+    typeof status.koedHome !== "string" ||
+    typeof status.generatedAt !== "string" ||
+    !["local-personal", "external", "developer"].includes(
+      String(status.runtimeMode)
+    ) ||
+    !["bundled-local", "external"].includes(String(status.dependencyMode))
+  ) {
+    return false;
+  }
+  if (
+    ![
+      status.api,
+      status.database,
+      status.redis,
+      status.workerQueues,
+      status.embeddingService,
+      status.privacyService,
+      status.localAiRuntime,
+      status.apiToken
+    ].every(isComponentStatus)
+  ) {
+    return false;
+  }
+  return (
+    typeof objectValue(status.api)?.url === "string" &&
+    typeof objectValue(status.apiToken)?.configured === "boolean"
+  );
+};
+
+const diagnosticStartupStatus = (message: string): KoedServerStartupStatus => {
+  const component = (action?: string): ComponentStatus =>
+    diagnosticComponent("needs_attention", message, action);
+  return {
+    ok: false,
+    state: "needs_attention",
+    koedHome: "not available",
+    generatedAt: new Date().toISOString(),
+    runtimeMode: "developer",
+    dependencyMode: "external",
+    api: { ...component("Start Koed"), url: "" },
+    database: component("Start Koed"),
+    redis: component("Check queue dependencies"),
+    workerQueues: component("Start Koed"),
+    embeddingService: component("Install runtime assets"),
+    privacyService: component("Install runtime assets"),
+    localAiRuntime: component("Start Koed"),
+    apiToken: { ...component("Run setup"), configured: false }
+  };
+};
 
 const desktopAskErrorMessage = (question: Record<string, unknown>): unknown => {
   if (question.errorMessage !== "codex_failed") return question.errorMessage;
@@ -988,7 +1115,9 @@ export const setupServicesHealthy = (value: unknown): boolean => {
     status?.database,
     status?.redis,
     status?.workerQueues,
-    status?.embeddingService
+    status?.embeddingService,
+    status?.privacyService,
+    status?.localAiRuntime
   ].every(componentHealthy);
 };
 
@@ -1574,10 +1703,16 @@ export const createKoedServerManager = ({
   };
 
   const statusWithEnrollmentReconciliation = async (): Promise<unknown> => {
-    const [current, packageStatus] = await Promise.all([
+    const [statusResult, packageStatus] = await Promise.all([
       runJson(["status"], statusCommandTimeoutMs),
       runPackageStatusJson() as Promise<ServerPackageStatusPayload | null>
     ]);
+    const current = isRenderableKoedServerStatus(statusResult)
+      ? statusResult
+      : diagnosticStatus({
+          state: "needs_attention",
+          message: "Koed status could not be read."
+        });
     scheduleEnrollmentReconciliation(current);
     return withPackageComponent(current, packageStatus);
   };
@@ -1585,7 +1720,13 @@ export const createKoedServerManager = ({
   const pollUntilReady = async (attemptLimit = 90) => {
     let latest: unknown = null;
     for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
-      latest = await runJson(["status"], statusCommandTimeoutMs);
+      const result = await runJson(
+        ["status", "--startup"],
+        statusCommandTimeoutMs
+      );
+      latest = isRenderableKoedServerStartupStatus(result)
+        ? result
+        : diagnosticStartupStatus("Koed startup status could not be read.");
       if (setupStartupReady(latest)) {
         retainedPersonalApiOrigin = localPersonalMemoryOrigin(latest);
         await provisionLocalAppCredential();
@@ -3212,11 +3353,18 @@ export const createKoedServerManager = ({
   };
 
   const requestDaemonStart = async () => {
-    const current = await runJson(["status"], statusCommandTimeoutMs);
+    const current = await runJson(
+      ["status", "--startup"],
+      statusCommandTimeoutMs
+    );
     if (hasHealthyApi(current)) {
       retainedPersonalApiOrigin = localPersonalMemoryOrigin(current);
       await provisionLocalAppCredential();
-      return current;
+      return {
+        ok: true,
+        state: "starting",
+        message: "Koed server is already starting or running."
+      };
     }
 
     if (serverProcess && !serverProcess.killed) {

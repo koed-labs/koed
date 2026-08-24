@@ -38,7 +38,7 @@ export type AppShellProps = {
   contextNavigation: ReactNode;
   health?: {
     label: string;
-    state: "healthy" | "needs_attention" | "starting";
+    state: "healthy" | "needs_attention" | "starting" | "waiting";
   };
   identityLabel: string;
   inspector?: ReactNode;
@@ -306,7 +306,21 @@ export function AppShell({
 }: AppShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mainPaneWidth, setMainPaneWidth] = useState(0);
+  const [healthTimedOut, setHealthTimedOut] = useState(false);
   const mainRef = useRef<HTMLElement | null>(null);
+  const hasHealth = Boolean(health);
+  const healthIsReady = health?.state === "healthy";
+  const healthHasTimedOut = healthTimedOut && !healthIsReady;
+
+  useEffect(() => {
+    if (!hasHealth || healthIsReady) {
+      setHealthTimedOut(false);
+      return;
+    }
+    setHealthTimedOut(false);
+    const timeout = window.setTimeout(() => setHealthTimedOut(true), 45_000);
+    return () => window.clearTimeout(timeout);
+  }, [hasHealth, healthIsReady]);
 
   useEffect(() => {
     setSidebarOpen(false);
@@ -465,19 +479,29 @@ export function AppShell({
           {scopeLine}
           {health ? (
             <button
-              aria-label={`Local health: ${health.label}`}
+              aria-label={`Local health: ${
+                healthHasTimedOut
+                  ? "Koed did not become ready within 45 seconds"
+                  : health.label
+              }`}
               className="desktop-health-trigger"
-              data-state={health.state}
+              data-state={healthHasTimedOut ? "needs_attention" : health.state}
               onClick={onOpenHealth}
-              title={health.label}
+              title={
+                healthHasTimedOut
+                  ? "Koed did not become ready within 45 seconds"
+                  : health.label
+              }
               type="button"
             >
               {health.state === "healthy" ? (
                 <CircleCheck aria-hidden="true" />
-              ) : health.state === "needs_attention" ? (
+              ) : health.state === "needs_attention" || healthHasTimedOut ? (
                 <CircleAlert aria-hidden="true" />
-              ) : (
+              ) : health.state === "starting" ? (
                 <LoaderCircle aria-hidden="true" />
+              ) : (
+                <CircleHelp aria-hidden="true" />
               )}
             </button>
           ) : null}

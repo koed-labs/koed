@@ -14,7 +14,7 @@
     "build:package": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json && pnpm build:preload && vite build",
     "build:preload": "esbuild src/preload.cts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload.cjs && node scripts/verify-preload-bundle.mjs",
     "dev": "vite --host 127.0.0.1",
-    "prestart": "pnpm --filter @koed/koed-server build",
+    "prestart": "pnpm --filter @koed/koed-server build && pnpm -w source-runtime:prepare",
     "package": "pnpm package:mac",
     "package:workspace:build": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build && pnpm --filter @koed/core build && pnpm --filter @koed/db build && pnpm --filter @koed/api build && pnpm --filter @koed/mcp-server build && pnpm --filter @koed/worker build && pnpm --filter @koed/embedding-service build && pnpm --filter @koed/privacy-service build && pnpm --filter @koed/koed-server build && pnpm build:package",
     "package:runtime": "node scripts/prepare-koed-runtime.mjs",

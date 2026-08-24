@@ -11,7 +11,10 @@ import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import { parseCodexOwnershipBlock } from "./codex-ownership-marker.js";
 import { collectLocalEmbeddingRuntimeStatus } from "./local-embedding-runtime.js";
-import { collectLocalPrivacyRuntimeStatus } from "./local-privacy-runtime.js";
+import {
+  collectLocalPrivacyRuntimeHealthStatus,
+  collectLocalPrivacyRuntimeStatus
+} from "./local-privacy-runtime.js";
 import { collectLocalPostgresRuntimeStatus } from "./local-postgres-runtime.js";
 import {
   ensureKoedHome,
@@ -57,6 +60,7 @@ import type {
   KoedServerDoctorCheck,
   KoedServerDoctorResult,
   KoedServerRuntimeState,
+  KoedServerStartupStatus,
   KoedServerStatus,
   KoedAiClientFlowReadiness,
   KoedAiClientReadiness
@@ -534,7 +538,10 @@ interface ApiReadyPayload {
 export const statusFromApiReady = async (
   apiUrl: string,
   fetcher: typeof fetch = globalThis.fetch.bind(globalThis),
-  options: { dependencyMode?: "bundled-local" | "external" } = {}
+  options: {
+    dependencyMode?: "bundled-local" | "external";
+    apiHealthyWhenReachable?: boolean;
+  } = {}
 ): Promise<{
   api: KoedServerComponentStatus;
   database: KoedServerComponentStatus;
@@ -629,13 +636,16 @@ export const statusFromApiReady = async (
     return components.find((entry) => entry.state === state) ?? components[0]!;
   };
 
+  const apiCheck = component("api", "API");
   return {
-    api: response.ok
-      ? healthy(undefined, { readyUrl })
-      : starting("API is reachable but readiness checks have not passed.", {
-          readyUrl,
-          httpStatus: response.status
-        }),
+    api:
+      response.ok ||
+      (options.apiHealthyWhenReachable && apiCheck.state === "healthy")
+        ? healthy(undefined, { readyUrl })
+        : starting("API is reachable but readiness checks have not passed.", {
+            readyUrl,
+            httpStatus: response.status
+          }),
     database: aggregateComponent(
       [
         ["postgres", "Database"],
@@ -2019,6 +2029,183 @@ const inspectSafely = <T>(label: string, inspect: () => T, fallback: T): T => {
       ...fallback
     } as T;
   }
+};
+
+export const collectKoedServerStartupStatus = async (
+  environment: NodeJS.ProcessEnv = process.env,
+  dependencies: KoedServerStatusDependencies = {}
+): Promise<KoedServerStartupStatus> => {
+  const deps = withDefaults(dependencies);
+  const paths = resolveKoedServerPaths(environment);
+  ensureKoedHome(paths);
+  environment = applyPersistedLocalPorts(paths, environment);
+  const repoEnv = loadRepoEnv(paths.repoRoot);
+  const runtime = readJsonFile<KoedServerRuntimeState>(
+    paths.runtimeStatePath,
+    deps.readFileSync
+  );
+  const runtimeProcessRunning = runtime ? deps.checkPid(runtime.pid) : false;
+  const runtimeEnvironment =
+    runtime && runtimeProcessRunning
+      ? {
+          ...environment,
+          KOED_RUNTIME_MODE: runtime.runtimeMode,
+          KOED_DEPENDENCY_MODE: runtime.dependencyMode,
+          ...(runtime.automaticPorts ? { KOED_AUTO_PORTS: "1" } : {})
+        }
+      : environment;
+  const serverConfig = resolveKoedServerConfig(
+    paths,
+    koedServerConfigEnvironment(runtimeEnvironment, repoEnv),
+    {
+      existsSync: deps.existsSync,
+      readFileSync: deps.readFileSync
+    }
+  );
+  const apiUrl =
+    runtimeProcessRunning && runtime?.apiUrl
+      ? runtime.apiUrl
+      : resolveApiUrl(runtimeEnvironment, repoEnv);
+  const desktopOwnedRuntime =
+    runtime?.automaticPorts === true ||
+    runtimeEnvironment.KOED_AUTO_PORTS === "1";
+  const apiReady =
+    desktopOwnedRuntime && !runtimeProcessRunning
+      ? statusWaitingForManagedRuntime(Boolean(runtime))
+      : await statusFromApiReady(apiUrl, deps.fetch, {
+          dependencyMode: serverConfig.dependencyMode,
+          apiHealthyWhenReachable: true
+        });
+  const serviceEnvironment = { ...repoEnv, ...runtimeEnvironment };
+  const useBundledLocalDependencies =
+    serverConfig.dependencyMode === "bundled-local";
+  const apiToken = await inspectApiToken(
+    paths,
+    runtimeEnvironment,
+    repoEnv,
+    apiUrl,
+    deps.fetch
+  );
+  const localAiRuntime = inspectLocalAiRuntime(
+    runtime,
+    runtimeProcessRunning,
+    serverConfig.runtimeMode,
+    deps
+  );
+  const queueBackend = resolveEffectiveWorkQueueBackend(
+    serverConfig.dependencyMode,
+    runtimeEnvironment,
+    repoEnv
+  );
+  const localQueueRedisBypass = healthy(
+    "Postgres-backed local queue does not require Redis.",
+    { backend: queueBackend, required: false }
+  );
+  const redisStatus =
+    queueBackend === "local" && apiReady.redis.state === "starting"
+      ? localQueueRedisBypass
+      : apiReady.redis;
+  const externalRedisUrl =
+    serverConfig.external?.redisUrl ??
+    runtimeEnvironment.REDIS_URL ??
+    repoEnv.REDIS_URL;
+  const queueDependency =
+    queueBackend === "local"
+      ? apiReady.workerQueues.state === "healthy"
+        ? healthy("Postgres-backed local queue is ready.", {
+            backend: queueBackend,
+            readiness: apiReady.workerQueues.details
+          })
+        : apiReady.workerQueues
+      : externalRedisUrl
+        ? apiReady.redis
+        : needsAttention(
+            `${serverConfig.dependencyMode === "external" ? "External dependency mode" : "Bundled-local mode with WORK_QUEUE_BACKEND=bullmq"} requires an Operator-managed Redis URL for BullMQ queues.`,
+            "Set external.redisUrl in KOED_HOME/config/server.json or set REDIS_URL, or set WORK_QUEUE_BACKEND=local."
+          );
+  const workerPid = runtime?.processes?.worker;
+  const workerRunning =
+    runtimeProcessRunning && workerPid ? deps.checkPid(workerPid) : false;
+  const workerQueues =
+    queueDependency.state !== "healthy"
+      ? queueDependency
+      : workerRunning
+        ? healthy("Queue dependency and Worker process are running.", {
+            queue: queueDependency.details,
+            workerPid
+          })
+        : starting("Worker process has not reported as running yet.", {
+            queue: queueDependency.details,
+            workerPid: workerPid ?? null
+          });
+  const teamCollaborationEnabled = resolveTeamCollaborationEnabled({
+    ...repoEnv,
+    ...runtimeEnvironment
+  });
+  const externalPrivacyServiceUrl =
+    serverConfig.external?.privacyServiceUrl ??
+    serviceEnvironment.PRIVACY_SERVICE_URL;
+  const privacyControlToken =
+    serviceEnvironment.PRIVACY_RUNTIME_CONTROL_TOKEN?.trim();
+  const privacyService = !teamCollaborationEnabled
+    ? healthy(
+        "Team collaboration is disabled; Privacy Filter is not required.",
+        {
+          required: false
+        }
+      )
+    : useBundledLocalDependencies
+      ? await collectLocalPrivacyRuntimeHealthStatus(
+          paths,
+          serviceEnvironment,
+          {
+            existsSync: deps.existsSync,
+            fetch: deps.fetch
+          }
+        )
+      : !serviceEnvironment.PRIVACY_SERVICE_TOKEN?.trim() ||
+          !privacyControlToken
+        ? notConfigured(
+            "Privacy Filter Service token is not configured.",
+            "Set PRIVACY_SERVICE_TOKEN and PRIVACY_RUNTIME_CONTROL_TOKEN to the credentials configured on the Operator-managed service."
+          )
+        : externalPrivacyServiceUrl
+          ? await inspectExternalPrivacyService(
+              externalPrivacyServiceUrl,
+              privacyControlToken,
+              deps.fetch
+            )
+          : notConfigured(
+              "External Privacy Filter Service URL is not configured.",
+              "Set external.privacyServiceUrl in KOED_HOME/config/server.json or set PRIVACY_SERVICE_URL."
+            );
+  const components = {
+    api: apiReady.api,
+    database: apiReady.database,
+    redis: redisStatus,
+    workerQueues,
+    embeddingService: apiReady.embeddingService,
+    privacyService,
+    localAiRuntime,
+    apiToken
+  };
+  const state = aggregateState(Object.values(components));
+  return {
+    ok: state === "healthy",
+    state,
+    koedHome: paths.koedHome,
+    generatedAt: deps.now().toISOString(),
+    runtimeMode: serverConfig.runtimeMode,
+    dependencyMode: serverConfig.dependencyMode,
+    api: { ...apiReady.api, url: apiUrl },
+    database: apiReady.database,
+    redis: redisStatus,
+    workerQueues,
+    embeddingService: apiReady.embeddingService,
+    privacyService,
+    localAiRuntime,
+    apiToken
+  };
 };
 
 export const collectKoedServerStatus = async (

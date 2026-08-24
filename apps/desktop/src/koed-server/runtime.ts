@@ -132,46 +132,62 @@ const daemonInvocationEnvironment = (
   };
 };
 
-export const createKoedServerCliInvocation = (
-  cliPath: string,
+export const createNodeEntrypointInvocation = (
+  entrypointPath: string,
   args: string[],
   options: KoedServerRuntimeOptions
 ): NodeEntrypointInvocation => {
   const explicitNodeCommand = options.environment.KOED_NODE_COMMAND?.trim();
   if (explicitNodeCommand) {
-    const invocationArgs = [cliPath, ...args];
+    const invocationArgs = [entrypointPath, ...args];
     return {
       command: explicitNodeCommand,
       args: invocationArgs,
-      env: daemonInvocationEnvironment(
-        options.environment,
-        explicitNodeCommand,
-        invocationArgs
-      )
+      env: options.environment
     };
   }
 
-  const command = resolveElectronNodeExecPath(options);
-  const env = createElectronNodeEnv(options.environment);
+  const command = options.appIsPackaged
+    ? resolveElectronNodeExecPath(options)
+    : "node";
+  const env = options.appIsPackaged
+    ? createElectronNodeEnv(options.environment)
+    : options.environment;
 
   if (options.appIsPackaged) {
     const invocationArgs = [
       resolvePackagedRunnerPath(options.resourcesPath),
       "node-script",
-      cliPath,
+      entrypointPath,
       ...args
     ];
     return {
       command,
       args: invocationArgs,
-      env: daemonInvocationEnvironment(env, command, invocationArgs)
+      env
     };
   }
 
-  const invocationArgs = [cliPath, ...args];
+  const invocationArgs = [entrypointPath, ...args];
   return {
     command,
     args: invocationArgs,
-    env: daemonInvocationEnvironment(env, command, invocationArgs)
+    env
+  };
+};
+
+export const createKoedServerCliInvocation = (
+  cliPath: string,
+  args: string[],
+  options: KoedServerRuntimeOptions
+): NodeEntrypointInvocation => {
+  const invocation = createNodeEntrypointInvocation(cliPath, args, options);
+  return {
+    ...invocation,
+    env: daemonInvocationEnvironment(
+      invocation.env,
+      invocation.command,
+      invocation.args
+    )
   };
 };

@@ -18,6 +18,7 @@ describe("AppShell", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.useRealTimers();
   });
 
   const renderShell = async (
@@ -131,6 +132,44 @@ describe("AppShell", () => {
     expect(teamDiscIndex("team-a")).toBe(teamDiscIndex("team-a"));
     expect(teamDiscIndex("team-a")).toBeGreaterThanOrEqual(0);
     expect(teamDiscIndex("team-a")).toBeLessThan(8);
+  });
+
+  it("shows starting, healthy, and immediate attention health states", async () => {
+    await renderShell({
+      health: { label: "Koed is starting", state: "starting" }
+    });
+    expect(
+      container.querySelector('.desktop-health-trigger[data-state="starting"]')
+    ).not.toBeNull();
+    expect(container.querySelector(".lucide-loader-circle")).not.toBeNull();
+
+    await renderShell({
+      health: { label: "Koed is ready", state: "healthy" }
+    });
+    expect(container.querySelector(".lucide-circle-check")).not.toBeNull();
+
+    await renderShell({
+      health: { label: "2 services need attention", state: "needs_attention" }
+    });
+    expect(container.querySelector(".lucide-circle-alert")).not.toBeNull();
+  });
+
+  it("replaces an unready spinner with an error after 45 seconds", async () => {
+    vi.useFakeTimers();
+    await renderShell({
+      health: { label: "Koed is starting", state: "starting" }
+    });
+
+    await act(async () => vi.advanceTimersByTime(44_999));
+    expect(container.querySelector(".lucide-loader-circle")).not.toBeNull();
+
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(container.querySelector(".lucide-circle-alert")).not.toBeNull();
+    expect(
+      container
+        .querySelector('[data-state="needs_attention"]')
+        ?.getAttribute("aria-label")
+    ).toBe("Local health: Koed did not become ready within 45 seconds");
   });
 
   it("uses one roving tab stop and supports Team rail navigation", async () => {

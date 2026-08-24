@@ -43,12 +43,31 @@ const childProcess = (): FakeChildProcess => {
 const healthyLocalServiceStatus = () => ({
   ok: true,
   state: "healthy",
-  api: { state: "healthy" },
+  koedHome: "/home/test/.koed",
+  generatedAt: "2026-08-24T00:00:00.000Z",
+  runtimeMode: "local-personal",
+  dependencyMode: "bundled-local",
+  api: { state: "healthy", url: "http://127.0.0.1:4170" },
   database: { state: "healthy" },
   redis: { state: "healthy" },
   workerQueues: { state: "healthy" },
   embeddingService: { state: "healthy" },
-  apiToken: { state: "healthy" }
+  privacyService: { state: "healthy" },
+  localAiRuntime: { state: "healthy" },
+  apiToken: { state: "healthy", configured: true },
+  mcpServer: { state: "healthy" },
+  captureHook: { state: "healthy" },
+  codex: { state: "healthy", configured: true },
+  lcmSummaryService: { state: "healthy" },
+  upstreamBackends: {
+    state: "healthy",
+    registered: 0,
+    validated: 0,
+    stale: 0,
+    failed: 0,
+    notChecked: 0
+  },
+  lastVerification: { state: "healthy", checkedAt: null }
 });
 
 const waitFor = async (predicate: () => boolean): Promise<void> => {
@@ -576,6 +595,8 @@ describe("Koed server desktop manager", () => {
         redis: { state: "healthy" },
         workerQueues: { state: "healthy" },
         embeddingService: { state: "healthy" },
+        privacyService: { state: "healthy" },
+        localAiRuntime: { state: "healthy" },
         codex: { state: "needs_attention" },
         lastVerification: { state: "not_configured" }
       })
@@ -586,7 +607,9 @@ describe("Koed server desktop manager", () => {
         database: { state: "needs_attention" },
         redis: { state: "healthy" },
         workerQueues: { state: "healthy" },
-        embeddingService: { state: "healthy" }
+        embeddingService: { state: "healthy" },
+        privacyService: { state: "healthy" },
+        localAiRuntime: { state: "healthy" }
       })
     ).toBe(false);
   });
@@ -598,6 +621,8 @@ describe("Koed server desktop manager", () => {
       redis: { state: "healthy" },
       workerQueues: { state: "starting" },
       embeddingService: { state: "healthy" },
+      privacyService: { state: "healthy" },
+      localAiRuntime: { state: "healthy" },
       apiToken: { state: "healthy" }
     };
     expect(setupStartupReady(starting)).toBe(false);
@@ -612,6 +637,20 @@ describe("Koed server desktop manager", () => {
         ...starting,
         workerQueues: { state: "healthy" },
         apiToken: { state: "not_configured" }
+      })
+    ).toBe(false);
+    expect(
+      setupStartupReady({
+        ...starting,
+        workerQueues: { state: "healthy" },
+        privacyService: { state: "starting" }
+      })
+    ).toBe(false);
+    expect(
+      setupStartupReady({
+        ...starting,
+        workerQueues: { state: "healthy" },
+        localAiRuntime: { state: "starting" }
       })
     ).toBe(false);
   });
@@ -848,7 +887,15 @@ describe("Koed server desktop manager", () => {
       existsSync: () => true,
       execFile: (command, args, _options, callback) => {
         calls.push({ command, args });
-        callback(null, JSON.stringify({ ok: true, state: "healthy" }), "");
+        callback(
+          null,
+          JSON.stringify(
+            args[1] === "status"
+              ? healthyLocalServiceStatus()
+              : { ok: true, state: "healthy" }
+          ),
+          ""
+        );
       },
       spawn: () => childProcess() as never,
       openExternal: async () => undefined
@@ -2025,9 +2072,9 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
           callback(
             null,
             JSON.stringify({
-              ok: true,
-              state: "healthy",
+              ...healthyLocalServiceStatus(),
               upstreamBackends: {
+                ...healthyLocalServiceStatus().upstreamBackends,
                 details: {
                   backends: [
                     {
@@ -2274,9 +2321,9 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
           callback(
             null,
             JSON.stringify({
-              ok: true,
-              state: "healthy",
+              ...healthyLocalServiceStatus(),
               upstreamBackends: {
+                ...healthyLocalServiceStatus().upstreamBackends,
                 details: {
                   backends: [
                     { id: "team-vps", credential: { status: "unknown" } }
@@ -3156,6 +3203,48 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     expect(JSON.stringify(status)).not.toContain("boom");
   });
 
+  it("returns renderable diagnostics when status JSON is valid but incomplete", async () => {
+    const privateFailure =
+      "EEXIST: file already exists, link '/Users/operator/.koed/models/privacy/blob' -> '/Users/operator/.koed/models/privacy/cache/model.onnx'";
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify(
+            args.includes("package")
+              ? { ok: false, state: "missing" }
+              : { ok: false, error: privateFailure }
+          ),
+          privateFailure
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    const status = await manager.handlers.status!();
+    expect(status).toMatchObject({
+      ok: false,
+      state: "needs_attention",
+      error: "Koed status could not be read.",
+      api: { state: "needs_attention" },
+      apiToken: { state: "needs_attention", configured: false },
+      mcpServer: { state: "needs_attention" },
+      lastVerification: { state: "needs_attention", checkedAt: null }
+    });
+    expect(JSON.stringify(status)).not.toContain(privateFailure);
+    expect(JSON.stringify(status)).not.toContain("/Users/operator");
+  });
+
   it("reconnects without requesting koed-server start --daemon again once healthy", async () => {
     const calls: string[][] = [];
     let statusCalls = 0;
@@ -3211,6 +3300,11 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       state: "healthy"
     });
     expect(calls.filter((args) => args.includes("--daemon"))).toHaveLength(1);
+    expect(
+      calls
+        .filter((args) => args[1] === "status")
+        .every((args) => args.includes("--startup"))
+    ).toBe(true);
   });
 
   it("does not auto-start an unverified fresh Desktop install", async () => {

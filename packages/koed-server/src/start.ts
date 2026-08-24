@@ -43,7 +43,7 @@ import {
 } from "./paths.js";
 import { allocateAndPersistLocalPorts } from "./ports.js";
 import { ensureDeviceIdentity } from "./device-identity.js";
-import { collectKoedServerStatus } from "./status.js";
+import { collectKoedServerStartupStatus } from "./status.js";
 import {
   acquireKoedServerSupervisorLock,
   releaseKoedServerSupervisorLock
@@ -78,7 +78,7 @@ export interface KoedServerStartOptions {
   timeoutMs?: number;
   spawnSync?: SpawnSyncLike;
   spawn?: SpawnLike;
-  collectStatus?: typeof collectKoedServerStatus;
+  collectStatus?: typeof collectKoedServerStartupStatus;
   signal?: AbortSignal;
 }
 
@@ -142,31 +142,26 @@ const waitForHealthyOrReady = async ({
   timeoutMs,
   pollIntervalMs,
   collectStatus,
-  isReady = (status) =>
-    status.api.state === "healthy" &&
-    status.database.state === "healthy" &&
-    status.redis.state === "healthy" &&
-    status.embeddingService.state === "healthy" &&
-    status.workerQueues.state === "healthy"
+  isReady = (status) => status.ok
 }: {
   environment: NodeJS.ProcessEnv;
   timeoutMs: number;
   pollIntervalMs: number;
-  collectStatus: typeof collectKoedServerStatus;
+  collectStatus: typeof collectKoedServerStartupStatus;
   isReady?: (
-    status: Awaited<ReturnType<typeof collectKoedServerStatus>>
+    status: Awaited<ReturnType<typeof collectKoedServerStartupStatus>>
   ) => boolean;
 }) => {
   const startedAt = Date.now();
   let lastStatus = await collectStatus(environment);
-  while (Date.now() - startedAt < timeoutMs) {
-    lastStatus = await collectStatus(environment);
+  while (true) {
     if (isReady(lastStatus)) {
       return lastStatus;
     }
+    if (Date.now() - startedAt >= timeoutMs) return lastStatus;
     await new Promise((resolvePoll) => setTimeout(resolvePoll, pollIntervalMs));
+    lastStatus = await collectStatus(environment);
   }
-  return lastStatus;
 };
 
 const resolveWorkQueueBackend = (
@@ -803,13 +798,27 @@ export const waitForManagedProcessExits = (
 
 export const startKoedServer = async ({
   environment = process.env,
-  pollIntervalMs = 2_000,
+  pollIntervalMs = 500,
   timeoutMs = 180_000,
   spawnSync = nodeSpawnSync as SpawnSyncLike,
   spawn = nodeSpawn as SpawnLike,
-  collectStatus = collectKoedServerStatus,
+  collectStatus = collectKoedServerStartupStatus,
   signal
 }: KoedServerStartOptions = {}): Promise<void> => {
+  const startupId = randomBytes(12).toString("hex");
+  const startupStartedAt = process.hrtime.bigint();
+  const emitStartupMilestone = (milestone: string): void => {
+    console.log(
+      JSON.stringify({
+        event: "koed.supervisor.startup",
+        startupId,
+        milestone,
+        elapsedMs:
+          Number(process.hrtime.bigint() - startupStartedAt) / 1_000_000
+      })
+    );
+  };
+  emitStartupMilestone("supervisor_entry");
   const bootstrapPaths = resolveKoedServerPaths(environment);
   const bootstrapEnvironment = environmentWithRepoEnv(
     bootstrapPaths.repoRoot,
@@ -1038,7 +1047,27 @@ export const startKoedServer = async ({
   process.on("SIGTERM", shutdown);
 
   const stopSupervisorLogMaintenance = maintainSupervisorLog(refreshedEnv);
+  let sourceRuntimeLeaseAcquired = false;
+  let startupReady = false;
   try {
+    if (appRuntime.kind === "source") {
+      runCommand(
+        paths,
+        "Check source runtime artifacts",
+        process.execPath,
+        [
+          resolve(paths.repoRoot, "scripts/source-runtime-build.mjs"),
+          "check",
+          "--lease-pid",
+          String(process.pid)
+        ],
+        refreshedEnv,
+        spawnSync
+      );
+      sourceRuntimeLeaseAcquired = true;
+      emitStartupMilestone("source_runtime_verification_complete");
+    }
+
     if (config.dependencyMode === "external") {
       const queueBackend = resolveWorkQueueBackend(
         refreshedEnv.WORK_QUEUE_BACKEND
@@ -1084,29 +1113,6 @@ export const startKoedServer = async ({
       }
     }
 
-    if (appRuntime.kind === "source") {
-      runCommand(
-        paths,
-        "Build Koed server apps",
-        "pnpm",
-        [
-          "--filter",
-          "@koed/api",
-          "--filter",
-          "@koed/worker",
-          "--filter",
-          "@koed/embedding-service",
-          "--filter",
-          "@koed/privacy-service",
-          "--filter",
-          "@koed/mcp-server",
-          "build"
-        ],
-        refreshedEnv,
-        spawnSync
-      );
-    }
-
     if (useBundledLocalDependencies) {
       const result = startLocalPostgresRuntime(paths, refreshedEnv, {
         spawnSync
@@ -1118,6 +1124,7 @@ export const startKoedServer = async ({
           `Bundled-local native Postgres could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
         );
       }
+      emitStartupMilestone("local_postgres_start_complete");
     }
 
     if (useBundledLocalDependencies && teamCollaborationEnabled) {
@@ -1134,6 +1141,7 @@ export const startKoedServer = async ({
           `Bundled-local Privacy Filter Service could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
         );
       }
+      emitStartupMilestone("privacy_filter_process_spawned");
     }
 
     if (useBundledLocalDependencies) {
@@ -1152,6 +1160,7 @@ export const startKoedServer = async ({
           `Bundled-local native Embedding Service could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
         );
       }
+      emitStartupMilestone("embedding_service_process_spawned");
     }
 
     const api =
@@ -1175,6 +1184,7 @@ export const startKoedServer = async ({
             resolve(paths.repoRoot, "apps/api")
           );
     manageChild("api", api);
+    emitStartupMilestone("api_process_spawned");
 
     const runtime: KoedServerRuntimeState = {
       pid: process.pid,
@@ -1233,6 +1243,7 @@ export const startKoedServer = async ({
         "API and database did not become ready before local credential provisioning."
       );
     }
+    emitStartupMilestone("api_and_database_ready");
     if (desktopManagedLocal) {
       const desktopApiToken = await provisionDesktopApiToken(
         paths,
@@ -1244,6 +1255,7 @@ export const startKoedServer = async ({
           MEMORY_API_TOKEN: desktopApiToken
         });
       }
+      emitStartupMilestone("desktop_credential_provisioned");
     }
 
     let localAiRuntime: ChildProcess | undefined;
@@ -1281,6 +1293,7 @@ export const startKoedServer = async ({
           : resolve(paths.repoRoot, "packages", "mcp-server")
       );
       manageChild("localAiRuntime", localAiRuntime);
+      emitStartupMilestone("local_ai_runtime_process_spawned");
     }
 
     const worker =
@@ -1304,6 +1317,7 @@ export const startKoedServer = async ({
             resolve(paths.repoRoot, "apps/worker")
           );
     manageChild("worker", worker);
+    emitStartupMilestone("worker_process_spawned");
     runtime.services = [...runtimeServices, ...appServices];
     runtime.processes = {
       ...runtime.processes,
@@ -1332,24 +1346,13 @@ export const startKoedServer = async ({
       pollIntervalMs,
       collectStatus
     });
-
-    status = await collectStatus(refreshedEnv);
-    console.log(
-      JSON.stringify(
-        {
-          ok: status.api.state === "healthy",
-          state: status.state,
-          api: status.api,
-          database: status.database,
-          redis: status.redis,
-          embeddingService: status.embeddingService,
-          privacyService: status.privacyService,
-          workerQueues: status.workerQueues
-        },
-        null,
-        2
-      )
-    );
+    if (!status.ok) {
+      throw new Error("Core services did not become ready before timeout.");
+    }
+    emitStartupMilestone("core_services_ready");
+    startupReady = true;
+    console.log(JSON.stringify(status, null, 2));
+    emitStartupMilestone("final_supervisor_status_emitted");
     console.log(
       "Koed server supervisor is running. Press Ctrl-C to stop local app processes."
     );
@@ -1362,6 +1365,7 @@ export const startKoedServer = async ({
     ]);
     await cleanupStartedResources();
   } catch (error) {
+    if (!startupReady) emitStartupMilestone("startup_failed");
     try {
       await cleanupStartedResources();
       if (runtimeStateOwnedByCurrentProcess()) {
@@ -1383,6 +1387,33 @@ export const startKoedServer = async ({
     managedProcessMonitor.dispose();
     if (runtimeStateWritten && runtimeStateOwnedByCurrentProcess()) {
       rmSync(paths.runtimeStatePath, { force: true });
+    }
+    if (sourceRuntimeLeaseAcquired) {
+      try {
+        const releaseResult = spawnSync(
+          process.execPath,
+          [
+            resolve(paths.repoRoot, "scripts/source-runtime-build.mjs"),
+            "release-lease",
+            "--lease-pid",
+            String(process.pid)
+          ],
+          {
+            cwd: paths.repoRoot,
+            env: refreshedEnv,
+            stdio: "inherit"
+          }
+        );
+        if (releaseResult.error || releaseResult.status !== 0) {
+          console.warn(
+            `Could not release the source-runtime lease: ${releaseResult.error?.message ?? `exit code ${releaseResult.status ?? 1}`}.`
+          );
+        }
+      } catch (error) {
+        console.warn(
+          `Could not release the source-runtime lease: ${error instanceof Error ? error.message : String(error)}.`
+        );
+      }
     }
     releaseKoedServerSupervisorLock(supervisorLock);
   }

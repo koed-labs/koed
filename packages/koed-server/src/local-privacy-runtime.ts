@@ -66,10 +66,11 @@ const runtimePaths = (
   return { entry, bootstrap, appDir: dirname(dirname(entry)) };
 };
 
-export const collectLocalPrivacyRuntimeStatus = async (
+const collectLocalPrivacyHealth = async (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv = process.env,
-  dependencies: { existsSync?: typeof existsSync; fetch?: typeof fetch } = {}
+  dependencies: { existsSync?: typeof existsSync; fetch?: typeof fetch } = {},
+  modelPath?: string
 ): Promise<LocalPrivacyRuntimeStatus> => {
   const exists = dependencies.existsSync ?? existsSync;
   const env = localPrivacyEnv(paths, environment);
@@ -84,16 +85,6 @@ export const collectLocalPrivacyRuntimeStatus = async (
       message: `Bundled-local Privacy Filter Service runtime is missing: ${missing.join(", ")}.`,
       action: "Build or reinstall the Koed app runtime.",
       details: { missing }
-    };
-  }
-  const model = await collectPrivacyModelStatus(paths);
-  if (!model.ok) {
-    return {
-      runtime: "native-privacy",
-      state: model.state === "missing" ? "not_configured" : "needs_attention",
-      message: model.message,
-      action: model.action,
-      details: { modelPath: model.modelPath }
     };
   }
   const healthUrl = `${env.PRIVACY_SERVICE_URL}/health`;
@@ -128,7 +119,7 @@ export const collectLocalPrivacyRuntimeStatus = async (
           message: "Bundled-local Privacy Filter Service is ready.",
           details: {
             healthUrl,
-            modelPath: model.modelPath,
+            ...(modelPath ? { modelPath } : {}),
             ...(runtimeDetails ? { privacyFilterRuntime: runtimeDetails } : {})
           }
         }
@@ -147,6 +138,50 @@ export const collectLocalPrivacyRuntimeStatus = async (
       details: { healthUrl }
     };
   }
+};
+
+export const collectLocalPrivacyRuntimeHealthStatus = async (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv = process.env,
+  dependencies: { existsSync?: typeof existsSync; fetch?: typeof fetch } = {}
+): Promise<LocalPrivacyRuntimeStatus> =>
+  collectLocalPrivacyHealth(paths, environment, dependencies);
+
+export const collectLocalPrivacyRuntimeStatus = async (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv = process.env,
+  dependencies: { existsSync?: typeof existsSync; fetch?: typeof fetch } = {}
+): Promise<LocalPrivacyRuntimeStatus> => {
+  const exists = dependencies.existsSync ?? existsSync;
+  const runtime = runtimePaths(paths, environment);
+  const missing = [runtime.entry, runtime.bootstrap].filter(
+    (path) => !exists(path)
+  );
+  if (missing.length > 0) {
+    return {
+      runtime: "native-privacy",
+      state: "not_configured",
+      message: `Bundled-local Privacy Filter Service runtime is missing: ${missing.join(", ")}.`,
+      action: "Build or reinstall the Koed app runtime.",
+      details: { missing }
+    };
+  }
+  const model = await collectPrivacyModelStatus(paths);
+  if (!model.ok) {
+    return {
+      runtime: "native-privacy",
+      state: model.state === "missing" ? "not_configured" : "needs_attention",
+      message: model.message,
+      action: model.action,
+      details: { modelPath: model.modelPath }
+    };
+  }
+  return collectLocalPrivacyHealth(
+    paths,
+    environment,
+    dependencies,
+    model.modelPath
+  );
 };
 
 export const startLocalPrivacyRuntime = async (

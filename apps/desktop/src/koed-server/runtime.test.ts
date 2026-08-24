@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createElectronNodeEnv,
+  createNodeEntrypointInvocation,
   createKoedServerCliInvocation,
   resolveElectronNodeExecPath,
   resolveKoedServerPaths
@@ -94,7 +95,7 @@ describe("Koed Desktop Node entrypoint runtime", () => {
     });
   });
 
-  it("uses Electron in explicit Node mode for development", () => {
+  it("uses the checkout Node runtime for development", () => {
     const invocation = createKoedServerCliInvocation(
       "/repo/packages/koed-server/dist/cli.js",
       ["doctor", "--json"],
@@ -106,15 +107,31 @@ describe("Koed Desktop Node entrypoint runtime", () => {
       }
     );
 
-    expect(invocation.command).toBe("/repo/node_modules/.bin/electron");
+    expect(invocation.command).toBe("node");
     expect(invocation.args).toEqual([
       "/repo/packages/koed-server/dist/cli.js",
       "doctor",
       "--json"
     ]);
-    expect(invocation.env).toMatchObject({
-      KOED_REPO_ROOT: "/repo",
-      ELECTRON_RUN_AS_NODE: "1"
+    expect(invocation.env).toEqual({ KOED_REPO_ROOT: "/repo" });
+  });
+
+  it("uses the checkout Node runtime for development support scripts", () => {
+    const invocation = createNodeEntrypointInvocation(
+      "/repo/apps/desktop/dist-electron/pds-secret-bridge-provider.js",
+      [],
+      {
+        appIsPackaged: false,
+        electronExecPath: "/repo/node_modules/.bin/electron",
+        platform: "darwin",
+        environment: { KOED_REPO_ROOT: "/repo" }
+      }
+    );
+
+    expect(invocation).toEqual({
+      command: "node",
+      args: ["/repo/apps/desktop/dist-electron/pds-secret-bridge-provider.js"],
+      env: { KOED_REPO_ROOT: "/repo" }
     });
   });
 
@@ -149,5 +166,29 @@ describe("Koed Desktop Node entrypoint runtime", () => {
       "status"
     ]);
     expect(invocation.env.ELECTRON_RUN_AS_NODE).toBe("1");
+  });
+
+  it("wraps packaged support scripts with the runner", () => {
+    const invocation = createNodeEntrypointInvocation(
+      "/app/pds-secret-bridge-provider.js",
+      [],
+      {
+        appIsPackaged: true,
+        electronExecPath: "/Applications/Koed.app/Contents/MacOS/Koed",
+        platform: "darwin",
+        resourcesPath: "/Applications/Koed.app/Contents/Resources",
+        environment: {}
+      }
+    );
+
+    expect(invocation).toEqual({
+      command: "/Applications/Koed.app/Contents/MacOS/Koed",
+      args: [
+        "/Applications/Koed.app/Contents/Resources/app.asar.unpacked/dist-electron/koed-server/node-entrypoint-runner.js",
+        "node-script",
+        "/app/pds-secret-bridge-provider.js"
+      ],
+      env: { ELECTRON_RUN_AS_NODE: "1" }
+    });
   });
 });

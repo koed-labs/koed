@@ -22,6 +22,7 @@ import { removePi, setupPi } from "./pi-setup.js";
 import { removeClaude, setupClaude } from "./claude-setup.js";
 import {
   collectKoedServerDoctor,
+  collectKoedServerStartupStatus,
   collectKoedServerStatus,
   evaluateAiClientReadiness
 } from "./status.js";
@@ -96,6 +97,7 @@ Commands:
   stop --json            Stop supervised local Koed services
   restart --json         Restart supervised local Koed services
   status --json          Print machine-readable local service state
+  status --startup --json Print lightweight supervisor startup state
   doctor --json          Print actionable setup/dependency diagnostics
   identity status --json Print clone-safe deployment/device identity state
   identity rotate --json Create fresh device identity and invalidate local enrollment references
@@ -168,6 +170,7 @@ Environment:
 
 export interface KoedServerCliDependencies {
   collectStatus?: typeof collectKoedServerStatus;
+  collectStartupStatus?: typeof collectKoedServerStartupStatus;
   collectDoctor?: typeof collectKoedServerDoctor;
   inspectDeviceIdentity?: typeof inspectDeviceIdentityStatus;
   rotateDeviceIdentity?: typeof rotateDeviceIdentity;
@@ -461,6 +464,7 @@ export const runKoedServerCli = async (
   args: string[],
   {
     collectStatus = collectKoedServerStatus,
+    collectStartupStatus = collectKoedServerStartupStatus,
     collectDoctor = collectKoedServerDoctor,
     inspectDeviceIdentity = inspectDeviceIdentityStatus,
     rotateDeviceIdentity: rotateIdentity = rotateDeviceIdentity,
@@ -535,7 +539,9 @@ export const runKoedServerCli = async (
     }
 
     if (command === "status") {
-      const status = await collectStatus();
+      const status = args.includes("--startup")
+        ? await collectStartupStatus()
+        : await collectStatus();
       if (wantsJson) {
         printJson(stdout, status);
       } else {

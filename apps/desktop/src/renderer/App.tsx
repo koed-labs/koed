@@ -482,6 +482,8 @@ export function App({
     readPersonalMemory
   );
   const desktopStatus = useDesktopStatus(activeStatusStore);
+  const desktopHealthSummary = compactHealthSummary(desktopStatus.status);
+  const desktopHealthIsReady = desktopHealthSummary.state === "healthy";
   const localSetupReady =
     statusReadyOverride ??
     (desktopStatus.status ? setupIsReady(desktopStatus.status) : undefined);
@@ -591,6 +593,15 @@ export function App({
       void activeStatusStore.refresh();
     }
   }, [activeStatusStore, statusReadyOverride]);
+
+  useEffect(() => {
+    if (statusReadyOverride !== undefined || desktopHealthIsReady) return;
+    const interval = window.setInterval(
+      () => void activeStatusStore.refresh(),
+      1_500
+    );
+    return () => window.clearInterval(interval);
+  }, [activeStatusStore, desktopHealthIsReady, statusReadyOverride]);
 
   useEffect(() => {
     if (
@@ -1503,15 +1514,16 @@ export function App({
         canGoForward={navigation.index < navigation.entries.length - 1}
         contextNavigation={contextNavigation}
         health={(() => {
-          const summary = compactHealthSummary(desktopStatus.status);
           return {
-            label: summary.label,
+            label: desktopHealthSummary.label,
             state:
-              summary.state === "healthy"
+              desktopHealthSummary.state === "healthy"
                 ? "healthy"
-                : summary.state === "fault"
+                : desktopHealthSummary.state === "fault"
                   ? "needs_attention"
-                  : "starting"
+                  : desktopHealthSummary.state === "starting"
+                    ? "starting"
+                    : "waiting"
           } as const;
         })()}
         identityLabel={

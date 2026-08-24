@@ -51,6 +51,33 @@ For server/private VPS terminology and migration notes, see
 mandatory core setup when needed, and keeps the startup screen visible until
 core services are ready. AI Client setup is optional and explicit.
 
+In a source checkout, the Desktop `prestart` script runs
+`pnpm source-runtime:prepare` before Electron starts. This command calculates a
+SHA-256 fingerprint for the API, Worker, MCP Server, Embedding Service, Privacy
+Filter Service, and their workspace dependencies. It builds these packages only
+when their inputs or required outputs changed.
+
+The source-runtime state is under
+`node_modules/.cache/koed/source-runtime-build.json`. A failed or interrupted
+build leaves a dirty marker beside this file. The dirty marker prevents a later
+start from using partial outputs. If workspace dependencies do not match
+`pnpm-lock.yaml`, run `pnpm install` before preparation.
+
+Use these commands for source-checkout diagnostics:
+
+```bash
+pnpm source-runtime:check
+pnpm source-runtime:prepare
+```
+
+Both commands print the state, fingerprint, and duration for development logs.
+
+The source `koed-server start` path only checks these outputs. It does not build
+them. The supervisor records a repository lease while it uses the outputs.
+Preparation fails instead of changing stale outputs that a live supervisor
+uses. Stop that supervisor before you prepare the stale runtime. Packaged
+Desktop and standalone `koed-server` packages do not use this fingerprint.
+
 Desktop creates and loads its main window before it resumes the managed local
 `koed-server`. Platform secret-provider initialization runs in the background
 startup path after the window exists and before the runtime resumes. A blocked
@@ -85,6 +112,7 @@ shell:
 
 ```bash
 node packages/koed-server/dist/cli.js status --json
+node packages/koed-server/dist/cli.js status --startup --json
 node packages/koed-server/dist/cli.js doctor --json
 node packages/koed-server/dist/cli.js setup core --json
 node packages/koed-server/dist/cli.js identity status --json
@@ -93,6 +121,26 @@ node packages/koed-server/dist/cli.js start --daemon --json
 node packages/koed-server/dist/cli.js stop --json
 node packages/koed-server/dist/cli.js restart --json
 ```
+
+`status --startup --json` is the bounded machine-readable readiness contract
+used by the supervisor and Desktop while local services start. It reads managed
+runtime ownership and process IDs, parses the API `/ready` checks, probes live
+Privacy Filter health when Team collaboration is enabled, and validates the
+local credential. It does not inspect AI Client profiles, MCP or Capture Hook
+configuration, device identity, upstream backends, last verification, or model
+digests. Use normal `status --json` or `doctor --json` for those diagnostics.
+
+Bundled-local Team startup verifies every pinned Privacy Filter model file once
+before the Privacy Filter process is spawned. Readiness polling then trusts the
+running service health response and does not read the model again. A later
+normal status or explicit model-status command remains a deep diagnostic and
+calculates the digest again.
+
+The supervisor log records structured `koed.supervisor.startup` events. Events
+from one process share a `startupId` and contain a `milestone` plus cumulative,
+monotonic `elapsedMs`. Successful startup records dependency and process-spawn
+milestones through `final_supervisor_status_emitted`; startup failure records
+`startup_failed`. These events contain no credentials or environment values.
 
 `start --daemon --json` starts a detached `koed-server start` supervisor and returns machine-readable startup intent for Desktop and scripts. One live supervisor owns each `KOED_HOME`: startup acquires an atomic lock before allocating automatic ports or starting dependencies, and a concurrent start reuses the live supervisor instead of rewriting `config/local-ports.json`. Stale locks are reclaimed after their owning process exits. Bundled-local cleanup stops native Postgres only when the current startup actually started it, so a failed concurrent or recovery attempt cannot stop another live supervisor's database.
 
@@ -111,10 +159,10 @@ the deployment supervisor restarts the complete service set. SIGINT, SIGTERM,
 and an identity-bound `koed-server stop` request use the same idempotent cleanup
 path and exit cleanly.
 
-In a source checkout, the supervisor launches the built API and Worker
-Node entry points directly. Recorded process IDs therefore identify the service
-processes themselves, so stop and restart do not leave package-manager child
-processes listening on Koed ports.
+In a source checkout, the supervisor verifies and leases the prepared runtime.
+It then launches the built API and Worker Node entry points directly. Recorded
+process IDs identify the service processes. Stop and restart therefore do not
+leave package-manager child processes listening on Koed ports.
 
 Local upstream enrollment orchestration is exposed as machine-readable
 control-plane state for Desktop and headless scripts:

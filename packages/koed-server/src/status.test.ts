@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   aggregateState,
   collectKoedServerDoctor,
+  collectKoedServerStartupStatus,
   collectKoedServerStatus,
   healthy,
   inspectAiClientFlowReadiness,
@@ -33,7 +34,12 @@ const tempDir = () => {
 };
 
 const response = (ok: boolean, status: number, body: unknown): Response =>
-  ({ ok, status, text: async () => JSON.stringify(body) }) as Response;
+  ({
+    ok,
+    status,
+    text: async () => JSON.stringify(body),
+    json: async () => body
+  }) as Response;
 
 const spawnResult = (stdout: string, status = 0) =>
   ({ stdout, stderr: "", status, signal: null, pid: 1, output: [] }) as never;
@@ -91,6 +97,134 @@ afterEach(() => {
   for (const path of temps.splice(0)) {
     rmSync(path, { recursive: true, force: true });
   }
+});
+
+describe("startup status", () => {
+  it("uses individual readiness checks and live process health without deep diagnostics", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "run"), { recursive: true });
+    writeFileSync(
+      resolve(root, "run/koed-server.json"),
+      JSON.stringify({
+        pid: 42,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        repoRoot: root,
+        apiUrl: "http://127.0.0.1:43300",
+        runtimeMode: "developer",
+        dependencyMode: "bundled-local",
+        automaticPorts: true,
+        services: ["api", "worker", "local-ai-runtime"],
+        processes: { api: 45, worker: 43, localAiRuntime: 44 }
+      })
+    );
+    const fetchedUrls: string[] = [];
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      fetchedUrls.push(url);
+      if (url.endsWith("/ready")) {
+        return response(false, 503, {
+          status: "error",
+          checks: [
+            { service: "api", status: "ok" },
+            { service: "postgres", status: "ok" },
+            { service: "postgres-version", status: "ok" },
+            { service: "migrations", status: "ok" },
+            { service: "pgvector", status: "ok" },
+            { service: "work-queue", status: "ok" },
+            { service: "embedding-service", status: "degraded" },
+            { service: "embedding-model", status: "degraded" }
+          ]
+        });
+      }
+      if (url.endsWith("/health")) {
+        return response(true, 200, { status: "ok" });
+      }
+      return response(true, 200, {});
+    });
+
+    const status = await collectKoedServerStartupStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_AUTO_PORTS: "1",
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_RUNTIME_MODE: "developer",
+        KOED_TEAM_COLLABORATION_ENABLED: "true",
+        WORK_QUEUE_BACKEND: "local",
+        MEMORY_API_TOKEN: "test-token",
+        PRIVACY_RUNTIME_CONTROL_TOKEN: "privacy-control-token"
+      },
+      {
+        existsSync: () => true,
+        fetch: fetcher,
+        checkPid: (pid) => [42, 43, 44].includes(pid),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status).toMatchObject({
+      ok: false,
+      state: "needs_attention",
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      api: { state: "healthy", url: "http://127.0.0.1:43300" },
+      database: { state: "healthy" },
+      redis: { state: "healthy" },
+      workerQueues: { state: "healthy" },
+      embeddingService: { state: "needs_attention" },
+      privacyService: { state: "healthy" },
+      localAiRuntime: { state: "healthy" },
+      apiToken: { state: "healthy", configured: true }
+    });
+    expect(fetchedUrls).toContain("http://127.0.0.1:43300/ready");
+    expect(fetchedUrls.some((url) => url.endsWith(":8092/health"))).toBe(true);
+    expect(fetchedUrls.every((url) => !url.includes("models/status"))).toBe(
+      true
+    );
+  });
+
+  it("does not trust health responses when Desktop runtime ownership is stale", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "run"), { recursive: true });
+    writeFileSync(
+      resolve(root, "run/koed-server.json"),
+      JSON.stringify({
+        pid: 42,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        repoRoot: root,
+        apiUrl: "http://127.0.0.1:43300",
+        runtimeMode: "local-personal",
+        dependencyMode: "bundled-local",
+        automaticPorts: true,
+        services: ["api"],
+        processes: { api: 43 }
+      })
+    );
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      response(true, 200, {
+        checks: [{ service: "api", status: "ok" }]
+      })
+    );
+
+    const status = await collectKoedServerStartupStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_AUTO_PORTS: "1",
+        KOED_DEPENDENCY_MODE: "bundled-local"
+      },
+      {
+        fetch: fetcher,
+        checkPid: () => false,
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.api.state).toBe("needs_attention");
+    expect(status.localAiRuntime.state).toBe("needs_attention");
+    expect(
+      fetcher.mock.calls.some(([url]) => String(url).endsWith("/ready"))
+    ).toBe(false);
+  });
 });
 
 describe("status state aggregation", () => {

@@ -173,23 +173,40 @@ export const compactHealthSummary = (
   status: KoedServerStatus | null
 ): {
   label: string;
-  state: "checking" | "healthy" | "starting" | "fault";
+  state: "checking" | "healthy" | "starting" | "waiting" | "fault";
 } => {
   if (!status) return { label: "Checking Koed", state: "checking" };
-  if (status.ok && status.state === "healthy") {
+
+  const components = status.core
+    ? Object.values(status.core.components)
+    : [
+        status.api,
+        status.database,
+        status.redis,
+        status.workerQueues,
+        status.embeddingService,
+        ...(status.privacyService ? [status.privacyService] : []),
+        ...(status.localAiRuntime ? [status.localAiRuntime] : []),
+        status.apiToken,
+        status.mcpServer
+      ];
+
+  if (components.every(({ state }) => state === "healthy")) {
     return { label: "Koed is ready", state: "healthy" };
   }
-  if (status.state === "starting") {
+  if (components.some(({ state }) => state === "starting")) {
     return { label: "Koed is starting", state: "starting" };
   }
-  if (status.state !== "needs_attention") {
-    return { label: "Koed is starting", state: "starting" };
-  }
-  const faults = setupStepsFromStatus(status).filter(
-    ({ state }) => state !== "healthy"
+  const faults = components.filter(
+    ({ state }) => state === "needs_attention"
   ).length;
-  return {
-    label: `${faults} setup ${faults === 1 ? "item needs" : "items need"} attention`,
-    state: "fault"
-  };
+  if (faults > 1) {
+    return {
+      label: `${faults} services need attention`,
+      state: "fault"
+    };
+  }
+  return faults === 1
+    ? { label: "1 service needs attention", state: "waiting" }
+    : { label: "Koed is not ready yet", state: "waiting" };
 };

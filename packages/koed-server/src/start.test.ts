@@ -308,6 +308,65 @@ afterEach(() => {
 });
 
 describe("start supervisor", () => {
+  it("collects startup status once per readiness phase and emits correlated timings", async () => {
+    const root = tempDir();
+    const logs: string[] = [];
+    const consoleLog = vi
+      .spyOn(console, "log")
+      .mockImplementation((value) => logs.push(String(value)));
+    let statusCollections = 0;
+    try {
+      await startKoedServer({
+        signal: cleanShutdownSignal(),
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_RUNTIME_MODE: "external",
+          KOED_DEPENDENCY_MODE: "external",
+          DATABASE_URL: "postgres://operator/db",
+          REDIS_URL: "redis://operator:6379",
+          EMBEDDING_SERVICE_URL: "http://operator:8000",
+          MEMORY_API_TOKEN: "test-runtime-token"
+        },
+        timeoutMs: 1,
+        pollIntervalMs: 1,
+        spawnSync: () => spawnResult(),
+        spawn: () => child(statusCollections + 10),
+        collectStatus: async () => {
+          statusCollections += 1;
+          return healthyStatus(root);
+        }
+      });
+    } finally {
+      consoleLog.mockRestore();
+    }
+
+    const events = logs.flatMap((line) => {
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        return parsed.event === "koed.supervisor.startup" ? [parsed] : [];
+      } catch {
+        return [];
+      }
+    });
+    expect(statusCollections).toBe(2);
+    expect(new Set(events.map((event) => event.startupId)).size).toBe(1);
+    expect(events.map((event) => event.milestone)).toEqual(
+      expect.arrayContaining([
+        "supervisor_entry",
+        "source_runtime_verification_complete",
+        "api_process_spawned",
+        "api_and_database_ready",
+        "worker_process_spawned",
+        "core_services_ready",
+        "final_supervisor_status_emitted"
+      ])
+    );
+    expect(events.every((event) => typeof event.elapsedMs === "number")).toBe(
+      true
+    );
+  });
+
   it("creates one Desktop Local Credential for the Personal owner", () => {
     const root = tempDir();
     const paths = resolveKoedServerPaths({
@@ -787,7 +846,9 @@ describe("start supervisor", () => {
     );
 
     expect(commands.map((command) => command.args.join(" "))).toEqual([
-      resolve(root, "scripts/setup-env.mjs")
+      resolve(root, "scripts/setup-env.mjs"),
+      `${resolve(root, "scripts/source-runtime-build.mjs")} check --lease-pid ${process.pid}`,
+      `${resolve(root, "scripts/source-runtime-build.mjs")} release-lease --lease-pid ${process.pid}`
     ]);
     expect(commands.some((command) => command.command === "docker")).toBe(
       false
@@ -953,22 +1014,11 @@ describe("start supervisor", () => {
       resolve(resources.pgBin, "pg_ctl")
     );
     expect(commands.map((command) => command.args.join(" "))).toContain(
-      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/privacy-service --filter @koed/mcp-server build"
+      `${resolve(root, "scripts/source-runtime-build.mjs")} check --lease-pid ${process.pid}`
     );
-    const buildEnv = commands.find((command) =>
-      command.args.includes("@koed/embedding-service")
-    )?.env;
-    expect(buildEnv?.WORK_QUEUE_BACKEND).toBe("local");
-    expect(buildEnv?.KOED_MODELS_DIR).toBe(resolve(root, "models"));
-    expect(buildEnv?.EMBEDDING_MODEL).toBe("qwen3-0.6b");
-    expect(buildEnv?.MODEL_KEY).toBe("qwen3-0.6b");
-    expect(buildEnv?.EMBEDDING_MODEL_PATH).toBe(
-      resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf")
+    expect(commands.some((command) => command.args.includes("@koed/api"))).toBe(
+      false
     );
-    expect(buildEnv?.DATABASE_URL).toMatch(
-      /^postgres:\/\/koed:[A-Za-z0-9_-]+@127\.0\.0\.1:25432\/koed$/
-    );
-    expect(buildEnv?.DATABASE_URL).not.toContain("wrong");
     expect(spawned[0]?.command).toBe(process.execPath);
     expect(spawned[0]?.args).toEqual([resources.serviceEntry]);
     expect(spawned[0]?.env?.LLAMA_SERVER_BINARY).toBe(resources.llamaServer);
@@ -1146,11 +1196,11 @@ describe("start supervisor", () => {
     );
   });
 
-  it("does not stop Docker Compose when native startup cleanup runs", async () => {
+  it("does not start dependencies when the source-runtime check fails", async () => {
     const root = tempDir();
     createNativeResources(root);
     const commands: Array<{ command: string; args: string[] }> = [];
-    let pgStatusCalls = 0;
+    const spawned: unknown[] = [];
 
     await expect(
       startKoedServer({
@@ -1163,22 +1213,11 @@ describe("start supervisor", () => {
         pollIntervalMs: 1,
         spawnSync: (command, args) => {
           commands.push({ command, args });
-          if (args.includes("@koed/api")) {
+          if (args.includes("check")) {
             return {
               stdout: "",
-              stderr: "build failed",
+              stderr: "source runtime is stale",
               status: 1,
-              signal: null,
-              pid: 1,
-              output: []
-            } as never;
-          }
-          if (command.endsWith("pg_ctl") && args.includes("status")) {
-            pgStatusCalls += 1;
-            return {
-              stdout: "",
-              stderr: pgStatusCalls === 1 ? "not running" : "",
-              status: pgStatusCalls === 1 ? 1 : 0,
               signal: null,
               pid: 1,
               output: []
@@ -1186,15 +1225,21 @@ describe("start supervisor", () => {
           }
           return spawnResult();
         },
-        spawn: () => child(1),
+        spawn: (...args) => {
+          spawned.push(args);
+          return child(1);
+        },
         collectStatus: async () => healthyStatus(root)
       })
-    ).rejects.toThrow("Build Koed server apps failed");
+    ).rejects.toThrow("Check source runtime artifacts failed");
 
     expect(commands.some((command) => command.command === "docker")).toBe(
       false
     );
-    expect(commands.map((command) => command.command)).not.toContain("docker");
+    expect(commands.some((command) => command.command.endsWith("pg_ctl"))).toBe(
+      false
+    );
+    expect(spawned).toEqual([]);
   });
 
   it("allows bundled-local models split across directories for native runtime", async () => {
@@ -1242,13 +1287,13 @@ describe("start supervisor", () => {
       collectStatus: async () => healthyStatus(root)
     });
 
-    const buildEnv = commands.find((command) =>
-      command.args.includes("@koed/embedding-service")
+    const checkEnv = commands.find((command) =>
+      command.args.includes("check")
     )?.env;
-    expect(buildEnv?.EMBEDDING_MODEL_PATH).toBe(
+    expect(checkEnv?.EMBEDDING_MODEL_PATH).toBe(
       resolve(embeddingDir, "embedding.gguf")
     );
-    expect(buildEnv?.EMBEDDING_RERANKER_MODEL_PATH).toBe(
+    expect(checkEnv?.EMBEDDING_RERANKER_MODEL_PATH).toBe(
       resolve(rerankerDir, "reranker.gguf")
     );
   });
@@ -1765,7 +1810,8 @@ describe("start supervisor", () => {
 
     expect(commands.map((command) => command.args.join(" "))).toEqual([
       resolve(root, "scripts/setup-env.mjs"),
-      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/privacy-service --filter @koed/mcp-server build"
+      `${resolve(root, "scripts/source-runtime-build.mjs")} check --lease-pid ${process.pid}`,
+      `${resolve(root, "scripts/source-runtime-build.mjs")} release-lease --lease-pid ${process.pid}`
     ]);
     expect(commands.some((command) => command.command === "docker")).toBe(
       false

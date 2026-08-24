@@ -219,14 +219,33 @@ describe("SetupChecklist", () => {
     expect(setupIsReady(status)).toBe(true);
   });
 
-  it("reserves the compact error state for confirmed attention", () => {
+  it("prioritizes starting services before confirmed attention", () => {
     expect(compactHealthSummary(statusFixture("not_configured"))).toEqual({
+      label: "Koed is not ready yet",
+      state: "waiting"
+    });
+    const mixed = statusFixture("healthy");
+    mixed.database = component("starting");
+    mixed.redis = component("needs_attention");
+    mixed.workerQueues = component("needs_attention");
+    expect(compactHealthSummary(mixed)).toEqual({
       label: "Koed is starting",
       state: "starting"
     });
-    expect(compactHealthSummary(statusFixture("needs_attention")).state).toBe(
-      "fault"
-    );
+  });
+
+  it("shows an error only when multiple services need attention", () => {
+    const status = statusFixture("healthy");
+    status.database = component("needs_attention");
+    expect(compactHealthSummary(status)).toEqual({
+      label: "1 service needs attention",
+      state: "waiting"
+    });
+    status.redis = component("needs_attention");
+    expect(compactHealthSummary(status)).toEqual({
+      label: "2 services need attention",
+      state: "fault"
+    });
   });
 
   it("inspects existing state and requires consent before setup", async () => {

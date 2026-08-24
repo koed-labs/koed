@@ -1,6 +1,9 @@
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { localPrivacyEnv } from "./local-privacy-runtime.js";
+import {
+  collectLocalPrivacyRuntimeHealthStatus,
+  localPrivacyEnv
+} from "./local-privacy-runtime.js";
 import type { KoedServerPaths } from "./paths.js";
 
 describe("native Privacy Filter Service runtime", () => {
@@ -41,5 +44,31 @@ describe("native Privacy Filter Service runtime", () => {
         PRIVACY_RUNTIME_PROVIDER: "cuda"
       }).PRIVACY_RUNTIME_PROVIDER
     ).toBe("cuda");
+  });
+
+  it("collects live startup health without requiring model files", async () => {
+    const paths = {
+      koedHome: "/koed",
+      modelsDir: "/koed/models",
+      repoRoot: "/repo"
+    } as KoedServerPaths;
+
+    await expect(
+      collectLocalPrivacyRuntimeHealthStatus(
+        paths,
+        { PRIVACY_SERVICE_PORT: "48092" },
+        {
+          existsSync: () => true,
+          fetch: async () =>
+            new Response(JSON.stringify({ status: "ok" }), {
+              status: 200,
+              headers: { "content-type": "application/json" }
+            })
+        }
+      )
+    ).resolves.toMatchObject({
+      state: "healthy",
+      details: { healthUrl: "http://127.0.0.1:48092/health" }
+    });
   });
 });
