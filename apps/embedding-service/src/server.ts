@@ -170,9 +170,10 @@ export const capacityHardwareIdentity = async (
   if (acceleration.backend !== "cpu" && !listing) {
     throw new HttpError(503, "embedding accelerator identity is unavailable");
   }
-  const acceleratorFingerprint = listing
-    ? stableHash({ backendClass: acceleration.backend, listing })
-    : null;
+  const acceleratorFingerprint =
+    acceleration.backend !== "cpu" && listing
+      ? stableHash({ backendClass: acceleration.backend, listing })
+      : null;
   return {
     acceleratorFingerprint,
     hardwareFingerprint: stableHash({
