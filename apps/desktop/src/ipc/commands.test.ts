@@ -75,7 +75,8 @@ describe("desktop IPC command registry", () => {
         operation: request.operation,
         ok: true,
         data:
-          request.operation === "personal.projects.list"
+          request.operation === "personal.projects.list" ||
+          request.operation === "personal.projects.metadata.list"
             ? { projects: [] }
             : request.operation === "personal.events.load_page"
               ? { events: [] }

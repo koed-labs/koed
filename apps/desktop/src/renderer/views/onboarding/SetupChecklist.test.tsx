@@ -726,6 +726,11 @@ describe("SetupChecklist", () => {
     expect(
       container.querySelectorAll("input[type=checkbox]:checked")
     ).toHaveLength(0);
+    expect(
+      [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Continue"
+      )?.disabled
+    ).toBe(true);
     await act(async () =>
       [...container.querySelectorAll("button")]
         .find((button) => button.textContent === "Set up later")!
@@ -735,6 +740,60 @@ describe("SetupChecklist", () => {
     expect(invoke.mock.calls.some(([command]) => command !== "status")).toBe(
       false
     );
+  });
+
+  it("limits client capability summaries and hides unknown managed conversations", async () => {
+    const status = statusWithClientProfiles({
+      codex: "not_configured",
+      claude: "not_configured",
+      pi: "not_configured"
+    });
+    const codex = status.aiClients!.codex!;
+    codex.capabilities = [
+      "automatic_capture",
+      "managed_conversation_start",
+      "mcp_recall",
+      "local_synthesis",
+      "automatic_capture",
+      "mcp_recall",
+      "local_synthesis"
+    ].map((id) => ({
+      id: id as (typeof codex.capabilities)[number]["id"],
+      support: "supported" as const,
+      readiness: "unknown" as const,
+      diagnostics: []
+    }));
+    const onComplete = vi.fn();
+    window.koedDesktop = {
+      invoke: async <T = unknown,>(command: string): Promise<T> =>
+        (command === "status" ? status : { ok: true }) as T,
+      setup: {
+        inspect: async () => completeSetupFixture(),
+        run: async () => completeSetupFixture(),
+        subscribe: () => () => undefined
+      }
+    };
+    const statusStore = new DesktopStatusStore();
+    await act(async () => {
+      root.render(
+        <SetupChecklist
+          onComplete={onComplete}
+          showTrustGuide={false}
+          statusStore={statusStore}
+        />
+      );
+    });
+    await act(async () => Promise.resolve());
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue")!
+        .click()
+    );
+    const codexCard = container.querySelectorAll(".koed-client-card")[0]!;
+    expect(codexCard.textContent).not.toContain(
+      "Managed Conversation: Unknown"
+    );
+    expect(codexCard.querySelectorAll("span")).toHaveLength(9);
   });
 
   it("requires separate consent for selected clients and keeps one failure isolated", async () => {

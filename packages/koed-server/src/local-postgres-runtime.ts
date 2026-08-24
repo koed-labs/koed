@@ -396,7 +396,16 @@ export const startLocalPostgresRuntime = (
   const exists = dependencies.existsSync ?? existsSync;
   const spawnSync = dependencies.spawnSync ?? (nodeSpawnSync as SpawnSyncLike);
   const runtime = resolveLocalPostgresRuntimePaths(paths, environment, exists);
-  const env = { ...environment, ...localPostgresEnv(runtime) };
+  // Finder-launched macOS apps can inherit a locale which is not installed on
+  // the host. PostgreSQL's initdb rejects that environment before it creates
+  // its data directory, so use its universally available C locale for the
+  // bundled local database.
+  const env = {
+    ...environment,
+    ...localPostgresEnv(runtime),
+    LANG: "C",
+    LC_ALL: "C"
+  };
   const missing = runtimeMissing(runtime, exists);
   if (missing.length > 0) {
     return {

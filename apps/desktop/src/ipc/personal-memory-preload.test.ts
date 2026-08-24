@@ -35,6 +35,7 @@ describe("Personal Memory preload bridge", () => {
     await expect(api.listProjects()).resolves.toEqual([]);
     expect(Object.keys(api).sort()).toEqual([
       "assignSessionProject",
+      "listProjectMetadata",
       "listProjects",
       "loadEventPage",
       "subscribe",
@@ -43,6 +44,22 @@ describe("Personal Memory preload bridge", () => {
     expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
       contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       operation: "personal.projects.list",
+      input: {}
+    });
+  });
+
+  it("exposes local Project metadata without allowing arbitrary IPC input", async () => {
+    const invoke = vi.fn().mockResolvedValue(
+      success("personal.projects.metadata.list", {
+        projects: []
+      })
+    );
+    const api = createPersonalMemoryPreloadApi(invoke, events());
+
+    await expect(api.listProjectMetadata?.()).resolves.toEqual([]);
+    expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.projects.metadata.list",
       input: {}
     });
   });

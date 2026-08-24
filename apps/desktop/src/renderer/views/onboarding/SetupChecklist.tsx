@@ -558,6 +558,18 @@ function AiClientSetup({
             {onboardingClients.map(({ id, label }) => {
               const readiness = status?.aiClients?.[id];
               const detected = readiness?.installed.state === "healthy";
+              const capabilitySummaries =
+                readiness?.capabilities
+                  .filter(
+                    (capability) =>
+                      capability.readiness !== "unknown" ||
+                      [
+                        "automatic_capture",
+                        "mcp_recall",
+                        "local_synthesis"
+                      ].includes(capability.id)
+                  )
+                  .slice(0, 5) ?? [];
               return (
                 <label
                   className="koed-client-card"
@@ -583,7 +595,7 @@ function AiClientSetup({
                         ? "Unauthenticated"
                         : "Unknown"}
                   </span>
-                  {readiness?.capabilities.map((capability) => (
+                  {capabilitySummaries.map((capability) => (
                     <span key={capability.id}>
                       {capability.id === "automatic_capture"
                         ? "Automatic capture"
@@ -644,7 +656,11 @@ function AiClientSetup({
             </Button>
           ) : (
             <Button
-              disabled={busyCommand !== null || activeClient !== null}
+              disabled={
+                busyCommand !== null ||
+                activeClient !== null ||
+                selected.size === 0
+              }
               onClick={begin}
             >
               Continue

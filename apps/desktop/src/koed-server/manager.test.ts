@@ -62,6 +62,90 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
+  it("returns sanitized local Project metadata through the Desktop boundary", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-metadata-"));
+    const configPath = resolve(koedHome, "config");
+    mkdirSync(configPath, { recursive: true });
+    writeFileSync(
+      resolve(configPath, "projects.json"),
+      JSON.stringify({
+        schemaVersion: 3,
+        updatedAt: "2026-07-24T00:00:00.000Z",
+        deviceSaltId: "pms_test",
+        projects: [
+          {
+            schemaVersion: 1,
+            discoveredAt: "2026-07-23T00:00:00.000Z",
+            lastSeenAt: "2026-07-24T00:00:00.000Z",
+            localProjectId: "local-project",
+            displayName: "koed",
+            path: {
+              cwd: "/private/operator/koed",
+              projectRoot: "/private/operator/koed",
+              basename: "koed",
+              localPathHash: "hmac_sha256:path"
+            },
+            git: {
+              rootHash: "hmac_sha256:root",
+              commonDirHash: null,
+              branch: "main",
+              headCommit: "deadbeef",
+              isWorktree: false,
+              worktreeHash: null,
+              remoteAliases: [],
+              remotes: [
+                {
+                  name: "origin",
+                  host: "github.com",
+                  namespace: "koed-labs",
+                  repo: "koed",
+                  display: "github.com/koed-labs/koed",
+                  fingerprint: "gr_remote"
+                }
+              ]
+            },
+            packages: []
+          }
+        ]
+      })
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(null, JSON.stringify({ ok: true }), ""),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.projects.metadata.list",
+        input: {}
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        projects: [
+          {
+            localProjectId: "local-project",
+            git: {
+              remotes: [{ display: "github.com/koed-labs/koed" }]
+            }
+          }
+        ]
+      }
+    });
+  });
+
   it("persists and restarts after changing hardware acceleration", async () => {
     const koedHome = mkdtempSync(
       resolve(tmpdir(), "koed-desktop-acceleration-")
@@ -595,7 +679,7 @@ describe("Koed server desktop manager", () => {
     ).toMatchObject({
       KOED_RUNTIME_MODE: "local-personal",
       KOED_DEPENDENCY_MODE: "bundled-local",
-      KOED_TEAM_COLLABORATION_ENABLED: "true",
+      KOED_TEAM_COLLABORATION_ENABLED: "false",
       WORK_QUEUE_BACKEND: "local",
       KOED_AUTO_PORTS: "1"
     });
@@ -614,7 +698,7 @@ describe("Koed server desktop manager", () => {
     expect(packagedEnvironment).toMatchObject({
       KOED_RUNTIME_MODE: "local-personal",
       KOED_DEPENDENCY_MODE: "bundled-local",
-      KOED_TEAM_COLLABORATION_ENABLED: "true",
+      KOED_TEAM_COLLABORATION_ENABLED: "false",
       WORK_QUEUE_BACKEND: "local",
       KOED_AUTO_PORTS: "1",
       KOED_PACKAGED_DESKTOP: "1",
@@ -650,7 +734,7 @@ describe("Koed server desktop manager", () => {
       KOED_REPO_ROOT: "/repo",
       KOED_RUNTIME_MODE: "local-personal",
       KOED_DEPENDENCY_MODE: "bundled-local",
-      KOED_TEAM_COLLABORATION_ENABLED: "true",
+      KOED_TEAM_COLLABORATION_ENABLED: "false",
       WORK_QUEUE_BACKEND: "local",
       KOED_AUTO_PORTS: "1"
     });

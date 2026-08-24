@@ -1,3 +1,5 @@
+import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+
 export type DesktopThreadGroup = {
   id: string;
   name: string;
@@ -34,8 +36,8 @@ export type DesktopProjectMetadata = {
   path: {
     cwd: string;
     projectRoot: string | null;
-    basename: string;
-    localPathHash: string;
+    basename?: string;
+    localPathHash?: string;
   };
   git?: {
     branch: string | null;
@@ -44,7 +46,8 @@ export type DesktopProjectMetadata = {
   };
 };
 
-export type DesktopProject = DesktopProjectGroup & {
+export type DesktopProject = Omit<DesktopProjectGroup, "threads"> & {
+  threads: PersonalDesktopProjectThread[];
   catalogued: boolean;
   discoveredAt: string | null;
   lastSeenAt: string | null;
@@ -127,6 +130,7 @@ const enrichProject = (
   metadata: DesktopProjectMetadata | null
 ): DesktopProject => ({
   ...project,
+  threads: project.threads as PersonalDesktopProjectThread[],
   name: metadata?.displayName || project.name,
   path:
     project.path ?? metadata?.path.projectRoot ?? metadata?.path.cwd ?? null,

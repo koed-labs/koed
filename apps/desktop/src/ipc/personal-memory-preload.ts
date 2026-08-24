@@ -62,6 +62,19 @@ export const createPersonalMemoryPreloadApi = (
       }
       return result.data.projects;
     },
+    listProjectMetadata: async () => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.metadata.list",
+          input: {}
+        })
+      );
+      if (result.operation !== "personal.projects.metadata.list") {
+        throw new Error("Invalid Personal Memory Project metadata result.");
+      }
+      return result.data.projects;
+    },
     loadEventPage: async (
       value: Parameters<PersonalDesktopApi["loadEventPage"]>[0]
     ) => {

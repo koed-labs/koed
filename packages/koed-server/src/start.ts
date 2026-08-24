@@ -48,6 +48,7 @@ import {
   acquireKoedServerSupervisorLock,
   releaseKoedServerSupervisorLock
 } from "./supervisor-lock.js";
+
 import { maintainSupervisorLog } from "./supervisor-log.js";
 import { monitorSupervisorExitRequest } from "./supervisor-exit-request.js";
 import type { KoedServerRuntimeState } from "./types.js";
@@ -58,6 +59,23 @@ export {
   provisionDesktopApiToken,
   provisionDesktopLocalCredential
 } from "./local-api-token.js";
+
+const localRuntimeFailureDetails = (details: unknown): string => {
+  if (!details || typeof details !== "object" || Array.isArray(details)) {
+    return "";
+  }
+  const result = details as { exitCode?: unknown; stderr?: unknown };
+  const exitCode = typeof result.exitCode === "number" ? result.exitCode : null;
+  const stderr =
+    typeof result.stderr === "string"
+      ? result.stderr.trim().slice(0, 2_000)
+      : "";
+  const parts = [
+    exitCode === null ? null : `exit code ${exitCode}`,
+    stderr || null
+  ].filter((part): part is string => Boolean(part));
+  return parts.length ? ` (${parts.join(": ")})` : "";
+};
 
 type SpawnSyncLike = (
   command: string,
@@ -1115,7 +1133,7 @@ export const startKoedServer = async ({
       startedNativePostgres = result.started;
       if (!result.ok) {
         throw new Error(
-          `Bundled-local native Postgres could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
+          `Bundled-local native Postgres could not start: ${result.status.message ?? result.status.state}${localRuntimeFailureDetails(result.status.details)}${result.status.action ? ` ${result.status.action}` : ""}`
         );
       }
     }

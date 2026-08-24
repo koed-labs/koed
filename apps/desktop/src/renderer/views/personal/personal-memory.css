@@ -320,6 +320,15 @@
   min-width: 0;
 }
 
+.personal-project-remote {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .personal-new-conversation-group {
   align-items: stretch;
   display: inline-flex;

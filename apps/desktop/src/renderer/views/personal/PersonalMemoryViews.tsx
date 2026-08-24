@@ -38,6 +38,7 @@ import {
   sessionPreview,
   sessionSelectionId
 } from "../../../project-memory-ui.js";
+import type { DesktopProject } from "../../../project-memory-ui.js";
 import { type PersonalMemoryStore } from "../../state/personal-memory.js";
 import { usePersonalMemorySnapshot } from "../../state/use-personal-memory.js";
 import {
@@ -121,7 +122,9 @@ function ProjectOverview({
   );
 }
 
-const projectActivity = (project: PersonalDesktopProject): string | null =>
+const projectActivity = (
+  project: Pick<DesktopProject, "threads">
+): string | null =>
   project.threads
     .map((thread) => thread.latestAt)
     .filter((timestamp) => Number.isFinite(Date.parse(timestamp)))
@@ -231,7 +234,7 @@ function ProjectRow({
   selected,
   onSelect
 }: {
-  project: PersonalDesktopProject;
+  project: DesktopProject;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -248,6 +251,11 @@ function ProjectRow({
       </span>
       <span className="personal-project-row-copy">
         <strong>{project.name}</strong>
+        {project.remoteDisplay ? (
+          <small className="personal-project-remote">
+            {project.remoteDisplay}
+          </small>
+        ) : null}
         <ProjectOverview
           eventCount={project.eventCount}
           sessionCount={project.threads.length}
@@ -272,7 +280,7 @@ function ProjectsPane({
   loading: boolean;
   onRetry: () => void;
   onSelect: (projectId: string) => void;
-  projects: readonly PersonalDesktopProject[];
+  projects: readonly DesktopProject[];
   selectedProjectId: string | null;
 }) {
   const [query, setQuery] = useState("");
@@ -280,22 +288,11 @@ function ProjectsPane({
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filtered = projects.filter((project) => {
     if (!normalizedQuery) return true;
-    return [project.name, project.path ?? ""].some((value) =>
-      value.toLocaleLowerCase().includes(normalizedQuery)
+    return [project.name, project.path ?? "", project.remoteDisplay ?? ""].some(
+      (value) => value.toLocaleLowerCase().includes(normalizedQuery)
     );
   });
-  const active = filtered.filter((project) =>
-    projectIsActive({
-      ...project,
-      branch: null,
-      catalogued: false,
-      discoveredAt: null,
-      isWorktree: false,
-      lastSeenAt: null,
-      localProjectId: null,
-      remoteDisplay: null
-    })
-  );
+  const active = filtered.filter((project) => projectIsActive(project));
   const inactive = filtered.filter(
     (project) => !active.some(({ id }) => id === project.id)
   );
@@ -596,7 +593,7 @@ function ProjectDetail({
   ) => void;
   onRetry: () => void;
   onSelectSession: (sessionId: string) => void;
-  project: PersonalDesktopProject | null;
+  project: DesktopProject | null;
 }) {
   const [startState, setStartState] = useState<{
     status: "idle" | "starting" | "error";
@@ -789,6 +786,12 @@ function ProjectDetail({
             <dt>Local path:</dt>
             <dd>{project.path ?? "Unavailable"}</dd>
           </div>
+          {project.remoteDisplay ? (
+            <div>
+              <dt>Git remote:</dt>
+              <dd>{project.remoteDisplay}</dd>
+            </div>
+          ) : null}
         </dl>
       </details>
       <section className="personal-sessions" aria-label="Captured Sessions">

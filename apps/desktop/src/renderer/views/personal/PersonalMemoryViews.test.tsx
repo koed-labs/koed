@@ -4,6 +4,7 @@ import type {
   PersonalDesktopApi,
   PersonalDesktopConversationEvent,
   PersonalDesktopProject,
+  PersonalDesktopProjectMetadata,
   PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
 import { act, useState, type ReactNode } from "react";
@@ -236,8 +237,24 @@ describe("PersonalMemoryWorkspace", () => {
 
   it("loads the normalized Project index and restores focus through drilldown", async () => {
     const source = project([thread(1, { sourceAiClient: "pi" })]);
+    const metadata: PersonalDesktopProjectMetadata = {
+      schemaVersion: 1,
+      discoveredAt: "2026-07-23T00:00:00.000Z",
+      lastSeenAt: "2026-07-24T00:00:00.000Z",
+      localProjectId: "local-project-1",
+      displayName: source.name,
+      path: { cwd: source.path!, projectRoot: source.path },
+      git: {
+        branch: "main",
+        isWorktree: false,
+        remotes: [{ display: "github.com/koed-labs/koed" }]
+      }
+    };
     const store = new PersonalMemoryStore(
-      api({ listProjects: vi.fn(async () => [source]) })
+      api({
+        listProjects: vi.fn(async () => [source]),
+        listProjectMetadata: vi.fn(async () => [metadata])
+      })
     );
 
     await act(async () => {
@@ -261,6 +278,7 @@ describe("PersonalMemoryWorkspace", () => {
     );
     expect(activeProjects).not.toBeNull();
     expect(activeProjects?.textContent).not.toContain("Active");
+    expect(container.textContent).toContain("github.com/koed-labs/koed");
     const overview = container.querySelector(
       '[data-project-id="project-1"] .personal-project-overview'
     );
