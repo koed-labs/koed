@@ -357,11 +357,12 @@ is invalid evidence.
 
 Run this before the remote Team flow. Keep both devices disconnected from any
 hosted Personal Memory or Team backend for the whole case. PDS V1 is
-relay-required, so this topology still uses the configured opaque PDS
-Authority/Relay service; that service is not a Personal Memory authority, does
-not project or embed source data, and does not own aggregate Recall. The
-Authority-hosting installation is nevertheless a fixed operational hub in V1:
-its outage pauses enrollment, governance, and package transfer.
+relay-backed, so this topology still uses the configured opaque PDS
+Authority/Relay service for governance, discovery, anti-entropy, and offline
+delivery; that service is not a Personal Memory authority, does not project or
+embed source data, and does not own aggregate Recall. Reachable devices may
+transfer identical encrypted packages directly. The Authority-hosting
+installation remains the fixed control-plane hub in V1.
 
 1. Run the deterministic and real API-first gates before Electron:
    `pnpm pds-fixture:validate` with its PostgreSQL stage enabled, then
@@ -401,7 +402,13 @@ its outage pauses enrollment, governance, and package transfer.
    embedding completes. Confirm device A's durable outbox reaches `acked` only
    after device B's ACK, and that device A never receives its own transport as
    an inbox delivery.
-8. Confirm a Personal note, Personal channel, and edited/open Session do **not**
+8. With both devices reachable, confirm each has a current signer-bound peer
+   route, the sender receives the recipient's signed materialization ACK, and
+   package bytes are not uploaded to the central relay. Disable the receiver's
+   peer listener and repeat with a new Session; confirm delivery falls back to
+   the relay and remains idempotent. Reject stale, cross-group, revoked-device,
+   duplicate-endpoint, malformed, and unsigned route records.
+9. Confirm a Personal note, Personal channel, and edited/open Session do **not**
    appear on device B. Confirm local indexes, queue rows, physical leases, and
    credentials were not transferred. Record them as excluded PDS V1 data
    classes, not as a failed retry.

@@ -55,11 +55,25 @@ export interface ApiServerConfig {
     updateDebounceMs: number;
     memoryEventUpdateDebounceMs: number;
   };
+  managedTerminal: {
+    detachedTtlMs: number;
+  };
   collaborationRealtime: {
     cursorSecret?: string;
     localBrokerSecret?: string;
     streamMaxClients: number;
     streamMaxClientsPerPrincipal: number;
+    webTransport: {
+      enabled: boolean;
+      endpoint?: string;
+      listenHost: string;
+      listenPort: number;
+      tlsCertificatePath?: string;
+      tlsKeyPath?: string;
+      maxSessions: number;
+      maxStreamsPerSession: number;
+      maxDatagramBytes: number;
+    };
   };
   crossIdentitySyncStaleAfterSeconds: number;
   embeddingModel?: string;
@@ -343,6 +357,13 @@ export const resolveApiServerConfig = (
         Math.min(graphUpdateDebounceMs, 100)
       )
     },
+    managedTerminal: {
+      detachedTtlMs: positiveIntEnv(
+        environment,
+        "MANAGED_TERMINAL_DETACHED_TTL_MS",
+        30 * 60 * 1_000
+      )
+    },
     collaborationRealtime: {
       localBrokerSecret: optionalEnv(
         environment.COLLABORATION_LOCAL_BROKER_SECRET
@@ -359,7 +380,46 @@ export const resolveApiServerConfig = (
         environment,
         "COLLABORATION_REALTIME_STREAM_MAX_CLIENTS_PER_PRINCIPAL",
         6
-      )
+      ),
+      webTransport: {
+        enabled: explicitBooleanEnv(
+          environment,
+          "COLLABORATION_REALTIME_WEBTRANSPORT_ENABLED"
+        ),
+        endpoint: optionalEnv(
+          environment.COLLABORATION_REALTIME_WEBTRANSPORT_ENDPOINT
+        ),
+        listenHost:
+          optionalEnv(
+            environment.COLLABORATION_REALTIME_WEBTRANSPORT_LISTEN_HOST
+          ) ?? "0.0.0.0",
+        listenPort: positiveIntEnv(
+          environment,
+          "COLLABORATION_REALTIME_WEBTRANSPORT_LISTEN_PORT",
+          3443
+        ),
+        tlsCertificatePath: optionalEnv(
+          environment.COLLABORATION_REALTIME_WEBTRANSPORT_TLS_CERTIFICATE_PATH
+        ),
+        tlsKeyPath: optionalEnv(
+          environment.COLLABORATION_REALTIME_WEBTRANSPORT_TLS_KEY_PATH
+        ),
+        maxSessions: positiveIntEnv(
+          environment,
+          "COLLABORATION_REALTIME_WEBTRANSPORT_MAX_SESSIONS",
+          200
+        ),
+        maxStreamsPerSession: positiveIntEnv(
+          environment,
+          "COLLABORATION_REALTIME_WEBTRANSPORT_MAX_STREAMS_PER_SESSION",
+          16
+        ),
+        maxDatagramBytes: positiveIntEnv(
+          environment,
+          "COLLABORATION_REALTIME_WEBTRANSPORT_MAX_DATAGRAM_BYTES",
+          1_200
+        )
+      }
     },
     crossIdentitySyncStaleAfterSeconds: positiveIntEnv(
       environment,

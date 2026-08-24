@@ -157,21 +157,20 @@
 .personal-ai-client-mark {
   background: color-mix(in oklab, var(--muted-foreground) 10%, transparent);
   color: var(--muted-foreground);
+  font-size: 0.82rem;
+  font-weight: 750;
+  letter-spacing: -0.06em;
 }
 
 .personal-ai-client-mark[data-client="claude"] {
   background: color-mix(in oklab, #d97745 13%, transparent);
   color: color-mix(in oklab, #d97745 78%, var(--foreground));
+  font-size: 1.05rem;
 }
 
 .personal-ai-client-mark[data-client="codex"] {
   background: color-mix(in oklab, #168f70 11%, transparent);
   color: color-mix(in oklab, #168f70 72%, var(--foreground));
-}
-
-.personal-ai-client-mark[data-client="pi"] {
-  background: color-mix(in oklab, #6366f1 13%, transparent);
-  color: color-mix(in oklab, #6366f1 78%, var(--foreground));
 }
 
 .personal-ai-client-mark svg {
@@ -370,7 +369,7 @@
   justify-content: flex-start;
 }
 
-.personal-project-detail-heading {
+.personal-project-detail > header > div {
   flex: 1;
   min-width: 0;
 }
@@ -536,6 +535,64 @@ button.personal-new-conversation-owner-picker > svg {
   opacity: 0.5;
 }
 
+.personal-managed-launch {
+  align-items: end;
+  background: color-mix(in srgb, var(--muted) 35%, var(--background));
+  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  padding: 12px 16px;
+}
+
+.personal-managed-launch label {
+  display: grid;
+  font-size: 11px;
+  gap: 4px;
+  min-width: 0;
+}
+
+.personal-managed-launch label > span {
+  color: var(--muted-foreground);
+}
+
+.personal-managed-launch select {
+  background: var(--background);
+  border: 1px solid var(--input);
+  border-radius: 5px;
+  color: var(--foreground);
+  min-height: 34px;
+  min-width: 0;
+  padding: 4px 7px;
+  width: 100%;
+}
+
+.personal-managed-launch > button {
+  align-items: center;
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: 5px;
+  color: var(--primary-foreground);
+  display: inline-flex;
+  gap: 6px;
+  justify-content: center;
+  min-height: 34px;
+  padding: 5px 10px;
+  white-space: nowrap;
+}
+
+.personal-managed-launch > button svg {
+  height: 15px;
+  width: 15px;
+}
+
+@media (max-width: 1050px) {
+  .personal-managed-launch {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .personal-managed-error {
   color: var(--destructive);
   margin: 0;
@@ -549,7 +606,8 @@ button.personal-new-conversation-owner-picker > svg {
   box-sizing: border-box;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  padding-inline-end: 1rem;
+  padding-inline-end: 3.25rem;
+  position: relative;
   width: 100%;
 }
 
@@ -563,6 +621,103 @@ button.personal-new-conversation-owner-picker > svg {
 .personal-session-row-select:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: -2px;
+}
+
+.personal-session-actions {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 4;
+}
+
+.personal-session-actions > summary {
+  align-items: center;
+  border-radius: var(--radius);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: flex;
+  height: 2rem;
+  justify-content: center;
+  list-style: none;
+  width: 2rem;
+}
+
+.personal-session-actions > summary::-webkit-details-marker {
+  display: none;
+}
+
+.personal-session-actions > summary:hover,
+.personal-session-actions[open] > summary {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.personal-session-actions > summary svg,
+.personal-session-actions button svg {
+  height: 1rem;
+  width: 1rem;
+}
+
+.personal-session-actions > div {
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 2px 8px color-mix(in oklab, black 16%, transparent);
+  display: grid;
+  min-width: 10.5rem;
+  padding: 0.25rem;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.25rem);
+}
+
+.personal-session-actions button {
+  align-items: center;
+  border-radius: calc(var(--radius) - 2px);
+  display: flex;
+  gap: 0.55rem;
+  min-height: 2rem;
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.personal-session-actions button:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+.personal-session-actions button:disabled {
+  color: var(--muted-foreground);
+  opacity: 0.55;
+}
+
+.personal-sessions section > h3 {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  letter-spacing: 0;
+  padding: 0.75rem 1rem 0.35rem;
+}
+
+.personal-settled-sessions > summary {
+  align-items: center;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.8rem;
+  font-weight: 600;
+  justify-content: space-between;
+  list-style: none;
+  padding: 0.75rem 1rem;
+}
+
+.personal-settled-sessions > summary::-webkit-details-marker {
+  display: none;
+}
+
+.personal-settled-sessions > summary:hover {
+  background: var(--accent);
+  color: var(--foreground);
 }
 
 .personal-session-copy > span {
@@ -845,10 +1000,811 @@ button.personal-new-conversation-owner-picker > svg {
   overflow: hidden;
 }
 
+.personal-conversation-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.personal-cockpit-open {
+  align-items: center;
+  align-self: start;
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 5px 0 0 5px;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  margin-top: 12px;
+  width: 34px;
+}
+
+.personal-cockpit-open svg {
+  height: 16px;
+  width: 16px;
+}
+
+.personal-cockpit {
+  background: var(--background);
+  border-left: 1px solid var(--border);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+  width: clamp(320px, 39vw, 620px);
+}
+
+.personal-cockpit-toolbar,
+.personal-terminal-toolbar,
+.personal-preview-toolbar,
+.personal-source-toolbar,
+.personal-file-location,
+.personal-file-reader > header {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 4px;
+  min-height: 38px;
+  padding: 4px 7px;
+}
+
+.personal-cockpit-toolbar {
+  justify-content: space-between;
+}
+
+.personal-cockpit-toolbar > div {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+}
+
+.personal-cockpit-toolbar button,
+.personal-terminal-toolbar button,
+.personal-preview-toolbar button,
+.personal-source-toolbar button,
+.personal-file-location button,
+.personal-file-reader button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 5px;
+  justify-content: center;
+  min-height: 28px;
+  padding: 4px 7px;
+}
+
+.personal-cockpit-toolbar button[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.personal-cockpit-toolbar svg,
+.personal-terminal-toolbar svg,
+.personal-preview-toolbar svg,
+.personal-source-toolbar svg,
+.personal-file-location svg,
+.personal-file-reader button svg {
+  height: 14px;
+  width: 14px;
+}
+
+.personal-cockpit-split {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.38fr) minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.personal-cockpit-split > nav {
+  border-right: 1px solid var(--border);
+  min-width: 0;
+  overflow: auto;
+  padding: 5px;
+}
+
+.personal-cockpit-split > nav button,
+.personal-file-list button,
+.personal-file-results button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--foreground);
+  display: flex;
+  font-size: 12px;
+  gap: 7px;
+  min-height: 28px;
+  overflow: hidden;
+  padding: 4px 6px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.personal-cockpit-split > nav button[aria-current="true"],
+.personal-cockpit-split > nav button:hover,
+.personal-file-list button:hover,
+.personal-file-results button:hover {
+  background: var(--accent);
+}
+
+.personal-cockpit-split > nav button > span {
+  color: var(--muted-foreground);
+  flex: 0 0 12px;
+  font-family: ui-monospace, monospace;
+}
+
+.personal-cockpit-split > nav p,
+.personal-cockpit-error,
+.personal-terminal-view > p,
+.personal-source-empty {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  margin: 8px;
+}
+
+.personal-source-view {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.personal-source-create {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 6px;
+  padding: 6px 7px;
+}
+
+.personal-source-create input {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--foreground);
+  flex: 1;
+  font: inherit;
+  min-width: 0;
+  padding: 6px 7px;
+}
+
+.personal-source-create button,
+.personal-source-review-actions button {
+  background: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--foreground);
+  font: inherit;
+  min-height: 28px;
+  padding: 4px 8px;
+}
+
+.personal-source-toolbar {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 6px;
+  min-height: 38px;
+  padding: 4px 7px;
+}
+
+.personal-source-toolbar select {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--foreground);
+  font-size: 12px;
+  min-width: 0;
+  padding: 4px 6px;
+}
+
+.personal-source-toolbar > span {
+  color: var(--muted-foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.personal-source-split {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.4fr) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.personal-source-split > nav {
+  border-right: 1px solid var(--border);
+  overflow: auto;
+  padding: 5px;
+}
+
+.personal-source-split > nav button {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--foreground);
+  display: grid;
+  font-size: 12px;
+  gap: 3px;
+  padding: 6px;
+  text-align: left;
+  width: 100%;
+}
+
+.personal-source-split > nav button:hover,
+.personal-source-split > nav button[aria-current="true"] {
+  background: var(--accent);
+}
+
+.personal-source-split > nav button span,
+.personal-source-split > nav p,
+.personal-source-detail header span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.personal-source-detail {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.personal-source-detail > header {
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+}
+
+.personal-source-checks {
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 6px 9px;
+}
+
+.personal-source-checks span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.personal-source-comments {
+  min-height: 0;
+  overflow: auto;
+  padding: 5px 9px;
+}
+
+.personal-source-comments article {
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  padding: 7px 0;
+}
+
+.personal-source-comments p {
+  margin: 3px 0 0;
+  white-space: pre-wrap;
+}
+
+.personal-source-comment {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 5px;
+  padding: 7px;
+}
+
+.personal-source-review-actions {
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  padding: 7px;
+}
+
+.personal-source-comment textarea {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--foreground);
+  font: inherit;
+  max-height: 120px;
+  min-height: 52px;
+  padding: 6px;
+  resize: vertical;
+}
+
+.personal-source-comment button {
+  justify-self: end;
+}
+
+.personal-cockpit-code,
+.personal-file-reader {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.personal-cockpit-code > header,
+.personal-file-reader > header > span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  overflow: hidden;
+  padding: 8px 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-cockpit-code pre,
+.personal-file-reader pre {
+  background: color-mix(in srgb, var(--foreground) 4%, var(--background));
+  border: 0;
+  color: var(--foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.personal-files-view {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.personal-file-search {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 6px;
+  padding: 6px 9px;
+}
+
+.personal-file-search svg {
+  color: var(--muted-foreground);
+  height: 14px;
+  width: 14px;
+}
+
+.personal-file-search input {
+  background: transparent;
+  border: 0;
+  color: var(--foreground);
+  font-size: 12px;
+  min-width: 0;
+  outline: 0;
+  width: 100%;
+}
+
+.personal-file-location > span {
+  color: var(--muted-foreground);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-file-list,
+.personal-file-results {
+  min-height: 0;
+  overflow: auto;
+  padding: 5px;
+}
+
+.personal-file-list button svg {
+  color: var(--muted-foreground);
+  flex: 0 0 15px;
+  height: 15px;
+  width: 15px;
+}
+
+.personal-file-results button {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 2px;
+  white-space: normal;
+}
+
+.personal-file-results strong,
+.personal-file-results span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-file-results span {
+  color: var(--muted-foreground);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.personal-file-reader > header {
+  justify-content: space-between;
+}
+
+.personal-terminal-view {
+  background: #111214;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.personal-terminal-toolbar {
+  background: var(--background);
+}
+
+.personal-terminal-toolbar select {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--foreground);
+  font-size: 11px;
+  height: 28px;
+  min-width: 0;
+}
+
+.personal-terminal-host {
+  min-height: 0;
+  overflow: hidden;
+  padding: 6px;
+}
+
+.personal-terminal-host .xterm {
+  height: 100%;
+}
+
+.personal-preview-view {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.personal-preview-toolbar {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 5px;
+  min-height: 38px;
+  overflow: hidden;
+  padding: 4px 7px;
+}
+
+.personal-preview-toolbar select,
+.personal-preview-port input {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--foreground);
+  font-size: 11px;
+  height: 28px;
+  min-width: 0;
+}
+
+.personal-preview-toolbar select {
+  flex: 1 1 9rem;
+}
+
+.personal-preview-viewport-toggle {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.personal-preview-viewport-toggle button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.personal-preview-port {
+  display: flex;
+  flex: 0 1 8.5rem;
+  gap: 3px;
+  min-width: 0;
+}
+
+.personal-preview-port input {
+  min-width: 3.5rem;
+  padding-inline: 6px;
+  width: 100%;
+}
+
+.personal-preview-host {
+  align-items: center;
+  background: color-mix(in srgb, var(--foreground) 3%, var(--background));
+  color: var(--muted-foreground);
+  display: flex;
+  justify-content: center;
+  min-height: 240px;
+  overflow: hidden;
+}
+
+.personal-preview-host-mobile {
+  background: color-mix(in srgb, var(--foreground) 7%, var(--background));
+}
+
+.personal-preview-host > p,
+.personal-preview-state {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  margin: 8px;
+}
+
+.personal-preview-state {
+  min-height: 20px;
+}
+
+.personal-cockpit-spin {
+  animation: personal-managed-spin 1s linear infinite;
+  color: var(--muted-foreground);
+  height: 18px;
+  margin: 12px;
+  width: 18px;
+}
+
+.personal-managed-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-bottom: 6px;
+}
+
+.personal-managed-attachments > span {
+  align-items: center;
+  background: var(--accent);
+  border-radius: 4px;
+  color: var(--foreground);
+  display: inline-flex;
+  font-size: 11px;
+  gap: 4px;
+  max-width: 18rem;
+  min-height: 24px;
+  overflow: hidden;
+  padding: 3px 4px 3px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-managed-attachments svg {
+  flex: 0 0 12px;
+  height: 12px;
+  width: 12px;
+}
+
+.personal-managed-attachments button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  height: 18px;
+  justify-content: center;
+  padding: 2px;
+  width: 18px;
+}
+
+@media (max-width: 900px) {
+  .personal-cockpit {
+    inset: 0;
+    position: absolute;
+    width: 100%;
+    z-index: 3;
+  }
+}
+
 .personal-managed-composer {
   background: var(--background);
   border-top: 1px solid var(--border);
   padding: 8px 18px 14px;
+}
+
+.personal-child-agents {
+  border-left: 1px solid var(--border);
+  margin-left: 17px;
+  padding-left: 10px;
+}
+
+.personal-session-row-shell.is-child-agent .personal-memory-mark svg {
+  height: 14px;
+  width: 14px;
+}
+
+.personal-managed-usage {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 11px;
+  gap: 5px;
+  line-height: 1.35;
+  min-height: 20px;
+  min-width: 0;
+  padding: 0 2px 6px;
+}
+
+.personal-managed-usage > svg {
+  flex: 0 0 14px;
+  height: 14px;
+  width: 14px;
+}
+
+.personal-managed-usage-model,
+.personal-managed-usage-count,
+.personal-managed-usage-processed {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-managed-usage-model {
+  max-width: 13rem;
+}
+
+.personal-managed-usage-count {
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.personal-managed-usage-meter {
+  background: color-mix(in srgb, var(--muted-foreground) 20%, transparent);
+  display: block;
+  flex: 1 1 4rem;
+  height: 2px;
+  margin-left: 3px;
+  max-width: 8rem;
+  min-width: 2rem;
+  overflow: hidden;
+}
+
+.personal-managed-usage-meter > span {
+  background: var(--muted-foreground);
+  display: block;
+  height: 100%;
+  transition: width 180ms ease-out;
+}
+
+.personal-managed-usage.is-unavailable {
+  color: var(--muted-foreground);
+}
+
+.personal-managed-runtime-controls {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+  margin: -26px 0 4px auto;
+  width: max-content;
+}
+
+.personal-managed-runtime-controls button,
+.personal-managed-interaction button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  gap: 5px;
+  justify-content: center;
+  min-height: 28px;
+  padding: 4px 8px;
+}
+
+.personal-managed-runtime-controls button {
+  height: 28px;
+  padding: 4px;
+  width: 28px;
+}
+
+.personal-managed-runtime-controls svg,
+.personal-managed-interaction button svg {
+  height: 14px;
+  width: 14px;
+}
+
+.personal-managed-runtime-controls button:disabled,
+.personal-managed-interaction button:disabled {
+  opacity: 0.45;
+}
+
+.personal-managed-transient,
+.personal-managed-interaction {
+  border-left: 2px solid var(--ring);
+  margin: 2px 0 8px;
+  max-height: 180px;
+  overflow: auto;
+  padding: 6px 9px;
+}
+
+.personal-managed-runtime-error {
+  border-left: 3px solid var(--danger, #b42318);
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  padding: 0.45rem 0.65rem;
+}
+
+.personal-managed-working {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 11px;
+  gap: 6px;
+  min-height: 22px;
+  padding: 1px 2px 5px;
+}
+
+.personal-managed-working svg {
+  animation: personal-managed-spin 900ms linear infinite;
+  height: 13px;
+  width: 13px;
+}
+
+.personal-managed-transient > span,
+.personal-managed-interaction > strong {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.personal-managed-transient p,
+.personal-managed-interaction p,
+.personal-managed-interaction code {
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.personal-managed-interaction form,
+.personal-managed-interaction label {
+  display: grid;
+  gap: 5px;
+}
+
+.personal-managed-interaction form {
+  gap: 8px;
+}
+
+.personal-managed-interaction input {
+  background: var(--background);
+  border: 1px solid var(--input);
+  border-radius: 5px;
+  color: var(--foreground);
+  min-height: 32px;
+  padding: 5px 7px;
+}
+
+.personal-managed-interaction > div {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 7px;
+}
+
+@media (max-width: 720px) {
+  .personal-managed-usage-model,
+  .personal-managed-usage-processed {
+    display: none;
+  }
 }
 
 .personal-managed-composer-field {

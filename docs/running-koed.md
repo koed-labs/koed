@@ -304,8 +304,10 @@ QR code, copyable private-network link, eight-character comparison code, and
 expiry. The second Desktop may scan the QR, open the `koed-pair://` handoff, or
 paste the link under **Join with link**. Confirm that both devices show the same
 short code, then approve on the Authority-hosting installation. Joined devices
-are symmetric Personal Memory replicas, but V1 does not copy the Authority key
-or offer another invitation from those replicas.
+are symmetric Personal Memory replicas. They receive encrypted packages
+directly when every recipient has a current reachable peer route, but V1 does
+not copy the Authority key or offer another invitation from those replicas.
+Unreachable devices continue through the configured relay.
 
 Pairing requires both devices to reach the inviting installation's private IPv4
 address on TCP port `3310`. The invitation lasts ten minutes, is invalidated
@@ -314,11 +316,12 @@ ceremony at the application layer and then uses the existing signed PDS
 membership and encrypted relay protocol. Do not expose port `3310` to the
 public internet.
 
-After enrollment, Desktop keeps that private-network gateway available for
-certificate-authenticated encrypted replication and restores it when local
-services resume. Invitation routes remain invalidated after use. If the
-gateway cannot bind, Devices status reports the fault; Personal capture and
-Recall continue locally until replication connectivity is restored.
+After enrollment, every Desktop keeps its private-network package receive path
+available for certificate-authenticated encrypted replication and restores it
+when local services resume. Invitation routes remain Authority-host-only and
+are invalidated after use. If a receive path cannot bind, Devices status reports
+the fault and transfer falls back to the relay; Personal capture and Recall
+continue locally.
 
 For API-first validation, run `pnpm pds-fixture:validate` with `DATABASE_URL`
 set so its PostgreSQL stages execute. Against an isolated local-personal API
@@ -439,6 +442,168 @@ device-local Project id. Electron main resolves that id against the local
 Project metadata store, requires the stored absolute path to still exist, and
 uses the platform show-in-folder operation. The renderer cannot submit an
 arbitrary local path or fall back to opening a `file://` URL.
+
+### Managed Conversation permissions
+
+New managed Conversations default to **Full access**. Choose a permission mode
+in the Conversation launch settings before starting:
+
+| Mode              | Codex                                                  | Claude Code                      |
+| ----------------- | ------------------------------------------------------ | -------------------------------- |
+| Supervised        | Read-only sandbox with approvals for untrusted actions | Native default approvals         |
+| Auto-accept edits | Workspace-write sandbox with on-request approvals      | Native automatic edit approval   |
+| Auto              | Workspace-write sandbox with automatic approval review | Native automatic approval review |
+| Full access       | No AI Client sandbox or approval prompts               | Permission checks bypassed       |
+
+Respond to pending approvals in the Conversation. Approve grants one request;
+Always allow this session grants the provider's session-scoped permission when
+available. Task questions remain interactive regardless of permission mode.
+
+Full access commands run with the runner account's filesystem and network
+access, including access outside the selected Project. Koed's file browser,
+Team authorization, and execution ownership checks remain independently
+enforced; they do not sandbox the AI Client process.
+
+For a new local managed Conversation, the runner uses the selected Project
+checkout directly, whether or not it is a Git repository or has uncommitted
+changes. The API records a pending source locator and wakes the runner; it does
+not declare the execution ready. The runner verifies the canonical path and
+execution generation, records the workspace as User-managed, and only then
+releases the start command. Koed never removes or resets this checkout.
+Multiple Conversations may use the same selected checkout; Koed reserves path
+exclusivity only for linked worktrees that Koed creates and owns.
+
+A User may explicitly select a dedicated linked worktree under
+`KOED_HOME/managed-workspaces/worktrees`. In that mode the runner additionally
+verifies the Git common directory, worktree administration, opaque Koed branch,
+immutable base object, and cleanup ownership. A dirty source checkout is not
+silently copied or discarded when isolated worktree creation is requested.
+
+Local Codex execution uses the selected AI Client instance's existing
+`CODEX_HOME`, normally `~/.codex`, so its authentication, MCP servers, Capture
+Hooks, skills, settings, and session history remain available. The selected
+Project checkout or explicit worktree is the app-server and thread working
+directory. Koed does not create or delete per-Conversation Codex homes.
+
+Execution responses expose only the opaque workspace id, ownership class, VCS
+driver, lifecycle, and cleanup state. Absolute paths and Git administration
+remain local to the assigned runner. Stopping, settling, hiding, or archiving a
+Conversation does not remove its workspace. An owning User may explicitly
+request cleanup with `DELETE
+/v1/managed-conversations/{executionId}/execution-workspace` after the
+execution is terminal. Cleanup succeeds only for the exact clean Koed-owned
+worktree with unchanged identity and `HEAD`; User-managed checkouts, dirty or
+ignored state, advanced branches, identity mismatches, and partial Git cleanup
+fail closed without `git worktree prune` or force deletion.
+
+The assigned runner captures one content checkpoint before and after each
+managed prompt under
+`refs/koed/checkpoints/<execution>/<generation>/<sequence>/<kind>`. Capture
+uses an isolated temporary index and a bounded sequence of bulk Git commands.
+It preserves the active index, working tree, branch, and `HEAD`, and fails if
+the Project changes concurrently. Ignored files remain outside the checkpoint
+according to normal Git behavior. Koed never includes its hidden refs in an
+ordinary push.
+
+Prompt commands are complete only after their terminal checkpoint is durable.
+If capture fails after the provider accepted the prompt, the command is
+requeued as checkpoint-only work and the provider is not called again. Worker
+restart recovery uses the canonical User-message identity plus the bound source
+generation; missing proof remains indeterminate.
+
+The owning User can read a derived diff with:
+
+```text
+GET /v1/managed-conversations/{executionId}/diff?scope=turn&commandId={commandId}
+GET /v1/managed-conversations/{executionId}/diff?scope=full
+```
+
+The API derives checkpoint generation, refs, and object ids server-side. It
+does not accept caller-selected Git refs or paths. Patches are bounded and
+encrypted in Postgres; API responses omit hidden refs, local paths, and Git
+administration. The route remains local to the execution runner because the
+runner owns the repository objects. Remote runner authority carries only the
+durable checkpoint-pending command phase and checkpoint metadata.
+
+An owning User can queue guarded content-only Restore with:
+
+```text
+POST /v1/managed-conversations/{executionId}/checkpoints/{checkpointId}/restore
+```
+
+Restore requires an idle execution generation. The runner first records a
+recovery checkpoint, proves the workspace still matches it, materializes the
+target through a temporary index, preserves ignored files and the active Git
+index, and verifies the resulting content tree. Conversation source, provider
+history, Memory, branch, `HEAD`, and staged state are not rewound.
+
+The owning User can also queue bounded read-only inspection of an immutable
+Git checkpoint:
+
+```text
+POST /v1/managed-conversations/{executionId}/files
+GET  /v1/managed-conversations/{executionId}/files/{commandId}
+```
+
+The POST body selects `browse`, `read`, `search`, or `mention` and supplies
+only a normalized root-relative path. The assigned runner resolves the latest
+checkpoint or the exact revision returned by an earlier operation. It never
+accepts an absolute path, URI, caller-selected Git object, shell expression, or
+workspace root. Operations are durable and encrypted; callers read their
+bounded result by command id and receive realtime invalidation when it changes.
+
+Checkpoint file inspection is Git-backed. It serves
+regular UTF-8 text, excludes recognized secret paths, ignored content,
+symlinks, Git administration, binary data, and unsupported or oversized
+content, and applies bounded browse, read, search, and aggregate prompt limits.
+A structured `mention` contains no file text in its public command metadata.
+When an owning User submits a prompt referencing a completed mention, the
+runner reauthorizes and re-resolves that recorded checkpoint content before
+supplying it to the AI Client as explicitly untrusted context. Expired, stale,
+cross-execution, cross-generation, or changed mentions fail closed.
+
+File inspection requires a browser session or enrolled device credential with
+the separate `managed_file_read` operation family. A Personal API Token,
+general `managed_execution` credential, Team Membership, Workspace Access, or
+Share Grant does not grant file access. Local and remote coordinators relay the
+same bounded commands; absolute runner paths and file content are not written
+to plaintext queue state, logs, or capability metadata. Live filesystem reads,
+writes, Team repository access, and non-Git file authority are not part of this
+capability. See
+[ADR 0035](./adr/0035-runner-owned-rooted-file-authority.md).
+
+## Managed terminals
+
+The assigned managed-execution runner owns bounded pseudoterminals in the exact
+verified execution workspace. The initial shell profile is the platform's
+verified system shell; callers cannot provide an executable, working directory,
+environment map, process id, or arbitrary signal. Koed passes a narrow
+platform/toolchain environment and deliberately excludes API, database,
+encryption, provider, and deployment credentials.
+
+Terminal lifecycle metadata is durable, but input, output, process ids, local
+paths, environment values, and captured context bytes remain in runner memory.
+Create, list, inspect, and stop use finite HTTPS routes. Interactive input,
+resize, interrupt, output, replay, and explicit context capture use a dedicated
+reliable WebTransport stream where available and the same bounded protocol over
+WebSocket as fallback. Both transports periodically reauthorize the attached
+principal, bound pending queues, and detach a slow or revoked client.
+
+Disconnecting the final attachment marks the terminal `detached`; it does not
+immediately kill the process. The owning runner stops its process group after
+`API_MANAGED_TERMINAL_DETACHED_TTL_MS`, which defaults to 30 minutes. API
+shutdown, an explicit stop, or detached expiry sends a graceful group stop and
+then a bounded hard stop. After runner restart, an interrupted creation becomes
+`failed`; another previously active lifecycle becomes `unknown` rather than
+claiming that an unobserved process exited.
+
+Terminal access requires a browser session or enrolled device credential with
+the separate `managed_terminal` operation family. Personal API Tokens, Team
+visibility, Workspace Access, and Share Grants do not grant it. Output reaches
+an AI Client only when the owning User explicitly captures a bounded replay
+range and supplies its short-lived, execution-bound reference with a prompt.
+The prompt marks the resolved bytes as untrusted context. See
+[ADR 0036](./adr/0036-runner-owned-scoped-terminal-authority.md).
 
 Captured Sessions adopt one unambiguous detected Personal Project immediately.
 Ambiguous or signal-free captures remain `Unassigned`. Users can move a

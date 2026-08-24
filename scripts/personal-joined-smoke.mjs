@@ -1,11 +1,8 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { Client } from "../packages/mcp-server/node_modules/@modelcontextprotocol/client/dist/index.mjs";
-import { StdioClientTransport } from "../packages/mcp-server/node_modules/@modelcontextprotocol/client/dist/stdio.mjs";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import {
   assertMemoryAnswerDetailModes,
   parseToolJson
@@ -17,53 +14,52 @@ const apiUrl = (process.env.MEMORY_API_URL ?? "http://127.0.0.1:3300").replace(
 );
 const apiToken = process.env.MEMORY_API_TOKEN?.trim();
 const databaseUrl = process.env.DATABASE_URL?.trim();
+const mcpTimeoutMs = Number.parseInt(
+  process.env.PERSONAL_JOINED_MCP_TIMEOUT_MS ?? "240000",
+  10
+);
 if (!apiToken || !databaseUrl) {
   throw new Error("MEMORY_API_TOKEN and DATABASE_URL are required.");
 }
+if (!Number.isFinite(mcpTimeoutMs) || mcpTimeoutMs < 1_000) {
+  throw new Error("PERSONAL_JOINED_MCP_TIMEOUT_MS must be at least 1000.");
+}
 
 const marker = `personal-joined-${Date.now()}-${randomUUID().slice(0, 8)}`;
-const root = mkdtempSync(path.join(tmpdir(), "koed-personal-joined-"));
-const configPath = path.join(root, "mcp.json");
-writeFileSync(configPath, JSON.stringify({ apiUrl, apiToken }), {
-  mode: 0o600
+
+execFileSync(
+  process.execPath,
+  [
+    "scripts/lcm-smoke-test.mjs",
+    "--api-url",
+    apiUrl,
+    "--api-token",
+    apiToken,
+    "--database-url",
+    databaseUrl,
+    "--marker",
+    marker
+  ],
+  { cwd: process.cwd(), env: process.env, stdio: "inherit" }
+);
+
+const client = new Client({
+  name: "koed-personal-joined-smoke",
+  version: "1.0.0"
 });
-
+const transport = new StdioClientTransport({
+  command: process.execPath,
+  args: ["packages/mcp-server/dist/cli.js"],
+  cwd: process.cwd(),
+  env: process.env,
+  stderr: "inherit"
+});
+await client.connect(transport);
 try {
-  execFileSync(
-    process.execPath,
-    [
-      "scripts/lcm-smoke-test.mjs",
-      "--api-url",
-      apiUrl,
-      "--api-token",
-      apiToken,
-      "--database-url",
-      databaseUrl,
-      "--marker",
-      marker
-    ],
-    { cwd: process.cwd(), env: process.env, stdio: "inherit" }
-  );
-
-  const client = new Client({
-    name: "koed-personal-joined-smoke",
-    version: "1.0.0"
-  });
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: ["packages/mcp-server/dist/cli.js", "--config", configPath],
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      MEMORY_ANSWER_BRIDGE_ENABLED: "false"
-    },
-    stderr: "inherit"
-  });
-  await client.connect(transport);
-  try {
-    const responses = {};
-    for (const mode of ["answer_only", "with_citations", "with_evidence"]) {
-      const result = await client.callTool({
+  const responses = {};
+  for (const mode of ["answer_only", "with_citations", "with_evidence"]) {
+    const result = await client.callTool(
+      {
         name: "memory_answer",
         arguments: {
           query: `What durable fact contains summary-check-${marker}-01?`,
@@ -72,16 +68,15 @@ try {
           search_domain: "global",
           limit: 10
         }
-      });
-      responses[mode] = parseToolJson(result, mode);
-    }
-    const detailModes = assertMemoryAnswerDetailModes(responses, marker);
-    process.stdout.write(
-      `${JSON.stringify({ ok: true, marker, lcmExpansion: "passed", detailModes }, null, 2)}\n`
+      },
+      { timeout: mcpTimeoutMs }
     );
-  } finally {
-    await client.close();
+    responses[mode] = parseToolJson(result, mode);
   }
+  const detailModes = assertMemoryAnswerDetailModes(responses, marker);
+  process.stdout.write(
+    `${JSON.stringify({ ok: true, marker, lcmExpansion: "passed", detailModes }, null, 2)}\n`
+  );
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  await client.close();
 }

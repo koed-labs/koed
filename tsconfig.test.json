@@ -14,7 +14,10 @@
       "@koed/mcp-server/claude-transcript-parser": [
         "packages/mcp-server/src/claude-transcript-parser.ts"
       ],
-      "@koed/shared": ["packages/shared/src/index.ts"]
+      "@koed/shared": ["packages/shared/src/index.ts"],
+      "@koed/shared/execution-workspace": [
+        "packages/shared/src/execution-workspace.ts"
+      ]
     }
   },
   "include": [

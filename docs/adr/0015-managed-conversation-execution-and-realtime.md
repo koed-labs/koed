@@ -10,6 +10,10 @@ Related decisions:
 - [0008 Explorer-First Auth And Device Enrollment](./0008-explorer-first-auth-and-device-enrollment.md)
 - [0013 Team Collaboration Uses Device-Mediated, Server-Authorized Operations](./0013-team-collaboration-authority.md)
 - [0014 Hosted Personal Replication Uses The Conversation Source Journal](./0014-hosted-personal-source-replication.md)
+- [0031 Realtime Transport Allocation And Negotiation](./0031-realtime-transport-allocation-and-negotiation.md)
+- [0032 AI Client Instance, Capability, And Permission Contracts](./0032-ai-client-instance-capability-and-permission-contracts.md)
+- [0033 Runner-Owned Worktrees And Execution Checkpoints](./0033-runner-owned-worktrees-and-execution-checkpoints.md)
+- [0042 Conversation Source Presentation Is Independent From Memory Projection](./0042-conversation-source-presentation-policy.md)
 
 ## Context
 
@@ -69,10 +73,30 @@ Local filesystem paths never cross the remote authority boundary. A local edge
 sends only the opaque Project id when requesting hosted coordination. The
 hosted authority may accept that id from a scoped Personal Device credential
 and persist a deferred execution, but the initial command remains blocked. The
-selected local runner must persist its verified runtime binding and acknowledge
-the matching execution generation before the authority releases that command.
+API persists only a pending local source locator and wakes the selected runner.
+The runner creates or selects the execution workspace, verifies its filesystem
+and VCS identity, persists the immutable workspace binding, and only then
+acknowledges the matching execution generation so the authority can release
+that command.
 An unknown local Project, missing path, stale generation, or failed readiness
 acknowledgement fails closed.
+
+Starting a managed Conversation persists its complete launch configuration on
+the execution before a command can be released: AI Client driver and instance,
+model, optional reasoning effort, Koed permission mode, and exact runner kind.
+Desktop obtains the selectable values from the current redacted capability
+snapshot; it does not construct provider names, models, permissions, or runner
+identities. The local edge validates the selection against that snapshot, and
+the selected runner resolves the same instance and native permission mapping
+again before launch. A stale capability, unavailable instance, unsupported
+model, inexact permission mapping, or mismatched runner fails closed.
+
+The launch configuration is immutable for one execution. Resume, recovery,
+handoff, and fork execution paths consume the persisted values rather than
+current process defaults. A failed resume never silently creates a new
+provider Conversation. Changing AI Client, account, model, or permissions is a
+separate explicit product operation with its own provider capability and
+identity semantics; it is not an incidental side effect of reconnecting.
 
 ### Provider Adapter
 
@@ -83,18 +107,48 @@ filesystem guesses:
 - attach to or restore a compatible provider Conversation;
 - submit one User prompt with a caller idempotency key;
 - stream typed lifecycle events;
+- surface provider approval and structured User-input requests;
+- interrupt the active turn without waiting behind its prompt command;
 - report provider Conversation, turn, and item identities;
 - seal and report the durable source boundary;
 - declare provider and artifact format compatibility;
 - confirm whether restoration preserved the same provider Conversation
   identity.
 
-The current published AI Client contract keeps cancellation, approval
-interaction, and provider-token streaming unsupported for Codex, Claude Code,
-and Pi Managed Conversation UI. Desktop exposes no controls for these bounded
-differences. Codex uses app-server mode behind this interface. Provider credentials,
+Codex uses its native app-server, Claude Code uses the official Agent SDK,
+and Pi uses its installed public SDK with the native RPC server. Each adapter
+provides cancellation, approval interaction, and streaming presentation through
+the shared capability contract. Provider credentials,
 provider home, app-server stdio, and raw protocol messages remain inside the
 runner boundary.
+
+A local Codex execution uses the Codex home belonging to the selected AI Client
+instance. The default instance uses the User's existing `CODEX_HOME`, normally
+`~/.codex`. Koed does not create a per-Conversation Codex home, copy credentials
+into one, or replace the User's Codex configuration. The selected Project
+checkout or explicit managed worktree is passed as the app-server process
+working directory and as the working directory for thread start, resume, and
+fork operations. Codex home selects provider identity and configuration;
+working directory selects the code being changed. Neither substitutes for the
+other.
+
+The managed app-server process registers Koed's packaged stdio MCP entry with
+the active local `KOED_HOME`. This process-scoped overlay keeps Memory Answer
+bound to the same runtime as Desktop without rewriting the User's Codex
+configuration, replacing other MCP entries, or placing API credentials on the
+command line. Claude's strict SDK MCP configuration uses the same connection.
+
+Multiple managed Conversations may use the same Codex home concurrently. Koed
+fences commands and writable execution workspaces, not the User's provider
+configuration directory. Stopping or cleaning up an execution must never
+remove or rewrite that Codex home.
+
+Provider-reported token and context-window snapshots are durable product
+telemetry, not Conversation Source or Memory. The execution runner records one
+idempotent usage row per completed prompt command. A local runner keeps that row
+on the local edge even when execution authority is hosted; only a bounded,
+owner-authorized presentation projection reaches Desktop. Missing or estimated
+usage never becomes an invented exact value.
 
 ### Isolated Runtime
 
@@ -129,6 +183,15 @@ The API:
 4. writes an idempotent command with a caller-generated command id;
 5. returns the durable command identity and accepted sequence.
 
+The start command is also a durable acceptance boundary. Once it is accepted,
+Desktop may open the Conversation immediately and accept an initial prompt
+while the provider runtime is still starting. The prompt is stored against the
+accepted execution generation, but command claiming enforces predecessor order:
+the start command must reach a terminal successful state and bind the canonical
+Captured Session and provider Conversation identities before the prompt can be
+claimed. A failed or indeterminate predecessor blocks later prompts instead of
+letting them run against provisional identity.
+
 API idempotency and provider-side prompt acceptance are distinct. The command
 row stores the canonical request digest, deterministic
 `clientUserMessageId`, execution generation, command sequence, and provider
@@ -156,6 +219,52 @@ The initial Personal contract permits only the owning User's authenticated
 browser session or enrolled Personal device to submit prompts. Team members who
 can view a shared Conversation remain read-only. Team execution delegation or
 sponsorship requires a separate accepted authority decision.
+
+### Provider terminal evidence
+
+Claude and Pi preserve the managed semantic Projection hold. Their local runner
+requests release only after canonical capture, and the API independently verifies
+native terminal records in digest-checked retained journal bytes. Runtime
+completion and Capture Hook signals alone do not authorize release. Source
+identity, owner, session, generation, lifecycle, exact captured blocks, and
+Claude completion-control frontiers are checked before the normal Projection
+path proceeds. See [service ordering](../service-sequence-overview.md#verified-managed-terminal-projection)
+for the provider checks and bounded verification contract.
+
+### Interactive Runtime Items And Controls
+
+Provider approvals, structured User-input requests, and transient assistant
+output use bounded runtime items owned by the same Personal User and execution.
+They are not canonical Conversation items, Conversation Source, Memory Events,
+or a second command authority.
+
+Runtime items and provider deltas feed the owner-facing Conversation
+presentation path immediately. Their presentation policy is independent from
+Memory Projection. Once matching canonical source arrives, stable provider
+identity replaces the provisional item without duplicating it. A completed
+turn may be displayed before terminal Projection and embedding work finish.
+
+Each provider request is identified by a digest of its provider method and
+provider callback identity, then bound to the execution generation and optional
+provider turn/item identities. Request payloads and User responses are
+encrypted at the application layer. Replaying the same identity and digest
+returns the existing item; reusing an identity for different content fails
+closed. A response is accepted once. An exact replay returns the settled
+response, while a conflicting second response, stale generation, wrong owner,
+or terminal item is rejected.
+
+The execution runner waits on the existing durable wake path for a response; it
+does not poll. The runner translates the bounded Koed response into the exact
+current provider protocol response and resolves the runtime item. Turn
+completion, interruption, stop, fencing, and runner loss cancel unresolved
+items so an old request cannot authorize later work.
+
+Interrupt and stop are durable, idempotent control commands claimed through a
+separate concurrent control lane. They remain owner-, runner-, device-, lease-,
+and generation-fenced. Interrupt targets only the currently active provider
+turn. Stop first enters `stopping`, prevents later prompt failure handling from
+reviving the execution, closes the provider session, cancels runtime items, and
+then records `stopped`.
 
 ### Lease Authority
 
@@ -195,9 +304,11 @@ does not silently execute them elsewhere.
 
 ### Durable Realtime Delivery
 
-Koed delivers Conversation updates through a cursor-based SSE stream with an
-authenticated snapshot and explicit acknowledgement endpoint. Polling is not
-part of the normal UI path.
+Koed currently delivers Conversation updates through a cursor-based SSE stream
+with an authenticated snapshot and explicit acknowledgement endpoint. Polling
+is not part of the normal UI path. ADR 0031 assigns the same durable semantics
+to the negotiated WebTransport, WebSocket, or SSE adapter; changing wire
+transport does not change Conversation authority.
 
 Managed-execution events normatively inherit ADR 0013's transaction and outbox
 contract: the product mutation and durable outbox row commit atomically,
@@ -221,10 +332,31 @@ The server sends retained durable events after that cursor or instructs the
 client to reload a bounded canonical snapshot when retention has elapsed.
 Duplicate delivery is expected and idempotent.
 
-Incremental provider deltas may be sent as explicitly transient events for
-typing/progress UX. They are never persisted as canonical messages or Memory
-Events and never advance the durable cursor. Final provider items become
-durable only after the source journal and canonical transaction commit.
+Desktop materializes ordinary managed-Conversation changes directly from the
+authorized durable event. The event contains the current versioned execution,
+the latest command identity and sequence, and at most one changed runtime item
+with its execution generation and item revision. The client reducer rejects
+stale generations, command sequences, and item revisions; a removal revision
+also prevents a delayed upsert from resurrecting an item. This application
+materialization contract is independent of whether SSE or WebTransport carries
+the event.
+
+Desktop loads one versioned runtime snapshot when it first attaches. It loads
+another only after authoritative stream recovery, an execution-generation
+change, or an explicit runtime reset that cannot be represented safely as one
+item delta. Updates received while a snapshot is in flight are replayed over
+that snapshot before it is exposed. An ordinary output, command, approval, or
+input event must not trigger a second runtime-snapshot request. Missing or
+incompatible delta state fails into snapshot recovery rather than inference.
+
+Incremental provider deltas may be coalesced into encrypted, size-bounded
+runtime rows for immediate typing/progress UX. They never become canonical
+messages or Memory Events and never advance the durable cursor. A transient row
+is revised in place for its exact execution/turn/item identity. Its final
+revision remains available across the provider-completion race until the
+matching canonical source item replaces it in the UI; starting the next turn or
+ending the execution removes retained transient rows. Final provider items
+become durable only after the source journal and canonical transaction commit.
 
 ### Conversation UI
 
@@ -239,6 +371,36 @@ Desktop exposes:
   quiescing, transferred, and read-only states;
 - live durable updates and transient progress without manual refresh;
 - clear distinction between source durability and semantic processing.
+
+Creating a Conversation does not wait for provider startup before navigating.
+Desktop opens an execution-backed provisional surface after durable start
+acceptance, keeps draft entry available, and reconciles the canonical Captured
+Session and provider Conversation identities through realtime events. A prompt
+submitted on that surface is durably queued behind startup. Startup failure is
+shown in the same surface with an explicit retry that creates a new execution;
+it never silently reuses a failed provider operation.
+
+Provider approval and input cards are rendered only from active, validated
+runtime items. Indeterminate command dispatch is shown explicitly and is never
+presented as successful or automatically retried. Provider child-Agent threads
+use their durable parent-thread lineage and may nest recursively; UI grouping
+does not change their source identity or authority.
+
+Desktop keeps an unsent prompt draft outside canonical Conversation state.
+When platform secure storage is available, Desktop main encrypts it under a
+key derived from the authenticated User, backend identity, Project, Captured
+Session, and provider thread. The renderer never receives the secure-store
+key or provider credentials. Drafts are local presentation state, do not sync,
+do not enter source ingestion or Memory, and are deleted only after durable
+prompt-command acceptance. A failed or indeterminate submission retains the
+draft for recovery.
+
+Desktop distinguishes a definitive pre-dispatch refusal from an indeterminate
+provider acceptance. A definitive refusal removes the optimistic Conversation
+row and restores the draft and attachments because no prompt was submitted. An
+indeterminate result keeps the optimistic row visible and fences further
+submission until durable command and source reconciliation establish the
+outcome; it is never represented as a successful canonical turn.
 
 The UI does not expose provider credentials, raw app-server protocol, local
 paths from another device, fencing tokens, or internal queue controls.
@@ -272,6 +434,11 @@ An unknown provider protocol, incompatible source artifact, missing workspace,
 missing credentials, stale device credential, conflicting command, or
 uncertain execution owner fails visibly and closed. Koed never starts a fresh
 provider Conversation while presenting it as continuation of the old one.
+
+For Git Projects, each mutating prompt is additionally fenced by the local
+content-baseline contract in ADR 0033. Terminal checkpoint retry is a durable
+post-provider phase and never causes prompt replay. These local refs are not
+execution ownership, source replication, or handoff artifacts.
 
 ## Consequences
 

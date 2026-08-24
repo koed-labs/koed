@@ -492,6 +492,14 @@ class MemoryCollaborationRepository {
       : null;
   }
 
+  async getLatestManagedConversationCommandForExecution() {
+    return null;
+  }
+
+  async getManagedConversationRuntimeItem() {
+    return null;
+  }
+
   async revokeSubscriptions() {
     this.revoked = true;
     return { revokedCount: 1 };
@@ -790,9 +798,9 @@ const createHarness = async (
         capabilities: {
           state: "validated",
           expiresAt: "2099-01-01T00:00:00.000Z",
-          schemaVersion: options.capabilitySchemaVersion ?? 6,
+          schemaVersion: options.capabilitySchemaVersion ?? 9,
           payload: {
-            capabilitySchemaVersion: options.capabilitySchemaVersion ?? 6,
+            capabilitySchemaVersion: options.capabilitySchemaVersion ?? 9,
             capabilities: {
               "memory.collaboration": { availability: "partial" }
             },

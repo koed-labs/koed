@@ -54,33 +54,59 @@ projection pipeline has handled that raw record, including cases where the
 correct projection is to preserve only the raw audit row and skip telemetry or
 lifecycle noise. Pending and errored raw rows can be run through the Projection
 endpoint again for deterministic catch-up. Managed-thread rows remain `held`
-until terminal verification and JSONL reconciliation complete; the worker never
-scans held rows.
+until exact transcript terminal evidence is persisted. The managed runner
+normally releases them after reconciliation. Before selecting its ordinary
+backlog, the worker may promote only held turns whose matching transcript
+`task_complete` or `turn_aborted` observation is already durable. This closes
+the crash and concurrent-reader recovery path without weakening the terminal
+evidence boundary.
+
+Each Projection pass computes the complete session and canonical-item advisory
+lock set for its selected batch, sorts and deduplicates each group, acquires all
+session locks before any canonical-item lock, and acquires every lock before
+writing derived rows. Live ingestion uses the same hierarchy before locking a
+session row or canonical item: capture policy, session Projection, session row,
+then canonical item. Projection never acquires another item lock after writes
+begin. Concurrent capture, API Projection, and Worker Projection can therefore
+overlap without holding a database row while waiting on a lock owned by the
+other path.
 
 Projection uses the DB-backed `projection_policy_rules` table as the explicit
-positive allowlist for canonical AI Client conversation item types. Provider
-adapters map their own source records into those types: Codex transcript items,
-Claude transcript records, and Pi session entries each retain their source
-adapter identity. The seeded defaults preserve the current behavior: user,
-agent, subagent, tool call/result, and reasoning summary items are projected to
-the UI and embedded semantic memory; system, developer, context, lifecycle,
-token-usage, error, raw reasoning, and unknown items remain raw provenance only.
-Canonical transcript `function_call` and `function_call_output` rows are the tool
-items used for rendering and semantic memory; lower-level MCP and patch
-lifecycle event rows are retained only as raw provenance. The server refines
-generic provider `message` records from their raw role before policy lookup, so
-developer/system records cannot inherit the generic message rule. A role-user
-response item without stable provider identity stays a raw-only source record;
-provider adapters must supply an explicit projectable prompt identity. The
-seeded defaults keep UI projection and embedding selection matched for current
-product behavior, but the policy fields are deliberately independent so future
-rules can represent display-only or recall-only transcript rows without a
-schema change. The same policy row also controls whether a projected Memory
-Event may become an LCM source through `include_in_lcm`. Unlisted transcript
-item types default to raw provenance only until a policy row deliberately opts
-them in. After a policy change, the authenticated session rebuild operation
-invalidates prior display, Memory Event, embedding, and LCM derivations and
-reprojects retained canonical items under the new policy.
+positive allowlist for semantic transcript item types. The seeded defaults let
+user, agent, subagent, tool call/result, and safe reasoning-summary items create
+Memory Events and enter embedding and LCM work; system, developer, context,
+lifecycle, token-usage, error, raw reasoning, and unknown items remain source
+provenance only. The server refines generic provider `message` records from
+their raw role before policy lookup, so developer/system records cannot inherit
+the generic message rule. A role-user response item without stable provider
+identity stays a raw-only source record; external JSONL uses the explicit
+`event_msg:user_message` as the projectable prompt. The same semantic policy
+row controls whether a Memory Event may enter embedding and LCM work.
+Unlisted transcript item types default to raw provenance only until a policy row
+deliberately opts them in. After a semantic-policy change, the authenticated
+session Projection rebuild invalidates Memory Events and their embedding and LCM
+derivations, then reprojects retained canonical items. It does not invalidate
+the Conversation presentation read model.
+
+Source custody is comprehensive rather than policy-selected: every complete
+record is retained byte-for-byte and in source order in the Conversation Source
+Journal. `projection_policy_rules` never decides whether a source record is
+captured.
+
+Owned Conversation rendering uses the separate DB-backed
+`conversation_presentation_policy_rules` allowlist. It classifies canonical
+source and managed-runtime items as `expanded`, `collapsed`, `status`, or
+`hidden` and selects a bounded renderer kind. Presentation changes do not alter
+Memory Events, embeddings, or LCM. Memory Projection policy contains no display
+or renderer controls and must not be used to decide what appears in an owned
+live Conversation. The separate authenticated presentation rebuild invalidates
+only `messages` and `tool_events`, then reapplies presentation policy to retained
+canonical items without changing source Projection state. See ADR 0042.
+
+Provider adapters map Codex transcript items, Claude transcript records, and Pi
+session entries into canonical source item types while retaining their adapter
+identity. Canonical `function_call` and `function_call_output` items, rather than
+lower-level MCP or patch lifecycle telemetry, are eligible for semantic policy.
 
 ## Pi Session Adapter
 
@@ -292,7 +318,11 @@ record arrives;
 provider lifecycle timestamps remain distinct from Koed observation time.
 Incremental text and command-output deltas are deliberately transient and are
 not stored as semantic items or source observations because completed item
-payloads retain the durable result.
+payloads retain the durable result. Managed Conversation UX may temporarily
+coalesce assistant deltas into encrypted runtime rows bound to the exact
+execution generation, turn, and provider item. Those rows are non-canonical,
+never feed Projection or Memory, and resolve when the durable provider item or
+turn completes.
 
 Koed-managed prompts use the shared app-server `clientUserMessageId` / JSONL
 `client_id` as their exact item identity. Codex may also persist injected setup
@@ -311,12 +341,15 @@ The persisted rollout and Conversation Source Journal are the reconciliation
 and recovery source. Managed journal consumers use `sourceTransport=transcript`
 and attach exact chronology and transcript-only context to canonical keys. A
 persisted `task_complete` or `turn_aborted` record is the terminal authority.
-The server releases held rows only after journal consumption and Projection
-succeed, so display, turn sealing, embedding, and LCM cannot race ahead of
-durable source capture. Resuming a managed session verifies the provider thread
-and Captured Session, reuses its durable Codex home, and resumes from the
-database-backed journal consumer cursor. A crash before cursor advancement
-causes only an idempotent replay.
+The server releases held rows only after that evidence is consumed and
+persisted. The managed runner performs the normal release; the Projection
+worker can complete it from the same durable evidence if another reader won the
+cursor race or the runner stopped between persistence and release. Display,
+turn sealing, embedding, and LCM therefore cannot race ahead of durable source
+capture. Resuming a managed session verifies the provider thread and Captured
+Session, uses the selected AI Client instance's configured Codex home, and
+resumes from the database-backed journal consumer cursor. A crash before cursor
+advancement causes only an idempotent replay.
 
 Oversized raw items are bounded to 64 transport chunks of 256 KiB each and a
 16 MiB logical-item ceiling. The server derives and verifies one chunk-group id

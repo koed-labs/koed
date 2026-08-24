@@ -69,9 +69,10 @@ const expectedLocalRuntimeCutoverTag = "0026_amused_zeigeist";
 const expectedPreSelectivePiiTag = "0033_fixed_scarlet_witch";
 const expectedSelectivePiiTag = "0034_young_silvermane";
 const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
-const expectedLatestMigrationTag = "0036_gifted_leader";
+const expectedPrivacyManifestTag = "0036_gifted_leader";
+const expectedLatestMigrationTag = "0037_coding_workspace_runtime";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 36;
+const expectedLatestMigrationIndex = 37;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -1186,15 +1187,23 @@ try {
     preGenericSharedMemoryFolder,
     journal.entries.slice(0, preGenericSharedMemoryIndex + 1)
   );
+  const privacyManifestIndex = journal.entries.findIndex(
+    (entry) => entry.tag === expectedPrivacyManifestTag
+  );
+  if (privacyManifestIndex < 1) {
+    throw new Error(
+      `Expected privacy manifest migration ${expectedPrivacyManifestTag}`
+    );
+  }
   const prePrivacyManifestFolder = await createMigrationSlice(
     journal,
-    expectedLatestMigrationIndex - 1,
+    privacyManifestIndex - 1,
     { folderPrefix: "koed-pre-privacy-manifest-" }
   );
   temporaryFolders.add(prePrivacyManifestFolder);
   const prePrivacyManifestRecords = await migrationRecords(
     prePrivacyManifestFolder,
-    journal.entries.slice(0, expectedLatestMigrationIndex)
+    journal.entries.slice(0, privacyManifestIndex)
   );
 
   await runScenario("clean-full-migration", async () => {

@@ -8,6 +8,7 @@ import {
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { managedKoedMcpServer } from "./managed-koed-mcp.js";
 
 import {
   forkSession as forkClaudeSession,
@@ -32,12 +33,12 @@ import {
 
 export const CLAUDE_MANAGED_CONVERSATION_PROVIDER = "claude" as const;
 
-type SafePermissionMode = Exclude<PermissionMode, "bypassPermissions">;
+type ManagedPermissionMode = PermissionMode;
 
 export interface ClaudeManagedConversationConfig {
   cwd: string;
   model: string;
-  permissionMode: SafePermissionMode;
+  permissionMode: ManagedPermissionMode;
   env?: NodeJS.ProcessEnv;
   managedHome: string;
   clientName?: string;
@@ -49,6 +50,8 @@ export interface ClaudeManagedConversationConfig {
   settingSources?: SettingSource[];
   systemPrompt?: Options["systemPrompt"];
   maxTurns?: number;
+  canUseTool?: Options["canUseTool"];
+  onTextDelta?: (delta: string, turnId: string) => void;
 }
 
 export interface ClaudeManagedConversationIdentity {
@@ -63,6 +66,7 @@ export interface ClaudeManagedConversationIdentity {
 }
 
 export interface ClaudeManagedConversationResult {
+  turnId: string;
   provider: typeof CLAUDE_MANAGED_CONVERSATION_PROVIDER;
   sessionId: string;
   model: string;
@@ -95,7 +99,8 @@ export class ClaudeManagedConversationCancelledError extends Error {
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SAFE_PERMISSION_MODES = new Set<SafePermissionMode>([
+const MANAGED_PERMISSION_MODES = new Set<ManagedPermissionMode>([
+  "bypassPermissions",
   "default",
   "acceptEdits",
   "plan",
@@ -680,7 +685,35 @@ export const createManagedClaudeSessionStore = (
   const transcriptFor = (key: SessionKey, create: boolean): string | null => {
     assertSessionId(key.sessionId, "Claude SessionStore session ID");
     if (key.subpath !== undefined) {
-      throw new Error("Claude managed SessionStore subpaths are unsupported");
+      if (
+        !/^subagents\/agent-[A-Za-z0-9][A-Za-z0-9_-]{0,127}\.jsonl$/.test(
+          key.subpath
+        )
+      ) {
+        throw new Error("Claude managed SessionStore subpath is invalid");
+      }
+      const main = transcriptFor({ ...key, subpath: undefined }, create);
+      if (!main) return null;
+      let directory = path.dirname(main);
+      for (const segment of [key.sessionId, "subagents"]) {
+        directory = path.join(directory, segment);
+        if (!fs.existsSync(directory)) {
+          if (!create) return null;
+          fs.mkdirSync(directory, { mode: 0o700 });
+        }
+        const info = fs.lstatSync(directory);
+        if (!info.isDirectory() || info.isSymbolicLink()) {
+          throw new Error("Claude managed SessionStore directory is invalid");
+        }
+      }
+      const transcript = path.join(directory, path.basename(key.subpath));
+      if (!create && !fs.existsSync(transcript)) return null;
+      if (fs.existsSync(transcript)) {
+        const info = fs.lstatSync(transcript);
+        if (!info.isFile() || info.isSymbolicLink())
+          throw new Error("Claude managed transcript is not a regular file");
+      }
+      return transcript;
     }
     const matches = transcriptMatches(canonicalHome, key.sessionId);
     if (matches.length > 1) {
@@ -695,6 +728,24 @@ export const createManagedClaudeSessionStore = (
     return path.join(project, `${key.sessionId}.jsonl`);
   };
   return {
+    listSubkeys(key) {
+      const main = transcriptFor(key, false);
+      if (!main) return Promise.resolve([]);
+      const directory = path.join(
+        path.dirname(main),
+        key.sessionId,
+        "subagents"
+      );
+      if (!fs.existsSync(directory)) return Promise.resolve([]);
+      const keys = fs
+        .readdirSync(directory)
+        .filter((name) =>
+          /^agent-[A-Za-z0-9][A-Za-z0-9_-]{0,127}\.jsonl$/.test(name)
+        )
+        .map((name) => `subagents/${name}`);
+      for (const subpath of keys) transcriptFor({ ...key, subpath }, false);
+      return Promise.resolve(keys);
+    },
     append(key, entries) {
       if (entries.length === 0) return Promise.resolve();
       const transcript = transcriptFor(key, true);
@@ -857,9 +908,9 @@ export class ClaudeManagedConversationSession {
   ) {
     this.config = config;
     this.model = assertNonEmpty(config.model, "Claude model");
-    if (!SAFE_PERMISSION_MODES.has(config.permissionMode)) {
+    if (!MANAGED_PERMISSION_MODES.has(config.permissionMode)) {
       throw new Error(
-        "Claude managed conversation permissionMode must be explicitly set to a non-bypassing mode"
+        "Claude managed conversation permissionMode must be explicitly set to a supported mode"
       );
     }
     if (
@@ -991,6 +1042,7 @@ export class ClaudeManagedConversationSession {
     const shouldResume = this.resumed || this.submittedQuery;
     let stream: Query;
     try {
+      const koedMcp = managedKoedMcpServer(this.config.env ?? process.env);
       stream = query({
         prompt,
         options: {
@@ -999,16 +1051,27 @@ export class ClaudeManagedConversationSession {
           env: this.sdkEnvironment,
           ...claudeAgentSdkExecutableOptions(this.executablePath),
           model: this.model,
-          permissionMode: this.config.permissionMode,
+          ...(this.config.permissionMode === "default"
+            ? {}
+            : { permissionMode: this.config.permissionMode }),
+          ...(this.config.permissionMode === "bypassPermissions"
+            ? { allowDangerouslySkipPermissions: true }
+            : {}),
           tools: this.config.tools ?? [],
+          ...(this.config.canUseTool
+            ? { canUseTool: this.config.canUseTool }
+            : {}),
           allowedTools: this.config.allowedTools ?? [],
-          mcpServers: this.config.mcpServers ?? {},
+          mcpServers: {
+            ...this.config.mcpServers,
+            ...(koedMcp ? { koed: koedMcp } : {})
+          },
           strictMcpConfig: true,
           settingSources: this.config.settingSources ?? [],
           sessionStore: this.sessionStore,
           persistSession: true,
           maxTurns: this.config.maxTurns ?? 1,
-          includePartialMessages: false,
+          includePartialMessages: Boolean(this.config.onTextDelta),
           forwardSubagentText: false,
           ...(this.config.systemPrompt === undefined
             ? {}
@@ -1029,6 +1092,7 @@ export class ClaudeManagedConversationSession {
     this.activeAbortController = abortController;
     this.activeQuery = stream;
     const providerEvents: SDKMessage[] = [];
+    const turnId = randomUUID();
     let result: SDKResultMessage | undefined;
     try {
       for await (const message of stream) {
@@ -1042,7 +1106,17 @@ export class ClaudeManagedConversationSession {
             `Claude Agent SDK returned unexpected session ID ${message.session_id}`
           );
         }
-        providerEvents.push(message);
+        if (message.type === "stream_event") {
+          const event = message.event;
+          if (
+            event.type === "content_block_delta" &&
+            event.delta.type === "text_delta"
+          ) {
+            this.config.onTextDelta?.(event.delta.text, turnId);
+          }
+        } else {
+          providerEvents.push(message);
+        }
         if (message.type === "result") {
           result = message;
         }
@@ -1070,6 +1144,7 @@ export class ClaudeManagedConversationSession {
     const model = Object.keys(result.modelUsage ?? {})[0] ?? this.model;
     return {
       provider: CLAUDE_MANAGED_CONVERSATION_PROVIDER,
+      turnId,
       sessionId: this.sessionId,
       model,
       text: resultText(result),

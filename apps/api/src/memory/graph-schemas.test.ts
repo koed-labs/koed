@@ -29,7 +29,8 @@ describe("graph thread index response schema", () => {
                 sample: "Captured from Pi",
                 threadKind: "conversation",
                 parentThreadId: null,
-                parentSessionId: null
+                parentSessionId: null,
+                presentation: null
               }
             ]
           }

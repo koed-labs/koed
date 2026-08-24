@@ -21,8 +21,9 @@ could copy the bearer value and race the intended device. A general local API
 listener is also too broad: pairing must not expose Personal Memory, Team
 routes, operational routes, or arbitrary proxy behavior.
 
-PDS V1 is relay-required. Same-network pairing does not introduce direct peer
-transport or a fallback protocol. In the local self-hosted topology, the
+PDS V1 is relay-backed. Same-network pairing and peer-assisted transfer reuse
+the same membership and package protocols; neither creates a second sync
+protocol. In the local self-hosted topology, the
 inviting installation may co-locate the neutral PDS Authority/Relay service
 role and provides a narrowly scoped route to it. The Authority has a separate
 signing identity in Desktop's secure provider and no group content keys; it is
@@ -44,7 +45,9 @@ This control-plane placement does not make that installation a plaintext
 Personal Memory authority or aggregate Recall host. Every admitted device
 remains a symmetric source and replica in the data plane. It does make the
 installation an operational availability hub in V1: enrollment, governance,
-and package transfer pause when its Authority/Relay route is unavailable. A
+route discovery, and offline fallback pause when its Authority/Relay route is
+unavailable. Already discovered reachable peers may continue transferring
+packages directly until their short-lived routes expire. A
 joined replica does not advertise an invitation action that its local Authority
 key cannot countersign; the User creates the next invitation on the same
 Authority-hosting installation. V1 has no Authority transfer or rotation
@@ -76,17 +79,18 @@ The listener:
 - uses a no-store, no-referrer landing page with a nonce-scoped CSP;
 - exposes only the exact PDS enrollment control routes needed by the joining
   device;
-- exposes the PDS relay route only with the existing membership certificate
-  and signed relay-proof contract;
+- exposes the PDS package data plane only with the existing membership
+  certificate and signed relay-proof contract;
 - never accepts a browser session, API Token, device credential, or pairing
   secret as PDS governance authority.
 
-Invitation state is temporary; the authenticated relay gateway is not. The
-Authority-hosting Desktop starts the same-network listener whenever its
-Personal Device Group is present and restores it when local services resume.
-Joined replicas do not start a second gateway without an explicit Authority
-recovery or transfer. After an invitation is invalidated, only
-membership-certificate and signed-proof relay traffic remains available.
+Invitation state is temporary; the authenticated package receive path is not.
+Every Desktop with a Personal Device Group starts the same-network listener and
+restores it when local services resume. Only the Authority-hosting installation
+may create invitations. Joined replicas expose no enrollment authority, but
+may advertise a short-lived peer receive route through the Authority/Relay.
+After an invitation is invalidated, only membership-certificate and signed-proof
+package traffic remains available.
 Listener startup failure is surfaced in Devices status while Personal capture
 and Recall remain usable.
 
@@ -146,22 +150,24 @@ must not restart API, Worker, capture, or Recall services.
   control responses.
 - Possession of the QR/link alone cannot add a device; active-device approval
   and the signed PDS transition remain mandatory.
-- The local Authority/Relay route must be reachable for enrollment and later
-  replication. Its outage pauses transfer but does not stop local capture or
-  Recall.
+- The Authority/Relay route must be reachable for enrollment, lifecycle,
+  discovery, anti-entropy, and offline delivery. A temporary outage does not
+  stop local capture, Recall, or transfer over already discovered peer routes.
 - Loss of the Authority-hosting installation strands V1 enrollment, governance,
-  and new package transfer until a later supported Authority recovery/transfer
-  protocol exists. Replicas retain local use of already materialized Memory.
-- A joined replica remains symmetric for capture and replication but does not
-  host the group's enrollment gateway. It directs the User to create another
-  invitation on the Authority-hosting installation.
+  new route discovery, and durable offline delivery until a supported Authority
+  recovery/transfer protocol exists. Replicas retain local use of already
+  materialized Memory.
+- A joined replica remains symmetric for capture and replication and may host a
+  signed peer package receive path, but it does not host the group's enrollment
+  authority. It directs the User to create another invitation on the
+  Authority-hosting installation.
 - Idle synchronization uses database notifications and one authenticated held
   relay wake request. Persisted retry due-times use exact one-shot timers;
   continuous interval polling is forbidden.
-- Direct peer mesh transport, multiple relay endpoints, Authority
-  transfer/rotation, mDNS discovery, public-address pairing, and Bluetooth
-  proximity are not silently inferred. Each requires a separate protocol
-  decision.
+- Unauthenticated peer mesh, Authority transfer/rotation, mDNS discovery,
+  public-address pairing, and Bluetooth proximity are not silently inferred.
+  Peer routes are signer-bound, short-lived records discovered through the
+  Authority/Relay and carry only the existing encrypted package protocol.
 - Retrying the exact signed joining request reuses the locally protected
   pending keys and request. A different request cannot replace it. This makes
   response loss recoverable without creating a second logical device.

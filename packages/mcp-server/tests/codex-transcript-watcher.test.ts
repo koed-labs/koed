@@ -994,6 +994,63 @@ describe("Codex Transcript Watcher source journal", () => {
     expect(artifact.providerCursorOffset).toBe(Buffer.byteLength(content));
   });
 
+  it("advances bounded journal pages toward a later turn boundary", async () => {
+    const root = temporaryDirectory();
+    const client = new FakeWatcherClient();
+    const config = watcherConfig(root, { maxBytesPerBatch: 512 });
+    const watcher = trackedWatcher(client, config);
+    await watcher.scanNow();
+    const transcript = transcriptPath(root);
+    const content =
+      line(sessionRecord("bounded-turn-boundary")) +
+      Array.from({ length: 8 }, (_, index) =>
+        line(
+          userRecord(`bounded record ${index} ${"x".repeat(256)}`, index + 2)
+        )
+      ).join("") +
+      line(assistantResponseRecord("bounded final answer"));
+    writeFileSync(transcript, content);
+    signalCodexTranscriptWatcher(
+      { KOED_HOME: config.koedHome },
+      {
+        sourceSessionId: "bounded-turn-boundary",
+        transcriptPath: transcript,
+        turnBoundary: true
+      }
+    );
+
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await watcher.scanNow();
+      if (
+        client.itemBatches
+          .flat()
+          .some(
+            (item) =>
+              item.sourceAdapterVersion === "codex-hook-signal-v1" &&
+              item.sourceEventType === "turn_completed"
+          )
+      ) {
+        break;
+      }
+    }
+
+    const artifact = client.artifacts.get("bounded-turn-boundary")!;
+    expect(watcher.snapshot().lastErrorCode).toBeNull();
+    expect(artifact.providerCursorOffset).toBe(Buffer.byteLength(content));
+    expect(client.cursors.get(artifact.id)?.sourceOffset).toBe(
+      artifact.providerCursorOffset
+    );
+    expect(
+      client.itemBatches
+        .flat()
+        .filter(
+          (item) =>
+            item.sourceAdapterVersion === "codex-hook-signal-v1" &&
+            item.sourceEventType === "turn_completed"
+        )
+    ).toHaveLength(1);
+  });
+
   it("replays durable journal bytes after Projection failure without appending twice", async () => {
     const root = temporaryDirectory();
     const client = new FakeWatcherClient();

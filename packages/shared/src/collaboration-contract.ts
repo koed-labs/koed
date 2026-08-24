@@ -20,6 +20,7 @@ import {
 import { aiClientIdentifierPattern } from "./ai-client-contract.js";
 import { sharedMemorySourceRefSchema } from "./shared-memory-source.js";
 export type { SharedMemorySourceRef } from "./shared-memory-source.js";
+import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
 export const COLLABORATION_CONTRACT_VERSION = 5;
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
@@ -3317,7 +3318,77 @@ export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
           quiescedAt: collaborationTimestampSchema.nullable(),
           stoppedAt: collaborationTimestampSchema.nullable()
         })
+        .strict(),
+      latestCommand: z
+        .object({
+          id: z.uuid(),
+          sequence: z.number().int().safe().nonnegative(),
+          executionGeneration: positiveVersionSchema,
+          commandKind: z.string().trim().min(1).max(96),
+          clientUserMessageId: z.uuid().nullable(),
+          state: z.string().trim().min(1).max(96),
+          lastErrorCode: z.string().trim().min(1).max(120).nullable(),
+          updatedAt: collaborationTimestampSchema
+        })
         .strict()
+        .nullable(),
+      runtimeItemChange: z
+        .discriminatedUnion("kind", [
+          z
+            .object({
+              kind: z.literal("upsert"),
+              item: z
+                .object({
+                  id: z.uuid(),
+                  executionGeneration: positiveVersionSchema,
+                  providerTurnId: z
+                    .string()
+                    .trim()
+                    .min(1)
+                    .max(2_048)
+                    .nullable(),
+                  providerItemId: z
+                    .string()
+                    .trim()
+                    .min(1)
+                    .max(2_048)
+                    .nullable(),
+                  itemKind: z.enum([
+                    "command_approval",
+                    "file_approval",
+                    "permissions_approval",
+                    "user_input",
+                    "transient_output"
+                  ]),
+                  presentation: conversationPresentationDecisionSchema.extend({
+                    mode: z.enum(["expanded", "collapsed", "status"]),
+                    policyKey: z.string().min(1).max(1_024)
+                  }),
+                  state: z.enum(["pending", "answered"]),
+                  payload: z.record(z.string(), z.unknown()),
+                  revision: positiveVersionSchema,
+                  createdAt: collaborationTimestampSchema,
+                  updatedAt: collaborationTimestampSchema,
+                  answered: z.boolean()
+                })
+                .strict()
+            })
+            .strict(),
+          z
+            .object({
+              kind: z.literal("remove"),
+              itemId: z.uuid(),
+              executionGeneration: positiveVersionSchema,
+              revision: positiveVersionSchema
+            })
+            .strict(),
+          z
+            .object({
+              kind: z.literal("reset")
+            })
+            .strict()
+        ])
+        .nullable()
     })
     .strict()
 ]);

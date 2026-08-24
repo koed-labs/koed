@@ -32,7 +32,9 @@ const authorizationHeaders = (
 const jsonResponse = async (response, label) => {
   const value = await response.json().catch(() => null);
   if (!response.ok || !value || typeof value !== "object") {
-    throw new Error(`${label} failed (${response.status}).`);
+    const detail =
+      value && typeof value.error === "string" ? `: ${value.error}` : "";
+    throw new Error(`${label} failed (${response.status})${detail}.`);
   }
   return value;
 };

@@ -15,7 +15,7 @@ import {
   it,
   vi
 } from "vitest";
-import type pg from "pg";
+import pg from "pg";
 import {
   createMemoryEngine,
   estimateTokens,
@@ -33,6 +33,7 @@ import {
   createSharedMemoryRepository,
   runDbMigrations,
   SHARED_MEMORY_AUTHORITY,
+  ConversationPresentationVersionConflictError,
   SyncStateConflictError,
   type ConversationItemInput,
   type MemorySourceRepository
@@ -1155,9 +1156,26 @@ describeDb("memory repository visibility", () => {
   });
 
   it("runs Personal Device relay cleanup against PostgreSQL", async () => {
+    const owner = await repo.createUser({
+      email: `pds-peer-cleanup-${randomUUID()}@example.com`
+    });
+    const group = await createPdsTestGroup({ userId: owner.id });
+    await pool.query(
+      `insert into pds_peer_routes
+       (group_id,device_id,endpoint_url,record_hash,canonical_advertisement,
+        canonical_request_proof,advertised_at,expires_at)
+       values ($1,$2,'http://192.168.1.20:3310/pds','hash','{}','{}',
+        now()-interval '4 minutes',now()-interval '1 minute')`,
+      [group.groupDbId, group.deviceIds[0]]
+    );
     const result = await repo.cleanupPdsRelay(new Date());
     expect(typeof result.expired).toBe("number");
     expect(typeof result.deleted).toBe("number");
+    await expect(
+      pool.query("select id from pds_peer_routes where group_id=$1", [
+        group.groupDbId
+      ])
+    ).resolves.toMatchObject({ rows: [] });
   });
 
   it("claims an empty encrypted conversation-source restore queue", async () => {
@@ -1847,6 +1865,10 @@ describeDb("memory repository visibility", () => {
       {
         provider: "codex",
         aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
         projectId: "managed-blocked-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -1927,6 +1949,10 @@ describeDb("memory repository visibility", () => {
       {
         provider: "codex",
         aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
         projectId: "managed-runtime-ready-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -1949,6 +1975,107 @@ describeDb("memory repository visibility", () => {
         leaseMs: 60_000
       })
     ).resolves.toEqual([]);
+    const sourceProjectPath = "/work/managed-runtime-ready";
+    const pendingBinding = await repo.upsertManagedConversationRuntimeBinding(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        deploymentId,
+        deviceId,
+        executionGeneration: 1,
+        projectPath: sourceProjectPath
+      }
+    );
+    expect(pendingBinding).toMatchObject({
+      sourceProjectPath,
+      projectPath: sourceProjectPath,
+      workspaceKind: "pending",
+      workspaceLifecycle: "pending",
+      workspaceId: null
+    });
+    const operationId = randomUUID();
+    const workspaceId = randomUUID();
+    const readyBinding = await repo.bindManagedConversationExecutionWorkspace(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        deploymentId,
+        deviceId,
+        executionGeneration: 1,
+        sourceProjectPath,
+        projectPath: sourceProjectPath,
+        workspaceId,
+        workspaceKind: "non_vcs_directory",
+        vcsDriver: null,
+        creationOperationId: operationId
+      }
+    );
+    expect(readyBinding).toMatchObject({
+      workspaceId,
+      workspaceKind: "non_vcs_directory",
+      workspaceLifecycle: "ready",
+      creationOperationId: operationId
+    });
+    await expect(
+      repo.bindManagedConversationExecutionWorkspace(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          deploymentId,
+          deviceId,
+          executionGeneration: 1,
+          sourceProjectPath,
+          projectPath: sourceProjectPath,
+          workspaceId,
+          workspaceKind: "non_vcs_directory",
+          vcsDriver: null,
+          creationOperationId: operationId
+        }
+      )
+    ).resolves.toMatchObject({ workspaceId, workspaceLifecycle: "ready" });
+    await expect(
+      repo.bindManagedConversationExecutionWorkspace(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          deploymentId,
+          deviceId,
+          executionGeneration: 1,
+          sourceProjectPath,
+          projectPath: "/work/substituted-workspace",
+          workspaceId: randomUUID(),
+          workspaceKind: "non_vcs_directory",
+          vcsDriver: null,
+          creationOperationId: operationId
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      repo.requestManagedConversationExecutionWorkspaceCleanup(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          deploymentId,
+          deviceId
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      repo.upsertManagedConversationRuntimeBinding(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          deploymentId,
+          deviceId,
+          executionGeneration: 1,
+          projectPath: sourceProjectPath
+        }
+      )
+    ).resolves.toMatchObject({
+      workspaceId,
+      workspaceLifecycle: "ready"
+    });
     await expect(
       repo.releaseManagedConversationStartForRuntimeBinding({
         ownerUserId: owner.id,
@@ -1984,9 +2111,1289 @@ describeDb("memory repository visibility", () => {
       leaseMs: 60_000
     });
     expect(claimed?.id).toBe(managed.command.id);
+
+    await expect(
+      repo.upsertManagedConversationRuntimeBinding(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          deploymentId,
+          deviceId,
+          executionGeneration: 1,
+          projectPath: "/work/changed-project"
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  it("marks an abandoned non-replayable prompt indeterminate without resubmitting it", async () => {
+  it("does not retry pending workspaces after their execution becomes terminal", async () => {
+    const owner = await repo.createUser({
+      email: `managed-workspace-terminal-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const managed = await repo.createManagedConversation(
+      { userId: owner.id },
+      {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        projectId: "managed-workspace-terminal-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID(),
+        deferUntilRuntimeBinding: true
+      }
+    );
+    await repo.upsertManagedConversationRuntimeBinding(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        deploymentId,
+        deviceId,
+        executionGeneration: 1,
+        projectPath: "/work/terminal-workspace"
+      }
+    );
+
+    await expect(
+      repo.listPendingManagedConversationRuntimeBindings({
+        ownerUserId: owner.id,
+        deploymentId,
+        deviceId
+      })
+    ).resolves.toEqual([
+      expect.objectContaining({ executionId: managed.execution.id })
+    ]);
+    await expect(
+      repo.failManagedConversationStartForRuntimeBinding({
+        ownerUserId: owner.id,
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        deploymentId,
+        deviceId,
+        errorCode: "ExecutionWorkspaceSourceDirtyError"
+      })
+    ).resolves.toBe(true);
+    await expect(
+      repo.listPendingManagedConversationRuntimeBindings({
+        ownerUserId: owner.id,
+        deploymentId,
+        deviceId
+      })
+    ).resolves.toEqual([]);
+  });
+
+  it("fences explicit cleanup to the exact Koed-managed workspace", async () => {
+    const owner = await repo.createUser({
+      email: `managed-workspace-cleanup-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const managed = await repo.createManagedConversation(
+      { userId: owner.id },
+      {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        projectId: "managed-workspace-cleanup-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID(),
+        deferUntilRuntimeBinding: true
+      }
+    );
+    const sourceProjectPath = "/work/cleanup-source";
+    await repo.upsertManagedConversationRuntimeBinding(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        deploymentId,
+        deviceId,
+        executionGeneration: 1,
+        projectPath: sourceProjectPath
+      }
+    );
+    const workspaceId = randomUUID();
+    const operationId = randomUUID();
+    const headObjectId = "a".repeat(40);
+    await repo.bindManagedConversationExecutionWorkspace(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        deploymentId,
+        deviceId,
+        executionGeneration: 1,
+        sourceProjectPath,
+        projectPath: "/work/managed-cleanup-worktree",
+        workspaceId,
+        workspaceKind: "koed_managed_worktree",
+        vcsDriver: "git",
+        localRepositoryCommonDirectory: "/work/source/.git",
+        localGitDirectory: "/work/source/.git/worktrees/managed",
+        repositoryIdentityHash: "b".repeat(64),
+        worktreeIdentityHash: "c".repeat(64),
+        baseRef: "HEAD",
+        baseObjectId: headObjectId,
+        branchRef: `refs/heads/koed/${managed.execution.id}/1/${operationId}`,
+        headObjectId,
+        creationOperationId: operationId
+      }
+    );
+
+    await expect(
+      repo.requestManagedConversationExecutionWorkspaceCleanup(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          deploymentId,
+          deviceId: randomUUID()
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    const requested =
+      await repo.requestManagedConversationExecutionWorkspaceCleanup(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          deploymentId,
+          deviceId
+        }
+      );
+    expect(requested).toMatchObject({
+      workspaceId,
+      workspaceLifecycle: "cleanup_requested",
+      cleanupState: "requested"
+    });
+    await expect(
+      repo.listManagedConversationExecutionWorkspaceCleanupRequests({
+        deploymentId,
+        deviceId
+      })
+    ).resolves.toEqual([
+      expect.objectContaining({
+        executionId: managed.execution.id,
+        workspaceId
+      })
+    ]);
+    await expect(
+      repo.completeManagedConversationExecutionWorkspaceCleanup({
+        ownerUserId: owner.id,
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        deploymentId,
+        deviceId,
+        workspaceId: randomUUID()
+      })
+    ).resolves.toBe(false);
+    await expect(
+      repo.completeManagedConversationExecutionWorkspaceCleanup({
+        ownerUserId: owner.id,
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        deploymentId,
+        deviceId,
+        workspaceId
+      })
+    ).resolves.toBe(true);
+    await expect(
+      repo.getManagedConversationRuntimeBinding(
+        { userId: owner.id },
+        managed.execution.id
+      )
+    ).resolves.toMatchObject({
+      workspaceLifecycle: "removed",
+      cleanupState: "completed"
+    });
+  });
+
+  it("queues an initial prompt behind a starting managed Conversation", async () => {
+    const managedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 44).toString("base64")
+      )
+    });
+    const owner = await managedRepo.createUser({
+      email: `managed-start-prompt-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = "managed-start-prompt-runner";
+    const managed = await managedRepo.createManagedConversation(
+      { userId: owner.id },
+      {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
+        projectId: "managed-start-prompt-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const prompt = await managedRepo.enqueueManagedConversationPrompt(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        idempotencyKey: randomUUID(),
+        clientUserMessageId: randomUUID(),
+        prompt: "Begin as soon as the provider is ready."
+      }
+    );
+
+    const firstClaims = await managedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    expect(firstClaims.map((command) => command.commandKind)).toEqual([
+      "start"
+    ]);
+    const start = firstClaims[0]!;
+    const running = await managedRepo.bindManagedConversationRuntime(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        expectedStateVersion: start.execution.stateVersion,
+        executionGeneration: 1,
+        runnerId,
+        logicalSessionId: randomUUID(),
+        providerThreadId: randomUUID(),
+        providerCliVersion: "test"
+      }
+    );
+    await managedRepo.completeManagedConversationCommand({
+      commandId: start.id,
+      leaseToken: start.leaseToken!,
+      result: { started: true }
+    });
+
+    const [claimedPrompt] = await managedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    expect(claimedPrompt).toMatchObject({
+      id: prompt.id,
+      commandKind: "prompt",
+      execution: {
+        id: running.id,
+        state: "running",
+        logicalSessionId: running.logicalSessionId,
+        providerThreadId: running.providerThreadId
+      }
+    });
+  });
+
+  it("stores durable execution checkpoints and owner-only encrypted diffs", async () => {
+    const checkpointRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 43).toString("base64")
+      )
+    });
+    const owner = await checkpointRepo.createUser({
+      email: `managed-checkpoint-owner-${randomUUID()}@example.com`
+    });
+    const stranger = await checkpointRepo.createUser({
+      email: `managed-checkpoint-stranger-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = "managed-checkpoint-runner";
+    const managed = await checkpointRepo.createManagedConversation(
+      { userId: owner.id },
+      {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        projectId: "managed-checkpoint-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const baselineId = randomUUID();
+    const terminalId = randomUUID();
+    const initialCommit = "1".repeat(40);
+    const terminalCommit = "2".repeat(40);
+    const sourceGenerationId = randomUUID();
+    const checkpoint = (input: {
+      id: string;
+      sequence: number;
+      kind: "baseline" | "terminal";
+      commandId: string;
+      objectId: string;
+    }) => ({
+      id: input.id,
+      executionId: managed.execution.id,
+      executionGeneration: 1,
+      commandId: input.commandId,
+      providerTurnId: input.kind === "terminal" ? "turn-1" : null,
+      sourceGenerationId: input.kind === "terminal" ? sourceGenerationId : null,
+      sequence: input.sequence,
+      checkpointKind: input.kind,
+      checkpointStatus: "ready" as const,
+      failureCode: null,
+      repositoryIdentityHash: "a".repeat(64),
+      worktreeIdentityHash: "b".repeat(64),
+      vcsDriver: "git" as const,
+      checkpointRef: `refs/koed/checkpoints/${managed.execution.id}/1/${input.sequence}/${input.kind}`,
+      commitObjectId: input.objectId,
+      capturedAt: new Date().toISOString()
+    });
+    const [start] = await checkpointRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    const running = await checkpointRepo.bindManagedConversationRuntime(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        expectedStateVersion: start!.execution.stateVersion,
+        executionGeneration: start!.executionGeneration,
+        runnerId,
+        logicalSessionId: randomUUID(),
+        providerThreadId: randomUUID(),
+        providerCliVersion: "test"
+      }
+    );
+    await checkpointRepo.completeManagedConversationCommand({
+      commandId: start!.id,
+      leaseToken: start!.leaseToken!,
+      result: { started: true }
+    });
+    const prompt = await checkpointRepo.enqueueManagedConversationPrompt(
+      { userId: owner.id },
+      {
+        executionId: running.id,
+        executionGeneration: running.executionGeneration,
+        idempotencyKey: randomUUID(),
+        clientUserMessageId: randomUUID(),
+        prompt: "Create a durable execution checkpoint."
+      }
+    );
+    const [claimedPrompt] =
+      await checkpointRepo.claimManagedConversationCommands({
+        ownerUserId: owner.id,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      });
+    expect(claimedPrompt?.id).toBe(prompt.id);
+    const baselineCheckpoint = checkpoint({
+      id: baselineId,
+      sequence: prompt.sequence,
+      kind: "baseline",
+      commandId: prompt.id,
+      objectId: initialCommit
+    });
+    await checkpointRepo.recordManagedConversationExecutionCheckpoint(
+      { userId: owner.id },
+      { checkpoint: baselineCheckpoint }
+    );
+    await expect(
+      checkpointRepo.recordManagedConversationExecutionCheckpoint(
+        { userId: owner.id },
+        { checkpoint: baselineCheckpoint }
+      )
+    ).resolves.toMatchObject({ id: baselineId });
+    await expect(
+      checkpointRepo.recordManagedConversationExecutionCheckpoint(
+        { userId: owner.id },
+        {
+          checkpoint: {
+            ...baselineCheckpoint,
+            commitObjectId: "f".repeat(40)
+          }
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await checkpointRepo.bindManagedConversationSourceGeneration(
+      { userId: owner.id },
+      {
+        executionId: running.id,
+        executionGeneration: running.executionGeneration,
+        runnerId,
+        sourceGenerationId
+      }
+    );
+    await checkpointRepo.markManagedConversationCheckpointPending({
+      commandId: prompt.id,
+      leaseToken: claimedPrompt!.leaseToken!,
+      sourceGenerationId,
+      providerTurnId: "turn-1"
+    });
+    const diffId = randomUUID();
+    const secretPatch =
+      "diff --git a/private.ts b/private.ts\n+redacted-test-value";
+    const revisionDigest = "d".repeat(64);
+    const byteCount = Buffer.byteLength(secretPatch);
+    const diffPayload = {
+      files: [{ path: "private.ts", patch: secretPatch }],
+      revisionDigest,
+      complete: true,
+      truncated: false,
+      fileCount: 1,
+      byteCount
+    };
+    const terminalCheckpoint = checkpoint({
+      id: terminalId,
+      sequence: prompt.sequence,
+      kind: "terminal",
+      commandId: prompt.id,
+      objectId: terminalCommit
+    });
+    await expect(
+      checkpointRepo.recordManagedConversationExecutionCheckpoint(
+        { userId: owner.id },
+        {
+          checkpoint: {
+            ...terminalCheckpoint,
+            sourceGenerationId: randomUUID()
+          }
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await checkpointRepo.recordManagedConversationExecutionCheckpoint(
+      { userId: owner.id },
+      {
+        checkpoint: terminalCheckpoint,
+        diffs: [
+          {
+            id: diffId,
+            scopeKey: `turn:${prompt.id}`,
+            diffScope: "turn",
+            fromCheckpointId: baselineId,
+            toCheckpointId: terminalId,
+            revisionDigest,
+            complete: true,
+            truncated: false,
+            fileCount: 1,
+            byteCount,
+            payload: diffPayload
+          }
+        ]
+      }
+    );
+    await checkpointRepo.completeManagedConversationCommand({
+      commandId: prompt.id,
+      leaseToken: claimedPrompt!.leaseToken!,
+      result: { turnId: "turn-1" }
+    });
+    const restore =
+      await checkpointRepo.enqueueManagedConversationCheckpointRestore(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          checkpointId: baselineId,
+          idempotencyKey: `checkpoint-restore-${randomUUID()}`
+        }
+      );
+    expect(restore).toMatchObject({
+      commandKind: "checkpoint_restore",
+      payload: { checkpointId: baselineId },
+      state: "queued"
+    });
+
+    await expect(
+      checkpointRepo.listManagedConversationExecutionCheckpoints(
+        { userId: owner.id },
+        { executionId: managed.execution.id, executionGeneration: 1 }
+      )
+    ).resolves.toMatchObject([
+      { id: baselineId, checkpointKind: "baseline" },
+      { id: terminalId, checkpointKind: "terminal" }
+    ]);
+    const restoredId = randomUUID();
+    await checkpointRepo.recordManagedConversationExecutionCheckpoint(
+      { userId: owner.id },
+      {
+        checkpoint: checkpoint({
+          id: restoredId,
+          sequence: restore.sequence,
+          kind: "terminal",
+          commandId: restore.id,
+          objectId: initialCommit
+        }),
+        diffs: [
+          {
+            id: randomUUID(),
+            scopeKey: "full",
+            diffScope: "full",
+            fromCheckpointId: baselineId,
+            toCheckpointId: restoredId,
+            revisionDigest,
+            complete: true,
+            truncated: false,
+            fileCount: 0,
+            byteCount: 0,
+            payload: {
+              files: [],
+              revisionDigest,
+              complete: true,
+              truncated: false,
+              fileCount: 0,
+              byteCount: 0
+            }
+          }
+        ]
+      }
+    );
+    await expect(
+      checkpointRepo.getManagedConversationExecutionDiff(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          scopeKey: "full"
+        }
+      )
+    ).resolves.toMatchObject({ toCheckpointId: restoredId, fileCount: 0 });
+    await expect(
+      checkpointRepo.getManagedConversationExecutionDiff(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          scopeKey: `turn:${prompt.id}`
+        }
+      )
+    ).resolves.toMatchObject({
+      id: diffId,
+      payload: { files: [{ path: "private.ts", patch: secretPatch }] }
+    });
+    await expect(
+      checkpointRepo.getManagedConversationExecutionDiff(
+        { userId: stranger.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          scopeKey: `turn:${prompt.id}`
+        }
+      )
+    ).resolves.toBeNull();
+    const raw = await pool.query<{ payload: string }>(
+      `select encrypted_payload::text as payload
+         from managed_conversation_execution_diffs
+        where id = $1`,
+      [diffId]
+    );
+    expect(raw.rows[0]?.payload).not.toContain("private.ts");
+    expect(raw.rows[0]?.payload).not.toContain("redacted-test-value");
+  });
+
+  it("allows concurrent executions to use the same selected directory", async () => {
+    const owner = await repo.createUser({
+      email: `managed-workspace-exclusive-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const projectPath = "/work/exclusive-runtime-path";
+    const createExecution = () =>
+      repo.createManagedConversation(
+        { userId: owner.id },
+        {
+          provider: "codex",
+          aiClientInstanceId: "codex.default",
+          model: "gpt-test",
+          permissionMode: "supervised",
+          runnerKind: "local_device",
+          projectId: `exclusive-${randomUUID()}`,
+          runnerDeploymentId: deploymentId,
+          runnerDeviceId: deviceId,
+          idempotencyKey: randomUUID(),
+          deferUntilRuntimeBinding: true
+        }
+      );
+    const first = await createExecution();
+    const second = await createExecution();
+    for (const execution of [first.execution, second.execution]) {
+      await repo.upsertManagedConversationRuntimeBinding(
+        { userId: owner.id },
+        {
+          executionId: execution.id,
+          deploymentId,
+          deviceId,
+          executionGeneration: 1,
+          projectPath
+        }
+      );
+    }
+    await repo.bindManagedConversationExecutionWorkspace(
+      { userId: owner.id },
+      {
+        executionId: first.execution.id,
+        deploymentId,
+        deviceId,
+        executionGeneration: 1,
+        sourceProjectPath: projectPath,
+        projectPath,
+        workspaceId: randomUUID(),
+        workspaceKind: "non_vcs_directory",
+        vcsDriver: null,
+        creationOperationId: randomUUID()
+      }
+    );
+
+    await repo.bindManagedConversationExecutionWorkspace(
+      { userId: owner.id },
+      {
+        executionId: second.execution.id,
+        deploymentId,
+        deviceId,
+        executionGeneration: 1,
+        sourceProjectPath: projectPath,
+        projectPath,
+        workspaceId: randomUUID(),
+        workspaceKind: "non_vcs_directory",
+        vcsDriver: null,
+        creationOperationId: randomUUID()
+      }
+    );
+    await expect(
+      repo.getManagedConversationRuntimeBinding(
+        { userId: owner.id },
+        second.execution.id
+      )
+    ).resolves.toMatchObject({
+      workspaceLifecycle: "ready",
+      projectPath
+    });
+  });
+
+  it("fails a deferred start atomically when its assigned workspace is rejected", async () => {
+    const owner = await repo.createUser({
+      email: `managed-workspace-rejected-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const managed = await repo.createManagedConversation(
+      { userId: owner.id },
+      {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        projectId: "managed-workspace-rejected-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID(),
+        deferUntilRuntimeBinding: true
+      }
+    );
+    const failure = {
+      ownerUserId: owner.id,
+      executionId: managed.execution.id,
+      executionGeneration: 1,
+      deploymentId,
+      deviceId,
+      errorCode: "ExecutionWorkspaceSourceDirtyError"
+    };
+
+    await expect(
+      repo.failManagedConversationStartForRuntimeBinding({
+        ...failure,
+        deviceId: randomUUID()
+      })
+    ).resolves.toBe(false);
+    await expect(
+      repo.failManagedConversationStartForRuntimeBinding(failure)
+    ).resolves.toBe(true);
+    await expect(
+      repo.failManagedConversationStartForRuntimeBinding(failure)
+    ).resolves.toBe(true);
+    await expect(
+      repo.getManagedConversationExecution(
+        { userId: owner.id },
+        managed.execution.id
+      )
+    ).resolves.toMatchObject({
+      state: "failed",
+      lastErrorCode: failure.errorCode,
+      runnerId: null,
+      runnerLeaseExpiresAt: null
+    });
+    await expect(
+      repo.getLatestManagedConversationCommandForExecution(
+        { userId: owner.id },
+        managed.execution.id
+      )
+    ).resolves.toMatchObject({
+      state: "failed",
+      lastErrorCode: failure.errorCode,
+      blockedOnKind: null,
+      blockedOnId: null
+    });
+  });
+
+  it("encrypts, fences, and reconciles managed runtime interactions", async () => {
+    const protectedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 91).toString("base64")
+      )
+    });
+    const owner = await protectedRepo.createUser({
+      email: `managed-runtime-owner-${randomUUID()}@example.com`
+    });
+    const other = await protectedRepo.createUser({
+      email: `managed-runtime-other-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const managed = await protectedRepo.createManagedConversation(
+      { userId: owner.id },
+      {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        projectId: "managed-runtime-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const payload = {
+      providerMethod: "item/commandExecution/requestApproval",
+      command: "printf runtime-secret-marker"
+    };
+    const interaction = await protectedRepo.putManagedConversationRuntimeItem(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        providerRequestId: "provider:approval-1",
+        providerTurnId: "turn-1",
+        providerItemId: "item-1",
+        itemKind: "command_approval",
+        payload
+      }
+    );
+    const interactionEvent = await pool.query<{
+      resource_id: string;
+      resource_type: string;
+    }>(
+      `select resource_id, resource_type
+         from collaboration_outbox
+        where family = 'managed_conversation_changed'
+          and resource_id = $1
+        order by cursor desc
+        limit 1`,
+      [interaction.id]
+    );
+    expect(interactionEvent.rows[0]).toEqual({
+      resource_id: interaction.id,
+      resource_type: "managed_conversation_runtime_item"
+    });
+    await expect(
+      protectedRepo.putManagedConversationRuntimeItem(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          providerRequestId: "provider:approval-1",
+          itemKind: "command_approval",
+          payload
+        }
+      )
+    ).resolves.toMatchObject({ id: interaction.id, revision: 1 });
+    await expect(
+      protectedRepo.putManagedConversationRuntimeItem(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          providerRequestId: "provider:approval-1",
+          itemKind: "command_approval",
+          payload: { ...payload, command: "different" }
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      protectedRepo.putManagedConversationRuntimeItem(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 2,
+          providerRequestId: "provider:fenced",
+          itemKind: "command_approval",
+          payload
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      protectedRepo.getManagedConversationRuntimeItem(
+        { userId: other.id },
+        interaction.id
+      )
+    ).resolves.toBeNull();
+
+    const raw = await pool.query<{
+      encrypted_payload: unknown;
+      encrypted_response: unknown;
+    }>(
+      `select encrypted_payload, encrypted_response
+         from managed_conversation_runtime_items where id = $1`,
+      [interaction.id]
+    );
+    expect(JSON.stringify(raw.rows[0]?.encrypted_payload)).not.toContain(
+      "runtime-secret-marker"
+    );
+    expect(raw.rows[0]?.encrypted_response).toBeNull();
+
+    const answered = await protectedRepo.answerManagedConversationRuntimeItem(
+      { userId: owner.id },
+      {
+        itemId: interaction.id,
+        executionGeneration: 1,
+        response: { decision: "accept" }
+      }
+    );
+    expect(answered).toMatchObject({ state: "answered", revision: 2 });
+    await expect(
+      protectedRepo.answerManagedConversationRuntimeItem(
+        { userId: owner.id },
+        {
+          itemId: interaction.id,
+          executionGeneration: 1,
+          response: { decision: "accept" }
+        }
+      )
+    ).resolves.toMatchObject({ state: "answered", revision: 2 });
+    await expect(
+      protectedRepo.answerManagedConversationRuntimeItem(
+        { userId: owner.id },
+        {
+          itemId: interaction.id,
+          executionGeneration: 1,
+          response: { decision: "decline" }
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    const encrypted = await pool.query<{ encrypted_response: unknown }>(
+      `select encrypted_response from managed_conversation_runtime_items where id = $1`,
+      [interaction.id]
+    );
+    expect(JSON.stringify(encrypted.rows[0]?.encrypted_response)).not.toContain(
+      "accept"
+    );
+
+    const firstTransient =
+      await protectedRepo.putManagedConversationRuntimeItem(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          providerRequestId: "transient:turn-1:item-2",
+          providerTurnId: "turn-1",
+          providerItemId: "item-2",
+          itemKind: "transient_output",
+          payload: { text: "first" }
+        }
+      );
+    const secondTransient =
+      await protectedRepo.putManagedConversationRuntimeItem(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          providerRequestId: "transient:turn-1:item-2",
+          providerTurnId: "turn-1",
+          providerItemId: "item-2",
+          itemKind: "transient_output",
+          payload: { text: "first and second" }
+        }
+      );
+    expect(secondTransient).toMatchObject({
+      id: firstTransient.id,
+      revision: 2,
+      payload: { text: "first and second" }
+    });
+    await expect(
+      protectedRepo.cancelManagedConversationRuntimeItems(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          providerTurnId: "turn-1"
+        }
+      )
+    ).resolves.toBe(2);
+    await expect(
+      protectedRepo.listManagedConversationRuntimeItems(
+        { userId: owner.id },
+        { executionId: managed.execution.id }
+      )
+    ).resolves.toEqual([]);
+    const removedTransient = await pool.query<{ count: number }>(
+      `select count(*)::int as count
+         from managed_conversation_runtime_items where id = $1`,
+      [firstTransient.id]
+    );
+    expect(removedTransient.rows[0]?.count).toBe(0);
+    const resetEvent = await pool.query<{
+      resource_id: string;
+      resource_type: string;
+    }>(
+      `select resource_id, resource_type
+         from collaboration_outbox
+        where family = 'managed_conversation_changed'
+          and resource_type = 'managed_conversation_runtime_reset'
+          and resource_id = $1
+        order by cursor desc
+        limit 1`,
+      [managed.execution.id]
+    );
+    expect(resetEvent.rows[0]).toEqual({
+      resource_id: managed.execution.id,
+      resource_type: "managed_conversation_runtime_reset"
+    });
+
+    const staleInteraction =
+      await protectedRepo.putManagedConversationRuntimeItem(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          providerRequestId: "provider:stale-generation",
+          itemKind: "command_approval",
+          payload
+        }
+      );
+    await pool.query(
+      `update managed_conversation_executions
+          set execution_generation = 2
+        where owner_user_id = $1 and id = $2`,
+      [owner.id, managed.execution.id]
+    );
+    await expect(
+      protectedRepo.answerManagedConversationRuntimeItem(
+        { userId: owner.id },
+        {
+          itemId: staleInteraction.id,
+          executionGeneration: 1,
+          response: { decision: "accept" }
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      protectedRepo.resolveManagedConversationRuntimeItem(
+        { userId: owner.id },
+        {
+          itemId: staleInteraction.id,
+          executionGeneration: 1,
+          state: "resolved"
+        }
+      )
+    ).resolves.toBe(false);
+  });
+
+  it("claims interrupt and stop commands through the concurrent control lane", async () => {
+    const protectedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 92).toString("base64")
+      )
+    });
+    const owner = await protectedRepo.createUser({
+      email: `managed-control-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = "managed-control-runner";
+    const managed = await protectedRepo.createManagedConversation(
+      { userId: owner.id },
+      {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        projectId: "managed-control-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const [start] = await protectedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    await protectedRepo.bindManagedConversationRuntime(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        expectedStateVersion: start!.execution.stateVersion,
+        executionGeneration: 1,
+        runnerId,
+        logicalSessionId: randomUUID(),
+        providerThreadId: randomUUID(),
+        providerCliVersion: "test"
+      }
+    );
+    await protectedRepo.completeManagedConversationCommand({
+      commandId: start!.id,
+      leaseToken: start!.leaseToken!,
+      result: { started: true }
+    });
+    const interrupt = await protectedRepo.enqueueManagedConversationControl(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        idempotencyKey: "interrupt-control-1",
+        commandKind: "interrupt"
+      }
+    );
+    await expect(
+      protectedRepo.enqueueManagedConversationControl(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          idempotencyKey: "interrupt-control-1",
+          commandKind: "interrupt"
+        }
+      )
+    ).resolves.toMatchObject({ id: interrupt.id });
+    await expect(
+      protectedRepo.claimManagedConversationCommands({
+        ownerUserId: owner.id,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      })
+    ).resolves.toEqual([]);
+    const [claimed] =
+      await protectedRepo.claimManagedConversationControlCommands({
+        ownerUserId: owner.id,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      });
+    expect(claimed).toMatchObject({
+      id: interrupt.id,
+      commandKind: "interrupt",
+      state: "dispatching"
+    });
+  });
+
+  it("keeps rooted file operations encrypted and separate from provider commands", async () => {
+    const protectedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 63).toString("base64")
+      )
+    });
+    const owner = await protectedRepo.createUser({
+      email: `managed-files-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const runnerId = "managed-file-runner";
+    const managed = await protectedRepo.createManagedConversation(
+      { userId: owner.id },
+      {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        permissionMode: "supervised",
+        runnerKind: "local_device",
+        projectId: "managed-file-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const [start] = await protectedRepo.claimManagedConversationCommands({
+      ownerUserId: owner.id,
+      runnerId,
+      deploymentId,
+      deviceId,
+      leaseMs: 60_000
+    });
+    await protectedRepo.bindManagedConversationRuntime(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        expectedStateVersion: start!.execution.stateVersion,
+        executionGeneration: 1,
+        runnerId,
+        logicalSessionId: randomUUID(),
+        providerThreadId: randomUUID(),
+        providerCliVersion: "test"
+      }
+    );
+    await protectedRepo.completeManagedConversationCommand({
+      commandId: start!.id,
+      leaseToken: start!.leaseToken!,
+      result: { started: true }
+    });
+
+    const mention = await protectedRepo.enqueueManagedConversationFileOperation(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        idempotencyKey: `file-${randomUUID()}`,
+        operation: {
+          kind: "mention",
+          path: "src/private-context.ts",
+          revision: null,
+          startLine: 2,
+          endLine: 4
+        }
+      }
+    );
+    await expect(
+      protectedRepo.claimManagedConversationCommands({
+        ownerUserId: owner.id,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      })
+    ).resolves.toEqual([]);
+    const [claimed] =
+      await protectedRepo.claimManagedConversationFileOperations({
+        ownerUserId: owner.id,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      });
+    expect(claimed).toMatchObject({
+      id: mention.id,
+      commandKind: "file_mention",
+      payload: {
+        operation: {
+          kind: "mention",
+          path: "src/private-context.ts",
+          startLine: 2,
+          endLine: 4
+        }
+      }
+    });
+    const checkpointId = randomUUID();
+    const revisionDigest = "a".repeat(64);
+    const result = {
+      protocolVersion: 1 as const,
+      checkpointId,
+      checkpointSequence: 3,
+      revision: { checkpointId, revisionDigest },
+      kind: "mention" as const,
+      path: "src/private-context.ts",
+      contentDigest: "b".repeat(64),
+      totalBytes: 300,
+      startLine: 2,
+      endLine: 4,
+      selectedBytes: 120,
+      expiresAt: new Date(Date.now() + 60_000).toISOString()
+    };
+    await expect(
+      protectedRepo.completeManagedConversationFileOperation({
+        commandId: claimed!.id,
+        leaseToken: claimed!.leaseToken!,
+        result: { ...result, path: "src/other.ts" }
+      })
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      protectedRepo.completeManagedConversationFileOperation({
+        commandId: claimed!.id,
+        leaseToken: claimed!.leaseToken!,
+        result
+      })
+    ).resolves.toBe(true);
+    await expect(
+      protectedRepo.getManagedConversationCommand(
+        { userId: owner.id },
+        mention.id
+      )
+    ).resolves.toMatchObject({
+      state: "completed",
+      payload: {
+        operation: { kind: "mention", path: "src/private-context.ts" },
+        result
+      },
+      result: {
+        phase: "file_result",
+        kind: "mention",
+        revisionDigest
+      }
+    });
+    const stored = await pool.query<{
+      encrypted_payload: string;
+      result: Record<string, unknown>;
+    }>(
+      `select encrypted_payload::text, result
+         from managed_conversation_commands
+        where id = $1`,
+      [mention.id]
+    );
+    expect(stored.rows[0]!.encrypted_payload).not.toContain("private-context");
+    expect(stored.rows[0]!.result).not.toHaveProperty("path");
+
+    const prompt = await protectedRepo.enqueueManagedConversationPrompt(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        idempotencyKey: `prompt-${randomUUID()}`,
+        clientUserMessageId: randomUUID(),
+        prompt: "Review the attached context.",
+        fileMentionCommandIds: [mention.id]
+      }
+    );
+    const [claimedPrompt] =
+      await protectedRepo.claimManagedConversationCommands({
+        ownerUserId: owner.id,
+        runnerId,
+        deploymentId,
+        deviceId,
+        leaseMs: 60_000
+      });
+    expect(claimedPrompt).toMatchObject({
+      id: prompt.id,
+      payload: {
+        prompt: "Review the attached context.",
+        fileMentions: [
+          {
+            commandId: mention.id,
+            operation: { kind: "mention" },
+            result: { kind: "mention", revision: { revisionDigest } }
+          }
+        ]
+      }
+    });
+  });
+
+  it("requeues an accepted abandoned prompt for checkpoint-only recovery", async () => {
     const protectedRepo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
         Buffer.alloc(32, 37).toString("base64")
@@ -1998,11 +3405,25 @@ describeDb("memory repository visibility", () => {
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
     const runnerId = "managed-abandoned-runner";
+    const providerThreadId = randomUUID();
+    const capturedSession = await protectedRepo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: providerThreadId,
+        sourceRuntime: "codex",
+        captureMethod: "api",
+        metadata: { managedConversation: true }
+      }
+    );
     const managed = await protectedRepo.createManagedConversation(
       { userId: owner.id },
       {
         provider: "codex",
         aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
         projectId: "managed-abandoned-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2023,9 +3444,19 @@ describeDb("memory repository visibility", () => {
         expectedStateVersion: start!.execution.stateVersion,
         executionGeneration: start!.executionGeneration,
         runnerId,
-        logicalSessionId: randomUUID(),
-        providerThreadId: randomUUID(),
+        logicalSessionId: capturedSession.logicalSessionId,
+        providerThreadId,
         providerCliVersion: "test"
+      }
+    );
+    const sourceGenerationId = randomUUID();
+    await protectedRepo.bindManagedConversationSourceGeneration(
+      { userId: owner.id },
+      {
+        executionId: running.id,
+        executionGeneration: running.executionGeneration,
+        runnerId,
+        sourceGenerationId
       }
     );
     await protectedRepo.completeManagedConversationCommand({
@@ -2039,6 +3470,7 @@ describeDb("memory repository visibility", () => {
         executionId: running.id,
         executionGeneration: running.executionGeneration,
         idempotencyKey: randomUUID(),
+        clientUserMessageId: randomUUID(),
         prompt: "This must not be submitted twice."
       }
     );
@@ -2050,6 +3482,51 @@ describeDb("memory repository visibility", () => {
       leaseMs: 60_000
     });
     expect(claimed?.id).toBe(prompt.id);
+    const stableItemId = `koed-user-message:${prompt.clientUserMessageId!}`;
+    const externalTurnId = `managed-abandoned-${prompt.id}`;
+    await protectedRepo.createConversationItems(
+      { userId: owner.id },
+      {
+        items: [
+          {
+            sessionId: capturedSession.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-conversation-v1",
+            sourceTransport: "app_server",
+            externalSessionId: providerThreadId,
+            externalThreadId: providerThreadId,
+            externalTurnId,
+            externalItemId: stableItemId,
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  id: stableItemId,
+                  type: "userMessage",
+                  content: [{ type: "text", text: "Accepted prompt" }]
+                }
+              }
+            },
+            rawText: "Accepted prompt",
+            sourceHash: `managed-abandoned-${randomUUID()}`,
+            idempotencyKey: `managed-abandoned-${randomUUID()}`,
+            canonicalItemKey: codexCanonicalConversationItemKey({
+              externalThreadId: providerThreadId,
+              externalTurnId,
+              stableItemId,
+              component: "message"
+            }),
+            canonicalStableItemId: stableItemId,
+            observationKind: "lifecycle_completed",
+            observationComponent: "message",
+            projectionStatus: "pending",
+            metadata: { transcriptType: "user_message" }
+          }
+        ]
+      }
+    );
     await pool.query(
       `update managed_conversation_commands
           set lease_expires_at = now() - interval '1 second'
@@ -2076,18 +3553,60 @@ describeDb("memory repository visibility", () => {
         prompt.id
       )
     ).resolves.toMatchObject({
-      state: "indeterminate",
-      lastErrorCode: "ManagedConversationRunnerInterruptedError"
+      state: "queued",
+      result: {
+        phase: "checkpoint_pending",
+        providerTurnId: null,
+        sourceGenerationId
+      },
+      lastErrorCode: "ExecutionCheckpointRecoveryPendingError"
     });
-    await expect(
-      protectedRepo.claimManagedConversationCommands({
+    const [checkpointRetry] =
+      await protectedRepo.claimManagedConversationCommands({
         ownerUserId: owner.id,
         runnerId,
         deploymentId,
         deviceId,
         leaseMs: 60_000
+      });
+    expect(checkpointRetry).toMatchObject({
+      id: prompt.id,
+      state: "dispatching",
+      result: {
+        phase: "checkpoint_pending",
+        providerTurnId: null,
+        sourceGenerationId
+      }
+    });
+    await expect(
+      protectedRepo.markManagedConversationCheckpointPending({
+        commandId: prompt.id,
+        leaseToken: checkpointRetry!.leaseToken!,
+        providerTurnId: "provider-turn-recovered",
+        sourceGenerationId
       })
-    ).resolves.toEqual([]);
+    ).resolves.toBe(true);
+    await expect(
+      protectedRepo.failManagedConversationCommand({
+        commandId: prompt.id,
+        leaseToken: checkpointRetry!.leaseToken!,
+        state: "indeterminate",
+        errorCode: "ExecutionCheckpointConcurrentMutationError"
+      })
+    ).resolves.toEqual({ updated: true, reconciled: false, requeued: true });
+    await expect(
+      protectedRepo.getManagedConversationCommand(
+        { userId: owner.id },
+        prompt.id
+      )
+    ).resolves.toMatchObject({
+      state: "queued",
+      result: {
+        phase: "checkpoint_pending",
+        providerTurnId: "provider-turn-recovered",
+        sourceGenerationId
+      }
+    });
   });
 
   it("reacquires an expired managed execution lease only on its assigned device and generation", async () => {
@@ -2106,6 +3625,10 @@ describeDb("memory repository visibility", () => {
       {
         provider: "codex",
         aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
         projectId: "managed-reacquire-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2195,6 +3718,10 @@ describeDb("memory repository visibility", () => {
       {
         provider: "codex",
         aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
         projectId: "managed-fork-failure-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2300,6 +3827,10 @@ describeDb("memory repository visibility", () => {
       {
         provider: "codex",
         aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
         projectId: "managed-idle-handoff-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2401,6 +3932,10 @@ describeDb("memory repository visibility", () => {
       {
         provider: "codex",
         aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
         projectId: "managed-source-generation-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2498,6 +4033,10 @@ describeDb("memory repository visibility", () => {
       {
         provider: "codex",
         aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
         projectId: "workspace-chunks-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
@@ -2691,6 +4230,238 @@ describeDb("memory repository visibility", () => {
       attemptCount: 1,
       maxAttempts: 4
     });
+  });
+
+  it("fences managed terminal lifecycle metadata to the exact owner, runner, generation, and workspace", async () => {
+    const owner = await repo.createUser({
+      email: `managed-terminal-owner-${randomUUID()}@example.com`
+    });
+    const other = await repo.createUser({
+      email: `managed-terminal-other-${randomUUID()}@example.com`
+    });
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const managed = await repo.createManagedConversation(
+      { userId: owner.id },
+      {
+        provider: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
+        projectId: "managed-terminal-project",
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        idempotencyKey: randomUUID(),
+        deferUntilRuntimeBinding: true
+      }
+    );
+    const projectPath = `/tmp/managed-terminal-${randomUUID()}`;
+    await repo.upsertManagedConversationRuntimeBinding(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        deploymentId,
+        deviceId,
+        executionGeneration: 1,
+        projectPath
+      }
+    );
+    const workspaceId = randomUUID();
+    await repo.bindManagedConversationExecutionWorkspace(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        deploymentId,
+        deviceId,
+        executionGeneration: 1,
+        sourceProjectPath: projectPath,
+        projectPath,
+        workspaceId,
+        workspaceKind: "non_vcs_directory",
+        vcsDriver: null,
+        creationOperationId: randomUUID()
+      }
+    );
+    const idempotencyKey = "managed-terminal-repository-0001";
+    const terminal = await repo.createManagedTerminal(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        idempotencyKey,
+        shellProfileId: "system_default",
+        columns: 120,
+        rows: 40
+      }
+    );
+    expect(terminal).toMatchObject({
+      executionId: managed.execution.id,
+      executionGeneration: 1,
+      workspaceId,
+      runnerDeploymentId: deploymentId,
+      runnerDeviceId: deviceId,
+      state: "creating"
+    });
+    expect(JSON.stringify(terminal)).not.toContain(idempotencyKey);
+    const creating = await repo.createManagedTerminal(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        idempotencyKey: "managed-terminal-repository-0002",
+        shellProfileId: "system_default",
+        columns: 80,
+        rows: 24
+      }
+    );
+    await expect(
+      repo.createManagedTerminal(
+        { userId: owner.id },
+        {
+          executionId: managed.execution.id,
+          executionGeneration: 1,
+          idempotencyKey,
+          shellProfileId: "system_default",
+          columns: 80,
+          rows: 40
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      repo.listManagedTerminals({ userId: other.id }, managed.execution.id)
+    ).resolves.toEqual([]);
+    await expect(
+      repo.transitionManagedTerminal({
+        ownerUserId: owner.id,
+        terminalId: terminal.id,
+        executionGeneration: 1,
+        lifecycleGeneration: 1,
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: randomUUID(),
+        fromStates: ["creating"],
+        state: "running"
+      })
+    ).resolves.toBeNull();
+    const running = await repo.transitionManagedTerminal({
+      ownerUserId: owner.id,
+      terminalId: terminal.id,
+      executionGeneration: 1,
+      lifecycleGeneration: 1,
+      runnerDeploymentId: deploymentId,
+      runnerDeviceId: deviceId,
+      fromStates: ["creating"],
+      state: "running"
+    });
+    expect(running).toMatchObject({ state: "running" });
+    expect(typeof running?.startedAt).toBe("string");
+    await expect(
+      repo.reconcileManagedTerminalsForRunner({
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        failureCode: "terminal_runtime_restarted"
+      })
+    ).resolves.toBe(2);
+    await expect(
+      repo.getManagedTerminal(
+        { userId: owner.id },
+        { executionId: managed.execution.id, terminalId: terminal.id }
+      )
+    ).resolves.toMatchObject({
+      state: "unknown",
+      failureCode: "terminal_runtime_restarted"
+    });
+    const reconciledCreating = await repo.getManagedTerminal(
+      { userId: owner.id },
+      { executionId: managed.execution.id, terminalId: creating.id }
+    );
+    expect(reconciledCreating).toMatchObject({
+      state: "failed",
+      failureCode: "terminal_runtime_restarted"
+    });
+    expect(typeof reconciledCreating?.stoppedAt).toBe("string");
+  });
+
+  it("does not wake projection workers for no-op projection updates", async () => {
+    const owner = await repo.createUser({
+      email: `projection-wakeup-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: `projection-wakeup-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "transcript"
+      }
+    );
+    const [item] = await repo.createConversationItems(
+      { userId: owner.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "projection-wakeup-turn",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            sourceSequence: 0,
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: "user_message",
+                message: "Projection wakeup sentinel."
+              }
+            },
+            rawText: "Projection wakeup sentinel.",
+            sourceHash: `projection-wakeup-source-${randomUUID()}`,
+            idempotencyKey: `projection-wakeup-idempotency-${randomUUID()}`,
+            metadata: { transcriptType: "user_message" }
+          }
+        ]
+      }
+    );
+    const listener = await pool.connect();
+    const notifications: string[] = [];
+    const onNotification = (message: pg.Notification) => {
+      if (message.channel === "koed_projection_work") {
+        notifications.push(message.payload ?? "");
+      }
+    };
+
+    try {
+      listener.on("notification", onNotification);
+      await listener.query("listen koed_projection_work");
+      await pool.query("select pg_notify('koed_projection_work', 'ready')");
+      await vi.waitFor(() => expect(notifications).toContain("ready"));
+      notifications.length = 0;
+
+      await pool.query(
+        `update conversation_items
+         set projection_status = projection_status,
+             projection_work_class = projection_work_class
+         where id = $1`,
+        [item!.id]
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(notifications).toEqual([]);
+
+      await pool.query(
+        `update conversation_items
+         set projection_status = 'held'
+         where id = $1`,
+        [item!.id]
+      );
+      await vi.waitFor(() => expect(notifications).toHaveLength(1));
+    } finally {
+      await listener.query("unlisten koed_projection_work");
+      listener.removeListener("notification", onNotification);
+      listener.release();
+    }
   });
 
   afterEach(async () => {
@@ -5043,7 +6814,7 @@ describeDb("memory repository visibility", () => {
         graphThreads.flatMap((project) =>
           project.threads.map((thread) => thread.sample)
         )
-      ).toContain(sentinel);
+      ).not.toContain(sentinel);
     });
   });
 
@@ -17258,17 +19029,15 @@ describeDb("memory repository visibility", () => {
     });
   });
 
-  it("seeds explicit projection policy rows while allowing independent display and recall policy", async () => {
+  it("seeds independent semantic Projection and Conversation presentation policies", async () => {
     const rows = await pool.query<{
       transcript_type: string;
-      project_to_ui: boolean;
       include_in_embedding: boolean;
       create_memory_event: boolean;
     }>(
       `
         select
           transcript_type,
-          project_to_ui,
           include_in_embedding,
           create_memory_event
         from projection_policy_rules
@@ -17305,76 +19074,84 @@ describeDb("memory repository visibility", () => {
         "unknown"
       ])
     );
-    expect(
-      rows.rows.every((row) => row.project_to_ui === row.include_in_embedding)
-    ).toBe(true);
+    const presentationRows = await pool.query<{
+      item_type: string;
+      presentation_mode: string;
+      renderer_kind: string;
+    }>(
+      `select item_type, presentation_mode, renderer_kind
+         from conversation_presentation_policy_rules
+        where source_kind = 'codex'
+          and source_adapter_version = 'codex-transcript-v1'`
+    );
+    const presentationByType = new Map(
+      presentationRows.rows.map((row) => [row.item_type, row])
+    );
     const displayOnlyType = `display_only_${randomUUID().replaceAll("-", "_")}`;
     const recallOnlyType = `recall_only_${randomUUID().replaceAll("-", "_")}`;
     try {
       await pool.query(
         `
-          insert into projection_policy_rules (
-            transcript_type,
-            description,
-            project_to_ui,
-            create_message,
-            create_tool_event,
-            create_memory_event,
-            include_in_embedding,
-            include_in_lcm
+          insert into conversation_presentation_policy_rules (
+            source_kind, source_adapter_version, item_type, description,
+            presentation_mode, renderer_kind
+          ) values (
+            'codex', 'codex-transcript-v1', $1,
+            'Temporary display-only policy rule.', 'expanded', 'message'
           )
-          values
-            (
-              $1,
-              'Temporary display-only policy rule.',
-              true,
-              true,
-              false,
-              false,
-              false,
-              false
-            ),
-            (
-              $2,
-              'Temporary recall-only policy rule.',
-              false,
-              false,
-              false,
-              true,
-              true,
-              false
-            )
         `,
-        [displayOnlyType, recallOnlyType]
+        [displayOnlyType]
+      );
+      await pool.query(
+        `
+          insert into projection_policy_rules (
+            transcript_type, description, create_memory_event,
+            include_in_embedding, include_in_lcm
+          ) values (
+            $1, 'Temporary recall-only policy rule.', true, true, false
+          )
+        `,
+        [recallOnlyType]
       );
     } finally {
       await pool.query(
-        "delete from projection_policy_rules where transcript_type = any($1)",
-        [[displayOnlyType, recallOnlyType]]
+        "delete from projection_policy_rules where transcript_type = $1",
+        [recallOnlyType]
+      );
+      await pool.query(
+        "delete from conversation_presentation_policy_rules where item_type = $1",
+        [displayOnlyType]
       );
     }
     expect(byType.get("user_message")).toMatchObject({
-      project_to_ui: true,
       include_in_embedding: true,
       create_memory_event: true
+    });
+    expect(presentationByType.get("user_message")).toMatchObject({
+      presentation_mode: "expanded",
+      renderer_kind: "message"
     });
     expect(byType.get("function_call_output")).toMatchObject({
-      project_to_ui: true,
       include_in_embedding: true,
       create_memory_event: true
     });
+    expect(presentationByType.get("function_call_output")).toMatchObject({
+      presentation_mode: "collapsed",
+      renderer_kind: "tool_result"
+    });
     expect(byType.get("ide_context")).toMatchObject({
-      project_to_ui: false,
       include_in_embedding: false,
       create_memory_event: false
     });
+    expect(presentationByType.get("ide_context")).toMatchObject({
+      presentation_mode: "hidden",
+      renderer_kind: "generic"
+    });
     expect(byType.get("mcp_tool_call_end")).toMatchObject({
-      project_to_ui: false,
       include_in_embedding: false,
       create_memory_event: false
     });
     expect(byType.get("patch_apply_end")).toMatchObject({
-      project_to_ui: false,
       include_in_embedding: false,
       create_memory_event: false
     });
@@ -17651,9 +19428,6 @@ describeDb("memory repository visibility", () => {
         insert into projection_policy_rules (
           transcript_type,
           description,
-          project_to_ui,
-          create_message,
-          create_tool_event,
           create_memory_event,
           include_in_embedding,
           include_in_lcm
@@ -17663,12 +19437,19 @@ describeDb("memory repository visibility", () => {
           'Temporary test projection policy rule.',
           true,
           true,
-          false,
-          true,
-          true,
           true
         )
       `,
+      [transcriptType]
+    );
+    await pool.query(
+      `insert into conversation_presentation_policy_rules (
+         source_kind, source_adapter_version, item_type, description,
+         presentation_mode, renderer_kind
+       ) values (
+         'codex', 'codex-transcript-v1', $1,
+         'Temporary test presentation policy rule.', 'expanded', 'message'
+       )`,
       [transcriptType]
     );
 
@@ -17737,10 +19518,14 @@ describeDb("memory repository visibility", () => {
         "delete from projection_policy_rules where transcript_type = $1",
         [transcriptType]
       );
+      await pool.query(
+        "delete from conversation_presentation_policy_rules where item_type = $1",
+        [transcriptType]
+      );
     }
   });
 
-  it("rebuilds display and semantic memory when Projection Policy selection changes", async () => {
+  it("rebuilds Conversation presentation and semantic Memory independently", async () => {
     const owner = await repo.createUser({
       email: `projection-policy-rebuild-${randomUUID()}@example.com`
     });
@@ -17758,12 +19543,21 @@ describeDb("memory repository visibility", () => {
     await pool.query(
       `
         insert into projection_policy_rules (
-          transcript_type, description, project_to_ui, create_message,
-          create_tool_event, create_memory_event, include_in_embedding,
-          include_in_lcm
+          transcript_type, description, create_memory_event,
+          include_in_embedding, include_in_lcm
         )
-        values ($1, 'Policy rebuild test.', true, true, false, true, true, true)
+        values ($1, 'Policy rebuild test.', true, true, true)
       `,
+      [transcriptType]
+    );
+    await pool.query(
+      `insert into conversation_presentation_policy_rules (
+         source_kind, source_adapter_version, item_type, description,
+         presentation_mode, renderer_kind
+       ) values (
+         'codex', 'codex-transcript-v1', $1,
+         'Policy rebuild presentation test.', 'expanded', 'message'
+       )`,
       [transcriptType]
     );
 
@@ -17820,9 +19614,7 @@ describeDb("memory repository visibility", () => {
       await pool.query(
         `
           update projection_policy_rules
-          set project_to_ui = true,
-              create_message = true,
-              create_memory_event = false,
+          set create_memory_event = false,
               include_in_embedding = false,
               include_in_lcm = false,
               updated_at = now()
@@ -17861,14 +19653,21 @@ describeDb("memory repository visibility", () => {
       await pool.query(
         `
           update projection_policy_rules
-          set project_to_ui = false,
-              create_message = false,
-              create_memory_event = true,
+          set create_memory_event = true,
               include_in_embedding = true,
               include_in_lcm = false,
               updated_at = now()
           where transcript_type = $1
         `,
+        [transcriptType]
+      );
+      await pool.query(
+        `update conversation_presentation_policy_rules
+            set presentation_mode = 'hidden', renderer_kind = 'generic',
+                updated_at = now()
+          where source_kind = 'codex'
+            and source_adapter_version = 'codex-transcript-v1'
+            and item_type = $1`,
         [transcriptType]
       );
       const recallReset = await repo.resetConversationProjection(
@@ -17881,6 +19680,36 @@ describeDb("memory repository visibility", () => {
           limit: 10,
           conversationItemIds: recallReset.conversationItemIds
         }
+      );
+      const processingOutboxBeforePresentation = await pool.query<{
+        rows_count: number;
+      }>(
+        `select count(*)::int as rows_count
+           from conversation_projection_processing_outbox processing
+           join memory_events event on event.id = processing.event_id
+          where event.session_id = $1`,
+        [session.id]
+      );
+      const presentationReset = await repo.resetConversationPresentation(
+        { userId: owner.id },
+        { sessionId: session.id }
+      );
+      const presentationOnly = await repo.projectPendingConversationItems(
+        { userId: owner.id },
+        {
+          limit: 10,
+          conversationItemIds: presentationReset.conversationItemIds,
+          presentationOnly: true
+        }
+      );
+      const processingOutboxAfterPresentation = await pool.query<{
+        rows_count: number;
+      }>(
+        `select count(*)::int as rows_count
+           from conversation_projection_processing_outbox processing
+           join memory_events event on event.id = processing.event_id
+          where event.session_id = $1`,
+        [session.id]
       );
       const recallState = await pool.query<{
         active_messages: number;
@@ -17899,6 +19728,16 @@ describeDb("memory repository visibility", () => {
           includeInLcm: false
         })
       ]);
+      expect(presentationOnly).toMatchObject({
+        memoryEventsCreated: 0,
+        memoryEventIds: [],
+        memoryEventScopes: []
+      });
+      expect(processingOutboxAfterPresentation.rows).toEqual(
+        processingOutboxBeforePresentation.rows
+      );
+      expect(presentationReset.invalidatedMessageIds).toHaveLength(1);
+      expect(presentationReset.invalidatedToolEventIds).toEqual([]);
       expect(recallState.rows[0]).toEqual({
         active_messages: 0,
         active_events: 1
@@ -17908,10 +19747,14 @@ describeDb("memory repository visibility", () => {
         "delete from projection_policy_rules where transcript_type = $1",
         [transcriptType]
       );
+      await pool.query(
+        "delete from conversation_presentation_policy_rules where item_type = $1",
+        [transcriptType]
+      );
     }
   });
 
-  it("prefers an exact app-server projection policy over transcript defaults", async () => {
+  it("lets exact semantic policy suppress Memory without suppressing Conversation presentation", async () => {
     const alice = await repo.createUser({
       email: `alice-app-server-policy-${randomUUID()}@example.com`
     });
@@ -17931,9 +19774,6 @@ describeDb("memory repository visibility", () => {
           source_adapter_version,
           transcript_type,
           description,
-          project_to_ui,
-          create_message,
-          create_tool_event,
           create_memory_event,
           include_in_embedding,
           include_in_lcm
@@ -17943,9 +19783,6 @@ describeDb("memory repository visibility", () => {
           'codex-app-server-conversation-v1',
           'user_message',
           'App-server user messages remain raw for this policy test.',
-          false,
-          false,
-          false,
           false,
           false,
           false
@@ -18017,10 +19854,10 @@ describeDb("memory repository visibility", () => {
       );
 
       expect(projection).toMatchObject({
-        messagesCreated: 0,
+        messagesCreated: 1,
         memoryEventsCreated: 0
       });
-      expect(messages.rows).toEqual([]);
+      expect(messages.rows).toHaveLength(1);
       expect(memoryEvents.rows).toEqual([]);
       expect(stored.rows[0]?.projection_status).toBe("projected");
     } finally {
@@ -18057,9 +19894,6 @@ describeDb("memory repository visibility", () => {
         insert into projection_policy_rules (
           transcript_type,
           description,
-          project_to_ui,
-          create_message,
-          create_tool_event,
           create_memory_event,
           include_in_embedding,
           include_in_lcm
@@ -18069,12 +19903,19 @@ describeDb("memory repository visibility", () => {
           'Temporary LCM exclusion projection policy rule.',
           true,
           true,
-          false,
-          true,
-          true,
           false
         )
       `,
+      [transcriptType]
+    );
+    await pool.query(
+      `insert into conversation_presentation_policy_rules (
+         source_kind, source_adapter_version, item_type, description,
+         presentation_mode, renderer_kind
+       ) values (
+         'codex', 'codex-transcript-v1', $1,
+         'Temporary LCM exclusion presentation rule.', 'expanded', 'message'
+       )`,
       [transcriptType]
     );
 
@@ -18161,6 +20002,10 @@ describeDb("memory repository visibility", () => {
     } finally {
       await pool.query(
         "delete from projection_policy_rules where transcript_type = $1",
+        [transcriptType]
+      );
+      await pool.query(
+        "delete from conversation_presentation_policy_rules where item_type = $1",
         [transcriptType]
       );
     }
@@ -18802,7 +20647,7 @@ describeDb("memory repository visibility", () => {
 
     const policyRows = await pool.query<{
       transcript_type: string;
-      project_to_ui: boolean;
+      presentation_mode: string;
       create_memory_event: boolean;
       include_in_embedding: boolean;
       include_in_lcm: boolean;
@@ -18810,69 +20655,73 @@ describeDb("memory repository visibility", () => {
       `
         select
           transcript_type,
-          project_to_ui,
+          presentation.presentation_mode,
           create_memory_event,
           include_in_embedding,
           include_in_lcm
-        from projection_policy_rules
-        where source_kind = 'claude-code'
-          and source_adapter_version = 'claude-code-transcript-v1'
-        order by transcript_type asc
+        from projection_policy_rules semantic
+        join conversation_presentation_policy_rules presentation
+          on presentation.source_kind = semantic.source_kind
+         and presentation.source_adapter_version = semantic.source_adapter_version
+         and presentation.item_type = semantic.transcript_type
+        where semantic.source_kind = 'claude-code'
+          and semantic.source_adapter_version = 'claude-code-transcript-v1'
+        order by semantic.transcript_type asc
       `
     );
     expect(policyRows.rows).toEqual([
       {
         transcript_type: "agent_message",
-        project_to_ui: true,
+        presentation_mode: "expanded",
         create_memory_event: true,
         include_in_embedding: true,
         include_in_lcm: true
       },
       {
         transcript_type: "agent_reasoning",
-        project_to_ui: false,
+        presentation_mode: "hidden",
         create_memory_event: false,
         include_in_embedding: false,
         include_in_lcm: false
       },
       {
         transcript_type: "subagent_message",
-        project_to_ui: true,
+        presentation_mode: "expanded",
         create_memory_event: true,
         include_in_embedding: true,
         include_in_lcm: true
       },
       {
         transcript_type: "system_message",
-        project_to_ui: false,
+        presentation_mode: "hidden",
         create_memory_event: false,
         include_in_embedding: false,
         include_in_lcm: false
       },
       {
         transcript_type: "tool_call",
-        project_to_ui: true,
+        presentation_mode: "collapsed",
         create_memory_event: true,
         include_in_embedding: true,
         include_in_lcm: true
       },
       {
         transcript_type: "tool_result",
-        project_to_ui: true,
+        presentation_mode: "collapsed",
         create_memory_event: true,
         include_in_embedding: true,
         include_in_lcm: true
       },
       {
         transcript_type: "unknown",
-        project_to_ui: false,
+        presentation_mode: "hidden",
         create_memory_event: false,
         include_in_embedding: false,
         include_in_lcm: false
       },
       {
         transcript_type: "user_message",
-        project_to_ui: true,
+        presentation_mode: "expanded",
         create_memory_event: true,
         include_in_embedding: true,
         include_in_lcm: true
@@ -21498,7 +23347,7 @@ describeDb("memory repository visibility", () => {
     expect(userRows[0]!.id).toBe(userRows[1]!.id);
   });
 
-  it("seals a replicated managed turn through its device-local runtime binding", async () => {
+  it("converges a held managed turn from exact transcript terminal evidence", async () => {
     const owner = await repo.createUser({
       email: `canonical-turn-seal-${randomUUID()}@example.com`
     });
@@ -21521,13 +23370,14 @@ describeDb("memory repository visibility", () => {
           deployment_id,
           device_id,
           execution_generation,
+          source_project_path,
           project_path,
           local_session_id,
           provider_thread_id,
           transcript_path,
           managed_home
         )
-        values ($1, $2, $3, $4, 2, $5, $6, $7, $8, $9)
+        values ($1, $2, $3, $4, 2, $5, $5, $6, $7, $8, $9)
       `,
       [
         randomUUID(),
@@ -21723,31 +23573,21 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { items: [controlItem(), reconciledControlItem()] }
     );
-    const release = await repo.releaseConversationProjectionHold(
-      { userId: owner.id },
-      { sessionId: session.id, externalTurnId: turnId }
+    await pool.query(
+      `update conversation_items
+       set projection_status = 'held'
+       where session_id = $1 and external_turn_id = $2`,
+      [session.id, turnId]
     );
-    const releasedStatuses = await pool.query<{
-      projection_status: string;
-      source_event_type: string;
-    }>(
-      `
-        select source_event_type, projection_status
-        from conversation_items
-        where session_id = $1
-        order by source_event_type
-      `,
-      [session.id]
-    );
-    expect(releasedStatuses.rows).toEqual([
-      { source_event_type: "item/completed", projection_status: "pending" },
-      { source_event_type: "thread/start", projection_status: "projected" },
-      { source_event_type: "turn/completed", projection_status: "pending" }
-    ]);
     const releasedProjection = await repo.projectPendingConversationItems(
       { userId: owner.id },
-      { limit: 10, conversationItemIds: release.conversationItemIds }
+      { limit: 10 }
     );
+    expect(releasedProjection).toMatchObject({
+      rawItemsScanned: 2,
+      rawItemsWaitingForAgentSeal: 0,
+      memoryEventsCreated: 1
+    });
     const messages = await pool.query<{ content: string }>(
       "select content from messages where session_id = $1",
       [session.id]
@@ -21781,7 +23621,6 @@ describeDb("memory repository visibility", () => {
         seal_reason: "turn_completed"
       }
     ]);
-    expect(release.conversationItemIds).toHaveLength(2);
     expect(releasedProjection.messagesCreated).toBe(0);
     expect(releasedProjection.memoryEventsCreated).toBe(1);
   });
@@ -22066,6 +23905,62 @@ describeDb("memory repository visibility", () => {
         }
       )
     ).rejects.toMatchObject({ code: "capture_disabled" });
+  });
+
+  it("resolves Capture Policy on the ingestion transaction connection", async () => {
+    const singleConnectionPool = new pg.Pool({
+      connectionString: databaseUrl,
+      max: 1
+    });
+    const singleConnectionRepo =
+      createMemorySourceRepository(singleConnectionPool);
+    try {
+      const owner = await singleConnectionRepo.createUser({
+        email: `single-connection-capture-${randomUUID()}@example.com`
+      });
+      const threadId = `single-connection-thread-${randomUUID()}`;
+      const session = await singleConnectionRepo.createCapturedSession(
+        { userId: owner.id },
+        {
+          externalSessionId: threadId,
+          sourceRuntime: "codex",
+          captureMethod: "transcript"
+        }
+      );
+
+      const [stored] = await singleConnectionRepo.createConversationItems(
+        { userId: owner.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "transcript",
+              externalSessionId: threadId,
+              externalThreadId: threadId,
+              externalTurnId: `turn-${randomUUID()}`,
+              externalItemId: `message-${randomUUID()}`,
+              sourceRecordType: "event_msg",
+              sourceEventType: "user_message",
+              rawJson: { type: "event_msg", payload: { type: "user_message" } },
+              rawText: "Single-connection Capture Policy regression.",
+              sourceHash: randomUUID(),
+              idempotencyKey: randomUUID(),
+              canonicalStableItemId: `message-${randomUUID()}`,
+              canonicalSourcePriority: 400,
+              observationKind: "reconciliation",
+              observationComponent: "message",
+              metadata: { transcriptType: "user_message" }
+            }
+          ]
+        }
+      );
+
+      expect(stored?.sessionId).toBe(session.id);
+    } finally {
+      await singleConnectionPool.end();
+    }
   });
 
   it("keeps managed app-server and external JSONL turns downstream-equivalent", async () => {
@@ -22652,10 +24547,7 @@ describeDb("memory repository visibility", () => {
       await pool.query(
         `
           update projection_policy_rules
-          set project_to_ui = true,
-              create_message = true,
-              create_tool_event = false,
-              create_memory_event = true,
+          set create_memory_event = true,
               include_in_embedding = true,
               include_in_lcm = true,
               updated_at = now()
@@ -22663,6 +24555,14 @@ describeDb("memory repository visibility", () => {
             and source_adapter_version = 'codex-transcript-v1'
             and transcript_type = 'plan'
         `
+      );
+      await pool.query(
+        `update conversation_presentation_policy_rules
+            set presentation_mode = 'expanded', renderer_kind = 'message',
+                updated_at = now()
+          where source_kind = 'codex'
+            and source_adapter_version = 'codex-transcript-v1'
+            and item_type = 'plan'`
       );
       const unrelatedEvent = await repo.createMemoryEvent(
         { userId: owner.id },
@@ -22821,10 +24721,7 @@ describeDb("memory repository visibility", () => {
       await pool.query(
         `
           update projection_policy_rules
-          set project_to_ui = false,
-              create_message = false,
-              create_tool_event = false,
-              create_memory_event = false,
+          set create_memory_event = false,
               include_in_embedding = false,
               include_in_lcm = false,
               updated_at = now()
@@ -22832,6 +24729,14 @@ describeDb("memory repository visibility", () => {
             and source_adapter_version = 'codex-transcript-v1'
             and transcript_type = 'plan'
         `
+      );
+      await pool.query(
+        `update conversation_presentation_policy_rules
+            set presentation_mode = 'hidden', renderer_kind = 'generic',
+                updated_at = now()
+          where source_kind = 'codex'
+            and source_adapter_version = 'codex-transcript-v1'
+            and item_type = 'plan'`
       );
     }
   });
@@ -23907,6 +25812,66 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
+  it("returns only the owning User's latest managed Conversation context usage", async () => {
+    const alice = await repo.createUser({
+      email: `alice-managed-usage-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-managed-usage-${randomUUID()}@example.com`
+    });
+    const executionId = randomUUID();
+    const older = await repo.recordWorkflowTokenUsage(
+      { userId: alice.id },
+      {
+        workflowType: "managed_conversation",
+        workflowId: executionId,
+        model: "gpt-5.6",
+        modelContextWindow: 258_000,
+        totalTokens: 12_000,
+        metadata: { totalProcessedTokens: 30_000 },
+        idempotencyKey: `managed-usage-${randomUUID()}`
+      }
+    );
+    const latest = await repo.recordWorkflowTokenUsage(
+      { userId: alice.id },
+      {
+        workflowType: "managed_conversation",
+        workflowId: executionId,
+        model: "gpt-5.6",
+        modelContextWindow: 258_000,
+        totalTokens: 42_000,
+        metadata: { totalProcessedTokens: 125_000 },
+        idempotencyKey: `managed-usage-${randomUUID()}`
+      }
+    );
+    await pool.query(
+      `update workflow_token_usage
+       set observed_at = case when id = $1 then now() - interval '1 minute' else now() end
+       where id in ($1, $2)`,
+      [older.id, latest.id]
+    );
+
+    await expect(
+      repo.getLatestManagedConversationTokenUsage(
+        { userId: alice.id },
+        executionId
+      )
+    ).resolves.toMatchObject({
+      id: latest.id,
+      executionId,
+      model: "gpt-5.6",
+      modelContextWindow: 258_000,
+      totalTokens: 42_000,
+      metadata: { totalProcessedTokens: 125_000 }
+    });
+    await expect(
+      repo.getLatestManagedConversationTokenUsage(
+        { userId: bob.id },
+        executionId
+      )
+    ).resolves.toBeNull();
+  });
+
   it("reprojects pending raw conversation items into messages, semantic events, and token usage", async () => {
     const alice = await repo.createUser({
       email: `alice-reproject-${randomUUID()}@example.com`
@@ -24616,15 +26581,14 @@ describeDb("memory repository visibility", () => {
 
     expect(projection.rawItemsProjected).toBe(rows.length + 1);
     expect(projection.memoryEventsCreated).toBe(3);
-    expect(projection.messagesCreated).toBe(5);
+    expect(projection.messagesCreated).toBe(4);
     expect(projection.toolEventsCreated).toBe(1);
     expect(toolEvents.rows[0]?.count).toBe("1");
     expect(messages.rows.map((row) => row.content)).toEqual([
       "Please inspect the projection policy.",
       "The projection policy keeps raw audit data separate.",
       "Reasoning summary: compare transcript type against policy.",
-      "Readable reasoning summary: choose the projection policy.",
-      "Tool call: exec_command"
+      "Readable reasoning summary: choose the projection policy."
     ]);
     expect(
       events.rows.map((row) => ({
@@ -30811,7 +32775,7 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
-  it("keeps display-only Projection messages out of every recall source path", async () => {
+  it("keeps display-only Conversation items out of every recall source path", async () => {
     const owner = await repo.createUser({
       email: `display-only-recall-${randomUUID()}@example.com`
     });
@@ -30829,12 +32793,21 @@ describeDb("memory repository visibility", () => {
     await pool.query(
       `
         insert into projection_policy_rules (
-          transcript_type, description, project_to_ui, create_message,
-          create_tool_event, create_memory_event, include_in_embedding,
-          include_in_lcm
+          transcript_type, description, create_memory_event,
+          include_in_embedding, include_in_lcm
         )
-        values ($1, 'Display-only recall regression.', true, true, false, false, false, false)
+        values ($1, 'Display-only recall regression.', false, false, false)
       `,
+      [transcriptType]
+    );
+    await pool.query(
+      `insert into conversation_presentation_policy_rules (
+         source_kind, source_adapter_version, item_type, description,
+         presentation_mode, renderer_kind
+       ) values (
+         'codex', 'codex-transcript-v1', $1,
+         'Display-only recall regression.', 'expanded', 'message'
+       )`,
       [transcriptType]
     );
 
@@ -30943,6 +32916,10 @@ describeDb("memory repository visibility", () => {
         "delete from projection_policy_rules where transcript_type = $1",
         [transcriptType]
       );
+      await pool.query(
+        "delete from conversation_presentation_policy_rules where item_type = $1",
+        [transcriptType]
+      );
     }
   });
 
@@ -30962,11 +32939,20 @@ describeDb("memory repository visibility", () => {
     await pool.query(
       `
         insert into projection_policy_rules (
-          transcript_type, project_to_ui, create_message, create_tool_event,
-          create_memory_event, include_in_embedding, include_in_lcm
+          transcript_type, create_memory_event, include_in_embedding,
+          include_in_lcm
         )
-        values ($1, true, true, false, true, true, true)
+        values ($1, true, true, true)
       `,
+      [transcriptType]
+    );
+    await pool.query(
+      `insert into conversation_presentation_policy_rules (
+         source_kind, source_adapter_version, item_type,
+         presentation_mode, renderer_kind
+       ) values (
+         'codex', 'codex-transcript-v1', $1, 'expanded', 'message'
+       )`,
       [transcriptType]
     );
     await repo.createConversationItems(
@@ -31086,6 +33072,169 @@ describeDb("memory repository visibility", () => {
         "delete from projection_policy_rules where transcript_type = $1",
         [transcriptType]
       );
+      await pool.query(
+        "delete from conversation_presentation_policy_rules where item_type = $1",
+        [transcriptType]
+      );
+    }
+  });
+
+  it("acquires every projection item lock before writing an overlapping batch", async () => {
+    const owner = await repo.createUser({
+      email: `projection-lock-set-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: `projection-lock-set-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "transcript"
+      }
+    );
+    const stableItemIds = [0, 1].map(
+      (index) => `projection-lock-set-item-${index}-${randomUUID()}`
+    );
+    const canonicalKeys = stableItemIds.map((stableItemId, index) =>
+      codexCanonicalConversationItemKey({
+        externalThreadId: session.externalSessionId!,
+        externalTurnId: `projection-lock-set-turn-${index}`,
+        stableItemId,
+        component: "message"
+      })
+    );
+    await repo.createConversationItems(
+      { userId: owner.id },
+      {
+        items: canonicalKeys.map((canonicalItemKey, index) => ({
+          sessionId: session.id,
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-transcript-v1",
+          sourceTransport: "transcript",
+          externalSessionId: session.externalSessionId ?? undefined,
+          externalThreadId: session.externalSessionId ?? undefined,
+          externalTurnId: `projection-lock-set-turn-${index}`,
+          externalItemId: stableItemIds[index],
+          canonicalItemKey,
+          canonicalStableItemId: stableItemIds[index],
+          observationKind: "reconciliation",
+          observationComponent: "message",
+          sourceRecordType: "event_msg",
+          sourceEventType: "user_message",
+          sourceSequence: index + 1,
+          eventTime: `2026-07-12T01:0${index}:00.000Z`,
+          rawJson: {
+            type: "event_msg",
+            payload: {
+              type: "user_message",
+              message: `Projection lock set message ${index}.`
+            }
+          },
+          rawText: `Projection lock set message ${index}.`,
+          sourceHash: `projection-lock-set-source-${randomUUID()}`,
+          idempotencyKey: `projection-lock-set-idempotency-${randomUUID()}`,
+          metadata: { transcriptType: "user_message" }
+        }))
+      }
+    );
+
+    const blocker = await pool.connect();
+    const blockedItemLock = `conversation-item:${owner.id}:personal:${canonicalKeys[1]}`;
+    try {
+      await blocker.query("select pg_advisory_lock(hashtextextended($1, 0))", [
+        blockedItemLock
+      ]);
+      const projecting = repo.projectPendingConversationItems(
+        { userId: owner.id },
+        { limit: 10 }
+      );
+      let waiting = false;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const activity = await pool.query<{ count: number }>(
+          `
+            select count(*)::int as count
+            from pg_stat_activity
+            where datname = current_database()
+              and pid <> pg_backend_pid()
+              and wait_event_type = 'Lock'
+              and wait_event = 'advisory'
+          `
+        );
+        waiting = (activity.rows[0]?.count ?? 0) > 0;
+        if (waiting) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(waiting).toBe(true);
+
+      const beforeRelease = await pool.query<{ count: number }>(
+        `select count(*)::int as count from memory_events where session_id = $1`,
+        [session.id]
+      );
+      expect(beforeRelease.rows[0]?.count).toBe(0);
+
+      const concurrentStableItemId = `projection-lock-set-concurrent-${randomUUID()}`;
+      const concurrentCapture = repo.createConversationItems(
+        { userId: owner.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "transcript",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "projection-lock-set-concurrent-turn",
+              externalItemId: concurrentStableItemId,
+              canonicalItemKey: codexCanonicalConversationItemKey({
+                externalThreadId: session.externalSessionId!,
+                externalTurnId: "projection-lock-set-concurrent-turn",
+                stableItemId: concurrentStableItemId,
+                component: "message"
+              }),
+              canonicalStableItemId: concurrentStableItemId,
+              observationKind: "reconciliation",
+              observationComponent: "message",
+              sourceRecordType: "event_msg",
+              sourceEventType: "user_message",
+              sourceSequence: 3,
+              eventTime: "2026-07-12T01:03:00.000Z",
+              rawJson: {
+                type: "event_msg",
+                payload: {
+                  type: "user_message",
+                  message: "Concurrent capture waits behind projection."
+                }
+              },
+              rawText: "Concurrent capture waits behind projection.",
+              sourceHash: `projection-lock-set-concurrent-source-${randomUUID()}`,
+              idempotencyKey: `projection-lock-set-concurrent-idempotency-${randomUUID()}`,
+              metadata: { transcriptType: "user_message" }
+            }
+          ]
+        }
+      );
+
+      await blocker.query(
+        "select pg_advisory_unlock(hashtextextended($1, 0))",
+        [blockedItemLock]
+      );
+      const [projected, captured] = await Promise.all([
+        projecting,
+        concurrentCapture
+      ]);
+      expect(projected.memoryEventsCreated).toBe(2);
+      expect(captured).toHaveLength(1);
+      const followUpProjection = await repo.projectPendingConversationItems(
+        { userId: owner.id },
+        { limit: 10 }
+      );
+      expect(followUpProjection.memoryEventsCreated).toBe(1);
+    } finally {
+      await blocker.query(
+        "select pg_advisory_unlock(hashtextextended($1, 0))",
+        [blockedItemLock]
+      );
+      blocker.release();
     }
   });
 
@@ -34356,5 +36505,93 @@ describeDb("memory repository visibility", () => {
     ).rejects.toThrow(
       "Memory Event embedding source changed after embedding work began"
     );
+  });
+
+  it("versions owner-only Conversation presentation without mutating Captured Sessions", async () => {
+    const owner = await repo.createUser({
+      email: `conversation-presentation-${randomUUID()}@example.com`
+    });
+    const other = await repo.createUser({
+      email: `conversation-presentation-other-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: `presentation-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "transcript"
+      }
+    );
+    const initial = await repo.listConversationPresentationStates(
+      { userId: owner.id },
+      [session.id]
+    );
+    const snoozedUntil = new Date(Date.now() + 60_000).toISOString();
+    const updated = await repo.updateConversationPresentationState(
+      { userId: owner.id },
+      {
+        sessionId: session.id,
+        expectedVersion: 0,
+        pinned: true,
+        displayMode: "active",
+        snoozedUntil
+      }
+    );
+
+    expect(initial).toEqual([
+      expect.objectContaining({
+        sessionId: session.id,
+        logicalSessionId: session.logicalSessionId,
+        pinnedAt: null,
+        displayMode: "automatic",
+        version: 0
+      })
+    ]);
+    expect(typeof updated?.pinnedAt).toBe("string");
+    expect(typeof updated?.snoozedAt).toBe("string");
+    expect(updated).toMatchObject({
+      sessionId: session.id,
+      logicalSessionId: session.logicalSessionId,
+      displayMode: "active",
+      snoozedUntil,
+      version: 1
+    });
+    await expect(
+      repo.updateConversationPresentationState(
+        { userId: owner.id },
+        {
+          sessionId: session.id,
+          expectedVersion: 0,
+          displayMode: "settled"
+        }
+      )
+    ).rejects.toBeInstanceOf(ConversationPresentationVersionConflictError);
+    await expect(
+      repo.updateConversationPresentationState(
+        { userId: other.id },
+        { sessionId: session.id, expectedVersion: 0, pinned: true }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.listConversationPresentationStates({ userId: other.id }, [
+        session.id
+      ])
+    ).resolves.toEqual([]);
+    await expect(
+      repo.getCapturedSession({ userId: owner.id }, session.id)
+    ).resolves.toMatchObject({
+      id: session.id,
+      logicalSessionId: session.logicalSessionId,
+      sourceRuntime: "codex",
+      captureMethod: "transcript"
+    });
+    await pool.query("delete from sessions where id = $1", [session.id]);
+    const presentationRows = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+       from conversation_presentation_states
+       where owner_user_id = $1 and logical_session_id = $2`,
+      [owner.id, session.logicalSessionId]
+    );
+    expect(presentationRows.rows[0]?.count).toBe("0");
   });
 });

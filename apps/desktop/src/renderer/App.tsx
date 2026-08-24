@@ -54,8 +54,10 @@ import {
 import { DesktopStatusStore } from "./services/desktop-commands.js";
 import { createRendererPlatform } from "./services/platform.js";
 import { PersonalMemoryStore } from "./state/personal-memory.js";
+import type { ManagedConversationRealtimeUpdate } from "./state/managed-conversation-runtime.js";
 import { sessionSelectionId } from "../project-memory-ui.js";
 import type { ManagedConversationDesktopApi } from "../ipc/managed-conversation-protocol.js";
+import type { ManagedWorkspaceDesktopApi } from "../ipc/managed-workspace-protocol.js";
 import { ThemeStore } from "./state/theme.js";
 import { useDesktopStatus } from "./state/use-status.js";
 import {
@@ -519,6 +521,7 @@ export type AppProps = {
   initialCollaborationSelection?: CollaborationSelection;
   onboardingComplete?: boolean;
   managedConversations?: ManagedConversationDesktopApi | null;
+  managedWorkspace?: ManagedWorkspaceDesktopApi | null;
   personalMemoryApi?: PersonalDesktopApi | null;
   statusReadyOverride?: boolean;
   statusStoreOverride?: DesktopStatusStore;
@@ -531,6 +534,7 @@ export function App({
   initialCollaborationSelection,
   onboardingComplete = false,
   managedConversations = window.koedDesktop?.managedConversations ?? null,
+  managedWorkspace = window.koedDesktop?.managedWorkspace ?? null,
   personalMemoryApi = window.koedDesktop?.personalMemory ?? null,
   statusReadyOverride,
   statusStoreOverride,
@@ -574,6 +578,14 @@ export function App({
   const [askRecentsError, setAskRecentsError] = useState<string | null>(null);
   const [managedConversationRevision, setManagedConversationRevision] =
     useState(0);
+  const [
+    managedConversationRecoveryRevision,
+    setManagedConversationRecoveryRevision
+  ] = useState(0);
+  const [managedConversationUpdate, setManagedConversationUpdate] = useState<{
+    revision: number;
+    update: ManagedConversationRealtimeUpdate;
+  } | null>(null);
   const initialSelectionApplied = useRef(
     !initialCollaborationSelection ||
       Boolean(client.current()) ||
@@ -606,6 +618,12 @@ export function App({
   const localSetupReady =
     statusReadyOverride ??
     (desktopStatus.status ? setupIsReady(desktopStatus.status) : undefined);
+  const personalMemoryReady =
+    statusReadyOverride ??
+    Boolean(
+      desktopStatus.status?.api.state === "healthy" &&
+      desktopStatus.status.database.state === "healthy"
+    );
   const theme = useSyncExternalStore(
     themeStore.subscribe,
     readTheme,
@@ -730,6 +748,13 @@ export function App({
   }, [activeStatusStore, desktopHealthIsReady, statusReadyOverride]);
 
   useEffect(() => {
+    if (statusReadyOverride !== undefined) return;
+    return window.koedDesktop?.status?.subscribe(() => {
+      void activeStatusStore.refresh();
+    });
+  }, [activeStatusStore, statusReadyOverride]);
+
+  useEffect(() => {
     if (
       statusReadyOverride !== undefined ||
       snapshot?.connection.state !== "live"
@@ -778,12 +803,18 @@ export function App({
   useEffect(
     () =>
       client.subscribe((_snapshot, update) => {
-        if (
-          update.kind === "realtime" &&
-          (update.realtimeUpdate?.type === "managed_conversation_upserted" ||
-            update.realtimeUpdate?.type === "personal_memory_upserted")
-        ) {
+        if (update.authoritativeRecovery) {
+          setManagedConversationRecoveryRevision((revision) => revision + 1);
+        }
+        if (update.kind !== "realtime") return;
+        if (update.realtimeUpdate?.type === "managed_conversation_upserted") {
           setManagedConversationRevision((revision) => revision + 1);
+          setManagedConversationUpdate((current) => ({
+            revision: (current?.revision ?? 0) + 1,
+            update: update.realtimeUpdate as ManagedConversationRealtimeUpdate
+          }));
+        }
+        if (update.realtimeUpdate?.type === "personal_memory_upserted") {
           personalMemoryStore?.refreshFromDurableEvent();
         }
       }),
@@ -1514,12 +1545,21 @@ export function App({
           }
         >
           <PersonalMemoryWorkspace
+            localAiClients={window.koedDesktop?.localAiClients}
             assignSessionProject={personalMemoryApi.assignSessionProject}
+            updateSessionPresentation={
+              personalMemoryApi.updateSessionPresentation
+            }
             authorizeManagedConversationTransfer={
               client.authorizeManagedConversationTransfer
             }
             managedConversationRevision={managedConversationRevision}
+            managedConversationRecoveryRevision={
+              managedConversationRecoveryRevision
+            }
+            managedConversationUpdate={managedConversationUpdate}
             managedConversations={managedConversations}
+            managedWorkspace={managedWorkspace}
             markdownAdapters={collaboration.markdownAdapters}
             openExternal={platform.openExternal}
             revealLocalProject={platform.revealLocalProject}
@@ -1557,6 +1597,7 @@ export function App({
                 ...(source.localEntry ? { localEntry: source.localEntry } : {})
               });
             }}
+            ready={personalMemoryReady}
             route={personalMemoryRoute(route)}
             sharingRecords={
               snapshot?.navigation.personal.memory.map((entry) => ({

@@ -633,7 +633,11 @@ describe("desktop local credential store", () => {
       ownerUserId,
       operationFamilies: [
         "personal_collaboration_read",
-        "personal_collaboration_write"
+        "personal_collaboration_write",
+        "managed_file_read",
+        "managed_terminal",
+        "managed_preview",
+        "managed_source_control"
       ]
     });
     expect(stored.credentialKeyId).toMatch(/^koed_desktop_[a-f0-9]{40}$/);
@@ -795,7 +799,7 @@ describe("desktop local credential store", () => {
     expect(rotateDesktopLocalCredential(koedHome, { now })).toBeNull();
   });
 
-  it("rejects invalid owners and every non-personal or ambiguous operation family", () => {
+  it("rejects invalid owners and every unsupported or ambiguous operation family", () => {
     const invalidFamilies = [
       [],
       ["team_chat_read"],

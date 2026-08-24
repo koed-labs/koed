@@ -9,6 +9,7 @@ import {
 } from "@koed/memory-ui";
 import {
   Fragment,
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -25,10 +26,12 @@ import {
   expandConversationDisplayEvents,
   groupConversationEvents,
   mergeConversationEvents,
+  stabilizeConversationTimelineItems,
   summarizeToolActivity,
   type ConversationCursor,
   type DesktopConversationEvent,
-  type DesktopConversationTimelineItem
+  type DesktopConversationTimelineItem,
+  type StableConversationTimelineItemsState
 } from "./desktop-conversation.js";
 import type { DesktopThreadGroup } from "./project-memory-ui.js";
 import "./renderer/views/personal/personal-memory.css";
@@ -123,7 +126,7 @@ function InvalidationLabel({ event }: { event: DesktopConversationEvent }) {
   );
 }
 
-function ConversationEventRow({
+const ConversationEventRow = memo(function ConversationEventRow({
   event,
   markdownAdapters,
   onInspectEvent,
@@ -206,7 +209,10 @@ function ConversationEventRow({
         className="native-event-wrap"
         data-invalidated={event.invalidatedAt ? "true" : undefined}
       >
-        <details className="native-tool-event">
+        <details
+          className="native-tool-event"
+          {...(event.presentation?.mode === "expanded" ? { open: true } : {})}
+        >
           <summary>
             <span className={`native-event-avatar ${tone}`} aria-hidden="true">
               T
@@ -255,6 +261,46 @@ function ConversationEventRow({
       </div>
     );
   }
+  if (event.presentation?.mode === "collapsed") {
+    return (
+      <div
+        className="native-event-wrap"
+        data-invalidated={event.invalidatedAt ? "true" : undefined}
+      >
+        <details className="native-tool-event">
+          <summary>
+            <span className={`native-event-avatar ${tone}`} aria-hidden="true">
+              {event.presentation.renderer === "reasoning_summary" ? "R" : "A"}
+            </span>
+            <span className="native-event-heading">
+              <strong>{actor}</strong>
+              <small>{eventTime(event.timestamp)}</small>
+            </span>
+            <span className="native-tool-preview">
+              {text.split(/\r?\n/u)[0] || "Conversation activity"}
+            </span>
+            <InvalidationLabel event={event} />
+          </summary>
+          <MemoryEventFrame
+            actions={
+              <EventActions event={event} onInspectEvent={onInspectEvent} />
+            }
+            className="native-tool-event-frame"
+            contentType="message"
+            header={actor}
+            metadata={metadata}
+            scope={scope}
+          >
+            {markdownAdapters ? (
+              <SecureMarkdown adapters={markdownAdapters} source={text} />
+            ) : (
+              <div className="native-event-content">{text}</div>
+            )}
+          </MemoryEventFrame>
+        </details>
+      </div>
+    );
+  }
   return (
     <div
       className="native-event-wrap"
@@ -287,9 +333,9 @@ function ConversationEventRow({
       </MemoryEventFrame>
     </div>
   );
-}
+});
 
-function ToolActivityGroup({
+const ToolActivityGroup = memo(function ToolActivityGroup({
   events,
   markdownAdapters,
   onInspectEvent,
@@ -338,6 +384,20 @@ function ToolActivityGroup({
       </details>
     </div>
   );
+});
+
+function useStableConversationTimelineItems(
+  items: DesktopConversationTimelineItem[]
+): DesktopConversationTimelineItem[] {
+  const previous = useRef<StableConversationTimelineItemsState>({
+    byId: new Map(),
+    result: []
+  });
+  return useMemo(() => {
+    const next = stabilizeConversationTimelineItems(items, previous.current);
+    previous.current = next;
+    return next.result;
+  }, [items]);
 }
 
 export function ConversationRows({
@@ -415,20 +475,25 @@ export function ConversationTimeline({
     () => new Map(events.map((event) => [event.id, event])),
     [events]
   );
+  const sourceEventsByIdRef = useRef(sourceEventsById);
+  sourceEventsByIdRef.current = sourceEventsById;
   const inspectEvent = useCallback(
     (event: DesktopConversationEvent) => {
       if (!onInspectEvent) return;
       const sourceId = approvalReviewSourceEventId(event.id);
       onInspectEvent(
-        (sourceId ? sourceEventsById.get(sourceId) : undefined) ?? event
+        (sourceId ? sourceEventsByIdRef.current.get(sourceId) : undefined) ??
+          event
       );
     },
-    [onInspectEvent, sourceEventsById]
+    [onInspectEvent]
   );
-  const timelineItems = useMemo(
+  const derivedTimelineItems = useMemo(
     () => groupConversationEvents(visibleEvents),
     [visibleEvents]
   );
+  const timelineItems =
+    useStableConversationTimelineItems(derivedTimelineItems);
   const renderEvent = useCallback(
     (item: DesktopConversationTimelineItem) => (
       <Fragment key={item.id}>
@@ -491,20 +556,25 @@ function ConversationPresentation({
     () => new Map(model.events.map((event) => [event.id, event])),
     [model.events]
   );
+  const sourceEventsByIdRef = useRef(sourceEventsById);
+  sourceEventsByIdRef.current = sourceEventsById;
   const inspectEvent = useCallback(
     (event: DesktopConversationEvent) => {
       if (!onInspectEvent) return;
       const sourceId = approvalReviewSourceEventId(event.id);
       onInspectEvent(
-        (sourceId ? sourceEventsById.get(sourceId) : undefined) ?? event
+        (sourceId ? sourceEventsByIdRef.current.get(sourceId) : undefined) ??
+          event
       );
     },
-    [onInspectEvent, sourceEventsById]
+    [onInspectEvent]
   );
-  const timelineItems = useMemo(
+  const derivedTimelineItems = useMemo(
     () => groupConversationEvents(visibleEvents),
     [visibleEvents]
   );
+  const timelineItems =
+    useStableConversationTimelineItems(derivedTimelineItems);
   const renderEvent = useCallback(
     (item: DesktopConversationTimelineItem) =>
       item.kind === "tool-group" ? (

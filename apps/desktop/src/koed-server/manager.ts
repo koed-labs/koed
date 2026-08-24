@@ -1,13 +1,19 @@
 import type { ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import WebSocket from "ws";
 import {
   approvalActivityClassificationSchema,
   approvalReviewTranscriptDisplayFromText,
   approvalReviewTranscriptDisplaySchema,
   collaborationRendererCommandSchema,
+  conversationPresentationDecisionSchema,
   fetchBoundedJsonObject,
   isApprovalReviewTranscriptEnvelopeText,
   isLoopbackHostname,
+  managedDevelopmentPreviewAccessSchema,
+  managedTerminalClientFrameSchema,
+  managedTerminalServerFrameSchema,
+  PDS_PEER_ENDPOINT_RUNTIME_FILE,
   readDesktopLocalCredentialAuthorization,
   resolveTeamCollaborationEnabled,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
@@ -27,7 +33,9 @@ import {
   personalDesktopResultSchema,
   personalDesktopSessionProjectDataSchema,
   personalDesktopSessionTitleDataSchema,
+  personalDesktopSessionPresentationDataSchema,
   type CollaborationRendererEvent,
+  type ManagedDevelopmentPreviewAccess,
   type PersonalDesktopChange,
   type PersonalDesktopRequest,
   type PersonalDesktopResult
@@ -43,9 +51,13 @@ import {
 } from "@koed/koed-server";
 import {
   existsSync as nodeExistsSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
-  statSync
+  statSync,
+  renameSync,
+  rmSync,
+  writeFileSync
 } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -104,6 +116,12 @@ import {
   PERSONAL_DEVICE_PAIRING_PROGRESS_VERSION,
   type PersonalDevicePairingProgress
 } from "../ipc/personal-device-pairing-protocol.js";
+import {
+  managedWorkspaceResultSchema,
+  type ManagedWorkspaceEvent,
+  type ManagedWorkspaceRequest,
+  type ManagedWorkspaceResult
+} from "../ipc/managed-workspace-protocol.js";
 import { buildPersonalToolDisplay } from "./personal-tool-display.js";
 
 export interface DesktopCommandContext {
@@ -114,6 +132,20 @@ export interface DesktopCommandContext {
     progress: PersonalDevicePairingProgress
   ) => void;
   emitSetupProgress?: (snapshot: DesktopSetupSnapshot) => void;
+  emitManagedWorkspaceEvent?: (event: ManagedWorkspaceEvent) => void;
+  managedPreview?: {
+    attach(input: {
+      surfaceId: string;
+      access: ManagedDevelopmentPreviewAccess;
+      bounds: { x: number; y: number; width: number; height: number };
+    }): Promise<void>;
+    setBounds(input: {
+      surfaceId: string;
+      bounds: { x: number; y: number; width: number; height: number };
+    }): void;
+    reload(surfaceId: string): void;
+    detach(surfaceId: string): Promise<void>;
+  };
 }
 
 export type DesktopCommandHandler = (
@@ -132,6 +164,11 @@ export type LocalAiClientDesktopHandler = (
 export type ManagedConversationDesktopHandler = (
   request: ManagedConversationRequest
 ) => Promise<ManagedConversationResult>;
+
+export type ManagedWorkspaceDesktopHandler = (
+  request: ManagedWorkspaceRequest,
+  context?: DesktopCommandContext
+) => Promise<ManagedWorkspaceResult>;
 
 export interface KoedServerManagerOptions {
   repoRoot: string;
@@ -178,6 +215,14 @@ export interface KoedServerManagerOptions {
     ): Promise<Record<string, unknown>>;
   };
   startPairingServer?: typeof startPersonalDevicePairingServer;
+  managedConversationDraftStore?: {
+    get(reference: string): Promise<string | null>;
+    put(reference: string, value: string): Promise<void>;
+    delete(reference: string): Promise<void>;
+  };
+  confirmSourceControlMutation?: (input: {
+    operation: string;
+  }) => Promise<boolean>;
 }
 
 export interface KoedServerManager {
@@ -189,6 +234,7 @@ export interface KoedServerManager {
     set: (enabled: boolean) => Promise<HardwareAccelerationState>;
   };
   managedConversation: ManagedConversationDesktopHandler;
+  managedWorkspace: ManagedWorkspaceDesktopHandler;
   subscribePersonalMemory: (
     listener: (change: PersonalDesktopChange) => void,
     signal: AbortSignal
@@ -367,6 +413,30 @@ const resolveLocalAppCredentialPath = (
 ): string =>
   resolve(resolveKoedHome(environment), "config", "local-app-credential.json");
 
+const writePersonalDevicePeerEndpoint = (
+  environment: NodeJS.ProcessEnv,
+  endpointUrl: string | null
+): void => {
+  const runDir = resolve(resolveKoedHome(environment), "run");
+  const endpointPath = resolve(runDir, PDS_PEER_ENDPOINT_RUNTIME_FILE);
+  if (!endpointUrl) {
+    rmSync(endpointPath, { force: true });
+    return;
+  }
+  mkdirSync(runDir, { recursive: true, mode: 0o700 });
+  const temporaryPath = `${endpointPath}.${process.pid}.${randomBytes(8).toString("hex")}`;
+  try {
+    writeFileSync(
+      temporaryPath,
+      `${JSON.stringify({ version: 1, endpointUrl })}\n`,
+      { encoding: "utf8", mode: 0o600, flag: "wx" }
+    );
+    renameSync(temporaryPath, endpointPath);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+};
+
 const readLocalAppCredential = (
   environment: NodeJS.ProcessEnv
 ): { ok: true; apiToken: string } | { ok: false; error: string } => {
@@ -389,6 +459,7 @@ const readLocalAppCredential = (
 type PersonalMemoryErrorCode =
   | "not_ready"
   | "not_found"
+  | "conflict"
   | "request_failed"
   | "invalid_response";
 
@@ -405,6 +476,9 @@ class PersonalMemoryBoundaryError extends Error {
 const personalMemoryErrorMessage = (code: PersonalMemoryErrorCode): string => {
   if (code === "not_ready") return "Local Personal Memory is not ready.";
   if (code === "not_found") return "The Personal Memory item was not found.";
+  if (code === "conflict") {
+    return "Conversation navigation changed on another device. Try again.";
+  }
   if (code === "invalid_response") {
     return "Local Personal Memory returned an invalid response.";
   }
@@ -630,6 +704,7 @@ const personalProjectsData = (payload: Record<string, unknown>) => {
           projectName: thread.projectName,
           projectPath: thread.projectPath,
           projectAssignmentSource: thread.projectAssignmentSource,
+          presentation: thread.presentation,
           eventCount: thread.eventCount,
           invalidatedCount: thread.invalidatedCount,
           latestAt: thread.latestAt,
@@ -736,6 +811,9 @@ const personalEventsData = (payload: Record<string, unknown>) => {
       const approvalActivity = approvalActivityClassificationSchema.safeParse(
         metadata?.approvalActivity
       ).data;
+      const presentation = conversationPresentationDecisionSchema.safeParse(
+        metadata?.presentation
+      ).data;
       const toolDisplay = buildPersonalToolDisplay({
         actor: event.actor,
         content: event.content,
@@ -788,15 +866,25 @@ const personalEventsData = (payload: Record<string, unknown>) => {
           : {}),
         contentPreview: event.contentPreview,
         invalidatedAt: event.invalidatedAt,
+        ...(presentation?.mode !== "hidden" ? { presentation } : {}),
         ...(approvalDecisionDisplay ? { approvalDecisionDisplay } : {}),
         ...(transcriptDisplay ? { transcriptDisplay } : {}),
         ...(toolDisplay ? { toolDisplay } : {}),
         ...(approvalActivity?.display
           ? { activityDisplay: approvalActivity.display }
           : {}),
-        metadata: toolDisplay?.toolName
-          ? { toolName: toolDisplay.toolName }
-          : {}
+        metadata: {
+          ...(toolDisplay?.toolName ? { toolName: toolDisplay.toolName } : {}),
+          ...(typeof metadata?.clientUserMessageId === "string"
+            ? { clientUserMessageId: metadata.clientUserMessageId }
+            : {}),
+          ...(typeof metadata?.providerTurnId === "string"
+            ? { providerTurnId: metadata.providerTurnId }
+            : {}),
+          ...(typeof metadata?.providerItemId === "string"
+            ? { providerItemId: metadata.providerItemId }
+            : {})
+        }
       };
     })
   });
@@ -832,6 +920,7 @@ export const personalMemoryChangeFromSseFrame = (
             {
               id: payload.id,
               projectId: payload.projectId,
+              sourceTable: payload.table,
               threadId: payload.threadId
             }
           ]
@@ -868,6 +957,7 @@ export const personalMemoryChangeFromSseFrame = (
       if (
         typeof ref?.id !== "string" ||
         typeof ref.projectId !== "string" ||
+        (ref.sourceTable !== "messages" && ref.sourceTable !== "tool_events") ||
         typeof ref.threadId !== "string" ||
         seen.has(ref.id)
       ) {
@@ -878,15 +968,25 @@ export const personalMemoryChangeFromSseFrame = (
         {
           id: ref.id,
           projectId: ref.projectId,
+          sourceTable: ref.sourceTable,
           threadId: ref.threadId
         }
       ];
     });
-    const parsed = personalDesktopChangeSchema.safeParse({
-      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-      type: "conversation_events_changed",
-      eventRefs
-    });
+    const parsed = personalDesktopChangeSchema.safeParse(
+      payload.table === "conversation_presentation_states" &&
+        typeof payload.id === "string"
+        ? {
+            contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+            type: "conversation_presentation_changed",
+            sessionIds: [payload.id]
+          }
+        : {
+            contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+            type: "conversation_events_changed",
+            eventRefs
+          }
+    );
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -1433,7 +1533,9 @@ export const createKoedServerManager = ({
   selectRecoveryKitPath,
   personalMemoryFetch = globalThis.fetch,
   localAiRuntimeClient,
-  startPairingServer = startPersonalDevicePairingServer
+  startPairingServer = startPersonalDevicePairingServer,
+  managedConversationDraftStore,
+  confirmSourceControlMutation
 }: KoedServerManagerOptions): KoedServerManager => {
   let serverProcess: ChildProcess | null = null;
   let enrollmentReconciliation: Promise<void> | null = null;
@@ -1448,6 +1550,19 @@ export const createKoedServerManager = ({
   let personalDevicePairingServerStart: Promise<PersonalDevicePairingServer> | null =
     null;
   let personalDevicePairingServerError: string | null = null;
+  if (environment.KOED_HOME?.trim()) {
+    writePersonalDevicePeerEndpoint(environment, null);
+  }
+  const managedTerminalConnections = new Map<
+    string,
+    {
+      executionId: string;
+      terminalId: string;
+      lifecycleGeneration: number;
+      socket: WebSocket;
+      intentionalClose: boolean;
+    }
+  >();
   void environment;
 
   const callLocalDesktopAsk = async (
@@ -2005,7 +2120,9 @@ export const createKoedServerManager = ({
 
   const ensurePersonalDevicePairingServer =
     async (): Promise<PersonalDevicePairingServer> => {
-      if (personalDevicePairingServer) return personalDevicePairingServer;
+      if (personalDevicePairingServer) {
+        return personalDevicePairingServer;
+      }
       if (personalDevicePairingServerStart)
         return await personalDevicePairingServerStart;
       personalDevicePairingServerStart = startPairingServer({
@@ -2031,12 +2148,15 @@ export const createKoedServerManager = ({
                   : {})
               },
               ...(input.body === undefined ? {} : { body: input.body }),
-              signal: AbortSignal.timeout(
-                input.mode === "relay" &&
-                  input.path === "/v1/personal-device-sync/relay/wake"
-                  ? 31 * 60_000
-                  : 10_000
-              )
+              signal: AbortSignal.any([
+                input.signal,
+                AbortSignal.timeout(
+                  input.mode === "relay" &&
+                    input.path === "/v1/personal-device-sync/relay/wake"
+                    ? 31 * 60_000
+                    : 10_000
+                )
+              ])
             }
           );
           const body = await response.text();
@@ -2056,6 +2176,10 @@ export const createKoedServerManager = ({
       });
       try {
         personalDevicePairingServer = await personalDevicePairingServerStart;
+        writePersonalDevicePeerEndpoint(
+          environment,
+          personalDevicePairingServer.relayUrl
+        );
         personalDevicePairingServerError = null;
         return personalDevicePairingServer;
       } finally {
@@ -2066,14 +2190,7 @@ export const createKoedServerManager = ({
   const personalSyncStatusWithLanRelay = async () => {
     const status = await runPersonalSync(["status"]);
     const groups = Array.isArray(status.groups) ? status.groups : [];
-    const invitationGroupIds = Array.isArray(
-      status.pairing_invitation_group_ids
-    )
-      ? status.pairing_invitation_group_ids.filter(
-          (groupId): groupId is string => typeof groupId === "string"
-        )
-      : [];
-    if (groups.length === 0 || invitationGroupIds.length === 0) {
+    if (groups.length === 0) {
       personalDevicePairingServerError = null;
       return status;
     }
@@ -2083,7 +2200,7 @@ export const createKoedServerManager = ({
       return status;
     } catch {
       personalDevicePairingServerError =
-        "Same-network Personal Device relay could not be started.";
+        "Same-network Personal Device transport could not be started.";
       return {
         ...status,
         ok: false,
@@ -2426,9 +2543,11 @@ export const createKoedServerManager = ({
       throw new PersonalMemoryBoundaryError(
         status === 404
           ? "not_found"
-          : status === 401
-            ? "not_ready"
-            : "request_failed",
+          : status === 409
+            ? "conflict"
+            : status === 401
+              ? "not_ready"
+              : "request_failed",
         status === 401 || status === 408 || status === 429 || status >= 500
       );
     }
@@ -2612,6 +2731,73 @@ export const createKoedServerManager = ({
   const managedConversation: ManagedConversationDesktopHandler = async (
     request
   ) => {
+    if (request.operation === "launch_options") {
+      const payload = await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL("/v1/managed-conversations/launch-options", apiOrigin),
+          init: { method: "GET" }
+        }),
+        2 * 1_024 * 1_024
+      );
+      return parseManagedConversationResult({
+        operation: "launch_options",
+        options: payload
+      });
+    }
+
+    if (
+      request.operation === "draft_read" ||
+      request.operation === "draft_write" ||
+      request.operation === "draft_delete"
+    ) {
+      if (!managedConversationDraftStore) {
+        throw new PersonalMemoryBoundaryError("not_ready", false);
+      }
+      const [access, identity] = await Promise.all([
+        personalMemoryAccess(),
+        authenticatedPersonalMemoryRequest(
+          ({ apiOrigin }) => ({
+            url: new URL("/v1/access/check", apiOrigin),
+            init: { method: "GET" }
+          }),
+          64 * 1_024
+        )
+      ]);
+      const user = objectValue(identity.user);
+      if (typeof user?.id !== "string") {
+        throw new PersonalMemoryBoundaryError("invalid_response", false);
+      }
+      const reference = `managed-draft-${createHash("sha256")
+        .update(
+          JSON.stringify({
+            backend: access.apiOrigin,
+            ownerUserId: user.id,
+            projectId: request.projectId,
+            capturedSessionId: request.capturedSessionId,
+            threadId: request.threadId
+          })
+        )
+        .digest("hex")}`;
+      if (request.operation === "draft_read") {
+        return parseManagedConversationResult({
+          operation: "draft_read",
+          value: (await managedConversationDraftStore.get(reference)) ?? ""
+        });
+      }
+      if (request.operation === "draft_write") {
+        await managedConversationDraftStore.put(reference, request.value ?? "");
+        return parseManagedConversationResult({
+          operation: "draft_write",
+          ok: true
+        });
+      }
+      await managedConversationDraftStore.delete(reference);
+      return parseManagedConversationResult({
+        operation: "draft_delete",
+        ok: true
+      });
+    }
+
     if (request.operation === "start") {
       const payload = await authenticatedPersonalMemoryRequest(
         ({ apiOrigin }) => ({
@@ -2623,6 +2809,10 @@ export const createKoedServerManager = ({
               projectId: request.projectId,
               provider: request.aiClientDriverId,
               aiClientInstanceId: request.aiClientInstanceId,
+              model: request.model,
+              reasoningEffort: request.reasoningEffort,
+              permissionMode: request.permissionMode,
+              runnerKind: request.runnerKind,
               idempotencyKey: request.idempotencyKey
             })
           }
@@ -2720,6 +2910,142 @@ export const createKoedServerManager = ({
       });
     }
 
+    if (request.operation === "usage") {
+      const payload = await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL(
+            `/v1/managed-conversations/${encodeURIComponent(
+              request.executionId
+            )}/usage`,
+            apiOrigin
+          ),
+          init: { method: "GET" }
+        }),
+        64 * 1_024
+      );
+      return parseManagedConversationResult({
+        operation: "usage",
+        executionId: request.executionId,
+        provider: payload.provider,
+        usage: payload.usage
+      });
+    }
+
+    if (request.operation === "runtime") {
+      const payload = await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL(
+            `/v1/managed-conversations/${encodeURIComponent(
+              request.executionId
+            )}/runtime`,
+            apiOrigin
+          ),
+          init: { method: "GET" }
+        }),
+        2 * 1_024 * 1_024
+      );
+      const execution = objectValue(payload.execution);
+      const latestCommand =
+        payload.latestCommand === null
+          ? null
+          : objectValue(payload.latestCommand);
+      if (
+        !execution ||
+        typeof execution.id !== "string" ||
+        typeof execution.executionGeneration !== "number" ||
+        typeof execution.stateVersion !== "number" ||
+        typeof execution.state !== "string" ||
+        (execution.lastErrorCode !== null &&
+          typeof execution.lastErrorCode !== "string") ||
+        (latestCommand !== null &&
+          (typeof latestCommand.id !== "string" ||
+            typeof latestCommand.sequence !== "number" ||
+            typeof latestCommand.executionGeneration !== "number" ||
+            typeof latestCommand.commandKind !== "string" ||
+            (latestCommand.clientUserMessageId !== null &&
+              typeof latestCommand.clientUserMessageId !== "string") ||
+            typeof latestCommand.state !== "string" ||
+            (latestCommand.lastErrorCode !== null &&
+              typeof latestCommand.lastErrorCode !== "string") ||
+            typeof latestCommand.updatedAt !== "string")) ||
+        !Array.isArray(payload.items)
+      ) {
+        throw new PersonalMemoryBoundaryError("invalid_response", false);
+      }
+      return parseManagedConversationResult({
+        operation: "runtime",
+        executionId: execution.id,
+        executionGeneration: execution.executionGeneration,
+        executionStateVersion: execution.stateVersion,
+        executionState: execution.state,
+        executionLastErrorCode: execution.lastErrorCode ?? null,
+        latestCommand,
+        items: payload.items
+      });
+    }
+
+    if (request.operation === "runtime_respond") {
+      await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL(
+            `/v1/managed-conversations/${encodeURIComponent(
+              request.executionId
+            )}/runtime-items/${encodeURIComponent(request.itemId)}/respond`,
+            apiOrigin
+          ),
+          init: {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              kind: request.itemKind,
+              executionGeneration: request.executionGeneration,
+              ...(request.itemKind === "user_input"
+                ? { answers: request.answers }
+                : { decision: request.decision })
+            })
+          }
+        }),
+        64 * 1_024
+      );
+      return parseManagedConversationResult({
+        operation: "runtime_respond",
+        accepted: true,
+        itemId: request.itemId
+      });
+    }
+
+    if (request.operation === "interrupt" || request.operation === "stop") {
+      const payload = await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL(
+            `/v1/managed-conversations/${encodeURIComponent(
+              request.executionId
+            )}/${request.operation}`,
+            apiOrigin
+          ),
+          init: {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              executionGeneration: request.executionGeneration,
+              idempotencyKey: request.idempotencyKey
+            })
+          }
+        }),
+        64 * 1_024
+      );
+      const command = objectValue(payload.command);
+      if (!command || typeof command.id !== "string") {
+        throw new PersonalMemoryBoundaryError("invalid_response", false);
+      }
+      return parseManagedConversationResult({
+        operation: request.operation,
+        status: "queued",
+        executionId: request.executionId,
+        commandId: command.id
+      });
+    }
+
     if (request.operation === "transfer_status") {
       const payload = await authenticatedPersonalMemoryRequest(
         ({ apiOrigin }) => ({
@@ -2774,14 +3100,18 @@ export const createKoedServerManager = ({
       });
     }
 
-    const executions = await listManagedExecutions(
-      request.operation === "resume" ? request.projectId : undefined
-    );
-    const execution = executions.find(
-      (candidate) =>
-        candidate.sessionId === request.capturedSessionId &&
-        candidate.providerThreadId === request.threadId
-    );
+    if (request.operation !== "resume" && request.operation !== "send") {
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    }
+
+    const execution =
+      request.operation === "send"
+        ? await getManagedExecution(request.executionId)
+        : (await listManagedExecutions(request.projectId)).find(
+            (candidate) =>
+              candidate.sessionId === request.capturedSessionId &&
+              candidate.providerThreadId === request.threadId
+          );
     const conversation = {
       executionId: execution?.id ?? null,
       ...(execution
@@ -2836,12 +3166,16 @@ export const createKoedServerManager = ({
                 })
       });
     }
-    if (!execution || execution.state !== "running") {
+    if (
+      !execution ||
+      (execution.state !== "starting" && execution.state !== "running")
+    ) {
       return parseManagedConversationResult({
         operation: "send",
-        status: "reconciling",
+        status: "rejected",
         conversation,
         idempotencyKey: request.idempotencyKey,
+        clientUserMessageId: request.clientUserMessageId,
         message:
           "The managed Conversation is not writable. Koed will not submit this prompt automatically."
       });
@@ -2858,7 +3192,10 @@ export const createKoedServerManager = ({
           body: JSON.stringify({
             executionGeneration: execution.executionGeneration,
             idempotencyKey: request.idempotencyKey,
-            prompt: request.prompt
+            clientUserMessageId: request.clientUserMessageId,
+            prompt: request.prompt,
+            fileMentionCommandIds: request.fileMentionCommandIds,
+            terminalContextReferences: request.terminalContextReferences
           })
         }
       }),
@@ -2868,7 +3205,464 @@ export const createKoedServerManager = ({
       operation: "send",
       status: "queued",
       conversation,
-      idempotencyKey: request.idempotencyKey
+      idempotencyKey: request.idempotencyKey,
+      clientUserMessageId: request.clientUserMessageId
+    });
+  };
+
+  const managedWorkspaceAccess = async () => {
+    const current = retainedPersonalApiOrigin
+      ? null
+      : await runJson(["status"], statusCommandTimeoutMs);
+    const apiOrigin =
+      retainedPersonalApiOrigin ??
+      (current ? localPersonalMemoryOrigin(current) : null);
+    const credential = readDesktopLocalCredentialAuthorization(
+      resolveKoedHome(environment)
+    );
+    if (!apiOrigin || !credential) {
+      throw new PersonalMemoryBoundaryError("not_ready", true);
+    }
+    retainedPersonalApiOrigin = apiOrigin;
+    return { apiOrigin, authorization: credential.authorization };
+  };
+
+  const managedWorkspaceJson = async (
+    path: string,
+    init: RequestInit,
+    maximumResponseBytes: number
+  ): Promise<Record<string, unknown>> => {
+    const access = await managedWorkspaceAccess();
+    const remote = await fetchBoundedJsonObject(
+      personalMemoryFetch,
+      new URL(path, access.apiOrigin),
+      {
+        ...init,
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          ...init.headers,
+          authorization: access.authorization
+        }
+      },
+      { timeoutMs: 30_000, maxBytes: maximumResponseBytes }
+    );
+    if (!remote.response.ok) {
+      await remote.response.body?.cancel().catch(() => undefined);
+      throw new PersonalMemoryBoundaryError(
+        remote.response.status === 404 ? "not_found" : "request_failed",
+        remote.response.status === 408 || remote.response.status >= 500
+      );
+    }
+    return remote.payload;
+  };
+
+  const managedTerminalConnectionKey = (
+    ownerId: string,
+    connectionId: string
+  ): string => `${ownerId}:${connectionId}`;
+
+  const managedWorkspace: ManagedWorkspaceDesktopHandler = async (
+    request,
+    context
+  ) => {
+    const basePath = `/v1/managed-conversations/${encodeURIComponent(
+      request.executionId
+    )}`;
+    type UncorrelatedResult = ManagedWorkspaceResult extends infer Result
+      ? Result extends { requestId: string }
+        ? Omit<Result, "requestId">
+        : never
+      : never;
+    const correlated = (value: UncorrelatedResult) =>
+      managedWorkspaceResultSchema.parse({
+        ...value,
+        requestId: request.requestId
+      });
+
+    if (request.operation === "diff_read") {
+      const query = new URLSearchParams({ scope: request.scope });
+      if (request.scope === "turn") query.set("commandId", request.commandId);
+      const payload = await managedWorkspaceJson(
+        `${basePath}/diff?${query.toString()}`,
+        { method: "GET" },
+        18 * 1_024 * 1_024
+      );
+      return correlated({
+        operation: "diff_read",
+        executionId: request.executionId,
+        value: payload as never
+      });
+    }
+
+    if (request.operation === "checkpoint_restore") {
+      const payload = await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL(
+            `${basePath}/checkpoints/${encodeURIComponent(
+              request.checkpointId
+            )}/restore`,
+            apiOrigin
+          ),
+          init: {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              executionGeneration: request.executionGeneration,
+              idempotencyKey: request.idempotencyKey
+            })
+          }
+        }),
+        1 * 1_024 * 1_024
+      );
+      return correlated({
+        operation: "checkpoint_restore",
+        executionId: request.executionId,
+        command: payload.command as never
+      });
+    }
+
+    if (request.operation === "file_start") {
+      const payload = await managedWorkspaceJson(
+        `${basePath}/files`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            executionGeneration: request.executionGeneration,
+            idempotencyKey: request.idempotencyKey,
+            operation: request.fileOperation
+          })
+        },
+        1 * 1_024 * 1_024
+      );
+      return correlated({
+        operation: "file_start",
+        executionId: request.executionId,
+        command: payload.command as never
+      });
+    }
+
+    if (request.operation === "file_result") {
+      const payload = await managedWorkspaceJson(
+        `${basePath}/files/${encodeURIComponent(request.commandId)}`,
+        { method: "GET" },
+        8 * 1_024 * 1_024
+      );
+      return correlated({
+        operation: "file_result",
+        executionId: request.executionId,
+        command: payload.command as never,
+        result: (payload.result ?? null) as never
+      });
+    }
+
+    if (request.operation === "terminal_profiles") {
+      const payload = await managedWorkspaceJson(
+        `${basePath}/terminals/profiles`,
+        { method: "GET" },
+        64 * 1_024
+      );
+      return correlated({
+        operation: "terminal_profiles",
+        executionId: request.executionId,
+        profiles: payload.profiles as never
+      });
+    }
+
+    if (request.operation === "terminal_list") {
+      const payload = await managedWorkspaceJson(
+        `${basePath}/terminals`,
+        { method: "GET" },
+        512 * 1_024
+      );
+      return correlated({
+        operation: "terminal_list",
+        executionId: request.executionId,
+        terminals: payload.terminals as never
+      });
+    }
+
+    if (request.operation === "terminal_create") {
+      const payload = await managedWorkspaceJson(
+        `${basePath}/terminals`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(request.input)
+        },
+        512 * 1_024
+      );
+      return correlated({
+        operation: "terminal_create",
+        executionId: request.executionId,
+        terminal: payload.terminal as never
+      });
+    }
+
+    if (request.operation === "terminal_stop") {
+      const payload = await managedWorkspaceJson(
+        `${basePath}/terminals/${encodeURIComponent(request.terminalId)}/stop`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}"
+        },
+        512 * 1_024
+      );
+      return correlated({
+        operation: "terminal_stop",
+        executionId: request.executionId,
+        terminal: payload.terminal as never
+      });
+    }
+
+    if (request.operation === "preview_list") {
+      const payload = await managedWorkspaceJson(
+        `${basePath}/previews`,
+        { method: "GET" },
+        256 * 1_024
+      );
+      return correlated({
+        operation: "preview_list",
+        executionId: request.executionId,
+        previews: payload.previews as never
+      });
+    }
+
+    if (request.operation === "preview_nominate") {
+      const payload = await managedWorkspaceJson(
+        `${basePath}/previews`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(request.candidate)
+        },
+        256 * 1_024
+      );
+      return correlated({
+        operation: "preview_nominate",
+        executionId: request.executionId,
+        preview: payload.preview as never
+      });
+    }
+
+    if (request.operation === "source_control") {
+      const mutation = "idempotencyKey" in request.sourceControlOperation;
+      if (
+        mutation &&
+        !(await confirmSourceControlMutation?.({
+          operation: request.sourceControlOperation.kind
+        }))
+      ) {
+        throw new PersonalMemoryBoundaryError("request_failed", false);
+      }
+      const payload = await managedWorkspaceJson(
+        `${basePath}/source-control`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(mutation
+              ? { "x-koed-desktop-source-control-approval": "1" }
+              : {})
+          },
+          body: JSON.stringify(request.sourceControlOperation)
+        },
+        8 * 1_024 * 1_024
+      );
+      return correlated({
+        operation: "source_control",
+        executionId: request.executionId,
+        result: payload as never
+      });
+    }
+
+    if (
+      request.operation === "preview_attach" ||
+      request.operation === "preview_bounds" ||
+      request.operation === "preview_reload" ||
+      request.operation === "preview_detach"
+    ) {
+      if (!context?.managedPreview) {
+        throw new PersonalMemoryBoundaryError("not_ready", false);
+      }
+      if (request.operation === "preview_attach") {
+        const query = new URLSearchParams({
+          lifecycleGeneration: String(request.lifecycleGeneration)
+        });
+        const payload = managedDevelopmentPreviewAccessSchema.parse(
+          await managedWorkspaceJson(
+            `${basePath}/previews/${encodeURIComponent(request.previewId)}/access?${query.toString()}`,
+            { method: "GET" },
+            256 * 1_024
+          )
+        );
+        await context.managedPreview.attach({
+          surfaceId: request.surfaceId,
+          access: payload,
+          bounds: request.bounds
+        });
+      } else if (request.operation === "preview_bounds") {
+        context.managedPreview.setBounds({
+          surfaceId: request.surfaceId,
+          bounds: request.bounds
+        });
+      } else if (request.operation === "preview_reload") {
+        context.managedPreview.reload(request.surfaceId);
+      } else {
+        await context.managedPreview.detach(request.surfaceId);
+      }
+      return correlated({
+        operation: request.operation,
+        executionId: request.executionId,
+        surfaceId: request.surfaceId,
+        accepted: true
+      });
+    }
+
+    if (!context?.emitManagedWorkspaceEvent) {
+      throw new PersonalMemoryBoundaryError("not_ready", false);
+    }
+    const key = managedTerminalConnectionKey(
+      context.ownerId,
+      request.connectionId
+    );
+    if (request.operation === "terminal_attach") {
+      const previous = managedTerminalConnections.get(key);
+      if (previous) {
+        previous.intentionalClose = true;
+        previous.socket.close(1000, "Reattached");
+        managedTerminalConnections.delete(key);
+      }
+      const access = await managedWorkspaceAccess();
+      const url = new URL(
+        `${basePath}/terminals/${encodeURIComponent(
+          request.terminalId
+        )}/attach`,
+        access.apiOrigin
+      );
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      url.searchParams.set(
+        "lifecycleGeneration",
+        String(request.lifecycleGeneration)
+      );
+      url.searchParams.set(
+        "afterOutputSequence",
+        String(request.afterOutputSequence)
+      );
+      const socket = new WebSocket(url, {
+        headers: { authorization: access.authorization },
+        maxPayload: 64 * 1_024,
+        perMessageDeflate: false
+      });
+      const connection = {
+        executionId: request.executionId,
+        terminalId: request.terminalId,
+        lifecycleGeneration: request.lifecycleGeneration,
+        socket,
+        intentionalClose: false
+      };
+      managedTerminalConnections.set(key, connection);
+      socket.on("message", (raw) => {
+        try {
+          const frame = managedTerminalServerFrameSchema.parse(
+            JSON.parse(raw.toString())
+          );
+          if (
+            frame.terminalId === connection.terminalId &&
+            frame.lifecycleGeneration === connection.lifecycleGeneration
+          ) {
+            context.emitManagedWorkspaceEvent?.({
+              kind: "terminal",
+              connectionId: request.connectionId,
+              frame
+            });
+          }
+        } catch {
+          socket.close(1002, "Invalid terminal frame");
+        }
+      });
+      socket.on("close", () => {
+        if (managedTerminalConnections.get(key) === connection) {
+          managedTerminalConnections.delete(key);
+        }
+        if (!connection.intentionalClose && !context.signal.aborted) {
+          context.emitManagedWorkspaceEvent?.({
+            kind: "terminal",
+            connectionId: request.connectionId,
+            frame: managedTerminalServerFrameSchema.parse({
+              protocolVersion: 1,
+              terminalId: connection.terminalId,
+              lifecycleGeneration: connection.lifecycleGeneration,
+              type: "terminal.error",
+              code: "transport_closed"
+            })
+          });
+        }
+      });
+      context.signal.addEventListener(
+        "abort",
+        () => {
+          connection.intentionalClose = true;
+          socket.close(1000, "Renderer closed");
+          managedTerminalConnections.delete(key);
+        },
+        { once: true }
+      );
+      await new Promise<void>((resolvePromise, rejectPromise) => {
+        const timeout = setTimeout(() => {
+          socket.close(1000, "Attach timeout");
+          rejectPromise(new Error("Managed terminal attach timed out."));
+        }, 10_000);
+        timeout.unref?.();
+        socket.once("open", () => {
+          clearTimeout(timeout);
+          resolvePromise();
+        });
+        socket.once("error", () => {
+          clearTimeout(timeout);
+          rejectPromise(new Error("Managed terminal attach failed."));
+        });
+      });
+      return correlated({
+        operation: "terminal_attach",
+        executionId: request.executionId,
+        connectionId: request.connectionId,
+        accepted: true
+      });
+    }
+
+    const connection = managedTerminalConnections.get(key);
+    if (!connection || connection.executionId !== request.executionId) {
+      throw new PersonalMemoryBoundaryError("not_found", false);
+    }
+    if (request.operation === "terminal_send") {
+      const frame = managedTerminalClientFrameSchema.parse(request.frame);
+      if (
+        frame.terminalId !== connection.terminalId ||
+        frame.lifecycleGeneration !== connection.lifecycleGeneration ||
+        connection.socket.readyState !== WebSocket.OPEN
+      ) {
+        throw new PersonalMemoryBoundaryError("conflict", false);
+      }
+      connection.socket.send(JSON.stringify(frame));
+      return correlated({
+        operation: "terminal_send",
+        executionId: request.executionId,
+        connectionId: request.connectionId,
+        accepted: true
+      });
+    }
+
+    connection.intentionalClose = true;
+    connection.socket.close(1000, "Detached");
+    managedTerminalConnections.delete(key);
+    return correlated({
+      operation: "terminal_detach",
+      executionId: request.executionId,
+      connectionId: request.connectionId,
+      accepted: true
     });
   };
 
@@ -3347,6 +4141,40 @@ export const createKoedServerManager = ({
     );
   };
 
+  const updatePersonalSessionPresentation = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.sessions.update_presentation" }
+    >["input"]
+  ) => {
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/memory/graph/sessions/${encodeURIComponent(input.sessionId)}/presentation`,
+          apiOrigin
+        ),
+        init: {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            expectedVersion: input.expectedVersion,
+            ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
+            ...(input.displayMode === undefined
+              ? {}
+              : { displayMode: input.displayMode }),
+            ...(input.snoozedUntil === undefined
+              ? {}
+              : { snoozedUntil: input.snoozedUntil })
+          })
+        }
+      }),
+      1 * 1_024 * 1_024
+    );
+    return personalDesktopSessionPresentationDataSchema.parse({
+      presentation: payload.presentation
+    });
+  };
+
   const personalMemory: PersonalMemoryDesktopHandler = async (value) => {
     const request = personalDesktopRequestSchema.parse(value);
     try {
@@ -3379,9 +4207,14 @@ export const createKoedServerManager = ({
                                 ? await assignPersonalSessionProject(
                                     request.input
                                   )
-                                : await updatePersonalSessionTitle(
-                                    request.input
-                                  );
+                                : request.operation ===
+                                    "personal.sessions.update_presentation"
+                                  ? await updatePersonalSessionPresentation(
+                                      request.input
+                                    )
+                                  : await updatePersonalSessionTitle(
+                                      request.input
+                                    );
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,
@@ -3846,10 +4679,18 @@ export const createKoedServerManager = ({
   });
 
   const stop = async () => {
+    for (const connection of managedTerminalConnections.values()) {
+      connection.intentionalClose = true;
+      connection.socket.close(1001, "Koed stopping");
+    }
+    managedTerminalConnections.clear();
     await collaborationTransport.stop();
     if (personalDevicePairingServer) {
       await personalDevicePairingServer.close();
       personalDevicePairingServer = null;
+      writePersonalDevicePeerEndpoint(environment, null);
+    } else if (environment.KOED_HOME?.trim()) {
+      writePersonalDevicePeerEndpoint(environment, null);
     }
     const result = await runJson(["stop"], 45_000);
     if (serverProcess && !serverProcess.killed) {
@@ -3955,6 +4796,7 @@ export const createKoedServerManager = ({
       set: setHardwareAcceleration
     },
     managedConversation,
+    managedWorkspace,
     subscribePersonalMemory,
     resume,
     handlers: {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   aiClientCapabilityIds,
+  aiClientPermissionContractFor,
   aiClientModelLabel,
   assertAiClientDriverId,
   assertAiClientInstanceId,
@@ -54,6 +55,23 @@ describe("AI Client identifiers", () => {
 });
 
 describe("AI Client contract helpers", () => {
+  it("projects exact provider-neutral permission choices", () => {
+    expect(aiClientPermissionContractFor("codex")).toEqual({
+      defaultPermissionMode: "full_access",
+      permissionModes: [
+        { mode: "supervised", support: "supported" },
+        { mode: "auto_edit", support: "supported" },
+        { mode: "auto", support: "supported" },
+        { mode: "full_access", support: "supported" }
+      ]
+    });
+    expect(
+      aiClientPermissionContractFor("claude").permissionModes.every(
+        (entry) => entry.support === "supported"
+      )
+    ).toBe(true);
+  });
+
   it("keeps full model identity visible when display name is friendly", () => {
     expect(
       aiClientModelLabel({

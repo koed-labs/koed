@@ -1,6 +1,6 @@
 import {
-  aiClientIdentifierPattern,
-  aiClientInstanceIdMaxLength
+  isSupportedAiClientDriverId,
+  type SupportedAiClientDriverId
 } from "@koed/shared/ai-client-contract";
 
 export const managedConversationCommandChannel =
@@ -44,17 +44,6 @@ const identifier = (value: unknown, label: string): string => {
   return value;
 };
 
-const aiClientInstanceIdentifier = (value: unknown, label: string): string => {
-  const result = identifier(value, label);
-  if (
-    result.length > aiClientInstanceIdMaxLength ||
-    !aiClientIdentifierPattern.test(result)
-  ) {
-    throw new TypeError(`${label} is invalid.`);
-  }
-  return result;
-};
-
 const idempotencyKey = (value: unknown): string => {
   const key = identifier(value, "Managed Conversation idempotency key");
   if (
@@ -64,6 +53,18 @@ const idempotencyKey = (value: unknown): string => {
     throw new TypeError("Managed Conversation idempotency key is invalid.");
   }
   return key;
+};
+
+const uuid = (value: unknown, label: string): string => {
+  const parsed = identifier(value, label);
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      parsed
+    )
+  ) {
+    throw new TypeError(`${label} is invalid.`);
+  }
+  return parsed;
 };
 
 const prompt = (value: unknown): string => {
@@ -80,10 +81,32 @@ const prompt = (value: unknown): string => {
 export type ManagedConversationStartRequest = {
   operation: "start";
   projectId: string;
-  aiClientDriverId: "codex" | "claude" | "pi";
+  aiClientDriverId: SupportedAiClientDriverId;
   aiClientInstanceId: string;
+  model: string;
+  reasoningEffort: string | null;
+  permissionMode: "supervised" | "auto_edit" | "auto" | "full_access";
+  runnerKind: "local_device";
   idempotencyKey: string;
 };
+
+export type ManagedConversationLaunchOptionsRequest = {
+  operation: "launch_options";
+};
+
+export type ManagedConversationDraftScope = {
+  projectId: string;
+  capturedSessionId: string;
+  threadId: string;
+};
+
+export type ManagedConversationDraftRequest =
+  | ({ operation: "draft_read" } & ManagedConversationDraftScope)
+  | ({
+      operation: "draft_write";
+      value: string;
+    } & ManagedConversationDraftScope)
+  | ({ operation: "draft_delete" } & ManagedConversationDraftScope);
 
 export type ManagedConversationResumeRequest = {
   operation: "resume";
@@ -99,14 +122,49 @@ export type ManagedConversationInspectRequest = {
 
 export type ManagedConversationSendRequest = {
   operation: "send";
+  executionId: string;
   capturedSessionId: string;
   threadId: string;
   idempotencyKey: string;
+  clientUserMessageId: string;
   prompt: string;
+  fileMentionCommandIds: string[];
+  terminalContextReferences: string[];
 };
 
 export type ManagedConversationTargetsRequest = {
   operation: "targets";
+};
+
+export type ManagedConversationUsageRequest = {
+  operation: "usage";
+  executionId: string;
+};
+
+export type ManagedConversationRuntimeRequest = {
+  operation: "runtime";
+  executionId: string;
+};
+
+export type ManagedConversationRuntimeResponseRequest = {
+  operation: "runtime_respond";
+  executionId: string;
+  itemId: string;
+  itemKind:
+    | "command_approval"
+    | "file_approval"
+    | "permissions_approval"
+    | "user_input";
+  executionGeneration: number;
+  decision?: "accept" | "acceptForSession" | "decline" | "cancel";
+  answers?: Record<string, string[]>;
+};
+
+export type ManagedConversationControlRequest = {
+  operation: "interrupt" | "stop";
+  executionId: string;
+  executionGeneration: number;
+  idempotencyKey: string;
 };
 
 export type ManagedConversationTransferStatusRequest = {
@@ -137,10 +195,16 @@ export type ManagedConversationForkRequest = {
 
 export type ManagedConversationRequest =
   | ManagedConversationStartRequest
+  | ManagedConversationLaunchOptionsRequest
+  | ManagedConversationDraftRequest
   | ManagedConversationInspectRequest
   | ManagedConversationResumeRequest
   | ManagedConversationSendRequest
   | ManagedConversationTargetsRequest
+  | ManagedConversationUsageRequest
+  | ManagedConversationRuntimeRequest
+  | ManagedConversationRuntimeResponseRequest
+  | ManagedConversationControlRequest
   | ManagedConversationTransferStatusRequest
   | ManagedConversationHandoffRequest
   | ManagedConversationForkRequest;
@@ -151,7 +215,7 @@ export type ManagedConversationIdentity = {
   capturedSessionId: string;
   threadId: string;
   executionOwner?: {
-    driverId: "codex" | "claude" | "pi";
+    driverId: SupportedAiClientDriverId;
     instanceId: string;
   };
 };
@@ -166,7 +230,105 @@ export type ManagedConversationTransferLifecycle = {
   updatedAt: string;
 };
 
+export type ManagedConversationContextUsage = {
+  model: string | null;
+  modelContextWindow: number | null;
+  usedTokens: number | null;
+  totalProcessedTokens: number | null;
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  reasoningOutputTokens: number | null;
+  usageAccuracy:
+    | "provider_reported"
+    | "provider_replayed"
+    | "provider_partial"
+    | "local_estimate";
+  observedAt: string;
+};
+
+export type ManagedConversationRuntimeItem = {
+  id: string;
+  executionGeneration: number;
+  providerTurnId: string | null;
+  providerItemId: string | null;
+  itemKind:
+    | "command_approval"
+    | "file_approval"
+    | "permissions_approval"
+    | "user_input"
+    | "transient_output";
+  presentation: {
+    mode: "expanded" | "collapsed" | "status";
+    renderer:
+      | "message"
+      | "reasoning_summary"
+      | "tool_call"
+      | "tool_result"
+      | "approval"
+      | "user_input"
+      | "lifecycle"
+      | "telemetry"
+      | "generic";
+    policyKey: string;
+    policyRevision: number;
+    reason: string;
+  };
+  state: "pending" | "answered";
+  payload: Record<string, unknown>;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+  answered: boolean;
+};
+
+export type ManagedConversationLaunchOptions = {
+  runners: Array<{
+    kind: "local_device";
+    deploymentId: string;
+    deviceId: string;
+    displayName: string;
+  }>;
+  instances: Array<{
+    instanceId: string;
+    driverId: SupportedAiClientDriverId;
+    displayName: string;
+    ready: boolean;
+    readiness: string;
+    models: Array<{
+      id: string;
+      displayName?: string;
+      description?: string;
+      supportedReasoningEfforts: string[];
+      defaultReasoningEffort?: string;
+      isDefault?: boolean;
+      contextWindow?: number;
+    }>;
+    capabilities: {
+      defaultPermissionMode:
+        | "supervised"
+        | "auto_edit"
+        | "auto"
+        | "full_access";
+      permissionModes: Array<{
+        mode: "supervised" | "auto_edit" | "auto" | "full_access";
+        support: "supported" | "requires_bridge" | "unsupported";
+      }>;
+    };
+  }>;
+};
+
 export type ManagedConversationResult =
+  | {
+      operation: "launch_options";
+      options: ManagedConversationLaunchOptions;
+    }
+  | {
+      operation: "draft_read";
+      value: string;
+    }
+  | { operation: "draft_write"; ok: true }
+  | { operation: "draft_delete"; ok: true }
   | {
       operation: "start";
       status: "starting" | "ready";
@@ -188,9 +350,10 @@ export type ManagedConversationResult =
     }
   | {
       operation: "send";
-      status: "queued" | "reconciling";
+      status: "queued" | "reconciling" | "rejected";
       conversation: ManagedConversationIdentity;
       idempotencyKey: string;
+      clientUserMessageId: string;
       turnId?: string;
       message?: string;
     }
@@ -201,6 +364,44 @@ export type ManagedConversationResult =
         deploymentId: string;
         label: string | null;
       }>;
+    }
+  | {
+      operation: "usage";
+      executionId: string;
+      provider: "codex" | "claude" | "pi";
+      usage: ManagedConversationContextUsage | null;
+    }
+  | {
+      operation: "runtime";
+      executionId: string;
+      executionGeneration: number;
+      executionStateVersion: number;
+      executionState: string;
+      executionLastErrorCode: string | null;
+      latestCommand: {
+        id: string;
+        sequence: number;
+        executionGeneration: number;
+        commandKind: string;
+        clientUserMessageId: string | null;
+        state: string;
+        lastErrorCode: string | null;
+        updatedAt: string;
+      } | null;
+      items: ManagedConversationRuntimeItem[];
+    }
+  | { operation: "runtime_respond"; accepted: true; itemId: string }
+  | {
+      operation: "interrupt";
+      status: "queued";
+      executionId: string;
+      commandId: string;
+    }
+  | {
+      operation: "stop";
+      status: "queued";
+      executionId: string;
+      commandId: string;
     }
   | {
       operation: "transfer_status";
@@ -235,27 +436,98 @@ export const parseManagedConversationRequest = (
         "projectId",
         "aiClientDriverId",
         "aiClientInstanceId",
+        "model",
+        "reasoningEffort",
+        "permissionMode",
+        "runnerKind",
         "idempotencyKey"
       ],
       "Managed Conversation start"
     );
-    if (
-      input.aiClientDriverId !== "codex" &&
-      input.aiClientDriverId !== "claude" &&
-      input.aiClientDriverId !== "pi"
-    ) {
-      throw new TypeError("AI Client driver id is invalid.");
-    }
     return {
       operation: "start",
       projectId: identifier(input.projectId, "Project id"),
-      aiClientDriverId: input.aiClientDriverId,
-      aiClientInstanceId: aiClientInstanceIdentifier(
+      aiClientDriverId:
+        typeof input.aiClientDriverId === "string" &&
+        isSupportedAiClientDriverId(input.aiClientDriverId)
+          ? input.aiClientDriverId
+          : (() => {
+              throw new TypeError(
+                "Managed Conversation AI Client driver is invalid."
+              );
+            })(),
+      aiClientInstanceId: identifier(
         input.aiClientInstanceId,
         "AI Client instance id"
       ),
+      model: identifier(input.model, "AI Client model"),
+      reasoningEffort:
+        input.reasoningEffort === null
+          ? null
+          : identifier(input.reasoningEffort, "Reasoning effort"),
+      permissionMode:
+        input.permissionMode === "auto" ||
+        input.permissionMode === "supervised" ||
+        input.permissionMode === "auto_edit" ||
+        input.permissionMode === "full_access"
+          ? input.permissionMode
+          : (() => {
+              throw new TypeError(
+                "Managed Conversation permission mode is invalid."
+              );
+            })(),
+      runnerKind:
+        input.runnerKind === "local_device"
+          ? input.runnerKind
+          : (() => {
+              throw new TypeError("Managed Conversation runner is invalid.");
+            })(),
       idempotencyKey: idempotencyKey(input.idempotencyKey)
     };
+  }
+  if (input.operation === "launch_options") {
+    exactKeys(input, ["operation"], "Managed Conversation launch options");
+    return { operation: "launch_options" };
+  }
+  if (
+    input.operation === "draft_read" ||
+    input.operation === "draft_write" ||
+    input.operation === "draft_delete"
+  ) {
+    exactKeys(
+      input,
+      [
+        "operation",
+        "projectId",
+        "capturedSessionId",
+        "threadId",
+        ...(input.operation === "draft_write" ? ["value"] : [])
+      ],
+      "Managed Conversation draft"
+    );
+    if (
+      input.operation === "draft_write" &&
+      (typeof input.value !== "string" ||
+        new TextEncoder().encode(input.value).byteLength > maximumPromptBytes)
+    ) {
+      throw new TypeError("Managed Conversation draft is invalid.");
+    }
+    const scope = {
+      projectId: identifier(input.projectId, "Project id"),
+      capturedSessionId: identifier(
+        input.capturedSessionId,
+        "Captured Session id"
+      ),
+      threadId: identifier(input.threadId, "Conversation id")
+    };
+    if (input.operation === "draft_write") {
+      return {
+        operation: "draft_write",
+        ...scope,
+        value: input.value as string
+      };
+    }
+    return { operation: input.operation, ...scope };
   }
   if (input.operation === "resume") {
     exactKeys(
@@ -292,27 +564,170 @@ export const parseManagedConversationRequest = (
       input,
       [
         "operation",
+        "executionId",
         "capturedSessionId",
         "threadId",
         "idempotencyKey",
-        "prompt"
+        "clientUserMessageId",
+        "prompt",
+        "fileMentionCommandIds",
+        "terminalContextReferences"
       ],
       "Managed Conversation send"
     );
+    if (
+      !Array.isArray(input.fileMentionCommandIds) ||
+      input.fileMentionCommandIds.length > 16 ||
+      input.fileMentionCommandIds.some(
+        (value) =>
+          typeof value !== "string" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+            value
+          )
+      ) ||
+      !Array.isArray(input.terminalContextReferences) ||
+      input.terminalContextReferences.length > 8 ||
+      input.terminalContextReferences.some(
+        (value) =>
+          typeof value !== "string" || !/^mtc1_[A-Za-z0-9_-]{43}$/u.test(value)
+      )
+    ) {
+      throw new TypeError(
+        "Managed Conversation context references are invalid."
+      );
+    }
     return {
       operation: "send",
+      executionId: identifier(input.executionId, "Managed execution id"),
       capturedSessionId: identifier(
         input.capturedSessionId,
         "Captured Session id"
       ),
       threadId: identifier(input.threadId, "Conversation id"),
       idempotencyKey: idempotencyKey(input.idempotencyKey),
-      prompt: prompt(input.prompt)
+      clientUserMessageId: uuid(
+        input.clientUserMessageId,
+        "Client user message id"
+      ),
+      prompt: prompt(input.prompt),
+      fileMentionCommandIds: input.fileMentionCommandIds as string[],
+      terminalContextReferences: input.terminalContextReferences as string[]
+    };
+  }
+  if (input.operation === "runtime") {
+    exactKeys(input, ["operation", "executionId"], "Managed runtime read");
+    return {
+      operation: "runtime",
+      executionId: identifier(input.executionId, "Managed execution id")
+    };
+  }
+  if (input.operation === "runtime_respond") {
+    const itemKind = input.itemKind;
+    if (
+      itemKind !== "command_approval" &&
+      itemKind !== "file_approval" &&
+      itemKind !== "permissions_approval" &&
+      itemKind !== "user_input"
+    ) {
+      throw new TypeError("Managed runtime item kind is invalid.");
+    }
+    exactKeys(
+      input,
+      [
+        "operation",
+        "executionId",
+        "itemId",
+        "itemKind",
+        "executionGeneration",
+        ...(itemKind === "user_input" ? ["answers"] : ["decision"])
+      ],
+      "Managed runtime response"
+    );
+    if (
+      !Number.isSafeInteger(input.executionGeneration) ||
+      (input.executionGeneration as number) < 1
+    ) {
+      throw new TypeError("Managed runtime generation is invalid.");
+    }
+    if (itemKind === "user_input") {
+      const answers = record(input.answers, "Managed runtime answers");
+      if (Object.keys(answers).length > 64) {
+        throw new TypeError("Managed runtime answers are invalid.");
+      }
+      const parsedAnswers: Record<string, string[]> = {};
+      for (const [questionId, value] of Object.entries(answers)) {
+        if (
+          !questionId ||
+          questionId.length > 512 ||
+          !Array.isArray(value) ||
+          value.length > 32 ||
+          value.some(
+            (answer) => typeof answer !== "string" || answer.length > 16_384
+          )
+        ) {
+          throw new TypeError("Managed runtime answers are invalid.");
+        }
+        parsedAnswers[questionId] = value as string[];
+      }
+      return {
+        operation: "runtime_respond",
+        executionId: identifier(input.executionId, "Managed execution id"),
+        itemId: identifier(input.itemId, "Managed runtime item id"),
+        itemKind,
+        executionGeneration: input.executionGeneration as number,
+        answers: parsedAnswers
+      };
+    }
+    if (
+      input.decision !== "accept" &&
+      input.decision !== "acceptForSession" &&
+      input.decision !== "decline" &&
+      input.decision !== "cancel"
+    ) {
+      throw new TypeError("Managed runtime decision is invalid.");
+    }
+    return {
+      operation: "runtime_respond",
+      executionId: identifier(input.executionId, "Managed execution id"),
+      itemId: identifier(input.itemId, "Managed runtime item id"),
+      itemKind,
+      executionGeneration: input.executionGeneration as number,
+      decision: input.decision
+    };
+  }
+  if (input.operation === "interrupt" || input.operation === "stop") {
+    exactKeys(
+      input,
+      ["operation", "executionId", "executionGeneration", "idempotencyKey"],
+      "Managed Conversation control"
+    );
+    if (
+      !Number.isSafeInteger(input.executionGeneration) ||
+      (input.executionGeneration as number) < 1
+    ) {
+      throw new TypeError("Managed execution generation is invalid.");
+    }
+    return {
+      operation: input.operation,
+      executionId: identifier(input.executionId, "Managed execution id"),
+      executionGeneration: input.executionGeneration as number,
+      idempotencyKey: idempotencyKey(input.idempotencyKey)
     };
   }
   if (input.operation === "targets") {
     exactKeys(input, ["operation"], "Managed Conversation targets");
     return { operation: "targets" };
+  }
+  if (input.operation === "usage") {
+    exactKeys(
+      input,
+      ["operation", "executionId"],
+      "Managed Conversation usage"
+    );
+    return {
+      operation: "usage",
+      executionId: identifier(input.executionId, "Managed execution id")
+    };
   }
   if (input.operation === "transfer_status") {
     exactKeys(
@@ -380,27 +795,33 @@ export const parseManagedConversationRequest = (
 
 const parseIdentity = (value: unknown): ManagedConversationIdentity => {
   const identity = record(value, "Managed Conversation identity");
-  const keys = ["executionId", "projectId", "capturedSessionId", "threadId"];
-  if (identity.executionOwner !== undefined) keys.push("executionOwner");
-  exactKeys(identity, keys, "Managed Conversation identity");
-  const owner =
-    identity.executionOwner === undefined
-      ? undefined
-      : record(identity.executionOwner, "Managed Conversation execution owner");
-  if (owner) {
+  const hasExecutionOwner = identity.executionOwner !== undefined;
+  exactKeys(
+    identity,
+    [
+      "executionId",
+      "projectId",
+      "capturedSessionId",
+      "threadId",
+      ...(hasExecutionOwner ? ["executionOwner"] : [])
+    ],
+    "Managed Conversation identity"
+  );
+  const executionOwner = hasExecutionOwner
+    ? record(identity.executionOwner, "Managed Conversation execution owner")
+    : null;
+  if (executionOwner) {
     exactKeys(
-      owner,
+      executionOwner,
       ["driverId", "instanceId"],
       "Managed Conversation execution owner"
     );
-  }
-  if (
-    owner &&
-    owner.driverId !== "codex" &&
-    owner.driverId !== "claude" &&
-    owner.driverId !== "pi"
-  ) {
-    throw new TypeError("Managed Conversation execution owner is invalid.");
+    if (
+      typeof executionOwner.driverId !== "string" ||
+      !isSupportedAiClientDriverId(executionOwner.driverId)
+    ) {
+      throw new TypeError("Managed Conversation execution owner is invalid.");
+    }
   }
   return {
     executionId:
@@ -413,12 +834,12 @@ const parseIdentity = (value: unknown): ManagedConversationIdentity => {
       "Captured Session id"
     ),
     threadId: identifier(identity.threadId, "Conversation id"),
-    ...(owner
+    ...(executionOwner
       ? {
           executionOwner: {
-            driverId: owner.driverId as "codex" | "claude" | "pi",
-            instanceId: aiClientInstanceIdentifier(
-              owner.instanceId,
+            driverId: executionOwner.driverId as SupportedAiClientDriverId,
+            instanceId: identifier(
+              executionOwner.instanceId,
               "AI Client instance id"
             )
           }
@@ -481,10 +902,368 @@ const parseTransferLifecycle = (
   };
 };
 
+const nullableTokenCount = (value: unknown, label: string): number | null => {
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new TypeError(`${label} is invalid.`);
+  }
+  return value as number;
+};
+
+const parseContextUsage = (value: unknown): ManagedConversationContextUsage => {
+  const usage = record(value, "Managed Conversation context usage");
+  exactKeys(
+    usage,
+    [
+      "model",
+      "modelContextWindow",
+      "usedTokens",
+      "totalProcessedTokens",
+      "inputTokens",
+      "cachedInputTokens",
+      "outputTokens",
+      "reasoningOutputTokens",
+      "usageAccuracy",
+      "observedAt"
+    ],
+    "Managed Conversation context usage"
+  );
+  if (
+    usage.model !== null &&
+    (typeof usage.model !== "string" ||
+      usage.model.length === 0 ||
+      usage.model.length > 512)
+  ) {
+    throw new TypeError("Managed Conversation usage model is invalid.");
+  }
+  if (
+    usage.usageAccuracy !== "provider_reported" &&
+    usage.usageAccuracy !== "provider_replayed" &&
+    usage.usageAccuracy !== "provider_partial" &&
+    usage.usageAccuracy !== "local_estimate"
+  ) {
+    throw new TypeError("Managed Conversation usage accuracy is invalid.");
+  }
+  if (
+    typeof usage.observedAt !== "string" ||
+    !Number.isFinite(Date.parse(usage.observedAt))
+  ) {
+    throw new TypeError("Managed Conversation usage time is invalid.");
+  }
+  return {
+    model: usage.model,
+    modelContextWindow: nullableTokenCount(
+      usage.modelContextWindow,
+      "Model context window"
+    ),
+    usedTokens: nullableTokenCount(usage.usedTokens, "Used token count"),
+    totalProcessedTokens: nullableTokenCount(
+      usage.totalProcessedTokens,
+      "Processed token count"
+    ),
+    inputTokens: nullableTokenCount(usage.inputTokens, "Input token count"),
+    cachedInputTokens: nullableTokenCount(
+      usage.cachedInputTokens,
+      "Cached input token count"
+    ),
+    outputTokens: nullableTokenCount(usage.outputTokens, "Output token count"),
+    reasoningOutputTokens: nullableTokenCount(
+      usage.reasoningOutputTokens,
+      "Reasoning token count"
+    ),
+    usageAccuracy: usage.usageAccuracy,
+    observedAt: usage.observedAt
+  };
+};
+
+const parseRuntimeItem = (value: unknown): ManagedConversationRuntimeItem => {
+  const item = record(value, "Managed runtime item");
+  exactKeys(
+    item,
+    [
+      "id",
+      "executionGeneration",
+      "providerTurnId",
+      "providerItemId",
+      "itemKind",
+      "presentation",
+      "state",
+      "payload",
+      "revision",
+      "createdAt",
+      "updatedAt",
+      "answered"
+    ],
+    "Managed runtime item"
+  );
+  const kinds = [
+    "command_approval",
+    "file_approval",
+    "permissions_approval",
+    "user_input",
+    "transient_output"
+  ] as const;
+  if (
+    !kinds.includes(item.itemKind as (typeof kinds)[number]) ||
+    (item.state !== "pending" && item.state !== "answered") ||
+    typeof item.answered !== "boolean" ||
+    !Number.isSafeInteger(item.executionGeneration) ||
+    (item.executionGeneration as number) < 1 ||
+    !Number.isSafeInteger(item.revision) ||
+    (item.revision as number) < 1 ||
+    (item.providerTurnId !== null && typeof item.providerTurnId !== "string") ||
+    (item.providerItemId !== null && typeof item.providerItemId !== "string") ||
+    typeof item.createdAt !== "string" ||
+    !Number.isFinite(Date.parse(item.createdAt)) ||
+    typeof item.updatedAt !== "string" ||
+    !Number.isFinite(Date.parse(item.updatedAt))
+  ) {
+    throw new TypeError("Managed runtime item is invalid.");
+  }
+  const payload = record(item.payload, "Managed runtime payload");
+  const presentation = record(
+    item.presentation,
+    "Managed runtime presentation"
+  );
+  const presentationModes = ["expanded", "collapsed", "status"] as const;
+  const presentationRenderers = [
+    "message",
+    "reasoning_summary",
+    "tool_call",
+    "tool_result",
+    "approval",
+    "user_input",
+    "lifecycle",
+    "telemetry",
+    "generic"
+  ] as const;
+  if (
+    !presentationModes.includes(
+      presentation.mode as (typeof presentationModes)[number]
+    ) ||
+    !presentationRenderers.includes(
+      presentation.renderer as (typeof presentationRenderers)[number]
+    ) ||
+    typeof presentation.policyKey !== "string" ||
+    !Number.isSafeInteger(presentation.policyRevision) ||
+    (presentation.policyRevision as number) < 0 ||
+    typeof presentation.reason !== "string"
+  ) {
+    throw new TypeError("Managed runtime presentation is invalid.");
+  }
+  if (new TextEncoder().encode(JSON.stringify(payload)).byteLength > 256_000) {
+    throw new TypeError("Managed runtime payload is too large.");
+  }
+  return {
+    id: identifier(item.id, "Managed runtime item id"),
+    executionGeneration: item.executionGeneration as number,
+    providerTurnId: item.providerTurnId,
+    providerItemId: item.providerItemId,
+    itemKind: item.itemKind as ManagedConversationRuntimeItem["itemKind"],
+    presentation:
+      presentation as ManagedConversationRuntimeItem["presentation"],
+    state: item.state,
+    payload,
+    revision: item.revision as number,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    answered: item.answered
+  };
+};
+
+const permissionMode = (
+  value: unknown
+): "supervised" | "auto_edit" | "auto" | "full_access" => {
+  if (
+    value !== "auto" &&
+    value !== "supervised" &&
+    value !== "auto_edit" &&
+    value !== "full_access"
+  ) {
+    throw new TypeError("Managed Conversation permission mode is invalid.");
+  }
+  return value;
+};
+
+const parseLaunchOptions = (
+  value: unknown
+): ManagedConversationLaunchOptions => {
+  const options = record(value, "Managed Conversation launch options");
+  exactKeys(
+    options,
+    ["runners", "instances"],
+    "Managed Conversation launch options"
+  );
+  if (
+    !Array.isArray(options.runners) ||
+    options.runners.length > 8 ||
+    !Array.isArray(options.instances) ||
+    options.instances.length > 32
+  ) {
+    throw new TypeError("Managed Conversation launch options are invalid.");
+  }
+  return {
+    runners: options.runners.map((value) => {
+      const runner = record(value, "Managed Conversation runner");
+      exactKeys(
+        runner,
+        ["kind", "deploymentId", "deviceId", "displayName"],
+        "Managed Conversation runner"
+      );
+      if (runner.kind !== "local_device") {
+        throw new TypeError("Managed Conversation runner is invalid.");
+      }
+      return {
+        kind: runner.kind,
+        deploymentId: identifier(runner.deploymentId, "Runner deployment id"),
+        deviceId: identifier(runner.deviceId, "Runner device id"),
+        displayName: identifier(runner.displayName, "Runner display name")
+      };
+    }),
+    instances: options.instances.map((value) => {
+      const instance = record(value, "AI Client instance");
+      exactKeys(
+        instance,
+        [
+          "instanceId",
+          "driverId",
+          "displayName",
+          "ready",
+          "readiness",
+          "models",
+          "capabilities"
+        ],
+        "AI Client instance"
+      );
+      if (
+        typeof instance.driverId !== "string" ||
+        !isSupportedAiClientDriverId(instance.driverId) ||
+        typeof instance.ready !== "boolean" ||
+        !Array.isArray(instance.models) ||
+        instance.models.length > 256
+      ) {
+        throw new TypeError("AI Client instance is invalid.");
+      }
+      const capabilities = record(
+        instance.capabilities,
+        "AI Client capabilities"
+      );
+      if (
+        !Array.isArray(capabilities.permissionModes) ||
+        capabilities.permissionModes.length > 4
+      ) {
+        throw new TypeError("AI Client permission modes are invalid.");
+      }
+      return {
+        instanceId: identifier(instance.instanceId, "AI Client instance id"),
+        driverId: instance.driverId,
+        displayName: identifier(instance.displayName, "AI Client display name"),
+        ready: instance.ready,
+        readiness: identifier(instance.readiness, "AI Client readiness"),
+        models: instance.models.map((value) => {
+          const model = record(value, "AI Client model");
+          if (
+            !Array.isArray(model.supportedReasoningEfforts) ||
+            model.supportedReasoningEfforts.length > 16
+          ) {
+            throw new TypeError(
+              "AI Client model reasoning values are invalid."
+            );
+          }
+          const efforts = model.supportedReasoningEfforts.map((effort) =>
+            identifier(effort, "AI Client reasoning effort")
+          );
+          return {
+            id: identifier(model.id, "AI Client model id"),
+            ...(typeof model.displayName === "string"
+              ? {
+                  displayName: identifier(
+                    model.displayName,
+                    "AI Client model name"
+                  )
+                }
+              : {}),
+            ...(typeof model.description === "string"
+              ? { description: model.description.slice(0, 2_048) }
+              : {}),
+            supportedReasoningEfforts: efforts,
+            ...(typeof model.defaultReasoningEffort === "string"
+              ? {
+                  defaultReasoningEffort: identifier(
+                    model.defaultReasoningEffort,
+                    "Default reasoning effort"
+                  )
+                }
+              : {}),
+            ...(typeof model.isDefault === "boolean"
+              ? { isDefault: model.isDefault }
+              : {}),
+            ...(Number.isSafeInteger(model.contextWindow) &&
+            (model.contextWindow as number) > 0
+              ? { contextWindow: model.contextWindow as number }
+              : {})
+          };
+        }),
+        capabilities: {
+          defaultPermissionMode: permissionMode(
+            capabilities.defaultPermissionMode
+          ),
+          permissionModes: capabilities.permissionModes.map((value) => {
+            const mode = record(value, "AI Client permission mode");
+            if (
+              mode.support !== "supported" &&
+              mode.support !== "requires_bridge" &&
+              mode.support !== "unsupported"
+            ) {
+              throw new TypeError("AI Client permission support is invalid.");
+            }
+            return { mode: permissionMode(mode.mode), support: mode.support };
+          })
+        }
+      };
+    })
+  };
+};
+
 export const parseManagedConversationResult = (
   value: unknown
 ): ManagedConversationResult => {
   const result = record(value, "Managed Conversation result");
+  if (result.operation === "launch_options") {
+    exactKeys(
+      result,
+      ["operation", "options"],
+      "Managed Conversation launch options result"
+    );
+    return {
+      operation: "launch_options",
+      options: parseLaunchOptions(result.options)
+    };
+  }
+  if (result.operation === "draft_read") {
+    exactKeys(
+      result,
+      ["operation", "value"],
+      "Managed Conversation draft read result"
+    );
+    if (
+      typeof result.value !== "string" ||
+      new TextEncoder().encode(result.value).byteLength > maximumPromptBytes
+    ) {
+      throw new TypeError("Managed Conversation draft result is invalid.");
+    }
+    return { operation: "draft_read", value: result.value };
+  }
+  if (
+    result.operation === "draft_write" ||
+    result.operation === "draft_delete"
+  ) {
+    exactKeys(result, ["operation", "ok"], "Managed Conversation draft result");
+    if (result.ok !== true) {
+      throw new TypeError("Managed Conversation draft result is invalid.");
+    }
+    return { operation: result.operation, ok: true };
+  }
   if (result.operation === "start") {
     const hasConversation = result.conversation !== undefined;
     exactKeys(
@@ -588,11 +1367,16 @@ export const parseManagedConversationResult = (
       "status",
       "conversation",
       "idempotencyKey",
+      "clientUserMessageId",
       ...(result.turnId ? ["turnId"] : []),
       ...(result.message ? ["message"] : [])
     ];
     exactKeys(result, allowedKeys, "Managed Conversation send result");
-    if (result.status !== "queued" && result.status !== "reconciling") {
+    if (
+      result.status !== "queued" &&
+      result.status !== "reconciling" &&
+      result.status !== "rejected"
+    ) {
       throw new TypeError("Managed Conversation send status is invalid.");
     }
     if (
@@ -606,6 +1390,10 @@ export const parseManagedConversationResult = (
       status: result.status,
       conversation: parseIdentity(result.conversation),
       idempotencyKey: idempotencyKey(result.idempotencyKey),
+      clientUserMessageId: uuid(
+        result.clientUserMessageId,
+        "Client user message id"
+      ),
       ...(result.turnId
         ? { turnId: identifier(result.turnId, "Codex turn id") }
         : {}),
@@ -638,6 +1426,161 @@ export const parseManagedConversationResult = (
           label: device.label
         };
       })
+    };
+  }
+  if (result.operation === "usage") {
+    exactKeys(
+      result,
+      ["operation", "executionId", "provider", "usage"],
+      "Managed Conversation usage result"
+    );
+    if (
+      result.provider !== "codex" &&
+      result.provider !== "claude" &&
+      result.provider !== "pi"
+    ) {
+      throw new TypeError("Managed Conversation usage provider is invalid.");
+    }
+    return {
+      operation: "usage",
+      executionId: identifier(result.executionId, "Managed execution id"),
+      provider: result.provider,
+      usage: result.usage === null ? null : parseContextUsage(result.usage)
+    };
+  }
+  if (result.operation === "runtime") {
+    exactKeys(
+      result,
+      [
+        "operation",
+        "executionId",
+        "executionGeneration",
+        "executionStateVersion",
+        "executionState",
+        "executionLastErrorCode",
+        "latestCommand",
+        "items"
+      ],
+      "Managed runtime result"
+    );
+    if (
+      !Number.isSafeInteger(result.executionGeneration) ||
+      (result.executionGeneration as number) < 1 ||
+      !Number.isSafeInteger(result.executionStateVersion) ||
+      (result.executionStateVersion as number) < 1 ||
+      !Array.isArray(result.items) ||
+      result.items.length > 256
+    ) {
+      throw new TypeError("Managed runtime result is invalid.");
+    }
+    if (
+      result.executionLastErrorCode !== null &&
+      typeof result.executionLastErrorCode !== "string"
+    ) {
+      throw new TypeError("Managed runtime execution error is invalid.");
+    }
+    const latestCommand =
+      result.latestCommand === null
+        ? null
+        : record(result.latestCommand, "Managed runtime latest command");
+    if (latestCommand) {
+      exactKeys(
+        latestCommand,
+        [
+          "id",
+          "sequence",
+          "executionGeneration",
+          "commandKind",
+          "clientUserMessageId",
+          "state",
+          "lastErrorCode",
+          "updatedAt"
+        ],
+        "Managed runtime latest command"
+      );
+      if (
+        !Number.isSafeInteger(latestCommand.sequence) ||
+        (latestCommand.sequence as number) < 0 ||
+        !Number.isSafeInteger(latestCommand.executionGeneration) ||
+        (latestCommand.executionGeneration as number) < 1 ||
+        typeof latestCommand.commandKind !== "string" ||
+        (latestCommand.clientUserMessageId !== null &&
+          typeof latestCommand.clientUserMessageId !== "string") ||
+        typeof latestCommand.state !== "string" ||
+        (latestCommand.lastErrorCode !== null &&
+          typeof latestCommand.lastErrorCode !== "string") ||
+        typeof latestCommand.updatedAt !== "string" ||
+        !Number.isFinite(Date.parse(latestCommand.updatedAt))
+      ) {
+        throw new TypeError("Managed runtime latest command is invalid.");
+      }
+    }
+    return {
+      operation: "runtime",
+      executionId: identifier(result.executionId, "Managed execution id"),
+      executionGeneration: result.executionGeneration as number,
+      executionStateVersion: result.executionStateVersion as number,
+      executionState: identifier(
+        result.executionState,
+        "Managed execution state"
+      ),
+      executionLastErrorCode: result.executionLastErrorCode as string | null,
+      latestCommand: latestCommand
+        ? {
+            id: identifier(latestCommand.id, "Managed runtime command id"),
+            sequence: latestCommand.sequence as number,
+            executionGeneration: latestCommand.executionGeneration as number,
+            commandKind: identifier(
+              latestCommand.commandKind,
+              "Managed runtime command kind"
+            ),
+            state: identifier(
+              latestCommand.state,
+              "Managed runtime command state"
+            ),
+            clientUserMessageId:
+              latestCommand.clientUserMessageId === null
+                ? null
+                : identifier(
+                    latestCommand.clientUserMessageId,
+                    "Managed client message id"
+                  ),
+            lastErrorCode: latestCommand.lastErrorCode as string | null,
+            updatedAt: latestCommand.updatedAt as string
+          }
+        : null,
+      items: result.items.map(parseRuntimeItem)
+    };
+  }
+  if (result.operation === "runtime_respond") {
+    exactKeys(
+      result,
+      ["operation", "accepted", "itemId"],
+      "Managed runtime response result"
+    );
+    if (result.accepted !== true) {
+      throw new TypeError("Managed runtime response was not accepted.");
+    }
+    return {
+      operation: "runtime_respond",
+      accepted: true,
+      itemId: identifier(result.itemId, "Managed runtime item id")
+    };
+  }
+  if (result.operation === "interrupt" || result.operation === "stop") {
+    exactKeys(
+      result,
+      ["operation", "status", "executionId", "commandId"],
+      "Managed control result"
+    );
+    if (result.status !== "queued") {
+      throw new TypeError("Managed control status is invalid.");
+    }
+    return {
+      operation: result.operation,
+      status: "queued",
+      executionId: identifier(result.executionId, "Managed execution id"),
+      commandId: identifier(result.commandId, "Managed command id")
     };
   }
   if (result.operation === "transfer_status") {
@@ -680,13 +1623,11 @@ export const parseManagedConversationResult = (
 };
 
 export interface ManagedConversationDesktopApi {
+  launchOptions: () => Promise<
+    Extract<ManagedConversationResult, { operation: "launch_options" }>
+  >;
   start: (
-    projectId: string,
-    idempotencyKey: string,
-    owner: {
-      aiClientDriverId: "codex" | "claude" | "pi";
-      aiClientInstanceId: string;
-    }
+    input: Omit<ManagedConversationStartRequest, "operation">
   ) => Promise<Extract<ManagedConversationResult, { operation: "start" }>>;
   inspect: (
     executionId: string
@@ -695,11 +1636,50 @@ export interface ManagedConversationDesktopApi {
     input: Omit<ManagedConversationResumeRequest, "operation">
   ) => Promise<Extract<ManagedConversationResult, { operation: "resume" }>>;
   send: (
-    input: Omit<ManagedConversationSendRequest, "operation">
+    input: Omit<
+      ManagedConversationSendRequest,
+      "operation" | "fileMentionCommandIds" | "terminalContextReferences"
+    > &
+      Partial<
+        Pick<
+          ManagedConversationSendRequest,
+          "fileMentionCommandIds" | "terminalContextReferences"
+        >
+      >
   ) => Promise<Extract<ManagedConversationResult, { operation: "send" }>>;
+  readDraft: (
+    input: ManagedConversationDraftScope
+  ) => Promise<Extract<ManagedConversationResult, { operation: "draft_read" }>>;
+  writeDraft: (
+    input: ManagedConversationDraftScope & { value: string }
+  ) => Promise<
+    Extract<ManagedConversationResult, { operation: "draft_write" }>
+  >;
+  deleteDraft: (
+    input: ManagedConversationDraftScope
+  ) => Promise<
+    Extract<ManagedConversationResult, { operation: "draft_delete" }>
+  >;
   targets: () => Promise<
     Extract<ManagedConversationResult, { operation: "targets" }>
   >;
+  usage: (
+    executionId: string
+  ) => Promise<Extract<ManagedConversationResult, { operation: "usage" }>>;
+  runtime: (
+    executionId: string
+  ) => Promise<Extract<ManagedConversationResult, { operation: "runtime" }>>;
+  respond: (
+    input: Omit<ManagedConversationRuntimeResponseRequest, "operation">
+  ) => Promise<
+    Extract<ManagedConversationResult, { operation: "runtime_respond" }>
+  >;
+  interrupt: (
+    input: Omit<ManagedConversationControlRequest, "operation">
+  ) => Promise<Extract<ManagedConversationResult, { operation: "interrupt" }>>;
+  stop: (
+    input: Omit<ManagedConversationControlRequest, "operation">
+  ) => Promise<Extract<ManagedConversationResult, { operation: "stop" }>>;
   transferStatus: (
     executionId: string
   ) => Promise<

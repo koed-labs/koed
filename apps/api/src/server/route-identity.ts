@@ -103,6 +103,36 @@ const managedConversationRunnerRoutes = [
   ],
   [
     "POST",
+    "/v1/managed-conversation-runner/commands/claim-controls",
+    "Claim interrupt and stop commands concurrently with an active provider turn."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/commands/claim-files",
+    "Claim rooted checkpoint file operations assigned to this runner."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/runtime-items",
+    "Publish encrypted provider interaction or transient runtime state."
+  ],
+  [
+    "GET",
+    "/v1/managed-conversation-runner/runtime-items/{itemId}",
+    "Read an encrypted provider interaction assigned to this runner."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/runtime-items/{itemId}/resolve",
+    "Resolve or cancel an assigned provider interaction."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/executions/{executionId}/runtime-items/cancel",
+    "Cancel active provider interactions for an execution generation."
+  ],
+  [
+    "POST",
     "/v1/managed-conversation-runner/commands/reconcile-abandoned",
     "Reconcile expired non-replayable provider commands assigned to this runner."
   ],
@@ -257,6 +287,16 @@ const managedConversationRunnerRoutes = [
     "Read an execution assigned to this runner."
   ],
   [
+    "GET",
+    "/v1/managed-conversation-runner/executions/{executionId}/checkpoints",
+    "List exact execution checkpoints assigned to this runner."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/executions/{executionId}/checkpoints",
+    "Record an exact execution checkpoint assigned to this runner."
+  ],
+  [
     "POST",
     "/v1/managed-conversation-runner/commands/{commandId}/lease",
     "Renew an assigned managed command lease."
@@ -278,6 +318,21 @@ const managedConversationRunnerRoutes = [
   ],
   [
     "POST",
+    "/v1/managed-conversation-runner/commands/{commandId}/checkpoint-pending",
+    "Record checkpoint-only recovery for an accepted managed prompt."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/commands/{commandId}/file-complete",
+    "Complete an assigned rooted checkpoint file operation."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/commands/{commandId}/file-fail",
+    "Retry or fail an assigned rooted checkpoint file operation."
+  ],
+  [
+    "POST",
     "/v1/managed-conversation-runner/commands/{commandId}/fail",
     "Fail or reconcile an assigned managed command."
   ],
@@ -295,6 +350,11 @@ const managedConversationRunnerRoutes = [
     "POST",
     "/v1/managed-conversation-runner/executions/{executionId}/runtime-binding-ready",
     "Release a deferred start after its assigned Personal Device persists the local runtime binding."
+  ],
+  [
+    "POST",
+    "/v1/managed-conversation-runner/executions/{executionId}/runtime-binding-failed",
+    "Fail a deferred start after its assigned Personal Device rejects the execution workspace."
   ],
   [
     "POST",
@@ -370,6 +430,16 @@ export const routeIdentityContracts = [
     "session",
     "operations",
     "Redacted hosted/self-hosted operations status for authenticated operators."
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/launch-options",
+    "session_or_api_token",
+    "personal_memory",
+    "Read current local runner, AI Client, model, and permission choices for a new managed Conversation.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
   ),
   route(
     "POST",
@@ -853,6 +923,13 @@ export const routeIdentityContracts = [
     "session_or_api_token",
     "personal_memory",
     "Move a personal Captured Session to a Personal Project or reset automatic placement."
+  ),
+  route(
+    "PATCH",
+    "/v1/memory/graph/sessions/{sessionId}/presentation",
+    "session_or_api_token",
+    "personal_memory",
+    "Update owner-only Conversation navigation presentation state."
   ),
   route(
     "DELETE",
@@ -2191,11 +2268,147 @@ export const routeIdentityContracts = [
     localEdgeDeploymentModes
   ),
   route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/usage",
+    "session_or_api_token",
+    "personal_memory",
+    "Read the latest provider-attributed context usage for one managed Conversation.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/diff",
+    "session_or_api_token",
+    "personal_memory",
+    "Read a revision-bound encrypted turn or full-Conversation workspace diff.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "DELETE",
+    "/v1/managed-conversations/{executionId}/execution-workspace",
+    "session_or_api_token",
+    "personal_memory",
+    "Request cleanup of the exact terminal Koed-managed execution workspace.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
     "POST",
     "/v1/managed-conversations/{executionId}/prompts",
     "session_or_api_token",
     "personal_memory",
     "Queue an idempotent prompt for a Koed-managed conversation.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/files",
+    "session_or_device_credential",
+    "personal_memory",
+    "Queue an encrypted rooted checkpoint file operation for the assigned runner."
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/source-control",
+    "session_or_device_credential",
+    "personal_memory",
+    "Run a provider-neutral, revision-bound source-control operation in the exact managed execution workspace.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/files/{commandId}",
+    "session_or_device_credential",
+    "personal_memory",
+    "Read one encrypted rooted checkpoint file operation result."
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/terminals/profiles",
+    "session_or_device_credential",
+    "personal_memory",
+    "List bounded shell profiles available on the assigned runner."
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/terminals",
+    "session_or_device_credential",
+    "personal_memory",
+    "Create an idempotent terminal in the exact execution workspace."
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/terminals",
+    "session_or_device_credential",
+    "personal_memory",
+    "List terminal lifecycle metadata without terminal content."
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/terminals/{terminalId}",
+    "session_or_device_credential",
+    "personal_memory",
+    "Read one terminal lifecycle record without terminal content."
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/terminals/{terminalId}/stop",
+    "session_or_device_credential",
+    "personal_memory",
+    "Stop an owned terminal using its runner-fenced lifecycle."
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/terminals/{terminalId}/attach",
+    "session_or_device_credential",
+    "personal_memory",
+    "Attach a bounded bidirectional WebSocket terminal stream."
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/runtime",
+    "session_or_api_token",
+    "personal_memory",
+    "Read active provider interactions and transient output for a managed Conversation.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/runtime-items/{itemId}/respond",
+    "session_or_api_token",
+    "personal_memory",
+    "Answer one generation-fenced provider approval or user-input request.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/interrupt",
+    "session_or_api_token",
+    "personal_memory",
+    "Interrupt the active provider turn without stopping its managed Conversation.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/stop",
+    "session_or_api_token",
+    "personal_memory",
+    "Stop a managed Conversation runtime.",
     "none",
     "implemented",
     localEdgeDeploymentModes
@@ -2384,6 +2597,20 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
+    "/v1/personal-device-sync/relay/peer-routes",
+    "pds_relay_proof",
+    "personal_memory",
+    "Device-signed short-lived peer receive-route advertisement."
+  ),
+  route(
+    "GET",
+    "/v1/personal-device-sync/relay/peer-routes",
+    "pds_relay_proof",
+    "personal_memory",
+    "Device-signed same-group peer receive-route discovery."
+  ),
+  route(
+    "POST",
     "/v1/personal-device-sync/relay/transports",
     "pds_relay_proof",
     "personal_memory",
@@ -2437,6 +2664,13 @@ export const routeIdentityContracts = [
     "pds_relay_proof",
     "personal_memory",
     "Device-signed PDS relay package acknowledgement."
+  ),
+  route(
+    "GET",
+    "/v1/personal-device-sync/relay/transports/{transportId}/peer-receipts/{recipientDeviceId}",
+    "pds_relay_proof",
+    "personal_memory",
+    "Device-signed exact recipient materialization receipt read for peer delivery."
   ),
   route(
     "GET",

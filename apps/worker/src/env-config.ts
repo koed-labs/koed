@@ -60,9 +60,6 @@ export interface WorkerEnvConfig {
   managedConversationApiUrl?: string;
   managedConversationApiToken?: string;
   managedConversationAppServerBinary: string;
-  managedConversationModel: string;
-  managedConversationClaudeModel: string;
-  managedConversationReasoningEffort: string;
   koedHome: string;
   historicalImport: HistoricalImportBatchConfig;
   historicalImportApiReadyUrl?: string;
@@ -333,14 +330,6 @@ export const resolveWorkerEnv = (
     ...(managedConversationApiToken ? { managedConversationApiToken } : {}),
     managedConversationAppServerBinary:
       optionalEnv(environment.MEMORY_CODEX_APP_SERVER_BINARY) ?? "codex",
-    managedConversationModel:
-      optionalEnv(environment.KOED_MANAGED_CONVERSATION_MODEL) ?? "gpt-5.4",
-    managedConversationClaudeModel:
-      optionalEnv(environment.KOED_MANAGED_CONVERSATION_CLAUDE_MODEL) ??
-      "claude-haiku-4-5-20251001",
-    managedConversationReasoningEffort:
-      optionalEnv(environment.KOED_MANAGED_CONVERSATION_REASONING_EFFORT) ??
-      "high",
     koedHome: resolve(environment.KOED_HOME ?? resolve(homedir(), ".koed")),
     historicalImport: {
       maxRows: boundedIntEnv(

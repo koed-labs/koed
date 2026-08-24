@@ -1178,6 +1178,9 @@ const createPersonalMemoryApi = (): PersonalDesktopApi => {
   stored.set(initial.noteId, initial);
   return {
     assignSessionProject: vi.fn(async () => ({ projectId: null })),
+    updateSessionPresentation: vi.fn(async () => {
+      throw new Error("Unexpected presentation update in this fixture");
+    }),
     createNote: vi.fn(async ({ body }) => {
       const created = testNote(stored.size + 1, body);
       stored.set(created.noteId, created);
@@ -1333,6 +1336,9 @@ describe("CollaborationApp", () => {
     const listProjects = vi.fn(async () => []);
     const personalMemoryApi: PersonalDesktopApi = {
       assignSessionProject: vi.fn(async () => ({ projectId: null })),
+      updateSessionPresentation: vi.fn(async () => {
+        throw new Error("not used");
+      }),
       listProjects,
       loadEventPage: vi.fn(async () => []),
       updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
@@ -1488,6 +1494,9 @@ describe("CollaborationApp", () => {
     const client = createClient(snapshot);
     const personalMemoryApi: PersonalDesktopApi = {
       assignSessionProject: vi.fn(async () => ({ projectId: null })),
+      updateSessionPresentation: vi.fn(async () => {
+        throw new Error("not used");
+      }),
       listProjects: vi.fn<PersonalDesktopApi["listProjects"]>(async () => [
         {
           id: "koed-project",
@@ -1508,7 +1517,8 @@ describe("CollaborationApp", () => {
               eventCount: 2,
               invalidatedCount: 0,
               latestAt: new Date().toISOString(),
-              sample: "A local Captured Session awaiting Team preparation."
+              sample: "A local Captured Session awaiting Team preparation.",
+              presentation: null
             }
           ]
         }
@@ -2181,6 +2191,9 @@ describe("CollaborationApp", () => {
     });
     const personalMemoryApi: PersonalDesktopApi = {
       assignSessionProject: vi.fn(async () => ({ projectId: null })),
+      updateSessionPresentation: vi.fn(async () => {
+        throw new Error("not used");
+      }),
       listProjects: vi.fn(async () => []),
       loadEventPage: vi.fn(async () => []),
       updateSessionTitle: vi.fn(async ({ title }) => ({ title })),

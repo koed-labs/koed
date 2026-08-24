@@ -3,15 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import * as mcpServerApi from "../src/index.js";
-import {
-  CodexAppServerClient,
-  prepareManagedCodexHome,
-  removeManagedCodexHome
-} from "../src/codex-app-server-runner.js";
+import { CodexAppServerClient } from "../src/codex-app-server-runner.js";
 import { MemoryApiError, type MemoryApiClient } from "../src/index.js";
 import {
   CodexManagedConversationSession,
+  managedConversationKoedMcpConfigOverrides,
   KOED_MANAGED_CONVERSATION_ENV
 } from "../src/codex-managed-conversation.js";
 
@@ -71,16 +67,6 @@ const waitFor = async (
   }
 };
 
-const managedSessionHomes = (directory: string): string[] => {
-  const root = path.join(directory, "koed-home", "codex-managed");
-  return fs.existsSync(root)
-    ? fs
-        .readdirSync(root)
-        .filter((entry) => entry.startsWith("session-"))
-        .map((entry) => path.join(root, entry))
-    : [];
-};
-
 const writeManagedFakeAppServer = (
   directory: string,
   transcriptPath: string,
@@ -107,6 +93,7 @@ const writeManagedFakeAppServer = (
     lifecyclePath?: string;
     pathOnlyInThreadStarted?: boolean;
     primaryParentThreadId?: string;
+    providerRequestKind?: "command_approval" | "user_input";
   } = {}
 ): string => {
   const modulePath = path.join(directory, "managed-fake-app-server.mjs");
@@ -197,11 +184,14 @@ const append = (records) => fs.appendFileSync(transcriptPath, records.map((recor
 const lifecycle = (event) => {
   if (options.lifecyclePath) fs.appendFileSync(options.lifecyclePath, event + "\\n");
 };
-if (!process.env.CODEX_HOME || process.env.CODEX_HOME === process.env.FAKE_SOURCE_CODEX_HOME) process.exit(5);
+if (!process.env.CODEX_HOME || process.env.CODEX_HOME !== process.env.FAKE_SOURCE_CODEX_HOME) process.exit(5);
 if (process.env.${KOED_MANAGED_CONVERSATION_ENV} !== "1") process.exit(10);
+const configOverrideIndex = process.argv.indexOf("--config");
+const koedOverride = process.argv[configOverrideIndex + 1] ?? "";
+if (configOverrideIndex < 0 || !koedOverride.startsWith("mcp_servers.koed={") || !koedOverride.includes("KOED_HOME=" + JSON.stringify(process.env.KOED_HOME))) process.exit(16);
 if ((fs.statSync(process.env.CODEX_HOME).mode & 0o777) !== 0o700) process.exit(11);
-const isolatedConfig = fs.readFileSync(path.join(process.env.CODEX_HOME, "config.toml"), "utf8");
-if (isolatedConfig.includes("capture_hook")) process.exit(6);
+const userConfig = fs.readFileSync(path.join(process.env.CODEX_HOME, "config.toml"), "utf8");
+if (!userConfig.includes("capture_hook")) process.exit(6);
 if ((fs.statSync(path.join(process.env.CODEX_HOME, "config.toml")).mode & 0o777) !== 0o600) process.exit(12);
 const expectedAuth = JSON.parse(process.env.FAKE_EXPECTED_AUTH ?? "{}");
 const copiedAuth = JSON.parse(fs.readFileSync(path.join(process.env.CODEX_HOME, "auth.json"), "utf8"));
@@ -251,10 +241,22 @@ reader.on("line", (line) => {
   if (!line.trim()) return;
   const message = JSON.parse(line);
   if ((typeof message.id === "number" || typeof message.id === "string") && !message.method && pendingServerRequests.has(message.id)) {
-    const turn = pendingServerRequests.get(message.id);
+    const pending = pendingServerRequests.get(message.id);
     pendingServerRequests.delete(message.id);
-    if (message.error?.code !== -32601) process.exit(8);
-    completeTurn(turn, "completed");
+    if (pending.kind === "unsupported") {
+      if (message.error?.code !== -32601) process.exit(8);
+    } else if (pending.kind === "command_approval") {
+      if (message.result?.decision !== "accept") process.exit(14);
+      lifecycle("provider-response:command_approval");
+    } else if (
+      JSON.stringify(message.result) !==
+      JSON.stringify({ answers: { target: { answers: ["Core"] } } })
+    ) {
+      process.exit(15);
+    } else {
+      lifecycle("provider-response:user_input");
+    }
+    completeTurn(pending.turn, "completed");
     return;
   }
   if (message.method === "initialize") {
@@ -351,9 +353,58 @@ reader.on("line", (line) => {
     if ((options.childNotificationCount ?? 0) > 0) {
       send({ method: "turn/completed", params: { threadId: "child-thread-1", turn: { id: "child-turn-1", status: "completed", completedAt: (turn.base + 300) / 1000 } } });
     }
+    if (options.providerRequestKind) {
+      const requestId = "provider-request-" + index;
+      pendingServerRequests.set(requestId, {
+        turn,
+        kind: options.providerRequestKind
+      });
+      send(
+        options.providerRequestKind === "command_approval"
+          ? {
+              id: requestId,
+              method: "item/commandExecution/requestApproval",
+              params: {
+                threadId,
+                turnId,
+                itemId: turn.callId,
+                approvalId: "approval-" + index,
+                startedAtMs: turn.base + 350,
+                command: "printf managed",
+                cwd: turn.cwd,
+                reason: "test approval"
+              }
+            }
+          : {
+              id: requestId,
+              method: "item/tool/requestUserInput",
+              params: {
+                threadId,
+                turnId,
+                itemId: turn.callId,
+                questions: [
+                  {
+                    id: "target",
+                    header: "Target",
+                    question: "Which target?",
+                    isOther: false,
+                    isSecret: false,
+                    options: [
+                      { label: "Core", description: "Inspect core" },
+                      { label: "TUI", description: "Inspect TUI" }
+                    ]
+                  }
+                ],
+                isBlocking: true,
+                autoResolutionMs: null
+              }
+            }
+      );
+      return;
+    }
     if (options.unsupportedServerRequest) {
       const requestId = "server-request-" + index;
-      pendingServerRequests.set(requestId, turn);
+      pendingServerRequests.set(requestId, { turn, kind: "unsupported" });
       send({ id: requestId, method: "account/login/start", params: { threadId, turnId } });
       return;
     }
@@ -663,6 +714,22 @@ class FakeMemoryClient {
     sessionId: string;
     externalTurnId: string;
   }) {
+    const terminalEvidence = this.observations.some(
+      (item) =>
+        item.sessionId === input.sessionId &&
+        item.externalTurnId === input.externalTurnId &&
+        item.sourceTransport === "transcript" &&
+        ["task_complete", "turn_aborted"].includes(String(item.sourceEventType))
+    );
+    if (!terminalEvidence) {
+      throw new MemoryApiError(
+        "Managed turn cannot be projected before terminal reconciliation",
+        {
+          status: 409,
+          payload: { code: "managed_turn_not_terminal" }
+        }
+      );
+    }
     if (this.releaseFailuresRemaining > 0) {
       this.releaseFailuresRemaining -= 1;
       this.operations.push({
@@ -749,7 +816,7 @@ const configFor = (
   const managedResume = resume
     ? {
         ...resume,
-        codexHome: resume.codexHome ?? prepareManagedCodexHome(appServerEnv)
+        codexHome: resume.codexHome ?? sourceCodexHome
       }
     : undefined;
   return {
@@ -770,6 +837,21 @@ const configFor = (
 };
 
 describe("Codex managed conversation coordinator", () => {
+  it("connects managed recall to the selected Koed runtime", () => {
+    const overrides = managedConversationKoedMcpConfigOverrides({
+      KOED_HOME: "/tmp/koed home",
+      CODEX_HOME: "/tmp/codex-home"
+    });
+    expect(overrides).toHaveLength(1);
+    expect(overrides[0]).toContain(
+      `command=${JSON.stringify(process.execPath)}`
+    );
+    expect(overrides[0]).toContain('/cli.js"]');
+    expect(overrides[0]).toContain('env={KOED_HOME="/tmp/koed home"}');
+    expect(overrides[0]).toContain("enabled=true");
+    expect(managedConversationKoedMcpConfigOverrides({})).toEqual([]);
+  });
+
   it("accepts a rollout path supplied by the buffered thread/started event", async () => {
     const directory = fs.mkdtempSync(
       path.join(os.tmpdir(), "koed-managed-conversation-")
@@ -821,7 +903,8 @@ describe("Codex managed conversation coordinator", () => {
         thread: {
           id: "managed-thread-1",
           parentThreadId: "parent-thread-1",
-          path: transcriptPath
+          path: transcriptPath,
+          cwd: directory
         },
         transcriptPath
       });
@@ -850,13 +933,21 @@ describe("Codex managed conversation coordinator", () => {
     const transcriptPath = path.join(directory, "rollout.jsonl");
     expect(fs.existsSync(transcriptPath)).toBe(false);
     const memoryClient = new FakeMemoryClient();
-    const session = new CodexManagedConversationSession(
-      configFor(
-        memoryClient,
-        writeManagedFakeAppServer(directory, transcriptPath),
-        directory
-      )
+    const streamedDeltas: string[] = [];
+    const config = configFor(
+      memoryClient,
+      writeManagedFakeAppServer(directory, transcriptPath),
+      directory
     );
+    const session = new CodexManagedConversationSession({
+      ...config,
+      appServer: {
+        ...config.appServer,
+        onAgentMessageDelta: ({ delta }) => {
+          streamedDeltas.push(delta);
+        }
+      }
+    });
     let managedHome: string | undefined;
 
     try {
@@ -876,6 +967,7 @@ describe("Codex managed conversation coordinator", () => {
           (item) => item.sourceEventType === "item/agentMessage/delta"
         )
       ).toBe(false);
+      expect(streamedDeltas).toEqual(["Managed answer"]);
 
       const canonicalGroups = new Map<string, Array<Record<string, unknown>>>();
       for (const observation of memoryClient.observations) {
@@ -975,14 +1067,11 @@ describe("Codex managed conversation coordinator", () => {
         | Record<string, unknown>
         | undefined;
       managedHome = String(initialization?.codexHome);
-      expect(path.dirname(managedHome)).toBe(
-        path.join(directory, "koed-home", "codex-managed")
-      );
-      expect(path.basename(managedHome)).toMatch(/^session-/);
+      expect(managedHome).toBe(path.join(directory, "source-codex-home"));
       expect(initialization?.codexHome).toBe(managedHome);
       expect(
         fs.readFileSync(path.join(managedHome, "config.toml"), "utf8")
-      ).not.toContain("capture_hook");
+      ).toContain("capture_hook");
       expect(
         JSON.parse(fs.readFileSync(path.join(managedHome, "auth.json"), "utf8"))
       ).toEqual({ OPENAI_API_KEY: "managed-test-key" });
@@ -1255,6 +1344,110 @@ describe("Codex managed conversation coordinator", () => {
     }
   });
 
+  it.each([
+    ["command_approval", { decision: "accept" }],
+    ["user_input", { answers: { target: { answers: ["Core"] } } }]
+  ] as const)(
+    "routes %s provider requests through the supervised handler",
+    async (providerRequestKind, providerResponse) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), `koed-managed-${providerRequestKind}-`)
+      );
+      const transcriptPath = path.join(directory, "rollout.jsonl");
+      const lifecyclePath = path.join(directory, "lifecycle.log");
+      fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+      const memoryClient = new FakeMemoryClient();
+      const received: Array<{
+        method: string;
+        params: Record<string, unknown>;
+      }> = [];
+      const base = configFor(
+        memoryClient,
+        writeManagedFakeAppServer(directory, transcriptPath, {
+          providerRequestKind,
+          lifecyclePath
+        }),
+        directory
+      );
+      const session = new CodexManagedConversationSession({
+        ...base,
+        appServer: {
+          ...base.appServer,
+          providerRequestHandler: async (request) => {
+            received.push(request);
+            return providerResponse;
+          }
+        }
+      });
+
+      try {
+        await expect(
+          session.runTurn("Provider request", 2_000)
+        ).resolves.toMatchObject({
+          text: "Managed answer"
+        });
+        expect(received).toHaveLength(1);
+        expect(received[0]).toMatchObject({
+          method:
+            providerRequestKind === "command_approval"
+              ? "item/commandExecution/requestApproval"
+              : "item/tool/requestUserInput",
+          params: {
+            threadId: "managed-thread-1",
+            turnId: "managed-turn-1",
+            itemId: "call-1"
+          }
+        });
+        expect(fs.readFileSync(lifecyclePath, "utf8")).toContain(
+          `provider-response:${providerRequestKind}`
+        );
+      } finally {
+        await session.closeAndWait();
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("interrupts an active turn without waiting for the prompt lane", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-direct-interrupt-")
+    );
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    const lifecyclePath = path.join(directory, "lifecycle.log");
+    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    const session = new CodexManagedConversationSession(
+      configFor(
+        new FakeMemoryClient(),
+        writeManagedFakeAppServer(directory, transcriptPath, {
+          runUntilInterrupted: true,
+          lifecyclePath
+        }),
+        directory
+      )
+    );
+
+    try {
+      await session.start();
+      const turn = session.runTurn("Interrupt me", 2_000);
+      let interruption: { interrupted: boolean; turnId?: string } = {
+        interrupted: false
+      };
+      const deadline = Date.now() + 1_000;
+      while (!interruption.interrupted && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        interruption = await session.interruptActiveTurn();
+      }
+      expect(interruption).toMatchObject({ interrupted: true });
+      await expect(turn).rejects.toMatchObject({
+        name: "CodexAppServerTurnError",
+        turnId: "managed-turn-1"
+      });
+    } finally {
+      await session.closeAndWait();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("closes a failed startup child and can retry startup cleanly", async () => {
     const directory = fs.mkdtempSync(
       path.join(os.tmpdir(), "koed-managed-start-cleanup-")
@@ -1284,7 +1477,6 @@ describe("Codex managed conversation coordinator", () => {
       );
       expect(fs.readFileSync(launchCounterPath, "utf8")).toBe("1");
       expect(fs.readFileSync(lifecyclePath, "utf8")).toContain("signal");
-      expect(managedSessionHomes(directory)).toEqual([]);
 
       const started = await session.start();
       expect(started.thread.id).toBe("managed-thread-1");
@@ -1296,12 +1488,11 @@ describe("Codex managed conversation coordinator", () => {
       ).toHaveLength(1);
     } finally {
       await session.closeAndWait();
-      expect(managedSessionHomes(directory)).toHaveLength(1);
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
 
-  it("leases a durable managed home exclusively and releases it on close", async () => {
+  it("allows concurrent managed conversations to share the configured Codex home", async () => {
     const directory = fs.mkdtempSync(
       path.join(os.tmpdir(), "koed-managed-exclusive-lease-")
     );
@@ -1316,11 +1507,6 @@ describe("Codex managed conversation coordinator", () => {
 
     try {
       const started = await first.start();
-      const leasePath = path.join(
-        started.codexHome,
-        ".koed-managed-home.lease"
-      );
-      expect(fs.existsSync(leasePath)).toBe(true);
       second = new CodexManagedConversationSession(
         configFor(memoryClient, binary, directory, {
           threadId: started.thread.id,
@@ -1330,13 +1516,16 @@ describe("Codex managed conversation coordinator", () => {
         })
       );
 
-      await expect(second.start()).rejects.toThrow(/lease|active/i);
+      await expect(second.start()).resolves.toMatchObject({
+        codexHome: started.codexHome
+      });
       await first.closeAndWait();
-      expect(fs.existsSync(leasePath)).toBe(false);
 
       const resumed = await second.start();
       expect(resumed.codexHome).toBe(started.codexHome);
-      expect(fs.existsSync(leasePath)).toBe(true);
+      expect(
+        fs.readFileSync(path.join(started.codexHome, "config.toml"), "utf8")
+      ).toContain("capture_hook");
     } finally {
       await second?.closeAndWait().catch(() => undefined);
       await first.closeAndWait().catch(() => undefined);
@@ -1344,108 +1533,30 @@ describe("Codex managed conversation coordinator", () => {
     }
   });
 
-  it("recovers a stale managed-home lease and replaces its owner record", async () => {
+  it("refuses to resume a conversation through a different Codex home", async () => {
     const directory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "koed-managed-stale-lease-")
-    );
-    const transcriptPath = path.join(directory, "rollout.jsonl");
-    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
-    const memoryClient = new FakeMemoryClient("stale-lease-session");
-    const binary = writeManagedFakeAppServer(directory, transcriptPath);
-    const config = configFor(memoryClient, binary, directory, {
-      threadId: "managed-thread-1",
-      sessionId: "stale-lease-session",
-      transcriptPath
-    });
-    const codexHome = config.resume!.codexHome;
-    const leasePath = path.join(codexHome, ".koed-managed-home.lease");
-    fs.mkdirSync(leasePath, { mode: 0o700 });
-    fs.writeFileSync(
-      path.join(leasePath, "owner.json"),
-      JSON.stringify({
-        version: 1,
-        pid: 2_147_483_647,
-        hostname: os.hostname(),
-        processStartId: "stale-process",
-        token: "stale-token",
-        createdAt: "2020-01-01T00:00:00.000Z"
-      }),
-      { mode: 0o600 }
-    );
-    const session = new CodexManagedConversationSession(config);
-    const contender = new CodexManagedConversationSession(config);
-
-    try {
-      await session.start();
-      const owner = JSON.parse(
-        fs.readFileSync(path.join(leasePath, "owner.json"), "utf8")
-      ) as { pid: number; token: string };
-      expect(owner.pid).toBe(process.pid);
-      expect(owner.token).not.toBe("stale-token");
-      expect(
-        fs
-          .readdirSync(codexHome)
-          .filter((entry) =>
-            entry.startsWith(".koed-managed-home.lease.stale-")
-          )
-      ).toHaveLength(1);
-      await expect(contender.start()).rejects.toThrow(/lease|active/i);
-    } finally {
-      await contender.closeAndWait().catch(() => undefined);
-      await session.closeAndWait().catch(() => undefined);
-      expect(fs.existsSync(leasePath)).toBe(false);
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
-  it("exports a validated destroy operation that refuses an active home", async () => {
-    const directory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "koed-managed-destroy-")
+      path.join(os.tmpdir(), "koed-managed-home-mismatch-")
     );
     const transcriptPath = path.join(directory, "rollout.jsonl");
     fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
     const memoryClient = new FakeMemoryClient();
-    const binary = writeManagedFakeAppServer(directory, transcriptPath);
-    const config = configFor(memoryClient, binary, directory);
+    const config = configFor(
+      memoryClient,
+      writeManagedFakeAppServer(directory, transcriptPath),
+      directory,
+      {
+        threadId: "managed-thread-1",
+        sessionId: "koed-session-1",
+        transcriptPath,
+        codexHome: path.join(directory, "different-codex-home")
+      }
+    );
     const session = new CodexManagedConversationSession(config);
-    const destroyManagedCodexHome = (
-      mcpServerApi as unknown as Record<string, unknown>
-    ).destroyManagedCodexHome as
-      | ((managedHome: string, env?: NodeJS.ProcessEnv) => void)
-      | undefined;
 
     try {
-      expect(destroyManagedCodexHome).toBeTypeOf("function");
-      if (!destroyManagedCodexHome) {
-        throw new Error("destroyManagedCodexHome is not exported");
-      }
-      const started = await session.start();
-      expect(() =>
-        destroyManagedCodexHome(started.codexHome, config.appServer.env)
-      ).toThrow(/lease|active/i);
-
-      await session.closeAndWait();
-      const retainedTranscript = path.join(
-        started.codexHome,
-        "sessions",
-        "retained-rollout.jsonl"
+      await expect(session.start()).rejects.toThrow(
+        "Managed Codex conversation belongs to a different AI Client home"
       );
-      fs.mkdirSync(path.dirname(retainedTranscript), { recursive: true });
-      fs.writeFileSync(retainedTranscript, "sensitive transcript", {
-        mode: 0o600
-      });
-      expect(fs.existsSync(path.join(started.codexHome, "auth.json"))).toBe(
-        true
-      );
-      expect(
-        fs.existsSync(path.join(started.codexHome, "koed-ingestion-state.json"))
-      ).toBe(false);
-
-      destroyManagedCodexHome(started.codexHome, config.appServer.env);
-      expect(fs.existsSync(started.codexHome)).toBe(false);
-      expect(() =>
-        destroyManagedCodexHome(directory, config.appServer.env)
-      ).toThrow(/outside/i);
     } finally {
       await session.closeAndWait().catch(() => undefined);
       fs.rmSync(directory, { recursive: true, force: true });
@@ -1463,7 +1574,7 @@ describe("Codex managed conversation coordinator", () => {
       stateNoiseCount: 30
     });
     const config = configFor(memoryClient, binary, directory);
-    const managedHome = prepareManagedCodexHome(config.appServer.env);
+    const managedHome = config.appServer.env.CODEX_HOME!;
     const client = new CodexAppServerClient(
       binary,
       directory,
@@ -1473,7 +1584,13 @@ describe("Codex managed conversation coordinator", () => {
         [KOED_MANAGED_CONVERSATION_ENV]: "1"
       },
       undefined,
-      { maxRawEvents: 6, maxTurnStates: 3 }
+      {
+        maxRawEvents: 6,
+        maxTurnStates: 3,
+        configOverrides: managedConversationKoedMcpConfigOverrides(
+          config.appServer.env
+        )
+      }
     );
 
     try {
@@ -1497,7 +1614,6 @@ describe("Codex managed conversation coordinator", () => {
       expect(client.turnStateCount()).toBeLessThanOrEqual(3);
     } finally {
       await client.closeAndWait(200);
-      removeManagedCodexHome(managedHome, config.appServer.env);
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
@@ -1589,7 +1705,6 @@ describe("Codex managed conversation coordinator", () => {
         "durable event capacity exceeded"
       );
       expect(fs.readFileSync(lifecyclePath, "utf8")).toContain("signal");
-      expect(managedSessionHomes(directory)).toHaveLength(1);
       await expect(session.runTurn("Closed prompt", 100)).rejects.toThrow(
         "durable event capacity exceeded"
       );
@@ -1622,7 +1737,6 @@ describe("Codex managed conversation coordinator", () => {
       await expect(session.start()).rejects.toThrow(
         "pre-start event capacity exceeded"
       );
-      expect(managedSessionHomes(directory)).toEqual([]);
       expect(
         memoryClient.operations.filter(
           (operation) => operation.kind === "create_session"
@@ -1668,7 +1782,6 @@ describe("Codex managed conversation coordinator", () => {
         await expect(
           session.runTurn("Byte limit prompt", 2_000)
         ).rejects.toThrow(testCase.expected);
-        expect(managedSessionHomes(directory)).toHaveLength(1);
       } finally {
         await session.closeAndWait().catch(() => undefined);
         fs.rmSync(directory, { recursive: true, force: true });
@@ -1705,7 +1818,6 @@ describe("Codex managed conversation coordinator", () => {
       expect(fs.readFileSync(lifecyclePath, "utf8").trim().split("\n")).toEqual(
         ["turn-accepted", "signal"]
       );
-      expect(managedSessionHomes(directory)).toHaveLength(1);
     } finally {
       await session.closeAndWait().catch(() => undefined);
       fs.rmSync(directory, { recursive: true, force: true });
@@ -1741,7 +1853,6 @@ describe("Codex managed conversation coordinator", () => {
       expect(fs.readFileSync(lifecyclePath, "utf8").trim().split("\n")).toEqual(
         ["turn-accepted", "signal"]
       );
-      expect(managedSessionHomes(directory)).toHaveLength(1);
       await expect(session.runTurn("Closed prompt", 100)).rejects.toThrow(
         "closed"
       );
@@ -1751,7 +1862,7 @@ describe("Codex managed conversation coordinator", () => {
     }
   });
 
-  it("recovers from an idle child exit while retaining its isolated session home", async () => {
+  it("recovers from an idle child exit while retaining the configured Codex home", async () => {
     const directory = fs.mkdtempSync(
       path.join(os.tmpdir(), "koed-managed-idle-restart-")
     );
@@ -1798,7 +1909,6 @@ describe("Codex managed conversation coordinator", () => {
         () => !(session as unknown as { started: boolean }).started
       );
       expect(fs.existsSync(firstHome)).toBe(true);
-      expect(managedSessionHomes(directory)).toEqual([firstHome]);
 
       const second = await session.runTurn("Second process", 2_000);
       expect(second.text).toBe("Managed answer 2");
@@ -1810,7 +1920,6 @@ describe("Codex managed conversation coordinator", () => {
       ).toHaveLength(2);
     } finally {
       await session.closeAndWait();
-      expect(managedSessionHomes(directory)).toHaveLength(1);
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
@@ -1897,7 +2006,6 @@ describe("Codex managed conversation coordinator", () => {
         )
       ).toBe(true);
       expect(fs.readFileSync(lifecyclePath, "utf8")).toContain("signal");
-      expect(managedSessionHomes(directory)).toHaveLength(1);
     } finally {
       await session.closeAndWait().catch(() => undefined);
       fs.rmSync(directory, { recursive: true, force: true });
@@ -1999,7 +2107,7 @@ describe("Codex managed conversation coordinator", () => {
       childTranscriptPath
     );
     const base = configFor(memoryClient, appServerBinary, directory);
-    const managedHome = prepareManagedCodexHome(base.appServer.env);
+    const managedHome = base.appServer.env.CODEX_HOME!;
     const sourceTranscriptPath = path.join(
       managedHome,
       "sessions",
@@ -2053,7 +2161,6 @@ describe("Codex managed conversation coordinator", () => {
       expect(typeof sourceArtifact?.providerCursorOffset).toBe("number");
     } finally {
       await session.closeAndWait().catch(() => undefined);
-      removeManagedCodexHome(managedHome, base.appServer.env);
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
@@ -2268,14 +2375,7 @@ describe("Codex managed conversation coordinator", () => {
         : 0;
       expect(committedOffset).toBeLessThan(fs.statSync(transcriptPath).size);
 
-      const leasePath = path.join(
-        started.codexHome,
-        ".koed-managed-home.lease"
-      );
       first.close();
-      await expect
-        .poll(() => fs.existsSync(leasePath), { timeout: 1_000, interval: 10 })
-        .toBe(false);
       memoryClient.setAppServerPersistenceUnavailable(false);
       resumed = new CodexManagedConversationSession(
         configFor(memoryClient, binary, directory, {
@@ -2399,6 +2499,54 @@ describe("Codex managed conversation coordinator", () => {
           )[0]?.offset ?? 0)
         : 0;
       expect(committedOffset).toBeLessThan(fs.statSync(transcriptPath).size);
+    } finally {
+      await session.closeAndWait().catch(() => undefined);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("uses durable terminal evidence when another reader wins transcript reconciliation", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-terminal-race-")
+    );
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    const memoryClient = new FakeMemoryClient();
+    const session = new CodexManagedConversationSession({
+      ...configFor(
+        memoryClient,
+        writeManagedFakeAppServer(directory, transcriptPath),
+        directory
+      ),
+      terminalReconciliationTimeoutMs: 500
+    });
+
+    try {
+      const started = await session.start();
+      memoryClient.observations.push({
+        id: "externally-reconciled-terminal",
+        sessionId: started.sessionId,
+        externalTurnId: "externally-reconciled-turn",
+        sourceTransport: "transcript",
+        sourceEventType: "task_complete"
+      });
+      await (
+        session as unknown as {
+          reconcileAndSealTurn(
+            turnId: string,
+            releaseProjection: boolean
+          ): Promise<void>;
+        }
+      ).reconcileAndSealTurn("externally-reconciled-turn", true);
+
+      expect(
+        memoryClient.operations.filter(
+          (operation) =>
+            operation.kind === "release" &&
+            operation.externalTurnId === "externally-reconciled-turn" &&
+            operation.sessionId === started.sessionId
+        )
+      ).toHaveLength(1);
     } finally {
       await session.closeAndWait().catch(() => undefined);
       fs.rmSync(directory, { recursive: true, force: true });

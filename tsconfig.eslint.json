@@ -25,6 +25,9 @@
       "@koed/shared/collaboration": [
         "packages/shared/src/collaboration-contract.ts"
       ],
+      "@koed/shared/execution-workspace": [
+        "packages/shared/src/execution-workspace.ts"
+      ],
       "@koed/shared/personal-desktop": [
         "packages/shared/src/personal-desktop-contract.ts"
       ],

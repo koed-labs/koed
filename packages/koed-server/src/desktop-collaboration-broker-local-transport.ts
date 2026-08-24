@@ -25,6 +25,11 @@ import {
   type CollaborationSnapshot,
   type CollaborationSubscription
 } from "@koed/shared";
+import {
+  negotiateDurableRealtimeTransport,
+  readBoundedSse,
+  runDurableRealtime
+} from "@koed/shared/durable-realtime";
 
 export const collaborationCommandPath = "/v1/local-edge/collaboration/command";
 export const collaborationRealtimeSubscriptionsPath =
@@ -61,6 +66,9 @@ export interface DesktopCollaborationBrokerLocalTransportOptions {
   random?: () => number;
   now?: () => number;
   sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+  offeredRealtimeTransports?: (
+    connection: CollaborationLocalConnection
+  ) => readonly string[];
 }
 
 interface ActiveSubscription {
@@ -193,19 +201,6 @@ const linkedAbortController = (
     }
   };
 };
-
-const defaultSleep = (delayMs: number, signal: AbortSignal) =>
-  new Promise<void>((resolve) => {
-    if (signal.aborted) return resolve();
-    const finish = () => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", finish);
-      resolve();
-    };
-    const timer = setTimeout(finish, delayMs);
-    timer.unref?.();
-    signal.addEventListener("abort", finish, { once: true });
-  });
 
 export const calculateCollaborationReconnectDelay = (
   attempt: number,
@@ -387,84 +382,11 @@ const parseBrokerAckResponse = (
   return parsed;
 };
 
-const readSse = async (
-  body: ReadableStream<Uint8Array>,
-  signal: AbortSignal,
-  onFrame: (
-    eventName: string,
-    payload: unknown
-  ) => Promise<"continue" | "terminal">
-): Promise<"ended" | "terminal"> => {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  const consumeFrame = async (
-    frame: string
-  ): Promise<"continue" | "terminal"> => {
-    if (
-      Buffer.byteLength(frame, "utf8") >
-      COLLABORATION_RENDERER_MAX_PENDING_BYTES
-    ) {
-      throw new Error("Collaboration stream frame exceeded its byte limit");
-    }
-    const lines = frame.split("\n");
-    if (lines.every((line) => line === "" || line.startsWith(":"))) {
-      return "continue";
-    }
-    const eventName =
-      lines
-        .find((line) => line.startsWith("event:"))
-        ?.slice(6)
-        .trim() ?? "message";
-    const data = lines
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trimStart())
-      .join("\n");
-    if (!data) throw new Error("Collaboration stream frame has no payload");
-    const parsedJson: unknown = JSON.parse(data);
-    return onFrame(eventName, parsedJson);
-  };
-
-  try {
-    for (;;) {
-      if (signal.aborted) return "terminal";
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      buffer += decoder
-        .decode(chunk.value, { stream: true })
-        .replace(/\r\n/g, "\n");
-      for (;;) {
-        const boundary = buffer.indexOf("\n\n");
-        if (boundary < 0) break;
-        const frame = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-        if ((await consumeFrame(frame)) === "terminal") return "terminal";
-      }
-      if (
-        Buffer.byteLength(buffer, "utf8") >
-        COLLABORATION_RENDERER_MAX_PENDING_BYTES
-      ) {
-        throw new Error("Collaboration stream frame exceeded its byte limit");
-      }
-    }
-    buffer += decoder.decode();
-    if (buffer.trim() && (await consumeFrame(buffer)) === "terminal") {
-      return "terminal";
-    }
-    return "ended";
-  } finally {
-    await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
-  }
-};
-
 export const createDesktopCollaborationBrokerLocalTransport = (
   options: DesktopCollaborationBrokerLocalTransportOptions
 ) => {
   const random = options.random ?? Math.random;
   const now = options.now ?? Date.now;
-  const sleep = options.sleep ?? defaultSleep;
   const subscriptions = new Map<string, ActiveSubscription>();
   const latestTeamSelections = new Map<
     string,
@@ -712,11 +634,32 @@ export const createDesktopCollaborationBrokerLocalTransport = (
   };
 
   const runStream = async (subscription: ActiveSubscription) => {
-    const attempts: number[] = [];
-    let reconnecting = false;
-    emitConnection(subscription, "connecting", 0, null, null);
-    while (!subscription.controller.signal.aborted) {
-      try {
+    await runDurableRealtime({
+      signal: subscription.controller.signal,
+      isCurrent: () => subscriptions.get(subscription.id) === subscription,
+      now,
+      sleep: options.sleep,
+      retry: {
+        maxAttempts: COLLABORATION_RECONNECT_MAX_ATTEMPTS,
+        attemptWindowMs: COLLABORATION_RECONNECT_WINDOW_MS,
+        unavailableCooldownMs: COLLABORATION_RECONNECT_UNAVAILABLE_COOLDOWN_MS,
+        delayForAttempt: (attempt) =>
+          calculateCollaborationReconnectDelay(attempt, random())
+      },
+      onState: (state) => {
+        if (state.state === "connecting" || state.state === "live") {
+          emitConnection(subscription, state.state, 0, null, null);
+          return;
+        }
+        emitConnection(
+          subscription,
+          state.state,
+          state.reconnectAttempt,
+          new Date(state.retryAtMs).toISOString(),
+          safeError("temporarily_unavailable", state.retryDelayMs)
+        );
+      },
+      connect: async ({ signal, reconnecting, isCurrent, markLive }) => {
         if (reconnecting) {
           const backendId = subscription.connection.backendId;
           const refreshedConnection = await options
@@ -732,6 +675,16 @@ export const createDesktopCollaborationBrokerLocalTransport = (
             throw new Error("Collaboration stream connection is unavailable");
           }
           subscription.connection = refreshedConnection;
+        }
+        if (!isCurrent()) return "terminal";
+        const transportId = negotiateDurableRealtimeTransport(
+          options.offeredRealtimeTransports?.(subscription.connection) ?? [
+            "sse"
+          ],
+          ["sse"]
+        );
+        if (transportId !== "sse") {
+          throw new Error("Collaboration realtime transport is unavailable");
         }
         const url = new URL(
           `${collaborationRealtimeSubscriptionsPath}/${encodeURIComponent(subscription.id)}/stream`,
@@ -754,7 +707,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
             authorization: subscription.connection.authorization
           },
           redirect: "error",
-          signal: subscription.controller.signal
+          signal
         });
         if (
           !response.ok ||
@@ -773,68 +726,30 @@ export const createDesktopCollaborationBrokerLocalTransport = (
               null,
               safeError("access_revoked")
             );
-            return;
+            return "terminal";
           }
-          if (response.status === 409) {
+          if (response.status === 404 || response.status === 409) {
             emitTerminalControl(subscription, "requires_snapshot");
-            return;
+            return "terminal";
           }
           throw new Error("Collaboration stream is unavailable");
         }
-        emitConnection(subscription, "live", 0, null, null);
-        const outcome = await readSse(
-          response.body,
-          subscription.controller.signal,
-          (eventName, payload) =>
-            Promise.resolve(
-              parseBrokerStreamFrame(subscription, eventName, payload)
-            )
-        );
-        if (outcome === "terminal") return;
-      } catch {
-        if (subscription.controller.signal.aborted) return;
+        markLive();
+        return readBoundedSse({
+          body: response.body,
+          signal,
+          maxFrameBytes: COLLABORATION_RENDERER_MAX_PENDING_BYTES,
+          onFrame: ({ event, data }) => {
+            if (!isCurrent()) return "terminal";
+            if (!data) {
+              throw new Error("Collaboration stream frame has no payload");
+            }
+            const payload: unknown = JSON.parse(data);
+            return parseBrokerStreamFrame(subscription, event, payload);
+          }
+        });
       }
-      reconnecting = true;
-
-      const attemptNow = now();
-      while (
-        attempts.length > 0 &&
-        attemptNow - attempts[0]! >= COLLABORATION_RECONNECT_WINDOW_MS
-      ) {
-        attempts.shift();
-      }
-      if (attempts.length >= COLLABORATION_RECONNECT_MAX_ATTEMPTS) {
-        const retryAtMs =
-          attemptNow + COLLABORATION_RECONNECT_UNAVAILABLE_COOLDOWN_MS;
-        emitConnection(
-          subscription,
-          "unavailable",
-          COLLABORATION_RECONNECT_MAX_ATTEMPTS,
-          new Date(retryAtMs).toISOString(),
-          safeError(
-            "temporarily_unavailable",
-            COLLABORATION_RECONNECT_UNAVAILABLE_COOLDOWN_MS
-          )
-        );
-        await sleep(
-          COLLABORATION_RECONNECT_UNAVAILABLE_COOLDOWN_MS,
-          subscription.controller.signal
-        );
-        attempts.length = 0;
-        continue;
-      }
-      attempts.push(attemptNow);
-      const attempt = attempts.length;
-      const delay = calculateCollaborationReconnectDelay(attempt, random());
-      emitConnection(
-        subscription,
-        "reconnecting",
-        attempt,
-        new Date(attemptNow + delay).toISOString(),
-        safeError("temporarily_unavailable", delay)
-      );
-      await sleep(delay, subscription.controller.signal);
-    }
+    });
   };
 
   const stopSubscription = (subscriptionId: string) => {
@@ -917,7 +832,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
           stopSubscription(subscription.id);
           return failureResult(command, safeError("access_revoked"));
         }
-        if (response.status === 409) {
+        if (response.status === 404 || response.status === 409) {
           emitTerminalControl(subscription, "requires_snapshot");
           stopSubscription(subscription.id);
           return failureResult(command, safeError("conflict"));

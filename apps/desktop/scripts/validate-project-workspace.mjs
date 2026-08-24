@@ -35,6 +35,10 @@ const inspectWorkspace = async (window) =>
       titleTextOverflow: title && getComputedStyle(title).textOverflow,
       previewTextOverflow: preview && getComputedStyle(preview).textOverflow,
       sourceAiClient: row?.textContent.includes('Codex CLI') ?? false,
+      pinnedHeadingVisible: document.body.textContent.includes('Pinned'),
+      settledToggleVisible: document.body.textContent.includes('Settled & snoozed'),
+      presentationActionCount: document.querySelectorAll('.personal-session-actions').length,
+      sessionListOverflow: Boolean(list && list.scrollWidth > list.clientWidth),
       rawMetadataExposed: document.body.textContent.includes('untrusted metadata'),
       timelineScrollable: Boolean(timeline && timeline.scrollHeight > timeline.clientHeight),
       timelineOverflowY: timeline && getComputedStyle(timeline).overflowY,
@@ -308,6 +312,10 @@ const run = async () => {
     assert.equal(wide.titleTextOverflow, "clip");
     assert.equal(wide.previewTextOverflow, "clip");
     assert.equal(wide.sourceAiClient, false);
+    assert.equal(wide.pinnedHeadingVisible, true);
+    assert.equal(wide.settledToggleVisible, true);
+    assert.equal(wide.presentationActionCount, 4);
+    assert.equal(wide.sessionListOverflow, false);
     assert.equal(wide.rawMetadataExposed, false);
     assert.ok(
       contrastRatio(wide.foreground, wide.background) >= 4.5,

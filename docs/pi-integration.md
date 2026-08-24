@@ -34,8 +34,7 @@ reports Pi executable/profile availability but never selects or configures Pi
 automatically. Select Pi explicitly in post-core onboarding; its setup has an
 independent consent prompt and can be cancelled without affecting core or other
 clients. A detected but unauthenticated Pi installation produces a Pi-only
-setup result and does not affect Koed's local runtime health. Pi Managed
-Conversation is explicitly unsupported. Preferences can set up, check, repair,
+setup result and does not affect Koed's local runtime health. Preferences can set up, check, repair,
 or remove Pi later.
 
 Contributor checkout alternative:
@@ -133,6 +132,27 @@ target uses the canonical transport-chunk envelope. If its representation is
 still above the historical API product ceiling, Koed advances past only that
 record with a digest-addressed, raw-only gap observation and skipped-record
 counter, then continues the Conversation.
+
+## Managed Conversations
+
+Managed Pi uses the configured npm installation's public SDK and native RPC
+server. Select the exact Pi instance, provider/model, reasoning effort, and
+permission mode in the Project launch picker. Full access is the default;
+Supervised, Auto-accept edits, and Auto are also available. Pi Auto asks for
+approval because Pi has no native automatic reviewer. These modes are tool
+policies, not an operating-system sandbox.
+
+The runner owns a persistent session directory and loads only the explicit
+Koed recall and permission extensions. Streaming text is transient presentation;
+the Transcript Watcher remains the canonical capture path. Completed turns
+drain the source consumer before checkpoint completion. Uncertain prompts are
+not automatically resubmitted.
+
+Handoff preserves exact source bytes and session identity while binding SDK
+tools to the receiving execution workspace. Fork uses native
+`SessionManager.forkFrom` and verifies a distinct identity, parent provenance,
+and unchanged parent bytes. Both operations use Koed's signed source-boundary,
+workspace, and execution-generation checks. Provider credentials remain local.
 
 ## Local Synthesis
 

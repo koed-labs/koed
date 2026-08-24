@@ -3,6 +3,7 @@ import {
   createEncryptedJsonPackage,
   crossIdentitySyncDeterministicUuid
 } from "@koed/shared";
+import { ConversationPresentationVersionConflictError } from "@koed/db";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
 import {
@@ -19,6 +20,7 @@ import {
   graphEventsQuerySchema,
   graphThreadIndexResponseSchema,
   graphSessionParamsSchema,
+  graphSessionPresentationPatchSchema,
   graphSessionProjectPatchSchema,
   graphSessionTitlePatchSchema,
   graphNodesQuerySchema,
@@ -44,6 +46,22 @@ const memoryExportQuerySchema = z.object({
   reason: z.string().trim().min(1).max(160).optional(),
   target: z.string().trim().min(1).max(160).optional(),
   expires_at: z.coerce.date().optional()
+});
+
+const publicConversationPresentation = (presentation: {
+  pinnedAt: string | null;
+  displayMode: "automatic" | "active" | "settled";
+  snoozedAt: string | null;
+  snoozedUntil: string | null;
+  version: number;
+  updatedAt: string;
+}) => ({
+  pinnedAt: presentation.pinnedAt,
+  displayMode: presentation.displayMode,
+  snoozedAt: presentation.snoozedAt,
+  snoozedUntil: presentation.snoozedUntil,
+  version: presentation.version,
+  updatedAt: presentation.updatedAt
 });
 
 export const registerGraphRoutes = (
@@ -233,7 +251,20 @@ export const registerGraphRoutes = (
         repo.listLcmGraphThreads({ userId: user.id }, personalQuery),
         repo.getLocalSyncDeployment()
       ]);
-      const response = graphThreadIndexResponseSchema.parse({
+      const sessionIds = projects.flatMap((project) =>
+        project.threads.flatMap((thread) =>
+          thread.sessionId ? [thread.sessionId] : []
+        )
+      );
+      const presentations = new Map(
+        (
+          await repo.listConversationPresentationStates(
+            { userId: user.id },
+            sessionIds
+          )
+        ).map((state) => [state.sessionId, state] as const)
+      );
+      const graphResponseInput = {
         projects: projects.map((project) => ({
           ...project,
           threads: project.threads.map((thread) => ({
@@ -247,10 +278,18 @@ export const registerGraphRoutes = (
                     originSessionId: thread.sessionId,
                     identity: "logical-memory"
                   })
+                : null,
+            presentation: thread.sessionId
+              ? presentations.has(thread.sessionId)
+                ? publicConversationPresentation(
+                    presentations.get(thread.sessionId)!
+                  )
                 : null
+              : null
           }))
         }))
-      });
+      };
+      const response = graphThreadIndexResponseSchema.parse(graphResponseInput);
       await cacheProvider.setJson(cacheKey, response, graphCacheTtlSeconds);
       return response;
     }
@@ -350,6 +389,38 @@ export const registerGraphRoutes = (
       }
       await cacheProvider.deleteByPrefix("koed:graph:");
       return { session };
+    }
+  );
+
+  app.patch(
+    "/v1/memory/graph/sessions/:sessionId/presentation",
+    { preHandler: memoryWriteRateLimit },
+    async (request, reply) => {
+      const repo = requireRepository();
+      const user = await authenticate(request);
+      const params = graphSessionParamsSchema.parse(request.params);
+      const input = graphSessionPresentationPatchSchema.parse(request.body);
+      try {
+        const presentation = await repo.updateConversationPresentationState(
+          { userId: user.id },
+          { sessionId: params.sessionId, ...input }
+        );
+        if (presentation) {
+          await cacheProvider.deleteByPrefix("koed:graph:");
+        }
+        return presentation
+          ? { presentation: publicConversationPresentation(presentation) }
+          : reply
+              .status(404)
+              .send({ error: "Captured session not found or not visible" });
+      } catch (error) {
+        if (error instanceof ConversationPresentationVersionConflictError) {
+          return reply.status(409).send({
+            error: "Conversation presentation changed on another client"
+          });
+        }
+        throw error;
+      }
     }
   );
 

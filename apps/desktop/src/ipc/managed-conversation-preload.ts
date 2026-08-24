@@ -26,20 +26,18 @@ export const createManagedConversationPreloadApi = (
   invoke: ManagedConversationIpcInvoke
 ): ManagedConversationDesktopApi => {
   const api: ManagedConversationDesktopApi = {
-    start: async (
-      projectId: string,
-      idempotencyKey: string,
-      owner: {
-        aiClientDriverId: "codex" | "claude" | "pi";
-        aiClientInstanceId: string;
-      }
-    ) => {
+    launchOptions: async () =>
+      correlated(
+        "launch_options",
+        await invoke(
+          managedConversationCommandChannel,
+          parseManagedConversationRequest({ operation: "launch_options" })
+        )
+      ),
+    start: async (input) => {
       const request = parseManagedConversationRequest({
         operation: "start",
-        projectId,
-        aiClientDriverId: owner.aiClientDriverId,
-        aiClientInstanceId: owner.aiClientInstanceId,
-        idempotencyKey
+        ...input
       }) as Extract<
         ReturnType<typeof parseManagedConversationRequest>,
         { operation: "start" }
@@ -82,7 +80,9 @@ export const createManagedConversationPreloadApi = (
     send: async (input) => {
       const request = parseManagedConversationRequest({
         operation: "send",
-        ...input
+        ...input,
+        fileMentionCommandIds: input.fileMentionCommandIds ?? [],
+        terminalContextReferences: input.terminalContextReferences ?? []
       }) as Extract<
         ReturnType<typeof parseManagedConversationRequest>,
         { operation: "send" }
@@ -94,14 +94,114 @@ export const createManagedConversationPreloadApi = (
       if (result.idempotencyKey !== request.idempotencyKey) {
         throw new Error("Invalid Managed Conversation send correlation.");
       }
+      if (result.clientUserMessageId !== request.clientUserMessageId) {
+        throw new Error(
+          "Invalid Managed Conversation user message correlation."
+        );
+      }
       return result;
     },
+    readDraft: async (input) =>
+      correlated(
+        "draft_read",
+        await invoke(
+          managedConversationCommandChannel,
+          parseManagedConversationRequest({ operation: "draft_read", ...input })
+        )
+      ),
+    writeDraft: async (input) =>
+      correlated(
+        "draft_write",
+        await invoke(
+          managedConversationCommandChannel,
+          parseManagedConversationRequest({
+            operation: "draft_write",
+            ...input
+          })
+        )
+      ),
+    deleteDraft: async (input) =>
+      correlated(
+        "draft_delete",
+        await invoke(
+          managedConversationCommandChannel,
+          parseManagedConversationRequest({
+            operation: "draft_delete",
+            ...input
+          })
+        )
+      ),
     targets: async () => {
       const request = parseManagedConversationRequest({
         operation: "targets"
       });
       return correlated(
         "targets",
+        await invoke(managedConversationCommandChannel, request)
+      );
+    },
+    usage: async (executionId: string) => {
+      const request = parseManagedConversationRequest({
+        operation: "usage",
+        executionId
+      }) as Extract<
+        ReturnType<typeof parseManagedConversationRequest>,
+        { operation: "usage" }
+      >;
+      const result = correlated(
+        "usage",
+        await invoke(managedConversationCommandChannel, request)
+      );
+      if (result.executionId !== request.executionId) {
+        throw new Error("Invalid Managed Conversation usage correlation.");
+      }
+      return result;
+    },
+    runtime: async (executionId: string) => {
+      const request = parseManagedConversationRequest({
+        operation: "runtime",
+        executionId
+      });
+      const result = correlated(
+        "runtime",
+        await invoke(managedConversationCommandChannel, request)
+      );
+      if (result.executionId !== executionId) {
+        throw new Error("Invalid Managed Conversation runtime correlation.");
+      }
+      return result;
+    },
+    respond: async (input) => {
+      const request = parseManagedConversationRequest({
+        operation: "runtime_respond",
+        ...input
+      });
+      const result = correlated(
+        "runtime_respond",
+        await invoke(managedConversationCommandChannel, request)
+      );
+      if (result.itemId !== input.itemId) {
+        throw new Error("Invalid Managed Conversation response correlation.");
+      }
+      return result;
+    },
+    interrupt: async (input) => {
+      const request = parseManagedConversationRequest({
+        operation: "interrupt",
+        ...input
+      });
+      return correlated(
+        "interrupt",
+        await invoke(managedConversationCommandChannel, request)
+      );
+    },
+    stop: async (input) => {
+      const request = parseManagedConversationRequest({
+        operation: "stop",
+        ...input
+      });
+      return correlated(
+        "stop",
         await invoke(managedConversationCommandChannel, request)
       );
     },

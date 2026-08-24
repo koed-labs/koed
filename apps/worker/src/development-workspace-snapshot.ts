@@ -16,21 +16,16 @@ import { devNull } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
+import {
+  classifyWorkspaceContent,
+  workspaceContentLimits
+} from "./workspace-content-policy.js";
+
 const execFileAsync = promisify(execFile);
 const protocol = "koed-development-workspace-snapshot-v1" as const;
-const maxFileBytes = 32 * 1024 * 1024;
-const maxPackageBytes = 256 * 1024 * 1024;
-const maxFiles = 25_000;
-const secretPathPattern =
-  /(^|\/)(\.env(?:\.|$)|id_(?:rsa|dsa|ecdsa|ed25519)$|credentials$|\.npmrc$|\.pypirc$|service-account[^/]*\.json$)/i;
-const environmentTemplatePathPattern =
-  /(^|\/)\.env(?:\.[^/]*)?\.(?:example|sample|template)$/i;
-const secretContentPatterns = [
-  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
-  /\bAKIA[0-9A-Z]{16}\b/,
-  /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9_-]{20,}\b/,
-  /\bgh[opusr]_[A-Za-z0-9]{30,}\b/
-] as const;
+const maxFileBytes = workspaceContentLimits.maxFileBytes;
+const maxPackageBytes = workspaceContentLimits.maxAggregateBytes;
+const maxFiles = workspaceContentLimits.maxFiles;
 
 type GitResult = { stdout: string; stderr: string };
 type GitBufferResult = { stdout: Buffer; stderr: Buffer };
@@ -292,27 +287,19 @@ const writeExclusiveFile = async (
 };
 
 const assertNoSecrets = (path: string, bytes: Uint8Array): void => {
-  if (
-    secretPathPattern.test(path) &&
-    !environmentTemplatePathPattern.test(path)
-  ) {
+  const reason = classifyWorkspaceContent(path, bytes);
+  if (reason === "secret_path") {
     throw new Error("WorkspaceSnapshotSecretPathError");
   }
-  const text = Buffer.from(bytes).toString("utf8");
-  if (secretContentPatterns.some((pattern) => pattern.test(text))) {
+  if (reason === "secret_content") {
     throw new Error("WorkspaceSnapshotSecretContentError");
+  }
+  if (reason === "git_lfs_pointer") {
+    throw new Error("WorkspaceSnapshotLfsUnsupportedError");
   }
 };
 
 const assertPortableBlob = (path: string, content: Buffer): void => {
-  if (
-    content
-      .subarray(0, 128)
-      .toString("utf8")
-      .startsWith("version https://git-lfs.github.com/spec/v1\n")
-  ) {
-    throw new Error("WorkspaceSnapshotLfsUnsupportedError");
-  }
   assertNoSecrets(normalizedRelativePath(path), content);
 };
 

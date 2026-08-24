@@ -17,6 +17,7 @@ import type {
   MemorySearchResult
 } from "@koed/core";
 import releaseManifest from "@koed/koed/package.json" with { type: "json" };
+import { ConversationPresentationVersionConflictError } from "@koed/db";
 import pdsFixture from "../../../packages/shared/test-fixtures/personal-device-sync-v1.json" with { type: "json" };
 import type {
   ActorContext,
@@ -45,6 +46,7 @@ import type {
   MemoryQuestionDetailRecord,
   MemoryNodeRecord,
   MemorySourceRepository,
+  RealtimeTransportTicketRepository,
   TeamBillingSeatStateRecord,
   TeamInviteRecord,
   TeamEntitlementGateRecord,
@@ -181,7 +183,17 @@ afterEach(() => {
     "KOED_OPS_OPERATOR_EMAILS",
     "KOED_OPS_ALERT_WEBHOOK_URL",
     "KOED_OPS_ALERT_WEBHOOK_TOKEN",
-    "KOED_OPS_METRICS_TOKEN"
+    "KOED_OPS_METRICS_TOKEN",
+    "MANAGED_TERMINAL_DETACHED_TTL_MS",
+    "COLLABORATION_REALTIME_WEBTRANSPORT_ENABLED",
+    "COLLABORATION_REALTIME_WEBTRANSPORT_ENDPOINT",
+    "COLLABORATION_REALTIME_WEBTRANSPORT_LISTEN_HOST",
+    "COLLABORATION_REALTIME_WEBTRANSPORT_LISTEN_PORT",
+    "COLLABORATION_REALTIME_WEBTRANSPORT_TLS_CERTIFICATE_PATH",
+    "COLLABORATION_REALTIME_WEBTRANSPORT_TLS_KEY_PATH",
+    "COLLABORATION_REALTIME_WEBTRANSPORT_MAX_SESSIONS",
+    "COLLABORATION_REALTIME_WEBTRANSPORT_MAX_STREAMS_PER_SESSION",
+    "COLLABORATION_REALTIME_WEBTRANSPORT_MAX_DATAGRAM_BYTES"
   ]) {
     delete process.env[name];
   }
@@ -484,15 +496,31 @@ type CapabilitiesResponse = {
     collaboration: string;
     shareGrants: string;
     crossIdentitySync: string;
+    managedDevelopmentPreviews: string;
     memoryInbox: string;
   };
   protocols: {
     collaborationRealtime: {
       version: number;
-      transport: string;
       snapshotEndpoint: string;
       streamEndpoint: string;
       acknowledgementEndpoint: string;
+      offers: Array<{
+        id: string;
+        availability: string;
+        protocolVersions: number[];
+        endpoint: string | null;
+        authentication: string;
+        reliability: string;
+        direction: string;
+      }>;
+      transportTicket: {
+        endpoint: string;
+        version: number;
+        ttlSeconds: number;
+        singleUse: boolean;
+        authority: string;
+      };
     };
   };
   commercial: {
@@ -654,6 +682,14 @@ type GraphThreadIndexResponse = {
       threadKind: string;
       parentThreadId: string | null;
       parentSessionId: string | null;
+      presentation: {
+        pinnedAt: string | null;
+        displayMode: "automatic" | "active" | "settled";
+        snoozedAt: string | null;
+        snoozedUntil: string | null;
+        version: number;
+        updatedAt: string;
+      } | null;
     }>;
   }>;
 };
@@ -705,6 +741,17 @@ const createFakeRepository = () => {
     updatedAt: string;
   }> = [];
   const capturedSessions = new Map<string, CapturedSessionRecord>();
+  const conversationPresentations = new Map<
+    string,
+    {
+      pinnedAt: string | null;
+      displayMode: "automatic" | "active" | "settled";
+      snoozedAt: string | null;
+      snoozedUntil: string | null;
+      version: number;
+      updatedAt: string;
+    }
+  >();
   const capturedSessionIdsByIdempotencyKey = new Map<string, string>();
   const historicalImportRuns = new Map<string, HistoricalImportRunRecord>();
   const historicalImportSources = new Map<
@@ -3861,6 +3908,14 @@ const createFakeRepository = () => {
         projectionPolicyRevision: 1
       };
     },
+    async resetConversationPresentation() {
+      return {
+        conversationItemIds: [],
+        invalidatedMessageIds: [],
+        invalidatedToolEventIds: [],
+        presentationPolicyRevision: 1
+      };
+    },
     async recordWorkflowTokenUsage(_actor, input) {
       return {
         id: randomUUID(),
@@ -3901,6 +3956,9 @@ const createFakeRepository = () => {
           totalTokens: 6
         }
       ];
+    },
+    async getLatestManagedConversationTokenUsage() {
+      return null;
     },
     async projectPendingConversationItems(_actor, input) {
       if (input?.visibility !== "personal") {
@@ -5037,6 +5095,63 @@ const createFakeRepository = () => {
           return rightLatest.localeCompare(leftLatest);
         });
     },
+    async listConversationPresentationStates(actor, sessionIds) {
+      return sessionIds.flatMap((sessionId) => {
+        const session = capturedSessions.get(sessionId);
+        if (!session || session.ownerUserId !== actor.userId) return [];
+        const state = conversationPresentations.get(sessionId);
+        return [
+          {
+            sessionId,
+            logicalSessionId: session.logicalSessionId,
+            pinnedAt: state?.pinnedAt ?? null,
+            displayMode: state?.displayMode ?? "automatic",
+            snoozedAt: state?.snoozedAt ?? null,
+            snoozedUntil: state?.snoozedUntil ?? null,
+            version: state?.version ?? 0,
+            updatedAt: state?.updatedAt ?? session.createdAt
+          }
+        ];
+      });
+    },
+    async updateConversationPresentationState(actor, input) {
+      const session = capturedSessions.get(input.sessionId);
+      if (!session || session.ownerUserId !== actor.userId) return null;
+      const current = conversationPresentations.get(input.sessionId);
+      const currentVersion = current?.version ?? 0;
+      if (currentVersion !== input.expectedVersion) {
+        throw new ConversationPresentationVersionConflictError();
+      }
+      const updatedAt = new Date().toISOString();
+      const snoozedAt =
+        input.snoozedUntil === undefined
+          ? (current?.snoozedAt ?? null)
+          : input.snoozedUntil === null
+            ? null
+            : updatedAt;
+      const next = {
+        pinnedAt:
+          input.pinned === undefined
+            ? (current?.pinnedAt ?? null)
+            : input.pinned
+              ? updatedAt
+              : null,
+        displayMode: input.displayMode ?? current?.displayMode ?? "automatic",
+        snoozedAt,
+        snoozedUntil:
+          input.snoozedUntil === undefined
+            ? (current?.snoozedUntil ?? null)
+            : input.snoozedUntil,
+        version: currentVersion + 1,
+        updatedAt
+      };
+      conversationPresentations.set(input.sessionId, next);
+      return {
+        sessionId: input.sessionId,
+        logicalSessionId: session.logicalSessionId,
+        ...next
+      };
+    },
     async getLcmGraphEvent(actor, eventId, input = {}) {
       const event = (
         await this.listLcmGraphEvents!(actor, {
@@ -5592,7 +5707,7 @@ describe("api health", () => {
     expect(capabilities).toMatchObject({
       product: "koed",
       apiVersion: "v1",
-      capabilitySchemaVersion: 6,
+      capabilitySchemaVersion: 9,
       audience: "public",
       deployment: {
         profile: "local_personal",
@@ -5624,15 +5739,33 @@ describe("api health", () => {
         collaboration: "unavailable",
         shareGrants: "unavailable",
         crossIdentitySync: "unavailable",
+        managedDevelopmentPreviews: "unavailable",
         memoryInbox: "unavailable"
       },
       protocols: {
         collaborationRealtime: {
           version: COLLABORATION_CONTRACT_VERSION,
-          transport: "sse",
           snapshotEndpoint: "/v1/collaboration/realtime/snapshot",
           streamEndpoint: "/v1/collaboration/realtime/stream",
-          acknowledgementEndpoint: "/v1/collaboration/realtime/ack"
+          acknowledgementEndpoint: "/v1/collaboration/realtime/ack",
+          offers: [
+            {
+              id: "sse",
+              availability: "available",
+              protocolVersions: [COLLABORATION_CONTRACT_VERSION],
+              endpoint: "/v1/collaboration/realtime/stream",
+              authentication: "session_or_device_credential",
+              reliability: "reliable_ordered",
+              direction: "server_to_client"
+            }
+          ],
+          transportTicket: {
+            endpoint: "/v1/realtime/transport-tickets",
+            version: 1,
+            ttlSeconds: 30,
+            singleUse: true,
+            authority: "admission_only"
+          }
         }
       },
       commercial: {
@@ -5792,6 +5925,53 @@ describe("api health", () => {
     expect(response.body).not.toContain("API_TOKEN");
     expect(response.body).not.toContain("replace_with_generated");
     expect(response.body).not.toContain("WORKOS_API_KEY");
+  });
+
+  it("advertises only realtime adapters instantiated by the server runtime", async () => {
+    const ticketRepository = {
+      createTicket: vi.fn(),
+      consumeTicket: vi.fn(),
+      revokeTicketsForPrincipal: vi.fn(),
+      deleteExpiredTickets: vi.fn()
+    } as unknown as RealtimeTransportTicketRepository;
+    const app = await buildServer({
+      realtimeTransportTicketRepository: ticketRepository,
+      realtimeTransportAdapters: [
+        {
+          transport: "webtransport",
+          protocolVersions: [COLLABORATION_CONTRACT_VERSION],
+          endpoint: "https://api.example.test/v1/realtime/webtransport"
+        }
+      ]
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/capabilities"
+    });
+    await app.close();
+
+    expect(
+      jsonBody<CapabilitiesResponse>(response).protocols.collaborationRealtime
+        .offers
+    ).toEqual([
+      expect.objectContaining({ id: "sse", availability: "available" }),
+      {
+        id: "webtransport",
+        availability: "available",
+        protocolVersions: [COLLABORATION_CONTRACT_VERSION],
+        endpoint: "https://api.example.test/v1/realtime/webtransport",
+        authentication: "single_use_ticket",
+        reliability: "reliable_ordered",
+        direction: "bidirectional"
+      }
+    ]);
+  });
+
+  it("fails startup when WebTransport is enabled without its runtime boundary", async () => {
+    process.env.COLLABORATION_REALTIME_WEBTRANSPORT_ENABLED = "true";
+    await expect(buildServer()).rejects.toThrow(
+      /WebTransport requires database-backed realtime admission/
+    );
   });
 
   it("publishes cloud and Team self-hosted profile capabilities without route probing", async () => {
@@ -6293,7 +6473,7 @@ describe("api health", () => {
     expect(allowed.statusCode).toBe(200);
     expect(jsonBody<CapabilitiesResponse>(allowed)).toMatchObject({
       audience: "authenticated",
-      capabilitySchemaVersion: 6
+      capabilitySchemaVersion: 9
     });
   });
 
@@ -12525,6 +12705,58 @@ describe("account and access flows", () => {
     expect(resetCalls).toBe(2);
   });
 
+  it("rebuilds Conversation presentation without requesting semantic Projection", async () => {
+    const repository = createFakeRepository();
+    const sourceId = randomUUID();
+    repository.resetConversationPresentation = async () => ({
+      conversationItemIds: [sourceId],
+      invalidatedMessageIds: [randomUUID()],
+      invalidatedToolEventIds: [],
+      presentationPolicyRevision: 2
+    });
+    const projectionInputs: unknown[] = [];
+    const projectPendingConversationItems =
+      repository.projectPendingConversationItems.bind(repository);
+    repository.projectPendingConversationItems = async (actor, input) => {
+      projectionInputs.push(input);
+      return projectPendingConversationItems(actor, input);
+    };
+    const app = await buildServer({ repository });
+    const client = await registerApiClientForTest(
+      app,
+      "presentation-rebuild@example.com"
+    );
+    const session = await createCapturedSessionForTest(
+      app,
+      client.authorization
+    );
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items/presentation/rebuild",
+      headers: { authorization: client.authorization },
+      payload: { sessionId: session.id }
+    });
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items/presentation/rebuild",
+      headers: browserSessionHeaders(client.cookie),
+      payload: { sessionId: session.id }
+    });
+    await app.close();
+
+    expect(rejected.statusCode).toBe(401);
+    expect(accepted.statusCode).toBe(200);
+    expect(projectionInputs).toEqual([
+      expect.objectContaining({
+        conversationItemIds: [sourceId],
+        presentationOnly: true
+      })
+    ]);
+    expect(
+      jsonBody<{ presentation: { memoryEventsCreated: number } }>(accepted)
+    ).toMatchObject({ presentation: { memoryEventsCreated: 0 } });
+  });
+
   it("fails an oversized Projection rebuild before projecting any raw items", async () => {
     const repository = createFakeRepository();
     let resetCalls = 0;
@@ -15182,6 +15414,131 @@ describe("account and access flows", () => {
     ]);
   });
 
+  it("keeps Conversation presentation owner-scoped, versioned, and separate from capture", async () => {
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      runMemoryJobsInlineForTests: true
+    });
+    const owner = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "conversation-presentation-owner@example.com",
+        password: "password123"
+      }
+    });
+    const other = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "conversation-presentation-other@example.com",
+        password: "password123"
+      }
+    });
+    const ownerCookie = cookieHeader(owner);
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: browserSessionHeaders(ownerCookie),
+      payload: { name: "Conversation presentation capture" }
+    });
+    const captureHeaders = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/sessions",
+      headers: captureHeaders,
+      payload: {
+        externalSessionId: "conversation-presentation-thread",
+        cwd: "/work/presentation",
+        detectedProjects: [
+          {
+            id: "presentation-project",
+            name: "Presentation Project",
+            path: "/work/presentation"
+          }
+        ]
+      }
+    });
+    const session = jsonBody<SessionResponse>(created).session;
+    const initialThreads = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?projectId=presentation-project",
+      headers: browserSessionHeaders(ownerCookie)
+    });
+    const snoozedUntil = new Date(
+      Date.now() + 24 * 60 * 60 * 1_000
+    ).toISOString();
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/graph/sessions/${session.id}/presentation`,
+      headers: browserSessionHeaders(ownerCookie),
+      payload: {
+        expectedVersion: 0,
+        pinned: true,
+        displayMode: "active",
+        snoozedUntil
+      }
+    });
+    const stale = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/graph/sessions/${session.id}/presentation`,
+      headers: browserSessionHeaders(ownerCookie),
+      payload: { expectedVersion: 0, displayMode: "settled" }
+    });
+    const unauthorized = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/graph/sessions/${session.id}/presentation`,
+      headers: browserSessionHeaders(cookieHeader(other)),
+      payload: { expectedVersion: 0, pinned: true }
+    });
+    const threads = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?projectId=presentation-project",
+      headers: browserSessionHeaders(ownerCookie)
+    });
+    await app.close();
+
+    expect(updated.statusCode).toBe(200);
+    expect(
+      jsonBody<GraphThreadIndexResponse>(initialThreads).projects[0]?.threads[0]
+        ?.presentation
+    ).toMatchObject({
+      pinnedAt: null,
+      displayMode: "automatic",
+      version: 0
+    });
+    const updatedPresentation = jsonBody<{
+      presentation: GraphThreadIndexResponse["projects"][number]["threads"][number]["presentation"];
+    }>(updated).presentation;
+    expect(typeof updatedPresentation?.pinnedAt).toBe("string");
+    expect(typeof updatedPresentation?.snoozedAt).toBe("string");
+    expect(updatedPresentation).toMatchObject({
+      displayMode: "active",
+      snoozedUntil,
+      version: 1
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(unauthorized.statusCode).toBe(404);
+    expect(jsonBody(updated)).not.toHaveProperty("presentation.sessionId");
+    expect(jsonBody(updated)).not.toHaveProperty(
+      "presentation.logicalSessionId"
+    );
+    const updatedThread =
+      jsonBody<GraphThreadIndexResponse>(threads).projects[0]?.threads[0];
+    expect(typeof updatedThread?.presentation?.pinnedAt).toBe("string");
+    expect(updatedThread).toMatchObject({
+      sessionId: session.id,
+      projectId: "presentation-project",
+      presentation: {
+        displayMode: "active",
+        snoozedUntil,
+        version: 1
+      }
+    });
+  });
+
   it("renames captured session titles in the graph thread index", async () => {
     const app = await buildServer({
       repository: createFakeRepository(),
@@ -16292,6 +16649,65 @@ describe("account and access flows", () => {
       expect.objectContaining({ flowKey: "curated_memory_review" }),
       expect.objectContaining({ flowKey: "lcm_summary" })
     ]);
+  });
+
+  it("keeps AI Client instances and capability snapshots scoped to their owning User", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const owner = await registerApiClientForTest(
+      app,
+      "ai-client-instance-owner@example.com"
+    );
+    const otherUser = await registerApiClientForTest(
+      app,
+      "ai-client-instance-other@example.com"
+    );
+    const created = await app.inject({
+      method: "PUT",
+      url: "/v1/memory/ai-client-instances/codex.private",
+      headers: { authorization: owner.authorization },
+      payload: {
+        driver_id: "codex",
+        display_name: "Private Codex",
+        enabled: true
+      }
+    });
+    const unauthenticated = await app.inject({
+      method: "GET",
+      url: "/v1/memory/ai-client-instances"
+    });
+    const otherUserList = await app.inject({
+      method: "GET",
+      url: "/v1/memory/ai-client-instances",
+      headers: { authorization: otherUser.authorization }
+    });
+    const now = Date.now();
+    const crossUserSnapshot = await app.inject({
+      method: "POST",
+      url: "/v1/memory/ai-client-instances/codex.private/capability-snapshots",
+      headers: { authorization: otherUser.authorization },
+      payload: {
+        installation_identity_hash: "d".repeat(64),
+        client_version: "test",
+        authentication_state: "authenticated",
+        health_state: "healthy",
+        models: [],
+        capabilities: { descriptors: {} },
+        observed_at: new Date(now).toISOString(),
+        expires_at: new Date(now + 300_000).toISOString()
+      }
+    });
+    await app.close();
+
+    expect(created.statusCode).toBe(200);
+    expect(unauthenticated.statusCode).toBe(401);
+    expect(otherUserList.statusCode).toBe(200);
+    expect(otherUserList.json()).toMatchObject({
+      instances: [],
+      capabilitySnapshots: [],
+      settings: []
+    });
+    expect(crossUserSnapshot.statusCode).toBe(409);
+    expect(crossUserSnapshot.body).toContain("is not configured");
   });
 
   it("rejects unsupported retrieval scope for persisted questions", async () => {

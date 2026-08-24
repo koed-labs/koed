@@ -57,7 +57,7 @@ import { openOpaqueCursor, sealOpaqueCursor } from "./opaque-cursor.js";
 
 const RESPONSE_LIMIT_BYTES = 2 * 1_024 * 1_024;
 const REQUEST_TIMEOUT_MS = 30_000;
-const CAPABILITY_SCHEMA_VERSION = 6;
+const CAPABILITY_SCHEMA_VERSION = 9;
 const SOURCE_ADMISSION_PROTOCOL_VERSION = 1;
 const SOURCE_CURSOR_PREFIX = "csmc1";
 const PREVIEW_CURSOR_PREFIX = "csmp1";

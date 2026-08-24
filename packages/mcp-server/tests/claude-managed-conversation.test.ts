@@ -26,6 +26,7 @@ import {
   ClaudeManagedConversationCancelledError,
   ClaudeManagedConversationSession,
   cleanupAbandonedManagedClaudeHomes,
+  createManagedClaudeSessionStore,
   destroyManagedClaudeHome,
   forkClaudeTranscript,
   prepareManagedClaudeHome,
@@ -140,6 +141,55 @@ const queryOptions = (callIndex = 0): Options => {
 };
 
 describe("ClaudeManagedConversationSession", () => {
+  it("retains main and child transcripts for exact managed resume and capture", async () => {
+    const { managedHome } = fixture();
+    const store = createManagedClaudeSessionStore(managedHome);
+    const key = { projectKey: "/test-project", sessionId: randomUUID() };
+    const parent = [
+      { type: "user", uuid: randomUUID(), message: { content: "Parent" } }
+    ];
+    const child = [
+      { type: "assistant", uuid: randomUUID(), message: { content: "Child" } }
+    ];
+    await store.append(key, parent);
+    await store.append(
+      { ...key, subpath: "subagents/agent-child1.jsonl" },
+      child
+    );
+    expect(await store.load(key)).toEqual(parent);
+    expect(await store.listSubkeys!(key)).toEqual([
+      "subagents/agent-child1.jsonl"
+    ]);
+    expect(
+      await store.load({ ...key, subpath: "subagents/agent-child1.jsonl" })
+    ).toEqual(child);
+  });
+
+  it.each(["default", "acceptEdits", "auto", "bypassPermissions"] as const)(
+    "runs with native permission mode %s",
+    async (permissionMode) => {
+      const { config } = fixture();
+      sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+        queryFrom([successResult(options?.sessionId as string, "hello")])
+      );
+      const session = new ClaudeManagedConversationSession({
+        ...config,
+        permissionMode
+      });
+      try {
+        await session.start("Hello");
+        expect(queryOptions().permissionMode).toBe(
+          permissionMode === "default" ? undefined : permissionMode
+        );
+        expect(queryOptions().allowDangerouslySkipPermissions).toBe(
+          permissionMode === "bypassPermissions" ? true : undefined
+        );
+      } finally {
+        await session.closeAndWait();
+      }
+    }
+  );
+
   it("uses the official SessionStore fork path and returns SDK-remapped JSONL", async () => {
     const { cwd } = fixture();
     const parentSessionId = randomUUID();
@@ -238,6 +288,29 @@ describe("ClaudeManagedConversationSession", () => {
     expect(options.settingSources).toEqual([]);
     expect(options.strictMcpConfig).toBe(true);
     expect(options.persistSession).toBe(true);
+  });
+
+  it("provides Koed recall through the selected local runtime without forwarding API credentials", async () => {
+    const { config, cwd } = fixture();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+      queryFrom([successResult(options?.sessionId as string, "hello")])
+    );
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      env: {
+        ...config.env,
+        KOED_HOME: cwd,
+        MEMORY_API_TOKEN: "test-private-token"
+      }
+    });
+    await session.start("Recall the Project");
+    expect(queryOptions().mcpServers?.koed).toEqual({
+      type: "stdio",
+      command: process.execPath,
+      args: [expect.stringMatching(/\/cli\.js$/)],
+      env: { KOED_HOME: cwd }
+    });
+    session.close();
   });
 
   it("resumes and forks only within the exact configured Claude home", async () => {

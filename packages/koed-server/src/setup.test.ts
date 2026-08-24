@@ -851,6 +851,9 @@ describe("Codex setup wrapper", () => {
     expect(readFileSync(resolve(root, "AGENTS.md"), "utf8")).toContain(
       "Consult Koed before substantive work."
     );
+    expect(readFileSync(codexConfigPath, "utf8")).toContain(
+      '[mcp_servers.koed.tools.memory_answer]\napproval_mode = "approve"'
+    );
     expect(
       JSON.parse(
         readFileSync(resolve(root, "run/last-verification.json"), "utf8")

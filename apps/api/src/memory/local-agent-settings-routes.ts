@@ -221,6 +221,21 @@ const registerCapabilitySnapshotRoute = (
       const user = await authenticate(request);
       const params = aiClientInstanceParamsSchema.parse(request.params);
       const input = aiClientCapabilitySnapshotSchema.parse(request.body);
+      const configuredInstances = await repo.listAiClientInstances({
+        userId: user.id
+      });
+      if (
+        !configuredInstances.some(
+          (instance) => instance.instanceId === params.instanceId
+        )
+      ) {
+        throw Object.assign(
+          new Error(
+            `AI Client instance "${params.instanceId}" is not configured`
+          ),
+          { statusCode: 409 }
+        );
+      }
       const capabilitySnapshot = await repo.recordAiClientCapabilitySnapshot(
         { userId: user.id },
         {

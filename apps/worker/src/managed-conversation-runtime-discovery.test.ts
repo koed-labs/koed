@@ -26,24 +26,19 @@ describe("managed Conversation runtime discovery", () => {
   });
 
   const createTranscript = async (
-    root: string,
-    homeName: string,
+    codexHome: string,
+    fileName: string,
     threadId: string
   ) => {
-    const managedHome = join(root, "codex-managed", homeName);
     const transcriptPath = join(
-      managedHome,
+      codexHome,
       "sessions",
       "2026",
       "07",
       "27",
-      `rollout-${threadId}.jsonl`
+      `rollout-${fileName}-${threadId}.jsonl`
     );
     await mkdir(dirname(transcriptPath), { recursive: true });
-    await writeFile(
-      join(managedHome, "koed-managed-home.json"),
-      JSON.stringify({ version: 1, kind: "koed-managed-codex-home" })
-    );
     await writeFile(
       transcriptPath,
       `${JSON.stringify({
@@ -55,17 +50,17 @@ describe("managed Conversation runtime discovery", () => {
         }
       })}\n`
     );
-    return { managedHome, transcriptPath };
+    return { codexHome, transcriptPath };
   };
 
-  it("finds the exact transcript in a valid Koed-managed home", async () => {
-    const root = await temporaryRoot("koed-runtime-discovery-");
-    homes.push(root);
-    const expected = await createTranscript(root, "session-valid", "thread-1");
+  it("finds the exact transcript in the configured Codex home", async () => {
+    const codexHome = await temporaryRoot("koed-runtime-discovery-");
+    homes.push(codexHome);
+    const expected = await createTranscript(codexHome, "one", "thread-1");
 
     await expect(
       discoverManagedConversationRuntime({
-        koedHome: root,
+        codexHome,
         providerThreadId: "thread-1"
       })
     ).resolves.toEqual({
@@ -76,29 +71,50 @@ describe("managed Conversation runtime discovery", () => {
   });
 
   it("rejects ambiguous provider identity", async () => {
-    const root = await temporaryRoot("koed-runtime-discovery-");
-    homes.push(root);
-    await createTranscript(root, "session-first", "thread-1");
-    await createTranscript(root, "session-second", "thread-1");
+    const codexHome = await temporaryRoot("koed-runtime-discovery-");
+    homes.push(codexHome);
+    await createTranscript(codexHome, "first", "thread-1");
+    await createTranscript(codexHome, "second", "thread-1");
 
     await expect(
       discoverManagedConversationRuntime({
-        koedHome: root,
+        codexHome,
         providerThreadId: "thread-1"
       })
     ).rejects.toThrow("ManagedConversationRuntimeDiscoveryConflictError");
   });
 
-  it("does not follow transcript directory symlinks", async () => {
-    const root = await temporaryRoot("koed-runtime-discovery-");
-    const outside = await temporaryRoot("koed-runtime-outside-");
-    homes.push(root, outside);
-    const managedHome = join(root, "codex-managed", "session-valid");
-    await mkdir(managedHome, { recursive: true });
-    await writeFile(
-      join(managedHome, "koed-managed-home.json"),
-      JSON.stringify({ version: 1, kind: "koed-managed-codex-home" })
+  it("ignores unrelated transcript content before reading metadata", async () => {
+    const codexHome = await temporaryRoot("koed-runtime-discovery-");
+    homes.push(codexHome);
+    const sessions = join(codexHome, "sessions", "2026", "07", "26");
+    await mkdir(sessions, { recursive: true });
+    await Promise.all(
+      Array.from({ length: 256 }, (_, index) =>
+        writeFile(
+          join(sessions, `rollout-unrelated-${index}.jsonl`),
+          "not valid JSON and must never be opened\n"
+        )
+      )
     );
+    const expected = await createTranscript(codexHome, "matching", "thread-1");
+
+    await expect(
+      discoverManagedConversationRuntime({
+        codexHome,
+        providerThreadId: "thread-1"
+      })
+    ).resolves.toEqual({
+      ...expected,
+      providerCliVersion: "0.145.0",
+      projectPath: "/work/project"
+    });
+  });
+
+  it("does not follow transcript directory symlinks", async () => {
+    const codexHome = await temporaryRoot("koed-runtime-discovery-");
+    const outside = await temporaryRoot("koed-runtime-outside-");
+    homes.push(codexHome, outside);
     const outsideTranscript = join(outside, "rollout.jsonl");
     await writeFile(
       outsideTranscript,
@@ -107,11 +123,11 @@ describe("managed Conversation runtime discovery", () => {
         payload: { session_id: "thread-1" }
       })}\n`
     );
-    await symlink(outside, join(managedHome, "sessions"));
+    await symlink(outside, join(codexHome, "sessions"));
 
     await expect(
       discoverManagedConversationRuntime({
-        koedHome: root,
+        codexHome,
         providerThreadId: "thread-1"
       })
     ).resolves.toBeNull();

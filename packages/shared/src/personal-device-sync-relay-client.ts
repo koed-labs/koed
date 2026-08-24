@@ -14,6 +14,11 @@ import type {
   PdsSessionPackage,
   PdsSessionPackageChunk
 } from "./personal-device-session-package.js";
+import {
+  createPdsPeerRouteAdvertisement,
+  pdsPeerRouteRecordSchema,
+  type PdsPeerRouteRecord
+} from "./personal-device-peer.js";
 
 export interface PdsRelayClientIdentity {
   certificate: string;
@@ -259,6 +264,61 @@ export class PdsRelayClient {
         await this.uploadChunk(initialized.transportId, chunk);
     }
     return this.commit(pkg);
+  }
+
+  async advertisePeerRoute(
+    endpointUrl: string,
+    now = new Date()
+  ): Promise<void> {
+    const response = asRecord(
+      await this.request<unknown>(
+        "POST",
+        `${relayPath}/peer-routes`,
+        createPdsPeerRouteAdvertisement({ endpointUrl, now })
+      )
+    );
+    if (response.accepted !== true) {
+      throw new TypeError("PDS peer route response is invalid");
+    }
+  }
+
+  async peerRoutes(): Promise<PdsPeerRouteRecord[]> {
+    const response = asRecord(
+      await this.request<unknown>("GET", `${relayPath}/peer-routes`)
+    );
+    if (!Array.isArray(response.routes)) {
+      throw new TypeError("PDS peer route response is invalid");
+    }
+    return response.routes.map((value) =>
+      pdsPeerRouteRecordSchema.parse(value)
+    );
+  }
+
+  async peerReceipt(
+    transportId: string,
+    recipientDeviceId: string
+  ): Promise<string | null> {
+    try {
+      const response = asRecord(
+        await this.request<unknown>(
+          "GET",
+          `${relayPath}/transports/${encodeURIComponent(transportId)}/peer-receipts/${encodeURIComponent(recipientDeviceId)}`
+        )
+      );
+      if (typeof response.canonicalAck !== "string") {
+        throw new TypeError("PDS peer receipt response is invalid");
+      }
+      return response.canonicalAck;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.name === "PdsRelayRejectedError" &&
+        /404/.test(error.message)
+      ) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   async acquireSemanticWorkClaim(input: {

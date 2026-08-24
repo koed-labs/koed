@@ -67,6 +67,10 @@ export const captureState = pgEnum("capture_state", [
   "disabled",
   "ask"
 ]);
+export const conversationPresentationMode = pgEnum(
+  "conversation_presentation_mode",
+  ["automatic", "active", "settled"]
+);
 export const historicalImportState = pgEnum("historical_import_state", [
   "discovered",
   "eligible",
@@ -1034,6 +1038,47 @@ export const sessions = pgTable(
   ]
 );
 
+export const conversationPresentationStates = pgTable(
+  "conversation_presentation_states",
+  {
+    ownerUserId: uuid("owner_user_id").notNull(),
+    logicalSessionId: uuid("logical_session_id").notNull(),
+    pinnedAt: timestamp("pinned_at", { withTimezone: true }),
+    displayMode: conversationPresentationMode("display_mode")
+      .notNull()
+      .default("automatic"),
+    snoozedAt: timestamp("snoozed_at", { withTimezone: true }),
+    snoozedUntil: timestamp("snoozed_until", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({
+      name: "conversation_presentation_states_owner_session_pk",
+      columns: [table.ownerUserId, table.logicalSessionId]
+    }),
+    foreignKey({
+      columns: [table.ownerUserId, table.logicalSessionId],
+      foreignColumns: [sessions.ownerUserId, sessions.logicalSessionId],
+      name: "conversation_presentation_states_owner_session_fk"
+    }).onDelete("cascade"),
+    index("conversation_presentation_states_owner_pinned_idx").on(
+      table.ownerUserId,
+      table.pinnedAt
+    ),
+    check(
+      "conversation_presentation_states_snooze_shape_check",
+      sql`(${table.snoozedAt} is null and ${table.snoozedUntil} is null)
+        or (${table.snoozedAt} is not null and ${table.snoozedUntil} > ${table.snoozedAt})`
+    ),
+    check(
+      "conversation_presentation_states_version_check",
+      sql`${table.version} > 0`
+    )
+  ]
+);
+
 export const conversationSourceArtifacts = pgTable(
   "conversation_source_artifacts",
   {
@@ -1578,6 +1623,12 @@ export const messages = pgTable(
     projectionPolicyRevision: bigint("projection_policy_revision", {
       mode: "number"
     }),
+    presentationPolicyKey: text("presentation_policy_key"),
+    presentationPolicyRevision: bigint("presentation_policy_revision", {
+      mode: "number"
+    }),
+    presentationMode: text("presentation_mode"),
+    presentationRenderer: text("presentation_renderer"),
     sourceEventTime: timestamp("source_event_time", { withTimezone: true }),
     capturedAt: timestamp("captured_at", { withTimezone: true })
       .notNull()
@@ -1603,6 +1654,14 @@ export const messages = pgTable(
     check(
       "messages_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
+    ),
+    check(
+      "messages_presentation_mode_check",
+      sql`${table.presentationMode} is null or ${table.presentationMode} in ('expanded','collapsed','status')`
+    ),
+    check(
+      "messages_presentation_renderer_check",
+      sql`${table.presentationRenderer} is null or ${table.presentationRenderer} in ('message','reasoning_summary')`
     )
   ]
 );
@@ -1629,6 +1688,12 @@ export const toolEvents = pgTable(
     transcriptItemId: text("transcript_item_id"),
     idempotencyKey: text("idempotency_key"),
     sourceHash: text("source_hash"),
+    presentationPolicyKey: text("presentation_policy_key"),
+    presentationPolicyRevision: bigint("presentation_policy_revision", {
+      mode: "number"
+    }),
+    presentationMode: text("presentation_mode"),
+    presentationRenderer: text("presentation_renderer"),
     sourceEventTime: timestamp("source_event_time", { withTimezone: true }),
     capturedAt: timestamp("captured_at", { withTimezone: true })
       .notNull()
@@ -1652,6 +1717,14 @@ export const toolEvents = pgTable(
     check(
       "tool_events_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
+    ),
+    check(
+      "tool_events_presentation_mode_check",
+      sql`${table.presentationMode} is null or ${table.presentationMode} in ('expanded','collapsed','status')`
+    ),
+    check(
+      "tool_events_presentation_renderer_check",
+      sql`${table.presentationRenderer} is null or ${table.presentationRenderer} in ('tool_call','tool_result')`
     )
   ]
 );
@@ -3597,6 +3670,7 @@ export const userSessions = pgTable(
     revokedAt: timestamp("revoked_at", { withTimezone: true })
   },
   (table) => [
+    unique("user_sessions_id_user_unique").on(table.id, table.userId),
     index("user_sessions_active_user_idx")
       .on(table.userId, table.expiresAt.desc())
       .where(sql`${table.revokedAt} is null`),
@@ -3823,6 +3897,10 @@ export const managedConversationExecutions = pgTable(
     projectId: text("project_id").notNull(),
     provider: text("provider").notNull().default("codex"),
     aiClientInstanceId: text("ai_client_instance_id").notNull(),
+    model: text("model").notNull(),
+    reasoningEffort: text("reasoning_effort"),
+    permissionMode: text("permission_mode").notNull(),
+    runnerKind: text("runner_kind").notNull(),
     state: text("state").notNull().default("starting"),
     stateVersion: integer("state_version").notNull().default(1),
     executionGeneration: integer("execution_generation").notNull().default(1),
@@ -3874,7 +3952,12 @@ export const managedConversationExecutions = pgTable(
     ),
     check(
       "managed_conversation_executions_provider_check",
-      sql`${table.provider} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'`
+      sql`${table.provider} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'
+        and ${table.aiClientInstanceId} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'
+        and length(trim(${table.model})) between 1 and 512
+        and (${table.reasoningEffort} is null or length(trim(${table.reasoningEffort})) between 1 and 64)
+        and ${table.permissionMode} in ('supervised', 'auto_edit', 'auto', 'full_access')
+        and ${table.runnerKind} = 'local_device'`
     ),
     check(
       "managed_conversation_executions_ai_client_instance_check",
@@ -3922,7 +4005,24 @@ export const managedConversationRuntimeBindings = pgTable(
     deploymentId: uuid("deployment_id").notNull(),
     deviceId: uuid("device_id").notNull(),
     executionGeneration: integer("execution_generation").notNull(),
+    sourceProjectPath: text("source_project_path").notNull(),
     projectPath: text("project_path").notNull(),
+    workspaceId: uuid("workspace_id"),
+    workspaceKind: text("workspace_kind").notNull().default("pending"),
+    workspaceLifecycle: text("workspace_lifecycle")
+      .notNull()
+      .default("pending"),
+    cleanupState: text("cleanup_state").notNull().default("not_requested"),
+    vcsDriver: text("vcs_driver"),
+    localRepositoryCommonDirectory: text("local_repository_common_directory"),
+    localGitDirectory: text("local_git_directory"),
+    repositoryIdentityHash: text("repository_identity_hash"),
+    worktreeIdentityHash: text("worktree_identity_hash"),
+    baseRef: text("base_ref"),
+    baseObjectId: text("base_object_id"),
+    branchRef: text("branch_ref"),
+    headObjectId: text("head_object_id"),
+    creationOperationId: uuid("creation_operation_id"),
     localSessionId: uuid("local_session_id").references(() => sessions.id, {
       onDelete: "set null"
     }),
@@ -3944,9 +4044,83 @@ export const managedConversationRuntimeBindings = pgTable(
       table.deviceId,
       table.executionGeneration
     ),
+    index("managed_conversation_runtime_binding_preparation_idx").on(
+      table.deploymentId,
+      table.deviceId,
+      table.workspaceLifecycle,
+      table.createdAt
+    ),
+    index("managed_conversation_runtime_binding_cleanup_idx").on(
+      table.deploymentId,
+      table.deviceId,
+      table.workspaceLifecycle,
+      table.cleanupState,
+      table.updatedAt
+    ),
+    uniqueIndex("managed_conversation_runtime_binding_active_path_unique")
+      .on(table.projectPath)
+      .where(
+        sql`${table.workspaceKind} = 'koed_managed_worktree'
+          and ${table.workspaceLifecycle} in ('ready', 'cleanup_requested')`
+      ),
     check(
       "managed_conversation_runtime_binding_generation_check",
       sql`${table.executionGeneration} > 0`
+    ),
+    check(
+      "managed_conversation_runtime_binding_workspace_check",
+      sql`((${table.workspaceLifecycle} = 'pending'
+          and ${table.workspaceId} is null
+          and ${table.workspaceKind} = 'pending'
+          and ${table.creationOperationId} is null
+          and ${table.vcsDriver} is null
+          and ${table.localRepositoryCommonDirectory} is null
+          and ${table.localGitDirectory} is null
+          and ${table.repositoryIdentityHash} is null
+          and ${table.worktreeIdentityHash} is null
+          and ${table.baseRef} is null
+          and ${table.baseObjectId} is null
+          and ${table.branchRef} is null
+          and ${table.headObjectId} is null)
+        or (${table.workspaceLifecycle} in ('ready', 'cleanup_requested', 'removed', 'cleanup_failed', 'orphaned')
+          and ${table.workspaceId} is not null
+          and ${table.workspaceKind} in ('koed_managed_worktree', 'user_managed_checkout', 'non_vcs_directory')
+          and ${table.creationOperationId} is not null
+          and ((${table.workspaceKind} = 'non_vcs_directory'
+              and ${table.vcsDriver} is null
+              and ${table.localRepositoryCommonDirectory} is null
+              and ${table.localGitDirectory} is null
+              and ${table.repositoryIdentityHash} is null
+              and ${table.worktreeIdentityHash} is null
+              and ${table.baseRef} is null
+              and ${table.baseObjectId} is null
+              and ${table.branchRef} is null
+              and ${table.headObjectId} is null)
+            or (${table.workspaceKind} in ('koed_managed_worktree', 'user_managed_checkout')
+              and ${table.vcsDriver} = 'git'
+              and length(trim(${table.localRepositoryCommonDirectory})) > 0
+              and length(trim(${table.localGitDirectory})) > 0
+              and ${table.repositoryIdentityHash} is not null
+              and ${table.worktreeIdentityHash} is not null
+              and ${table.headObjectId} is not null
+              and (${table.workspaceKind} <> 'koed_managed_worktree'
+                or (${table.baseRef} is not null
+                  and ${table.baseObjectId} is not null
+                  and ${table.branchRef} is not null))))))
+        and ((${table.workspaceLifecycle} in ('pending', 'ready')
+            and ${table.cleanupState} = 'not_requested')
+          or (${table.workspaceLifecycle} = 'cleanup_requested'
+            and ${table.cleanupState} = 'requested')
+          or (${table.workspaceLifecycle} = 'removed'
+            and ${table.cleanupState} = 'completed')
+          or (${table.workspaceLifecycle} in ('cleanup_failed', 'orphaned')
+            and ${table.cleanupState} = 'failed'))
+        and length(trim(${table.sourceProjectPath})) > 0
+        and length(trim(${table.projectPath})) > 0
+        and (${table.repositoryIdentityHash} is null or ${table.repositoryIdentityHash} ~ '^[0-9a-f]{64}$')
+        and (${table.worktreeIdentityHash} is null or ${table.worktreeIdentityHash} ~ '^[0-9a-f]{64}$')
+        and (${table.baseObjectId} is null or ${table.baseObjectId} ~ '^[0-9a-f]{40,64}$')
+        and (${table.headObjectId} is null or ${table.headObjectId} ~ '^[0-9a-f]{40,64}$')`
     ),
     check(
       "managed_conversation_runtime_binding_identity_check",
@@ -3961,6 +4135,101 @@ export const managedConversationRuntimeBindings = pgTable(
           and length(trim(${table.transcriptPath})) > 0
           and length(trim(${table.managedHome})) > 0
         )`
+    )
+  ]
+);
+
+export const managedConversationTerminals = pgTable(
+  "managed_conversation_terminals",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    executionId: uuid("execution_id")
+      .notNull()
+      .references(() => managedConversationExecutions.id, {
+        onDelete: "cascade"
+      }),
+    executionGeneration: integer("execution_generation").notNull(),
+    workspaceId: uuid("workspace_id").notNull(),
+    runnerDeploymentId: uuid("runner_deployment_id").notNull(),
+    runnerDeviceId: uuid("runner_device_id").notNull(),
+    lifecycleGeneration: integer("lifecycle_generation").notNull().default(1),
+    shellProfileId: text("shell_profile_id").notNull(),
+    state: text("state").notNull().default("creating"),
+    columns: integer("columns").notNull(),
+    rows: integer("rows").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestDigest: text("request_digest").notNull(),
+    exitCode: integer("exit_code"),
+    exitSignal: integer("exit_signal"),
+    failureCode: text("failure_code"),
+    createdAt: now(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    detachedAt: timestamp("detached_at", { withTimezone: true }),
+    stoppedAt: timestamp("stopped_at", { withTimezone: true }),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("managed_conversation_terminals_owner_idempotency_unique").on(
+      table.ownerUserId,
+      table.executionId,
+      table.idempotencyKey
+    ),
+    index("managed_conversation_terminals_execution_state_idx").on(
+      table.ownerUserId,
+      table.executionId,
+      table.state,
+      table.createdAt.desc()
+    ),
+    index("managed_conversation_terminals_runner_state_idx").on(
+      table.runnerDeploymentId,
+      table.runnerDeviceId,
+      table.state
+    ),
+    check(
+      "managed_conversation_terminals_shape_check",
+      sql`${table.executionGeneration} > 0
+        and ${table.lifecycleGeneration} > 0
+        and ${table.shellProfileId} = 'system_default'
+        and ${table.state} in ('creating', 'running', 'detached', 'stopping', 'unknown', 'exited', 'failed')
+        and ${table.columns} between 20 and 500
+        and ${table.rows} between 5 and 300
+        and length(trim(${table.idempotencyKey})) between 16 and 160
+        and ${table.requestDigest} ~ '^[0-9a-f]{64}$'
+        and (${table.failureCode} is null or ${table.failureCode} ~ '^[A-Za-z][A-Za-z0-9_.-]{0,119}$')`
+    ),
+    check(
+      "managed_conversation_terminals_lifecycle_check",
+      sql`(${table.state} = 'creating'
+          and ${table.startedAt} is null
+          and ${table.stoppedAt} is null
+          and ${table.exitCode} is null
+          and ${table.exitSignal} is null
+          and ${table.failureCode} is null)
+        or (${table.state} in ('running', 'detached', 'stopping')
+          and ${table.startedAt} is not null
+          and ${table.stoppedAt} is null
+          and ${table.exitCode} is null
+          and ${table.exitSignal} is null
+          and ${table.failureCode} is null)
+        or (${table.state} = 'unknown'
+          and ${table.startedAt} is not null
+          and ${table.stoppedAt} is null
+          and ${table.exitCode} is null
+          and ${table.exitSignal} is null
+          and ${table.failureCode} is not null)
+        or (${table.state} = 'exited'
+          and ${table.startedAt} is not null
+          and ${table.stoppedAt} is not null
+          and ${table.exitCode} is not null
+          and ${table.failureCode} is null)
+        or (${table.state} = 'failed'
+          and ${table.stoppedAt} is not null
+          and ${table.exitCode} is null
+          and ${table.exitSignal} is null
+          and ${table.failureCode} is not null)`
     )
   ]
 );
@@ -4019,12 +4288,18 @@ export const managedConversationCommands = pgTable(
       sql`${table.commandKind} in (
         'start',
         'prompt',
+        'interrupt',
         'quiesce',
         'stop',
         'verify_target',
         'restore',
+        'checkpoint_restore',
         'fork_prepare',
-        'fork_create'
+        'fork_create',
+        'file_browse',
+        'file_read',
+        'file_search',
+        'file_mention'
       )`
     ),
     check(
@@ -4064,12 +4339,13 @@ export const managedConversationCommands = pgTable(
             and ${table.blockedOnKind} is null
             and ${table.blockedOnId} is null)
         )
+        and (${table.commandKind} not in (
+            'prompt','checkpoint_restore','file_browse','file_read','file_search','file_mention'
+          ) or ${table.encryptedPayload} is not null)
         and (
           (${table.commandKind} = 'prompt'
-            and ${table.clientUserMessageId} is not null
-            and ${table.encryptedPayload} is not null)
-          or (${table.commandKind} <> 'prompt'
-            and ${table.clientUserMessageId} is null)
+            and ${table.clientUserMessageId} is not null)
+          or (${table.commandKind} <> 'prompt' and ${table.clientUserMessageId} is null)
         )
         and (
           (${table.commandKind} in ('verify_target','restore','fork_create')
@@ -4084,6 +4360,269 @@ export const managedConversationCommands = pgTable(
       "managed_conversation_commands_lease_check",
       sql`(${table.leaseToken} is null and ${table.leaseExpiresAt} is null)
         or (${table.leaseToken} is not null and ${table.leaseExpiresAt} is not null)`
+    ),
+    check(
+      "managed_conversation_commands_checkpoint_pending_check",
+      sql`(${table.result}->>'phase') is distinct from 'checkpoint_pending'
+        or (
+          ${table.commandKind} = 'prompt'
+          and ${table.state} in ('queued','dispatching')
+          and (${table.result}->>'sourceGenerationId') ~
+            '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          and (
+            ${table.result}->'providerTurnId' = 'null'::jsonb
+            or (
+              jsonb_typeof(${table.result}->'providerTurnId') = 'string'
+              and length(trim(${table.result}->>'providerTurnId')) between 1 and 512
+            )
+          )
+        )`
+    )
+  ]
+);
+
+export const managedConversationRuntimeItems = pgTable(
+  "managed_conversation_runtime_items",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    executionId: uuid("execution_id")
+      .notNull()
+      .references(() => managedConversationExecutions.id, {
+        onDelete: "cascade"
+      }),
+    executionGeneration: integer("execution_generation").notNull(),
+    providerRequestId: text("provider_request_id").notNull(),
+    providerTurnId: text("provider_turn_id"),
+    providerItemId: text("provider_item_id"),
+    itemKind: text("item_kind").notNull(),
+    state: text("state").notNull().default("pending"),
+    requestDigest: text("request_digest").notNull(),
+    encryptedPayload: jsonb("encrypted_payload")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    encryptedResponse:
+      jsonb("encrypted_response").$type<Record<string, unknown>>(),
+    responseDigest: text("response_digest"),
+    revision: integer("revision").notNull().default(1),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    respondedAt: timestamp("responded_at", { withTimezone: true }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("managed_conversation_runtime_items_provider_unique").on(
+      table.ownerUserId,
+      table.executionId,
+      table.executionGeneration,
+      table.providerRequestId
+    ),
+    index("managed_conversation_runtime_items_active_idx").on(
+      table.ownerUserId,
+      table.executionId,
+      table.state,
+      table.updatedAt
+    ),
+    check(
+      "managed_conversation_runtime_items_kind_check",
+      sql`${table.itemKind} in (
+        'command_approval',
+        'file_approval',
+        'permissions_approval',
+        'user_input',
+        'transient_output'
+      )`
+    ),
+    check(
+      "managed_conversation_runtime_items_state_check",
+      sql`${table.state} in ('pending','answered','resolved','canceled')`
+    ),
+    check(
+      "managed_conversation_runtime_items_shape_check",
+      sql`${table.executionGeneration} > 0
+        and ${table.revision} > 0
+        and length(trim(${table.providerRequestId})) > 0
+        and length(${table.providerRequestId}) <= 512
+        and (${table.providerTurnId} is null or length(${table.providerTurnId}) <= 512)
+        and (${table.providerItemId} is null or length(${table.providerItemId}) <= 512)
+        and ${table.requestDigest} ~ '^[0-9a-f]{64}$'
+        and (${table.responseDigest} is null or ${table.responseDigest} ~ '^[0-9a-f]{64}$')
+        and (
+          (${table.state} = 'pending'
+            and ${table.encryptedResponse} is null
+            and ${table.responseDigest} is null
+            and ${table.respondedAt} is null
+            and ${table.resolvedAt} is null)
+          or (${table.state} = 'answered'
+            and ${table.itemKind} <> 'transient_output'
+            and ${table.encryptedResponse} is not null
+            and ${table.responseDigest} is not null
+            and ${table.respondedAt} is not null
+            and ${table.resolvedAt} is null)
+          or (${table.state} in ('resolved','canceled')
+            and ${table.resolvedAt} is not null)
+        )`
+    )
+  ]
+);
+
+export const managedConversationExecutionCheckpoints = pgTable(
+  "managed_conversation_execution_checkpoints",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    executionId: uuid("execution_id")
+      .notNull()
+      .references(() => managedConversationExecutions.id, {
+        onDelete: "cascade"
+      }),
+    executionGeneration: integer("execution_generation").notNull(),
+    commandId: uuid("command_id")
+      .notNull()
+      .references(() => managedConversationCommands.id, {
+        onDelete: "restrict"
+      }),
+    providerTurnId: text("provider_turn_id"),
+    sourceGenerationId: uuid("source_generation_id"),
+    sequence: integer("sequence").notNull(),
+    checkpointKind: text("checkpoint_kind").notNull(),
+    checkpointStatus: text("checkpoint_status").notNull(),
+    failureCode: text("failure_code"),
+    repositoryIdentityHash: text("repository_identity_hash"),
+    worktreeIdentityHash: text("worktree_identity_hash"),
+    vcsDriver: text("vcs_driver"),
+    checkpointRef: text("checkpoint_ref"),
+    commitObjectId: text("commit_object_id"),
+    capturedAt: timestamp("captured_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("managed_conversation_checkpoint_sequence_unique").on(
+      table.executionId,
+      table.executionGeneration,
+      table.sequence,
+      table.checkpointKind
+    ),
+    unique("managed_conversation_checkpoint_command_kind_unique").on(
+      table.commandId,
+      table.checkpointKind
+    ),
+    index("managed_conversation_checkpoint_execution_idx").on(
+      table.ownerUserId,
+      table.executionId,
+      table.executionGeneration,
+      table.sequence
+    ),
+    check(
+      "managed_conversation_checkpoint_shape_check",
+      sql`${table.executionGeneration} > 0
+        and ${table.sequence} >= 0
+        and ${table.checkpointKind} in ('baseline','terminal','recovery')
+        and ${table.checkpointStatus} in ('pending','ready','failed','unsupported')
+        and (${table.providerTurnId} is null or length(${table.providerTurnId}) <= 512)
+        and (${table.failureCode} is null or ${table.failureCode} ~ '^[A-Za-z][A-Za-z0-9_.-]{0,119}$')
+        and (${table.checkpointKind} <> 'terminal' or ${table.sourceGenerationId} is not null)
+        and (
+          (${table.checkpointStatus} = 'ready'
+            and ${table.vcsDriver} = 'git'
+            and ${table.repositoryIdentityHash} ~ '^[0-9a-f]{64}$'
+            and ${table.worktreeIdentityHash} ~ '^[0-9a-f]{64}$'
+            and ${table.commitObjectId} ~ '^[0-9a-f]{40,64}$'
+            and ${table.checkpointRef} =
+              'refs/koed/checkpoints/' || ${table.executionId}::text || '/' ||
+              ${table.executionGeneration}::text || '/' || ${table.sequence}::text || '/' || ${table.checkpointKind}
+            and ${table.capturedAt} is not null
+            and ${table.failureCode} is null)
+          or (${table.checkpointStatus} = 'unsupported'
+            and ${table.vcsDriver} is null
+            and ${table.repositoryIdentityHash} is null
+            and ${table.worktreeIdentityHash} is null
+            and ${table.checkpointRef} is null
+            and ${table.commitObjectId} is null
+            and ${table.capturedAt} is null
+            and ${table.failureCode} is null)
+          or (${table.checkpointStatus} = 'pending'
+            and ${table.checkpointRef} is null
+            and ${table.commitObjectId} is null
+            and ${table.capturedAt} is null
+            and ${table.failureCode} is null)
+          or (${table.checkpointStatus} = 'failed'
+            and ${table.checkpointRef} is null
+            and ${table.commitObjectId} is null
+            and ${table.capturedAt} is null
+            and ${table.failureCode} is not null)
+        )`
+    )
+  ]
+);
+
+export const managedConversationExecutionDiffs = pgTable(
+  "managed_conversation_execution_diffs",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    executionId: uuid("execution_id")
+      .notNull()
+      .references(() => managedConversationExecutions.id, {
+        onDelete: "cascade"
+      }),
+    executionGeneration: integer("execution_generation").notNull(),
+    scopeKey: text("scope_key").notNull(),
+    diffScope: text("diff_scope").notNull(),
+    fromCheckpointId: uuid("from_checkpoint_id")
+      .notNull()
+      .references(() => managedConversationExecutionCheckpoints.id, {
+        onDelete: "cascade"
+      }),
+    toCheckpointId: uuid("to_checkpoint_id")
+      .notNull()
+      .references(() => managedConversationExecutionCheckpoints.id, {
+        onDelete: "cascade"
+      }),
+    revisionDigest: text("revision_digest").notNull(),
+    complete: boolean("complete").notNull(),
+    truncated: boolean("truncated").notNull(),
+    fileCount: integer("file_count").notNull(),
+    byteCount: integer("byte_count").notNull(),
+    payloadDigest: text("payload_digest").notNull(),
+    encryptedPayload: jsonb("encrypted_payload")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("managed_conversation_diff_scope_unique").on(
+      table.executionId,
+      table.executionGeneration,
+      table.scopeKey
+    ),
+    index("managed_conversation_diff_execution_idx").on(
+      table.ownerUserId,
+      table.executionId,
+      table.executionGeneration,
+      table.updatedAt
+    ),
+    check(
+      "managed_conversation_diff_shape_check",
+      sql`${table.executionGeneration} > 0
+        and (
+          (${table.diffScope} = 'full' and ${table.scopeKey} = 'full')
+          or (${table.diffScope} = 'turn'
+            and ${table.scopeKey} ~ '^turn:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
+        )
+        and ${table.revisionDigest} ~ '^[0-9a-f]{64}$'
+        and ${table.payloadDigest} ~ '^[0-9a-f]{64}$'
+        and ${table.fileCount} between 0 and 25000
+        and ${table.byteCount} between 0 and 16777216
+        and (not ${table.complete} or not ${table.truncated})`
     )
   ]
 );
@@ -8702,6 +9241,86 @@ export const collaborationStreamSubscriptions = pgTable(
   ]
 );
 
+export const realtimeTransportTickets = pgTable(
+  "realtime_transport_tickets",
+  {
+    id: id(),
+    secretHash: text("secret_hash").notNull(),
+    ticketVersion: integer("ticket_version").notNull(),
+    transport: text("transport").notNull(),
+    protocolVersion: integer("protocol_version").notNull(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    authKind: text("auth_kind").notNull(),
+    userSessionId: uuid("user_session_id"),
+    deviceCredentialId: uuid("device_credential_id"),
+    backendIdentityHash: text("backend_identity_hash").notNull(),
+    clientInstanceHash: text("client_instance_hash").notNull(),
+    clientKind: text("client_kind").notNull(),
+    originHash: text("origin_hash"),
+    nativeBindingHash: text("native_binding_hash"),
+    operationFamilies: text("operation_families").array().notNull(),
+    issuedAt: timestamp("issued_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    connectionIdHash: text("connection_id_hash"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("realtime_transport_tickets_secret_unique").on(table.secretHash),
+    foreignKey({
+      columns: [table.userSessionId, table.ownerUserId],
+      foreignColumns: [userSessions.id, userSessions.userId],
+      name: "realtime_transport_tickets_session_owner_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.deviceCredentialId, table.ownerUserId],
+      foreignColumns: [deviceCredentials.id, deviceCredentials.ownerUserId],
+      name: "realtime_transport_tickets_device_owner_fk"
+    }).onDelete("cascade"),
+    index("realtime_transport_tickets_active_idx")
+      .on(table.ownerUserId, table.expiresAt)
+      .where(sql`${table.consumedAt} is null and ${table.revokedAt} is null`),
+    index("realtime_transport_tickets_expiry_idx").on(table.expiresAt),
+    index("realtime_transport_tickets_session_idx").on(table.userSessionId),
+    index("realtime_transport_tickets_device_idx").on(table.deviceCredentialId),
+    check(
+      "realtime_transport_tickets_shape_check",
+      sql`${table.ticketVersion} > 0
+        and ${table.protocolVersion} > 0
+        and ${table.transport} in ('webtransport','websocket')
+        and ${table.authKind} in ('session','device_credential')
+        and ${table.clientKind} in ('browser','native')
+        and length(${table.secretHash}) = 64
+        and length(${table.backendIdentityHash}) = 64
+        and length(${table.clientInstanceHash}) = 64
+        and (${table.originHash} is null or length(${table.originHash}) = 64)
+        and (${table.nativeBindingHash} is null or length(${table.nativeBindingHash}) = 64)
+        and (${table.connectionIdHash} is null or length(${table.connectionIdHash}) = 64)
+        and cardinality(${table.operationFamilies}) > 0
+        and array_position(${table.operationFamilies}, null) is null
+        and ${table.expiresAt} > ${table.issuedAt}
+        and ((${table.authKind} = 'session'
+          and ${table.userSessionId} is not null
+          and ${table.deviceCredentialId} is null
+          and ${table.clientKind} = 'browser'
+          and ${table.originHash} is not null
+          and ${table.nativeBindingHash} is null)
+        or (${table.authKind} = 'device_credential'
+          and ${table.userSessionId} is null
+          and ${table.deviceCredentialId} is not null
+          and ${table.clientKind} = 'native'
+          and ${table.originHash} is null
+          and ${table.nativeBindingHash} is not null))
+        and ((${table.consumedAt} is null and ${table.connectionIdHash} is null)
+          or (${table.consumedAt} is not null and ${table.connectionIdHash} is not null))`
+    )
+  ]
+);
+
 export const localEdgeCollaborationSubscriptions = pgTable(
   "local_edge_collaboration_subscriptions",
   {
@@ -11225,9 +11844,6 @@ export const projectionPolicyRules = pgTable(
       .default("codex-transcript-v1"),
     transcriptType: text("transcript_type").notNull(),
     description: text("description"),
-    projectToUi: boolean("project_to_ui").notNull().default(false),
-    createMessage: boolean("create_message").notNull().default(false),
-    createToolEvent: boolean("create_tool_event").notNull().default(false),
     createMemoryEvent: boolean("create_memory_event").notNull().default(false),
     includeInEmbedding: boolean("include_in_embedding")
       .notNull()
@@ -11252,14 +11868,6 @@ export const projectionPolicyRules = pgTable(
       table.enabled
     ),
     check(
-      "projection_policy_rules_message_ui_check",
-      sql`${table.createMessage} = false or ${table.projectToUi} = true`
-    ),
-    check(
-      "projection_policy_rules_tool_ui_check",
-      sql`${table.createToolEvent} = false or ${table.projectToUi} = true`
-    ),
-    check(
       "projection_policy_rules_embedding_memory_check",
       sql`${table.includeInEmbedding} = false or ${table.createMemoryEvent} = true`
     ),
@@ -11280,6 +11888,66 @@ export const projectionPolicyState = pgTable(
   (table) => [
     check("projection_policy_state_singleton_check", sql`${table.id} = 1`),
     check("projection_policy_state_revision_check", sql`${table.revision} >= 1`)
+  ]
+);
+
+export const conversationPresentationPolicyRules = pgTable(
+  "conversation_presentation_policy_rules",
+  {
+    sourceKind: text("source_kind").notNull(),
+    sourceAdapterVersion: text("source_adapter_version").notNull(),
+    itemType: text("item_type").notNull(),
+    description: text("description"),
+    presentationMode: text("presentation_mode").notNull().default("hidden"),
+    rendererKind: text("renderer_kind").notNull().default("generic"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.sourceKind, table.sourceAdapterVersion, table.itemType]
+    }),
+    index("conversation_presentation_policy_lookup_idx").on(
+      table.sourceKind,
+      table.sourceAdapterVersion,
+      table.itemType,
+      table.enabled
+    ),
+    check(
+      "conversation_presentation_policy_mode_check",
+      sql`${table.presentationMode} in ('expanded','collapsed','status','hidden')`
+    ),
+    check(
+      "conversation_presentation_policy_renderer_check",
+      sql`${table.rendererKind} in (
+        'message','reasoning_summary','tool_call','tool_result','approval',
+        'user_input','lifecycle','telemetry','generic'
+      )`
+    ),
+    check(
+      "conversation_presentation_policy_hidden_renderer_check",
+      sql`${table.presentationMode} <> 'hidden' or ${table.rendererKind} = 'generic'`
+    )
+  ]
+);
+
+export const conversationPresentationPolicyState = pgTable(
+  "conversation_presentation_policy_state",
+  {
+    id: integer("id").primaryKey().default(1),
+    revision: bigint("revision", { mode: "number" }).notNull().default(1),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    check(
+      "conversation_presentation_policy_state_singleton_check",
+      sql`${table.id} = 1`
+    ),
+    check(
+      "conversation_presentation_policy_state_revision_check",
+      sql`${table.revision} >= 1`
+    )
   ]
 );
 

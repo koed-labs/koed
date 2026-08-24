@@ -99,6 +99,12 @@ export type PdsRelayDeviceCapability =
   | "lcm";
 export type PdsRelayDeviceReadiness = "ready" | "busy" | "unavailable";
 
+export interface PdsPeerRouteRecord {
+  deviceId: string;
+  canonicalAdvertisement: string;
+  canonicalRequestProof: string;
+}
+
 const transportRecord = (
   value: Record<string, unknown>
 ): PdsRelayTransportRecord => {
@@ -431,6 +437,87 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
       );
       await client.query("commit");
       return result.rowCount === 1;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  async advertisePdsPeerRoute(
+    input: PdsRelayAuthContext & {
+      endpointUrl: string;
+      canonicalAdvertisement: string;
+      canonicalRequestProof: string;
+      recordHash: string;
+      advertisedAt: Date;
+      expiresAt: Date;
+    }
+  ): Promise<void> {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const auth = await assertCurrentRelayAuth(client, input);
+      await client.query(
+        `insert into pds_peer_routes
+          (group_id,device_id,endpoint_url,record_hash,canonical_advertisement,canonical_request_proof,advertised_at,expires_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)
+         on conflict (group_id,device_id) do update set
+          endpoint_url=excluded.endpoint_url,
+          record_hash=excluded.record_hash,
+          canonical_advertisement=excluded.canonical_advertisement,
+          canonical_request_proof=excluded.canonical_request_proof,
+          advertised_at=excluded.advertised_at,
+          expires_at=excluded.expires_at,
+          updated_at=now()
+         where pds_peer_routes.advertised_at <= excluded.advertised_at`,
+        [
+          auth.groupDbId,
+          auth.deviceId,
+          input.endpointUrl,
+          input.recordHash,
+          input.canonicalAdvertisement,
+          input.canonicalRequestProof,
+          input.advertisedAt,
+          input.expiresAt
+        ]
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  async listPdsPeerRoutes(
+    input: PdsRelayAuthContext
+  ): Promise<PdsPeerRouteRecord[]> {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const auth = await assertCurrentRelayAuth(client, input);
+      const result = await client.query<{
+        device_id: string;
+        canonical_advertisement: string;
+        canonical_request_proof: string;
+      }>(
+        `select r.device_id,r.canonical_advertisement,r.canonical_request_proof
+         from pds_peer_routes r
+         join personal_device_group_members m
+           on m.group_id=r.group_id and m.device_id=r.device_id and m.status='active'
+         where r.group_id=$1 and r.device_id<>$2 and r.expires_at>now()
+         order by r.device_id`,
+        [auth.groupDbId, auth.deviceId]
+      );
+      await client.query("commit");
+      return result.rows.map((value) => ({
+        deviceId: value.device_id,
+        canonicalAdvertisement: value.canonical_advertisement,
+        canonicalRequestProof: value.canonical_request_proof
+      }));
     } catch (error) {
       await client.query("rollback");
       throw error;
@@ -1222,8 +1309,8 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
       }
       if (!found.ack_hash) {
         await client.query(
-          `update pds_relay_recipients set ack_hash=$1,acked_at=now() where id=$2`,
-          [input.ackHash, found.recipient_id]
+          `update pds_relay_recipients set ack_hash=$1,canonical_ack=$2,acked_at=now() where id=$3`,
+          [input.ackHash, canonicalizePdsJson(input.ack), found.recipient_id]
         );
       }
       const pending = await client.query(
@@ -1247,6 +1334,40 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
         auth.groupId
       ]);
       await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  async getPdsPeerReceipt(
+    input: PdsRelayAuthContext & {
+      transportId: string;
+      recipientDeviceId: string;
+    }
+  ): Promise<string | null> {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const auth = await assertCurrentRelayAuth(client, input);
+      const result = await client.query<{ canonical_ack: string | null }>(
+        `select r.canonical_ack
+         from pds_relay_transports t
+         join pds_relay_recipients r on r.transport_id=t.id
+         where t.group_id=$1 and t.transport_id=$2
+           and t.sender_device_id=$3 and r.recipient_device_id=$4
+           and r.acked_at is not null and r.waived_at is null`,
+        [
+          auth.groupDbId,
+          input.transportId,
+          auth.deviceId,
+          input.recipientDeviceId
+        ]
+      );
+      await client.query("commit");
+      return result.rows[0]?.canonical_ack ?? null;
     } catch (error) {
       await client.query("rollback");
       throw error;
@@ -1485,6 +1606,14 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
       );
       await client.query(
         `delete from pds_relay_request_nonces where expires_at <= $1`,
+        [now]
+      );
+      await client.query(
+        `delete from pds_peer_routes r
+         where r.expires_at <= $1 or not exists (
+           select 1 from personal_device_group_members m
+           where m.group_id=r.group_id and m.device_id=r.device_id and m.status='active'
+         )`,
         [now]
       );
       await client.query("commit");

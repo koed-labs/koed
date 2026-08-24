@@ -525,6 +525,13 @@ durable, push-based updates without polling application data.
   reconnect limits, jitter, replay limits, and defined close reasons prevent
   unbounded resource use. SSE comment heartbeats are transport liveness only and
   never enter the application event parser or trigger reconnects.
+- The shared durable realtime client runtime owns cancellation, reconnect
+  windows, backoff, cooldown, transport selection and framing, subscription
+  coordination, and generation-bound view caching. The collaboration domain
+  validates and authorizes a backend before binding it to that runtime and
+  remains the authority for credentials, durable cursor and acknowledgement
+  semantics, schema validation, revocation, and resnapshot. See [ADR
+  0030](./adr/0030-shared-durable-realtime-client-runtime.md).
 
 Realtime event families cover Team and Workspace lifecycle or access changes,
 thread creation and archive, Team Chat Message creation, current-User read
@@ -767,3 +774,12 @@ the unprefixed child values in the mode-`0600`
 The broker and cursor secrets must be distinct and retained across restarts and
 restore. See [Collaboration Launch Validation](collaboration-launch-validation.md)
 for executable rollout, disconnect, cleanup, and rollback procedures.
+
+The optional WebTransport runtime is configured separately with the
+`API_COLLABORATION_REALTIME_WEBTRANSPORT_*` variables documented in
+[Configuration](configuration.md). It requires direct or explicitly proven
+HTTP/3/UDP reachability and does not become a capability merely because a Team
+profile is enabled. Browser and native clients fall back to the next advertised
+adapter only for unsupported, disabled, or network-path failures;
+authentication, authorization, revocation, schema, and protocol-integrity
+failures stop closed.

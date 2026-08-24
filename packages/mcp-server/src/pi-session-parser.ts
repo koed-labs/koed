@@ -173,7 +173,7 @@ export const parsePiSessionJournalBytes = (input: {
       }
       const rawJson = {
         type: "pi_session_record",
-        ...(blockIndex === 0
+        ...(blockIndex === 0 || blockIndex === blocks.length - 1
           ? { sourceRecord: entry }
           : { sourceRecordReference: entryId }),
         contentBlock: rawBlock

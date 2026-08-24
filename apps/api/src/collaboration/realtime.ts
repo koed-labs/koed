@@ -84,7 +84,7 @@ type RealtimeAuth = {
   operationFamilies: ReadonlySet<string> | null;
 };
 
-type RealtimeScopeInput =
+export type RealtimeScopeInput =
   | { scope: "personal" }
   | { scope: "team"; teamId: string };
 
@@ -129,7 +129,7 @@ type StreamClient = {
   scope: RealtimeScopeInput;
   subscriptionId: string;
   cursor: number;
-  reply: FastifyReply;
+  sink: CollaborationRealtimeEventSink;
   flushing: boolean;
   pending: boolean;
   closed: boolean;
@@ -149,6 +149,32 @@ export type CollaborationRealtimeCloseReason =
   | "stream_replaced"
   | "server_shutdown";
 
+export interface CollaborationRealtimeEventSink {
+  send(event: string, serializedPayload: string, id?: string): Promise<void>;
+  close(): Promise<void>;
+  onClose(listener: () => void): void;
+}
+
+export interface CollaborationRealtimeTransportPrincipal {
+  user: { id: string; email: string; displayName: string | null };
+  deviceCredentialId: string | null;
+  operationFamilies: ReadonlySet<string> | null;
+}
+
+export interface CollaborationRealtimeTransportStreamInput {
+  principal: CollaborationRealtimeTransportPrincipal;
+  scope: RealtimeScopeInput;
+  clientInstanceId: string;
+  subscriptionKey: string;
+  cursor: string;
+  reauthenticate: () => Promise<CollaborationRealtimeTransportPrincipal>;
+}
+
+export interface PreparedCollaborationRealtimeStream {
+  subscriptionId: string;
+  activate(sink: CollaborationRealtimeEventSink): Promise<void>;
+}
+
 export interface CollaborationRealtimeServiceOptions {
   app: FastifyInstance;
   auth: Pick<
@@ -162,6 +188,8 @@ export interface CollaborationRealtimeServiceOptions {
           ManagedConversationRepository,
           | "getManagedConversationExecution"
           | "getManagedConversationRuntimeBinding"
+          | "getLatestManagedConversationCommandForExecution"
+          | "getManagedConversationRuntimeItem"
         >)
     | null;
   sharedMemoryRepository: Pick<
@@ -356,23 +384,23 @@ const assertCursorMatches = (
   }
 };
 
-const writeSerializedEvent = (
-  reply: FastifyReply,
-  event: string,
-  serializedPayload: string,
-  id?: string
-) => {
-  reply.raw.write(
-    `${id ? `id: ${id}\n` : ""}event: ${event}\ndata: ${serializedPayload}\n\n`
-  );
-};
-
-const writeEvent = (
-  reply: FastifyReply,
-  event: string,
-  payload: unknown,
-  id?: string
-) => writeSerializedEvent(reply, event, JSON.stringify(payload), id);
+const createSseSink = (
+  reply: FastifyReply
+): CollaborationRealtimeEventSink => ({
+  send(event, serializedPayload, id) {
+    reply.raw.write(
+      `${id ? `id: ${id}\n` : ""}event: ${event}\ndata: ${serializedPayload}\n\n`
+    );
+    return Promise.resolve();
+  },
+  close() {
+    reply.raw.end();
+    return Promise.resolve();
+  },
+  onClose(listener) {
+    reply.raw.once("close", listener);
+  }
+});
 
 type RendererUpdate = Extract<
   CollaborationRendererEvent,
@@ -462,7 +490,10 @@ export type PersonalRealtimeMaterializationRepository =
   CollaborationRealtimeMaterializationRepository &
     Pick<
       ManagedConversationRepository,
-      "getManagedConversationExecution" | "getManagedConversationRuntimeBinding"
+      | "getManagedConversationExecution"
+      | "getManagedConversationRuntimeBinding"
+      | "getLatestManagedConversationCommandForExecution"
+      | "getManagedConversationRuntimeItem"
     >;
 
 export const materializePendingShareLifecycleEvent = async (
@@ -525,19 +556,85 @@ export const materializeManagedConversationChangedEvent = async (
     event.messageId !== null ||
     event.shareGrantId !== null ||
     event.logicalMemoryId !== null ||
-    event.resourceType !== "managed_conversation_execution"
+    ![
+      "managed_conversation_execution",
+      "managed_conversation_runtime_item",
+      "managed_conversation_runtime_reset"
+    ].includes(event.resourceType)
   ) {
     return { action: "requires_snapshot" };
   }
+  const runtimeItem =
+    event.resourceType === "managed_conversation_runtime_item"
+      ? await repository.getManagedConversationRuntimeItem(
+          actor,
+          event.resourceId
+        )
+      : null;
+  if (
+    event.resourceType === "managed_conversation_runtime_item" &&
+    !runtimeItem
+  ) {
+    return { action: "requires_snapshot" };
+  }
+  const executionId = runtimeItem?.executionId ?? event.resourceId;
   const execution = await repository.getManagedConversationExecution(
     actor,
-    event.resourceId
+    executionId
   );
   if (!execution) return { action: "requires_snapshot" };
   const runtimeBinding = await repository.getManagedConversationRuntimeBinding(
     actor,
     execution.id
   );
+  const latestCommand =
+    await repository.getLatestManagedConversationCommandForExecution(
+      actor,
+      execution.id
+    );
+  const runtimeItemChange =
+    event.resourceType === "managed_conversation_runtime_reset"
+      ? ({ kind: "reset" } as const)
+      : runtimeItem
+        ? runtimeItem.state === "pending" || runtimeItem.state === "answered"
+          ? runtimeItem.presentation.mode === "hidden" ||
+            runtimeItem.presentation.policyKey === null
+            ? ({
+                kind: "remove",
+                itemId: runtimeItem.id,
+                executionGeneration: runtimeItem.executionGeneration,
+                revision: runtimeItem.revision
+              } as const)
+            : ({
+                kind: "upsert",
+                item: {
+                  id: runtimeItem.id,
+                  executionGeneration: runtimeItem.executionGeneration,
+                  providerTurnId: runtimeItem.providerTurnId,
+                  providerItemId: runtimeItem.providerItemId,
+                  itemKind: runtimeItem.itemKind,
+                  presentation: {
+                    mode: runtimeItem.presentation.mode,
+                    renderer: runtimeItem.presentation.renderer,
+                    policyKey: runtimeItem.presentation.policyKey,
+                    policyRevision: runtimeItem.presentation.policyRevision,
+                    reason: runtimeItem.presentation.reason
+                  },
+                  state: runtimeItem.state,
+                  payload: runtimeItem.payload,
+                  revision: runtimeItem.revision,
+                  createdAt: runtimeItem.createdAt,
+                  updatedAt: runtimeItem.updatedAt,
+                  answered: runtimeItem.state === "answered"
+                }
+              } as const)
+          : ({
+              kind: "remove",
+              itemId: runtimeItem.id,
+              executionGeneration: runtimeItem.executionGeneration,
+              revision: runtimeItem.revision
+            } as const)
+        : null;
   return {
     action: "deliver",
     update: {
@@ -559,7 +656,20 @@ export const materializeManagedConversationChangedEvent = async (
         startedAt: execution.startedAt,
         quiescedAt: execution.quiescedAt,
         stoppedAt: execution.stoppedAt
-      }
+      },
+      latestCommand: latestCommand
+        ? {
+            id: latestCommand.id,
+            sequence: latestCommand.sequence,
+            executionGeneration: latestCommand.executionGeneration,
+            commandKind: latestCommand.commandKind,
+            clientUserMessageId: latestCommand.clientUserMessageId,
+            state: latestCommand.state,
+            lastErrorCode: latestCommand.lastErrorCode,
+            updatedAt: latestCommand.updatedAt
+          }
+        : null,
+      runtimeItemChange
     }
   };
 };
@@ -1360,30 +1470,39 @@ const makeCursor = (
     cursor: input.cursor
   });
 
-const closeClient = (
+const closeClient = async (
   client: StreamClient,
   reason: CollaborationRealtimeCloseReason
-) => {
+): Promise<void> => {
   if (client.closed) return;
   client.closed = true;
   if (client.authorizationTimer) clearInterval(client.authorizationTimer);
   if (client.heartbeatTimer) clearInterval(client.heartbeatTimer);
   client.authorizationTimer = null;
   client.heartbeatTimer = null;
-  if (reason === "access_revoked") {
-    writeEvent(client.reply, "access_revoked", {
-      protocolVersion,
-      subscription: { id: client.subscriptionId },
-      reason
-    });
-  } else {
-    writeEvent(client.reply, "control", {
-      protocolVersion,
-      subscription: { id: client.subscriptionId },
-      reason
-    });
+  try {
+    if (reason === "access_revoked") {
+      await client.sink.send(
+        "access_revoked",
+        JSON.stringify({
+          protocolVersion,
+          subscription: { id: client.subscriptionId },
+          reason
+        })
+      );
+    } else {
+      await client.sink.send(
+        "control",
+        JSON.stringify({
+          protocolVersion,
+          subscription: { id: client.subscriptionId },
+          reason
+        })
+      );
+    }
+  } finally {
+    await client.sink.close().catch(() => undefined);
   }
-  client.reply.raw.end();
 };
 
 export const createCollaborationRealtimeService = async (
@@ -1462,15 +1581,15 @@ export const createCollaborationRealtimeService = async (
   let listenerReconnectAttempt = 0;
   let closing = false;
 
-  const closeAndForget = (
+  const closeAndForget = async (
     client: StreamClient,
     reason: CollaborationRealtimeCloseReason
-  ) => {
-    closeClient(client, reason);
+  ): Promise<void> => {
     clients.delete(client);
     if (clientsBySubscription.get(client.subscriptionId) === client) {
       clientsBySubscription.delete(client.subscriptionId);
     }
+    await closeClient(client, reason).catch(() => undefined);
   };
 
   const backpressureExceeded = (
@@ -1498,7 +1617,7 @@ export const createCollaborationRealtimeService = async (
           currentAuth.user.id !== client.actor.userId ||
           currentAuth.deviceCredentialId !== client.binding.deviceCredentialId
         ) {
-          closeAndForget(client, "access_revoked");
+          await closeAndForget(client, "access_revoked");
           return false;
         }
         client.operationFamilies = currentAuth.operationFamilies;
@@ -1513,16 +1632,16 @@ export const createCollaborationRealtimeService = async (
         });
         if (client.closed) return false;
         if (!recovered) {
-          closeAndForget(client, "access_revoked");
+          await closeAndForget(client, "access_revoked");
           return false;
         }
         if (recovered.requiresSnapshot) {
-          closeAndForget(client, "requires_snapshot");
+          await closeAndForget(client, "requires_snapshot");
           return false;
         }
         return true;
       } catch {
-        closeAndForget(client, "access_revoked");
+        await closeAndForget(client, "access_revoked");
         return false;
       }
     })();
@@ -1545,7 +1664,7 @@ export const createCollaborationRealtimeService = async (
       do {
         client.pending = false;
         if (backpressureExceeded(client)) {
-          closeAndForget(client, "backpressure");
+          await closeAndForget(client, "backpressure");
           return;
         }
         if (!(await reauthorize(client))) return;
@@ -1559,13 +1678,13 @@ export const createCollaborationRealtimeService = async (
         );
         if (client.closed) return;
         if (!replay) {
-          closeAndForget(client, "access_revoked");
+          await closeAndForget(client, "access_revoked");
           return;
         }
         for (const event of replay.events) {
           client.cursor = event.cursor;
           if (event.family === "access_revoked" && !event.shareGrantId) {
-            closeAndForget(client, "access_revoked");
+            await closeAndForget(client, "access_revoked");
             return;
           }
           if (!canReceiveEvent(client.operationFamilies, event.family)) {
@@ -1574,7 +1693,7 @@ export const createCollaborationRealtimeService = async (
           const materialized = await materializeEvent(client, event, options);
           if (materialized.action === "skip") continue;
           if (materialized.action === "requires_snapshot") {
-            closeAndForget(client, "requires_snapshot");
+            await closeAndForget(client, "requires_snapshot");
             return;
           }
           const stillAuthorized =
@@ -1588,7 +1707,7 @@ export const createCollaborationRealtimeService = async (
               }
             );
           if (stillAuthorized !== true) {
-            closeAndForget(client, "requires_snapshot");
+            await closeAndForget(client, "requires_snapshot");
             return;
           }
           const cursor = makeCursor(options.cursorSecret, {
@@ -1607,7 +1726,7 @@ export const createCollaborationRealtimeService = async (
           const serializedEnvelope = JSON.stringify(envelope);
           const bytes = Buffer.byteLength(serializedEnvelope, "utf8");
           if (backpressureExceeded(client, 1, bytes)) {
-            closeAndForget(client, "backpressure");
+            await closeAndForget(client, "backpressure");
             return;
           }
           client.unacknowledged.push({
@@ -1616,8 +1735,7 @@ export const createCollaborationRealtimeService = async (
             sentAt: Date.now()
           });
           client.unacknowledgedBytes += bytes;
-          writeSerializedEvent(
-            client.reply,
+          await client.sink.send(
             "collaboration_event",
             serializedEnvelope,
             cursor
@@ -1638,7 +1756,7 @@ export const createCollaborationRealtimeService = async (
         },
         "could not flush collaboration realtime events"
       );
-      closeAndForget(client, "requires_snapshot");
+      await closeAndForget(client, "requires_snapshot");
     } finally {
       client.flushing = false;
     }
@@ -1659,9 +1777,9 @@ export const createCollaborationRealtimeService = async (
             : true;
       if (!samePrincipal || !sameScope) continue;
       if (notification.control === "access_revoked") {
-        closeAndForget(client, "access_revoked");
+        void closeAndForget(client, "access_revoked");
       } else if (notification.control === "requires_snapshot") {
-        closeAndForget(client, "requires_snapshot");
+        void closeAndForget(client, "requires_snapshot");
       } else {
         void flush(client);
       }
@@ -1781,6 +1899,161 @@ export const createCollaborationRealtimeService = async (
       "access-control-allow-origin": normalized,
       "access-control-allow-credentials": "true",
       vary: "Origin"
+    };
+  };
+
+  const prepareDurableStream = async (
+    input: CollaborationRealtimeTransportStreamInput
+  ): Promise<PreparedCollaborationRealtimeStream> => {
+    const binding = bindingFor({
+      backendIdentityHash,
+      userId: input.principal.user.id,
+      deviceCredentialId: input.principal.deviceCredentialId,
+      clientInstanceId: input.clientInstanceId,
+      subscriptionKey: input.subscriptionKey
+    });
+    const parsedCursor = decryptCollaborationRealtimeCursor(
+      options.cursorSecret,
+      input.cursor
+    );
+    assertCursorMatches(parsedCursor, binding, input.scope);
+
+    const assertCapacity = () => {
+      const existing = clientsBySubscription.get(parsedCursor.subscriptionId);
+      const replacementCount = existing ? 1 : 0;
+      if (clients.size - replacementCount >= maxClients) {
+        throw Object.assign(new Error("Realtime stream limit reached"), {
+          statusCode: 429
+        });
+      }
+      const principalClientCount = [...clients].filter(
+        (client) =>
+          client !== existing &&
+          client.principalIdHash === binding.principalIdHash
+      ).length;
+      if (principalClientCount >= maxClientsPerPrincipal) {
+        throw Object.assign(new Error("Realtime stream limit reached"), {
+          statusCode: 429
+        });
+      }
+    };
+    assertCapacity();
+
+    const recovered = await requireRepository(
+      options.repository
+    ).recoverSubscription(
+      { userId: input.principal.user.id },
+      {
+        ...binding,
+        ...input.scope,
+        subscriptionId: parsedCursor.subscriptionId,
+        afterCursor: parsedCursor.cursor,
+        expiresAt: new Date(Date.now() + subscriptionTtlMs)
+      }
+    );
+    if (!recovered) {
+      throw Object.assign(
+        new Error("Collaboration realtime stream cannot be viewed"),
+        { statusCode: 403 }
+      );
+    }
+
+    let activated = false;
+    return {
+      subscriptionId: parsedCursor.subscriptionId,
+      async activate(sink) {
+        if (activated) {
+          throw Object.assign(new Error("Realtime stream is already active"), {
+            statusCode: 409
+          });
+        }
+        activated = true;
+        if (closing) {
+          throw Object.assign(new Error("Realtime service is closing"), {
+            statusCode: 503
+          });
+        }
+        assertCapacity();
+        const client: StreamClient = {
+          id: randomBytes(12).toString("base64url"),
+          actor: { userId: input.principal.user.id },
+          user: input.principal.user,
+          principalIdHash: binding.principalIdHash,
+          binding,
+          scope: input.scope,
+          subscriptionId: parsedCursor.subscriptionId,
+          cursor: parsedCursor.cursor,
+          sink,
+          flushing: false,
+          pending: false,
+          closed: false,
+          unacknowledged: [],
+          unacknowledgedBytes: 0,
+          operationFamilies: input.principal.operationFamilies,
+          reauthenticate: input.reauthenticate,
+          authorizationPromise: null,
+          authorizationTimer: null,
+          heartbeatTimer: null
+        };
+        const replaced = clientsBySubscription.get(client.subscriptionId);
+        if (replaced) await closeAndForget(replaced, "stream_replaced");
+        clients.add(client);
+        clientsBySubscription.set(client.subscriptionId, client);
+        sink.onClose(() => {
+          if (client.authorizationTimer)
+            clearInterval(client.authorizationTimer);
+          if (client.heartbeatTimer) clearInterval(client.heartbeatTimer);
+          client.authorizationTimer = null;
+          client.heartbeatTimer = null;
+          client.closed = true;
+          clients.delete(client);
+          if (clientsBySubscription.get(client.subscriptionId) === client) {
+            clientsBySubscription.delete(client.subscriptionId);
+          }
+        });
+        if (recovered.requiresSnapshot) {
+          await closeAndForget(client, "requires_snapshot");
+          return;
+        }
+        try {
+          await sink.send(
+            "ready",
+            JSON.stringify({
+              protocolVersion,
+              subscription: { id: client.subscriptionId },
+              cursor: input.cursor
+            })
+          );
+        } catch (error) {
+          await closeAndForget(client, "requires_snapshot");
+          throw error;
+        }
+        void flush(client);
+        client.authorizationTimer = setInterval(() => {
+          // LISTEN/NOTIFY is the low-latency wake-up path. Reconcile the durable
+          // outbox during the bounded authorization sweep so a lost advisory
+          // notification cannot strand an access change indefinitely.
+          void flush(client);
+        }, authorizationRecheckMs);
+        client.authorizationTimer.unref?.();
+        client.heartbeatTimer = setInterval(() => {
+          if (client.closed) return;
+          if (backpressureExceeded(client)) {
+            void closeAndForget(client, "backpressure");
+            return;
+          }
+          void sink
+            .send(
+              "heartbeat",
+              JSON.stringify({
+                protocolVersion,
+                subscription: { id: client.subscriptionId }
+              })
+            )
+            .catch(() => closeAndForget(client, "requires_snapshot"));
+        }, heartbeatMs);
+        client.heartbeatTimer.unref?.();
+      }
     };
   };
 
@@ -1931,13 +2204,6 @@ export const createCollaborationRealtimeService = async (
           options.auth,
           query
         );
-        const binding = bindingFor({
-          backendIdentityHash,
-          userId: realtimeAuth.user.id,
-          deviceCredentialId: realtimeAuth.deviceCredentialId,
-          clientInstanceId: query.clientInstanceId,
-          subscriptionKey: query.subscriptionKey
-        });
         const headerCursor = request.headers["last-event-id"];
         const token =
           (Array.isArray(headerCursor) ? headerCursor[0] : headerCursor) ??
@@ -1947,49 +2213,18 @@ export const createCollaborationRealtimeService = async (
             statusCode: 400
           });
         }
-        const parsedCursor = decryptCollaborationRealtimeCursor(
-          options.cursorSecret,
-          token
-        );
-        assertCursorMatches(parsedCursor, binding, query);
-        const existingClient = clientsBySubscription.get(
-          parsedCursor.subscriptionId
-        );
-        const replacementCount = existingClient ? 1 : 0;
-        if (clients.size - replacementCount >= maxClients) {
-          throw Object.assign(new Error("Realtime stream limit reached"), {
-            statusCode: 429
-          });
-        }
-        const principalClientCount = [...clients].filter(
-          (client) =>
-            client !== existingClient &&
-            client.principalIdHash === binding.principalIdHash
-        ).length;
-        if (principalClientCount >= maxClientsPerPrincipal) {
-          throw Object.assign(new Error("Realtime stream limit reached"), {
-            statusCode: 429
-          });
-        }
-        const recovered = await requireRepository(
-          options.repository
-        ).recoverSubscription(
-          { userId: realtimeAuth.user.id },
-          {
-            ...binding,
-            ...query,
-            subscriptionId: parsedCursor.subscriptionId,
-            afterCursor: parsedCursor.cursor,
-            expiresAt: new Date(Date.now() + subscriptionTtlMs)
-          }
-        );
-        if (!recovered) {
-          throw Object.assign(
-            new Error("Collaboration realtime stream cannot be viewed"),
-            { statusCode: 403 }
-          );
-        }
-
+        const prepared = await prepareDurableStream({
+          principal: realtimeAuth,
+          scope: query,
+          clientInstanceId: query.clientInstanceId,
+          subscriptionKey: query.subscriptionKey,
+          cursor: token,
+          reauthenticate: createRealtimeReauthenticator(
+            request,
+            options.auth,
+            query
+          )
+        });
         reply.hijack();
         reply.raw.writeHead(200, {
           ...corsHeaders,
@@ -1998,89 +2233,16 @@ export const createCollaborationRealtimeService = async (
           connection: "keep-alive",
           "x-accel-buffering": "no"
         });
-        const client: StreamClient = {
-          id: randomBytes(12).toString("base64url"),
-          actor: { userId: realtimeAuth.user.id },
-          user: realtimeAuth.user,
-          principalIdHash: binding.principalIdHash,
-          binding,
-          scope: query,
-          subscriptionId: parsedCursor.subscriptionId,
-          cursor: parsedCursor.cursor,
-          reply,
-          flushing: false,
-          pending: false,
-          closed: false,
-          unacknowledged: [],
-          unacknowledgedBytes: 0,
-          operationFamilies: realtimeAuth.operationFamilies,
-          reauthenticate: createRealtimeReauthenticator(
-            request,
-            options.auth,
-            query
-          ),
-          authorizationPromise: null,
-          authorizationTimer: null,
-          heartbeatTimer: null
-        };
-        const replacedClient = clientsBySubscription.get(client.subscriptionId);
-        if (replacedClient) {
-          closeAndForget(replacedClient, "stream_replaced");
-        }
-        clients.add(client);
-        clientsBySubscription.set(client.subscriptionId, client);
-        if (recovered.requiresSnapshot) {
-          closeAndForget(client, "requires_snapshot");
-          return;
-        }
-        writeEvent(reply, "ready", {
-          protocolVersion,
-          subscription: { id: client.subscriptionId },
-          cursor: token
-        });
-        void flush(client);
-        client.authorizationTimer = setInterval(() => {
-          // LISTEN/NOTIFY is the low-latency wake-up path. Reconcile the durable
-          // outbox during the bounded authorization sweep so a lost advisory
-          // notification cannot strand an access change indefinitely.
-          void flush(client);
-        }, authorizationRecheckMs);
-        client.authorizationTimer.unref?.();
-        client.heartbeatTimer = setInterval(() => {
-          if (client.closed) {
-            return;
-          }
-          if (backpressureExceeded(client)) {
-            closeAndForget(client, "backpressure");
-            return;
-          }
-          writeEvent(reply, "heartbeat", {
-            protocolVersion,
-            subscription: { id: client.subscriptionId }
-          });
-        }, heartbeatMs);
-        client.heartbeatTimer.unref?.();
-        reply.raw.once("close", () => {
-          if (client.authorizationTimer)
-            clearInterval(client.authorizationTimer);
-          if (client.heartbeatTimer) clearInterval(client.heartbeatTimer);
-          client.authorizationTimer = null;
-          client.heartbeatTimer = null;
-          client.closed = true;
-          clients.delete(client);
-          if (clientsBySubscription.get(client.subscriptionId) === client) {
-            clientsBySubscription.delete(client.subscriptionId);
-          }
-        });
+        await prepared.activate(createSseSink(reply));
       }
     );
   };
 
-  const close = () => {
+  const close = async (): Promise<void> => {
     closing = true;
-    for (const client of clients) {
-      closeClient(client, "server_shutdown");
-    }
+    await Promise.allSettled(
+      [...clients].map((client) => closeClient(client, "server_shutdown"))
+    );
     clients.clear();
     clientsBySubscription.clear();
     if (reconnectTimer) clearTimeout(reconnectTimer);
@@ -2092,6 +2254,7 @@ export const createCollaborationRealtimeService = async (
 
   return {
     registerRoutes,
+    prepareDurableStream,
     close,
     activeClientCount: () => clients.size
   };

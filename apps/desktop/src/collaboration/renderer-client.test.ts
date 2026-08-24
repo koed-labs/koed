@@ -806,6 +806,22 @@ const waitFor = async (check: () => void) => {
 };
 
 describe("collaboration renderer client", () => {
+  it("does not revoke durable subscriptions when the renderer is disposed", async () => {
+    const mock = createBridge();
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    mock.command.mockClear();
+
+    client.dispose();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(
+      mock.command.mock.calls.some(
+        ([command]) => command.command === "collaboration.unsubscribe"
+      )
+    ).toBe(false);
+  });
+
   it("prewarms recent Shared Memory and renders the cached view before revalidation", async () => {
     const prepared = sharedFixture();
     const initial = collaborationSnapshotSchema.parse({

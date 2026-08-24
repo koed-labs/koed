@@ -5,13 +5,12 @@ import type {
   SharedMemoryRepresentation,
   SharedMemorySourcePage
 } from "@koed/shared/collaboration";
+import { CollaborationClientRuntime } from "@koed/shared/collaboration-client-runtime";
 import { describe, expect, it, vi } from "vitest";
 
 import { CollaborationActionGrantProjectionStore } from "./action-grant-projection-store.js";
 import { RendererEventQueue } from "./renderer-event-queue.js";
-import { CollaborationSelectionViewCache } from "./selection-view-cache.js";
 import { SharedSourceBackfillCoordinator } from "./shared-source-backfill.js";
-import { CollaborationSubscriptionCoordinator } from "./subscription-coordinator.js";
 
 const personal = (threadId: string): CollaborationSelection => ({
   kind: "personal_channel",
@@ -27,43 +26,47 @@ const snapshot = (selection: CollaborationSelection): CollaborationSnapshot =>
     }
   }) as CollaborationSnapshot;
 
-describe("CollaborationSelectionViewCache", () => {
+const createClientRuntime = (input: {
+  now?: () => number;
+  createSubscription?: (
+    scope: CollaborationSubscription["scope"]
+  ) => Promise<CollaborationSubscription | null>;
+  releaseSubscription?: (subscriptionId: string) => Promise<void>;
+}) =>
+  new CollaborationClientRuntime({
+    createSubscription: input.createSubscription ?? (async () => null),
+    releaseSubscription: input.releaseSubscription ?? (async () => undefined),
+    preferredSelection: () => ({ selection: null, intentGeneration: 0 }),
+    selectionIdentity: (selection) =>
+      selection.kind === "personal_channel"
+        ? selection.threadId
+        : selection.kind,
+    teamIdForSelection: () => null,
+    selectionCacheLimit: 2,
+    selectionCacheRetentionMs: 100,
+    now: input.now
+  });
+
+describe("CollaborationClientRuntime selection views", () => {
   it("bounds cached views by recency and expires retained entries", () => {
     let now = 0;
-    const cache = new CollaborationSelectionViewCache(
-      (selection) =>
-        selection.kind === "personal_channel"
-          ? selection.threadId
-          : selection.kind,
-      () => null,
-      2,
-      100,
-      () => now
-    );
-    cache.remember(snapshot(personal("one")));
+    const runtime = createClientRuntime({ now: () => now });
+    runtime.rememberSelectionView(snapshot(personal("one")));
     now = 1;
-    cache.remember(snapshot(personal("two")));
+    runtime.rememberSelectionView(snapshot(personal("two")));
     now = 2;
-    expect(cache.get(personal("one"))).not.toBeNull();
+    expect(runtime.selectionView(personal("one"))).not.toBeNull();
     now = 3;
-    cache.remember(snapshot(personal("three")));
+    runtime.rememberSelectionView(snapshot(personal("three")));
 
-    expect(cache.get(personal("two"))).toBeNull();
-    expect(cache.get(personal("one"))).not.toBeNull();
+    expect(runtime.selectionView(personal("two"))).toBeNull();
+    expect(runtime.selectionView(personal("one"))).not.toBeNull();
     now = 103;
-    expect(cache.get(personal("one"))).toBeNull();
+    expect(runtime.selectionView(personal("one"))).toBeNull();
   });
 
   it("deduplicates in-flight selection loads and releases completed work", async () => {
-    const cache = new CollaborationSelectionViewCache(
-      (selection) =>
-        selection.kind === "personal_channel"
-          ? selection.threadId
-          : selection.kind,
-      () => null,
-      2,
-      100
-    );
+    const runtime = createClientRuntime({});
     let resolve!: (value: CollaborationSnapshot | null) => void;
     const load = vi.fn(
       () =>
@@ -71,15 +74,73 @@ describe("CollaborationSelectionViewCache", () => {
           resolve = done;
         })
     );
-    const first = cache.coordinate(personal("one"), load);
-    const second = cache.coordinate(personal("one"), load);
+    const first = runtime.coordinateSelectionLoad(personal("one"), load);
+    const second = runtime.coordinateSelectionLoad(personal("one"), load);
 
     expect(second).toBe(first);
     expect(load).toHaveBeenCalledTimes(1);
     resolve(null);
     await first;
-    await cache.coordinate(personal("one"), async () => null);
+    await runtime.coordinateSelectionLoad(personal("one"), async () => null);
     expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects stale cache work after the backend binding changes", async () => {
+    const runtime = createClientRuntime({});
+    runtime.bind({
+      backendId: "backend-one",
+      principalId: "principal",
+      remoteUrl: "https://one.example.test",
+      transportId: "desktop_ipc"
+    });
+    runtime.rememberSelectionView(snapshot(personal("one")));
+    let resolve!: (value: CollaborationSnapshot | null) => void;
+    const pending = runtime.coordinateSelectionLoad(
+      personal("two"),
+      () =>
+        new Promise<CollaborationSnapshot | null>((done) => {
+          resolve = done;
+        })
+    );
+
+    expect(
+      runtime.bind({
+        backendId: "backend-two",
+        principalId: "principal",
+        remoteUrl: "https://two.example.test",
+        transportId: "desktop_ipc"
+      })
+    ).toBe(true);
+    resolve(snapshot(personal("two")));
+
+    await expect(pending).resolves.toBeNull();
+    expect(runtime.selectionView(personal("one"))).toBeNull();
+  });
+
+  it("keeps the current generation when the resolved binding is unchanged", () => {
+    const runtime = createClientRuntime({});
+    const binding = {
+      backendId: "backend-one",
+      principalId: "principal",
+      remoteUrl: "https://one.example.test",
+      transportId: "desktop_ipc"
+    };
+    runtime.bind(binding);
+    const generation = runtime.authorityGeneration();
+
+    expect(runtime.bind(binding)).toBe(false);
+    expect(runtime.authorityGeneration()).toBe(generation);
+  });
+
+  it("attributes revocation only to work that started before it", () => {
+    const runtime = createClientRuntime({});
+    const beforeRevocation = runtime.authorityGeneration();
+    runtime.invalidateAuthority({ revoked: true });
+    const afterRevocation = runtime.authorityGeneration();
+    runtime.invalidateAuthority();
+
+    expect(runtime.authorityWasRevokedSince(beforeRevocation)).toBe(true);
+    expect(runtime.authorityWasRevokedSince(afterRevocation)).toBe(false);
   });
 });
 
@@ -198,7 +259,7 @@ describe("SharedSourceBackfillCoordinator", () => {
   );
 });
 
-describe("CollaborationSubscriptionCoordinator", () => {
+describe("CollaborationClientRuntime subscriptions", () => {
   it("deduplicates scope subscriptions and rejects an attempt invalidated by reset", async () => {
     let resolve!: (subscription: CollaborationSubscription) => void;
     const create = vi.fn(
@@ -208,14 +269,13 @@ describe("CollaborationSubscriptionCoordinator", () => {
         })
     );
     const unsubscribe = vi.fn(async () => undefined);
-    const coordinator = new CollaborationSubscriptionCoordinator(
-      create,
-      unsubscribe,
-      () => ({ selection: null, intentGeneration: 0 })
-    );
-    const first = coordinator.subscribe({ scope: "personal" });
-    const duplicate = coordinator.subscribe({ scope: "personal" });
-    const reset = coordinator.reset();
+    const runtime = createClientRuntime({
+      createSubscription: create,
+      releaseSubscription: unsubscribe
+    });
+    const first = runtime.subscribe({ scope: "personal" });
+    const duplicate = runtime.subscribe({ scope: "personal" });
+    const reset = runtime.resetSubscriptions();
     resolve({
       id: "subscription",
       scope: { scope: "personal" },
@@ -226,7 +286,7 @@ describe("CollaborationSubscriptionCoordinator", () => {
     await Promise.all([first, duplicate, reset]);
 
     expect(create).toHaveBeenCalledTimes(1);
-    expect(coordinator.has("subscription")).toBe(false);
+    expect(runtime.hasSubscription("subscription")).toBe(false);
     expect(unsubscribe).toHaveBeenCalledWith("subscription");
   });
 });

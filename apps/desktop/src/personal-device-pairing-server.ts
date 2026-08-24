@@ -95,6 +95,7 @@ export type PersonalDevicePairingServer = {
   inspect(id?: string): PersonalDevicePairingView[];
   close(): Promise<void>;
   port: number;
+  relayUrl: string | null;
 };
 
 type PairingServerOptions = {
@@ -108,6 +109,7 @@ type PairingServerOptions = {
     headers: Record<string, string>;
     body?: string;
     mode: "pairing" | "relay";
+    signal: AbortSignal;
   }): Promise<{
     status: number;
     headers?: Record<string, string>;
@@ -328,6 +330,10 @@ export const startPersonalDevicePairingServer = async (
     request: IncomingMessage,
     response: ServerResponse
   ): Promise<void> => {
+    const forwardingAbort = new AbortController();
+    const abortForwarding = () => forwardingAbort.abort();
+    request.once("aborted", abortForwarding);
+    response.once("close", abortForwarding);
     try {
       const url = new URL(request.url ?? "/", "http://koed.invalid");
       const landing = /^\/pair\/([^/]+)$/.exec(url.pathname);
@@ -519,7 +525,8 @@ export const startPersonalDevicePairingServer = async (
             ...(method === "POST" && typeof decrypted.value.body === "string"
               ? { body: decrypted.value.body }
               : {}),
-            mode: "pairing"
+            mode: "pairing",
+            signal: forwardingAbort.signal
           });
           encryptedResponse(response, pending, decrypted.messageId, {
             status: forwarded.status,
@@ -568,7 +575,8 @@ export const startPersonalDevicePairingServer = async (
           ...(request.method === "GET"
             ? {}
             : { body: await readBody(request) }),
-          mode: "relay"
+          mode: "relay",
+          signal: forwardingAbort.signal
         });
         response.writeHead(forwarded.status, {
           "cache-control": "no-store",
@@ -583,9 +591,13 @@ export const startPersonalDevicePairingServer = async (
 
       json(response, 404, { error: "Not found." });
     } catch (error) {
+      if (forwardingAbort.signal.aborted || response.destroyed) return;
       json(response, 400, {
         error: error instanceof Error ? error.message : "Pairing failed."
       });
+    } finally {
+      request.off("aborted", abortForwarding);
+      response.off("close", abortForwarding);
     }
   };
   const server = createServer((request, response) => {
@@ -602,9 +614,15 @@ export const startPersonalDevicePairingServer = async (
   const address = server.address();
   const port =
     address && typeof address === "object" ? address.port : configuredPort;
+  const advertisedAddress = (options.addresses ?? localIpv4Addresses)().find(
+    isPrivatePersonalDevicePairingIpv4
+  );
 
   return {
     port,
+    relayUrl: advertisedAddress
+      ? `http://${advertisedAddress}:${port}/pds`
+      : null,
     createInvitation(baseInvitation) {
       for (const [id, pending] of invitations) {
         if (

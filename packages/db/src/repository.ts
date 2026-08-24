@@ -28,6 +28,12 @@ import {
 } from "./conversation-semantic-projection.js";
 import { createConversationItemRepository } from "./conversation-item-repository.js";
 import { createConversationSourceJournalRepository } from "./conversation-source-journal-repository.js";
+import { createConversationPresentationRepository } from "./conversation-presentation-repository.js";
+import {
+  loadConversationPresentationPolicySnapshot,
+  ownerVisibleApprovalPresentationSql,
+  type ConversationPresentationPolicySnapshot
+} from "./conversation-presentation-policy.js";
 import { createHistoricalImportRepository } from "./historical-import-repository.js";
 import { embeddingTableForDimensions } from "./embedding-coverage.js";
 import { createCollaborationRepository } from "./collaboration-repository.js";
@@ -48,6 +54,7 @@ import { createHighRiskActionRepository } from "./high-risk-action-repository.js
 import { createLocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 import { createManagedConversationForkRepository } from "./managed-conversation-fork-repository.js";
 import { createManagedConversationRepository } from "./managed-conversation-repository.js";
+import { createManagedTerminalRepository } from "./managed-terminal-repository.js";
 import { createDevelopmentWorkspaceSnapshotRepository } from "./development-workspace-snapshot-repository.js";
 import { createManagedConversationTransferRepository } from "./managed-conversation-transfer-repository.js";
 import { createMemoryNodeRepository } from "./memory-node-repository.js";
@@ -99,6 +106,7 @@ import {
   classifyApprovalActivity,
   combineStorageSanitizationCounts,
   canonicalizePdsJson,
+  decideConversationItemPresentation,
   DEFAULT_EMBEDDING_QUERY_INSTRUCTION,
   formatEmbeddingRetrievalQuery,
   metadataWithStorageSanitization,
@@ -113,6 +121,7 @@ import {
   decryptEnvelopeToUtf8,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
+  type ConversationPresentationDecision,
   type KoedWorkClass
 } from "@koed/shared";
 
@@ -1003,6 +1012,7 @@ const projectionTranscriptItemIdFor = (row: {
 };
 
 type ConversationProjectionPolicy = {
+  presentation: ConversationPresentationDecision;
   createMessage: boolean;
   createToolEvent: boolean;
   createMemoryEvent: boolean;
@@ -1016,9 +1026,6 @@ type ConversationProjectionPolicyRule = {
   sourceKind: string;
   sourceAdapterVersion: string;
   transcriptType: string;
-  projectToUi: boolean;
-  createMessage: boolean;
-  createToolEvent: boolean;
   createMemoryEvent: boolean;
   includeInEmbedding: boolean;
   includeInLcm: boolean;
@@ -1179,9 +1186,6 @@ const loadConversationProjectionPolicyRules = async (
     source_kind: string;
     source_adapter_version: string;
     transcript_type: string;
-    project_to_ui: boolean;
-    create_message: boolean;
-    create_tool_event: boolean;
     create_memory_event: boolean;
     include_in_embedding: boolean;
     include_in_lcm: boolean;
@@ -1192,9 +1196,6 @@ const loadConversationProjectionPolicyRules = async (
         source_kind,
         source_adapter_version,
         transcript_type,
-        project_to_ui,
-        create_message,
-        create_tool_event,
         create_memory_event,
         include_in_embedding,
         include_in_lcm,
@@ -1215,9 +1216,6 @@ const loadConversationProjectionPolicyRules = async (
           sourceKind: row.source_kind,
           sourceAdapterVersion: row.source_adapter_version,
           transcriptType: row.transcript_type,
-          projectToUi: row.project_to_ui,
-          createMessage: row.create_message,
-          createToolEvent: row.create_tool_event,
           createMemoryEvent: row.create_memory_event,
           includeInEmbedding: row.include_in_embedding,
           includeInLcm: row.include_in_lcm,
@@ -1243,9 +1241,17 @@ const classifyConversationItemProjection = (
     actorType: MemoryActor | null;
     content: string | null;
     projectionRules: Map<string, ConversationProjectionPolicyRule>;
+    presentationPolicy: ConversationPresentationPolicySnapshot;
   }
 ): ConversationProjectionPolicy => {
   const base = {
+    presentation: {
+      mode: "hidden",
+      renderer: "generic",
+      policyKey: null,
+      policyRevision: input.presentationPolicy.revision,
+      reason: "not-presentable"
+    } satisfies ConversationPresentationDecision,
     createMessage: false,
     createToolEvent: false,
     createMemoryEvent: false,
@@ -1274,6 +1280,36 @@ const classifyConversationItemProjection = (
     return { ...base, reason: "managed-thread-level-provenance" };
   }
   const lookupKeys = projectionRuleLookupKeysForConversationItem(row);
+  const presentationForAdapter = (
+    sourceKind: string,
+    sourceAdapterVersion: string
+  ) =>
+    decideConversationItemPresentation({
+      sourceKind,
+      sourceAdapterVersion,
+      lookupItemTypes: lookupKeys,
+      policyRevision: input.presentationPolicy.revision,
+      rules: input.presentationPolicy.rules
+    });
+  const directPresentation = presentationForAdapter(
+    row.source_kind,
+    row.source_adapter_version
+  );
+  const presentation = directPresentation.reason.startsWith(
+    "presentation-policy-missing:"
+  )
+    ? row.source_kind === NORMALIZED_IMPORT_SOURCE_ADAPTER.sourceKind &&
+      row.source_adapter_version ===
+        NORMALIZED_IMPORT_SOURCE_ADAPTER.sourceAdapterVersion
+      ? presentationForAdapter(
+          row.source_kind,
+          NORMALIZED_IMPORT_SOURCE_ADAPTER.projectionPolicyEquivalentAdapterVersion
+        )
+      : row.source_kind === "codex" &&
+          row.source_adapter_version !== "codex-transcript-v1"
+        ? presentationForAdapter("codex", "codex-transcript-v1")
+        : directPresentation
+    : directPresentation;
   const findRule = (sourceAdapterVersion: string) =>
     lookupKeys
       .map((key) =>
@@ -1295,46 +1331,40 @@ const classifyConversationItemProjection = (
     row.source_adapter_version !== "codex-transcript-v1"
       ? findRule("codex-transcript-v1")
       : undefined);
-  if (matchedRule) {
-    if (!matchedRule.enabled) {
-      return {
-        ...base,
-        reason: `projection-policy-disabled:${matchedRule.transcriptType}`
-      };
-    }
-    if (!input.content || !input.actorType) {
-      return {
-        ...base,
-        reason: `projection-policy-missing-content-or-actor:${matchedRule.transcriptType}`
-      };
-    }
-    const createMessage = Boolean(
-      matchedRule.projectToUi &&
-      matchedRule.createMessage &&
-      messageRoleForActor(input.actorType)
-    );
-    const createToolEvent = Boolean(
-      matchedRule.projectToUi &&
-      matchedRule.createToolEvent &&
-      input.actorType === "tool"
-    );
-    const createMemoryEvent = matchedRule.createMemoryEvent;
-    return {
-      createMessage,
-      createToolEvent,
-      createMemoryEvent,
-      includeInEmbedding: createMemoryEvent && matchedRule.includeInEmbedding,
-      includeInLcm: createMemoryEvent && matchedRule.includeInLcm,
-      policyKey: matchedRule.transcriptType,
-      reason: createMemoryEvent
-        ? `projection-policy:${matchedRule.transcriptType}`
-        : `projection-policy-raw-only:${matchedRule.transcriptType}`
-    };
-  }
-
+  const hasContentAndActor = Boolean(input.content && input.actorType);
+  const createMessage = Boolean(
+    hasContentAndActor &&
+    presentation.mode !== "hidden" &&
+    ["message", "reasoning_summary"].includes(presentation.renderer) &&
+    messageRoleForActor(input.actorType)
+  );
+  const createToolEvent = Boolean(
+    hasContentAndActor &&
+    presentation.mode !== "hidden" &&
+    ["tool_call", "tool_result"].includes(presentation.renderer) &&
+    input.actorType === "tool"
+  );
+  const createMemoryEvent = Boolean(
+    hasContentAndActor && matchedRule?.enabled && matchedRule.createMemoryEvent
+  );
   return {
-    ...base,
-    reason: `projection-policy-missing:${projectionRuleKeyForConversationItem(row) || "unknown"}`
+    presentation,
+    createMessage,
+    createToolEvent,
+    createMemoryEvent,
+    includeInEmbedding:
+      createMemoryEvent && Boolean(matchedRule?.includeInEmbedding),
+    includeInLcm: createMemoryEvent && Boolean(matchedRule?.includeInLcm),
+    policyKey: matchedRule?.transcriptType ?? null,
+    reason: !hasContentAndActor
+      ? `projection-policy-missing-content-or-actor:${matchedRule?.transcriptType ?? "unknown"}`
+      : !matchedRule
+        ? `projection-policy-missing:${projectionRuleKeyForConversationItem(row) || "unknown"}`
+        : !matchedRule.enabled
+          ? `projection-policy-disabled:${matchedRule.transcriptType}`
+          : createMemoryEvent
+            ? `projection-policy:${matchedRule.transcriptType}`
+            : `projection-policy-raw-only:${matchedRule.transcriptType}`
   };
 };
 
@@ -1359,6 +1389,9 @@ const conversationItemTurnCompleteSealReason = (row: {
       row.source_event_type === "turn_completed") ||
     (row.source_adapter_version === "claude-code-hook-signal-v1" &&
       row.source_event_type === "turn_completed") ||
+    (row.source_adapter_version === "pi-session-v1" &&
+      stringField(row.metadata ?? {}, "semanticControl") ===
+        "turn_completed") ||
     (row.source_transport === "pds_relay" &&
       row.source_event_type === "pds_session_closed")
   ) {
@@ -3272,6 +3305,8 @@ const rebuiltSemanticMemoryEventsFromSources = async (
   const semanticItems: ConversationSemanticProjectionItem[] = [];
   const projectionPolicySnapshot =
     await loadConversationProjectionPolicyRules(pool);
+  const presentationPolicySnapshot =
+    await loadConversationPresentationPolicySnapshot(pool);
   const projectionRules = projectionPolicySnapshot.rules;
   for (const sourceRow of sourceRows.rows) {
     const hydratedSourceRow = await hydrateConversationProjectionRow(
@@ -3294,7 +3329,8 @@ const rebuiltSemanticMemoryEventsFromSources = async (
     const projectionPolicy = classifyConversationItemProjection(row, {
       actorType,
       content,
-      projectionRules
+      projectionRules,
+      presentationPolicy: presentationPolicySnapshot
     });
     if (!content || !actorType || !projectionPolicy.createMemoryEvent) {
       continue;
@@ -4057,14 +4093,20 @@ export const createMemorySourceRepository = (
     ...createCapturedSessionRepository(pool),
     ...createConversationItemRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
-      resolveCapturePolicy: settingsRepository.getEffectiveCapturePolicy
+      resolveCapturePolicy: (actor, input, client) =>
+        createSettingsRepository(createDb(client)).getEffectiveCapturePolicy(
+          actor,
+          input
+        )
     }),
     ...createConversationSourceJournalRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
+    ...createConversationPresentationRepository(pool),
     ...createManagedConversationRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
+    ...createManagedTerminalRepository(pool),
     ...createDevelopmentWorkspaceSnapshotRepository(pool),
     ...createManagedConversationForkRepository(pool),
     ...createManagedConversationTransferRepository(pool, {
@@ -4105,6 +4147,84 @@ export const createMemorySourceRepository = (
     ...createWorkflowTokenUsageRepository(pool),
 
     health: () => checkDatabase(pool),
+
+    async resetConversationPresentation(actor, input) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`conversation-projection-session:${actor.userId}:${input.sessionId}`]
+        );
+        await client.query(
+          "select pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
+          ["conversation-presentation-policy"]
+        );
+        const presentationPolicyRevision = (
+          await loadConversationPresentationPolicySnapshot(client)
+        ).revision;
+        const session = await client.query<{ id: string }>(
+          `select id from sessions
+           where id = $2 and owner_user_id = $1 and visibility = 'personal'
+             and invalidated_at is null and personal_deleted_at is null
+           limit 1`,
+          [actor.userId, input.sessionId]
+        );
+        if (session.rowCount === 0) {
+          throw Object.assign(new Error("Session not found or not visible"), {
+            statusCode: 404,
+            code: "session_not_found"
+          });
+        }
+        const sourceItems = await client.query<{ id: string }>(
+          `select id from conversation_items
+           where owner_user_id = $1 and visibility = 'personal'
+             and session_id = $2 and projection_status <> 'held'
+             and memory_excluded_at is null and personal_deleted_at is null
+           order by source_sequence asc nulls last, observed_at asc, id asc`,
+          [actor.userId, input.sessionId]
+        );
+        const maxItems = projectionRebuildMaxItems();
+        if (sourceItems.rows.length > maxItems) {
+          throw Object.assign(
+            new Error(
+              `Conversation presentation rebuild exceeds the ${maxItems}-item safety limit`
+            ),
+            { statusCode: 413, code: "presentation_rebuild_too_large" }
+          );
+        }
+        const messages = await client.query<{ id: string }>(
+          `update messages
+             set invalidated_at = coalesce(invalidated_at, now()),
+                 invalidation_reason = 'presentation_policy_rebuild'
+           where owner_user_id = $1 and visibility = 'personal'
+             and session_id = $2 and invalidated_at is null
+           returning id`,
+          [actor.userId, input.sessionId]
+        );
+        const toolEvents = await client.query<{ id: string }>(
+          `update tool_events
+             set invalidated_at = coalesce(invalidated_at, now()),
+                 invalidation_reason = 'presentation_policy_rebuild'
+           where owner_user_id = $1 and visibility = 'personal'
+             and session_id = $2 and invalidated_at is null
+           returning id`,
+          [actor.userId, input.sessionId]
+        );
+        await client.query("commit");
+        return {
+          conversationItemIds: sourceItems.rows.map((row) => row.id),
+          invalidatedMessageIds: messages.rows.map((row) => row.id),
+          invalidatedToolEventIds: toolEvents.rows.map((row) => row.id),
+          presentationPolicyRevision
+        };
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
 
     async resetConversationProjection(actor, input) {
       const client = await pool.connect();
@@ -4191,66 +4311,6 @@ export const createMemorySourceRepository = (
         );
         invalidatedMemoryEventIds = memoryEvents.rows.map((row) => row.id);
 
-        await client.query(
-          `
-            update messages
-            set invalidated_at = coalesce(invalidated_at, now()),
-                invalidation_reason = 'projection_policy_rebuild'
-            where owner_user_id = $1
-              and visibility = 'personal'
-              and session_id = $2
-              and idempotency_key in (
-                select distinct
-                  'message:' || coalesce(
-                    ci.metadata ->> 'canonicalConversationItemKey',
-                    ci.canonical_item_key,
-                    ci.logical_source_id,
-                    ci.id::text
-                  )
-                from conversation_items ci
-                where ci.owner_user_id = $1
-                  and ci.visibility = 'personal'
-                  and ci.session_id = $2
-              )
-          `,
-          [actor.userId, input.sessionId]
-        );
-        await client.query(
-          `
-            update tool_events
-            set invalidated_at = coalesce(invalidated_at, now()),
-                invalidation_reason = 'projection_policy_rebuild'
-            where owner_user_id = $1
-              and visibility = 'personal'
-              and session_id = $2
-              and idempotency_key in (
-                select distinct
-                  'tool:' || case
-                    when coalesce(
-                      ci.metadata ->> 'toolCallId',
-                      ci.metadata ->> 'callId',
-                      ci.metadata #>> '{toolCall,id}'
-                    ) is not null
-                    then 'tool-call:' || ci.session_id::text || ':' || coalesce(
-                      ci.metadata ->> 'toolCallId',
-                      ci.metadata ->> 'callId',
-                      ci.metadata #>> '{toolCall,id}'
-                    )
-                    else coalesce(
-                      ci.metadata ->> 'canonicalConversationItemKey',
-                      ci.canonical_item_key,
-                      ci.logical_source_id,
-                      ci.id::text
-                    )
-                  end
-                from conversation_items ci
-                where ci.owner_user_id = $1
-                  and ci.visibility = 'personal'
-                  and ci.session_id = $2
-              )
-          `,
-          [actor.userId, input.sessionId]
-        );
         const activeRebuildJobs = await client.query<{
           id: string;
           status: string;
@@ -4324,6 +4384,7 @@ export const createMemorySourceRepository = (
 
     async projectPendingConversationItems(actor, input = {}) {
       const conversationItemIds = input.conversationItemIds ?? null;
+      const presentationOnly = input.presentationOnly === true;
       const visibility = input.visibility ?? null;
       const workClass = input.workClass ?? null;
       const maxBytes = input.maxBytes ?? null;
@@ -4342,6 +4403,11 @@ export const createMemorySourceRepository = (
           memoryEventIds: [],
           memoryEventScopes: []
         };
+      }
+      if (presentationOnly && !conversationItemIds) {
+        throw new Error(
+          "Presentation-only projection requires explicit conversation item ids"
+        );
       }
       const limit = Math.min(
         Math.max(input.limit ?? conversationItemIds?.length ?? 100, 1),
@@ -4366,6 +4432,44 @@ export const createMemorySourceRepository = (
       ) {
         throw new Error(
           "Envelope encryption provider is required when plaintext display row storage is disabled"
+        );
+      }
+      if (!presentationOnly && !conversationItemIds) {
+        await pool.query(
+          `
+            update conversation_items ci
+            set projection_status = 'pending',
+                projection_error = null,
+                projected_at = null
+            where ci.owner_user_id = $1
+              and ci.projection_status = 'held'
+              and ci.external_turn_id is not null
+              and ci.personal_deleted_at is null
+              and exists (
+                select 1
+                from conversation_items terminal
+                join conversation_item_observations terminal_observation
+                  on terminal_observation.conversation_item_id = terminal.id
+                 and terminal_observation.owner_user_id = terminal.owner_user_id
+                 and terminal_observation.visibility = terminal.visibility
+                 and terminal_observation.session_id = terminal.session_id
+                where terminal.owner_user_id = ci.owner_user_id
+                  and terminal.visibility = ci.visibility
+                  and terminal.session_id = ci.session_id
+                  and terminal.external_turn_id = ci.external_turn_id
+                  and terminal.personal_deleted_at is null
+                  and terminal_observation.source_adapter_version = 'codex-transcript-v1'
+                  and terminal_observation.source_transport = 'transcript'
+                  and terminal_observation.observation_kind = 'reconciliation'
+                  and terminal_observation.ingestion_status = 'persisted'
+                  and terminal_observation.source_event_type in ('task_complete', 'turn_aborted')
+                  and terminal_observation.source_line_number is not null
+                  and terminal_observation.observation_component = 'control'
+                  and terminal_observation.canonical_stable_item_id =
+                    'turn:' || ci.external_turn_id || ':completed'
+              )
+          `,
+          [actor.userId]
         );
       }
       const rows = await pool.query<ConversationProjectionRawRow>(
@@ -4415,6 +4519,12 @@ export const createMemorySourceRepository = (
               (ci.source_adapter_version = 'codex-hook-signal-v1'
                 and ci.source_event_type = 'turn_completed')
               or
+              (ci.source_adapter_version = 'claude-code-hook-signal-v1'
+                and ci.source_event_type = 'turn_completed')
+              or
+              (ci.source_adapter_version = 'pi-session-v1'
+                and coalesce(ci.metadata ->> 'semanticControl' = 'turn_completed', false))
+              or
               (ci.source_transport = 'pds_relay'
                 and ci.source_event_type = 'pds_session_closed')
             ) as is_turn_complete_signal,
@@ -4428,12 +4538,21 @@ export const createMemorySourceRepository = (
               (ci.source_adapter_version = 'codex-hook-signal-v1'
                 and ci.source_event_type = 'turn_completed')
               or
+              (ci.source_adapter_version = 'claude-code-hook-signal-v1'
+                and ci.source_event_type = 'turn_completed')
+              or
+              (ci.source_adapter_version = 'pi-session-v1'
+                and coalesce(ci.metadata ->> 'semanticControl' = 'turn_completed', false))
+              or
               (ci.source_transport = 'pds_relay'
                 and ci.source_event_type = 'pds_session_closed')
             ) as is_semantic_turn_complete_signal
           from conversation_items ci
           left join sessions s on s.id = ci.session_id
-          where ci.projection_status in ('pending', 'error')
+          where (
+              ($7::boolean = true and ci.id = any($3::uuid[]))
+              or ($7::boolean = false and ci.projection_status in ('pending', 'error'))
+            )
             and ci.memory_excluded_at is null
             and ci.personal_deleted_at is null
             and not exists (
@@ -4624,21 +4743,36 @@ export const createMemorySourceRepository = (
           conversationItemIds,
           visibility,
           workClass,
-          maxBytes
+          maxBytes,
+          presentationOnly
         ]
       );
 
       const projectionCoordinatorClient = await pool.connect();
-      const projectionResourceLockKeys = uniqueOrderedStrings(
-        rows.rows.map((row) =>
+      const projectionSessionLockKeys = uniqueOrderedStrings(
+        rows.rows.flatMap((row) =>
           row.session_id
-            ? `conversation-projection-session:${row.owner_user_id ?? "anonymous"}:${row.session_id}`
-            : `conversation-item:${row.owner_user_id ?? "anonymous"}:${row.visibility}:${row.canonical_item_key}`
+            ? [
+                `conversation-projection-session:${row.owner_user_id ?? "anonymous"}:${row.session_id}`
+              ]
+            : []
         )
       ).sort();
+      const projectionItemLockKeys = uniqueOrderedStrings(
+        rows.rows.map(
+          (row) =>
+            `conversation-item:${row.owner_user_id ?? "anonymous"}:${row.visibility}:${row.canonical_item_key}`
+        )
+      ).sort();
+      const projectionResourceLockKeys = [
+        ...projectionSessionLockKeys,
+        ...projectionItemLockKeys
+      ];
       const acquiredProjectionResourceLocks: string[] = [];
       const projectionPolicyLockKey = "conversation-projection-policy";
+      const presentationPolicyLockKey = "conversation-presentation-policy";
       let projectionPolicyLockAcquired = false;
+      let presentationPolicyLockAcquired = false;
       try {
         for (const lockKey of projectionResourceLockKeys) {
           await projectionCoordinatorClient.query(
@@ -4652,12 +4786,22 @@ export const createMemorySourceRepository = (
           [projectionPolicyLockKey]
         );
         projectionPolicyLockAcquired = true;
+        await projectionCoordinatorClient.query(
+          "select pg_advisory_lock_shared(hashtextextended($1, 0))",
+          [presentationPolicyLockKey]
+        );
+        presentationPolicyLockAcquired = true;
         const projectionPolicySnapshot =
           await loadConversationProjectionPolicyRules(
             projectionCoordinatorClient
           );
         const projectionRules = projectionPolicySnapshot.rules;
+        const presentationPolicySnapshot =
+          await loadConversationPresentationPolicySnapshot(
+            projectionCoordinatorClient
+          );
         if (
+          !presentationOnly &&
           rows.rows.some(
             (row) =>
               row.projection_policy_revision !== null &&
@@ -4822,7 +4966,8 @@ export const createMemorySourceRepository = (
             const projectionPolicy = classifyConversationItemProjection(row, {
               actorType,
               content,
-              projectionRules
+              projectionRules,
+              presentationPolicy: presentationPolicySnapshot
             });
             const semanticUnitType =
               content && actorType && projectionPolicy.createMemoryEvent
@@ -4870,6 +5015,7 @@ export const createMemorySourceRepository = (
               selectionUnitId: sourceRow.selection_unit_id ?? sourceRow.id
             });
           } catch (error) {
+            if (presentationOnly) throw error;
             await markProjectionError(sourceIds, error);
           }
         }
@@ -5217,16 +5363,8 @@ export const createMemorySourceRepository = (
             semanticItem,
             disposition
           } = candidate;
-          const projectionLockClient = projectionCoordinatorClient;
-          const projectionLockKey = `conversation-item:${row.owner_user_id ?? "anonymous"}:${row.visibility}:${row.canonical_item_key}`;
-          let projectionLockAcquired = false;
           try {
-            await projectionLockClient.query(
-              "select pg_advisory_lock(hashtextextended($1, 0))",
-              [projectionLockKey]
-            );
-            projectionLockAcquired = true;
-            const freshness = await projectionLockClient.query<{
+            const freshness = await projectionCoordinatorClient.query<{
               source_hash: string;
               canonical_source_priority: number;
               projection_status: string;
@@ -5246,6 +5384,7 @@ export const createMemorySourceRepository = (
             );
             const current = freshness.rows[0];
             if (
+              !presentationOnly &&
               current?.projection_policy_revision !== null &&
               current?.projection_policy_revision !== undefined &&
               Number(current.projection_policy_revision) !==
@@ -5260,7 +5399,8 @@ export const createMemorySourceRepository = (
             }
             if (
               !current ||
-              !["pending", "error"].includes(current.projection_status) ||
+              (!presentationOnly &&
+                !["pending", "error"].includes(current.projection_status)) ||
               current.source_hash !== logicalItem.representativeSourceHash ||
               current.canonical_source_priority !==
                 (row.canonical_source_priority ?? 0)
@@ -5282,7 +5422,10 @@ export const createMemorySourceRepository = (
                 "Transcript display projection requires source event timestamp"
               );
             }
-            if (projectionPolicy.reason === "ide-client-supporting-context") {
+            if (
+              !presentationOnly &&
+              projectionPolicy.reason === "ide-client-supporting-context"
+            ) {
               if (content) {
                 const supportingContext: SupportingContextProjectionItem = {
                   row,
@@ -5300,7 +5443,7 @@ export const createMemorySourceRepository = (
               continue;
             }
 
-            if (tokenUsage) {
+            if (!presentationOnly && tokenUsage) {
               for (const scope of ["last", "total"] as const) {
                 const breakdown = tokenUsage[scope];
                 if (!breakdown) {
@@ -5358,7 +5501,7 @@ export const createMemorySourceRepository = (
                 result.tokenUsageRowsCreated += 1;
               }
             }
-            if (transcriptTokenUsage) {
+            if (!presentationOnly && transcriptTokenUsage) {
               const threadKind =
                 stringField(row.metadata ?? {}, "threadKind") ??
                 stringField(row.session_metadata ?? {}, "threadKind");
@@ -5465,6 +5608,10 @@ export const createMemorySourceRepository = (
                   recall_eligible = $16,
                   projection_policy_key = $17,
                   projection_policy_revision = $18,
+                  presentation_policy_key = $19,
+                  presentation_policy_revision = $20,
+                  presentation_mode = $21,
+                  presentation_renderer = $22,
                   invalidated_at = null,
                   invalidation_reason = null
                 where id = (
@@ -5501,12 +5648,14 @@ export const createMemorySourceRepository = (
                   transcript_item_id, idempotency_key,
                   source_hash, token_count, source_event_time, captured_at,
                   recall_eligible, projection_policy_key,
-                  projection_policy_revision
+                  projection_policy_revision, presentation_policy_key,
+                  presentation_policy_revision, presentation_mode,
+                  presentation_renderer
                 )
                 select
                   $1, $2, $3, $4, $5, $6, $7,
                   $8, $9, $10, $11, $12, $13, $14, $15,
-                  $16, $17, $18
+                  $16, $17, $18, $19, $20, $21, $22
                 where not exists (select 1 from existing)
                 on conflict do nothing
                 returning id, true as inserted
@@ -5565,7 +5714,11 @@ export const createMemorySourceRepository = (
                   row.observed_at,
                   projectionPolicy.createMemoryEvent,
                   projectionPolicy.policyKey,
-                  projectionPolicySnapshot.revision
+                  projectionPolicySnapshot.revision,
+                  projectionPolicy.presentation.policyKey,
+                  projectionPolicy.presentation.policyRevision,
+                  projectionPolicy.presentation.mode,
+                  projectionPolicy.presentation.renderer
                 ],
                 async (client, message) => {
                   await upsertEncryptedFieldPayloadWithClient(
@@ -5685,6 +5838,10 @@ export const createMemorySourceRepository = (
                   end,
                   idempotency_key = coalesce($12, tool_events.idempotency_key),
                   source_hash = coalesce($13, tool_events.source_hash),
+                  presentation_policy_key = $16,
+                  presentation_policy_revision = $17,
+                  presentation_mode = $18,
+                  presentation_renderer = $19,
                   source_event_time = least(tool_events.source_event_time, $14),
                   captured_at = least(tool_events.captured_at, $15),
                   started_at = case
@@ -5731,13 +5888,16 @@ export const createMemorySourceRepository = (
                   tool_name, tool_input, tool_response, status, source_runtime,
                   capture_method, transcript_item_id,
                   idempotency_key, source_hash, source_event_time, captured_at,
-                  started_at, completed_at
+                  started_at, completed_at, presentation_policy_key,
+                  presentation_policy_revision, presentation_mode,
+                  presentation_renderer
                 )
                 select
                   $1, $2, $3, $4, $5, $6, $7,
                   $8, $9, $10, $11, $12, $13, $14, $15,
                   case when $6::jsonb is not null then $14 else null end,
-                  case when $7::jsonb is not null then $14 else null end
+                  case when $7::jsonb is not null then $14 else null end,
+                  $16, $17, $18, $19
                 where not exists (select 1 from existing)
                 on conflict do nothing
                 returning id, true as inserted
@@ -5797,7 +5957,11 @@ export const createMemorySourceRepository = (
                   `tool:${toolEventIdentity}`,
                   `tool:${toolEventIdentity}`,
                   row.event_time,
-                  row.observed_at
+                  row.observed_at,
+                  projectionPolicy.presentation.policyKey,
+                  projectionPolicy.presentation.policyRevision,
+                  projectionPolicy.presentation.mode,
+                  projectionPolicy.presentation.renderer
                 ],
                 async (client, toolEvent) => {
                   if (toolInput !== null && toolInput !== undefined) {
@@ -5851,6 +6015,10 @@ export const createMemorySourceRepository = (
               if (inserted.rows.some((toolEvent) => toolEvent.inserted)) {
                 result.toolEventsCreated += 1;
               }
+            }
+
+            if (presentationOnly) {
+              continue;
             }
 
             if (turnCompleteSealReason) {
@@ -5907,17 +6075,11 @@ export const createMemorySourceRepository = (
             ) {
               throw error;
             }
+            if (presentationOnly) throw error;
             await markProjectionError(sourceIds, error);
-          } finally {
-            if (projectionLockAcquired) {
-              await projectionLockClient.query(
-                "select pg_advisory_unlock(hashtextextended($1, 0))",
-                [projectionLockKey]
-              );
-            }
           }
         }
-        await flushStaleAgentBundles();
+        if (!presentationOnly) await flushStaleAgentBundles();
         result.rawItemsWaitingForAgentSeal = [
           ...waitingForAgentSealSourceIds
         ].filter((sourceId) => !projectedStatusSourceIds.has(sourceId)).length;
@@ -5927,8 +6089,9 @@ export const createMemorySourceRepository = (
           "select revision::text as revision from projection_policy_state where id = 1"
         );
         if (
+          !presentationOnly &&
           Number(finalPolicyState.rows[0]?.revision ?? 0) !==
-          projectionPolicySnapshot.revision
+            projectionPolicySnapshot.revision
         ) {
           throw Object.assign(
             new Error(
@@ -5937,8 +6100,32 @@ export const createMemorySourceRepository = (
             { statusCode: 409, code: "projection_policy_changed" }
           );
         }
+        const finalPresentationPolicyState =
+          await projectionCoordinatorClient.query<{ revision: string }>(
+            "select revision::text as revision from conversation_presentation_policy_state where id = 1"
+          );
+        if (
+          Number(finalPresentationPolicyState.rows[0]?.revision ?? 0) !==
+          presentationPolicySnapshot.revision
+        ) {
+          throw Object.assign(
+            new Error(
+              "Conversation Presentation Policy changed during source processing"
+            ),
+            {
+              statusCode: 409,
+              code: "conversation_presentation_policy_changed"
+            }
+          );
+        }
         return result;
       } finally {
+        if (presentationPolicyLockAcquired) {
+          await projectionCoordinatorClient.query(
+            "select pg_advisory_unlock_shared(hashtextextended($1, 0))",
+            [presentationPolicyLockKey]
+          );
+        }
         if (projectionPolicyLockAcquired) {
           await projectionCoordinatorClient.query(
             "select pg_advisory_unlock_shared(hashtextextended($1, 0))",
@@ -6850,6 +7037,7 @@ export const createMemorySourceRepository = (
                   and ci.owner_user_id = $1
                   and ci.personal_deleted_at is null
                   and ${approvalConversationItemSql("ci")}
+                  and ${ownerVisibleApprovalPresentationSql("ci")}
               ) cursor_event
               where cursor_event.id = $10::uuid
               limit 1
@@ -7006,7 +7194,13 @@ export const createMemorySourceRepository = (
               'sourceTable', 'messages',
               'role', msg.role,
               'transcriptItemId', msg.transcript_item_id,
-              'displaySource', 'message'
+              'displaySource', 'message',
+              'presentation', jsonb_strip_nulls(jsonb_build_object(
+                'mode', msg.presentation_mode,
+                'renderer', msg.presentation_renderer,
+                'policyKey', msg.presentation_policy_key,
+                'policyRevision', msg.presentation_policy_revision
+              ))
             ) || coalesce(
               (
                 select jsonb_strip_nulls(jsonb_build_object(
@@ -7017,7 +7211,13 @@ export const createMemorySourceRepository = (
                     when ci.metadata ->> 'approvalReview' = 'true'
                       then 'true'::jsonb
                     else null
-                  end
+                  end,
+                  'clientUserMessageId',
+                  ci.metadata ->> 'clientUserMessageId',
+                  'providerTurnId',
+                  ci.external_turn_id,
+                  'providerItemId',
+                  ci.canonical_stable_item_id
                 ))
                 from conversation_items ci
                 where ci.owner_user_id = msg.owner_user_id
@@ -7030,6 +7230,9 @@ export const createMemorySourceRepository = (
                   and (
                     ci.metadata ? 'approvalReviewTranscriptDisplay'
                     or ci.metadata ->> 'approvalReview' = 'true'
+                    or ci.metadata ? 'clientUserMessageId'
+                    or ci.external_turn_id is not null
+                    or ci.canonical_stable_item_id is not null
                   )
                 order by ci.created_at asc, ci.id asc
                 limit 1
@@ -7164,6 +7367,12 @@ export const createMemorySourceRepository = (
               'output', te.tool_response,
               'status', te.status,
               'displaySource', 'tool_event',
+              'presentation', jsonb_strip_nulls(jsonb_build_object(
+                'mode', te.presentation_mode,
+                'renderer', te.presentation_renderer,
+                'policyKey', te.presentation_policy_key,
+                'policyRevision', te.presentation_policy_revision
+              )),
               'toolCall', jsonb_strip_nulls(jsonb_build_object(
                 'id', te.transcript_item_id,
                 'name', te.tool_name,
@@ -7325,6 +7534,7 @@ export const createMemorySourceRepository = (
             and ci.owner_user_id = $1
             and ci.personal_deleted_at is null
             and ${approvalConversationItemSql("ci")}
+            and ${ownerVisibleApprovalPresentationSql("ci")}
             and ($3::visibility_scope is null or ci.visibility = $3::visibility_scope)
             and (
               $4::text is null
@@ -7734,26 +7944,12 @@ export const createMemorySourceRepository = (
         ]
       );
 
-      const threadRows = await Promise.all(
-        result.rows.map(async (row) => {
-          if (row.sample && row.sample !== ENCRYPTED_MESSAGE_CONTENT) {
-            return row;
-          }
-          const latestEvents = await this.listLcmGraphEvents(actor, {
-            includeInvalidated: input.includeInvalidated,
-            visibility: input.visibility,
-            projectId: input.projectId,
-            threadId: row.thread_id,
-            query: input.query,
-            includeContent: true,
-            limit: 1
-          });
-          return {
-            ...row,
-            sample: latestEvents[0]?.content ?? row.sample
-          };
-        })
-      );
+      // Thread navigation must stay cheap. Encrypted content is resolved only
+      // when the Conversation itself is opened, never through an N+1 graph scan.
+      const threadRows = result.rows.map((row) => ({
+        ...row,
+        sample: row.sample === ENCRYPTED_MESSAGE_CONTENT ? "" : row.sample
+      }));
       const projects = new Map<string, LcmGraphProjectThreads>();
       for (const thread of threadRows.map(mapLcmGraphThreadRow)) {
         const project = projects.get(thread.projectId) ?? {

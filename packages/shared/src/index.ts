@@ -144,7 +144,37 @@ export {
   type HistoricalAdmissionPauseReason,
   type HistoricalImportBatchConfig
 } from "./historical-admission.js";
-
+export {
+  conversationPresentationDecisionSchema,
+  conversationPresentationModeSchema,
+  conversationPresentationPolicyKey,
+  conversationPresentationRendererSchema,
+  decideConversationItemPresentation,
+  normalizeConversationPresentationItemType,
+  type ConversationPresentationDecision,
+  type ConversationPresentationMode,
+  type ConversationPresentationPolicyRule,
+  type ConversationPresentationRenderer
+} from "./conversation-presentation-policy.js";
+export {
+  managedConversationDiffPayloadSchema,
+  managedConversationDiffSchema
+} from "./managed-conversation-diff.js";
+export type { ManagedConversationDiff } from "./managed-conversation-diff.js";
+export {
+  MANAGED_DEVELOPMENT_PREVIEW_MAX_RECORDS,
+  MANAGED_DEVELOPMENT_PREVIEW_POLICY_VERSION,
+  managedDevelopmentPreviewAccessSchema,
+  managedDevelopmentPreviewCandidateSchema,
+  managedDevelopmentPreviewRecordSchema,
+  managedDevelopmentPreviewSourceSchema,
+  managedDevelopmentPreviewStateSchema
+} from "./managed-development-preview.js";
+export type {
+  ManagedDevelopmentPreviewAccess,
+  ManagedDevelopmentPreviewCandidate,
+  ManagedDevelopmentPreviewRecord
+} from "./managed-development-preview.js";
 export {
   aiClientSourceAdapterRegistry,
   assertSupportedAiClientSourceAdapter,
@@ -164,6 +194,8 @@ export type {
 } from "./ai-client-source-adapters.js";
 export {
   aiClientCapabilityIds,
+  aiClientPermissionContractFor,
+  aiClientPermissionModes,
   aiClientDiagnosticCodeMaxLength,
   aiClientDiagnosticMessageMaxLength,
   aiClientDriverIdMaxLength,
@@ -177,6 +209,42 @@ export {
   aiClientModelLabel,
   sanitizeAiClientDiagnostics
 } from "./ai-client-contract.js";
+export {
+  MANAGED_CONVERSATION_FILE_MAX_READ_BYTES,
+  MANAGED_CONVERSATION_FILE_PROTOCOL_VERSION,
+  managedConversationFileOperationResultSchema,
+  managedConversationFileOperationSchema,
+  managedConversationFileRevisionSchema
+} from "./managed-conversation-files.js";
+export type {
+  ManagedConversationFileOperation,
+  ManagedConversationFileOperationResult,
+  ManagedConversationFileRevision
+} from "./managed-conversation-files.js";
+export {
+  createManagedTerminalInputSchema,
+  managedTerminalClientFrameSchema,
+  managedTerminalContextReferenceSchema,
+  managedTerminalLifecycleStateSchema,
+  managedTerminalLifecycleStates,
+  managedTerminalRecordSchema,
+  managedTerminalServerFrameSchema,
+  managedTerminalShellProfileSchema,
+  MANAGED_TERMINAL_CONTEXT_TTL_SECONDS,
+  MANAGED_TERMINAL_MAX_CONTEXT_BYTES,
+  MANAGED_TERMINAL_MAX_DATA_BYTES,
+  MANAGED_TERMINAL_MAX_FRAME_BYTES,
+  MANAGED_TERMINAL_PROTOCOL_VERSION
+} from "./managed-terminal.js";
+export type {
+  CreateManagedTerminalInput,
+  ManagedTerminalClientFrame,
+  ManagedTerminalContextReference,
+  ManagedTerminalLifecycleState,
+  ManagedTerminalRecord,
+  ManagedTerminalServerFrame,
+  ManagedTerminalShellProfile
+} from "./managed-terminal.js";
 export type {
   AiClientCapabilityDescriptor,
   AiClientCapabilityId,
@@ -191,6 +259,9 @@ export type {
   AiClientModelCapability,
   AiClientModelIdentity,
   AiClientModelProvenance,
+  AiClientPermissionContract,
+  AiClientPermissionMode,
+  AiClientPermissionModeSupport,
   AiClientRecoveryAction,
   AiClientRecoveryActionId,
   SupportedAiClientDriverId
@@ -378,6 +449,8 @@ export {
   personalDesktopAskThreadSchema,
   personalDesktopAskThreadsDataSchema,
   personalDesktopAskTurnSchema,
+  PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS,
+  personalConversationPresentationSchema,
   personalDesktopConversationCursorSchema,
   personalDesktopConversationEventSchema,
   personalDesktopChangeEventRefSchema,
@@ -404,6 +477,8 @@ export {
   personalDesktopSessionProjectInputSchema,
   personalDesktopSessionTitleDataSchema,
   personalDesktopSessionTitleInputSchema,
+  personalDesktopSessionPresentationDataSchema,
+  personalDesktopSessionPresentationInputSchema,
   personalDesktopToolDisplaySchema
 } from "./personal-desktop-contract.js";
 export {
@@ -445,7 +520,9 @@ export type {
   PersonalDesktopRequest,
   PersonalDesktopResult,
   PersonalDesktopSessionProjectInput,
-  PersonalDesktopSessionTitleInput
+  PersonalDesktopSessionTitleInput,
+  PersonalDesktopSessionPresentationInput,
+  PersonalConversationPresentation
 } from "./personal-desktop-contract.js";
 
 export {
@@ -612,7 +689,9 @@ export {
 export {
   fetchWithTimeout,
   fetchBoundedJsonObject,
+  readBoundedJson,
   readBoundedJsonObject,
+  fetchBoundedJson,
   RemoteRequestTimeoutError,
   RemoteResponseLimitError,
   upstreamApiUrl
@@ -887,7 +966,10 @@ export {
   verifyPdsRelayRequestProof
 } from "./personal-device-sync-relay.js";
 export type { PdsRelayRequestProof } from "./personal-device-sync-relay.js";
-export { PdsRelayClient } from "./personal-device-sync-relay-client.js";
+export {
+  normalizePdsRelayBaseUrl,
+  PdsRelayClient
+} from "./personal-device-sync-relay-client.js";
 export type {
   PdsRelayClientIdentity,
   PdsRelayClientOptions
@@ -1618,3 +1700,86 @@ export const resolveRerankerKeyFromEnv = (environment: {
   Object.prototype.hasOwnProperty.call(environment, "RERANKER_KEY")
     ? environment.RERANKER_KEY
     : environment.EMBEDDING_RERANKER_KEY;
+
+export {
+  REALTIME_TRANSPORT_CLIENT_INSTANCE_ID_MAX_LENGTH,
+  REALTIME_TRANSPORT_TICKET_TTL_SECONDS,
+  REALTIME_TRANSPORT_TICKET_VERSION,
+  realtimeTransportClientInstanceIdSchema,
+  realtimeTransportIdSchema,
+  realtimeTransportOperationFamilySchema,
+  realtimeTransportTicketRequestSchema,
+  webTransportDisposableDatagramSchema,
+  webTransportDurableAttachSchema,
+  webTransportInteractiveAttachSchema,
+  webTransportSessionAdmissionSchema,
+  webTransportStreamAttachSchema,
+  type RealtimeTransportId,
+  type RealtimeTransportOffer,
+  type RealtimeTransportOperationFamily,
+  type RealtimeTransportTicketRequest,
+  type RealtimeTransportTicketResponse,
+  type WebTransportDisposableDatagram,
+  type WebTransportInteractiveAttach,
+  type WebTransportSessionAdmission,
+  type WebTransportStreamAttach,
+  type WebTransportDurableAttach
+} from "./realtime-transport.js";
+
+export {
+  PortableClientEnvironmentRegistry,
+  PortableClientDraftStore,
+  PortableClientOutbox,
+  PortableClientViewCache,
+  portableClientAuthoritySchema,
+  portableClientBackendSchema,
+  portableClientNotificationSchema,
+  type PortableClientAuthority,
+  type PortableClientBackend,
+  type PortableClientNotification,
+  type PortableClientOutboxRecord,
+  type PortableClientSecureStore
+} from "./client-foundation.js";
+
+export {
+  PDS_PEER_ENDPOINT_RUNTIME_FILE,
+  PDS_PEER_PROTOCOL,
+  PDS_PEER_RECEIPT_WAIT_MS,
+  PDS_PEER_ROUTE_REFRESH_MS,
+  PDS_PEER_ROUTE_TTL_MS,
+  createPdsPeerRouteAdvertisement,
+  normalizePdsPeerEndpoint,
+  pdsPeerRouteAdvertisementSchema,
+  pdsPeerRouteRecordSchema,
+  selectCompletePdsPeerRouteSet,
+  verifyPdsPeerReceipt,
+  verifyPdsPeerRouteRecord,
+  type PdsPeerRouteAdvertisement,
+  type PdsPeerRouteRecord
+} from "./personal-device-peer.js";
+
+export {
+  SOURCE_CONTROL_CONTRACT_VERSION,
+  SOURCE_CONTROL_POLICY_VERSION,
+  sourceControlBranchSchema,
+  sourceControlCapabilitySchema,
+  sourceControlCheckSchema,
+  sourceControlCommentSchema,
+  sourceControlConnectionSchema,
+  sourceControlOperationSchema,
+  sourceControlProviderSchema,
+  sourceControlRemoteSchema,
+  sourceControlResultSchema,
+  sourceControlReviewRequestSchema,
+  sourceControlReviewRequestStateSchema,
+  type SourceControlBranch,
+  type SourceControlCapability,
+  type SourceControlCheck,
+  type SourceControlComment,
+  type SourceControlConnection,
+  type SourceControlOperation,
+  type SourceControlProvider,
+  type SourceControlRemote,
+  type SourceControlResult,
+  type SourceControlReviewRequest
+} from "./source-control.js";

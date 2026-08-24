@@ -49,16 +49,16 @@ export const fetchWithTimeout = async (
   }
 };
 
-export const readBoundedJsonObject = async (
+export const readBoundedJson = async (
   response: Response,
   maxBytes: number
-): Promise<Record<string, unknown>> => {
+): Promise<unknown> => {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     await response.body?.cancel().catch(() => undefined);
     throw new RemoteResponseLimitError();
   }
-  if (!response.body) return {};
+  if (!response.body) return null;
 
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -77,15 +77,62 @@ export const readBoundedJsonObject = async (
   } finally {
     reader.releaseLock();
   }
-  if (bytes === 0) return {};
+  if (bytes === 0) return null;
   const body = Buffer.concat(
     chunks.map((chunk) => Buffer.from(chunk))
   ).toString("utf8");
-  const parsed: unknown = JSON.parse(body);
+  return JSON.parse(body) as unknown;
+};
+
+export const readBoundedJsonObject = async (
+  response: Response,
+  maxBytes: number
+): Promise<Record<string, unknown>> => {
+  const parsed = await readBoundedJson(response, maxBytes);
+  if (parsed === null) return {};
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new SyntaxError("Remote response must be a JSON object");
   }
   return parsed as Record<string, unknown>;
+};
+
+export const fetchBoundedJson = async (
+  fetchFn: typeof fetch,
+  input: URL | RequestInfo,
+  init: RequestInit,
+  options: {
+    timeoutMs: number;
+    maxBytes: number;
+    readErrorBody?: boolean;
+  }
+): Promise<{ response: Response; payload: unknown }> => {
+  const controller = new AbortController();
+  let response: Response | undefined;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      void response?.body?.cancel().catch(() => undefined);
+      reject(new RemoteRequestTimeoutError());
+    }, options.timeoutMs);
+    timeout.unref?.();
+  });
+  const operation = (async () => {
+    response = await fetchFn(input, { ...init, signal: controller.signal });
+    if (!response.ok && !options.readErrorBody) {
+      await response.body?.cancel().catch(() => undefined);
+      return { response, payload: null };
+    }
+    return {
+      response,
+      payload: await readBoundedJson(response, options.maxBytes)
+    };
+  })();
+  try {
+    return await Promise.race([operation, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 };
 
 export const fetchBoundedJsonObject = async (

@@ -30,11 +30,14 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build && pnpm --filter @koed/koed-server build",
     "test": "vitest run --passWithNoTests",
-    "test:browser": "pnpm build && electron scripts/validate-project-workspace.mjs && electron scripts/validate-collaboration-interactions.mjs"
+    "test:browser": "pnpm build && electron scripts/validate-project-workspace.mjs && electron scripts/validate-collaboration-interactions.mjs && electron scripts/validate-managed-preview.mjs"
   },
   "dependencies": {
     "@koed/koed-server": "workspace:*",
     "@koed/shared": "workspace:*",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "ws": "8.21.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -46,6 +49,7 @@
     "@types/qrcode": "1.5.5",
     "@types/react": "~19.2.14",
     "@types/react-dom": "~19.2.3",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.2",
     "electron": "^39.2.7",
     "electron-builder": "^26.15.3",

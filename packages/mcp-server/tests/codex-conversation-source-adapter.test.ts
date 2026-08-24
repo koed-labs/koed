@@ -315,7 +315,8 @@ describe("Codex managed conversation source adapter", () => {
   });
 
   it("uses the same canonical identities for app-server and JSONL items", () => {
-    const clientUserMessageId = "koed-user-message:test-user-1";
+    const clientUserMessageId =
+      "koed-user-message:10000000-0000-4000-8000-000000000001";
     const appItems = [
       ...adapt(
         appEvent("item/completed", {
@@ -454,6 +455,14 @@ describe("Codex managed conversation source adapter", () => {
         (item) => item.metadata.managedConversationReconciliation === true
       )
     ).toBe(true);
+    expect(
+      appItems.find((item) => item.metadata.clientUserMessageId)?.metadata
+        .clientUserMessageId
+    ).toBe("10000000-0000-4000-8000-000000000001");
+    expect(
+      jsonlItems.find((item) => item.metadata.clientUserMessageId)?.metadata
+        .clientUserMessageId
+    ).toBe("10000000-0000-4000-8000-000000000001");
   });
 
   it("keeps role-user response context without a client id as raw provenance", () => {
@@ -483,6 +492,73 @@ describe("Codex managed conversation source adapter", () => {
     expect(contextItem?.observationOnly).toBeUndefined();
     expect(contextItem?.canonicalItemKey).toBeUndefined();
     expect(contextItem?.canonicalStableItemId).toBeUndefined();
+  });
+
+  it("reconciles Koed-managed user prompts during ordinary transcript catch-up", () => {
+    const clientUserMessageId =
+      "koed-user-message:10000000-0000-4000-8000-000000000002";
+    const items = buildCodexTranscriptConversationItems({
+      records: [
+        {
+          timestamp: "2026-07-11T09:59:55.000Z",
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: turnId }
+        },
+        {
+          timestamp: "2026-07-11T09:59:56.000Z",
+          type: "response_item",
+          payload: {
+            id: "provider-user-item",
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Run the check" }],
+            internal_chat_message_metadata_passthrough: { turn_id: turnId }
+          }
+        },
+        {
+          timestamp: "2026-07-11T09:59:56.000Z",
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            client_id: clientUserMessageId,
+            message: "Run the check"
+          }
+        }
+      ],
+      sessionId,
+      sourceSessionId: threadId,
+      threadKind: "conversation",
+      sourceTransport: "transcript"
+    });
+    const responseItem = items.find(
+      (item) => item.sourceRecordType === "response_item"
+    );
+    const userMessage = items.find(
+      (item) => item.sourceEventType === "user_message"
+    );
+
+    expect(responseItem).toMatchObject({
+      projectionStatus: "raw_only",
+      metadata: {
+        managedConversationSourceRole: "ambiguous_user_context_provenance"
+      }
+    });
+    expect(userMessage).toMatchObject({
+      canonicalStableItemId: clientUserMessageId,
+      projectionStatus: "pending",
+      metadata: {
+        clientUserMessageId: "10000000-0000-4000-8000-000000000002",
+        managedConversationReconciliation: true
+      }
+    });
+    expect(userMessage?.canonicalItemKey).toBe(
+      codexCanonicalConversationItemKey({
+        externalThreadId: threadId,
+        externalTurnId: turnId,
+        stableItemId: clientUserMessageId,
+        component: "message"
+      })
+    );
   });
 
   it("uses provider thread, turn, and item identity for external response items", () => {

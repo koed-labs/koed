@@ -14,6 +14,7 @@ import type { PersonalDeviceArtifactRepository } from "./personal-device-artifac
 import type { PersonalDeviceSyncLifecycleRepository } from "./personal-device-sync-lifecycle-repository.js";
 import type { ConversationItemRepository } from "./conversation-item-repository.js";
 import type { ConversationSourceJournalRepository } from "./conversation-source-journal-repository.js";
+import type { ConversationPresentationRepository } from "./conversation-presentation-repository.js";
 import type {
   CollaborationRealtimeMaterializationRepository,
   CollaborationRepository
@@ -23,6 +24,7 @@ import type { EncryptedPayloadRepository } from "./encrypted-payload-repository.
 import type { HighRiskActionRepository } from "./high-risk-action-repository.js";
 import type { LocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 import type { ManagedConversationRepository } from "./managed-conversation-repository.js";
+import type { ManagedTerminalRepository } from "./managed-terminal-repository.js";
 import type { DevelopmentWorkspaceSnapshotRepository } from "./development-workspace-snapshot-repository.js";
 import type { ManagedConversationForkRepository } from "./managed-conversation-fork-repository.js";
 import type { ManagedConversationTransferRepository } from "./managed-conversation-transfer-repository.js";
@@ -43,6 +45,19 @@ export type SourceRuntime = "codex" | "codex-cli" | "claude-code" | "pi";
 export type SourceAiClient = SourceRuntime;
 
 export type CaptureState = "enabled" | "disabled" | "ask";
+
+export type ConversationPresentationMode = "automatic" | "active" | "settled";
+
+export interface ConversationPresentationStateRecord {
+  sessionId: string;
+  logicalSessionId: string;
+  pinnedAt: string | null;
+  displayMode: ConversationPresentationMode;
+  snoozedAt: string | null;
+  snoozedUntil: string | null;
+  version: number;
+  updatedAt: string;
+}
 
 export type CapturePolicyTarget = "global" | "project" | "thread";
 
@@ -1506,6 +1521,23 @@ export interface WorkflowTokenUsageRecord {
   createdAt: string;
 }
 
+export interface ManagedConversationTokenUsageRecord {
+  id: string;
+  executionId: string;
+  model: string | null;
+  modelContextWindow: number | null;
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  reasoningOutputTokens: number | null;
+  totalTokens: number | null;
+  usageSource: string;
+  usageAccuracy: string;
+  usageKind: string;
+  metadata: Record<string, unknown>;
+  observedAt: string;
+}
+
 export interface WorkflowTokenUsageRollupInput {
   groupBy?: Array<
     | "workflow"
@@ -1587,6 +1619,7 @@ interface ConversationProjectionInput {
   conversationItemIds?: string[];
   visibility?: Visibility;
   workClass?: "live_capture_projection" | "historical_import_backfill";
+  presentationOnly?: boolean;
 }
 
 export type SemanticMemoryRebuildInput = {
@@ -1905,6 +1938,7 @@ export interface MemorySourceRepository
     CollaborationRepository,
     CollaborationRealtimeMaterializationRepository,
     ConversationItemRepository,
+    ConversationPresentationRepository,
     ConversationSourceJournalRepository,
     CrossIdentitySyncRepository,
     DevelopmentWorkspaceSnapshotRepository,
@@ -1912,6 +1946,7 @@ export interface MemorySourceRepository
     HighRiskActionRepository,
     LocalEmbeddingStatusRepository,
     ManagedConversationRepository,
+    ManagedTerminalRepository,
     ManagedConversationForkRepository,
     ManagedConversationTransferRepository,
     PersonalDeviceArtifactRepository,
@@ -2355,6 +2390,15 @@ export interface MemorySourceRepository
     conversationItemIds: string[];
     invalidatedMemoryEventIds: string[];
     projectionPolicyRevision: number;
+  }>;
+  resetConversationPresentation(
+    actor: ActorContext,
+    input: { sessionId: string }
+  ): Promise<{
+    conversationItemIds: string[];
+    invalidatedMessageIds: string[];
+    invalidatedToolEventIds: string[];
+    presentationPolicyRevision: number;
   }>;
   listConversationProjectionActors(input?: {
     limit?: number;

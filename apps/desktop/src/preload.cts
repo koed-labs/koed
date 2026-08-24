@@ -12,6 +12,7 @@ import {
 import { createPersonalMemoryPreloadApi } from "./ipc/personal-memory-preload.js";
 import { createManagedConversationPreloadApi } from "./ipc/managed-conversation-preload.js";
 import { createLocalAiClientPreloadApi } from "./ipc/local-ai-client-preload.js";
+import { createManagedWorkspacePreloadApi } from "./ipc/managed-workspace-preload.js";
 import { createPersonalDevicePairingPreloadApi } from "./ipc/personal-device-pairing-preload.js";
 import { desktopFeatureFlagsFromEnvironment } from "./ipc/desktop-feature-flags.js";
 import {
@@ -21,6 +22,7 @@ import {
   hardwareAccelerationSetChannel,
   launchAtStartupGetChannel,
   launchAtStartupSetChannel,
+  desktopStatusChangedChannel,
   setupCommandChannel,
   setupProgressEventChannel,
   themePreferenceGetChannel,
@@ -52,6 +54,14 @@ contextBridge.exposeInMainWorld("koedDesktop", {
   ),
   localAiClients: createLocalAiClientPreloadApi((channel, value) =>
     ipcRenderer.invoke(channel, value)
+  ),
+  managedWorkspace: createManagedWorkspacePreloadApi(
+    (channel, value) => ipcRenderer.invoke(channel, value),
+    {
+      on: (channel, listener) => ipcRenderer.on(channel, listener),
+      removeListener: (channel, listener) =>
+        ipcRenderer.removeListener(channel, listener)
+    }
   ),
   clipboard: Object.freeze({
     writeText: (value: string): Promise<void> =>
@@ -95,6 +105,22 @@ contextBridge.exposeInMainWorld("koedDesktop", {
       return () => {
         active = false;
         ipcRenderer.removeListener(setupProgressEventChannel, wrapped);
+      };
+    }
+  }),
+  status: Object.freeze({
+    subscribe: (listener: () => void) => {
+      if (typeof listener !== "function") {
+        throw new TypeError("Desktop status listener is required.");
+      }
+      let active = true;
+      const wrapped = () => {
+        if (active) listener();
+      };
+      ipcRenderer.on(desktopStatusChangedChannel, wrapped);
+      return () => {
+        active = false;
+        ipcRenderer.removeListener(desktopStatusChangedChannel, wrapped);
       };
     }
   }),

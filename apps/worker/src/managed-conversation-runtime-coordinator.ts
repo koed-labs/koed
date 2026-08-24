@@ -71,9 +71,6 @@ export const createManagedConversationRuntimeCoordinator = (options: {
   apiUrl: string;
   apiToken: string;
   appServerBinary: string;
-  model: string;
-  claudeModel: string;
-  reasoningEffort: string;
   deviceId: string;
   deploymentId: string;
   koedHome: string;
@@ -314,9 +311,6 @@ export const createManagedConversationRuntimeCoordinator = (options: {
       apiToken: options.apiToken,
       localOwnerUserId: options.localOwnerUserId,
       appServerBinary: options.appServerBinary,
-      model: options.model,
-      claudeModel: options.claudeModel,
-      reasoningEffort: options.reasoningEffort,
       deviceId: options.deviceId,
       deploymentId: options.deploymentId,
       koedHome: options.koedHome,

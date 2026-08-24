@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -10,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
+  PDS_PEER_ENDPOINT_RUNTIME_FILE,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   storeDesktopLocalCredential
 } from "@koed/shared";
@@ -887,11 +889,13 @@ describe("Koed server desktop manager", () => {
           {
             id: "00000000-0000-4000-8000-000000000001",
             projectId: "project-1",
+            sourceTable: "messages",
             threadId: "thread-1"
           },
           {
-            id: "00000000-0000-4000-8000-000000000001",
+            id: "00000000-0000-4000-8000-000000000002",
             projectId: "project-1",
+            sourceTable: "memory_events",
             threadId: "thread-1"
           }
         ]
@@ -903,6 +907,7 @@ describe("Koed server desktop manager", () => {
         {
           id: "00000000-0000-4000-8000-000000000001",
           projectId: "project-1",
+          sourceTable: "messages",
           threadId: "thread-1"
         }
       ]
@@ -932,11 +937,23 @@ describe("Koed server desktop manager", () => {
           threadId: "thread-1"
         })}`
       )
+    ).toBeNull();
+    expect(
+      personalMemoryChangeFromSseFrame(
+        `event: graph_update\ndata: ${JSON.stringify({
+          table: "tool_events",
+          operation: "INSERT",
+          id: "00000000-0000-4000-8000-000000000002",
+          projectId: "project-1",
+          threadId: "thread-1"
+        })}`
+      )
     ).toMatchObject({
       eventRefs: [
         {
           id: "00000000-0000-4000-8000-000000000002",
           projectId: "project-1",
+          sourceTable: "tool_events",
           threadId: "thread-1"
         }
       ]
@@ -1366,6 +1383,7 @@ describe("Koed server desktop manager", () => {
       projectName: "koed",
       projectPath: "/repo",
       projectAssignmentSource: "detected",
+      presentation: null,
       eventCount: 3,
       invalidatedCount: 0,
       latestAt: "2026-08-05T12:00:00.000Z",
@@ -1660,6 +1678,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
           {
             id: "00000000-0000-4000-8000-000000000001",
             projectId: "project-1",
+            sourceTable: "messages",
             threadId: "thread-1"
           }
         ]
@@ -1720,6 +1739,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         {
           id: "00000000-0000-4000-8000-000000000001",
           projectId: "project-1",
+          sourceTable: "messages",
           threadId: "thread-1"
         }
       ]
@@ -1800,6 +1820,78 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
 
     expect(statusCalls).toBe(1);
     expect(personalMemoryFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends exact presentation mutations and reports stale versions safely", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "personal_token" })
+    );
+    const personalMemoryFetch = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "Conversation presentation changed on another client"
+        }),
+        { status: 409, headers: { "content-type": "application/json" } }
+      )
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://127.0.0.1:4170" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.sessions.update_presentation",
+        input: {
+          sessionId,
+          expectedVersion: 4,
+          displayMode: "settled"
+        }
+      })
+    ).resolves.toEqual({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.sessions.update_presentation",
+      ok: false,
+      error: {
+        code: "conflict",
+        message:
+          "Conversation navigation changed on another device. Try again.",
+        retryable: false
+      }
+    });
+    expect(String(personalMemoryFetch.mock.calls[0]?.[0])).toBe(
+      `http://127.0.0.1:4170/v1/memory/graph/sessions/${sessionId}/presentation`
+    );
+    expect(personalMemoryFetch.mock.calls[0]?.[1]?.method).toBe("PATCH");
+    expect(
+      JSON.parse(String(personalMemoryFetch.mock.calls[0]?.[1]?.body))
+    ).toEqual({ expectedVersion: 4, displayMode: "settled" });
+    expect(personalMemoryFetch).toHaveBeenCalledTimes(1);
   });
 
   it("rediscovers the local API origin after a request failure", async () => {
@@ -2424,6 +2516,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     const closePairingServer = vi.fn(async () => undefined);
     const startPairingServer = vi.fn(async () => ({
       port: 3310,
+      relayUrl: "http://192.168.1.20:3310/pds",
       createInvitation: vi.fn(),
       waitForRequest: vi.fn(),
       approve: vi.fn(),
@@ -2492,14 +2585,28 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         }
       ]);
       expect(startPairingServer).toHaveBeenCalledTimes(1);
+      expect(
+        JSON.parse(
+          readFileSync(
+            resolve(koedHome, "run", PDS_PEER_ENDPOINT_RUNTIME_FILE),
+            "utf8"
+          )
+        )
+      ).toEqual({
+        version: 1,
+        endpointUrl: "http://192.168.1.20:3310/pds"
+      });
     } finally {
       await manager.stop();
       expect(closePairingServer).toHaveBeenCalledTimes(1);
+      expect(
+        existsSync(resolve(koedHome, "run", PDS_PEER_ENDPOINT_RUNTIME_FILE))
+      ).toBe(false);
       rmSync(koedHome, { recursive: true, force: true });
     }
   });
 
-  it("does not advertise or start an enrollment gateway on a joined replica", async () => {
+  it("starts peer transport without granting invitation authority on a joined replica", async () => {
     const koedHome = mkdtempSync(
       resolve(tmpdir(), "koed-desktop-pds-replica-")
     );
@@ -2510,7 +2617,17 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         "personal_collaboration_write"
       ]
     });
-    const startPairingServer = vi.fn();
+    const startPairingServer = vi.fn(async () => ({
+      port: 3310,
+      relayUrl: "http://192.168.1.21:3310/pds",
+      createInvitation: vi.fn(),
+      waitForRequest: vi.fn(),
+      approve: vi.fn(),
+      waitForCompletion: vi.fn(),
+      cancel: vi.fn(),
+      inspect: vi.fn(() => []),
+      close: vi.fn(async () => undefined)
+    }));
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
@@ -2563,7 +2680,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         groups: [{ group_id: "group-one" }],
         pairing_invitation_group_ids: []
       });
-      expect(startPairingServer).not.toHaveBeenCalled();
+      expect(startPairingServer).toHaveBeenCalledTimes(1);
       await expect(
         manager.handlers.personal_sync_pairing_create!({
           groupId: "group-one"
@@ -2574,7 +2691,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         error:
           "Create the pairing link on the device that originally set up this Personal Device Group."
       });
-      expect(startPairingServer).not.toHaveBeenCalled();
+      expect(startPairingServer).toHaveBeenCalledTimes(1);
     } finally {
       await manager.stop();
       rmSync(koedHome, { recursive: true, force: true });
@@ -3730,6 +3847,491 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       state: "needs_attention",
       error: "spawn /missing-electron ENOENT"
     });
+  });
+
+  it("scopes managed Conversation drafts to the authenticated owner and backend", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-drafts-"));
+    const credentialDirectory = resolve(koedHome, "config");
+    mkdirSync(credentialDirectory, { recursive: true });
+    writeFileSync(
+      resolve(credentialDirectory, "local-app-credential.json"),
+      JSON.stringify({ apiToken: "local_app_token" })
+    );
+    const drafts = new Map<string, string>();
+    const draftStore = {
+      get: vi.fn(async (reference: string) => drafts.get(reference) ?? null),
+      put: vi.fn(async (reference: string, value: string) => {
+        drafts.set(reference, value);
+      }),
+      delete: vi.fn(async (reference: string) => {
+        drafts.delete(reference);
+      })
+    };
+    const personalMemoryFetch = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/access/check") {
+        return new Response(
+          JSON.stringify({
+            user: {
+              id: "00000000-0000-4000-8000-000000000001"
+            }
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }
+      return new Response(JSON.stringify({ error: "unexpected route" }), {
+        status: 404,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify(
+            args.includes("status")
+              ? {
+                  ok: true,
+                  api: {
+                    state: "healthy",
+                    url: "http://127.0.0.1:4170"
+                  }
+                }
+              : { ok: true }
+          ),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch,
+      managedConversationDraftStore: draftStore
+    });
+    const identity = {
+      projectId: "project-one",
+      capturedSessionId: "captured-one",
+      threadId: "thread-one"
+    };
+
+    try {
+      await expect(
+        manager.managedConversation({
+          operation: "draft_write",
+          ...identity,
+          value: "Unsent private prompt"
+        })
+      ).resolves.toEqual({ operation: "draft_write", ok: true });
+      await expect(
+        manager.managedConversation({ operation: "draft_read", ...identity })
+      ).resolves.toEqual({
+        operation: "draft_read",
+        value: "Unsent private prompt"
+      });
+      await expect(
+        manager.managedConversation({ operation: "draft_delete", ...identity })
+      ).resolves.toEqual({ operation: "draft_delete", ok: true });
+      await expect(
+        manager.managedConversation({ operation: "draft_read", ...identity })
+      ).resolves.toEqual({ operation: "draft_read", value: "" });
+
+      const references = [
+        ...draftStore.put.mock.calls.map(([reference]) => reference),
+        ...draftStore.get.mock.calls.map(([reference]) => reference),
+        ...draftStore.delete.mock.calls.map(([reference]) => reference)
+      ];
+      expect(new Set(references).size).toBe(1);
+      expect(references[0]).toMatch(/^managed-draft-[0-9a-f]{64}$/);
+      expect(references[0]).not.toContain(identity.projectId);
+      expect(personalMemoryFetch).toHaveBeenCalledTimes(4);
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the encrypted Desktop credential for bounded managed workspace reads", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-workspace-"));
+    const ownerUserId = "11111111-1111-4111-8111-111111111111";
+    const executionId = "22222222-2222-4222-8222-222222222222";
+    const stored = storeDesktopLocalCredential(koedHome, {
+      ownerUserId,
+      operationFamilies: ["managed_file_read"]
+    });
+    const personalMemoryFetch = vi.fn<typeof fetch>(async (input, init) => {
+      expect(new URL(String(input)).pathname).toBe(
+        `/v1/managed-conversations/${executionId}/diff`
+      );
+      expect(new Headers(init?.headers).get("authorization")).toBe(
+        stored.authorization
+      );
+      return new Response(
+        JSON.stringify({
+          executionId,
+          executionGeneration: 1,
+          scope: "full",
+          scopeKey: "full",
+          fromCheckpointId: "11111111-1111-4111-8111-111111111111",
+          toCheckpointId: "22222222-2222-4222-8222-222222222222",
+          revisionDigest: "a".repeat(64),
+          complete: true,
+          truncated: false,
+          fileCount: 0,
+          byteCount: 0,
+          diff: {
+            fromCommitObjectId: "1".repeat(40),
+            toCommitObjectId: "2".repeat(40),
+            complete: true,
+            files: [],
+            fileCount: 0,
+            returnedFileCount: 0,
+            byteCount: 0,
+            truncated: false,
+            continuation: null,
+            revisionDigest: "a".repeat(64)
+          }
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://127.0.0.1:4170" }
+          }),
+          ""
+        ),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+
+    try {
+      await expect(
+        manager.managedWorkspace({
+          requestId: "33333333-3333-4333-8333-333333333333",
+          executionId,
+          operation: "diff_read",
+          scope: "full"
+        })
+      ).resolves.toMatchObject({
+        operation: "diff_read",
+        executionId,
+        value: { scope: "full", diff: { files: [] } }
+      });
+      expect(personalMemoryFetch).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the owner API Token for a managed checkpoint restore", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-restore-"));
+    const executionId = "22222222-2222-4222-8222-222222222222";
+    const checkpointId = "33333333-3333-4333-8333-333333333333";
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "personal_token" })
+    );
+    const personalMemoryFetch = vi.fn<typeof fetch>(async (input, init) => {
+      expect(new URL(String(input)).pathname).toBe(
+        `/v1/managed-conversations/${executionId}/checkpoints/${checkpointId}/restore`
+      );
+      expect(new Headers(init?.headers).get("authorization")).toBe(
+        "Bearer personal_token"
+      );
+      return new Response(
+        JSON.stringify({
+          command: {
+            id: "44444444-4444-4444-8444-444444444444",
+            state: "queued",
+            commandKind: "checkpoint_restore",
+            executionId,
+            executionGeneration: 1,
+            attempts: 0,
+            lastErrorCode: null,
+            createdAt: "2026-08-22T00:00:00.000Z",
+            updatedAt: "2026-08-22T00:00:00.000Z",
+            completedAt: null
+          }
+        }),
+        { status: 202, headers: { "content-type": "application/json" } }
+      );
+    });
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://127.0.0.1:4170" }
+          }),
+          ""
+        ),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+
+    try {
+      await expect(
+        manager.managedWorkspace({
+          requestId: "11111111-1111-4111-8111-111111111111",
+          executionId,
+          operation: "checkpoint_restore",
+          executionGeneration: 1,
+          checkpointId,
+          idempotencyKey: "restore:managed-checkpoint:0001"
+        })
+      ).resolves.toMatchObject({
+        operation: "checkpoint_restore",
+        executionId,
+        command: { commandKind: "checkpoint_restore", state: "queued" }
+      });
+      expect(personalMemoryFetch).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps managed preview targets inside Desktop main", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-preview-"));
+    const ownerUserId = "11111111-1111-4111-8111-111111111111";
+    const executionId = "22222222-2222-4222-8222-222222222222";
+    const previewId = "33333333-3333-4333-8333-333333333333";
+    const surfaceId = "44444444-4444-4444-8444-444444444444";
+    const stored = storeDesktopLocalCredential(koedHome, {
+      ownerUserId,
+      operationFamilies: ["managed_preview"]
+    });
+    const now = new Date().toISOString();
+    const preview = {
+      id: previewId,
+      executionId,
+      executionGeneration: 1,
+      lifecycleGeneration: 1,
+      terminalId: "55555555-5555-4555-8555-555555555555",
+      state: "available",
+      source: "terminal_output",
+      policyVersion: 1,
+      discoveredAt: now,
+      updatedAt: now
+    };
+    const personalMemoryFetch = vi.fn<typeof fetch>(async (input, init) => {
+      expect(new Headers(init?.headers).get("authorization")).toBe(
+        stored.authorization
+      );
+      const path = new URL(String(input)).pathname;
+      return path.endsWith("/access")
+        ? new Response(
+            JSON.stringify({
+              preview,
+              navigationUrl: "http://127.0.0.1:5173/"
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+        : new Response(JSON.stringify({ previews: [preview] }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          });
+    });
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://127.0.0.1:4170" }
+          }),
+          ""
+        ),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+    const attach = vi.fn(async () => undefined);
+    const context = {
+      ownerId: "7",
+      signal: new AbortController().signal,
+      emitCollaborationEvent: vi.fn(),
+      managedPreview: {
+        attach,
+        setBounds: vi.fn(),
+        reload: vi.fn(),
+        detach: vi.fn()
+      }
+    };
+
+    try {
+      const listed = await manager.managedWorkspace({
+        requestId: "66666666-6666-4666-8666-666666666666",
+        executionId,
+        operation: "preview_list"
+      });
+      expect(JSON.stringify(listed)).not.toContain("5173");
+      const attached = await manager.managedWorkspace(
+        {
+          requestId: "77777777-7777-4777-8777-777777777777",
+          executionId,
+          operation: "preview_attach",
+          surfaceId,
+          previewId,
+          lifecycleGeneration: 1,
+          bounds: { x: 10, y: 20, width: 800, height: 600 }
+        },
+        context
+      );
+      expect(attached).toEqual({
+        requestId: "77777777-7777-4777-8777-777777777777",
+        executionId,
+        operation: "preview_attach",
+        surfaceId,
+        accepted: true
+      });
+      expect(JSON.stringify(attached)).not.toContain("5173");
+      expect(attach).toHaveBeenCalledWith({
+        surfaceId,
+        access: {
+          preview: expect.objectContaining({ id: previewId }),
+          navigationUrl: "http://127.0.0.1:5173/"
+        },
+        bounds: { x: 10, y: 20, width: 800, height: 600 }
+      });
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("adds native approval only after confirming source-control mutations", async () => {
+    const koedHome = mkdtempSync(
+      resolve(tmpdir(), "koed-desktop-source-control-")
+    );
+    const ownerUserId = "11111111-1111-4111-8111-111111111111";
+    const executionId = "22222222-2222-4222-8222-222222222222";
+    const stored = storeDesktopLocalCredential(koedHome, {
+      ownerUserId,
+      operationFamilies: ["managed_source_control"]
+    });
+    const personalMemoryFetch = vi.fn<typeof fetch>(async (_input, init) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBe(stored.authorization);
+      expect(headers.get("x-koed-desktop-source-control-approval")).toBe("1");
+      return new Response(
+        JSON.stringify({
+          kind: "comment_create",
+          operationId: "33333333-3333-4333-8333-333333333333",
+          status: "completed",
+          headObjectId: "a".repeat(40),
+          comment: {
+            id: "comment-1",
+            author: "reviewer",
+            body: "Ship it",
+            createdAt: "2026-08-19T00:00:00.000Z",
+            webUrl: null
+          }
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    const confirmSourceControlMutation = vi
+      .fn<(input: { operation: string }) => Promise<boolean>>()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://127.0.0.1:4170" }
+          }),
+          ""
+        ),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch,
+      confirmSourceControlMutation
+    });
+    const request = {
+      requestId: "44444444-4444-4444-8444-444444444444",
+      executionId,
+      operation: "source_control" as const,
+      sourceControlOperation: {
+        contractVersion: 1 as const,
+        executionId,
+        executionGeneration: 1,
+        remoteIdentityHash: "b".repeat(64),
+        kind: "comment_create" as const,
+        number: 7,
+        body: "Ship it",
+        expectedHeadObjectId: "a".repeat(40),
+        credentialGeneration: 1,
+        idempotencyKey: "source-control:desktop-comment-0001"
+      }
+    };
+
+    try {
+      await expect(manager.managedWorkspace(request)).rejects.toThrow();
+      expect(personalMemoryFetch).not.toHaveBeenCalled();
+      await expect(manager.managedWorkspace(request)).resolves.toMatchObject({
+        operation: "source_control",
+        result: { kind: "comment_create", status: "completed" }
+      });
+      expect(confirmSourceControlMutation).toHaveBeenCalledTimes(2);
+      expect(personalMemoryFetch).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
   });
 
   it("reveals only a trusted path resolved from local Project metadata", async () => {
