@@ -4,7 +4,6 @@ import type {
   PersonalNoteRecord
 } from "@koed/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { crossIdentitySyncDeterministicUuid } from "@koed/shared";
 
 import type { ApiRouteContext } from "../server/context.js";
 import {
@@ -46,10 +45,7 @@ const badRequest = (message: string) =>
 
 export interface CollaborationRouteContext {
   requireCollaborationRepository(): CollaborationRepository &
-    Pick<
-      MemorySourceRepository,
-      "getPersonalNoteMemoryEvent" | "getLocalSyncDeployment"
-    >;
+    Pick<MemorySourceRepository, "getPersonalNoteMemoryEvent">;
   projectPersonalNote(input: {
     ownerUserId: string;
     note: PersonalNoteRecord;
@@ -98,19 +94,6 @@ const parseIdempotencyKey = (request: FastifyRequest): string =>
   collaborationIdempotencyHeadersSchema.parse(request.headers)[
     "idempotency-key"
   ];
-
-const personalNoteLogicalMemoryId = (input: {
-  sourceDeploymentId: string;
-  ownerUserId: string;
-  noteId: string;
-}): string =>
-  crossIdentitySyncDeterministicUuid({
-    protocol: "koed.personal-note-share/v1",
-    sourceDeploymentId: input.sourceDeploymentId,
-    sourceOwnerPrincipalId: input.ownerUserId,
-    noteId: input.noteId,
-    identity: "logical-memory"
-  });
 
 const requirePersonalThread = async (
   repository: CollaborationRepository,
@@ -916,6 +899,7 @@ export const registerCollaborationRoutes = (
         memoryEventId: note.memoryEventId,
         projectionState: note.projectionState,
         projectionFailureCode: note.projectionFailureCode,
+        logicalMemoryId: note.logicalMemoryId,
         createdAt: note.createdAt,
         updatedAt: note.updatedAt,
         sourceSequence: note.sourceSequence
@@ -949,7 +933,7 @@ export const registerCollaborationRoutes = (
       await context
         .projectPersonalNote({ ownerUserId: user.id, note: created })
         .catch(() => undefined);
-      const [note, event, deployment] = await Promise.all([
+      const [note, event] = await Promise.all([
         repository.getPersonalNote(
           { userId: user.id },
           { noteId: created.noteId }
@@ -957,10 +941,9 @@ export const registerCollaborationRoutes = (
         repository.getPersonalNoteMemoryEvent(
           { userId: user.id },
           created.noteId
-        ),
-        repository.getLocalSyncDeployment()
+        )
       ]);
-      if (!note || !deployment) throw new Error("Personal Note was not stored");
+      if (!note) throw new Error("Personal Note was not stored");
       return reply.status(201).send({
         note: {
           noteId: note.noteId,
@@ -973,11 +956,7 @@ export const registerCollaborationRoutes = (
           projectionState: note.projectionState,
           projectionFailureCode: note.projectionFailureCode,
           body: note.body,
-          logicalMemoryId: personalNoteLogicalMemoryId({
-            sourceDeploymentId: deployment.protocolDeploymentId,
-            ownerUserId: user.id,
-            noteId: note.noteId
-          }),
+          logicalMemoryId: note.logicalMemoryId,
           createdAt: note.createdAt,
           updatedAt: note.updatedAt,
           sourceSequence: note.sourceSequence,
@@ -998,12 +977,11 @@ export const registerCollaborationRoutes = (
       );
       const { noteId } = personalNoteParamsSchema.parse(request.params);
       const repository = context.requireCollaborationRepository();
-      const [note, event, deployment] = await Promise.all([
+      const [note, event] = await Promise.all([
         repository.getPersonalNote({ userId: user.id }, { noteId }),
-        repository.getPersonalNoteMemoryEvent({ userId: user.id }, noteId),
-        repository.getLocalSyncDeployment()
+        repository.getPersonalNoteMemoryEvent({ userId: user.id }, noteId)
       ]);
-      if (!note || !deployment) {
+      if (!note) {
         return reply.status(404).send({ message: "Personal Note not found" });
       }
       return {
@@ -1018,11 +996,7 @@ export const registerCollaborationRoutes = (
           projectionState: note.projectionState,
           projectionFailureCode: note.projectionFailureCode,
           body: note.body,
-          logicalMemoryId: personalNoteLogicalMemoryId({
-            sourceDeploymentId: deployment.protocolDeploymentId,
-            ownerUserId: user.id,
-            noteId: note.noteId
-          }),
+          logicalMemoryId: note.logicalMemoryId,
           createdAt: note.createdAt,
           updatedAt: note.updatedAt,
           sourceSequence: note.sourceSequence,
@@ -1097,12 +1071,11 @@ export const registerCollaborationRoutes = (
       await context
         .projectPersonalNote({ ownerUserId: user.id, note: updated })
         .catch(() => undefined);
-      const [note, event, deployment] = await Promise.all([
+      const [note, event] = await Promise.all([
         repository.getPersonalNote({ userId: user.id }, { noteId }),
-        repository.getPersonalNoteMemoryEvent({ userId: user.id }, noteId),
-        repository.getLocalSyncDeployment()
+        repository.getPersonalNoteMemoryEvent({ userId: user.id }, noteId)
       ]);
-      if (!note || !deployment) {
+      if (!note) {
         throw new Error("Personal Note revision was not stored");
       }
       return {
@@ -1117,11 +1090,7 @@ export const registerCollaborationRoutes = (
           projectionState: note.projectionState,
           projectionFailureCode: note.projectionFailureCode,
           body: note.body,
-          logicalMemoryId: personalNoteLogicalMemoryId({
-            sourceDeploymentId: deployment.protocolDeploymentId,
-            ownerUserId: user.id,
-            noteId: note.noteId
-          }),
+          logicalMemoryId: note.logicalMemoryId,
           createdAt: note.createdAt,
           updatedAt: note.updatedAt,
           sourceSequence: note.sourceSequence,

@@ -656,8 +656,8 @@ const mapLogical = (r: Row): LogicalMemoryRecord => ({
   ownerUserId: String(r.owner_user_id),
   ownerPrincipalId: String(r.owner_principal_id),
   originDeploymentIdentityId: String(r.origin_deployment_identity_id),
-  sourceBoundary: r.source_boundary as SyncSourceBoundary,
-  originSourceId: String(r.origin_source_id),
+  sourceBoundary: r.source_kind as SyncSourceBoundary,
+  originSourceId: String(r.source_session_id),
   localSessionId: optionalString(r.local_session_id),
   logicalKey: String(r.logical_key)
 });
@@ -1335,28 +1335,43 @@ export const createCrossIdentitySyncRepository = (
           return null;
         }
         const logicalResult = await client.query(
-          "insert into logical_memories (id,owner_user_id,owner_principal_id,origin_deployment_identity_id,source_boundary,origin_source_id,local_session_id,logical_key) values ($1,$2,$2,$3,'captured_session',$4::uuid::text,$4::uuid,$5) on conflict (origin_deployment_identity_id,source_boundary,origin_source_id) do update set updated_at=now() where logical_memories.owner_user_id=excluded.owner_user_id and logical_memories.owner_principal_id=excluded.owner_principal_id returning *",
+          "insert into logical_memories (id,owner_user_id,owner_principal_id,origin_deployment_identity_id,source_kind,logical_key) values ($1,$2,$2,$3,'captured_session',$4) on conflict (id) do update set updated_at=now() where logical_memories.owner_user_id=excluded.owner_user_id and logical_memories.owner_principal_id=excluded.owner_principal_id and logical_memories.origin_deployment_identity_id=excluded.origin_deployment_identity_id and logical_memories.source_kind=excluded.source_kind and logical_memories.logical_key=excluded.logical_key returning *",
           [
             input.logicalMemoryId,
             actor.userId,
             input.localDeploymentIdentityId,
-            input.sessionId,
             `captured-session:${input.sessionId}`
           ]
         );
         if (!logicalResult.rows[0]) throw new SyncIdempotencyConflictError();
-        const logical = mapLogical(logicalResult.rows[0] as Row);
+        const logical = mapLogical({
+          ...(logicalResult.rows[0] as Row),
+          source_session_id: input.sessionId,
+          local_session_id: input.sessionId
+        });
+        const protocolBinding = await client.query(
+          "insert into captured_session_logical_memories (logical_memory_id,source_kind,source_session_id,owner_principal_id) values ($1,'captured_session',$2,$3) on conflict (logical_memory_id) do update set source_session_id=captured_session_logical_memories.source_session_id where captured_session_logical_memories.source_session_id=excluded.source_session_id and captured_session_logical_memories.owner_principal_id=excluded.owner_principal_id returning logical_memory_id",
+          [logical.id, input.sessionId, actor.userId]
+        );
+        if (!protocolBinding.rows[0]) throw new SyncIdempotencyConflictError();
+        const localBinding = await client.query(
+          "insert into local_captured_session_logical_memories (logical_memory_id,local_session_id,owner_user_id) values ($1,$2,$3) on conflict (logical_memory_id) do update set local_session_id=local_captured_session_logical_memories.local_session_id where local_captured_session_logical_memories.local_session_id=excluded.local_session_id and local_captured_session_logical_memories.owner_user_id=excluded.owner_user_id returning logical_memory_id",
+          [logical.id, input.sessionId, actor.userId]
+        );
+        if (!localBinding.rows[0]) throw new SyncIdempotencyConflictError();
         const replicaResult = await client.query(
-          "insert into memory_replicas (id,logical_memory_id,deployment_identity_id,owner_user_id,owner_principal_id,replica_role,source_boundary,local_session_id,encryption_scope,freshness_status) values ($1,$2,$3,$4,$4,'source','captured_session',$5,'personal','fresh') on conflict (logical_memory_id,deployment_identity_id,replica_role) do update set updated_at=now() where memory_replicas.id=excluded.id and memory_replicas.owner_principal_id=excluded.owner_principal_id returning *",
+          "insert into memory_replicas (id,logical_memory_id,deployment_identity_id,owner_user_id,owner_principal_id,replica_role,source_boundary,encryption_scope,freshness_status) values ($1,$2,$3,$4,$4,'source','captured_session','personal','fresh') on conflict (logical_memory_id,deployment_identity_id,replica_role) do update set updated_at=now() where memory_replicas.id=excluded.id and memory_replicas.owner_principal_id=excluded.owner_principal_id returning *",
           [
             input.localReplicaId,
             logical.id,
             input.localDeploymentIdentityId,
-            actor.userId,
-            input.sessionId
+            actor.userId
           ]
         );
-        const replica = mapReplica(replicaResult.rows[0] as Row);
+        const replica = mapReplica({
+          ...(replicaResult.rows[0] as Row),
+          local_session_id: input.sessionId
+        });
         const relationshipResult = await client.query(
           "insert into cross_identity_sync_relationships (id,logical_memory_id,side,local_replica_id,local_user_id,remote_deployment_identity_id,remote_user_identity_id,remote_replica_id,source_boundary,state,paused_at,state_before_pause,idempotency_key,creation_request_hash,policy_manifest,consent_manifest) values ($1,$2,'source',$3,$4,$5,$6,$7,'captured_session','paused',now(),'created',$8,$9,$10::jsonb,$11::jsonb) on conflict (id) do update set updated_at=cross_identity_sync_relationships.updated_at where cross_identity_sync_relationships.local_user_id=excluded.local_user_id and cross_identity_sync_relationships.remote_deployment_identity_id=excluded.remote_deployment_identity_id and cross_identity_sync_relationships.remote_user_identity_id=excluded.remote_user_identity_id and cross_identity_sync_relationships.creation_request_hash=excluded.creation_request_hash returning *",
           [
@@ -1668,8 +1683,10 @@ export const createCrossIdentitySyncRepository = (
                   exists (
                     select 1
                       from memory_replicas replica
+                      join local_captured_session_logical_memories local_memory
+                        on local_memory.logical_memory_id=replica.logical_memory_id
                       join sync_semantic_changes change
-                        on change.session_id=replica.local_session_id
+                        on change.session_id=local_memory.local_session_id
                      where replica.id=relationship.local_replica_id
                        and change.cursor>relationship.source_cursor
                   ) as has_unsynced_changes,
@@ -1843,32 +1860,46 @@ export const createCrossIdentitySyncRepository = (
         if (!sessionResult.rows[0]) throw new SyncIdempotencyConflictError();
         const sessionId = String((sessionResult.rows[0] as Row).id);
         const logicalResult = await client.query(
-          "insert into logical_memories (id,owner_user_id,owner_principal_id,origin_deployment_identity_id,source_boundary,origin_source_id,local_session_id,logical_key) values ($1,$2,$7,$3,'captured_session',$4,$5,$6) on conflict (id) do update set updated_at=now() where logical_memories.owner_user_id=excluded.owner_user_id and logical_memories.owner_principal_id=excluded.owner_principal_id and logical_memories.origin_deployment_identity_id=excluded.origin_deployment_identity_id and logical_memories.origin_source_id=excluded.origin_source_id returning *",
+          "insert into logical_memories (id,owner_user_id,owner_principal_id,origin_deployment_identity_id,source_kind,logical_key) values ($1,$2,$5,$3,'captured_session',$4) on conflict (id) do update set updated_at=now() where logical_memories.owner_user_id=excluded.owner_user_id and logical_memories.owner_principal_id=excluded.owner_principal_id and logical_memories.origin_deployment_identity_id=excluded.origin_deployment_identity_id and logical_memories.source_kind=excluded.source_kind and logical_memories.logical_key=excluded.logical_key returning *",
           [
             input.logicalMemoryId,
             actor.userId,
             input.remoteDeploymentIdentityId,
-            input.originSessionId,
-            sessionId,
             `captured-session:${input.originSessionId}`,
             input.remoteUserIdentityId
           ]
         );
         if (!logicalResult.rows[0]) throw new SyncIdempotencyConflictError();
-        const logical = mapLogical(logicalResult.rows[0] as Row);
+        const logical = mapLogical({
+          ...(logicalResult.rows[0] as Row),
+          source_session_id: input.originSessionId,
+          local_session_id: sessionId
+        });
+        const protocolBinding = await client.query(
+          "insert into captured_session_logical_memories (logical_memory_id,source_kind,source_session_id,owner_principal_id) values ($1,'captured_session',$2,$3) on conflict (logical_memory_id) do update set source_session_id=captured_session_logical_memories.source_session_id where captured_session_logical_memories.source_session_id=excluded.source_session_id and captured_session_logical_memories.owner_principal_id=excluded.owner_principal_id returning logical_memory_id",
+          [logical.id, input.originSessionId, input.remoteUserIdentityId]
+        );
+        if (!protocolBinding.rows[0]) throw new SyncIdempotencyConflictError();
+        const localBinding = await client.query(
+          "insert into local_captured_session_logical_memories (logical_memory_id,local_session_id,owner_user_id) values ($1,$2,$3) on conflict (logical_memory_id) do update set local_session_id=local_captured_session_logical_memories.local_session_id where local_captured_session_logical_memories.local_session_id=excluded.local_session_id and local_captured_session_logical_memories.owner_user_id=excluded.owner_user_id returning logical_memory_id",
+          [logical.id, sessionId, actor.userId]
+        );
+        if (!localBinding.rows[0]) throw new SyncIdempotencyConflictError();
         const replicaResult = await client.query(
-          "insert into memory_replicas (id,logical_memory_id,deployment_identity_id,owner_user_id,owner_principal_id,replica_role,source_boundary,local_session_id,encryption_scope,freshness_status) values ($1,$2,$3,$4,$6,'target','captured_session',$5,'owner_private_replica','unknown') on conflict (id) do update set updated_at=now() where memory_replicas.logical_memory_id=excluded.logical_memory_id and memory_replicas.owner_user_id=excluded.owner_user_id and memory_replicas.owner_principal_id=excluded.owner_principal_id returning *",
+          "insert into memory_replicas (id,logical_memory_id,deployment_identity_id,owner_user_id,owner_principal_id,replica_role,source_boundary,encryption_scope,freshness_status) values ($1,$2,$3,$4,$5,'target','captured_session','owner_private_replica','unknown') on conflict (id) do update set updated_at=now() where memory_replicas.logical_memory_id=excluded.logical_memory_id and memory_replicas.owner_user_id=excluded.owner_user_id and memory_replicas.owner_principal_id=excluded.owner_principal_id returning *",
           [
             input.localReplicaId,
             logical.id,
             input.localDeploymentIdentityId,
             actor.userId,
-            sessionId,
             input.remoteUserIdentityId
           ]
         );
         if (!replicaResult.rows[0]) throw new SyncIdempotencyConflictError();
-        const replica = mapReplica(replicaResult.rows[0] as Row);
+        const replica = mapReplica({
+          ...(replicaResult.rows[0] as Row),
+          local_session_id: sessionId
+        });
         await ensureOwnerPrivateReplicaRetentionPolicy(client, {
           ownerPrivateReplicaId: replica.id,
           logicalMemoryId: logical.id,
@@ -1951,9 +1982,12 @@ export const createCrossIdentitySyncRepository = (
            from cross_identity_sync_relationships relationship
            join memory_replicas replica
              on replica.id=relationship.local_replica_id
+           join local_captured_session_logical_memories local_memory
+             on local_memory.logical_memory_id=relationship.logical_memory_id
+            and local_memory.owner_user_id=relationship.local_user_id
           where relationship.side='source'
             and relationship.local_user_id=$1
-            and replica.local_session_id=$2
+            and local_memory.local_session_id=$2
           order by relationship.created_at desc
           limit 1`,
         [actor.userId, sessionId]
@@ -2106,7 +2140,7 @@ export const createCrossIdentitySyncRepository = (
     },
     async readCapturedSessionSyncDelta(input) {
       const relationshipResult = await pool.query(
-        "select sr.*,lm.local_session_id,di.protocol_deployment_id from cross_identity_sync_relationships sr join logical_memories lm on lm.id=sr.logical_memory_id join memory_replicas mr on mr.id=sr.local_replica_id join deployment_identities di on di.id=mr.deployment_identity_id where sr.id=$1 and sr.side='source' and sr.state<>'paused' and sr.revoked_at is null for update",
+        "select sr.*,local_memory.local_session_id,di.protocol_deployment_id from cross_identity_sync_relationships sr join local_captured_session_logical_memories local_memory on local_memory.logical_memory_id=sr.logical_memory_id join memory_replicas mr on mr.id=sr.local_replica_id join deployment_identities di on di.id=mr.deployment_identity_id where sr.id=$1 and sr.side='source' and sr.state<>'paused' and sr.revoked_at is null for update of sr,mr,di",
         [input.relationshipId]
       );
       const row = relationshipResult.rows[0] as Row | undefined;
@@ -2387,12 +2421,15 @@ export const createCrossIdentitySyncRepository = (
            from cross_identity_sync_relationships relationship
            join memory_replicas replica
              on replica.id=relationship.local_replica_id
+           join local_captured_session_logical_memories local_memory
+             on local_memory.logical_memory_id=relationship.logical_memory_id
+            and local_memory.owner_user_id=relationship.local_user_id
           where relationship.id=$1
             and relationship.side='source'
             and relationship.local_user_id=$2
             and relationship.revoked_at is null
             and relationship.state not in ('failed','revoked','purge_pending')
-            and replica.local_session_id=$3
+            and local_memory.local_session_id=$3
           limit 1`,
         [input.relationshipId, input.ownerUserId, input.sessionId]
       );
@@ -2972,7 +3009,10 @@ export const createCrossIdentitySyncRepository = (
                    select 1
                    from cross_identity_sync_relationships relationship
                    join memory_replicas replica on replica.id=relationship.local_replica_id
-                   join sync_semantic_changes change on change.session_id=replica.local_session_id
+                   join local_captured_session_logical_memories local_memory
+                     on local_memory.logical_memory_id=relationship.logical_memory_id
+                   join sync_semantic_changes change
+                     on change.session_id=local_memory.local_session_id
                    where relationship.id=$1
                      and change.cursor>relationship.source_cursor
                  ) as pending`,
@@ -3141,7 +3181,10 @@ export const createCrossIdentitySyncRepository = (
                select 1
                from cross_identity_sync_relationships relationship
                join memory_replicas replica on replica.id=relationship.local_replica_id
-               join sync_semantic_changes change on change.session_id=replica.local_session_id
+               join local_captured_session_logical_memories local_memory
+                 on local_memory.logical_memory_id=relationship.logical_memory_id
+               join sync_semantic_changes change
+                 on change.session_id=local_memory.local_session_id
                where relationship.id=${table}.sync_relationship_id
                  and change.cursor>relationship.source_cursor
              ) then 'pending'::sync_queue_entry_state else 'completed'::sync_queue_entry_state end,
@@ -3149,7 +3192,10 @@ export const createCrossIdentitySyncRepository = (
                select 1
                from cross_identity_sync_relationships relationship
                join memory_replicas replica on replica.id=relationship.local_replica_id
-               join sync_semantic_changes change on change.session_id=replica.local_session_id
+               join local_captured_session_logical_memories local_memory
+                 on local_memory.logical_memory_id=relationship.logical_memory_id
+               join sync_semantic_changes change
+                 on change.session_id=local_memory.local_session_id
                where relationship.id=${table}.sync_relationship_id
                  and change.cursor>relationship.source_cursor
              ) then 0 else attempt_count end,
@@ -3158,7 +3204,10 @@ export const createCrossIdentitySyncRepository = (
                select 1
                from cross_identity_sync_relationships relationship
                join memory_replicas replica on replica.id=relationship.local_replica_id
-               join sync_semantic_changes change on change.session_id=replica.local_session_id
+               join local_captured_session_logical_memories local_memory
+                 on local_memory.logical_memory_id=relationship.logical_memory_id
+               join sync_semantic_changes change
+                 on change.session_id=local_memory.local_session_id
                where relationship.id=${table}.sync_relationship_id
                  and change.cursor>relationship.source_cursor
              ) then null else now() end`
@@ -3389,7 +3438,12 @@ export const createCrossIdentitySyncRepository = (
           );
         }
         const replicaResult = await client.query<Row>(
-          "select mr.local_session_id,mr.owner_principal_id from memory_replicas mr where mr.id=$1 and mr.owner_user_id=$2",
+          `select local_memory.local_session_id,mr.owner_principal_id
+             from memory_replicas mr
+             join local_captured_session_logical_memories local_memory
+               on local_memory.logical_memory_id=mr.logical_memory_id
+              and local_memory.owner_user_id=mr.owner_user_id
+            where mr.id=$1 and mr.owner_user_id=$2`,
           [relationship.localReplicaId, relationship.localUserId]
         );
         const sessionId =
@@ -4084,10 +4138,13 @@ export const createCrossIdentitySyncRepository = (
           `select relationship.state,
                   relationship.local_user_id,
                   relationship.logical_memory_id,
-                  replica.local_session_id
+                  local_memory.local_session_id
              from cross_identity_sync_relationships relationship
              join memory_replicas replica
                on replica.id = relationship.local_replica_id
+             join local_captured_session_logical_memories local_memory
+               on local_memory.logical_memory_id=relationship.logical_memory_id
+              and local_memory.owner_user_id=relationship.local_user_id
             where relationship.id = $1
               and relationship.side = 'source'
             for update of relationship`,
@@ -4178,7 +4235,10 @@ export const createCrossIdentitySyncRepository = (
                select 1
                from cross_identity_sync_relationships relationship
                join memory_replicas replica on replica.id=relationship.local_replica_id
-               join sync_semantic_changes change on change.session_id=replica.local_session_id
+               join local_captured_session_logical_memories local_memory
+                 on local_memory.logical_memory_id=relationship.logical_memory_id
+               join sync_semantic_changes change
+                 on change.session_id=local_memory.local_session_id
                where relationship.id=$1 and change.cursor>$2
              )`,
           [input.relationshipId, input.sourceCursor]
@@ -4487,7 +4547,7 @@ export const createCrossIdentitySyncRepository = (
         const relationship = result.rows[0] as Row;
         const affectedGrants = await client.query<Row>(
           `select g.id,g.team_id,g.team_workspace_id,g.logical_memory_id
-             from team_session_share_grants g
+             from team_memory_share_grants g
             where g.logical_memory_id=$1
               and g.remote_replica_id=$2
               and g.lifecycle='active'
@@ -4515,7 +4575,7 @@ export const createCrossIdentitySyncRepository = (
               messageId: null,
               shareGrantId: String(grant.id),
               logicalMemoryId: String(grant.logical_memory_id),
-              resourceType: "team_session_share_grant",
+              resourceType: "team_memory_share_grant",
               resourceId: String(grant.id),
               actorPrincipalId: actor.userId,
               mutationId: crossIdentitySyncDeterministicUuid({
@@ -4567,7 +4627,7 @@ export const createCrossIdentitySyncRepository = (
           ((select coalesce(sum(greatest(attempt_count-1,0)),0) from sync_outbox_entries)+(select coalesce(sum(greatest(attempt_count-1,0)),0) from sync_inbox_entries))::int as retries,
           coalesce((select sum(total_bytes) from sync_package_upload_sessions where completed_at>=now()-interval '1 hour'),0)::bigint as completed_bytes_last_hour,
           coalesce((select sum(case when jsonb_typeof(package_manifest->'recordCount')='number' then (package_manifest->>'recordCount')::bigint else 0 end) from sync_package_upload_sessions where completed_at>=now()-interval '1 hour'),0)::bigint as completed_records_last_hour,
-          coalesce((select sum((select count(*) from sync_semantic_changes change where change.session_id=replica.local_session_id and change.cursor>relationship.source_cursor)) from cross_identity_sync_relationships relationship join memory_replicas replica on replica.id=relationship.local_replica_id where relationship.side='source' and relationship.revoked_at is null),0)::bigint as source_lag_records,
+          coalesce((select sum((select count(*) from sync_semantic_changes change where change.session_id=local_memory.local_session_id and change.cursor>relationship.source_cursor)) from cross_identity_sync_relationships relationship join memory_replicas replica on replica.id=relationship.local_replica_id join local_captured_session_logical_memories local_memory on local_memory.logical_memory_id=relationship.logical_memory_id where relationship.side='source' and relationship.revoked_at is null),0)::bigint as source_lag_records,
           coalesce((select sum(case when jsonb_typeof(upload.package_manifest->'recordCount')='number' then (upload.package_manifest->>'recordCount')::bigint else 0 end) from sync_package_upload_sessions upload join cross_identity_sync_relationships relationship on relationship.id=upload.sync_relationship_id where relationship.side='target' and relationship.revoked_at is null and upload.state<>'failed' and upload.to_cursor>relationship.target_processing_cursor),0)::bigint as target_lag_records
       `);
       const row = result.rows[0]!;

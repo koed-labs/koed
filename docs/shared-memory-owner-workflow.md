@@ -37,6 +37,11 @@ that is ordinary code organization, not a new workflow owner.
   Personal Memory ownership nor grants the source.
 - A **Share Grant** is the durable, destination-bound authority derived from
   owner consent. It is not Cross-Identity Sync, Workspace Access, or ownership.
+- A **logical Memory source revision** is the positive immutable identity used
+  by generic sharing workflows. Its typed binding supplies source-specific
+  meaning. A Captured Session cursor remains a separate non-negative value;
+  cursor zero maps to generic revision one and ordinary cursor movement does
+  not create a durable frontier.
 
 ## Authoritative inputs
 
@@ -114,11 +119,13 @@ per-source revision hashes, representation, semantic source revision, item and
 byte counts, deterministic exclusion count, and candidate hash. Preview pages
 are slices of that retained set. They never extend the authorized set.
 
-The candidate source revision is the captured session's semantic sync cursor,
-not a Capture Hook transport sequence. Candidate preparation can reserve that
-cursor locally before consent, but it does not create a sync relationship or
-upload source data. After acceptance, the same cursor becomes the exact
-revision that the source worker transfers and the Team worker activates.
+The candidate source revision is the Captured Session's semantic sync cursor,
+not a Capture Hook transport sequence. Candidate preparation binds that cursor
+to a positive, immutable generic revision only when the durable candidate
+workflow needs the frontier; ordinary ingestion cursor movement does not.
+Candidate preparation creates no sync relationship or source upload. After
+acceptance, the same typed frontier becomes the exact revision that the source
+worker transfers and the Team worker activates.
 The reviewed binding also includes the selected snapshot or continuous mode.
 Changing that mode in Desktop re-authorizes the preview before consent so the
 final command cannot reuse a preview created for a different mode.

@@ -534,8 +534,7 @@ export interface CollaborationSharedMemoryAuthorityStore {
     mutationId: string;
     mode: "snapshot" | "continuous";
     source: shared.SharedMemorySourceRef;
-    /** Additive Captured Session compatibility field. */
-    localSessionId?: string;
+    sourceRevision: number;
   }): Promise<boolean>;
   claimPendingShareSourceWork(input?: { limit?: number }): Promise<
     Array<{
@@ -2403,9 +2402,7 @@ const dispatchShare = async (
       mutationId: command.input.mutationId,
       mode: command.input.mode,
       source: pendingSource,
-      ...(pendingSource.kind === "captured_session"
-        ? { localSessionId: pendingSource.sessionId }
-        : {})
+      sourceRevision: pendingShare.data.sourceRevision
     });
   if (!persistedWork) throw new ControlFailure("not_available");
   options.requestPendingShareSourceWork?.();
@@ -3033,9 +3030,7 @@ const dispatchControlPendingShare = async (
         mutationId: pendingShare.data.mutationId,
         mode: pendingShare.data.mode,
         source,
-        ...(source.kind === "captured_session"
-          ? { localSessionId: source.sessionId }
-          : {})
+        sourceRevision: pendingShare.data.sourceRevision
       });
     if (!persistedWork) throw new ControlFailure("not_available");
     options.requestPendingShareSourceWork?.();
@@ -3248,9 +3243,7 @@ const dispatchChangeFidelity = async (
       mutationId: command.input.mutationId,
       mode: pendingShare.data.mode,
       source,
-      ...(source.kind === "captured_session"
-        ? { localSessionId: source.sessionId }
-        : {})
+      sourceRevision: pendingShare.data.sourceRevision
     });
   if (!persistedWork) throw new ControlFailure("not_available");
   options.requestPendingShareSourceWork?.();
@@ -3384,7 +3377,8 @@ export const createCollaborationSharedMemoryControl = (
           pendingShareId: pendingShare.id,
           mutationId: pendingShare.mutationId,
           mode: pendingShare.mode,
-          source: candidate.source
+          source: candidate.source,
+          sourceRevision: pendingShare.sourceRevision
         });
       if (!persisted) throw new ControlFailure("not_available");
     }

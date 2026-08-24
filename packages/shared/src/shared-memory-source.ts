@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { crossIdentitySyncDigest } from "./cross-identity-sync.js";
+import {
+  crossIdentitySyncDeterministicUuid,
+  crossIdentitySyncDigest
+} from "./cross-identity-sync.js";
 import type { SharedMemoryFidelityCeiling } from "./shared-memory-fidelity.js";
 
 export const sharedMemorySourceKinds = [
@@ -31,6 +34,51 @@ export const sharedMemorySourceRefSchema = z.discriminatedUnion("kind", [
 ]);
 
 export type SharedMemorySourceRef = z.infer<typeof sharedMemorySourceRefSchema>;
+
+export interface LogicalMemorySourceRevisionIdentity {
+  id: string;
+  genericRevision: number;
+  bindingHash: string;
+}
+
+export const logicalMemorySourceRevisionIdentity = (input: {
+  source: SharedMemorySourceRef;
+  ownerPrincipalId: string;
+  sourceRevision: number;
+}): LogicalMemorySourceRevisionIdentity => {
+  if (
+    !Number.isSafeInteger(input.sourceRevision) ||
+    input.sourceRevision < 0 ||
+    (input.source.kind === "personal_note" && input.sourceRevision === 0)
+  ) {
+    throw new TypeError(
+      "Shared Memory source revision is outside the supported range"
+    );
+  }
+  const genericRevision =
+    input.source.kind === "captured_session"
+      ? input.sourceRevision + 1
+      : input.sourceRevision;
+  const bindingHash = crossIdentitySyncDigest({
+    kind: "logical_memory_source_revision_binding",
+    version: 1,
+    source: input.source,
+    ownerPrincipalId: input.ownerPrincipalId,
+    genericRevision,
+    sourceRevision: input.sourceRevision
+  });
+  return {
+    id: crossIdentitySyncDeterministicUuid({
+      kind: "logical_memory_source_revision",
+      logicalMemoryId: input.source.logicalMemoryId,
+      ownerPrincipalId: input.ownerPrincipalId,
+      revision: genericRevision,
+      bindingHash
+    }),
+    genericRevision,
+    bindingHash
+  };
+};
 
 export const sharedMemorySourceCanReplace = (
   current: SharedMemorySourceRef | undefined,
@@ -73,6 +121,28 @@ export const personalNoteSourceRevisionHash = (input: {
       sourceSequence: input.sourceSequence
     }
   });
+
+export const capturedSessionSourceFrontierHash = (input: {
+  source: Extract<SharedMemorySourceRef, { kind: "captured_session" }>;
+  representation: SharedMemoryRepresentationCapability;
+  sourceCursor: number;
+  manifestHash: string;
+  sourceContentHash: string;
+}): string => {
+  if (!Number.isSafeInteger(input.sourceCursor) || input.sourceCursor < 0) {
+    throw new TypeError("Captured Session source cursor must be non-negative");
+  }
+  return crossIdentitySyncDigest({
+    kind: "captured_session_source_frontier",
+    version: 1,
+    source: input.source,
+    genericRevision: input.sourceCursor + 1,
+    sourceCursor: input.sourceCursor,
+    representation: input.representation,
+    manifestHash: input.manifestHash,
+    sourceContentHash: input.sourceContentHash
+  });
+};
 
 export interface SharedMemorySourceSelection {
   source: SharedMemorySourceRef;

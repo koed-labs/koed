@@ -239,7 +239,7 @@ describeDb("Collaboration repository", () => {
         expires_at timestamptz,
         revoked_at timestamptz
       );
-      create temp table team_session_share_grants (
+      create temp table team_memory_share_grants (
         id uuid primary key,
         logical_memory_id uuid not null,
         remote_replica_id uuid not null,
@@ -454,7 +454,7 @@ describeDb("Collaboration repository", () => {
         ]
       );
       await authorizationPool.query(
-        `insert into team_session_share_grants (
+        `insert into team_memory_share_grants (
            id,logical_memory_id,remote_replica_id,owner_principal_id,team_id,
            team_workspace_id,consent_id,source_owner_policy_id,
            source_owner_policy_version,team_policy_id,team_policy_version,
@@ -507,7 +507,7 @@ describeDb("Collaboration repository", () => {
       maximumFidelity: FidelityCeiling
     ): Promise<void> => {
       await authorizationPool.query(
-        `update team_session_share_grants
+        `update team_memory_share_grants
             set maximum_fidelity=$2 where id=$1`,
         [scope.shareGrantId, maximumFidelity]
       );
@@ -544,7 +544,7 @@ describeDb("Collaboration repository", () => {
       included: boolean
     ): Promise<void> => {
       const updates = {
-        grant: ["team_session_share_grants", "id", scope.shareGrantId],
+        grant: ["team_memory_share_grants", "id", scope.shareGrantId],
         consent: [
           "source_owner_representation_consents",
           "id",
@@ -657,9 +657,7 @@ describeDb("Collaboration repository", () => {
         eventTeamWorkspaceId?: string;
         eventLogicalMemoryId?: string;
         eventShareGrantId?: string;
-        resourceType?:
-          | "team_session_share_grant"
-          | "team_memory_representation";
+        resourceType?: "team_memory_share_grant" | "team_memory_representation";
       }
     ) => {
       const eventId = randomUUID();
@@ -680,7 +678,7 @@ describeDb("Collaboration repository", () => {
           input?.eventTeamWorkspaceId ?? scope.teamWorkspaceId,
           shareGrantId,
           input?.eventLogicalMemoryId ?? scope.logicalMemoryId,
-          input?.resourceType ?? "team_session_share_grant",
+          input?.resourceType ?? "team_memory_share_grant",
           randomUUID()
         ]
       );
@@ -705,6 +703,13 @@ describeDb("Collaboration repository", () => {
   beforeAll(async () => {
     pool = createDbPool({ connectionString: databaseUrl });
     await runDbMigrations(pool);
+    await pool.query(
+      `insert into deployment_identities
+         (protocol_deployment_id,locality,profile,display_name)
+       values ($1,'local','local_personal','Collaboration test device')
+       on conflict do nothing`,
+      [randomUUID()]
+    );
     competingPool = createDbPool({ connectionString: databaseUrl });
     provider = createLocalTestKeyEnvelopeEncryptionProvider(
       Buffer.alloc(32, 73).toString("base64")
@@ -887,7 +892,7 @@ describeDb("Collaboration repository", () => {
       await expect(isAuthorized(downgrade)).resolves.toBe(true);
 
       await harness.pool.query(
-        `update team_session_share_grants
+        `update team_memory_share_grants
             set lifecycle='revoked',revoked_at=now()
           where id=$1`,
         [scope.shareGrantId]
@@ -1785,9 +1790,13 @@ describeDb("Collaboration repository", () => {
         state: string;
         redacted_failure_code: string | null;
       }>(
-        `select local_note_revision,state,redacted_failure_code
-           from collaboration_continuous_note_advancement_work
-          where local_note_id=$1 order by local_note_revision`,
+        `select local_revision.revision as local_note_revision,
+                work.state,work.redacted_failure_code
+           from collaboration_continuous_note_advancement_work work
+           join local_personal_note_source_revisions local_revision
+             on local_revision.source_revision_id=work.source_revision_id
+          where local_revision.local_note_id=$1
+          order by local_revision.revision`,
         [note.noteId]
       )
     ).resolves.toMatchObject({
@@ -1854,13 +1863,20 @@ describeDb("Collaboration repository", () => {
     const pendingShareId = randomUUID();
     const firstMutationId = randomUUID();
     const secondMutationId = randomUUID();
-    const logicalMemoryId = randomUUID();
+    const logicalMemory = await pool.query<{ logical_memory_id: string }>(
+      `select logical_memory_id
+         from local_personal_note_logical_memories
+        where local_note_id=$1 and owner_user_id=$2`,
+      [note.noteId, ownerUserId]
+    );
+    const logicalMemoryId = logicalMemory.rows[0]!.logical_memory_id;
     await expect(
       authorityStore.persistPendingShareSourceWork({
         identity,
         pendingShareId,
         mutationId: firstMutationId,
         mode: "continuous",
+        sourceRevision: 1,
         source: {
           kind: "personal_note",
           noteId: note.noteId,
@@ -1886,6 +1902,7 @@ describeDb("Collaboration repository", () => {
         pendingShareId,
         mutationId: secondMutationId,
         mode: "continuous",
+        sourceRevision: 2,
         source: {
           kind: "personal_note",
           noteId: note.noteId,
@@ -1897,10 +1914,12 @@ describeDb("Collaboration repository", () => {
     ).resolves.toBe(true);
     await expect(
       pool.query<{ mutation_id: string; state: string }>(
-        `select mutation_id,state
-           from collaboration_pending_share_source_work
-          where pending_share_id=$1
-          order by local_note_revision`,
+        `select work.mutation_id,work.state
+           from collaboration_pending_share_source_work work
+           join local_personal_note_source_revisions local_revision
+             on local_revision.source_revision_id=work.source_revision_id
+          where work.pending_share_id=$1
+          order by local_revision.revision`,
         [pendingShareId]
       )
     ).resolves.toMatchObject({

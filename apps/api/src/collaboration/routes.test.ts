@@ -497,6 +497,7 @@ const createCollaborationFixture = () => {
       const noteId = randomUUID();
       const note: PersonalNoteRecord = {
         noteId,
+        logicalMemoryId: randomUUID(),
         title: input.body.split(/\r?\n/u)[0]!,
         titleVersion: 1,
         body: input.body,

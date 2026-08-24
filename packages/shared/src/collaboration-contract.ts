@@ -2328,7 +2328,7 @@ export const pendingShareSchema = z
 
 export const ownedShareSummarySchema = z
   .object({
-    source: sharedMemorySourceRefSchema.optional(),
+    source: sharedMemorySourceRefSchema,
     sourceSessionId: z.uuid().nullable(),
     companionThreadId: z.uuid().nullable().optional(),
     sourceTitle: z.string().min(1).max(500),

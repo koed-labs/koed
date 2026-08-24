@@ -9016,7 +9016,9 @@ export const createMemorySourceRepository = (
           and not exists (
             select 1
             from memory_replicas target_replica
-            where target_replica.local_session_id = mn.session_id
+            join local_captured_session_logical_memories target_source
+              on target_source.logical_memory_id=target_replica.logical_memory_id
+            where target_source.local_session_id = mn.session_id
               and target_replica.replica_role = 'target'
           )
           and (
@@ -9420,7 +9422,9 @@ export const createMemorySourceRepository = (
             and not exists (
               select 1
               from memory_replicas target_replica
-              where target_replica.local_session_id = memory_nodes.session_id
+              join local_captured_session_logical_memories target_source
+                on target_source.logical_memory_id=target_replica.logical_memory_id
+              where target_source.local_session_id = memory_nodes.session_id
                 and target_replica.replica_role = 'target'
             )
           for update
@@ -9749,7 +9753,10 @@ export const createMemorySourceRepository = (
                from cross_identity_sync_relationships relationship
                join memory_replicas replica
                  on replica.id=relationship.local_replica_id
-                and replica.local_session_id=$2
+               join local_captured_session_logical_memories local_memory
+                 on local_memory.logical_memory_id=relationship.logical_memory_id
+                and local_memory.local_session_id=$2
+                and local_memory.owner_user_id=$1
               where relationship.side='source'
                 and relationship.local_user_id=$1
                 and relationship.revoked_at is null
@@ -12275,7 +12282,9 @@ export const createMemorySourceRepository = (
             and not exists (
               select 1
               from memory_replicas target_replica
-              where target_replica.local_session_id = me.session_id
+              join local_captured_session_logical_memories target_source
+                on target_source.logical_memory_id=target_replica.logical_memory_id
+              where target_source.local_session_id = me.session_id
                 and target_replica.replica_role = 'target'
             )
             and not exists (
@@ -12574,7 +12583,9 @@ export const createMemorySourceRepository = (
             and not exists (
               select 1
               from memory_replicas target_replica
-              where target_replica.local_session_id = mn.session_id
+              join local_captured_session_logical_memories target_source
+                on target_source.logical_memory_id=target_replica.logical_memory_id
+              where target_source.local_session_id = mn.session_id
                 and target_replica.replica_role = 'target'
             )
           order by mn.created_at asc, mn.id asc

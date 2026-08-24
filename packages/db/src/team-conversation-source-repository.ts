@@ -321,7 +321,7 @@ const artifactColumns = `
 
 const authorizedAccessFromSql = `
   from team_conversation_source_grants source_grant
-  join team_session_share_grants share_grant
+  join team_memory_share_grants share_grant
     on share_grant.id = source_grant.share_grant_id
    and share_grant.team_id = source_grant.team_id
    and share_grant.team_workspace_id = source_grant.team_workspace_id
@@ -457,9 +457,12 @@ export const createTeamConversationSourceRepository = (
               coalesce(source_grant.version, 0) as current_version,
               source_grant.mode as current_mode,
               source_grant.lifecycle as current_lifecycle
-         from team_session_share_grants share_grant
-         join logical_memories memory on memory.id=share_grant.logical_memory_id
-         join sessions session on session.id=memory.local_session_id
+         from team_memory_share_grants share_grant
+         join logical_memory_source_revision_bindings source_binding
+           on source_binding.source_revision_id=share_grant.source_revision_id
+         join local_captured_session_logical_memories local_memory
+           on local_memory.logical_memory_id=share_grant.logical_memory_id
+         join sessions session on session.id=local_memory.local_session_id
          join users source_owner on source_owner.id=share_grant.owner_user_id
           and source_owner.disabled_at is null and source_owner.deleted_at is null
          join teams team on team.id=share_grant.team_id
@@ -474,7 +477,7 @@ export const createTeamConversationSourceRepository = (
          left join team_conversation_source_grants source_grant
            on source_grant.share_grant_id=share_grant.id
         where share_grant.id=$1 and share_grant.owner_user_id=$2
-          and share_grant.source_kind='captured_session'
+          and source_binding.source_kind='captured_session'
           and share_grant.lifecycle='active' and share_grant.revoked_at is null
           and share_grant.personal_deleted_at is null
           and team.lifecycle='active'
@@ -484,7 +487,7 @@ export const createTeamConversationSourceRepository = (
           and exists (
             select 1 from conversation_source_artifacts artifact
              where artifact.owner_user_id=$2
-               and artifact.session_id=memory.local_session_id
+               and artifact.session_id=local_memory.local_session_id
                and artifact.lifecycle not in ('deleted','deletion_pending','failed','conflicted')
           )
         limit 1`,
@@ -518,9 +521,12 @@ export const createTeamConversationSourceRepository = (
     try {
       await client.query("begin");
       const parent = await client.query<Row>(
-        `select share_grant.*, memory.local_session_id
-           from team_session_share_grants share_grant
-           join logical_memories memory on memory.id = share_grant.logical_memory_id
+        `select share_grant.*, local_memory.local_session_id
+           from team_memory_share_grants share_grant
+           join logical_memory_source_revision_bindings source_binding
+             on source_binding.source_revision_id=share_grant.source_revision_id
+           join local_captured_session_logical_memories local_memory
+             on local_memory.logical_memory_id = share_grant.logical_memory_id
            join users source_owner on source_owner.id = share_grant.owner_user_id
             and source_owner.disabled_at is null
             and source_owner.deleted_at is null
@@ -551,7 +557,7 @@ export const createTeamConversationSourceRepository = (
             and (consent.expires_at is null or consent.expires_at > now())
           where share_grant.id = $1
             and share_grant.owner_user_id = $2
-            and share_grant.source_kind = 'captured_session'
+            and source_binding.source_kind = 'captured_session'
             and share_grant.team_id = $3
             and share_grant.lifecycle = 'active'
             and share_grant.revoked_at is null
@@ -742,7 +748,7 @@ export const createTeamConversationSourceRepository = (
                 mutation_id = $3, revoked_at = now(),
                 revoked_by_user_id = $2, revocation_reason = $5,
                 updated_at = now()
-           from team_session_share_grants share_grant
+           from team_memory_share_grants share_grant
           where source_grant.share_grant_id = $1
             and source_grant.version = $4
             and source_grant.lifecycle = 'active'
@@ -765,7 +771,7 @@ export const createTeamConversationSourceRepository = (
         const replay = await client.query<Row>(
           `select source_grant.*
              from team_conversation_source_grants source_grant
-             join team_session_share_grants share_grant
+             join team_memory_share_grants share_grant
                on share_grant.id = source_grant.share_grant_id
             where source_grant.share_grant_id = $1
               and source_grant.mutation_id = $3

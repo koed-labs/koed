@@ -735,6 +735,8 @@ export type {
 export {
   assertPersonalNoteSourceSelection,
   personalNoteSourceRevisionHash,
+  capturedSessionSourceFrontierHash,
+  logicalMemorySourceRevisionIdentity,
   personalNoteSourceSelectionIssues,
   sharedMemorySourceCanReplace,
   sharedMemorySourceKinds,
@@ -742,6 +744,7 @@ export {
 } from "./shared-memory-source.js";
 export type {
   SharedMemoryRepresentationCapability,
+  LogicalMemorySourceRevisionIdentity,
   SharedMemorySourceRef,
   SharedMemorySourceSelection
 } from "./shared-memory-source.js";

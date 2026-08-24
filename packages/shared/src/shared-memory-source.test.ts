@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertPersonalNoteSourceSelection,
+  capturedSessionSourceFrontierHash,
+  logicalMemorySourceRevisionIdentity,
   personalNoteSourceRevisionHash,
   sharedMemorySourceCanReplace,
   sharedMemorySourceRefSchema
@@ -42,6 +44,13 @@ describe("Shared Memory source binding", () => {
       sharedMemorySourceRefSchema.parse({
         kind: "personal_note",
         noteId: randomUUID(),
+        logicalMemoryId: randomUUID()
+      })
+    ).toThrow();
+    expect(() =>
+      sharedMemorySourceRefSchema.parse({
+        kind: "unsupported_source",
+        sourceId: randomUUID(),
         logicalMemoryId: randomUUID()
       })
     ).toThrow();
@@ -172,5 +181,79 @@ describe("Shared Memory source binding", () => {
         source: { ...source, memoryEventId: randomUUID() }
       })
     ).not.toBe(hash);
+  });
+
+  it("binds a Captured Session frontier to its cursor and semantic content", () => {
+    const source = {
+      kind: "captured_session" as const,
+      sessionId: randomUUID(),
+      logicalMemoryId: randomUUID()
+    };
+    const input = {
+      source,
+      representation: "memory_events" as const,
+      sourceCursor: 0,
+      manifestHash: "1".repeat(64),
+      sourceContentHash: "2".repeat(64)
+    };
+    const hash = capturedSessionSourceFrontierHash(input);
+    expect(capturedSessionSourceFrontierHash(input)).toBe(hash);
+    expect(
+      capturedSessionSourceFrontierHash({ ...input, sourceCursor: 1 })
+    ).not.toBe(hash);
+    expect(
+      capturedSessionSourceFrontierHash({
+        ...input,
+        sourceContentHash: "3".repeat(64)
+      })
+    ).not.toBe(hash);
+    expect(() =>
+      capturedSessionSourceFrontierHash({ ...input, sourceCursor: -1 })
+    ).toThrow("non-negative");
+  });
+
+  it("derives one canonical identity for each exact source revision", () => {
+    const ownerPrincipalId = randomUUID();
+    const sessionSource = {
+      kind: "captured_session" as const,
+      sessionId: randomUUID(),
+      logicalMemoryId: randomUUID()
+    };
+    const cursorZero = logicalMemorySourceRevisionIdentity({
+      source: sessionSource,
+      ownerPrincipalId,
+      sourceRevision: 0
+    });
+    expect(cursorZero.genericRevision).toBe(1);
+    expect(
+      logicalMemorySourceRevisionIdentity({
+        source: sessionSource,
+        ownerPrincipalId,
+        sourceRevision: 0
+      })
+    ).toEqual(cursorZero);
+    expect(
+      logicalMemorySourceRevisionIdentity({
+        source: sessionSource,
+        ownerPrincipalId,
+        sourceRevision: 1
+      }).id
+    ).not.toBe(cursorZero.id);
+
+    const note = noteSource();
+    expect(
+      logicalMemorySourceRevisionIdentity({
+        source: note,
+        ownerPrincipalId,
+        sourceRevision: note.noteRevision
+      }).genericRevision
+    ).toBe(note.noteRevision);
+    expect(() =>
+      logicalMemorySourceRevisionIdentity({
+        source: note,
+        ownerPrincipalId,
+        sourceRevision: 0
+      })
+    ).toThrow("outside the supported range");
   });
 });

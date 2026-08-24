@@ -5,9 +5,11 @@ import {
   structuredLcmSummarySchema
 } from "@koed/core";
 import {
+  capturedSessionSourceFrontierHash,
   classifyApprovalActivity,
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest,
+  logicalMemorySourceRevisionIdentity,
   sharedMemoryGrantScopedSourceId,
   sharedMemorySourceCanReplace,
   sharedMemorySourceRefSchema,
@@ -156,7 +158,7 @@ export interface SharedMemoryCandidatePreviewRecord {
   previewHash: string;
   previewRevision: 1;
   logicalMemoryId: string;
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
   sourceCapabilities: SharedMemoryRepresentation[];
   activationRepresentation: SharedMemoryRepresentation;
   teamId: string;
@@ -190,7 +192,7 @@ export interface PendingShareRecord {
   logicalGrantId: string;
   consentId: string;
   logicalMemoryId: string;
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
   sourceCapabilities: SharedMemoryRepresentation[];
   activationRepresentation: SharedMemoryRepresentation;
   teamId: string;
@@ -236,7 +238,7 @@ export type OwnedShareRecord =
     };
 
 export interface OwnedShareSummary {
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
   sourceSessionId: string | null;
   companionThreadId: string | null;
   sourceTitle: string;
@@ -300,7 +302,8 @@ export interface SharedMemoryPreviewDto {
 }
 
 export interface SharedMemorySourceArtifactRecord extends SharedSourceArtifactReference {
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
+  sourceRevisionId: string;
   sourceCapabilities: SharedMemoryRepresentation[];
   activationRepresentation: SharedMemoryRepresentation;
   logicalMemoryId: string;
@@ -339,7 +342,8 @@ export interface SharedMemorySourceArtifactRecord extends SharedSourceArtifactRe
 }
 
 export interface SharedMemoryPersistedPreviewRecord extends SharedSourcePreviewReference {
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
+  sourceRevisionId: string;
   sourceCapabilities: SharedMemoryRepresentation[];
   activationRepresentation: SharedMemoryRepresentation;
   mode: SharedMemoryConsentMode;
@@ -463,7 +467,8 @@ export interface SharedMemorySanitizedSemanticPreviewPayload {
 }
 
 export interface SharedMemoryConsentRecord {
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
+  sourceRevisionId: string;
   sourceCapabilities: SharedMemoryRepresentation[];
   activationRepresentation: SharedMemoryRepresentation;
   id: string;
@@ -503,7 +508,8 @@ export interface SharedMemoryConsentRecord {
 }
 
 export interface SharedMemoryGrantRecord {
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
+  sourceRevisionId: string;
   sourceCapabilities: SharedMemoryRepresentation[];
   activationRepresentation: SharedMemoryRepresentation;
   mode: SharedMemoryConsentMode;
@@ -541,7 +547,8 @@ export interface SharedMemoryGrantRecord {
 }
 
 export interface SharedMemoryRepresentationRecord {
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
+  sourceRevisionId: string;
   id: string;
   shareGrantId: string;
   consentId: string;
@@ -610,7 +617,7 @@ export interface PendingSharedMemorySemanticItem {
 }
 
 export interface SharedMemorySemanticCandidate {
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
   candidateId: string;
   shareGrantId: string;
   sourceArtifactId: string;
@@ -1473,6 +1480,18 @@ const SHARED_MEMORY_CLASSIFIER_VERSION = 1;
 type SqlClient = pg.Pool | pg.PoolClient;
 type Row = Record<string, unknown>;
 
+interface LogicalMemorySourceIdentity {
+  logicalMemoryId: string;
+  sourceKind: SharedMemorySourceRef["kind"];
+}
+
+interface ExactLogicalMemorySourceRevision extends LogicalMemorySourceIdentity {
+  id: string;
+  genericRevision: number;
+  sourceRevision: number;
+  source: SharedMemorySourceRef;
+}
+
 const iso = (value: unknown): string =>
   value instanceof Date
     ? value.toISOString()
@@ -1514,6 +1533,173 @@ const sourceRefFromRow = (row: Row): SharedMemorySourceRef | undefined => {
   return undefined;
 };
 
+const ensureLogicalMemorySourceRevision = async (
+  client: pg.PoolClient,
+  input: {
+    source: SharedMemorySourceRef;
+    ownerPrincipalId: string;
+    revision: number;
+  }
+): Promise<ExactLogicalMemorySourceRevision> => {
+  let identity: ReturnType<typeof logicalMemorySourceRevisionIdentity>;
+  try {
+    identity = logicalMemorySourceRevisionIdentity({
+      source: input.source,
+      ownerPrincipalId: input.ownerPrincipalId,
+      sourceRevision: input.revision
+    });
+  } catch {
+    throw new SharedMemoryConflictError(
+      "Shared Memory source revision is outside the supported range"
+    );
+  }
+  const { bindingHash, genericRevision, id: revisionId } = identity;
+  const logicalIdentity = await client.query<Row>(
+    `select id,source_kind,owner_principal_id
+       from logical_memories
+      where id=$1 and lifecycle='active'
+        and invalidated_at is null and purge_completed_at is null
+      for update`,
+    [input.source.logicalMemoryId]
+  );
+  const logical = logicalIdentity.rows[0];
+  if (
+    !logical ||
+    stringValue(logical.source_kind) !== input.source.kind ||
+    stringValue(logical.owner_principal_id) !== input.ownerPrincipalId
+  ) {
+    throw new SharedMemoryConflictError(
+      "Shared Memory source identity changed"
+    );
+  }
+  if (input.source.kind === "captured_session") {
+    const root = await client.query<Row>(
+      `insert into captured_session_logical_memories
+         (logical_memory_id,source_kind,source_session_id,owner_principal_id)
+       values ($1,'captured_session',$2,$3)
+       on conflict (logical_memory_id) do update
+         set source_session_id=captured_session_logical_memories.source_session_id
+       where captured_session_logical_memories.source_session_id=excluded.source_session_id
+         and captured_session_logical_memories.owner_principal_id=excluded.owner_principal_id
+       returning logical_memory_id`,
+      [
+        input.source.logicalMemoryId,
+        input.source.sessionId,
+        input.ownerPrincipalId
+      ]
+    );
+    if (!root.rows[0]) {
+      throw new SharedMemoryConflictError(
+        "Captured Session source binding changed"
+      );
+    }
+  } else {
+    const root = await client.query<Row>(
+      `insert into personal_note_logical_memories
+         (logical_memory_id,source_kind,source_note_id,owner_principal_id)
+       values ($1,'personal_note',$2,$3)
+       on conflict (logical_memory_id) do update
+         set source_note_id=personal_note_logical_memories.source_note_id
+       where personal_note_logical_memories.source_note_id=excluded.source_note_id
+         and personal_note_logical_memories.owner_principal_id=excluded.owner_principal_id
+       returning logical_memory_id`,
+      [
+        input.source.logicalMemoryId,
+        input.source.noteId,
+        input.ownerPrincipalId
+      ]
+    );
+    if (!root.rows[0]) {
+      throw new SharedMemoryConflictError(
+        "Personal Note source binding changed"
+      );
+    }
+  }
+  const revision = await client.query<Row>(
+    `insert into logical_memory_source_revisions
+       (id,logical_memory_id,owner_principal_id,source_kind,revision,binding_hash)
+     values ($1,$2,$3,$4,$5,$6)
+     on conflict (logical_memory_id,revision) do update
+       set binding_hash=logical_memory_source_revisions.binding_hash
+     where logical_memory_source_revisions.id=excluded.id
+       and logical_memory_source_revisions.owner_principal_id=excluded.owner_principal_id
+       and logical_memory_source_revisions.source_kind=excluded.source_kind
+       and logical_memory_source_revisions.binding_hash=excluded.binding_hash
+     returning id`,
+    [
+      revisionId,
+      input.source.logicalMemoryId,
+      input.ownerPrincipalId,
+      input.source.kind,
+      genericRevision,
+      bindingHash
+    ]
+  );
+  if (!revision.rows[0]) {
+    throw new SharedMemoryConflictError(
+      "Shared Memory source revision changed"
+    );
+  }
+  const binding =
+    input.source.kind === "captured_session"
+      ? await client.query<Row>(
+          `insert into captured_session_source_revisions
+             (source_revision_id,logical_memory_id,owner_principal_id,
+              source_kind,revision,source_session_id,source_cursor)
+           values ($1,$2,$3,'captured_session',$4,$5,$6)
+           on conflict (source_revision_id) do update
+             set source_cursor=captured_session_source_revisions.source_cursor
+           where captured_session_source_revisions.logical_memory_id=excluded.logical_memory_id
+             and captured_session_source_revisions.owner_principal_id=excluded.owner_principal_id
+             and captured_session_source_revisions.source_session_id=excluded.source_session_id
+             and captured_session_source_revisions.source_cursor=excluded.source_cursor
+           returning source_revision_id`,
+          [
+            revisionId,
+            input.source.logicalMemoryId,
+            input.ownerPrincipalId,
+            genericRevision,
+            input.source.sessionId,
+            input.revision
+          ]
+        )
+      : await client.query<Row>(
+          `insert into personal_note_source_revisions
+             (source_revision_id,logical_memory_id,owner_principal_id,
+              source_kind,source_note_id,revision,source_memory_event_id)
+           values ($1,$2,$3,'personal_note',$4,$5,$6)
+           on conflict (source_revision_id) do update
+             set source_memory_event_id=personal_note_source_revisions.source_memory_event_id
+           where personal_note_source_revisions.logical_memory_id=excluded.logical_memory_id
+             and personal_note_source_revisions.owner_principal_id=excluded.owner_principal_id
+             and personal_note_source_revisions.source_note_id=excluded.source_note_id
+             and personal_note_source_revisions.revision=excluded.revision
+             and personal_note_source_revisions.source_memory_event_id=excluded.source_memory_event_id
+           returning source_revision_id`,
+          [
+            revisionId,
+            input.source.logicalMemoryId,
+            input.ownerPrincipalId,
+            input.source.noteId,
+            input.revision,
+            input.source.memoryEventId
+          ]
+        );
+  if (!binding.rows[0]) {
+    throw new SharedMemoryConflictError(
+      "Shared Memory source-specific revision binding changed"
+    );
+  }
+  return {
+    id: revisionId,
+    logicalMemoryId: input.source.logicalMemoryId,
+    sourceKind: input.source.kind,
+    genericRevision,
+    sourceRevision: input.revision,
+    source: input.source
+  };
+};
+
 const pendingShareSourceRefFromRow = (
   row: Row
 ): SharedMemorySourceRef | undefined =>
@@ -1535,6 +1721,27 @@ const requiredSourceRefFromRow = (row: Row): SharedMemorySourceRef => {
   if (!source) {
     throw new SharedMemoryConflictError(
       "Shared Memory source metadata is required"
+    );
+  }
+  return source;
+};
+
+const sourceRefRow = (source: SharedMemorySourceRef): Row => ({
+  source_kind: source.kind,
+  source_session_id:
+    source.kind === "captured_session" ? source.sessionId : null,
+  source_note_id: source.kind === "personal_note" ? source.noteId : null,
+  source_memory_event_id:
+    source.kind === "personal_note" ? source.memoryEventId : null
+});
+
+const requiredPendingShareSourceRefFromRow = (
+  row: Row
+): SharedMemorySourceRef => {
+  const source = pendingShareSourceRefFromRow(row);
+  if (!source) {
+    throw new SharedMemoryConflictError(
+      "Pending Share source metadata is required"
     );
   }
   return source;
@@ -1644,7 +1851,7 @@ export const composeSharedMemorySemanticText = (
   return `${toolName}\n${payloadText}`.trim();
 };
 
-const sanitizedTeamDisplayTitle = (
+export const sharedMemorySanitizedDisplayTitle = (
   items: readonly SharedMemoryCanonicalSourceItemDto[]
 ): string => {
   for (const item of items) {
@@ -1934,7 +2141,7 @@ const semanticPrivacyConsentJoinSql = (
   select pending.replacement_consent_id as id,
          pending.replacement_maximum_fidelity as maximum_fidelity,
          pending.replacement_include_curated_memory as include_curated_memory
-    from pending_share_operations pending
+    from pending_share_operation_records pending
    where pending.grant_id=${grant}.id
      and pending.owner_user_id=${grant}.owner_user_id
      and pending.logical_memory_id=${preview}.logical_memory_id
@@ -1949,7 +2156,7 @@ const semanticPrivacyConsentJoinSql = (
      and pending.revoked_at is null
      and exists (
        select 1
-         from shared_memory_candidate_previews candidate
+         from shared_memory_candidate_preview_records candidate
         where candidate.id=pending.replacement_preview_id
           and candidate.preview_hash=pending.replacement_preview_hash
           and candidate.preview_revision=pending.replacement_preview_revision
@@ -1968,7 +2175,7 @@ const semanticPrivacyConsentJoinSql = (
      )
   union all
   select current.id,current.maximum_fidelity,current.include_curated_memory
-    from source_owner_representation_consents current
+    from source_owner_representation_consent_records current
    where current.id=${grant}.consent_id
      and current.state='active' and current.revoked_at is null
      and (current.expires_at is null or current.expires_at>now())
@@ -2088,10 +2295,11 @@ const mapPolicy = (
 });
 
 const mapConsent = (row: Row): SharedMemoryConsentRecord => ({
-  ...(sourceRefFromRow(row) ? { source: sourceRefFromRow(row) } : {}),
+  source: requiredSourceRefFromRow(row),
   sourceCapabilities: representationArrayValue(row.source_capabilities),
   activationRepresentation: representationValue(row.activation_representation),
   id: stringValue(row.id),
+  sourceRevisionId: stringValue(row.source_revision_id),
   previewId: stringValue(row.preview_id),
   logicalMemoryId: stringValue(row.logical_memory_id),
   remoteReplicaId: nullableStringValue(row.remote_replica_id),
@@ -2148,19 +2356,23 @@ const companionScope = (grant: {
 
 const mapGrant = (row: Row): SharedMemoryGrantRecord => {
   const grant = {
-    ...(sourceRefFromRow(row) ? { source: sourceRefFromRow(row) } : {}),
+    source: requiredSourceRefFromRow(row),
     sourceCapabilities: representationArrayValue(row.source_capabilities),
     activationRepresentation: representationValue(
       row.activation_representation
     ),
     mode: stringValue(row.mode) as SharedMemoryConsentMode,
     id: stringValue(row.id),
+    sourceRevisionId: stringValue(row.source_revision_id),
     logicalGrantId: stringValue(row.logical_grant_id),
     logicalMemoryId: stringValue(row.logical_memory_id),
     remoteReplicaId: nullableStringValue(row.remote_replica_id),
     ownerUserId: row.owner_user_id ? stringValue(row.owner_user_id) : null,
     ownerPrincipalId: stringValue(row.owner_principal_id),
-    sessionId: row.session_id ? stringValue(row.session_id) : null,
+    sessionId:
+      row.source_kind === "captured_session" && row.source_session_id
+        ? stringValue(row.source_session_id)
+        : null,
     displayTitle: row.display_title ? stringValue(row.display_title) : null,
     teamId: stringValue(row.team_id),
     teamWorkspaceId: stringValue(row.team_workspace_id),
@@ -2198,9 +2410,7 @@ const mapPendingShare = (row: Row): PendingShareRecord => ({
   logicalGrantId: stringValue(row.logical_grant_id),
   consentId: stringValue(row.replacement_consent_id ?? row.consent_id),
   logicalMemoryId: stringValue(row.logical_memory_id),
-  ...(pendingShareSourceRefFromRow(row)
-    ? { source: pendingShareSourceRefFromRow(row) }
-    : {}),
+  source: requiredPendingShareSourceRefFromRow(row),
   sourceCapabilities: representationArrayValue(row.source_capabilities),
   activationRepresentation: representationValue(row.activation_representation),
   teamId: stringValue(row.team_id),
@@ -2238,8 +2448,9 @@ const mapPendingShare = (row: Row): PendingShareRecord => ({
 });
 
 const mapRepresentation = (row: Row): SharedMemoryRepresentationRecord => ({
-  ...(sourceRefFromRow(row) ? { source: sourceRefFromRow(row) } : {}),
+  source: requiredSourceRefFromRow(row),
   id: stringValue(row.id),
+  sourceRevisionId: stringValue(row.source_revision_id),
   shareGrantId: stringValue(row.share_grant_id),
   consentId: stringValue(row.consent_id),
   sourcePreviewId: stringValue(row.source_preview_id),
@@ -2339,10 +2550,11 @@ const mapSemanticPreview = (row: Row): SharedMemorySemanticPreviewRecord => ({
 });
 
 const mapArtifact = (row: Row): SharedMemorySourceArtifactRecord => ({
-  ...(sourceRefFromRow(row) ? { source: sourceRefFromRow(row) } : {}),
+  source: requiredSourceRefFromRow(row),
   sourceCapabilities: representationArrayValue(row.source_capabilities),
   activationRepresentation: representationValue(row.activation_representation),
   artifactId: stringValue(row.id),
+  sourceRevisionId: stringValue(row.source_revision_id),
   artifactHash: stringValue(row.artifact_hash),
   logicalMemoryId: stringValue(row.logical_memory_id),
   remoteReplicaId: nullableStringValue(row.remote_replica_id),
@@ -2387,11 +2599,12 @@ const mapPersistedPreview = (
   preview: SharedSourcePreviewV1,
   artifactBody: SharedSourceArtifactV1
 ): SharedMemoryPersistedPreviewRecord => ({
-  ...(preview.source ? { source: preview.source } : {}),
+  source: preview.source,
   sourceCapabilities: representationArrayValue(row.source_capabilities),
   activationRepresentation: representationValue(row.activation_representation),
   mode: stringValue(row.mode) as SharedMemoryConsentMode,
   previewId: stringValue(row.id),
+  sourceRevisionId: stringValue(row.source_revision_id),
   previewHash: stringValue(row.preview_hash),
   artifactId: artifact.artifactId,
   artifactHash: artifact.artifactHash,
@@ -2603,10 +2816,12 @@ const requireSourceOwner = async (
   logicalMemoryId: string
 ): Promise<{ ownerPrincipalId: string; sessionId: string | null }> => {
   const result = await client.query<Row>(
-    `select owner_principal_id, local_session_id
+    `select lm.owner_principal_id,source.local_session_id
        from logical_memories lm
        join users u on u.id=lm.owner_user_id
         and u.disabled_at is null and u.deleted_at is null
+       left join local_captured_session_logical_memories source
+         on source.logical_memory_id=lm.id
       where lm.id=$1 and lm.owner_user_id=$2 and lm.lifecycle='active'
         and lm.invalidated_at is null and lm.purge_completed_at is null
       limit 1`,
@@ -2971,7 +3186,7 @@ const invalidateAffectedGrants = async (
   }
 ): Promise<void> => {
   const affected = await client.query<Row>(
-    `update team_session_share_grants g
+    `update team_memory_share_grants g
         set lifecycle='unavailable', grant_version=grant_version+1, updated_at=now()
       where g.lifecycle='active' and (${input.whereSql})
       returning g.*`,
@@ -3963,9 +4178,9 @@ export const createSharedMemoryRepository = (
   };
 
   const sourceMaterialHashes = (input: {
+    source: Extract<SharedMemorySourceRef, { kind: "captured_session" }>;
     representation: SharedMemoryRepresentation;
     logicalMemoryId: string;
-    sourceRevision: number;
     sourceCursor: number;
     manifest: SharedSourceArtifactV1["manifest"];
     items: SharedMemoryCanonicalSourceItemDto[];
@@ -3975,11 +4190,9 @@ export const createSharedMemoryRepository = (
   > => {
     const manifestHash = crossIdentitySyncDigest(input.manifest);
     const sourceContentHash = crossIdentitySyncDigest(input.items);
-    const sourceHash = crossIdentitySyncDigest({
-      kind: "shared_memory_authoritative_source",
+    const sourceHash = capturedSessionSourceFrontierHash({
+      source: input.source,
       representation: input.representation,
-      logicalMemoryId: input.logicalMemoryId,
-      sourceRevision: input.sourceRevision,
       sourceCursor: input.sourceCursor,
       manifestHash,
       sourceContentHash
@@ -4059,7 +4272,7 @@ export const createSharedMemoryRepository = (
     const previewBase: Omit<SharedSourcePreviewV1, "previewHash"> = {
       schemaVersion: SHARED_SOURCE_PREVIEW_SCHEMA_VERSION,
       previewId: "",
-      ...(input.artifact.source ? { source: input.artifact.source } : {}),
+      source: input.artifact.source,
       artifactId: input.artifact.artifactId,
       logicalMemoryId: input.artifact.logicalMemoryId,
       representation: input.artifact.representation,
@@ -5487,9 +5700,13 @@ export const createSharedMemoryRepository = (
       );
     }
     const hashes = sourceMaterialHashes({
+      source: {
+        kind: "captured_session",
+        sessionId: input.localSessionId,
+        logicalMemoryId: input.logicalMemoryId
+      },
       representation: input.representation,
       logicalMemoryId: input.logicalMemoryId,
-      sourceRevision: input.sourceRevision,
       sourceCursor: input.sourceRevision,
       manifest,
       items
@@ -5511,9 +5728,18 @@ export const createSharedMemoryRepository = (
       previewBody: SharedSourcePreviewV1;
     }
   ): Promise<PersistedPreviewLoadResult> => {
+    const source = sharedMemorySourceRefSchema.parse(input.artifactBody.source);
+    const exactSourceRevision = await ensureLogicalMemorySourceRevision(
+      client,
+      {
+        source,
+        ownerPrincipalId: input.context.ownerPrincipalId,
+        revision: input.context.sourceRevision
+      }
+    );
     const artifactResult = await client.query<Row>(
       `insert into shared_source_artifacts (
-         id,logical_memory_id,remote_replica_id,sync_relationship_id,
+         id,logical_memory_id,source_revision_id,remote_replica_id,sync_relationship_id,
          owner_user_id,owner_principal_id,team_id,team_workspace_id,
          representation,artifact_schema_version,source_revision,source_cursor,
          package_sequence,source_hash,manifest_hash,artifact_hash,
@@ -5526,12 +5752,11 @@ export const createSharedMemoryRepository = (
          classifier_version,classifier_hash,
          source_deployment_identity_id,remote_user_identity_id,
          device_credential_id,device_provenance_hash,
-         source_kind,source_session_id,source_note_id,source_memory_event_id,
          source_capabilities,activation_representation
        ) values (
          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
          $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,
-         $34,$35,$36,$37,$38,$39,$40,$41
+         $34,$35,$36,$37,$38
        )
        on conflict (artifact_hash) do update
          set invalidated_at=null,invalidation_reason=null
@@ -5539,6 +5764,7 @@ export const createSharedMemoryRepository = (
       [
         input.artifactBody.artifactId,
         input.context.logicalMemoryId,
+        exactSourceRevision.id,
         input.context.remoteReplicaId,
         input.context.syncRelationshipId,
         input.context.ownerUserId,
@@ -5572,22 +5798,18 @@ export const createSharedMemoryRepository = (
         input.context.remoteUserIdentityId,
         input.context.deviceCredentialId,
         input.context.deviceProvenanceHash,
-        input.artifactBody.source?.kind ?? "captured_session",
-        input.artifactBody.source?.kind === "captured_session"
-          ? input.artifactBody.source.sessionId
-          : null,
-        input.artifactBody.source?.kind === "personal_note"
-          ? input.artifactBody.source.noteId
-          : null,
-        input.artifactBody.source?.kind === "personal_note"
-          ? input.artifactBody.source.memoryEventId
-          : null,
         input.context.sourceCapabilities,
         input.context.activationRepresentation
       ]
     );
     const artifactRow: Row = {
       ...artifactResult.rows[0]!,
+      source_kind: source.kind,
+      source_session_id:
+        source.kind === "captured_session" ? source.sessionId : null,
+      source_note_id: source.kind === "personal_note" ? source.noteId : null,
+      source_memory_event_id:
+        source.kind === "personal_note" ? source.memoryEventId : null,
       maximum_fidelity: input.context.maximumFidelity,
       include_curated_memory: input.context.includeCuratedMemory
     };
@@ -5629,14 +5851,13 @@ export const createSharedMemoryRepository = (
     });
     const previewResult = await client.query<Row>(
       `insert into shared_source_previews (
-         id,source_artifact_id,logical_memory_id,remote_replica_id,
+         id,source_artifact_id,logical_memory_id,source_revision_id,remote_replica_id,
          owner_user_id,owner_principal_id,team_id,team_workspace_id,
          representation,preview_schema_version,preview_revision,
          preview_hash,source_revision,source_hash,source_content_hash,
-         source_kind,source_session_id,source_note_id,source_memory_event_id,
          source_capabilities,activation_representation,mode
        ) values (
-         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
        )
        on conflict (preview_hash) do update
          set invalidated_at=null,invalidation_reason=null
@@ -5645,6 +5866,7 @@ export const createSharedMemoryRepository = (
         input.previewBody.previewId,
         input.artifactBody.artifactId,
         input.context.logicalMemoryId,
+        exactSourceRevision.id,
         input.context.remoteReplicaId,
         input.context.ownerUserId,
         input.context.ownerPrincipalId,
@@ -5657,16 +5879,6 @@ export const createSharedMemoryRepository = (
         input.context.sourceRevision,
         input.previewBody.binding.sourceHash,
         input.previewBody.sourceContentHash,
-        input.previewBody.source?.kind ?? "captured_session",
-        input.previewBody.source?.kind === "captured_session"
-          ? input.previewBody.source.sessionId
-          : null,
-        input.previewBody.source?.kind === "personal_note"
-          ? input.previewBody.source.noteId
-          : null,
-        input.previewBody.source?.kind === "personal_note"
-          ? input.previewBody.source.memoryEventId
-          : null,
         input.context.sourceCapabilities,
         input.context.activationRepresentation,
         input.context.mode
@@ -5737,6 +5949,7 @@ export const createSharedMemoryRepository = (
           sp.id as preview_id,
           sp.source_artifact_id as preview_source_artifact_id,
           sp.logical_memory_id as preview_logical_memory_id,
+          sp.source_revision_id as preview_source_revision_id,
           sp.remote_replica_id as preview_remote_replica_id,
           sp.owner_user_id as preview_owner_user_id,
           sp.owner_principal_id as preview_owner_principal_id,
@@ -5749,16 +5962,17 @@ export const createSharedMemoryRepository = (
           sp.source_revision as preview_source_revision,
           sp.source_hash as preview_source_hash,
           sp.source_content_hash as preview_source_content_hash,
-          sp.source_kind as preview_source_kind,
-          sp.source_session_id as preview_source_session_id,
-          sp.source_note_id as preview_source_note_id,
-          sp.source_memory_event_id as preview_source_memory_event_id,
+          binding.source_kind as preview_source_kind,
+          binding.source_session_id as preview_source_session_id,
+          binding.source_note_id as preview_source_note_id,
+          binding.source_memory_event_id as preview_source_memory_event_id,
           sp.source_capabilities as preview_source_capabilities,
           sp.activation_representation as preview_activation_representation,
           sp.mode as preview_mode,
           sp.created_at as preview_created_at,
           sa.id as artifact_id,
           sa.logical_memory_id as artifact_logical_memory_id,
+          sa.source_revision_id as artifact_source_revision_id,
           sa.remote_replica_id as artifact_remote_replica_id,
           sa.sync_relationship_id,
           sa.owner_user_id as artifact_owner_user_id,
@@ -5791,15 +6005,18 @@ export const createSharedMemoryRepository = (
           sa.remote_user_identity_id,
           sa.device_credential_id,
           sa.device_provenance_hash,
-          sa.source_kind as artifact_source_kind,
-          sa.source_session_id as artifact_source_session_id,
-          sa.source_note_id as artifact_source_note_id,
-          sa.source_memory_event_id as artifact_source_memory_event_id,
+          binding.source_kind as artifact_source_kind,
+          binding.source_session_id as artifact_source_session_id,
+          binding.source_note_id as artifact_source_note_id,
+          binding.source_memory_event_id as artifact_source_memory_event_id,
           sa.source_capabilities as artifact_source_capabilities,
           sa.activation_representation as artifact_activation_representation,
           sa.created_at as artifact_created_at
-         from shared_source_previews sp
-         join shared_source_artifacts sa on sa.id=sp.source_artifact_id
+         from shared_source_preview_records sp
+         join shared_source_artifact_records sa on sa.id=sp.source_artifact_id
+         join logical_memory_source_revision_bindings binding
+           on binding.source_revision_id=sp.source_revision_id
+          and binding.source_revision_id=sa.source_revision_id
         where sp.id=$1 and sp.preview_hash=$2
           and sp.invalidated_at is null
           and sa.invalidated_at is null
@@ -5813,6 +6030,7 @@ export const createSharedMemoryRepository = (
     const artifactRow: Row = {
       id: row.artifact_id,
       logical_memory_id: row.artifact_logical_memory_id,
+      source_revision_id: row.artifact_source_revision_id,
       remote_replica_id: row.artifact_remote_replica_id,
       sync_relationship_id: row.sync_relationship_id,
       owner_user_id: row.artifact_owner_user_id,
@@ -5991,6 +6209,7 @@ export const createSharedMemoryRepository = (
       {
         id: row.preview_id,
         logical_memory_id: row.preview_logical_memory_id,
+        source_revision_id: row.preview_source_revision_id,
         remote_replica_id: row.preview_remote_replica_id,
         owner_user_id: row.preview_owner_user_id,
         owner_principal_id: row.preview_owner_principal_id,
@@ -6065,8 +6284,8 @@ export const createSharedMemoryRepository = (
     const result = await client.query<Row>(
       `select row_to_json(preview) as preview_row,
               row_to_json(artifact) as artifact_row
-         from shared_source_previews preview
-         join shared_source_artifacts artifact
+         from shared_source_preview_records preview
+         join shared_source_artifact_records artifact
            on artifact.id=preview.source_artifact_id
         where preview.id=$1 and preview.preview_hash=$2
           and preview.invalidated_at is null
@@ -6162,7 +6381,7 @@ export const createSharedMemoryRepository = (
     deviceProvenanceHash: string;
   }> => {
     const result = await client.query<Row>(
-      `select lm.local_session_id,
+      `select local_memory.local_session_id,
               mr.id as local_replica_id,
               sr.remote_replica_id as remote_sync_replica_id,
               sr.target_processing_cursor,
@@ -6176,6 +6395,9 @@ export const createSharedMemoryRepository = (
               credential.verifier_hash,credential.public_key_jwk,
               sr.id as sync_relationship_id
          from logical_memories lm
+         join local_captured_session_logical_memories local_memory
+           on local_memory.logical_memory_id=lm.id
+          and local_memory.owner_user_id=$3
          join memory_replicas mr
            on mr.logical_memory_id=lm.id
           and mr.id=$2
@@ -6268,7 +6490,7 @@ export const createSharedMemoryRepository = (
     );
     if (input.internalPendingShareId) {
       const pending = await client.query(
-        `select 1 from pending_share_operations
+        `select 1 from pending_share_operation_records
           where id=$1 and owner_user_id=$2 and logical_memory_id=$3
             and team_id=$4 and team_workspace_id=$5
             and coalesce(replacement_representation,representation)=$6
@@ -6305,8 +6527,8 @@ export const createSharedMemoryRepository = (
       const continuousAuthority = await client.query<{ allowed: boolean }>(
         `select exists (
            select 1
-             from team_session_share_grants g
-             join source_owner_representation_consents consent
+             from team_memory_share_grant_records g
+             join source_owner_representation_consent_records consent
                on consent.id=g.consent_id
               and consent.mode='continuous'
               and consent.state='active'
@@ -6322,7 +6544,7 @@ export const createSharedMemoryRepository = (
               and (
                 g.lifecycle='active'
                 or (g.lifecycle='unavailable' and exists (
-                  select 1 from pending_share_operations pending
+                  select 1 from pending_share_operation_records pending
                    where pending.grant_id=g.id
                      and pending.state='needs_attention'
                      and pending.redacted_failure_code='approval_content_remediation'
@@ -6433,7 +6655,7 @@ export const createSharedMemoryRepository = (
     }
     const rowResult = await client.query<Row>(
       `select lm.id as logical_memory_id,lm.owner_user_id,lm.owner_principal_id,
-              lm.local_session_id,lm.latest_source_revision,
+              local_memory.local_session_id,lm.latest_source_revision,
               mr.id as remote_replica_id,mr.latest_revision,
               mr.representation_policy_revision as replica_representation_policy_revision,
               mr.content_policy_version as replica_content_policy_version,
@@ -6447,6 +6669,9 @@ export const createSharedMemoryRepository = (
               credential.credential_version,credential.verifier_kind,
               credential.verifier_hash,credential.public_key_jwk
          from logical_memories lm
+         join local_captured_session_logical_memories local_memory
+           on local_memory.logical_memory_id=lm.id
+          and local_memory.owner_user_id=$3
          join memory_replicas mr
            on mr.logical_memory_id=lm.id
           and mr.id=$2
@@ -6684,9 +6909,11 @@ export const createSharedMemoryRepository = (
     }
     return withTransaction(pool, async (client) => {
       const pendingResult = await client.query<Row>(
-        `select p.*, candidate.candidate_manifest as reviewed_candidate_manifest,
+        `select p.*,pending_binding.source_kind,pending_binding.source_session_id,
+                pending_binding.source_note_id,pending_binding.source_memory_event_id,
+                candidate_binding.source_memory_event_id as candidate_source_memory_event_id,
+                candidate.candidate_manifest as reviewed_candidate_manifest,
                 candidate.candidate_manifest_hash as reviewed_candidate_manifest_hash,
-                candidate.source_memory_event_id as candidate_source_memory_event_id,
                 candidate.item_count as candidate_item_count,
                 candidate.byte_count as candidate_byte_count,
                 candidate.source_hash as candidate_source_hash,
@@ -6697,11 +6924,17 @@ export const createSharedMemoryRepository = (
                 candidate.classifier_version as candidate_classifier_version,
                 candidate.classifier_hash as candidate_classifier_hash
            from pending_share_operations p
+           join logical_memory_source_revision_bindings pending_binding
+             on pending_binding.source_revision_id=coalesce(
+               p.replacement_source_revision_id,p.source_revision_id
+             )
            join shared_memory_candidate_previews candidate
              on candidate.id=coalesce(p.replacement_preview_id,p.preview_id)
             and candidate.preview_hash=coalesce(
               p.replacement_preview_hash,p.preview_hash
             )
+           join logical_memory_source_revision_bindings candidate_binding
+             on candidate_binding.source_revision_id=candidate.source_revision_id
           where p.id=$1 and p.owner_user_id=$2 and p.state in ('preparing','needs_attention')
             and p.revoked_at is null
           for update of p,candidate`,
@@ -6777,18 +7010,25 @@ export const createSharedMemoryRepository = (
           "Verified Personal Note device credential is unavailable"
         );
       }
-      const deploymentResult = await client.query<Row>(
+      const insertedDeployment = await client.query<Row>(
         `insert into deployment_identities
            (protocol_deployment_id,locality,profile)
          values ($1,'remote','local_personal')
-         on conflict (protocol_deployment_id) do update
-           set profile='local_personal',updated_at=now()
-         where deployment_identities.locality='remote'
-           and deployment_identities.disabled_at is null
+         on conflict (protocol_deployment_id) do nothing
          returning id`,
         [input.sourceDeploymentProtocolId]
       );
-      const deployment = deploymentResult.rows[0];
+      const existingDeployment = insertedDeployment.rows[0]
+        ? null
+        : await client.query<Row>(
+            `select id
+               from deployment_identities
+              where protocol_deployment_id=$1 and disabled_at is null
+              for update`,
+            [input.sourceDeploymentProtocolId]
+          );
+      const deployment =
+        insertedDeployment.rows[0] ?? existingDeployment?.rows[0];
       if (!deployment) {
         throw new SharedMemoryConflictError(
           "Personal Note source deployment identity changed"
@@ -6851,9 +7091,9 @@ export const createSharedMemoryRepository = (
       const logicalResult = await client.query<Row>(
         `insert into logical_memories
            (id,protocol_logical_id,owner_user_id,owner_principal_id,
-            origin_deployment_identity_id,source_boundary,origin_source_id,
-            local_session_id,logical_key,latest_source_revision)
-         values ($1,$1,$2,$2,$3,'personal_note',$4,null,$5,$6)
+            origin_deployment_identity_id,source_kind,logical_key,
+            latest_source_revision)
+         values ($1,$1,$2,$2,$3,'personal_note',$4,$5)
          on conflict (id) do update
            set latest_source_revision=excluded.latest_source_revision,
                updated_at=case
@@ -6866,9 +7106,7 @@ export const createSharedMemoryRepository = (
            and logical_memories.owner_principal_id=excluded.owner_principal_id
            and logical_memories.origin_deployment_identity_id=
              excluded.origin_deployment_identity_id
-           and logical_memories.source_boundary=excluded.source_boundary
-           and logical_memories.origin_source_id=excluded.origin_source_id
-           and logical_memories.local_session_id is null
+           and logical_memories.source_kind=excluded.source_kind
            and logical_memories.logical_key=excluded.logical_key
            and logical_memories.latest_source_revision <=
              excluded.latest_source_revision
@@ -6877,7 +7115,6 @@ export const createSharedMemoryRepository = (
           source.logicalMemoryId,
           actor.userId,
           deploymentIdentityId,
-          source.noteId,
           logicalKey,
           source.noteRevision
         ]
@@ -6888,9 +7125,7 @@ export const createSharedMemoryRepository = (
         logical.owner_user_id !== actor.userId ||
         logical.owner_principal_id !== actor.userId ||
         logical.origin_deployment_identity_id !== deploymentIdentityId ||
-        logical.source_boundary !== "personal_note" ||
-        logical.origin_source_id !== source.noteId ||
-        logical.local_session_id !== null ||
+        logical.source_kind !== "personal_note" ||
         numberValue(logical.latest_source_revision) !== source.noteRevision
       ) {
         throw new SharedMemoryConflictError(
@@ -7170,7 +7405,9 @@ export const createSharedMemoryRepository = (
          from logical_memories lm
          join teams t on t.id=$2
          join team_workspaces tw on tw.id=$3 and tw.team_id=t.id
-         left join sessions s on s.id=lm.local_session_id
+         left join local_captured_session_logical_memories local_memory
+           on local_memory.logical_memory_id=lm.id
+         left join sessions s on s.id=local_memory.local_session_id
         where lm.id=$1 and lm.owner_principal_id=$4
         limit 1`,
       [
@@ -7496,7 +7733,7 @@ export const createSharedMemoryRepository = (
     );
     if (input.internalPendingShareId) {
       const pending = await client.query(
-        `select 1 from pending_share_operations
+        `select 1 from pending_share_operation_records
           where id=$1 and owner_user_id=$2 and logical_memory_id=$3
             and team_id=$4 and team_workspace_id=$5
             and state='preparing' and revoked_at is null
@@ -7685,9 +7922,7 @@ export const createSharedMemoryRepository = (
           );
           return [
             {
-              ...(authorized.grant.source
-                ? { source: authorized.grant.source }
-                : {}),
+              source: authorized.grant.source,
               candidateId: input.candidateId,
               shareGrantId: input.shareGrantId,
               sourceArtifactId: authorized.representation.sourceArtifactId,
@@ -7750,7 +7985,7 @@ export const createSharedMemoryRepository = (
       `select semantic.*,preview.remote_replica_id,
               g.id as share_grant_id,c.id as consent_id,g.grant_version
          from shared_source_semantic_previews semantic
-         join shared_source_previews preview
+         join shared_source_preview_records preview
            on preview.id=semantic.source_preview_id
           and preview.source_artifact_id=semantic.source_artifact_id
           and preview.preview_revision=semantic.source_preview_revision
@@ -7764,7 +7999,7 @@ export const createSharedMemoryRepository = (
           and preview.team_workspace_id=semantic.team_workspace_id
           and preview.representation=semantic.representation
           and preview.invalidated_at is null
-         join shared_source_artifacts artifact
+         join shared_source_artifact_records artifact
            on artifact.id=semantic.source_artifact_id
           and artifact.artifact_hash=semantic.source_artifact_hash
           and artifact.manifest_hash=semantic.source_manifest_hash
@@ -7777,7 +8012,7 @@ export const createSharedMemoryRepository = (
           and artifact.team_workspace_id=semantic.team_workspace_id
           and artifact.representation=semantic.representation
           and artifact.invalidated_at is null
-         join team_session_share_grants g
+         join team_memory_share_grant_records g
            on g.logical_memory_id=semantic.logical_memory_id
           and g.remote_replica_id is not distinct from preview.remote_replica_id
           and g.owner_user_id=semantic.owner_user_id
@@ -7788,7 +8023,7 @@ export const createSharedMemoryRepository = (
           and (
             g.lifecycle='active'
             or (g.lifecycle='unavailable' and exists (
-              select 1 from pending_share_operations pending
+              select 1 from pending_share_operation_records pending
                where pending.grant_id=g.id
                  and pending.owner_user_id=g.owner_user_id
                  and pending.consent_id=g.consent_id
@@ -7797,6 +8032,8 @@ export const createSharedMemoryRepository = (
                  and pending.revoked_at is null
             ))
           )
+         join team_memory_share_grants grant_lock
+           on grant_lock.id=g.id
          ${semanticPrivacyConsentJoinSql()}
          join users owner
            on owner.id=semantic.owner_user_id
@@ -7841,7 +8078,7 @@ export const createSharedMemoryRepository = (
           and semantic.status='pending'
           and ${cumulativeRepresentationAuthorizationSql("semantic.representation")}
         limit 1
-        ${lock ? "for update of semantic,g" : ""}`,
+        ${lock ? "for update of semantic,grant_lock" : ""}`,
       [semanticPreviewId, actor.userId]
     );
     const row = result.rows[0];
@@ -7998,7 +8235,8 @@ export const createSharedMemoryRepository = (
       ) ||
       payload.sanitizedContentHash !== record.sanitizedContentHash ||
       crossIdentitySyncDigest(validatedItems) !== record.sanitizedContentHash ||
-      payload.displayTitle !== sanitizedTeamDisplayTitle(validatedItems) ||
+      payload.displayTitle !==
+        sharedMemorySanitizedDisplayTitle(validatedItems) ||
       payloadBindingHash !== record.payloadBindingHash
     ) {
       throw new SharedMemoryConflictError(
@@ -8069,7 +8307,7 @@ export const createSharedMemoryRepository = (
     stallThresholdMs: number
   ): Promise<LoadedPendingShareProcessingContext | null> => {
     const pendingResult = await pool.query<Row>(
-      `select p.*,lm.local_session_id,lm.latest_source_revision,
+      `select p.*,local_memory.local_session_id,lm.latest_source_revision,
                 candidate.candidate_manifest,candidate.candidate_manifest_hash,
                 candidate.source_memory_event_id as candidate_source_memory_event_id,
                 candidate.item_count as candidate_item_count,
@@ -8079,10 +8317,13 @@ export const createSharedMemoryRepository = (
                 note_preview.preview_hash as note_preview_hash,
                 mr.id as remote_replica_id,mr.latest_revision,
                 sr.target_processing_cursor,sr.state as sync_state
-           from pending_share_operations p
+           from pending_share_operation_records p
            join logical_memories lm
              on lm.id=p.logical_memory_id and lm.owner_user_id=p.owner_user_id
-           join shared_memory_candidate_previews candidate
+           left join local_captured_session_logical_memories local_memory
+             on local_memory.logical_memory_id=lm.id
+            and local_memory.owner_user_id=p.owner_user_id
+           join shared_memory_candidate_preview_records candidate
              on candidate.id=coalesce(p.replacement_preview_id,p.preview_id)
             and candidate.preview_hash=coalesce(p.replacement_preview_hash,p.preview_hash)
             and candidate.source_revision=coalesce(
@@ -8094,7 +8335,7 @@ export const createSharedMemoryRepository = (
             and mr.replica_role='target'
             and mr.encryption_scope='owner_private_replica'
             and mr.lifecycle='active' and mr.disabled_at is null
-           left join shared_source_artifacts note_artifact
+           left join shared_source_artifact_records note_artifact
              on p.source_kind='personal_note'
             and note_artifact.logical_memory_id=p.logical_memory_id
             and note_artifact.owner_user_id=p.owner_user_id
@@ -8111,7 +8352,7 @@ export const createSharedMemoryRepository = (
               p.replacement_representation,p.representation
             )
             and note_artifact.invalidated_at is null
-           left join shared_source_previews note_preview
+           left join shared_source_preview_records note_preview
              on note_preview.source_artifact_id=note_artifact.id
             and note_preview.invalidated_at is null
            left join cross_identity_sync_relationships sr
@@ -8558,14 +8799,18 @@ export const createSharedMemoryRepository = (
     ) {
       return withTransaction(pool, async (client) => {
         const grantResult = await client.query<Row>(
-          `select * from team_session_share_grants
-            where id=$1 and owner_user_id=$2 and consent_id=$3
-              and logical_memory_id=$4 and team_id=$5
-              and team_workspace_id=$6 and source_kind='personal_note'
-              and source_note_id=$7 and mode='continuous'
-              and source_revision<$8 and lifecycle='active'
-              and revoked_at is null
-            for update`,
+          `select grant_row.*,binding.source_kind,binding.source_session_id,
+                  binding.source_note_id,binding.source_memory_event_id
+             from team_memory_share_grants grant_row
+             join logical_memory_source_revision_bindings binding
+               on binding.source_revision_id=grant_row.source_revision_id
+            where grant_row.id=$1 and grant_row.owner_user_id=$2 and grant_row.consent_id=$3
+              and grant_row.logical_memory_id=$4 and grant_row.team_id=$5
+              and grant_row.team_workspace_id=$6 and binding.source_kind='personal_note'
+              and binding.source_note_id=$7 and grant_row.mode='continuous'
+              and grant_row.source_revision<$8 and grant_row.lifecycle='active'
+              and grant_row.revoked_at is null
+            for update of grant_row`,
           [
             pending.grant_id,
             actor.userId,
@@ -8578,14 +8823,19 @@ export const createSharedMemoryRepository = (
           ]
         );
         const consentResult = await client.query<Row>(
-          `select * from source_owner_representation_consents
-            where id=$1 and logical_memory_id=$2 and team_id=$3
-              and team_workspace_id=$4 and source_kind='personal_note'
-              and source_note_id=$5 and mode='continuous' and state='active'
-              and maximum_authorized_source_revision is null
-              and revoked_at is null
-              and (expires_at is null or expires_at>now())
-            for update`,
+          `select consent.*,binding.source_kind,binding.source_session_id,
+                  binding.source_note_id,binding.source_memory_event_id
+             from source_owner_representation_consents consent
+             join logical_memory_source_revision_bindings binding
+               on binding.source_revision_id=consent.source_revision_id
+            where consent.id=$1 and consent.logical_memory_id=$2 and consent.team_id=$3
+              and consent.team_workspace_id=$4 and binding.source_kind='personal_note'
+              and binding.source_note_id=$5 and consent.mode='continuous'
+              and consent.state='active'
+              and consent.maximum_authorized_source_revision is null
+              and consent.revoked_at is null
+              and (consent.expires_at is null or consent.expires_at>now())
+            for update of consent`,
           [
             consentId,
             source.logicalMemoryId,
@@ -8752,14 +9002,16 @@ export const createSharedMemoryRepository = (
       }
       return withTransaction(pool, async (client) => {
         const current = await client.query<Row>(
-          `select g.id,g.grant_version,g.source_revision,g.source_note_id,
+          `select g.id,g.grant_version,g.source_revision,binding.source_note_id,
                   g.consent_id,g.team_id,g.team_workspace_id,g.logical_memory_id
-             from team_session_share_grants g
+             from team_memory_share_grants g
+             join logical_memory_source_revision_bindings binding
+               on binding.source_revision_id=g.source_revision_id
              join source_owner_representation_consents consent
                on consent.id=g.consent_id and consent.mode='continuous'
               and consent.state='active' and consent.revoked_at is null
               and (consent.expires_at is null or consent.expires_at>now())
-             join pending_share_operations pending
+             join pending_share_operation_records pending
                on pending.id=$1 and pending.grant_id=g.id
               and pending.replacement_authority_source='continuous_consent'
               and pending.replacement_consent_id=g.consent_id
@@ -8767,7 +9019,7 @@ export const createSharedMemoryRepository = (
               and pending.state=$3 and pending.operation_version=$4
               and pending.revoked_at is null
             where g.id=$5 and g.owner_user_id=$6 and g.lifecycle='active'
-              and g.source_kind='personal_note' and g.source_note_id=$7
+              and binding.source_kind='personal_note' and binding.source_note_id=$7
               and g.source_revision<$2 and g.revoked_at is null
             for update of g,consent,pending`,
           [
@@ -8813,8 +9065,8 @@ export const createSharedMemoryRepository = (
           [bundle.grant.id, stagedRepresentation.id]
         );
         const advancedGrant = await client.query<Row>(
-          `update team_session_share_grants
-              set source_revision=$2,source_memory_event_id=$3,
+          `update team_memory_share_grants
+              set source_revision=$2,source_revision_id=$3,
                   grant_version=grant_version+1,updated_at=now()
             where id=$1 and grant_version=$4 and source_revision<$2
               and lifecycle='active' and revoked_at is null
@@ -8822,7 +9074,7 @@ export const createSharedMemoryRepository = (
           [
             bundle.grant.id,
             source.noteRevision,
-            source.memoryEventId,
+            stagedRepresentation.sourceRevisionId,
             numberValue(grant.grant_version)
           ]
         );
@@ -8885,7 +9137,7 @@ export const createSharedMemoryRepository = (
           teamWorkspaceId: bundle.grant.teamWorkspaceId,
           shareGrantId: bundle.grant.id,
           logicalMemoryId: bundle.grant.logicalMemoryId,
-          resourceType: "team_session_share_grant",
+          resourceType: "team_memory_share_grant",
           resourceId: bundle.grant.id,
           actorPrincipalId: actor.userId
         });
@@ -8929,7 +9181,7 @@ export const createSharedMemoryRepository = (
         );
         if (!representationPublished.rows[0]) return false;
         const grantPublished = await client.query<Row>(
-          `update team_session_share_grants
+          `update team_memory_share_grants
                 set lifecycle='active',grant_version=grant_version+1,
                     updated_at=now()
               where id=$1 and consent_id=$2 and lifecycle='unavailable'
@@ -8964,7 +9216,7 @@ export const createSharedMemoryRepository = (
           teamWorkspaceId: bundle.grant.teamWorkspaceId,
           shareGrantId: bundle.grant.id,
           logicalMemoryId: bundle.grant.logicalMemoryId,
-          resourceType: "team_session_share_grant",
+          resourceType: "team_memory_share_grant",
           resourceId: bundle.grant.id,
           actorPrincipalId: actor.userId
         });
@@ -9172,7 +9424,7 @@ export const createSharedMemoryRepository = (
         `with candidates as (
              select o.id
                from pending_share_outbox o
-               join pending_share_operations p on p.id=o.pending_share_id
+               join pending_share_operation_records p on p.id=o.pending_share_id
               where p.state in ('preparing','needs_attention')
                 and p.revoked_at is null
                 and (
@@ -9206,14 +9458,14 @@ export const createSharedMemoryRepository = (
       `select g.*,p.id as pending_share_id,
                 p.owner_user_id as pending_owner_user_id,
                 p.operation_version as pending_operation_version
-           from pending_share_operations p
-           join team_session_share_grants g on g.id=p.grant_id
+           from pending_share_operation_records p
+           join team_memory_share_grant_records g on g.id=p.grant_id
           where p.state='needs_attention' and p.stage='activating'
             and p.redacted_failure_code='activation_failed'
             and p.revoked_at is null
             and g.lifecycle='unavailable' and g.revoked_at is null
             and exists (
-              select 1 from team_memory_representations r
+              select 1 from team_memory_representation_records r
                where r.share_grant_id=g.id and r.consent_id=g.consent_id
                  and r.state='pending' and r.invalidated_at is null
             )
@@ -9354,7 +9606,7 @@ export const createSharedMemoryRepository = (
           expiresAt: input.expiresAt ?? null
         });
         const existing = await client.query<Row>(
-          `select * from shared_memory_candidate_previews
+          `select * from shared_memory_candidate_preview_records
             where authority_source=$1 and authority_reference_id=$2
               and owner_user_id=$3
             order by created_at desc,id desc`,
@@ -9367,7 +9619,7 @@ export const createSharedMemoryRepository = (
           previewHash: stringValue(row.preview_hash),
           previewRevision: 1,
           logicalMemoryId: stringValue(row.logical_memory_id),
-          ...(sourceRefFromRow(row) ? { source: sourceRefFromRow(row) } : {}),
+          source: requiredSourceRefFromRow(row),
           sourceCapabilities: representationArrayValue(row.source_capabilities),
           activationRepresentation: representationValue(
             row.activation_representation
@@ -9516,21 +9768,47 @@ export const createSharedMemoryRepository = (
           classifierHash,
           previewExpiresAt: previewExpiresAt.toISOString()
         });
+        if (!source) {
+          throw new SharedMemoryConflictError(
+            "Shared Memory source metadata is required"
+          );
+        }
+        const sourceOwner = await client.query<{ owner_principal_id: string }>(
+          `select owner_principal_id
+             from logical_memories
+            where id=$1 and owner_user_id=$2 and source_kind=$3
+              and lifecycle='active' and invalidated_at is null
+              and purge_completed_at is null
+            limit 1`,
+          [source.logicalMemoryId, actor.userId, source.kind]
+        );
+        if (!sourceOwner.rows[0]) {
+          throw new SharedMemoryAuthorizationError(
+            "Shared Memory source ownership is unavailable"
+          );
+        }
+        const exactSourceRevision = await ensureLogicalMemorySourceRevision(
+          client,
+          {
+            source,
+            ownerPrincipalId: sourceOwner.rows[0].owner_principal_id,
+            revision: input.sourceRevision
+          }
+        );
         const inserted = await client.query<Row>(
           `insert into shared_memory_candidate_previews
              (id,preview_hash,preview_revision,authority_source,authority_reference_id,
-              owner_user_id,logical_memory_id,team_id,team_workspace_id,
+              owner_user_id,logical_memory_id,source_revision_id,team_id,team_workspace_id,
               representation,maximum_fidelity,include_curated_memory,mode,source_revision,
               source_hash,redacted_content_hash,item_count,byte_count,
               excluded_item_count,candidate_manifest,candidate_manifest_hash,
               representation_policy_revision,representation_policy_hash,
               content_policy_version,content_policy_hash,classifier_version,
               classifier_hash,share_expires_at,expires_at,created_at,
-              source_kind,source_session_id,source_note_id,source_memory_event_id,
               source_capabilities,activation_representation)
-           values ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$15,$16,
-                   $17,$18::jsonb,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,
-                   $29,$30,$31,$32,$33,$34)
+           values ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$16,$17,
+                   $18,$19::jsonb,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,
+                   $30,$31)
            returning *`,
           [
             previewId,
@@ -9539,6 +9817,7 @@ export const createSharedMemoryRepository = (
             input.authority.referenceId,
             actor.userId,
             input.logicalMemoryId,
+            exactSourceRevision.id,
             input.teamId,
             input.teamWorkspaceId,
             input.activationRepresentation,
@@ -9561,15 +9840,22 @@ export const createSharedMemoryRepository = (
             input.expiresAt ?? null,
             previewExpiresAt,
             createdAt,
-            source?.kind ?? "captured_session",
-            source?.kind === "captured_session" ? source.sessionId : null,
-            source?.kind === "personal_note" ? source.noteId : null,
-            source?.kind === "personal_note" ? source.memoryEventId : null,
             input.sourceCapabilities,
             input.activationRepresentation
           ]
         );
-        return inserted.rows[0] ? mapCandidate(inserted.rows[0]) : null;
+        return inserted.rows[0]
+          ? mapCandidate({
+              ...inserted.rows[0],
+              source_kind: source.kind,
+              source_session_id:
+                source.kind === "captured_session" ? source.sessionId : null,
+              source_note_id:
+                source.kind === "personal_note" ? source.noteId : null,
+              source_memory_event_id:
+                source.kind === "personal_note" ? source.memoryEventId : null
+            })
+          : null;
       });
     },
     async createPendingShare(actor, input) {
@@ -9608,7 +9894,7 @@ export const createSharedMemoryRepository = (
           [`pending-share:${input.mutationId}`]
         );
         const existing = await client.query<Row>(
-          "select * from pending_share_operations where mutation_id=$1 limit 1",
+          "select * from pending_share_operation_records where mutation_id=$1 limit 1",
           [input.mutationId]
         );
         if (existing.rows[0]) {
@@ -9658,17 +9944,22 @@ export const createSharedMemoryRepository = (
           );
         }
         const preview = await client.query<Row>(
-          `select * from shared_memory_candidate_previews
-            where id=$1 and preview_hash=$2 and preview_revision=$3
-              and owner_user_id=$4 and logical_memory_id=$5
-              and team_id=$6 and team_workspace_id=$7
-              and maximum_fidelity=$8
-              and include_curated_memory=$9
-              and mode=$10
-              and share_expires_at is not distinct from $11::timestamptz
-              and authority_source=$12
-              and invalidated_at is null and expires_at>now()
-            for update`,
+          `select candidate.*,binding.source_kind,binding.source_session_id,
+                  binding.source_note_id,binding.source_memory_event_id
+             from shared_memory_candidate_previews candidate
+             join logical_memory_source_revision_bindings binding
+               on binding.source_revision_id=candidate.source_revision_id
+            where candidate.id=$1 and candidate.preview_hash=$2
+              and candidate.preview_revision=$3
+              and candidate.owner_user_id=$4 and candidate.logical_memory_id=$5
+              and candidate.team_id=$6 and candidate.team_workspace_id=$7
+              and candidate.maximum_fidelity=$8
+              and candidate.include_curated_memory=$9
+              and candidate.mode=$10
+              and candidate.share_expires_at is not distinct from $11::timestamptz
+              and candidate.authority_source=$12
+              and candidate.invalidated_at is null and candidate.expires_at>now()
+            for update of candidate`,
           [
             input.preview.previewId,
             input.preview.previewHash,
@@ -9721,11 +10012,10 @@ export const createSharedMemoryRepository = (
               authority_source,authority_reference_id,
               preview_id,preview_hash,preview_revision,owner_user_id,
               display_title,
-              logical_memory_id,team_id,team_workspace_id,representation,
+              logical_memory_id,source_revision_id,team_id,team_workspace_id,representation,
               maximum_fidelity,include_curated_memory,mode,source_revision,source_hash,
-              share_expires_at,source_kind,source_session_id,source_note_id,
-              source_memory_event_id,source_capabilities,activation_representation)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+              share_expires_at,source_capabilities,activation_representation)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
            returning *`,
           [
             pendingId,
@@ -9741,6 +10031,7 @@ export const createSharedMemoryRepository = (
             actor.userId,
             null,
             input.logicalMemoryId,
+            source.source_revision_id,
             input.teamId,
             input.teamWorkspaceId,
             representation,
@@ -9750,12 +10041,6 @@ export const createSharedMemoryRepository = (
             source.source_revision,
             source.source_hash,
             input.expiresAt ?? null,
-            sourceRef?.kind ?? "captured_session",
-            sourceRef?.kind === "captured_session" ? sourceRef.sessionId : null,
-            sourceRef?.kind === "personal_note" ? sourceRef.noteId : null,
-            sourceRef?.kind === "personal_note"
-              ? sourceRef.memoryEventId
-              : null,
             input.sourceCapabilities,
             input.activationRepresentation
           ]
@@ -9802,7 +10087,22 @@ export const createSharedMemoryRepository = (
           ownerUserId: actor.userId,
           pendingShareId: pendingId
         });
-        return mapPendingShare(inserted.rows[0]);
+        return mapPendingShare({
+          ...inserted.rows[0],
+          source_kind: previewSource?.kind,
+          source_session_id:
+            previewSource?.kind === "captured_session"
+              ? previewSource.sessionId
+              : null,
+          source_note_id:
+            previewSource?.kind === "personal_note"
+              ? previewSource.noteId
+              : null,
+          source_memory_event_id:
+            previewSource?.kind === "personal_note"
+              ? previewSource.memoryEventId
+              : null
+        });
       });
     },
     async createPendingFidelityChange(actor, input) {
@@ -9832,7 +10132,7 @@ export const createSharedMemoryRepository = (
                   preview.source_memory_event_id as effective_source_memory_event_id,
                   preview.source_revision as effective_source_revision
              from pending_share_operations p
-             join shared_memory_candidate_previews preview
+             join shared_memory_candidate_preview_records preview
                on preview.id=coalesce(p.replacement_preview_id,p.preview_id)
             where p.replacement_mutation_id=$1 limit 1`,
           [input.mutationId]
@@ -9848,10 +10148,15 @@ export const createSharedMemoryRepository = (
           return mapPendingShare(replay.rows[0]);
         }
         const grantResult = await client.query<Row>(
-          `select * from team_session_share_grants
-            where id=$1 and owner_user_id=$2 and logical_memory_id=$3
-              and team_id=$4 and team_workspace_id=$5 and lifecycle='active'
-            for update`,
+          `select grant_row.*,binding.source_kind,binding.source_session_id,
+                  binding.source_note_id,binding.source_memory_event_id
+             from team_memory_share_grants grant_row
+             join logical_memory_source_revision_bindings binding
+               on binding.source_revision_id=grant_row.source_revision_id
+            where grant_row.id=$1 and grant_row.owner_user_id=$2
+              and grant_row.logical_memory_id=$3 and grant_row.team_id=$4
+              and grant_row.team_workspace_id=$5 and grant_row.lifecycle='active'
+            for update of grant_row`,
           [
             input.shareGrantId,
             actor.userId,
@@ -9918,17 +10223,20 @@ export const createSharedMemoryRepository = (
           });
         }
         const previewResult = await client.query<Row>(
-          `select * from shared_memory_candidate_previews
-            where id=$1 and preview_hash=$2 and preview_revision=$3
-              and owner_user_id=$4 and logical_memory_id=$5
-              and team_id=$6 and team_workspace_id=$7
-              and maximum_fidelity=$8
-              and include_curated_memory=$9
-              and mode=$10
-              and share_expires_at is not distinct from $11::timestamptz
-              and authority_source=$12
-              and invalidated_at is null and expires_at>now()
-            for update`,
+          `select preview.*,binding.source_kind,binding.source_session_id,
+                  binding.source_note_id,binding.source_memory_event_id
+             from shared_memory_candidate_previews preview
+             join logical_memory_source_revision_bindings binding
+               on binding.source_revision_id=preview.source_revision_id
+            where preview.id=$1 and preview.preview_hash=$2
+              and preview.preview_revision=$3 and preview.owner_user_id=$4
+              and preview.logical_memory_id=$5 and preview.team_id=$6
+              and preview.team_workspace_id=$7 and preview.maximum_fidelity=$8
+              and preview.include_curated_memory=$9 and preview.mode=$10
+              and preview.share_expires_at is not distinct from $11::timestamptz
+              and preview.authority_source=$12
+              and preview.invalidated_at is null and preview.expires_at>now()
+            for update of preview`,
           [
             input.preview.previewId,
             input.preview.previewHash,
@@ -9985,6 +10293,7 @@ export const createSharedMemoryRepository = (
                   replacement_maximum_fidelity=$11,
                   replacement_include_curated_memory=$12,
                   replacement_mode=$13,replacement_source_revision=$14,
+                  replacement_source_revision_id=$20,
                   replacement_source_hash=$15,replacement_expires_at=$16,
                   replacement_expected_grant_version=$17,
                   state='preparing',stage='accepted',workspace_access_state='active',
@@ -10017,7 +10326,8 @@ export const createSharedMemoryRepository = (
             input.expiresAt ?? null,
             input.expectedGrantVersion,
             actor.userId,
-            internalContinuousAuthority
+            internalContinuousAuthority,
+            preview.source_revision_id
           ]
         );
         const pending = pendingResult.rows[0];
@@ -10100,8 +10410,8 @@ export const createSharedMemoryRepository = (
       const authorization = await pool.query<Row>(
         `select g.id as grant_id,g.grant_version,g.team_id,
                 g.team_workspace_id,g.consent_id
-           from team_session_share_grants g
-           join source_owner_representation_consents consent
+           from team_memory_share_grant_records g
+           join source_owner_representation_consent_records consent
              on consent.id=g.consent_id
             and consent.mode='continuous' and consent.state='active'
             and consent.revoked_at is null
@@ -10208,7 +10518,7 @@ export const createSharedMemoryRepository = (
                   preview.source_memory_event_id as effective_source_memory_event_id,
                   preview.source_revision as effective_source_revision
              from pending_share_operations p
-             join shared_memory_candidate_previews preview
+             join shared_memory_candidate_preview_records preview
                on preview.id=coalesce(p.replacement_preview_id,p.preview_id)
             where p.id=$1 for update of p`,
           [input.pendingShareId]
@@ -10286,7 +10596,7 @@ export const createSharedMemoryRepository = (
           }
           const activeAuthority = await client.query<Row>(
             `select g.consent_id,c.mode,c.state as consent_state
-               from team_session_share_grants g
+               from team_memory_share_grants g
                join source_owner_representation_consents c on c.id=g.consent_id
               where g.id=$1 and g.owner_user_id=$2 and g.lifecycle='active'
                 and g.revoked_at is null and c.revoked_at is null
@@ -10447,6 +10757,9 @@ export const createSharedMemoryRepository = (
                     lm.latest_source_revision,mr.latest_revision,
                     sr.target_processing_cursor
                from logical_memories lm
+               join local_captured_session_logical_memories local_memory
+                 on local_memory.logical_memory_id=lm.id
+                and local_memory.owner_user_id=$3
                join memory_replicas mr
                  on mr.id=$2 and mr.logical_memory_id=lm.id
                 and mr.owner_user_id=$3
@@ -10465,7 +10778,7 @@ export const createSharedMemoryRepository = (
                 and credential.revoked_at is null
                 and (credential.expires_at is null or credential.expires_at>now())
               where lm.id=$1 and lm.owner_user_id=$3
-                and lm.owner_principal_id=$4 and lm.local_session_id is not null
+                and lm.owner_principal_id=$4
                 and sr.target_processing_cursor=lm.latest_source_revision
                 and sr.target_processing_cursor=mr.latest_revision
               limit 1`,
@@ -10562,12 +10875,12 @@ export const createSharedMemoryRepository = (
           const review = await loadPreviewReviewContext(client, actor, input);
           const conflicts = await client.query<{ conflicting: boolean }>(
             `select exists (
-               select 1 from team_session_share_grants
+               select 1 from team_memory_share_grant_records
                 where logical_grant_id=$1
                   and (owner_user_id<>$2 or logical_memory_id<>$3
                     or team_id<>$4 or team_workspace_id<>$5 or consent_id<>$6)
                union all
-               select 1 from team_session_share_grants
+               select 1 from team_memory_share_grant_records
                 where logical_memory_id=$3 and team_workspace_id=$5
                   and logical_grant_id<>$1
              ) as conflicting`,
@@ -10610,7 +10923,7 @@ export const createSharedMemoryRepository = (
           );
           const result = await client.query<Row>(
             `select preview.*,team.name as team_name,workspace.name as workspace_name
-               from shared_memory_candidate_previews preview
+               from shared_memory_candidate_preview_records preview
                join teams team on team.id=preview.team_id
                join team_workspaces workspace
                  on workspace.id=preview.team_workspace_id
@@ -10677,7 +10990,7 @@ export const createSharedMemoryRepository = (
           const personalNoteCandidate = await client.query<Row>(
             `select preview.*,team.name as team_name,
                     workspace.name as workspace_name
-               from shared_memory_candidate_previews preview
+               from shared_memory_candidate_preview_records preview
                join teams team on team.id=preview.team_id
                join team_workspaces workspace
                  on workspace.id=preview.team_workspace_id
@@ -10747,7 +11060,7 @@ export const createSharedMemoryRepository = (
               })()
             : await loadPreviewReviewContext(client, actor, input);
           const grantResult = await client.query<Row>(
-            `select * from team_session_share_grants
+            `select * from team_memory_share_grant_records
               where id=$1 and owner_user_id=$2 and logical_memory_id=$3
                 and team_id=$4 and team_workspace_id=$5
                 and grant_version=$6 and lifecycle in ('active','revoked')
@@ -10822,11 +11135,14 @@ export const createSharedMemoryRepository = (
                       case when g.source_kind='personal_note'
                         then 'Personal Note' else 'Captured Session' end
                     ) as source_title
-               from team_session_share_grants g
+               from team_memory_share_grant_records g
                join teams t on t.id=g.team_id
                join team_workspaces tw on tw.id=g.team_workspace_id and tw.team_id=t.id
                left join logical_memories lm on lm.id=g.logical_memory_id
-               left join sessions s on s.id=lm.local_session_id
+               left join local_captured_session_logical_memories local_memory
+                 on local_memory.logical_memory_id=lm.id
+                and local_memory.owner_user_id=g.owner_user_id
+               left join sessions s on s.id=local_memory.local_session_id
               where g.id=$1 and g.owner_user_id=$2
                 and g.team_id=$3 and g.team_workspace_id=$4
                 and g.grant_version=$5 and g.lifecycle='active'
@@ -11312,7 +11628,7 @@ export const createSharedMemoryRepository = (
         }
         if (input.internalPendingShareId) {
           const pending = await client.query(
-            `select 1 from pending_share_operations
+            `select 1 from pending_share_operation_records
               where id=$1 and owner_user_id=$2 and logical_memory_id=$3
                 and team_id=$4 and team_workspace_id=$5
                 and coalesce(replacement_consent_id,consent_id)=$6
@@ -11431,7 +11747,12 @@ export const createSharedMemoryRepository = (
           );
         }
         const existing = await client.query(
-          "select * from source_owner_representation_consents where id=$1 for update",
+          `select consent.*,binding.source_kind,binding.source_session_id,
+                  binding.source_note_id,binding.source_memory_event_id
+             from source_owner_representation_consents consent
+             join logical_memory_source_revision_bindings binding
+               on binding.source_revision_id=consent.source_revision_id
+            where consent.id=$1 for update of consent`,
           [input.consentId]
         );
         if (existing.rows[0]) {
@@ -11452,7 +11773,7 @@ export const createSharedMemoryRepository = (
         }
         const inserted = await client.query(
           `insert into source_owner_representation_consents (
-           id,preview_id,logical_memory_id,remote_replica_id,source_owner_principal_id,
+           id,preview_id,logical_memory_id,source_revision_id,remote_replica_id,source_owner_principal_id,
            team_id,team_workspace_id,source_owner_policy_id,source_owner_policy_version,
            team_policy_id,team_policy_version,workspace_policy_id,workspace_policy_version,
            mode,state,consent_version,maximum_fidelity,include_curated_memory,
@@ -11460,17 +11781,17 @@ export const createSharedMemoryRepository = (
            source_hash,fidelity_policy_revision,fidelity_policy_hash,
            content_policy_version,content_policy_hash,classifier_version,classifier_hash,
           source_content_hash,activated_at,expires_at,
-           source_kind,source_session_id,source_note_id,source_memory_event_id,
            source_capabilities,activation_representation
          ) values (
-           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'active',1,
-           $15,$16,$17,$18,$19,$20,$21,$22,$23,
-           $24,$25,$26,$27,$28,now(),$29,$30,$31,$32,$33,$34,$35
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'active',1,
+           $16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
+           $26,$27,$28,$29,now(),$30,$31,$32
          ) returning *`,
           [
             input.consentId,
             input.preview.previewId,
             logicalMemoryId,
+            preview.sourceRevisionId,
             remoteReplicaId,
             owner.ownerPrincipalId,
             teamId,
@@ -11497,21 +11818,26 @@ export const createSharedMemoryRepository = (
             artifact.classifierHash,
             preview.sourceContentHash,
             input.expiresAt ?? null,
-            artifact.source?.kind ?? "captured_session",
-            artifact.source?.kind === "captured_session"
-              ? artifact.source.sessionId
-              : null,
-            artifact.source?.kind === "personal_note"
-              ? artifact.source.noteId
-              : null,
-            artifact.source?.kind === "personal_note"
-              ? artifact.source.memoryEventId
-              : null,
             preview.sourceCapabilities,
             preview.activationRepresentation
           ]
         );
-        return mapConsent(inserted.rows[0] as Row);
+        return mapConsent({
+          ...(inserted.rows[0] as Row),
+          source_kind: artifact.source?.kind,
+          source_session_id:
+            artifact.source?.kind === "captured_session"
+              ? artifact.source.sessionId
+              : null,
+          source_note_id:
+            artifact.source?.kind === "personal_note"
+              ? artifact.source.noteId
+              : null,
+          source_memory_event_id:
+            artifact.source?.kind === "personal_note"
+              ? artifact.source.memoryEventId
+              : null
+        });
       };
       if (transactionClient) return command(transactionClient);
       return withTransaction(pool, async (client) => {
@@ -11525,9 +11851,13 @@ export const createSharedMemoryRepository = (
       assertUuid(input.logicalGrantId, "logicalGrantId");
       const command = async (client: pg.PoolClient) => {
         const consentResult = await client.query(
-          `select c.*,lm.owner_user_id,lm.local_session_id
+          `select c.*,lm.owner_user_id,binding.source_kind,
+                  binding.source_session_id,binding.source_note_id,
+                  binding.source_memory_event_id
            from source_owner_representation_consents c
            join logical_memories lm on lm.id=c.logical_memory_id
+           join logical_memory_source_revision_bindings binding
+             on binding.source_revision_id=c.source_revision_id
           where c.id=$1 and c.state='active' and c.revoked_at is null
             and (c.expires_at is null or c.expires_at>now())
           for update of c`,
@@ -11539,7 +11869,12 @@ export const createSharedMemoryRepository = (
             "Only the source owner may create a Share Grant"
           );
         const existing = await client.query(
-          "select * from team_session_share_grants where logical_grant_id=$1 for update",
+          `select grant_row.*,binding.source_kind,binding.source_session_id,
+                  binding.source_note_id,binding.source_memory_event_id
+             from team_memory_share_grants grant_row
+             join logical_memory_source_revision_bindings binding
+               on binding.source_revision_id=grant_row.source_revision_id
+            where grant_row.logical_grant_id=$1 for update of grant_row`,
           [input.logicalGrantId]
         );
         if (existing.rows[0]) {
@@ -11553,7 +11888,7 @@ export const createSharedMemoryRepository = (
             );
           if (input.internalPendingShareId) {
             const pending = await client.query<Row>(
-              `select 1 from pending_share_operations
+              `select 1 from pending_share_operation_records
                 where id=$1 and owner_user_id=$2 and grant_id=$3
                   and consent_id=$4 and logical_grant_id=$5
                   and state in ('preparing','activated') and revoked_at is null`,
@@ -11582,7 +11917,7 @@ export const createSharedMemoryRepository = (
           return mapGrant(row);
         }
         const destination = await client.query(
-          `select id from team_session_share_grants
+          `select id from team_memory_share_grants
            where logical_memory_id=$1 and team_workspace_id=$2
            for update`,
           [consent.logical_memory_id, consent.team_workspace_id]
@@ -11664,29 +11999,27 @@ export const createSharedMemoryRepository = (
         let inserted: pg.QueryResult<Row>;
         try {
           inserted = await client.query<Row>(
-            `insert into team_session_share_grants (
-           logical_grant_id,logical_memory_id,remote_replica_id,owner_user_id,
-           owner_principal_id,session_id,team_id,team_workspace_id,consent_id,
+            `insert into team_memory_share_grants (
+           logical_grant_id,logical_memory_id,source_revision_id,remote_replica_id,
+           owner_user_id,owner_principal_id,team_id,team_workspace_id,consent_id,
            display_title,
            source_owner_policy_id,source_owner_policy_version,team_policy_id,
            team_policy_version,workspace_policy_id,workspace_policy_version,
            maximum_fidelity,include_curated_memory,
            fidelity_policy_revision,content_policy_version,classifier_version,
            source_revision,grant_version,lifecycle,creator_authority,granted_by_user_id,
-           source_kind,source_note_id,source_memory_event_id,
            source_capabilities,activation_representation,mode
          ) values (
            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-           $17,$18,$19,$20,$21,$22,1,$24,$23,$4,
-           $25,$26,$27,$28,$29,$30
+           $17,$18,$19,$20,$21,$22,1,$23,$24,$5,$25,$26,$27
            ) returning *`,
             [
               input.logicalGrantId,
               consent.logical_memory_id,
+              consent.source_revision_id,
               consent.remote_replica_id,
               actor.userId,
               consent.source_owner_principal_id,
-              consent.local_session_id,
               consent.team_id,
               consent.team_workspace_id,
               consent.id,
@@ -11703,11 +12036,8 @@ export const createSharedMemoryRepository = (
               consent.content_policy_version,
               consent.classifier_version,
               consent.source_revision,
-              authority,
               input.internalPendingShareId ? "unavailable" : "active",
-              consent.source_kind ?? "captured_session",
-              consent.source_note_id,
-              consent.source_memory_event_id,
+              authority,
               consent.source_capabilities,
               consent.activation_representation,
               consent.mode
@@ -11717,7 +12047,7 @@ export const createSharedMemoryRepository = (
           if (
             isUniqueViolation(
               error,
-              "team_session_share_grants_destination_unique"
+              "team_memory_share_grants_destination_unique"
             )
           ) {
             throw new SharedMemoryConflictError(
@@ -11727,6 +12057,12 @@ export const createSharedMemoryRepository = (
           throw error;
         }
         const row = inserted.rows[0] as Row;
+        Object.assign(row, {
+          source_kind: consent.source_kind,
+          source_session_id: consent.source_session_id,
+          source_note_id: consent.source_note_id,
+          source_memory_event_id: consent.source_memory_event_id
+        });
         if (input.internalPendingShareId) {
           await client.query(
             `update pending_share_operations
@@ -11743,7 +12079,7 @@ export const createSharedMemoryRepository = (
           teamWorkspaceId: stringValue(row.team_workspace_id),
           shareGrantId: stringValue(row.id),
           logicalMemoryId: stringValue(row.logical_memory_id),
-          resourceType: "team_session_share_grant",
+          resourceType: "team_memory_share_grant",
           resourceId: stringValue(row.id),
           actorPrincipalId: actor.userId
         });
@@ -11762,7 +12098,12 @@ export const createSharedMemoryRepository = (
           input.shareGrantId
         );
         const grantResult = await client.query(
-          "select * from team_session_share_grants where id=$1 for update",
+          `select grant_row.*,binding.source_kind,binding.source_session_id,
+                  binding.source_note_id,binding.source_memory_event_id
+             from team_memory_share_grants grant_row
+             join logical_memory_source_revision_bindings binding
+               on binding.source_revision_id=grant_row.source_revision_id
+            where grant_row.id=$1 for update of grant_row`,
           [input.shareGrantId]
         );
         const grant = grantResult.rows[0] as Row | undefined;
@@ -11798,7 +12139,7 @@ export const createSharedMemoryRepository = (
         }
         if (input.internalPendingShareId) {
           const pending = await client.query(
-            `select 1 from pending_share_operations
+            `select 1 from pending_share_operation_records
               where id=$1 and owner_user_id=$2 and grant_id=$3
                 and replacement_consent_id=$4
                 and replacement_expected_grant_version=$5
@@ -11827,11 +12168,17 @@ export const createSharedMemoryRepository = (
           });
         }
         const consentResult = await client.query(
-          `select * from source_owner_representation_consents
-          where id=$1 and logical_memory_id=$2 and source_owner_principal_id=$3
-            and team_id=$4 and team_workspace_id=$5 and state='active'
-            and revoked_at is null and (expires_at is null or expires_at>now())
-          for update`,
+          `select consent.*,binding.source_kind,binding.source_session_id,
+                  binding.source_note_id,binding.source_memory_event_id
+             from source_owner_representation_consents consent
+             join logical_memory_source_revision_bindings binding
+               on binding.source_revision_id=consent.source_revision_id
+            where consent.id=$1 and consent.logical_memory_id=$2
+              and consent.source_owner_principal_id=$3 and consent.team_id=$4
+              and consent.team_workspace_id=$5 and consent.state='active'
+              and consent.revoked_at is null
+              and (consent.expires_at is null or consent.expires_at>now())
+            for update of consent`,
           [
             input.consentId,
             grant.logical_memory_id,
@@ -11912,15 +12259,14 @@ export const createSharedMemoryRepository = (
           [input.shareGrantId]
         );
         const updated = await client.query(
-          `update team_session_share_grants set
+          `update team_memory_share_grants set
            consent_id=$2,source_owner_policy_id=$3,source_owner_policy_version=$4,
            team_policy_id=$5,team_policy_version=$6,workspace_policy_id=$7,
            workspace_policy_version=$8,maximum_fidelity=$9,
            include_curated_memory=$10,fidelity_policy_revision=$11,
            content_policy_version=$12,classifier_version=$13,source_revision=$14,
            activation_representation=$15,mode=$16,source_capabilities=$17,
-           source_kind=$18,remote_replica_id=$19,session_id=$20,
-           source_note_id=$21,source_memory_event_id=$22,
+           source_revision_id=$18,remote_replica_id=$19,
            lifecycle='active',grant_version=grant_version+1,updated_at=now(),
            revoked_at=null,revoked_by_user_id=null,revocation_reason=null,
            retention_policy_id=null,retention_policy_version=null,
@@ -11946,14 +12292,14 @@ export const createSharedMemoryRepository = (
             consent.activation_representation,
             consent.mode,
             consent.source_capabilities,
-            consent.source_kind,
-            consent.remote_replica_id,
-            consent.source_session_id,
-            consent.source_note_id,
-            consent.source_memory_event_id
+            consent.source_revision_id,
+            consent.remote_replica_id
           ]
         );
-        const row = updated.rows[0] as Row;
+        const row = {
+          ...(updated.rows[0] as Row),
+          ...sourceRefRow(requiredSourceRefFromRow(grant))
+        };
         await appendOutbox(client, {
           mutationId: input.mutationId,
           family: replacementEventFamily,
@@ -11961,7 +12307,7 @@ export const createSharedMemoryRepository = (
           teamWorkspaceId: stringValue(row.team_workspace_id),
           shareGrantId: stringValue(row.id),
           logicalMemoryId: stringValue(row.logical_memory_id),
-          resourceType: "team_session_share_grant",
+          resourceType: "team_memory_share_grant",
           resourceId: stringValue(row.id),
           actorPrincipalId: actor.userId
         });
@@ -11982,7 +12328,12 @@ export const createSharedMemoryRepository = (
           input.shareGrantId
         );
         const result = await client.query(
-          "select * from team_session_share_grants where id=$1 for update",
+          `select grant_row.*,binding.source_kind,binding.source_session_id,
+                  binding.source_note_id,binding.source_memory_event_id
+             from team_memory_share_grants grant_row
+             join logical_memory_source_revision_bindings binding
+               on binding.source_revision_id=grant_row.source_revision_id
+            where grant_row.id=$1 for update of grant_row`,
           [input.shareGrantId]
         );
         const grant = result.rows[0] as Row | undefined;
@@ -12062,7 +12413,7 @@ export const createSharedMemoryRepository = (
         );
         const revokedAt = clock.rows[0]!.now;
         const updated = await client.query(
-          `update team_session_share_grants
+          `update team_memory_share_grants
             set lifecycle='revoked',grant_version=grant_version+1,updated_at=now(),
                 revocation_epoch=revocation_epoch+1,
                 revoked_at=$4,revoked_by_user_id=$2,revocation_reason=$3
@@ -12080,7 +12431,10 @@ export const createSharedMemoryRepository = (
           `delete from team_memory_semantic_items where share_grant_id=$1`,
           [input.shareGrantId]
         );
-        const row = updated.rows[0] as Row;
+        const row = {
+          ...(updated.rows[0] as Row),
+          ...sourceRefRow(requiredSourceRefFromRow(grant))
+        };
         await cascadeParentShareRevocation(client, {
           shareGrantId: input.shareGrantId,
           actorUserId: actor.userId,
@@ -12101,7 +12455,7 @@ export const createSharedMemoryRepository = (
           teamWorkspaceId: stringValue(row.team_workspace_id),
           shareGrantId: stringValue(row.id),
           logicalMemoryId: stringValue(row.logical_memory_id),
-          resourceType: "team_session_share_grant",
+          resourceType: "team_memory_share_grant",
           resourceId: stringValue(row.id),
           actorPrincipalId: actor.userId
         });
@@ -12131,8 +12485,8 @@ export const createSharedMemoryRepository = (
                   preview.owner_principal_id,preview.team_id,
                   preview.team_workspace_id,preview.representation,
                   g.id as share_grant_id,c.id as consent_id,g.grant_version
-             from shared_source_previews preview
-             join shared_source_artifacts artifact
+             from shared_source_preview_records preview
+             join shared_source_artifact_records artifact
                on artifact.id=preview.source_artifact_id
               and artifact.logical_memory_id=preview.logical_memory_id
               and artifact.remote_replica_id is not distinct from preview.remote_replica_id
@@ -12144,7 +12498,7 @@ export const createSharedMemoryRepository = (
               and artifact.source_revision=preview.source_revision
               and artifact.source_hash=preview.source_hash
               and artifact.invalidated_at is null
-             join team_session_share_grants g
+             join team_memory_share_grant_records g
                on g.logical_memory_id=preview.logical_memory_id
               and g.remote_replica_id is not distinct from preview.remote_replica_id
               and g.owner_user_id=preview.owner_user_id
@@ -12155,7 +12509,7 @@ export const createSharedMemoryRepository = (
               and (
                 g.lifecycle='active'
                 or (g.lifecycle='unavailable' and exists (
-                  select 1 from pending_share_operations pending
+                  select 1 from pending_share_operation_records pending
                    where pending.grant_id=g.id
                      and pending.owner_user_id=g.owner_user_id
                      and pending.consent_id=g.consent_id
@@ -12622,7 +12976,7 @@ export const createSharedMemoryRepository = (
         const classificationPayloadBindingHash = stringValue(
           classificationRow.payload_binding_hash
         );
-        const displayTitle = sanitizedTeamDisplayTitle(items);
+        const displayTitle = sharedMemorySanitizedDisplayTitle(items);
         const payload: SharedMemorySanitizedSemanticPreviewPayload = {
           schemaVersion: SHARED_MEMORY_SEMANTIC_PREVIEW_FORMAT_VERSION,
           semanticPreviewId: target.id,
@@ -12755,7 +13109,7 @@ export const createSharedMemoryRepository = (
           );
         }
         const titledGrant = await client.query(
-          `update team_session_share_grants
+          `update team_memory_share_grants
               set display_title=$2,display_title_source_revision=$7,updated_at=now()
             where id=$1 and owner_user_id=$3 and team_id=$4
               and team_workspace_id=$5 and logical_memory_id=$6
@@ -12774,7 +13128,7 @@ export const createSharedMemoryRepository = (
         );
         if ((titledGrant.rowCount ?? 0) !== 1) {
           const newerTitle = await client.query(
-            `select 1 from team_session_share_grants
+            `select 1 from team_memory_share_grant_records
               where id=$1 and owner_user_id=$2 and team_id=$3
                 and team_workspace_id=$4 and logical_memory_id=$5
                 and lifecycle in ('unavailable','active') and revoked_at is null
@@ -13024,8 +13378,8 @@ export const createSharedMemoryRepository = (
             `select
                exists (
                  select 1
-                   from shared_source_previews preview
-                   join shared_source_artifacts artifact
+                   from shared_source_preview_records preview
+                   join shared_source_artifact_records artifact
                      on artifact.id=preview.source_artifact_id
                     and artifact.invalidated_at is null
                   where preview.id=$1 and preview.invalidated_at is null
@@ -13044,11 +13398,11 @@ export const createSharedMemoryRepository = (
                ) as classifier_current,
                exists (
                  select 1
-                   from shared_source_previews preview
-                   join shared_source_artifacts artifact
+                   from shared_source_preview_records preview
+                   join shared_source_artifact_records artifact
                      on artifact.id=preview.source_artifact_id
                     and artifact.invalidated_at is null
-                   join team_session_share_grants g
+                   join team_memory_share_grant_records g
                      on g.logical_memory_id=preview.logical_memory_id
                     and g.remote_replica_id is not distinct from preview.remote_replica_id
                     and g.owner_user_id=preview.owner_user_id
@@ -13059,7 +13413,7 @@ export const createSharedMemoryRepository = (
                     and (
                       g.lifecycle='active'
                       or (g.lifecycle='unavailable' and exists (
-                        select 1 from pending_share_operations pending
+                        select 1 from pending_share_operation_records pending
                          where pending.grant_id=g.id
                            and pending.owner_user_id=g.owner_user_id
                            and pending.consent_id=g.consent_id
@@ -13174,10 +13528,10 @@ export const createSharedMemoryRepository = (
                 semantic.source_revision,semantic.representation,
                 g.id as share_grant_id,g.consent_id,g.grant_version
            from shared_source_semantic_previews semantic
-           join shared_source_previews preview
+           join shared_source_preview_records preview
              on preview.id=semantic.source_preview_id
             and preview.invalidated_at is null
-           join team_session_share_grants g
+           join team_memory_share_grant_records g
              on g.logical_memory_id=semantic.logical_memory_id
             and g.remote_replica_id is not distinct from preview.remote_replica_id
             and g.owner_user_id=semantic.owner_user_id
@@ -13185,14 +13539,14 @@ export const createSharedMemoryRepository = (
             and g.team_id=semantic.team_id
             and g.team_workspace_id=semantic.team_workspace_id
             and g.lifecycle='active' and g.revoked_at is null
-           join source_owner_representation_consents consent
+           join source_owner_representation_consent_records consent
              on consent.id=g.consent_id
             and consent.state='active' and consent.revoked_at is null
             and (consent.expires_at is null or consent.expires_at>now())
           where semantic.status='ready'
             and semantic.invalidated_at is null
             and not exists (
-              select 1 from pending_share_operations pending
+              select 1 from pending_share_operation_records pending
                where pending.grant_id=g.id
                  and pending.source_kind='personal_note'
                  and pending.replacement_authority_source='continuous_consent'
@@ -13206,7 +13560,7 @@ export const createSharedMemoryRepository = (
             )
             and not exists (
               select 1
-                from team_memory_representations representation
+                from team_memory_representation_records representation
                where representation.share_grant_id=g.id
                  and representation.representation=semantic.representation
                  and representation.source_revision=semantic.source_revision
@@ -13272,7 +13626,7 @@ export const createSharedMemoryRepository = (
                 sr.id as authorized_sync_relationship_id,
                 mr.freshness_status as replica_freshness_status,
                 sr.state as sync_relationship_state
-           from team_session_share_grants g
+           from team_memory_share_grant_records g
            left join memory_replicas mr
              on mr.id=g.remote_replica_id
             and mr.replica_role='target'
@@ -13373,18 +13727,21 @@ export const createSharedMemoryRepository = (
         });
         const { preview, artifact } = loaded;
         const consentResult = await client.query<Row>(
-          `select *
-           from source_owner_representation_consents
-          where id=$1
-            and logical_memory_id=$2
-            and remote_replica_id is not distinct from $3::uuid
-            and source_owner_principal_id=$4
-            and team_id=$5
-            and team_workspace_id=$6
-            and state='active'
-            and revoked_at is null
-            and (expires_at is null or expires_at>now())
-          for update`,
+          `select consent.*,binding.source_kind,binding.source_session_id,
+                  binding.source_note_id,binding.source_memory_event_id
+             from source_owner_representation_consents consent
+             join logical_memory_source_revision_bindings binding
+               on binding.source_revision_id=consent.source_revision_id
+            where consent.id=$1
+              and consent.logical_memory_id=$2
+              and consent.remote_replica_id is not distinct from $3::uuid
+              and consent.source_owner_principal_id=$4
+              and consent.team_id=$5
+              and consent.team_workspace_id=$6
+              and consent.state='active'
+              and consent.revoked_at is null
+              and (consent.expires_at is null or consent.expires_at>now())
+            for update of consent`,
           [
             input.consentId,
             grantRow.logical_memory_id,
@@ -13636,16 +13993,20 @@ export const createSharedMemoryRepository = (
           workspacePolicyVersion: grant.workspacePolicyVersion
         });
         const existingResult = await client.query<Row>(
-          `select *
-           from team_memory_representations
-          where share_grant_id=$1
-            and representation=$2
-            and source_revision=$3
-            and fidelity_policy_revision=$4
-            and content_policy_version=$5
-            and classifier_version=$6
-            and sanitized_source_preview_id=$7
-          for update`,
+          `select representation.*,binding.source_kind,
+                  binding.source_session_id,binding.source_note_id,
+                  binding.source_memory_event_id
+             from team_memory_representations representation
+             join logical_memory_source_revision_bindings binding
+               on binding.source_revision_id=representation.source_revision_id
+            where representation.share_grant_id=$1
+              and representation.representation=$2
+              and representation.source_revision=$3
+              and representation.fidelity_policy_revision=$4
+              and representation.content_policy_version=$5
+              and representation.classifier_version=$6
+              and representation.sanitized_source_preview_id=$7
+            for update of representation`,
           [
             grant.id,
             preview.representation,
@@ -13675,6 +14036,8 @@ export const createSharedMemoryRepository = (
                 artifact.artifactId ||
               stringValue(representationRow.sanitized_source_preview_id) !==
                 sanitized.record.id ||
+              stringValue(representationRow.source_revision_id) !==
+                artifact.sourceRevisionId ||
               stringValue(
                 representationRow.privacy_classifier_generation_id
               ) !== sanitized.record.classifierGenerationId ||
@@ -13727,17 +14090,16 @@ export const createSharedMemoryRepository = (
              privacy_classifier_generation_id,privacy_classifier_hash,
              effective_privacy_policy_hash,source_manifest_hash,
              sanitized_content_hash,
-             team_id,team_workspace_id,logical_memory_id,representation,
+             team_id,team_workspace_id,logical_memory_id,source_revision_id,representation,
              source_revision,source_revision_hash,provenance_hash,
              source_owner_policy_id,source_owner_policy_version,
              team_policy_id,team_policy_version,
              workspace_policy_id,workspace_policy_version,
              fidelity_policy_revision,content_policy_version,
-             classifier_version,record_version,state,chunk_count,
-             source_kind,source_session_id,source_note_id,source_memory_event_id
+             classifier_version,record_version,state,chunk_count
            ) values (
-             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-             $18,$19,$20,$21,$22,$23,$24,$25,$26,1,'pending',0,$27,$28,$29,$30
+             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+             $19,$20,$21,$22,$23,$24,$25,$26,$27,1,'pending',0
            ) returning *`,
             [
               grant.id,
@@ -13753,6 +14115,7 @@ export const createSharedMemoryRepository = (
               grant.teamId,
               grant.teamWorkspaceId,
               grant.logicalMemoryId,
+              artifact.sourceRevisionId,
               preview.representation,
               preview.sourceRevision,
               sourceRevisionHash,
@@ -13765,17 +14128,7 @@ export const createSharedMemoryRepository = (
               grant.workspacePolicyVersion,
               grant.fidelityPolicyRevision,
               grant.contentPolicyVersion,
-              grant.classifierVersion,
-              grant.source?.kind ?? "captured_session",
-              grant.source?.kind === "captured_session"
-                ? grant.source.sessionId
-                : null,
-              grant.source?.kind === "personal_note"
-                ? grant.source.noteId
-                : null,
-              grant.source?.kind === "personal_note"
-                ? grant.source.memoryEventId
-                : null
+              grant.classifierVersion
             ]
           );
           representationRow = inserted.rows[0]!;
@@ -13800,6 +14153,8 @@ export const createSharedMemoryRepository = (
                 team_policy_version=$16,
                 workspace_policy_id=$17,
                 workspace_policy_version=$18,
+                source_revision_id=$19,
+                source_revision=$20,
                 record_version=case when id=$1 and record_version>0 then record_version+1 else 1 end,
                 state='pending',
                 chunk_count=0,
@@ -13829,7 +14184,9 @@ export const createSharedMemoryRepository = (
             grant.teamPolicyId,
             grant.teamPolicyVersion,
             grant.workspacePolicyId,
-            grant.workspacePolicyVersion
+            grant.workspacePolicyVersion,
+            artifact.sourceRevisionId,
+            preview.sourceRevision
           ]
         );
         if (!resetResult.rows[0]) {
@@ -13865,8 +14222,8 @@ export const createSharedMemoryRepository = (
         }
         const finalAuthority = await client.query<Row>(
           `select semantic.id
-             from team_session_share_grants g
-             join source_owner_representation_consents c
+             from team_memory_share_grant_records g
+             join source_owner_representation_consent_records c
                on c.id=g.consent_id and c.id=$2
               and c.state='active' and c.revoked_at is null
               and (c.expires_at is null or c.expires_at>now())
@@ -13907,7 +14264,7 @@ export const createSharedMemoryRepository = (
               and wp.team_id=g.team_id
               and wp.team_workspace_id=g.team_workspace_id
               and wp.superseded_at is null
-             join shared_source_previews preview
+             join shared_source_preview_records preview
                on preview.id=$3 and preview.invalidated_at is null
               and preview.logical_memory_id=g.logical_memory_id
               and preview.remote_replica_id is not distinct from g.remote_replica_id
@@ -13915,7 +14272,7 @@ export const createSharedMemoryRepository = (
               and preview.owner_principal_id=g.owner_principal_id
               and preview.team_id=g.team_id
               and preview.team_workspace_id=g.team_workspace_id
-             join shared_source_artifacts artifact
+             join shared_source_artifact_records artifact
                on artifact.id=preview.source_artifact_id
               and artifact.invalidated_at is null
              left join lateral (
@@ -13967,7 +14324,7 @@ export const createSharedMemoryRepository = (
                   and captured_source.authorized=true)
                 or (g.source_kind='personal_note'
                   and g.remote_replica_id is null
-                  and g.session_id is null
+                  and g.source_session_id is null
                   and g.source_note_id=preview.source_note_id
                   and (g.source_memory_event_id=preview.source_memory_event_id
                     or (c.mode='continuous'
@@ -13979,7 +14336,7 @@ export const createSharedMemoryRepository = (
               and (
                 g.lifecycle='active'
                 or (g.lifecycle='unavailable' and exists (
-                  select 1 from pending_share_operations pending
+                  select 1 from pending_share_operation_records pending
                    where pending.grant_id=g.id
                      and pending.owner_user_id=g.owner_user_id
                      and pending.consent_id=g.consent_id
@@ -14229,10 +14586,10 @@ export const createSharedMemoryRepository = (
           preview.sourceRevision > grant.sourceRevision
         ) {
           await client.query(
-            `update team_session_share_grants
-              set source_revision=$2,updated_at=now()
+            `update team_memory_share_grants
+              set source_revision=$2,source_revision_id=$3,updated_at=now()
             where id=$1`,
-            [grant.id, preview.sourceRevision]
+            [grant.id, preview.sourceRevision, artifact.sourceRevisionId]
           );
         }
         if (
@@ -14253,7 +14610,7 @@ export const createSharedMemoryRepository = (
         }
         if (remediationRecovery?.rows[0]) {
           await client.query(
-            `update team_session_share_grants
+            `update team_memory_share_grants
                 set lifecycle='active',grant_version=grant_version+1,
                     updated_at=now()
               where id=$1 and lifecycle='unavailable' and revoked_at is null`,
@@ -14289,7 +14646,7 @@ export const createSharedMemoryRepository = (
             teamWorkspaceId: grant.teamWorkspaceId,
             shareGrantId: grant.id,
             logicalMemoryId: grant.logicalMemoryId,
-            resourceType: "team_session_share_grant",
+            resourceType: "team_memory_share_grant",
             resourceId: grant.id,
             actorPrincipalId: actor.userId
           });
@@ -14305,7 +14662,10 @@ export const createSharedMemoryRepository = (
             pendingShareId: stringValue(remediationRecovery.rows[0].id)
           });
         }
-        return mapRepresentation(finalized.rows[0] as Row);
+        return mapRepresentation({
+          ...(finalized.rows[0] as Row),
+          ...sourceRefRow(artifact.source!)
+        });
       };
       return transactionClient
         ? command(transactionClient)
@@ -14326,8 +14686,8 @@ export const createSharedMemoryRepository = (
                 g.maximum_fidelity,g.include_curated_memory,g.grant_version,
                 g.source_capabilities,g.activation_representation,g.mode,
                 consent.id as consent_id
-           from team_session_share_grants g
-           join source_owner_representation_consents consent
+           from team_memory_share_grant_records g
+           join source_owner_representation_consent_records consent
              on consent.id=g.consent_id
             and consent.mode='continuous'
             and consent.state='active'
@@ -14337,7 +14697,7 @@ export const createSharedMemoryRepository = (
             and (
               g.lifecycle='active'
               or (g.lifecycle='unavailable' and exists (
-                select 1 from pending_share_operations pending
+                select 1 from pending_share_operation_records pending
                  where pending.grant_id=g.id
                    and pending.state='needs_attention'
                    and pending.redacted_failure_code='approval_content_remediation'
@@ -14399,8 +14759,8 @@ export const createSharedMemoryRepository = (
                 g.team_workspace_id,g.grant_version,g.consent_id,
                 c.maximum_fidelity,c.include_curated_memory,
                 g.source_capabilities,g.activation_representation,g.mode
-           from team_session_share_grants g
-           join source_owner_representation_consents c on c.id=g.consent_id
+           from team_memory_share_grant_records g
+           join source_owner_representation_consent_records c on c.id=g.consent_id
             and c.mode='continuous' and c.state='active' and c.revoked_at is null
             and (c.expires_at is null or c.expires_at>now())
           where g.owner_user_id=$1 and g.lifecycle='active' and g.revoked_at is null
@@ -14505,7 +14865,7 @@ export const createSharedMemoryRepository = (
                 sr.state as sync_relationship_state,
                 sr.target_processing_cursor,
                 c.mode as consent_mode
-           from team_session_share_grants g
+           from team_memory_share_grant_records g
            join teams t on t.id=g.team_id and t.lifecycle='active'
              and t.entitlement_status in ('active','grace')
            join team_memberships tm on tm.team_id=g.team_id and tm.user_id=$1
@@ -14516,7 +14876,7 @@ export const createSharedMemoryRepository = (
            join team_workspace_access_grants wa on wa.team_workspace_id=tw.id
              and wa.team_id=g.team_id and wa.user_id=$1 and wa.disabled_at is null
              and wa.access in ('read','write')
-           join source_owner_representation_consents c on c.id=g.consent_id
+           join source_owner_representation_consent_records c on c.id=g.consent_id
              and c.state in ('active','paused') and c.revoked_at is null
              and (c.expires_at is null or c.expires_at>now())
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
@@ -14534,7 +14894,7 @@ export const createSharedMemoryRepository = (
              and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
            join lateral (
              select r0.representation,r0.state,r0.source_revision,r0.updated_at
-               from team_memory_representations r0
+               from team_memory_representation_records r0
               where r0.share_grant_id=g.id and r0.consent_id=g.consent_id
                 and ${cumulativeRepresentationAuthorizationSql("r0.representation")}
                 and r0.state in ('available','stale')
@@ -14614,7 +14974,7 @@ export const createSharedMemoryRepository = (
         );
         const result = await client.query<Row>(
           `select g.*
-             from team_session_share_grants g
+             from team_memory_share_grant_records g
             where g.logical_memory_id=$1 and g.owner_user_id=$2
             order by g.updated_at desc,g.id desc
             limit $3 offset $4`,
@@ -14705,8 +15065,8 @@ export const createSharedMemoryRepository = (
                       preview.source_memory_event_id as effective_source_memory_event_id,
                       preview.source_revision as effective_source_revision,
                       p.grant_id,p.created_at,p.id as sort_id
-                 from pending_share_operations p
-                 join shared_memory_candidate_previews preview
+                 from pending_share_operation_records p
+                 join shared_memory_candidate_preview_records preview
                    on preview.id=coalesce(p.replacement_preview_id,p.preview_id)
                  left join lateral (
                    select s.id,s.mode,s.lifecycle,s.version
@@ -14729,12 +15089,12 @@ export const createSharedMemoryRepository = (
                       null::uuid as preview_id,null::text as preview_hash,
                       null::integer as preview_revision,null::bigint as source_revision,
                       g.source_kind as effective_source_kind,
-                      g.session_id as effective_source_session_id,
+                      g.source_session_id as effective_source_session_id,
                       g.source_note_id as effective_source_note_id,
                       g.source_memory_event_id as effective_source_memory_event_id,
                       g.source_revision as effective_source_revision,
                       g.id as grant_id,g.created_at,g.id as sort_id
-                 from team_session_share_grants g
+                 from team_memory_share_grant_records g
                  left join lateral (
                    select s.id,s.mode,s.lifecycle,s.version
                      from team_conversation_source_grants s
@@ -14744,7 +15104,7 @@ export const createSharedMemoryRepository = (
                 where g.owner_user_id=$1
                   and g.created_at<=$4
                   and not exists (
-                    select 1 from pending_share_operations p
+                    select 1 from pending_share_operation_records p
                      where p.grant_id=g.id
                   )
                   and (($2::boolean and
@@ -14753,10 +15113,13 @@ export const createSharedMemoryRepository = (
                         g.lifecycle in ('active','unavailable')))
              ) owned
              left join logical_memories lm on lm.id=owned.logical_memory_id
-             left join sessions s on s.id=lm.local_session_id and s.owner_user_id=$1
+             left join local_captured_session_logical_memories local_memory
+               on local_memory.logical_memory_id=lm.id
+              and local_memory.owner_user_id=$1
+             left join sessions s on s.id=local_memory.local_session_id and s.owner_user_id=$1
              join teams t on t.id=owned.team_id
              join team_workspaces w on w.id=owned.team_workspace_id and w.team_id=owned.team_id
-             left join source_owner_representation_consents c on c.id=owned.consent_id
+             left join source_owner_representation_consent_records c on c.id=owned.consent_id
              left join lateral (
                select ct.id
                  from collaboration_threads ct
@@ -14770,7 +15133,7 @@ export const createSharedMemoryRepository = (
              ) companion on true
              left join lateral (
                select r.source_revision,r.available_at
-                 from team_memory_representations r
+                 from team_memory_representation_records r
                 where r.share_grant_id=owned.grant_id and r.state='available'
                 order by r.source_revision desc,r.updated_at desc limit 1
              ) ready on true
@@ -14810,7 +15173,13 @@ export const createSharedMemoryRepository = (
             const rawSummary = row.summary as Row;
             const rawPreview = rawSummary.authorizedPreview as Row | null;
             const summary: OwnedShareSummary = {
-              ...(effectiveSource ? { source: effectiveSource } : {}),
+              source:
+                effectiveSource ??
+                (() => {
+                  throw new SharedMemoryConflictError(
+                    "Owned Share source metadata is required"
+                  );
+                })(),
               sourceSessionId: nullableString(rawSummary.sourceSessionId),
               companionThreadId: nullableString(rawSummary.companionThreadId),
               sourceTitle: stringValue(rawSummary.sourceTitle),
@@ -14916,7 +15285,7 @@ export const createSharedMemoryRepository = (
           "set transaction isolation level repeatable read read only"
         );
         const authorized = await client.query(
-          `select 1 from shared_source_previews
+          `select 1 from shared_source_preview_records
             where id=$1 and preview_hash=$2 and owner_user_id=$3
               and invalidated_at is null
             limit 1`,
@@ -14940,8 +15309,8 @@ export const createSharedMemoryRepository = (
       const authorizedRows = await withTransaction(pool, async (client) => {
         const readiness = await client.query<Row>(
           `select count(*)::integer as missing_count
-             from team_memory_representations r
-             join team_session_share_grants g on g.id=r.share_grant_id
+             from team_memory_representation_records r
+             join team_memory_share_grant_records g on g.id=r.share_grant_id
                and g.lifecycle='active' and g.revoked_at is null
                and ${grantAuthorizesRepresentationSql("r.representation")}
             where r.state in ('available','stale') and r.invalidated_at is null
@@ -14964,20 +15333,20 @@ export const createSharedMemoryRepository = (
                 chunk.ciphertext_hash,chunk.nonce,chunk.tag,chunk.wrapped_dek,
                 chunk.aad,chunk.envelope_created_at,chunk.envelope_reencrypted_at
            from team_memory_semantic_items smi
-           join team_memory_representations r on r.id=smi.representation_id
+           join team_memory_representation_records r on r.id=smi.representation_id
              and r.share_grant_id=smi.share_grant_id
              and r.team_id=smi.team_id and r.team_workspace_id=smi.team_workspace_id
              and r.logical_memory_id=smi.logical_memory_id
              and r.state in ('available','stale') and r.invalidated_at is null
              and (r.curated_expires_at is null or r.curated_expires_at>now())
-           join team_session_share_grants g on g.id=r.share_grant_id
+           join team_memory_share_grant_records g on g.id=r.share_grant_id
              and g.lifecycle='active' and g.revoked_at is null
              and g.consent_id=r.consent_id
            join teams t on t.id=g.team_id and t.lifecycle='active'
              and t.entitlement_status in ('active','grace')
            join team_workspaces tw on tw.id=g.team_workspace_id and tw.team_id=g.team_id
              and tw.lifecycle='active' and tw.archived_at is null
-           join source_owner_representation_consents consent on consent.id=g.consent_id
+           join source_owner_representation_consent_records consent on consent.id=g.consent_id
              and consent.state='active' and consent.revoked_at is null
              and (consent.expires_at is null or consent.expires_at>now())
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
@@ -14994,8 +15363,8 @@ export const createSharedMemoryRepository = (
              and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
              and sr.revoked_at is null
              and sr.state in ('processing','partially_available','ready','stale')
-           join shared_source_previews sp on sp.id=r.source_preview_id and sp.invalidated_at is null
-           join shared_source_artifacts sa on sa.id=r.source_artifact_id and sa.invalidated_at is null
+           join shared_source_preview_records sp on sp.id=r.source_preview_id and sp.invalidated_at is null
+           join shared_source_artifact_records sa on sa.id=r.source_artifact_id and sa.invalidated_at is null
            join shared_source_semantic_previews semantic
              on semantic.id=r.sanitized_source_preview_id
             and semantic.source_preview_id=sp.id
@@ -15052,7 +15421,7 @@ export const createSharedMemoryRepository = (
             and r.workspace_policy_id=g.workspace_policy_id and r.workspace_policy_version=g.workspace_policy_version
             and ${cumulativeRepresentationAuthorizationSql("r.representation", { consent: "consent" })}
             and not exists (
-              select 1 from team_memory_representations newer
+              select 1 from team_memory_representation_records newer
                where newer.share_grant_id=r.share_grant_id
                  and newer.representation=r.representation
                  and newer.state in ('available','stale')
@@ -15113,13 +15482,13 @@ export const createSharedMemoryRepository = (
                         chunk.ciphertext_hash,chunk.nonce,chunk.tag,chunk.wrapped_dek,
                         chunk.aad,chunk.envelope_created_at,chunk.envelope_reencrypted_at
                    from team_memory_semantic_items smi
-                   join team_memory_representations r on r.id=smi.representation_id
+                   join team_memory_representation_records r on r.id=smi.representation_id
                      and r.share_grant_id=smi.share_grant_id
                      and r.team_id=smi.team_id and r.team_workspace_id=smi.team_workspace_id
                      and r.logical_memory_id=smi.logical_memory_id
                      and r.state in ('available','stale') and r.invalidated_at is null
                      and (r.curated_expires_at is null or r.curated_expires_at>now())
-                   join team_session_share_grants g on g.id=smi.share_grant_id
+                   join team_memory_share_grant_records g on g.id=smi.share_grant_id
                      and g.team_workspace_id=smi.team_workspace_id
                      and g.team_id=smi.team_id and g.logical_memory_id=smi.logical_memory_id
                      and g.lifecycle='active' and g.revoked_at is null
@@ -15128,7 +15497,7 @@ export const createSharedMemoryRepository = (
                      and t.entitlement_status in ('active','grace')
                    join team_workspaces tw on tw.id=g.team_workspace_id and tw.team_id=g.team_id
                      and tw.lifecycle='active' and tw.archived_at is null
-                   join source_owner_representation_consents consent on consent.id=g.consent_id
+                   join source_owner_representation_consent_records consent on consent.id=g.consent_id
                      and consent.state='active' and consent.revoked_at is null
                      and (consent.expires_at is null or consent.expires_at>now())
                    join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
@@ -15146,9 +15515,9 @@ export const createSharedMemoryRepository = (
                      and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
                      and sr.revoked_at is null
                      and sr.state in ('processing','partially_available','ready','stale')
-                   join shared_source_previews sp on sp.id=r.source_preview_id
+                   join shared_source_preview_records sp on sp.id=r.source_preview_id
                      and sp.invalidated_at is null
-                   join shared_source_artifacts sa on sa.id=r.source_artifact_id
+                   join shared_source_artifact_records sa on sa.id=r.source_artifact_id
                      and sa.invalidated_at is null
                    join shared_source_semantic_previews semantic
                      on semantic.id=r.sanitized_source_preview_id
@@ -15551,14 +15920,14 @@ export const createSharedMemoryRepository = (
                   semantic.team_workspace_id,
                   semantic.effective_privacy_policy_hash
              from team_memory_semantic_items smi
-             join team_memory_representations r
+             join team_memory_representation_records r
                on r.id=smi.representation_id
               and r.state in ('available','stale')
               and r.invalidated_at is null
-             join team_session_share_grants g on g.id=r.share_grant_id
+             join team_memory_share_grant_records g on g.id=r.share_grant_id
               and g.lifecycle='active' and g.revoked_at is null
               and g.consent_id=r.consent_id
-             join source_owner_representation_consents consent
+             join source_owner_representation_consent_records consent
                on consent.id=g.consent_id and consent.state='active'
               and consent.revoked_at is null
               and (consent.expires_at is null or consent.expires_at>now())
@@ -15797,13 +16166,13 @@ export const createSharedMemoryRepository = (
                   select array_agg(g.id order by g.id)
                     from (
                       select distinct grant_row.id
-                        from team_session_share_grants grant_row
-                        join team_memory_representations r
+                        from team_memory_share_grant_records grant_row
+                        join team_memory_representation_records r
                           on r.share_grant_id=grant_row.id
                          and r.consent_id=grant_row.consent_id
                          and r.state in ('available','stale') and r.invalidated_at is null
                          and (r.curated_expires_at is null or r.curated_expires_at>now())
-                        join source_owner_representation_consents c
+                        join source_owner_representation_consent_records c
                           on c.id=grant_row.consent_id and c.state='active'
                          and c.revoked_at is null
                          and (c.expires_at is null or c.expires_at>now())
@@ -15830,9 +16199,9 @@ export const createSharedMemoryRepository = (
                          and sr.logical_memory_id=grant_row.logical_memory_id
                          and sr.side='target' and sr.revoked_at is null
                          and sr.state in ('processing','partially_available','ready','stale')
-                        join shared_source_previews sp
+                        join shared_source_preview_records sp
                           on sp.id=r.source_preview_id and sp.invalidated_at is null
-                        join shared_source_artifacts sa
+                        join shared_source_artifact_records sa
                           on sa.id=r.source_artifact_id and sa.invalidated_at is null
                        where grant_row.team_workspace_id=tw.id
                          and grant_row.lifecycle='active' and grant_row.revoked_at is null
@@ -15895,10 +16264,10 @@ export const createSharedMemoryRepository = (
                 max(1-(v.embedding <=> $6::${semanticVectorCast(input.dimensions)})) as top_score
            from team_memory_semantic_items smi
            join ${semanticVectorTable(input.dimensions)} v on v.semantic_item_id=smi.id
-           join team_memory_representations r on r.id=smi.representation_id
+           join team_memory_representation_records r on r.id=smi.representation_id
              and r.state in ('available','stale') and r.invalidated_at is null
              and (r.curated_expires_at is null or r.curated_expires_at>now())
-           join team_session_share_grants g on g.id=smi.share_grant_id
+           join team_memory_share_grant_records g on g.id=smi.share_grant_id
              and g.team_workspace_id=$2 and g.lifecycle='active' and g.revoked_at is null
              and g.consent_id=r.consent_id
            join teams t on t.id=g.team_id and t.lifecycle='active'
@@ -15911,7 +16280,7 @@ export const createSharedMemoryRepository = (
            join team_workspace_access_grants wa on wa.team_workspace_id=tw.id
              and wa.team_id=g.team_id and wa.user_id=$1 and wa.disabled_at is null
              and wa.access in ('read','write')
-           join source_owner_representation_consents c on c.id=g.consent_id
+           join source_owner_representation_consent_records c on c.id=g.consent_id
              and c.state='active' and c.revoked_at is null
              and (c.expires_at is null or c.expires_at>now())
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
@@ -15928,17 +16297,20 @@ export const createSharedMemoryRepository = (
              and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
              and sr.revoked_at is null
              and sr.state in ('processing','partially_available','ready','stale')
-           join shared_source_previews sp on sp.id=r.source_preview_id and sp.invalidated_at is null
-           join shared_source_artifacts sa on sa.id=r.source_artifact_id and sa.invalidated_at is null
+           join shared_source_preview_records sp on sp.id=r.source_preview_id and sp.invalidated_at is null
+           join shared_source_artifact_records sa on sa.id=r.source_artifact_id and sa.invalidated_at is null
            join logical_memories lm on lm.id=smi.logical_memory_id
-           left join sessions source_session on source_session.id=lm.local_session_id
+           left join local_captured_session_logical_memories local_memory
+             on local_memory.logical_memory_id=lm.id
+            and local_memory.owner_user_id=g.owner_user_id
+           left join sessions source_session on source_session.id=local_memory.local_session_id
              and source_session.owner_user_id=g.owner_user_id
           where smi.embedding_state='embedded'
             and (
               (g.source_kind='captured_session' and mr.id is not null and sr.id is not null
-                and lm.local_session_id is not null and source_session.id is not null)
+                and local_memory.local_session_id is not null and source_session.id is not null)
               or (g.source_kind='personal_note' and g.remote_replica_id is null
-                and lm.local_session_id is null)
+                and local_memory.local_session_id is null)
             )
             and smi.embedding_model=$3 and smi.embedding_dimensions=$4 and smi.embedding_version=$5
             and smi.team_workspace_id=$2 and smi.source_revision=r.source_revision
@@ -15952,7 +16324,7 @@ export const createSharedMemoryRepository = (
             and ${cumulativeRepresentationAuthorizationSql("r.representation")}
             and (
               $12::text='global'
-              or ($12::text='session' and lm.local_session_id=$13::uuid)
+              or ($12::text='session' and local_memory.local_session_id=$13::uuid)
               or ($12::text='project' and coalesce(
                 source_session.project_override_id,
                 source_session.automatic_project_id
@@ -15978,7 +16350,7 @@ export const createSharedMemoryRepository = (
               and tm.version=$20 and wa.version=$21 and u.xmin::text=$22
             ))
             and not exists (
-              select 1 from team_memory_representations newer
+              select 1 from team_memory_representation_records newer
                where newer.share_grant_id=r.share_grant_id
                  and newer.representation=r.representation
                  and newer.state in ('available','stale')
@@ -16041,10 +16413,10 @@ export const createSharedMemoryRepository = (
                 1-(v.embedding <=> $6::${semanticVectorCast(input.dimensions)}) as score
            from team_memory_semantic_items smi
            join ${semanticVectorTable(input.dimensions)} v on v.semantic_item_id=smi.id
-           join team_memory_representations r on r.id=smi.representation_id
+           join team_memory_representation_records r on r.id=smi.representation_id
              and r.state in ('available','stale') and r.invalidated_at is null
              and (r.curated_expires_at is null or r.curated_expires_at>now())
-           join team_session_share_grants g on g.id=smi.share_grant_id
+           join team_memory_share_grant_records g on g.id=smi.share_grant_id
              and g.team_workspace_id=$2 and g.lifecycle='active' and g.revoked_at is null
              and g.consent_id=r.consent_id
            join teams t on t.id=g.team_id and t.lifecycle='active'
@@ -16057,7 +16429,7 @@ export const createSharedMemoryRepository = (
            join team_workspace_access_grants wa on wa.team_workspace_id=tw.id
              and wa.team_id=g.team_id and wa.user_id=$1 and wa.disabled_at is null
              and wa.access in ('read','write')
-           join source_owner_representation_consents c on c.id=g.consent_id
+           join source_owner_representation_consent_records c on c.id=g.consent_id
              and c.state='active' and c.revoked_at is null
              and (c.expires_at is null or c.expires_at>now())
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
@@ -16074,17 +16446,20 @@ export const createSharedMemoryRepository = (
              and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
              and sr.revoked_at is null
              and sr.state in ('processing','partially_available','ready','stale')
-           join shared_source_previews sp on sp.id=r.source_preview_id and sp.invalidated_at is null
-           join shared_source_artifacts sa on sa.id=r.source_artifact_id and sa.invalidated_at is null
+           join shared_source_preview_records sp on sp.id=r.source_preview_id and sp.invalidated_at is null
+           join shared_source_artifact_records sa on sa.id=r.source_artifact_id and sa.invalidated_at is null
            join logical_memories lm on lm.id=smi.logical_memory_id
-           left join sessions source_session on source_session.id=lm.local_session_id
+           left join local_captured_session_logical_memories local_memory
+             on local_memory.logical_memory_id=lm.id
+            and local_memory.owner_user_id=g.owner_user_id
+           left join sessions source_session on source_session.id=local_memory.local_session_id
              and source_session.owner_user_id=g.owner_user_id
           where smi.embedding_state='embedded'
             and (
               (g.source_kind='captured_session' and mr.id is not null and sr.id is not null
-                and lm.local_session_id is not null and source_session.id is not null)
+                and local_memory.local_session_id is not null and source_session.id is not null)
               or (g.source_kind='personal_note' and g.remote_replica_id is null
-                and lm.local_session_id is null)
+                and local_memory.local_session_id is null)
             )
             and smi.embedding_model=$3 and smi.embedding_dimensions=$4 and smi.embedding_version=$5
             and smi.team_workspace_id=$2 and smi.source_revision=r.source_revision
@@ -16098,7 +16473,7 @@ export const createSharedMemoryRepository = (
             and ${cumulativeRepresentationAuthorizationSql("r.representation")}
             and (
               $12::text='global'
-              or ($12::text='session' and lm.local_session_id=$13::uuid)
+              or ($12::text='session' and local_memory.local_session_id=$13::uuid)
               or ($12::text='project' and coalesce(
                 source_session.project_override_id,
                 source_session.automatic_project_id
@@ -16124,7 +16499,7 @@ export const createSharedMemoryRepository = (
               and tm.version=$20 and wa.version=$21 and u.xmin::text=$22
             ))
             and not exists (
-              select 1 from team_memory_representations newer
+              select 1 from team_memory_representation_records newer
                where newer.share_grant_id=r.share_grant_id
                  and newer.representation=r.representation
                  and newer.state in ('available','stale')
@@ -16194,13 +16569,13 @@ export const createSharedMemoryRepository = (
       const row = await pool.query<Row>(
         `select smi.*,r.representation,r.provenance_hash
            from team_memory_semantic_items smi
-           join team_memory_representations r on r.id=smi.representation_id
+           join team_memory_representation_records r on r.id=smi.representation_id
              and r.share_grant_id=smi.share_grant_id
              and r.team_id=smi.team_id and r.team_workspace_id=smi.team_workspace_id
              and r.logical_memory_id=smi.logical_memory_id
              and r.state in ('available','stale') and r.invalidated_at is null
              and (r.curated_expires_at is null or r.curated_expires_at>now())
-           join team_session_share_grants g on g.id=smi.share_grant_id
+           join team_memory_share_grant_records g on g.id=smi.share_grant_id
              and g.lifecycle='active' and g.revoked_at is null
              and g.consent_id=r.consent_id
            join teams t on t.id=g.team_id and t.lifecycle='active'
@@ -16213,7 +16588,7 @@ export const createSharedMemoryRepository = (
            join team_workspace_access_grants wa on wa.team_workspace_id=tw.id
              and wa.team_id=g.team_id and wa.user_id=u.id and wa.disabled_at is null
              and wa.access in ('read','write')
-           join source_owner_representation_consents consent on consent.id=g.consent_id
+           join source_owner_representation_consent_records consent on consent.id=g.consent_id
              and consent.state='active' and consent.revoked_at is null
              and (consent.expires_at is null or consent.expires_at>now())
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
@@ -16231,17 +16606,20 @@ export const createSharedMemoryRepository = (
              and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
              and sr.revoked_at is null
              and sr.state in ('processing','partially_available','ready','stale')
-           join shared_source_previews sp on sp.id=r.source_preview_id and sp.invalidated_at is null
-           join shared_source_artifacts sa on sa.id=r.source_artifact_id and sa.invalidated_at is null
+           join shared_source_preview_records sp on sp.id=r.source_preview_id and sp.invalidated_at is null
+           join shared_source_artifact_records sa on sa.id=r.source_artifact_id and sa.invalidated_at is null
            join logical_memories lm on lm.id=smi.logical_memory_id
-           left join sessions source_session on source_session.id=lm.local_session_id
+           left join local_captured_session_logical_memories local_memory
+             on local_memory.logical_memory_id=lm.id
+            and local_memory.owner_user_id=g.owner_user_id
+           left join sessions source_session on source_session.id=local_memory.local_session_id
              and source_session.owner_user_id=g.owner_user_id
           where smi.id=$1 and smi.team_workspace_id=$2 and smi.embedding_state='embedded'
             and (
               (g.source_kind='captured_session' and mr.id is not null and sr.id is not null
-                and lm.local_session_id is not null and source_session.id is not null)
+                and local_memory.local_session_id is not null and source_session.id is not null)
               or (g.source_kind='personal_note' and g.remote_replica_id is null
-                and lm.local_session_id is null)
+                and local_memory.local_session_id is null)
             )
             and smi.source_revision=r.source_revision
             and smi.representation_policy_revision=g.fidelity_policy_revision
@@ -16257,7 +16635,7 @@ export const createSharedMemoryRepository = (
             })}
             and (
               $3::text='global'
-              or ($3::text='session' and lm.local_session_id=$4::uuid)
+              or ($3::text='session' and local_memory.local_session_id=$4::uuid)
               or ($3::text='project' and coalesce(
                 source_session.project_override_id,
                 source_session.automatic_project_id
@@ -16521,7 +16899,7 @@ export const createSharedMemoryRepository = (
                 sr.state as sync_relationship_state,
                 sr.target_processing_cursor,
                 c.mode as consent_mode
-           from team_session_share_grants g
+           from team_memory_share_grant_records g
            join teams t on t.id=g.team_id and t.lifecycle='active' and t.entitlement_status in ('active','grace')
            join team_memberships tm on tm.team_id=g.team_id and tm.user_id=$2
              and tm.status='enabled' and tm.disabled_at is null
@@ -16531,7 +16909,7 @@ export const createSharedMemoryRepository = (
            join team_workspace_access_grants wa on wa.team_workspace_id=tw.id
              and wa.team_id=g.team_id and wa.user_id=$2 and wa.disabled_at is null
              and wa.access in ('read','write')
-           join source_owner_representation_consents c on c.id=g.consent_id
+           join source_owner_representation_consent_records c on c.id=g.consent_id
              and c.state in ('active','paused') and c.revoked_at is null
              and (c.expires_at is null or c.expires_at>now())
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
@@ -16547,7 +16925,7 @@ export const createSharedMemoryRepository = (
              and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
              and sr.state <> 'purge_pending'
            join lateral (
-             select r0.* from team_memory_representations r0
+             select r0.* from team_memory_representation_records r0
               where r0.share_grant_id=g.id and r0.consent_id=g.consent_id
                 and r0.representation=coalesce(
                   $3::shared_memory_representation,
@@ -16567,8 +16945,8 @@ export const createSharedMemoryRepository = (
                 and r0.classifier_version=g.classifier_version
               order by r0.source_revision desc,r0.available_at desc limit 1
            ) r on true
-           join shared_source_previews sp on sp.id=r.source_preview_id and sp.invalidated_at is null
-           join shared_source_artifacts sa on sa.id=r.source_artifact_id
+           join shared_source_preview_records sp on sp.id=r.source_preview_id and sp.invalidated_at is null
+           join shared_source_artifact_records sa on sa.id=r.source_artifact_id
              and sa.invalidated_at is null
            join shared_source_semantic_previews semantic
              on semantic.id=r.sanitized_source_preview_id
@@ -16611,6 +16989,7 @@ export const createSharedMemoryRepository = (
         const grant = mapGrant(row);
         const representationRow: Row = {
           id: row.representation_row_id,
+          source_revision_id: row.source_revision_id,
           share_grant_id: row.id,
           consent_id: row.representation_consent_id,
           source_preview_id: row.source_preview_id,

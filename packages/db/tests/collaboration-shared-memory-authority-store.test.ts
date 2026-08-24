@@ -189,32 +189,40 @@ describeDb("Collaboration Shared Memory authority store", () => {
       [fixture.sessionId, fixture.identity.localOwnerUserId]
     );
     await pool.query(
-      `insert into logical_memories
-         (id, owner_user_id, owner_principal_id, origin_deployment_identity_id,
-          source_boundary, origin_source_id, local_session_id, logical_key)
-       values ($1, $2, $2, $3, 'captured_session', $4, $5, $6)`,
+      `with logical_memory as (
+         insert into logical_memories
+           (id, owner_user_id, owner_principal_id, origin_deployment_identity_id,
+            source_kind, logical_key)
+         values ($1, $2, $2, $3, 'captured_session', $4)
+         returning id
+       ), protocol_binding as (
+         insert into captured_session_logical_memories
+           (logical_memory_id,source_session_id,owner_principal_id)
+         select id,$5,$2 from logical_memory
+       )
+       insert into local_captured_session_logical_memories
+         (logical_memory_id,local_session_id,owner_user_id)
+       select id,$5,$2 from logical_memory`,
       [
         fixture.logicalMemoryId,
         fixture.identity.localOwnerUserId,
         localDeploymentId,
-        `session:${fixture.sessionId}`,
-        fixture.sessionId,
-        `captured-session:${fixture.sessionId}`
+        `captured-session:${fixture.sessionId}`,
+        fixture.sessionId
       ]
     );
     await pool.query(
       `insert into memory_replicas
          (id, logical_memory_id, deployment_identity_id, owner_user_id,
-          owner_principal_id, replica_role, source_boundary, local_session_id,
+          owner_principal_id, replica_role, source_boundary,
           encryption_scope, freshness_status)
-       values ($1, $2, $3, $4, $4, 'source', 'captured_session', $5,
+       values ($1, $2, $3, $4, $4, 'source', 'captured_session',
                'personal', 'fresh')`,
       [
         localReplicaId,
         fixture.logicalMemoryId,
         localDeploymentId,
-        fixture.identity.localOwnerUserId,
-        fixture.sessionId
+        fixture.identity.localOwnerUserId
       ]
     );
     await pool.query(

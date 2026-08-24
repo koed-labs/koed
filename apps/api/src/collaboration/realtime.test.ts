@@ -1730,6 +1730,12 @@ describe("collaboration realtime protocol", () => {
   it("materializes owner-only Pending Share lifecycle status without Team authority", async () => {
     const ownerId = randomUUID();
     const pendingShareId = randomUUID();
+    const logicalMemoryId = randomUUID();
+    const source = {
+      kind: "captured_session" as const,
+      sessionId: randomUUID(),
+      logicalMemoryId
+    };
     const eventRecord = event({
       cursor: 1,
       scope: "personal",
@@ -1750,6 +1756,7 @@ describe("collaboration realtime protocol", () => {
       getOwnerShare: vi.fn(async () => ({
         kind: "pending" as const,
         pendingShare: {
+          source,
           sourceCapabilities: [
             "lcm_rollups",
             "lcm_leaves",
@@ -1760,7 +1767,7 @@ describe("collaboration realtime protocol", () => {
           mutationId: randomUUID(),
           logicalGrantId: randomUUID(),
           consentId: randomUUID(),
-          logicalMemoryId: randomUUID(),
+          logicalMemoryId,
           teamId: randomUUID(),
           teamWorkspaceId: randomUUID(),
           representation: "memory_events" as const,
@@ -1784,7 +1791,8 @@ describe("collaboration realtime protocol", () => {
         },
         sourceAccess: null,
         summary: {
-          sourceSessionId: randomUUID(),
+          source,
+          sourceSessionId: source.sessionId,
           companionThreadId: null,
           sourceTitle: "Owner conversation",
           teamName: "Team",

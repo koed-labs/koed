@@ -386,7 +386,7 @@ const persistedPreviewDto = (preview: SharedMemoryPersistedPreviewRecord) => ({
   createdAt: preview.createdAt
 });
 
-const grantDto = (grant: SharedMemoryGrantRecord) => ({
+const ownerGrantDto = (grant: SharedMemoryGrantRecord) => ({
   source: requiredSource(grant.source),
   sourceCapabilities: grant.sourceCapabilities,
   activationRepresentation: grant.activationRepresentation,
@@ -413,6 +413,27 @@ const grantDto = (grant: SharedMemoryGrantRecord) => ({
   grantVersion: grant.grantVersion,
   lifecycle: grant.lifecycle,
   grantedByUserId: grant.grantedByUserId,
+  createdAt: grant.createdAt,
+  updatedAt: grant.updatedAt,
+  revokedAt: grant.revokedAt,
+  companionScope: grant.companionScope
+});
+
+const teamGrantDto = (grant: SharedMemoryGrantRecord) => ({
+  sourceCapabilities: grant.sourceCapabilities,
+  activationRepresentation: grant.activationRepresentation,
+  id: grant.id,
+  logicalGrantId: grant.logicalGrantId,
+  logicalMemoryId: grant.logicalMemoryId,
+  ownerUserId: grant.ownerUserId,
+  teamId: grant.teamId,
+  teamWorkspaceId: grant.teamWorkspaceId,
+  mode: grant.mode,
+  maximumFidelity: grant.maximumFidelity,
+  includeCuratedMemory: grant.includeCuratedMemory,
+  sourceRevision: grant.sourceRevision,
+  grantVersion: grant.grantVersion,
+  lifecycle: grant.lifecycle,
   createdAt: grant.createdAt,
   updatedAt: grant.updatedAt,
   revokedAt: grant.revokedAt,
@@ -477,8 +498,6 @@ const representationDto = (
   logicalMemoryId: representation.logicalMemoryId,
   representation: representation.representation,
   sourceRevision: representation.sourceRevision,
-  sourceRevisionHash: representation.sourceRevisionHash,
-  provenanceHash: representation.provenanceHash,
   sourceOwnerPolicyId: representation.sourceOwnerPolicyId,
   sourceOwnerPolicyVersion: representation.sourceOwnerPolicyVersion,
   teamPolicyId: representation.teamPolicyId,
@@ -507,7 +526,7 @@ type OwnerGrantEntry = Awaited<
   ReturnType<SharedMemoryRepository["listOwnerGrants"]>
 >["entries"][number];
 
-const ownerGrantDto = (grant: OwnerGrantEntry) => grantDto(grant);
+const ownedGrantDto = (grant: OwnerGrantEntry) => ownerGrantDto(grant);
 
 type OwnedShareEntry = NonNullable<
   Awaited<ReturnType<SharedMemoryRepository["getOwnerShare"]>>
@@ -517,7 +536,7 @@ const ownedShareDto = (entry: OwnedShareEntry) =>
   entry.kind === "grant"
     ? {
         kind: "grant" as const,
-        grant: ownerGrantDto(entry.grant),
+        grant: ownedGrantDto(entry.grant),
         sourceAccess: entry.sourceAccess,
         summary: entry.summary
       }
@@ -563,7 +582,7 @@ const readDto = (
   result: SharedMemoryReadResult,
   items: SharedMemoryCanonicalSourceItemDto[]
 ) => ({
-  grant: grantDto(result.grant),
+  grant: teamGrantDto(result.grant),
   representation: representationDto(result.representation),
   items,
   sourcePage: result.sourcePage,
@@ -1142,7 +1161,7 @@ export const registerSharedMemoryRoutes = (
             ) {
               return null;
             }
-            return { statusCode: 200, body: { grant: grantDto(grant) } };
+            return { statusCode: 200, body: { grant: ownerGrantDto(grant) } };
           }
         )
       );
@@ -1432,7 +1451,7 @@ export const registerSharedMemoryRoutes = (
         query.representation
       );
       return {
-        grant: grantDto(result.grant),
+        grant: teamGrantDto(result.grant),
         representation: representationDto(result.representation),
         freshness: result.freshness,
         companionScope: result.companionScope,
@@ -1465,7 +1484,7 @@ export const registerSharedMemoryRoutes = (
       );
       if (!item) throw notFound();
       return {
-        grant: grantDto(result.grant),
+        grant: teamGrantDto(result.grant),
         representation: representationDto(result.representation),
         freshness: result.freshness,
         companionScope: result.companionScope,

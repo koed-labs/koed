@@ -14,6 +14,7 @@ import {
 const ownerUserId = "33333333-3333-4333-8333-333333333333";
 const note: PersonalNoteRecord = {
   noteId: "11111111-1111-4111-8111-111111111111",
+  logicalMemoryId: "55555555-5555-4555-8555-555555555555",
   title: "Launch date",
   titleVersion: 1,
   body: "The launch date is September 14.",

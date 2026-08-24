@@ -12944,6 +12944,11 @@ describe("account and access flows", () => {
       expandInputs.push(input as unknown as Record<string, unknown>);
       return {
         parent: {
+          source: {
+            kind: "captured_session" as const,
+            sessionId: randomUUID(),
+            logicalMemoryId: randomUUID()
+          },
           candidateId: input.candidateId,
           shareGrantId: randomUUID(),
           sourceArtifactId: randomUUID(),

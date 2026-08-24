@@ -7,6 +7,7 @@ Related decisions:
 - [0013 Team Collaboration Authority](./0013-team-collaboration-authority.md)
 - [0018 Personal Collaboration Sync And Cross-Platform Secret Providers](./0018-personal-collaboration-and-cross-platform-secret-providers.md)
 - [0029 Selective PII Team Representations](./0029-selective-pii-team-representations.md)
+- [0033 Generic Logical Memory Source Revisions](./0033-generic-logical-memory-source-revisions.md)
 
 ## Context
 
@@ -49,6 +50,12 @@ representation atomically. Pause stops advancement while preserving the last
 ready derivative; resume catches up to the latest eligible revision; revocation
 stops updates and removes Team authority. None of these operations mutates the
 Personal Note or its immutable revisions.
+
+Each projected Note revision is bound atomically to one positive generic
+logical-memory source revision. Generic sharing rows reference that immutable
+revision; Note IDs and Memory Event IDs remain in the typed Personal Note
+binding. This preserves generic authorization and publication without implying
+that Personal Notes have Captured Session capabilities.
 
 The consolidated alpha migration discards the transitional Notes chat rows and
 their dependent payloads instead of converting them. There is no compatibility

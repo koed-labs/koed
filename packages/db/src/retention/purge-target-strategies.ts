@@ -131,7 +131,7 @@ export const createPurgeTargetStrategies = (
       },
       lockTarget: async (client, target) => {
         const targetLock = await client.query(
-          `select id from team_session_share_grants
+          `select id from team_memory_share_grants
             where id = $1 for update`,
           [target.shareGrantId]
         );
@@ -149,7 +149,7 @@ export const createPurgeTargetStrategies = (
              actor_user_id, action, target_table, target_id, metadata
            )
            select null, 'share_grant.purge_completed',
-                  'team_session_share_grants', $1, $3::jsonb
+                  'team_memory_share_grants', $1, $3::jsonb
             where not exists (
               select 1 from audit_events audit
                where audit.action = 'share_grant.purge_completed'

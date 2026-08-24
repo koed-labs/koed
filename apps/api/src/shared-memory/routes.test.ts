@@ -66,6 +66,7 @@ const createFixture = () => {
     lcmPreview: randomUUID(),
     source: randomUUID(),
     sourceArtifact: randomUUID(),
+    sourceRevision: randomUUID(),
     sourceSession: randomUUID(),
     sessionAuthority: randomUUID(),
     actionGrantAuthority: randomUUID()
@@ -164,6 +165,7 @@ const createFixture = () => {
 
   const grantRecord = (): SharedMemoryGrantRecord => ({
     source: capturedSource,
+    sourceRevisionId: ids.sourceRevision,
     sourceCapabilities: capturedSourceCapabilities,
     activationRepresentation: "memory_events",
     mode: "continuous",
@@ -203,6 +205,7 @@ const createFixture = () => {
   const representationRecord = (
     representation: SharedMemoryRepresentationRecord["representation"] = "memory_events"
   ): SharedMemoryRepresentationRecord => ({
+    source: capturedSource,
     id: ids.representation,
     shareGrantId: ids.grant,
     consentId: ids.consent,
@@ -217,6 +220,7 @@ const createFixture = () => {
     teamId: ids.teamA,
     teamWorkspaceId: ids.workspaceA,
     logicalMemoryId: ids.logicalMemory,
+    sourceRevisionId: ids.sourceRevision,
     representation,
     sourceRevision: 1,
     sourceRevisionHash: hash,
@@ -261,6 +265,7 @@ const createFixture = () => {
     }
   ): SharedMemoryPersistedPreviewRecord => ({
     source: capturedSource,
+    sourceRevisionId: ids.sourceRevision,
     sourceCapabilities: capturedSourceCapabilities,
     activationRepresentation: input.representation,
     mode: "continuous",
@@ -431,6 +436,7 @@ const createFixture = () => {
 
   const consentRecord = (): SharedMemoryConsentRecord => ({
     source: capturedSource,
+    sourceRevisionId: ids.sourceRevision,
     sourceCapabilities: capturedSourceCapabilities,
     activationRepresentation: "memory_events",
     id: ids.consent,
@@ -2501,6 +2507,11 @@ describe("Shared Memory HTTP routes", () => {
       expect(response.body).not.toContain("remoteReplicaId");
       expect(response.body).not.toContain("ownerPrincipalId");
       expect(response.body).not.toContain("creatorAuthority");
+      expect(response.body).not.toContain("sourceRevisionHash");
+      expect(response.body).not.toContain("provenanceHash");
+      expect(response.body).not.toContain('"source":');
+      expect(response.body).not.toContain('"sessionId":');
+      expect(response.body).not.toContain('"noteId":');
       expect(response.body).not.toContain(fixture.ids.remoteReplica);
     }
     expect(read.body).toContain("[SECRET]");

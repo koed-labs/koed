@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import {
   COLLABORATION_CONTRACT_VERSION,
+  crossIdentitySyncDeterministicUuid,
+  logicalMemorySourceRevisionIdentity,
   type EnvelopeEncryptionProvider
 } from "@koed/shared";
 
@@ -143,6 +145,7 @@ export interface CollaborationMessagePageRecord {
 
 export interface PersonalNoteRecord {
   noteId: string;
+  logicalMemoryId: string;
   title: string;
   titleVersion: number;
   body: string;
@@ -629,6 +632,7 @@ type SubscriptionRow = {
 
 type PersonalNoteRow = {
   id: string;
+  logical_memory_id: string;
   owner_user_id: string;
   sequence: number | string;
   title_version: number;
@@ -671,8 +675,10 @@ const selectPersonalNoteSql = `
          note.current_revision,note.lifecycle,note.created_at,note.updated_at,
          revision.id as revision_id,revision.revision,revision.content_hash,
          revision.memory_event_id,revision.projection_state,
-         revision.projection_failure_code
+         revision.projection_failure_code,source.logical_memory_id
     from personal_notes note
+    join local_personal_note_logical_memories source
+      on source.local_note_id=note.id and source.owner_user_id=note.owner_user_id
     join personal_note_revisions revision
       on revision.note_id=note.id
      and revision.owner_user_id=note.owner_user_id
@@ -705,6 +711,7 @@ const decryptPersonalNote = async (
   }
   return {
     noteId: row.id,
+    logicalMemoryId: row.logical_memory_id,
     title: normalizePersonalNoteTitle(titlePayload.plaintext),
     titleVersion: row.title_version,
     body: bodyPayload.plaintext,
@@ -1085,7 +1092,7 @@ const activeShareGrant = async (
     `
       select exists (
         select 1
-        from team_session_share_grants sg
+        from team_memory_share_grants sg
         join source_owner_representation_consents consent
           on consent.id = sg.consent_id
          and consent.logical_memory_id = sg.logical_memory_id
@@ -1159,7 +1166,7 @@ const pendingShareGrant = async (
   const result = await client.query<{ allowed: boolean }>(
     `select exists (
        select 1
-         from team_session_share_grants g
+         from team_memory_share_grants g
          join pending_share_operations p on p.grant_id=g.id
         where g.id=$1 and g.team_id=$2 and g.team_workspace_id=$3
           and g.logical_memory_id=$4 and g.owner_user_id=$5
@@ -1201,7 +1208,7 @@ const authorizedThreadJoinsSql = `
    and workspace_access.team_id = ct.team_id
    and workspace_access.user_id = $1
    and workspace_access.disabled_at is null
-  left join team_session_share_grants share_grant
+  left join team_memory_share_grants share_grant
     on share_grant.id = ct.share_grant_id
    and share_grant.team_id = ct.team_id
    and share_grant.team_workspace_id = ct.team_workspace_id
@@ -1357,7 +1364,7 @@ const getAuthorizedThreadRow = async (
                   ct.kind = 'shared_session_discussion'
                   and exists (
                     select 1
-                      from team_session_share_grants pending_grant
+                      from team_memory_share_grants pending_grant
                       join pending_share_operations pending_share
                         on pending_share.grant_id = pending_grant.id
                      where pending_grant.id = ct.share_grant_id
@@ -2008,7 +2015,7 @@ const sharedMemoryScopedEventSql = `(
 
 const activeSharedMemoryGrantEventAuthorizationSql = `exists (
   select 1
-  from team_session_share_grants realtime_grant
+  from team_memory_share_grants realtime_grant
   join source_owner_representation_consents realtime_consent
     on realtime_consent.id = realtime_grant.consent_id
    and realtime_consent.logical_memory_id = realtime_grant.logical_memory_id
@@ -2062,7 +2069,7 @@ const activeSharedMemoryGrantEventAuthorizationSql = `exists (
 const sharedMemoryRepresentationEventAuthorizationSql = `exists (
   select 1
   from team_memory_representations realtime_representation
-  join team_session_share_grants realtime_grant
+  join team_memory_share_grants realtime_grant
     on realtime_grant.id = realtime_representation.share_grant_id
    and realtime_grant.consent_id = realtime_representation.consent_id
    and realtime_grant.team_id = realtime_representation.team_id
@@ -2146,7 +2153,7 @@ const sharedMemoryRepresentationEventAuthorizationSql = `exists (
 
 const exactSharedMemoryGrantEventBindingSql = `exists (
   select 1
-  from team_session_share_grants transition_grant
+  from team_memory_share_grants transition_grant
   where transition_grant.id = event.share_grant_id
     and transition_grant.team_id = event.team_id
     and transition_grant.team_workspace_id = event.team_workspace_id
@@ -2170,14 +2177,14 @@ const threadlessTeamEventAuthorizationSql = `
     )
     or (
       event.family = 'share_grant_lifecycle'
-      and event.resource_type = 'team_session_share_grant'
+      and event.resource_type = 'team_memory_share_grant'
       and event.resource_id = event.share_grant_id
       and ${activeSharedMemoryGrantEventAuthorizationSql}
     )
     or (
       event.family in ('fidelity_changed', 'source_revision_changed')
       and event.resource_type in (
-        'team_session_share_grant',
+        'team_memory_share_grant',
         'team_memory_representation'
       )
       and event.resource_id = event.share_grant_id
@@ -2185,7 +2192,7 @@ const threadlessTeamEventAuthorizationSql = `
     )
     or (
       event.family = 'access_revoked'
-      and event.resource_type = 'team_session_share_grant'
+      and event.resource_type = 'team_memory_share_grant'
       and event.resource_id = event.share_grant_id
       and ${exactSharedMemoryGrantEventBindingSql}
     )
@@ -4493,6 +4500,53 @@ export const createCollaborationRepository = (
             contentHash
           ]
         );
+        const deployment = await client.query<{
+          id: string;
+          protocol_deployment_id: string;
+        }>(
+          `select id,protocol_deployment_id
+             from deployment_identities
+            where locality='local' and disabled_at is null
+            limit 1`
+        );
+        const localDeployment = deployment.rows[0];
+        if (!localDeployment) {
+          throw new CollaborationStateConflictError(
+            "Local deployment identity is required for Personal Notes"
+          );
+        }
+        const logicalMemoryId = crossIdentitySyncDeterministicUuid({
+          protocol: "koed.personal-note-share/v1",
+          sourceDeploymentId: localDeployment.protocol_deployment_id,
+          sourceOwnerPrincipalId: actor.userId,
+          noteId,
+          identity: "logical-memory"
+        });
+        await client.query(
+          `insert into logical_memories (
+             id,protocol_logical_id,owner_user_id,owner_principal_id,
+             origin_deployment_identity_id,source_kind,logical_key,
+             latest_source_revision
+           ) values ($1,$1,$2,$2,$3,'personal_note',$4,0)`,
+          [
+            logicalMemoryId,
+            actor.userId,
+            localDeployment.id,
+            `personal_note:${localDeployment.protocol_deployment_id}:${noteId}`
+          ]
+        );
+        await client.query(
+          `insert into personal_note_logical_memories
+             (logical_memory_id,source_note_id,owner_principal_id)
+           values ($1,$2,$3)`,
+          [logicalMemoryId, noteId, actor.userId]
+        );
+        await client.query(
+          `insert into local_personal_note_logical_memories
+             (logical_memory_id,local_note_id,owner_user_id)
+           values ($1,$2,$3)`,
+          [logicalMemoryId, noteId, actor.userId]
+        );
         await Promise.all([
           upsertEncryptedFieldPayloadWithClient(
             client,
@@ -4813,7 +4867,11 @@ export const createCollaborationRepository = (
 
     async markPersonalNoteProjectionAvailable(actor, input) {
       return withTransaction(pool, async (client) => {
-        const updated = await client.query<{ note_id: string }>(
+        const updated = await client.query<{
+          note_id: string;
+          id: string;
+          content_hash: string;
+        }>(
           `update personal_note_revisions revision
               set projection_state='available',memory_event_id=$4,
                   projection_failure_code=null,projected_at=now(),
@@ -4826,10 +4884,109 @@ export const createCollaborationRepository = (
               and note.current_revision=revision.revision
               and note.lifecycle='active'
               and revision.projection_state in ('pending','failed','available')
-            returning revision.note_id`,
+            returning revision.note_id,revision.id,revision.content_hash`,
           [input.noteId, actor.userId, input.revision, input.memoryEventId]
         );
         if (!updated.rows[0]) return null;
+        const sourceRoot = await client.query<{ logical_memory_id: string }>(
+          `select logical_memory_id
+             from local_personal_note_logical_memories
+            where local_note_id=$1 and owner_user_id=$2
+            limit 1`,
+          [input.noteId, actor.userId]
+        );
+        const logicalMemoryId = sourceRoot.rows[0]?.logical_memory_id;
+        if (!logicalMemoryId) {
+          throw new CollaborationStateConflictError(
+            "Personal Note logical Memory binding is unavailable"
+          );
+        }
+        const source = {
+          kind: "personal_note" as const,
+          noteId: input.noteId,
+          noteRevision: input.revision,
+          memoryEventId: input.memoryEventId,
+          logicalMemoryId
+        };
+        const sourceRevisionIdentity = logicalMemorySourceRevisionIdentity({
+          source,
+          ownerPrincipalId: actor.userId,
+          sourceRevision: input.revision
+        });
+        const sourceRevisionBindingHash = sourceRevisionIdentity.bindingHash;
+        const deterministicSourceRevisionId = sourceRevisionIdentity.id;
+        const sourceRevision = await client.query<{ id: string }>(
+          `insert into logical_memory_source_revisions
+             (id,logical_memory_id,owner_principal_id,source_kind,revision,
+              binding_hash)
+           values ($1,$2,$3,'personal_note',$4,$5)
+           on conflict (logical_memory_id,revision) do update
+             set binding_hash=logical_memory_source_revisions.binding_hash
+           where logical_memory_source_revisions.owner_principal_id=excluded.owner_principal_id
+             and logical_memory_source_revisions.source_kind=excluded.source_kind
+             and logical_memory_source_revisions.binding_hash=excluded.binding_hash
+           returning id`,
+          [
+            deterministicSourceRevisionId,
+            logicalMemoryId,
+            actor.userId,
+            input.revision,
+            sourceRevisionBindingHash
+          ]
+        );
+        const sourceRevisionId = sourceRevision.rows[0]?.id;
+        if (!sourceRevisionId) {
+          throw new CollaborationStateConflictError(
+            "Personal Note source revision binding changed"
+          );
+        }
+        const sourceBinding = await client.query<{
+          source_revision_id: string;
+        }>(
+          `insert into personal_note_source_revisions (
+             source_revision_id,logical_memory_id,owner_principal_id,
+             source_note_id,revision,source_memory_event_id
+           ) values ($1,$2,$3,$4,$5,$6)
+           on conflict (source_note_id,revision) do update
+             set source_revision_id=personal_note_source_revisions.source_revision_id
+           where personal_note_source_revisions.source_revision_id=excluded.source_revision_id
+             and personal_note_source_revisions.source_memory_event_id=excluded.source_memory_event_id
+           returning source_revision_id`,
+          [
+            sourceRevisionId,
+            logicalMemoryId,
+            actor.userId,
+            input.noteId,
+            input.revision,
+            input.memoryEventId
+          ]
+        );
+        if (!sourceBinding.rows[0]) {
+          throw new CollaborationStateConflictError(
+            "Personal Note source revision binding changed"
+          );
+        }
+        await client.query(
+          `insert into local_personal_note_source_revisions (
+             source_revision_id,note_revision_id,local_note_id,revision,
+             local_memory_event_id
+           ) values ($1,$2,$3,$4,$5)
+           on conflict (source_revision_id) do nothing`,
+          [
+            sourceRevisionId,
+            updated.rows[0].id,
+            input.noteId,
+            input.revision,
+            input.memoryEventId
+          ]
+        );
+        await client.query(
+          `update logical_memories
+              set latest_source_revision=greatest(latest_source_revision,$2),
+                  updated_at=now()
+            where id=$1 and owner_principal_id=$3 and source_kind='personal_note'`,
+          [logicalMemoryId, input.revision, actor.userId]
+        );
         await client.query(
           `update memory_events event
               set invalidated_at=coalesce(event.invalidated_at,now()),
@@ -4857,25 +5014,29 @@ export const createCollaborationRepository = (
           `update collaboration_continuous_note_advancement_work work
               set state='completed',locked_at=null,completed_at=now(),
                   redacted_failure_code='superseded',updated_at=now()
-             from collaboration_shared_memory_enrollments enrollment
+             from collaboration_shared_memory_enrollments enrollment,
+                  personal_note_source_revisions source_revision,
+                  local_personal_note_source_revisions local_source_revision
             where work.enrollment_id=enrollment.id
+              and work.source_revision_id=source_revision.source_revision_id
+              and local_source_revision.source_revision_id=source_revision.source_revision_id
               and enrollment.local_owner_user_id=$2
               and enrollment.revoked_at is null
-              and work.local_note_id=$1 and work.local_note_revision<$3
+              and local_source_revision.local_note_id=$1
+              and source_revision.revision<$3
               and work.state in ('pending','failed')`,
           [input.noteId, actor.userId, input.revision]
         );
         await client.query(
           `insert into collaboration_continuous_note_advancement_work
-             (enrollment_id,local_owner_user_id,local_note_id,
-              local_note_revision,local_memory_event_id)
-           select enrollment.id,$2,$1,$3,$4
+             (enrollment_id,local_owner_user_id,source_revision_id)
+           select enrollment.id,$1,$2
              from collaboration_shared_memory_enrollments enrollment
-            where enrollment.local_owner_user_id=$2
+            where enrollment.local_owner_user_id=$1
               and enrollment.revoked_at is null
-           on conflict (enrollment_id,local_note_id,local_note_revision)
+           on conflict (enrollment_id,source_revision_id)
            do nothing`,
-          [input.noteId, actor.userId, input.revision, input.memoryEventId]
+          [actor.userId, sourceRevisionId]
         );
         await client.query(`select pg_notify('koed_graph_updates',$1)`, [
           JSON.stringify({

@@ -1213,6 +1213,11 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
     },
     sourceAccess: null,
     summary: {
+      source: {
+        kind: "captured_session",
+        sessionId: interactionIds.alphaSession,
+        logicalMemoryId: interactionIds.alphaMemory
+      },
       sourceSessionId: interactionIds.alphaSession,
       sourceTitle: "Packaged asynchronous sharing",
       teamName: "Electron Team App",
@@ -1262,6 +1267,11 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
     },
     sourceAccess: null,
     summary: {
+      source: {
+        kind: "captured_session",
+        sessionId: interactionIds.alphaSession,
+        logicalMemoryId: interactionIds.alphaMemory
+      },
       sourceSessionId: interactionIds.alphaSession,
       sourceTitle: "Packaged revocation fixture",
       teamName: "Electron Team App",
@@ -2001,6 +2011,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
               1
             ),
             summary: {
+              source: acceptedPendingShare.source,
               sourceSessionId: null,
               sourceTitle: "Browser launch note",
               teamName: "Electron Team App",

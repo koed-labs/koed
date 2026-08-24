@@ -1472,6 +1472,11 @@ describe("CollaborationApp", () => {
       },
       sourceAccess: null,
       summary: {
+        source: {
+          kind: "captured_session",
+          sessionId: entry.id,
+          logicalMemoryId: entry.logicalMemoryId!
+        },
         sourceSessionId: entry.id,
         sourceTitle: entry.title,
         teamName: "Atlas Research",
@@ -1959,6 +1964,11 @@ describe("CollaborationApp", () => {
       },
       sourceAccess: null,
       summary: {
+        source: {
+          kind: "captured_session",
+          sessionId: ids.eventSession,
+          logicalMemoryId: ids.logicalMemory
+        },
         sourceSessionId: ids.eventSession,
         sourceTitle: "Owner-wide active route fixture",
         teamName: "Atlas Research",
@@ -2238,6 +2248,7 @@ describe("CollaborationApp", () => {
       grant,
       sourceAccess: null,
       summary: {
+        source: grant.source,
         sourceSessionId: ids.eventSession,
         sourceTitle: "Approval-tracked revoke fixture",
         teamName: "Atlas Research",
@@ -2581,6 +2592,11 @@ describe("CollaborationApp", () => {
       },
       sourceAccess: null,
       summary: {
+        source: {
+          kind: "captured_session",
+          sessionId: source.id,
+          logicalMemoryId: source.logicalMemoryId!
+        },
         sourceSessionId: source.id,
         sourceTitle: source.title,
         teamName: "Atlas Research",
@@ -3822,6 +3838,11 @@ describe("CollaborationApp", () => {
       },
       sourceAccess: null,
       summary: {
+        source: {
+          kind: "captured_session",
+          sessionId: ids.eventSession,
+          logicalMemoryId: ids.logicalMemory
+        },
         sourceSessionId: ids.eventSession,
         sourceTitle: "Async sharing fixture",
         teamName: "Atlas Research",

@@ -444,7 +444,7 @@ const createFixture = (
     source: NonNullable<
       CollaborationPersistedSharedMemoryGrant["grant"]["source"]
     >;
-    localSessionId?: string;
+    sourceRevision: number;
   }> = [];
   const previews = new Map<string, CollaborationPersistedSharedMemoryPreview>();
   const consents = new Map<string, CollaborationPersistedSharedMemoryConsent>();
@@ -581,9 +581,7 @@ const createFixture = (
         mutationId: input.mutationId,
         mode: input.mode,
         source: input.source,
-        ...(input.localSessionId
-          ? { localSessionId: input.localSessionId }
-          : {})
+        sourceRevision: input.sourceRevision
       });
       return overrides.persistPendingSourceWork ?? true;
     },
@@ -1147,7 +1145,8 @@ describe("collaboration Shared Memory control", () => {
         pendingShareId: uuidFor(720),
         mutationId: expect.any(String),
         mode: "continuous",
-        source: noteSourceV2
+        source: noteSourceV2,
+        sourceRevision: 2
       }
     ]);
     expect(wake).toHaveBeenCalledOnce();
@@ -1282,7 +1281,8 @@ describe("collaboration Shared Memory control", () => {
         pendingShareId,
         mutationId: sourceMutationId,
         mode: "snapshot",
-        source: noteSourceV2
+        source: noteSourceV2,
+        sourceRevision: 2
       }
     ]);
     expect(wake).toHaveBeenCalledOnce();
@@ -1685,6 +1685,7 @@ describe("collaboration Shared Memory control", () => {
       },
       sourceAccess: null,
       summary: {
+        source: capturedSource,
         sourceSessionId: uuidFor(818),
         sourceTitle: "Pending owner share",
         teamName: "Atlas Research",
@@ -1770,6 +1771,7 @@ describe("collaboration Shared Memory control", () => {
         grant: remoteGrant,
         sourceAccess: null,
         summary: {
+          source: { ...capturedSource, logicalMemoryId },
           sourceSessionId: ids.localSession,
           companionThreadId: ids.companion,
           sourceTitle: `Shared source ${index + 1}`,
@@ -1886,6 +1888,7 @@ describe("collaboration Shared Memory control", () => {
       grant: grantResponse(),
       sourceAccess: null,
       summary: {
+        source: capturedSource,
         sourceSessionId: uuidFor(48),
         sourceTitle: "Owner preview",
         teamName: "Atlas Research",
@@ -1966,6 +1969,7 @@ describe("collaboration Shared Memory control", () => {
       },
       sourceAccess: null,
       summary: {
+        source: capturedSource,
         sourceSessionId: ids.localSession,
         sourceTitle: "Activated owner preview",
         teamName: "Atlas Research",
@@ -2339,7 +2343,8 @@ describe("collaboration Shared Memory control", () => {
     });
     expect(changeFixture.pendingSourceWork.at(-1)).toMatchObject({
       pendingShareId: uuidFor(701),
-      localSessionId: ids.localSession
+      source: capturedSource,
+      sourceRevision: 4
     });
   });
 
@@ -2527,7 +2532,7 @@ describe("collaboration Shared Memory control", () => {
         mutationId,
         mode: "continuous",
         source: capturedSource,
-        localSessionId: ids.localSession
+        sourceRevision: 4
       }
     ]);
     expect(requestPendingShareSourceWork).toHaveBeenCalledTimes(1);

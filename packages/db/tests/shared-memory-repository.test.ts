@@ -1133,39 +1133,47 @@ describeDb("Shared Memory repository", () => {
     );
     const ownerPrincipalId = randomUUID();
     const logicalMemory = await pool.query<{ id: string }>(
-      `insert into logical_memories (
-         owner_user_id, owner_principal_id, origin_deployment_identity_id,
-         source_boundary, origin_source_id, local_session_id, logical_key,
-         latest_source_revision
-      ) values ($1, $2, $3, 'captured_session', $4, $5, $6, $7)
-       returning id`,
+      `with logical_memory as (
+         insert into logical_memories (
+           owner_user_id, owner_principal_id, origin_deployment_identity_id,
+           source_kind, logical_key, latest_source_revision
+         ) values ($1, $2, $3, 'captured_session', $4, $5)
+         returning id
+       ), protocol_binding as (
+         insert into captured_session_logical_memories (
+           logical_memory_id,source_session_id,owner_principal_id
+         ) select id,$6,$2 from logical_memory
+       ), local_binding as (
+         insert into local_captured_session_logical_memories (
+           logical_memory_id,local_session_id,owner_user_id
+         ) select id,$6,$1 from logical_memory
+       )
+       select id from logical_memory`,
       [
         fixture.ownerUserId,
         ownerPrincipalId,
         fixture.sourceDeploymentId,
-        `source-${randomUUID()}`,
-        session.rows[0]!.id,
         `logical-${randomUUID()}`,
-        0
+        0,
+        session.rows[0]!.id
       ]
     );
     const logicalMemoryId = logicalMemory.rows[0]!.id;
     const replica = await pool.query<{ id: string }>(
       `insert into memory_replicas (
          logical_memory_id, deployment_identity_id, owner_user_id,
-         owner_principal_id, replica_role, source_boundary, local_session_id,
+         owner_principal_id, replica_role, source_boundary,
          latest_revision, lifecycle, encryption_scope, freshness_status,
          representation_policy_revision, content_policy_version
        ) values (
-         $1, $2, $3, $4, 'target', 'captured_session', $5,
-         $6, 'active', 'owner_private_replica', 'fresh', 1, 1
+         $1, $2, $3, $4, 'target', 'captured_session',
+         $5, 'active', 'owner_private_replica', 'fresh', 1, 1
        ) returning id`,
       [
         logicalMemoryId,
         fixture.targetDeploymentId,
         fixture.ownerUserId,
         ownerPrincipalId,
-        session.rows[0]!.id,
         0
       ]
     );
@@ -2224,6 +2232,185 @@ describeDb("Shared Memory repository", () => {
     ).resolves.toBeNull();
   });
 
+  it("uses indexed exact-revision lookups across the generic sharing workflow", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      representation: "memory_events",
+      label: "revision-index-plan"
+    });
+    await materialize(fixture, grant);
+    const sourceRevision = await pool.query<{ source_revision_id: string }>(
+      `select source_revision_id
+         from team_memory_share_grants
+        where id=$1`,
+      [grant.shareGrantId]
+    );
+    const sourceRevisionId = sourceRevision.rows[0]!.source_revision_id;
+    const lookups = [
+      [
+        "shared_memory_candidate_previews",
+        "shared_memory_candidate_previews_source_revision_idx"
+      ],
+      [
+        "shared_source_artifacts",
+        "shared_source_artifacts_source_revision_idx"
+      ],
+      ["shared_source_previews", "shared_source_previews_source_revision_idx"],
+      [
+        "source_owner_representation_consents",
+        "source_owner_consents_source_revision_idx"
+      ],
+      [
+        "team_memory_share_grants",
+        "team_memory_share_grants_source_revision_idx"
+      ],
+      [
+        "team_memory_representations",
+        "team_memory_representations_source_revision_idx"
+      ]
+    ] as const;
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("set local enable_seqscan=off");
+      for (const [table, indexName] of lookups) {
+        const plan = await client.query(
+          `explain (format json, costs off)
+           select id from ${table} where source_revision_id=$1`,
+          [sourceRevisionId]
+        );
+        expect(JSON.stringify(plan.rows[0])).toContain(indexName);
+      }
+      await client.query("rollback");
+    } finally {
+      client.release();
+    }
+  });
+
+  it("commits cursor zero as generic revision one only with its typed binding", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture);
+    const sourceRevisionId = randomUUID();
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `insert into logical_memory_source_revisions
+           (id,logical_memory_id,owner_principal_id,source_kind,revision,binding_hash)
+         values ($1,$2,$3,'captured_session',1,$4)`,
+        [
+          sourceRevisionId,
+          source.logicalMemoryId,
+          source.ownerPrincipalId,
+          hash("cursor-zero-binding")
+        ]
+      );
+      await client.query(
+        `insert into captured_session_source_revisions
+           (source_revision_id,logical_memory_id,owner_principal_id,source_kind,
+            revision,source_session_id,source_cursor)
+         values ($1,$2,$3,'captured_session',1,$4,0)`,
+        [
+          sourceRevisionId,
+          source.logicalMemoryId,
+          source.ownerPrincipalId,
+          source.sessionId
+        ]
+      );
+      await client.query("commit");
+    } finally {
+      client.release();
+    }
+    await expect(
+      pool.query(
+        `select generic_revision,source_revision,source_kind
+           from logical_memory_source_revision_bindings
+          where source_revision_id=$1`,
+        [sourceRevisionId]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          generic_revision: "1",
+          source_revision: "0",
+          source_kind: "captured_session"
+        }
+      ]
+    });
+
+    const unbound = await pool.connect();
+    try {
+      await unbound.query("begin");
+      await unbound.query(
+        `insert into logical_memory_source_revisions
+           (id,logical_memory_id,owner_principal_id,source_kind,revision,binding_hash)
+         values ($1,$2,$3,'captured_session',2,$4)`,
+        [
+          randomUUID(),
+          source.logicalMemoryId,
+          source.ownerPrincipalId,
+          hash("unbound-revision")
+        ]
+      );
+      let commitError: unknown;
+      try {
+        await unbound.query("commit");
+      } catch (error) {
+        commitError = error;
+      }
+      expect(commitError).toMatchObject({
+        code: "23514",
+        constraint: "logical_memory_revision_binding_check"
+      });
+    } finally {
+      await unbound.query("rollback").catch(() => undefined);
+      unbound.release();
+    }
+
+    await expect(
+      pool.query(
+        `update captured_session_source_revisions
+            set source_cursor=1
+          where source_revision_id=$1`,
+        [sourceRevisionId]
+      )
+    ).rejects.toMatchObject({
+      code: "23514",
+      constraint: "captured_session_source_revision_immutable_check"
+    });
+  });
+
+  it("rejects a workflow row whose numeric revision disagrees with its immutable binding", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      representation: "memory_events",
+      label: "revision-binding"
+    });
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `update team_memory_share_grants
+            set source_revision=source_revision+1
+          where id=$1`,
+        [grant.shareGrantId]
+      );
+      let commitError: unknown;
+      try {
+        await client.query("commit");
+      } catch (error) {
+        commitError = error;
+      }
+      expect(commitError).toMatchObject({
+        code: "23514",
+        constraint: "workflow_source_revision_binding_check"
+      });
+    } finally {
+      await client.query("rollback").catch(() => undefined);
+      client.release();
+    }
+  });
+
   it("keeps credentials in the owner preview but excludes them from Team reads", async () => {
     const fixture = await createWorkspaceFixture();
     const username = "preview-owner";
@@ -2545,9 +2732,9 @@ describeDb("Shared Memory repository", () => {
            as leaf_invalidated,
          (select invalidated_at is not null from memory_nodes where id=$3)
            as rollup_invalidated,
-         (select lifecycle from team_session_share_grants where id=$4)
+         (select lifecycle from team_memory_share_grants where id=$4)
            as grant_lifecycle,
-         (select revocation_reason from team_session_share_grants where id=$4)
+         (select revocation_reason from team_memory_share_grants where id=$4)
            as grant_reason,
          (select count(*)::text from sync_semantic_changes
            where memory_event_id=$1 and operation='delete') as delete_changes,
@@ -2720,7 +2907,7 @@ describeDb("Shared Memory repository", () => {
                 where semantic.share_grant_id=g.id) as semantic_count,
               p.state as pending_state,
               p.redacted_failure_code as failure_code
-         from team_session_share_grants g
+         from team_memory_share_grants g
          join team_memory_representations r on r.share_grant_id=g.id
          join pending_share_operations p on p.grant_id=g.id
         where g.id=$1
@@ -3020,15 +3207,26 @@ describeDb("Shared Memory repository", () => {
     );
     const noteId = personalNote.noteId;
     const memoryEventId = randomUUID();
-    const sourceDeploymentProtocolId = randomUUID();
-    const sourceOwnerPrincipalId = randomUUID();
-    const logicalMemoryId = crossIdentitySyncDeterministicUuid({
-      protocol: "koed.personal-note-share/v1",
-      sourceDeploymentId: sourceDeploymentProtocolId,
-      sourceOwnerPrincipalId,
-      noteId,
-      identity: "logical-memory"
-    });
+    const noteSource = await pool.query<{
+      logical_memory_id: string;
+      owner_principal_id: string;
+      protocol_deployment_id: string;
+    }>(
+      `select local_memory.logical_memory_id,logical.owner_principal_id,
+              deployment.protocol_deployment_id
+         from local_personal_note_logical_memories local_memory
+         join logical_memories logical
+           on logical.id=local_memory.logical_memory_id
+         join deployment_identities deployment
+           on deployment.id=logical.origin_deployment_identity_id
+        where local_memory.local_note_id=$1
+          and local_memory.owner_user_id=$2`,
+      [noteId, fixture.ownerUserId]
+    );
+    const logicalMemoryId = noteSource.rows[0]!.logical_memory_id;
+    const sourceOwnerPrincipalId = noteSource.rows[0]!.owner_principal_id;
+    const sourceDeploymentProtocolId =
+      noteSource.rows[0]!.protocol_deployment_id;
     const occurredAt = "2026-01-02T03:04:05.000Z";
     const body = personalNote.body;
     const source = {
@@ -3278,7 +3476,7 @@ describeDb("Shared Memory repository", () => {
       companion_count: string;
     }>(
       `select share.source_kind,share.source_note_id,share.source_memory_event_id,
-              share.remote_replica_id,share.session_id,
+              share.remote_replica_id,share.source_session_id as session_id,
               representation.source_kind as representation_source_kind,
               (select count(*)::text from memory_replicas replica
                 where replica.logical_memory_id=share.logical_memory_id) as replica_count,
@@ -3287,8 +3485,8 @@ describeDb("Shared Memory repository", () => {
               (select count(*)::text from collaboration_threads thread
                 where thread.share_grant_id=share.id
                   and thread.kind='shared_session_discussion') as companion_count
-         from team_session_share_grants share
-         join team_memory_representations representation
+         from team_memory_share_grant_records share
+         join team_memory_representation_records representation
            on representation.share_grant_id=share.id and representation.state='available'
         where share.id=$1`,
       [shareGrantId]
@@ -3503,7 +3701,7 @@ describeDb("Shared Memory repository", () => {
       rows: [{ latest_source_revision: "2" }]
     });
     const retainedSource = await pool.query<{ count: string }>(
-      `select count(*)::text as count from shared_source_artifacts
+      `select count(*)::text as count from shared_source_artifact_records
         where logical_memory_id=$1 and source_kind='personal_note'`,
       [logicalMemoryId]
     );
@@ -3548,7 +3746,7 @@ describeDb("Shared Memory repository", () => {
       }>(
         `select g.source_revision::text,
                 count(representation.id)::text as premature_representations
-           from team_session_share_grants g
+           from team_memory_share_grants g
            left join team_memory_representations representation
              on representation.share_grant_id=g.id
             and representation.source_revision=$2
@@ -3601,7 +3799,7 @@ describeDb("Shared Memory repository", () => {
     });
     await expect(
       pool.query<{ count: string }>(
-        `select count(*)::text as count from team_session_share_grants
+        `select count(*)::text as count from team_memory_share_grants
           where logical_memory_id=$1 and team_workspace_id=$2`,
         [logicalMemoryId, fixture.teamWorkspaceId]
       )
@@ -4896,7 +5094,7 @@ describeDb("Shared Memory repository", () => {
       grant_version: number;
     }>(
       `select maximum_fidelity,include_curated_memory,grant_version
-         from team_session_share_grants where id=$1`,
+         from team_memory_share_grants where id=$1`,
       [grant.shareGrantId]
     );
     expect(consent.rowCount).toBe(0);
@@ -5502,7 +5700,7 @@ describeDb("Shared Memory repository", () => {
       state: string;
     }>(
       `select g.lifecycle,r.representation,r.state
-         from team_session_share_grants g
+         from team_memory_share_grants g
          join team_memory_representations r on r.share_grant_id=g.id
         where g.id=$1`,
       [grant.shareGrantId]
@@ -5589,7 +5787,7 @@ describeDb("Shared Memory repository", () => {
         state: string;
       }>(
         `select g.lifecycle,r.representation,r.state
-           from team_session_share_grants g
+           from team_memory_share_grants g
            join team_memory_representations r on r.share_grant_id=g.id
           where g.id=$1`,
         [scopedGrant.shareGrantId]
@@ -6691,7 +6889,7 @@ describeDb("Shared Memory repository", () => {
       afterSharedMemorySemanticClaimForTest: async () => {
         boundaryCalls += 1;
         await pool.query(
-          `update team_session_share_grants
+          `update team_memory_share_grants
               set lifecycle='revoked',revoked_at=now(),
                   revoked_by_user_id=$2,revocation_reason='semantic_claim_race'
             where id=$1`,
@@ -6733,7 +6931,7 @@ describeDb("Shared Memory repository", () => {
       afterSharedMemorySemanticDecryptForTest: async () => {
         await revocationClient.query("begin");
         revocationUpdate = revocationClient.query(
-          `update team_session_share_grants
+          `update team_memory_share_grants
               set lifecycle='revoked',revoked_at=now(),
                   revoked_by_user_id=$2,revocation_reason='semantic_lease_race'
             where id=$1`,
@@ -7344,7 +7542,7 @@ describeDb("Shared Memory repository", () => {
       grant_count: string;
     }>(
       `select replica.lifecycle,replica.disabled_at,
-              (select count(*) from team_session_share_grants
+              (select count(*) from team_memory_share_grants
                 where remote_replica_id=replica.id)::text as grant_count
          from memory_replicas replica where replica.id=$1`,
       [source.remoteReplicaId]
@@ -7376,7 +7574,7 @@ describeDb("Shared Memory repository", () => {
     });
 
     await pool.query(
-      `update team_session_share_grants
+      `update team_memory_share_grants
           set lifecycle='unavailable',grant_version=grant_version+1,updated_at=now()
         where id=$1`,
       [grant.shareGrantId]
@@ -8099,7 +8297,7 @@ describeDb("Shared Memory repository", () => {
     await assertDeniedBeforeDecrypt(
       () =>
         pool.query(
-          `update team_session_share_grants
+          `update team_memory_share_grants
            set lifecycle = 'revoked', revoked_at = now(),
                revoked_by_user_id = $2, revocation_reason = 'matrix'
            where id = $1`,
@@ -8107,7 +8305,7 @@ describeDb("Shared Memory repository", () => {
         ),
       () =>
         pool.query(
-          `update team_session_share_grants
+          `update team_memory_share_grants
            set lifecycle = 'active', revoked_at = null,
                revoked_by_user_id = null, revocation_reason = null
            where id = $1`,
@@ -8276,7 +8474,7 @@ describeDb("Shared Memory repository", () => {
       sync_state: string;
     }>(
       `select g.lifecycle, s.state as sync_state
-         from team_session_share_grants g
+         from team_memory_share_grants g
          join cross_identity_sync_relationships s
            on s.local_replica_id = g.remote_replica_id and s.side = 'target'
         where g.id = $1`,
@@ -8302,7 +8500,7 @@ describeDb("Shared Memory repository", () => {
       sync_state: string;
     }>(
       `select g.lifecycle, s.state as sync_state
-         from team_session_share_grants g
+         from team_memory_share_grants g
          join cross_identity_sync_relationships s
            on s.local_replica_id = g.remote_replica_id and s.side = 'target'
         where g.id = $1`,
@@ -8423,7 +8621,7 @@ describeDb("Shared Memory repository", () => {
               representation.retain_until as representation_retain_until,
               companion.retain_until as companion_retain_until,
               audit.metadata
-         from team_session_share_grants grant_row
+         from team_memory_share_grants grant_row
          join retention_decisions decision
            on decision.id = grant_row.active_retention_decision_id
          join team_memory_representations representation
@@ -8497,7 +8695,7 @@ describeDb("Shared Memory repository", () => {
                 (select count(*)::text from purge_job_evidence evidence
                   join purge_jobs job on job.id = evidence.purge_job_id
                   where job.share_grant_id = grant_row.id) as evidence
-           from team_session_share_grants grant_row where grant_row.id = $1`,
+           from team_memory_share_grants grant_row where grant_row.id = $1`,
         [grant.shareGrantId]
       )
     ).resolves.toMatchObject({
@@ -8540,7 +8738,7 @@ describeDb("Shared Memory repository", () => {
                   where decision.share_grant_id = grant_row.id) as decisions,
                 (select count(*)::text from purge_jobs job
                   where job.share_grant_id = grant_row.id) as jobs
-           from team_session_share_grants grant_row
+           from team_memory_share_grants grant_row
            join team_memory_representations representation
              on representation.share_grant_id = grant_row.id
           where grant_row.id = $1`,
@@ -8648,7 +8846,7 @@ describeDb("Shared Memory repository", () => {
               job.state as job_state,
               (select count(*)::text from purge_job_evidence evidence
                 where evidence.purge_job_id = job.id) as evidence_count
-         from team_session_share_grants g
+         from team_memory_share_grants g
          join retention_decisions decision
            on decision.id = g.active_retention_decision_id
          join purge_jobs job on job.id = g.active_purge_job_id
@@ -8708,7 +8906,7 @@ describeDb("Shared Memory repository", () => {
                   and decision.trigger = 'share_revoked') as immutable_decisions,
               (select count(*)::text from purge_job_evidence evidence
                 where evidence.purge_job_id = job.id) as immutable_evidence
-         from team_session_share_grants g
+         from team_memory_share_grants g
          join purge_jobs job
            on job.id = $2
         where g.id = $1`,
@@ -8792,7 +8990,7 @@ describeDb("Shared Memory repository", () => {
          from retention_decisions decision
          join purge_jobs job on job.retention_decision_id = decision.id
          join purge_job_evidence evidence on evidence.purge_job_id = job.id
-         join team_session_share_grants grant_row
+         join team_memory_share_grants grant_row
            on grant_row.id = decision.share_grant_id
         where decision.share_grant_id = $1
           and decision.trigger = 'share_revoked'
@@ -8898,7 +9096,7 @@ describeDb("Shared Memory repository", () => {
               representation.state as representation_state,
               grant_row.active_purge_job_id as active_job_id,
               job.state as job_state, attempt.state as attempt_state
-         from team_session_share_grants grant_row
+         from team_memory_share_grants grant_row
          join team_memory_representations representation
            on representation.share_grant_id = grant_row.id
          join purge_jobs job on job.id = grant_row.active_purge_job_id
@@ -9202,7 +9400,7 @@ describeDb("Shared Memory repository", () => {
       completion_audits: string;
     }>(
       `select
-         (select lifecycle from team_session_share_grants
+         (select lifecycle from team_memory_share_grants
            where id = $1) as target_grant_lifecycle,
          (select state from team_memory_representations
            where id = $2) as target_representation_state,
@@ -9216,7 +9414,7 @@ describeDb("Shared Memory repository", () => {
            where thread_id = $3) as target_messages,
          (select count(*)::text from collaboration_outbox
            where share_grant_id = $1 or thread_id = $3) as target_outbox,
-         (select lifecycle from team_session_share_grants
+         (select lifecycle from team_memory_share_grants
            where id = $4) as unrelated_grant_lifecycle,
          (select state from team_memory_representations
            where id = $5) as unrelated_representation_state,
@@ -9412,7 +9610,7 @@ describeDb("Shared Memory repository", () => {
       applicable_legal_hold_ids: string[];
     }>(
       `select job.id as job_id, decision.applicable_legal_hold_ids
-         from team_session_share_grants grant_row
+         from team_memory_share_grants grant_row
          join retention_decisions decision
            on decision.id = grant_row.active_retention_decision_id
          join purge_jobs job on job.id = grant_row.active_purge_job_id
@@ -9430,7 +9628,7 @@ describeDb("Shared Memory repository", () => {
                   where share_grant_id = grant_row.id) as chunks,
                 (select count(*)::text from collaboration_messages
                   where thread_id = $2) as messages
-           from team_session_share_grants grant_row
+           from team_memory_share_grants grant_row
            join purge_jobs job on job.id = grant_row.active_purge_job_id
           where grant_row.id = $1`,
         [grant.shareGrantId, companion!.id]
@@ -9520,7 +9718,7 @@ describeDb("Shared Memory repository", () => {
            where mutation_id = $2 and family = 'access_revoked') as revoke_events,
          decision.trigger_epoch::text,
          job.target_epoch::text
-       from team_session_share_grants grant_row
+       from team_memory_share_grants grant_row
        join retention_decisions decision
          on decision.id = grant_row.active_retention_decision_id
        join purge_jobs job on job.id = grant_row.active_purge_job_id
@@ -9736,7 +9934,7 @@ describeDb("Shared Memory repository", () => {
     );
 
     const stored = await pool.query<{ count: string }>(
-      `select count(*)::text as count from team_session_share_grants
+      `select count(*)::text as count from team_memory_share_grants
        where logical_memory_id=$1 and team_workspace_id=$2`,
       [grant.logicalMemoryId, fixture.teamWorkspaceId]
     );

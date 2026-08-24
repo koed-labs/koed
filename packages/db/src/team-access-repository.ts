@@ -29,7 +29,7 @@ import {
   teamMemberships,
   teamRepresentationPolicies,
   retentionPolicies,
-  teamSessionShareGrants,
+  teamMemoryShareGrants,
   teams,
   teamWorkspaceAccessGrants,
   teamWorkspaces,
@@ -1865,12 +1865,12 @@ export const createTeamAccessRepository = (
           .where(eq(teamInvites.teamId, teamId)),
         db
           .select({
-            active: sql<number>`count(*) filter (where ${teamSessionShareGrants.revokedAt} is null)::int`,
-            revoked: sql<number>`count(*) filter (where ${teamSessionShareGrants.revokedAt} is not null)::int`,
-            retainedAfterPersonalDeletion: sql<number>`count(*) filter (where ${teamSessionShareGrants.personalDeletedAt} is not null and ${teamSessionShareGrants.retainedByTeamAt} is not null)::int`
+            active: sql<number>`count(*) filter (where ${teamMemoryShareGrants.revokedAt} is null)::int`,
+            revoked: sql<number>`count(*) filter (where ${teamMemoryShareGrants.revokedAt} is not null)::int`,
+            retainedAfterPersonalDeletion: sql<number>`count(*) filter (where ${teamMemoryShareGrants.personalDeletedAt} is not null and ${teamMemoryShareGrants.retainedByTeamAt} is not null)::int`
           })
-          .from(teamSessionShareGrants)
-          .where(eq(teamSessionShareGrants.teamId, teamId)),
+          .from(teamMemoryShareGrants)
+          .where(eq(teamMemoryShareGrants.teamId, teamId)),
         db
           .select({
             teamEventCount: sql<number>`count(*)::int`,
@@ -2140,12 +2140,12 @@ export const createTeamAccessRepository = (
           .where(eq(teamInvites.teamId, teamId)),
         db
           .select({
-            active: sql<number>`count(*) filter (where ${teamSessionShareGrants.revokedAt} is null)::int`,
-            revoked: sql<number>`count(*) filter (where ${teamSessionShareGrants.revokedAt} is not null)::int`,
-            retainedAfterPersonalDeletion: sql<number>`count(*) filter (where ${teamSessionShareGrants.personalDeletedAt} is not null and ${teamSessionShareGrants.retainedByTeamAt} is not null)::int`
+            active: sql<number>`count(*) filter (where ${teamMemoryShareGrants.revokedAt} is null)::int`,
+            revoked: sql<number>`count(*) filter (where ${teamMemoryShareGrants.revokedAt} is not null)::int`,
+            retainedAfterPersonalDeletion: sql<number>`count(*) filter (where ${teamMemoryShareGrants.personalDeletedAt} is not null and ${teamMemoryShareGrants.retainedByTeamAt} is not null)::int`
           })
-          .from(teamSessionShareGrants)
-          .where(eq(teamSessionShareGrants.teamId, teamId)),
+          .from(teamMemoryShareGrants)
+          .where(eq(teamMemoryShareGrants.teamId, teamId)),
         db
           .select({
             teamEventCount: sql<number>`count(*)::int`,

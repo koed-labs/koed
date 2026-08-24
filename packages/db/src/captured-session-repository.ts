@@ -208,11 +208,14 @@ export const getCapturedSessionSummaryWithClient = async (
        and me.visibility = 'personal'
        and me.invalidated_at is null
        and me.personal_deleted_at is null
+      left join local_captured_session_logical_memories local_memory
+        on local_memory.local_session_id = s.id
+       and local_memory.owner_user_id = $1
       left join logical_memories lm
-        on lm.local_session_id = s.id
+        on lm.id = local_memory.logical_memory_id
        and lm.owner_user_id = $1
        and lm.owner_principal_id = $1
-       and lm.source_boundary = 'captured_session'
+       and lm.source_kind = 'captured_session'
        and lm.lifecycle in ('active', 'stale')
       left join lateral (
         select relationship.state, relationship.revoked_at,
@@ -224,7 +227,6 @@ export const getCapturedSessionSummaryWithClient = async (
             select replica.id
             from memory_replicas replica
             where replica.logical_memory_id = lm.id
-              and replica.local_session_id = s.id
               and replica.owner_user_id = $1
               and replica.owner_principal_id = $1
               and replica.replica_role = 'source'
@@ -895,11 +897,14 @@ export const createCapturedSessionRepository = (
          and me.visibility = 'personal'
          and me.invalidated_at is null
          and me.personal_deleted_at is null
+        left join local_captured_session_logical_memories local_memory
+          on local_memory.local_session_id = s.id
+         and local_memory.owner_user_id = $1
         left join logical_memories lm
-          on lm.local_session_id = s.id
+          on lm.id = local_memory.logical_memory_id
          and lm.owner_user_id = $1
          and lm.owner_principal_id = $1
-         and lm.source_boundary = 'captured_session'
+         and lm.source_kind = 'captured_session'
          and lm.lifecycle in ('active', 'stale')
         left join lateral (
           select relationship.state, relationship.revoked_at,
@@ -911,7 +916,6 @@ export const createCapturedSessionRepository = (
               select replica.id
               from memory_replicas replica
               where replica.logical_memory_id = lm.id
-                and replica.local_session_id = s.id
                 and replica.owner_user_id = $1
                 and replica.owner_principal_id = $1
                 and replica.replica_role = 'source'
@@ -940,10 +944,13 @@ export const createCapturedSessionRepository = (
 
   async getCapturedSessionSummaryByLogicalMemoryId(actor, logicalMemoryId) {
     const result = await pool.query<{ local_session_id: string }>(
-      `select logical.local_session_id
+      `select local_memory.local_session_id
          from logical_memories logical
+         join local_captured_session_logical_memories local_memory
+           on local_memory.logical_memory_id=logical.id
+          and local_memory.owner_user_id=logical.owner_user_id
          join sessions session
-           on session.id = logical.local_session_id
+           on session.id = local_memory.local_session_id
           and session.owner_user_id = logical.owner_user_id
           and session.visibility = 'personal'
           and session.invalidated_at is null
@@ -951,7 +958,7 @@ export const createCapturedSessionRepository = (
         where logical.id = $2
           and logical.owner_user_id = $1
           and logical.owner_principal_id = $1
-          and logical.source_boundary = 'captured_session'
+          and logical.source_kind = 'captured_session'
           and logical.lifecycle in ('active', 'stale')
         limit 1`,
       [actor.userId, logicalMemoryId]
