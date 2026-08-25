@@ -1797,6 +1797,7 @@ describe("collaboration realtime protocol", () => {
           sourceTitle: "Owner conversation",
           teamName: "Team",
           workspaceName: "Workspace",
+          workspaceContentAccess: "unavailable" as const,
           mode: "continuous" as const,
           authorizedPreview: null,
           lastReadyRevision: null,
