@@ -148,6 +148,20 @@ describe("Embedding Service routes", () => {
     });
   });
 
+  it("ignores a device listing when the resolved backend is CPU", async () => {
+    const identity = await capacityHardwareIdentity({
+      policy: "cpu",
+      backend: "cpu",
+      device: null,
+      gpuLayers: "0",
+      fallbackReason: null,
+      deviceListing: "llama.cpp reported a generic CPU device"
+    });
+
+    expect(identity.acceleratorFingerprint).toBeNull();
+    expect(identity.hardwareFingerprint).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it("rejects HTTP bind failures through the awaited startup path", async () => {
     const service = {
       handle: async () => new Response(null, { status: 204 })
