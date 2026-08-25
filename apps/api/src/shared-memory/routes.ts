@@ -419,6 +419,13 @@ const ownerGrantDto = (grant: SharedMemoryGrantRecord) => ({
   companionScope: grant.companionScope
 });
 
+const ownedShareGrantDto = (grant: SharedMemoryGrantRecord) => {
+  const { companionScope: _companionScope, ...ownerSafeGrant } =
+    ownerGrantDto(grant);
+  void _companionScope;
+  return ownerSafeGrant;
+};
+
 const teamGrantDto = (grant: SharedMemoryGrantRecord) => ({
   sourceCapabilities: grant.sourceCapabilities,
   activationRepresentation: grant.activationRepresentation,
@@ -522,12 +529,6 @@ type WorkspaceIndexEntry = Awaited<
   ReturnType<SharedMemoryRepository["listWorkspaceGrants"]>
 >["entries"][number];
 
-type OwnerGrantEntry = Awaited<
-  ReturnType<SharedMemoryRepository["listOwnerGrants"]>
->["entries"][number];
-
-const ownedGrantDto = (grant: OwnerGrantEntry) => ownerGrantDto(grant);
-
 type OwnedShareEntry = NonNullable<
   Awaited<ReturnType<SharedMemoryRepository["getOwnerShare"]>>
 >;
@@ -536,7 +537,7 @@ const ownedShareDto = (entry: OwnedShareEntry) =>
   entry.kind === "grant"
     ? {
         kind: "grant" as const,
-        grant: ownedGrantDto(entry.grant),
+        grant: ownedShareGrantDto(entry.grant),
         sourceAccess: entry.sourceAccess,
         summary: entry.summary
       }

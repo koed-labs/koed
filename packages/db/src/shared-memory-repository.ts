@@ -244,6 +244,7 @@ export interface OwnedShareSummary {
   sourceTitle: string;
   teamName: string;
   workspaceName: string;
+  workspaceContentAccess: "available" | "unavailable";
   mode: "snapshot" | "continuous";
   authorizedPreview: {
     previewId: string;
@@ -15030,11 +15031,14 @@ export const createSharedMemoryRepository = (
                   owned.effective_source_revision,
                   jsonb_build_object(
                     'sourceSessionId',s.id,
-                    'companionThreadId',companion.id,
+                    'companionThreadId',case when workspace_access.available
+                      then companion.id else null end,
                     'sourceTitle',coalesce(nullif(btrim(owned.display_title),''),
                                            nullif(btrim(s.metadata ->> 'threadName'),''),
                                            s.external_session_id,'Untitled conversation'),
                     'teamName',t.name,'workspaceName',w.name,
+                    'workspaceContentAccess',case when workspace_access.available
+                      then 'available' else 'unavailable' end,
                     'mode',coalesce(c.mode,owned.share_mode),
                     'authorizedPreview',case when coalesce(c.preview_id,owned.preview_id) is null
                       then null else jsonb_build_object(
@@ -15119,6 +15123,25 @@ export const createSharedMemoryRepository = (
              left join sessions s on s.id=local_memory.local_session_id and s.owner_user_id=$1
              join teams t on t.id=owned.team_id
              join team_workspaces w on w.id=owned.team_workspace_id and w.team_id=owned.team_id
+             cross join lateral (
+               select exists (
+                 select 1
+                   from team_memberships tm
+                   join users owner_user on owner_user.id=tm.user_id
+                    and owner_user.disabled_at is null and owner_user.deleted_at is null
+                   join team_workspace_access_grants wa
+                     on wa.team_id=tm.team_id
+                    and wa.team_workspace_id=owned.team_workspace_id
+                    and wa.user_id=tm.user_id
+                    and wa.access in ('read','write')
+                    and wa.disabled_at is null
+                  where tm.team_id=owned.team_id and tm.user_id=$1
+                    and tm.status='enabled' and tm.disabled_at is null
+                    and t.lifecycle='active'
+                    and t.entitlement_status in ('active','grace')
+                    and w.lifecycle='active' and w.archived_at is null
+               ) as available
+             ) workspace_access
              left join source_owner_representation_consent_records c on c.id=owned.consent_id
              left join lateral (
                select ct.id
@@ -15185,6 +15208,10 @@ export const createSharedMemoryRepository = (
               sourceTitle: stringValue(rawSummary.sourceTitle),
               teamName: stringValue(rawSummary.teamName),
               workspaceName: stringValue(rawSummary.workspaceName),
+              workspaceContentAccess:
+                rawSummary.workspaceContentAccess === "available"
+                  ? "available"
+                  : "unavailable",
               mode: rawSummary.mode as "snapshot" | "continuous",
               authorizedPreview: rawPreview
                 ? {
@@ -15278,6 +15305,9 @@ export const createSharedMemoryRepository = (
 
     async readOwnerSharePreview(actor, input) {
       const ownedShare = await repository.getOwnerShare(actor, input);
+      if (ownedShare?.summary.workspaceContentAccess !== "available") {
+        return null;
+      }
       const previewReference = ownedShare?.summary.authorizedPreview;
       if (!previewReference) return null;
       return withTransaction(pool, async (client) => {

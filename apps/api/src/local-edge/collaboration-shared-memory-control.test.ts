@@ -1714,6 +1714,10 @@ describe("collaboration Shared Memory control", () => {
     const pendingShareId = uuidFor(812);
     const inaccessibleGrant = {
       ...grantResponse(),
+      source: {
+        ...capturedSource,
+        logicalMemoryId: inaccessibleLogicalMemoryId
+      },
       id: inaccessibleGrantId,
       logicalGrantId: uuidFor(813),
       logicalMemoryId: inaccessibleLogicalMemoryId,
@@ -1762,6 +1766,8 @@ describe("collaboration Shared Memory control", () => {
         sourceTitle: "Pending owner share",
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
+        companionThreadId: ids.companion,
         mode: "continuous",
         authorizedPreview: {
           previewId: ids.preview,
@@ -1783,6 +1789,8 @@ describe("collaboration Shared Memory control", () => {
           summary: {
             ...pending.summary,
             sourceTitle: "Inaccessible historical grant",
+            workspaceContentAccess: "unavailable",
+            companionThreadId: null,
             authorizedPreview: null
           }
         }
@@ -1806,6 +1814,15 @@ describe("collaboration Shared Memory control", () => {
             kind: "pending",
             pendingShare: { id: pendingShareId, state: "preparing" },
             summary: { sourceSessionId: ids.localSession }
+          },
+          {
+            kind: "grant",
+            grant: { id: inaccessibleGrant.id },
+            summary: {
+              sourceTitle: "Inaccessible historical grant",
+              workspaceContentAccess: "unavailable",
+              companionThreadId: null
+            }
           }
         ],
         nextCursor: null
@@ -1849,6 +1866,7 @@ describe("collaboration Shared Memory control", () => {
           sourceTitle: `Shared source ${index + 1}`,
           teamName: "Atlas Research",
           workspaceName: "Launch Plans",
+          workspaceContentAccess: "available",
           mode: "continuous" as const,
           authorizedPreview: null,
           lastReadyRevision: 4,
@@ -1962,9 +1980,11 @@ describe("collaboration Shared Memory control", () => {
       summary: {
         source: capturedSource,
         sourceSessionId: uuidFor(48),
+        companionThreadId: ids.companion,
         sourceTitle: "Owner preview",
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: {
           previewId: ids.preview,
@@ -2046,6 +2066,7 @@ describe("collaboration Shared Memory control", () => {
         sourceTitle: "Activated owner preview",
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: {
           previewId: ids.preview,

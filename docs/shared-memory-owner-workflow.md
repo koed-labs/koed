@@ -37,6 +37,9 @@ that is ordinary code organization, not a new workflow owner.
   Personal Memory ownership nor grants the source.
 - A **Share Grant** is the durable, destination-bound authority derived from
   owner consent. It is not Cross-Identity Sync, Workspace Access, or ownership.
+- Share ownership permits the owner to list safe grant metadata and revoke the
+  grant. It does not restore Workspace content or companion-discussion access
+  after the owner's Workspace Access is removed.
 - A **logical Memory source revision** is the positive immutable identity used
   by generic sharing workflows. Its typed binding supplies source-specific
   meaning. A Captured Session cursor remains a separate non-negative value;
@@ -92,6 +95,11 @@ never authoritative inputs.
 | Continuous propagation            | Keep a continuous grant current                        | Repository advances only authorized source revisions under current replica, policies, lifecycle, and encryption context                                                                                                               | Revocation/sync loss stops advancement and retains only the last authorized revision as stale                                                                  |
 | Pause or resume updates           | Stop or continue future continuous revisions           | Change only the continuous consent/update state; keep the last activated representation and Workspace access while paused; append an owner lifecycle event                                                                            | Exact retries are stable; snapshot shares and stale versions fail closed                                                                                       |
 | Revoke                            | End destination authority                              | Lock grant/retention scope, require owner and expected version, invalidate representations, advance revocation epoch, revoke attached Conversation Source Access, close source streams, schedule retention work, and append outbox    | Exact retry returns the same revoked grant and repairs stale derived lifecycle state; divergent reuse conflicts                                                |
+
+Owner-management responses state whether current Workspace content access is
+available. When unavailable, they omit the companion binding and source
+preview while retaining Team, Workspace, title, fidelity, lifecycle, and the
+authority needed to revoke. Owner-list reads never create or repair a companion.
 
 ## Why the repository seam owns bundle invariants
 

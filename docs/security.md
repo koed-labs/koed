@@ -229,6 +229,11 @@ family, and resource scope before selecting or decrypting content. High-risk
 device-mediated administration requires a freshly browser-confirmed, exact,
 one-use action grant; enrollment does not issue reusable admin authority.
 
+Share ownership and Workspace content authority remain separate. An owner who
+loses Workspace Access can still receive redacted management metadata and
+revoke the Share, but receives no Team representation, source preview, or
+companion-discussion binding through that owner-management path.
+
 The fixed owner-authorized Personal Note list, detail, title-rename, and
 revision-update routes also accept the Personal API Token held by Electron
 main. They expose only the owning User's Note metadata and bound Personal

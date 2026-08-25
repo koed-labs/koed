@@ -3162,6 +3162,31 @@ describeDb("Shared Memory repository", () => {
     expect(preview?.items.length).toBeGreaterThan(0);
 
     await pool.query(
+      `update team_workspace_access_grants
+          set access='disabled',disabled_at=now(),updated_at=now()
+        where team_workspace_id=$1 and user_id=$2`,
+      [fixture.teamWorkspaceId, fixture.ownerUserId]
+    );
+    await expect(
+      repository.listOwnerShares(actor(fixture.ownerUserId), { limit: 10 })
+    ).resolves.toMatchObject({
+      entries: [
+        {
+          summary: {
+            workspaceContentAccess: "unavailable",
+            companionThreadId: null
+          }
+        }
+      ]
+    });
+    await expect(
+      repository.readOwnerSharePreview(actor(fixture.ownerUserId), {
+        kind: "pending",
+        id: pending.id
+      })
+    ).resolves.toBeNull();
+
+    await pool.query(
       `delete from collaboration_threads where share_grant_id=$1`,
       [grantId]
     );

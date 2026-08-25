@@ -2218,7 +2218,7 @@ export const sharedMemoryConsentSchema = z
     validateSharedMemorySelection(consent, context);
   });
 
-export const sharedMemoryGrantSchema = z
+const sharedMemoryGrantBaseSchema = z
   .object({
     source: sharedMemorySourceRefSchema,
     sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
@@ -2249,24 +2249,39 @@ export const sharedMemoryGrantSchema = z
     revokedAt: collaborationTimestampSchema.nullable(),
     companionThreadId: z.uuid()
   })
-  .strict()
-  .superRefine((grant, context) => {
-    if (grant.source.logicalMemoryId !== grant.logicalMemoryId) {
-      context.addIssue({
-        code: "custom",
-        path: ["source", "logicalMemoryId"],
-        message: "Share Grant source must match its logical Memory"
-      });
-    }
-    if (!sharedMemorySelectionIsEffective(grant)) {
-      context.addIssue({
-        code: "custom",
-        path: ["activationRepresentation"],
-        message:
-          "Share Grant activation must be supported by its source and consent"
-      });
-    }
-  });
+  .strict();
+
+const validateSharedMemoryGrant = (
+  grant: Omit<z.infer<typeof sharedMemoryGrantBaseSchema>, "companionThreadId">,
+  context: z.RefinementCtx
+) => {
+  if (grant.source.logicalMemoryId !== grant.logicalMemoryId) {
+    context.addIssue({
+      code: "custom",
+      path: ["source", "logicalMemoryId"],
+      message: "Share Grant source must match its logical Memory"
+    });
+  }
+  if (!sharedMemorySelectionIsEffective(grant)) {
+    context.addIssue({
+      code: "custom",
+      path: ["activationRepresentation"],
+      message:
+        "Share Grant activation must be supported by its source and consent"
+    });
+  }
+};
+
+export const sharedMemoryGrantSchema = sharedMemoryGrantBaseSchema.superRefine(
+  validateSharedMemoryGrant
+);
+
+export const ownedSharedMemoryGrantSchema = sharedMemoryGrantBaseSchema
+  .omit({ companionThreadId: true })
+  .superRefine(validateSharedMemoryGrant);
+export type OwnedSharedMemoryGrant = z.infer<
+  typeof ownedSharedMemoryGrantSchema
+>;
 
 export const pendingShareSchema = z
   .object({
@@ -2334,6 +2349,7 @@ export const ownedShareSummarySchema = z
     sourceTitle: z.string().min(1).max(500),
     teamName: z.string().min(1).max(80),
     workspaceName: z.string().min(1).max(80),
+    workspaceContentAccess: z.enum(["available", "unavailable"]),
     mode: z.enum(["snapshot", "continuous"]),
     authorizedPreview: z
       .object({
@@ -2371,7 +2387,7 @@ export const ownedShareItemSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("grant"),
-      grant: sharedMemoryGrantSchema,
+      grant: ownedSharedMemoryGrantSchema,
       sourceAccess: conversationSourceAccessSummarySchema,
       summary: ownedShareSummarySchema,
       preview: sharedMemoryPreviewSchema.nullable().optional()

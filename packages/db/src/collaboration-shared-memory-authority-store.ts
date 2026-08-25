@@ -338,6 +338,7 @@ type PreviewRow = ProtectedRow & {
   representation: SharedMemoryRepresentation;
   maximum_fidelity: SharedMemoryFidelityCeiling;
   include_curated_memory: boolean;
+  mode: "snapshot" | "continuous";
   source_revision: string | number;
   source_hash: string;
   source_content_hash: string;
@@ -356,6 +357,7 @@ type ConsentRow = ProtectedRow & {
   team_workspace_id: string;
   maximum_fidelity: SharedMemoryFidelityCeiling;
   include_curated_memory: boolean;
+  mode: "snapshot" | "continuous";
   source_revision: string | number;
 };
 
@@ -378,6 +380,7 @@ type GrantRow = ProtectedRow & {
   team_workspace_id: string;
   maximum_fidelity: SharedMemoryFidelityCeiling;
   include_curated_memory: boolean;
+  mode: "snapshot" | "continuous";
   source_revision: string | number;
   grant_version: number;
   lifecycle: SharedMemoryGrant["lifecycle"];
@@ -875,6 +878,7 @@ const grantMatchesRow = (
   value.grant.workspaceId === row.team_workspace_id &&
   value.grant.maximumFidelity === row.maximum_fidelity &&
   value.grant.includeCuratedMemory === row.include_curated_memory &&
+  value.grant.mode === row.mode &&
   value.grant.sourceRevision === Number(row.source_revision) &&
   value.grant.grantVersion === row.grant_version &&
   value.grant.lifecycle === row.lifecycle;
@@ -944,11 +948,12 @@ const selectConsentSql = `select consent_id, consent_version, preview_id,
                                  include_curated_memory, source_revision,
                                  protected_dto_hash, protected_dto
                             from collaboration_shared_memory_consents`;
-const selectGrantSql = `select share_grant_id, logical_grant_id, logical_memory_id,
-                               consent_id, team_id, team_workspace_id,
-                               maximum_fidelity, include_curated_memory, source_revision,
-                               grant_version, lifecycle,
-                               protected_dto_hash, protected_dto
+const grantProjectionSql = `share_grant_id, logical_grant_id, logical_memory_id,
+                            consent_id, team_id, team_workspace_id,
+                            maximum_fidelity, include_curated_memory, mode,
+                            source_revision, grant_version, lifecycle,
+                            protected_dto_hash, protected_dto`;
+const selectGrantSql = `select ${grantProjectionSql}
                           from collaboration_shared_memory_grants`;
 
 export const createCollaborationSharedMemoryAuthorityStore = (
@@ -1879,10 +1884,7 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         if (!enrollment) return shareGrantIds.map(() => null);
         const result = await client.query<GrantRow>(
           `select distinct on (share_grant_id)
-                  share_grant_id, logical_grant_id, logical_memory_id,
-                  consent_id, team_id, team_workspace_id,
-                  active_representation, source_revision, grant_version,
-                  lifecycle, protected_dto_hash, protected_dto
+                  ${grantProjectionSql}
              from collaboration_shared_memory_grants
             where enrollment_id=$1 and share_grant_id=any($2::uuid[])
             order by share_grant_id,grant_version desc`,
@@ -1907,11 +1909,7 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         if (!enrollment) return null;
         const result = await client.query<GrantRow>(
           `select distinct on (share_grant_id)
-                  share_grant_id, logical_grant_id, logical_memory_id,
-                  consent_id, team_id, team_workspace_id,
-                  maximum_fidelity, include_curated_memory,
-                  source_revision, grant_version,
-                  lifecycle, protected_dto_hash, protected_dto
+                  ${grantProjectionSql}
              from collaboration_shared_memory_grants
             where enrollment_id = $1 and logical_memory_id = $2
             order by share_grant_id, grant_version desc

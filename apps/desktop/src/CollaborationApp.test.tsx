@@ -1491,6 +1491,7 @@ describe("CollaborationApp", () => {
         sourceTitle: entry.title,
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: {
           previewId: uuid(624),
@@ -1983,6 +1984,7 @@ describe("CollaborationApp", () => {
         sourceTitle: "Owner-wide active route fixture",
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: {
           previewId: uuid(616),
@@ -2134,7 +2136,13 @@ describe("CollaborationApp", () => {
       [...document.body.querySelectorAll(".collab-share-facts strong")].map(
         (label) => label.textContent
       )
-    ).toEqual(["Status", "Shared detail", "Updates", "Source access"]);
+    ).toEqual([
+      "Status",
+      "Shared detail",
+      "Updates",
+      "Source access",
+      "Workspace access"
+    ]);
     expect(document.body.textContent).not.toContain("Authorized preview");
     expect(
       [...document.body.querySelectorAll("button")].some(
@@ -2263,6 +2271,7 @@ describe("CollaborationApp", () => {
         sourceTitle: "Approval-tracked revoke fixture",
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: null,
         lastReadyRevision: 12,
@@ -2347,6 +2356,95 @@ describe("CollaborationApp", () => {
         revokedAt: at
       })
     );
+  });
+
+  it("keeps owner controls without exposing Workspace content after access is removed", async () => {
+    const snapshot = baseSnapshot();
+    const grant: Extract<OwnedShareItem, { kind: "grant" }>["grant"] = {
+      source: {
+        kind: "captured_session",
+        sessionId: ids.eventSession,
+        logicalMemoryId: ids.logicalMemory
+      },
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      mode: "continuous",
+      id: uuid(626),
+      logicalGrantId: uuid(627),
+      logicalMemoryId: ids.logicalMemory,
+      ownerUserId: ids.remoteMark,
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      consentId: uuid(628),
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      fidelityPolicyRevision: 1,
+      sourceRevision: 12,
+      grantVersion: 1,
+      lifecycle: "active",
+      createdAt: at,
+      updatedAt: at,
+      revokedAt: null
+    };
+    const share: OwnedShareItem = {
+      kind: "grant",
+      grant,
+      sourceAccess: null,
+      summary: {
+        source: grant.source,
+        sourceSessionId: ids.eventSession,
+        companionThreadId: null,
+        sourceTitle: "Retained owner Share",
+        teamName: "Atlas Research",
+        workspaceName: "Launch Plans",
+        workspaceContentAccess: "unavailable",
+        mode: "continuous",
+        authorizedPreview: null,
+        lastReadyRevision: 12,
+        lastSuccessfulUpdateAt: at
+      }
+    };
+    const client = createClient(snapshot);
+    vi.mocked(client.listOwnedShares).mockResolvedValue({
+      shares: [share],
+      nextCursor: null
+    });
+    vi.mocked(client.getOwnedShare).mockResolvedValue(share);
+
+    await act(async () =>
+      root.render(
+        <PersonalMemoryView
+          client={client}
+          initialSection="shares"
+          markdownAdapters={{ openExternal: vi.fn(), writeClipboard: vi.fn() }}
+          onShare={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain(share.summary.sourceTitle)
+    );
+    await act(async () =>
+      (
+        document.body.querySelector(".collab-share-row") as HTMLButtonElement
+      ).click()
+    );
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain(
+        "Workspace content unavailable"
+      )
+    );
+
+    const modify = [...document.body.querySelectorAll("button")].find(
+      (button) => button.textContent === "Modify"
+    );
+    const revoke = [...document.body.querySelectorAll("button")].find(
+      (button) => button.textContent === "Revoke"
+    );
+    expect(modify?.disabled).toBe(true);
+    expect(revoke?.disabled).toBe(false);
+    expect(client.previewSharedMemoryCandidate).not.toHaveBeenCalled();
   });
 
   it("keeps the Shares pane while the responsive status view loads", async () => {
@@ -2611,6 +2709,7 @@ describe("CollaborationApp", () => {
         sourceTitle: source.title,
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: null,
         lastReadyRevision: null,
@@ -3857,6 +3956,7 @@ describe("CollaborationApp", () => {
         sourceTitle: "Async sharing fixture",
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: {
           previewId: uuid(606),

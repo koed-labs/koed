@@ -1116,6 +1116,14 @@ describeDb("Collaboration Shared Memory authority store", () => {
         logicalMemoryId: fixture.logicalMemoryId
       })
     ).resolves.toEqual([second]);
+    const unavailableGrantId = randomUUID();
+    await expect(
+      store.readAuthoritativeGrants(fixture.identity, [
+        unavailableGrantId,
+        remoteGrant.id,
+        remoteGrant.id
+      ])
+    ).resolves.toEqual([null, second, second]);
     await expect(
       store.listAuthoritativeGrants({
         ...fixture.otherOwnerIdentity,

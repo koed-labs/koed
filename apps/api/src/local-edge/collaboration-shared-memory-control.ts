@@ -28,6 +28,7 @@ import {
   conversationSourceAccessSchema,
   pendingShareSchema,
   ownedShareSummarySchema,
+  ownedSharedMemoryGrantSchema,
   sharedMemorySourceItemSchema,
   sharedMemorySourceRefSchema,
   type CollaborationCommandResult,
@@ -330,6 +331,10 @@ const remoteGrantSchema = z
   })
   .passthrough();
 
+const remoteOwnedShareGrantSchema = remoteGrantSchema.omit({
+  companionScope: true
+});
+
 const remoteOwnerGrantPageSchema = z
   .object({
     shareGrants: z.array(remoteGrantSchema).max(100),
@@ -367,7 +372,7 @@ const remoteOwnedSharesPageSchema = z
           z
             .object({
               kind: z.literal("grant"),
-              grant: remoteGrantSchema,
+              grant: remoteOwnedShareGrantSchema,
               summary: ownedShareSummarySchema,
               sourceAccess: z
                 .object({
@@ -435,6 +440,53 @@ const persistedGrantSchema = z
 export type CollaborationPersistedSharedMemoryGrant = z.infer<
   typeof persistedGrantSchema
 >;
+
+const ownerSafeGrant = (
+  grant: CollaborationPersistedSharedMemoryGrant["grant"]
+) => {
+  const { companionThreadId: _companionThreadId, ...safeGrant } = grant;
+  void _companionThreadId;
+  return safeGrant;
+};
+
+const remoteOwnedGrantDto = (
+  grant: z.infer<typeof remoteOwnedShareGrantSchema>
+) => ({
+  source: grant.source,
+  sourceCapabilities: grant.sourceCapabilities,
+  activationRepresentation: grant.activationRepresentation,
+  id: grant.id,
+  logicalGrantId: grant.logicalGrantId,
+  logicalMemoryId: grant.logicalMemoryId,
+  ownerUserId: grant.ownerUserId,
+  teamId: grant.teamId,
+  workspaceId: grant.teamWorkspaceId,
+  consentId: grant.consentId,
+  mode: grant.mode,
+  maximumFidelity: grant.maximumFidelity,
+  includeCuratedMemory: grant.includeCuratedMemory,
+  fidelityPolicyRevision: grant.fidelityPolicyRevision,
+  sourceRevision: grant.sourceRevision,
+  grantVersion: grant.grantVersion,
+  lifecycle: grant.lifecycle,
+  createdAt: grant.createdAt,
+  updatedAt: grant.updatedAt,
+  revokedAt: grant.revokedAt
+});
+
+const remoteOwnedGrantWithCompanion = (
+  grant: z.infer<typeof remoteOwnedShareGrantSchema>
+): z.infer<typeof remoteGrantSchema> => ({
+  ...grant,
+  companionScope: {
+    scope: "team",
+    kind: "shared_session_discussion",
+    teamId: grant.teamId,
+    teamWorkspaceId: grant.teamWorkspaceId,
+    logicalMemoryId: grant.logicalMemoryId,
+    shareGrantId: grant.id
+  }
+});
 
 const previewTargetSchema = z
   .object({
@@ -2671,7 +2723,7 @@ const dispatchListOwnedShares = async (
       }
     | {
         kind: "grant";
-        grant: z.infer<typeof sharedMemoryGrantSchema>;
+        grant: z.infer<typeof ownedSharedMemoryGrantSchema>;
         summary: z.infer<typeof ownedShareSummarySchema>;
         sourceAccess: {
           mode: "snapshot" | "continuous";
@@ -2762,27 +2814,38 @@ const dispatchListOwnedShares = async (
         throw new ControlFailure("permission_denied");
       }
       const prior = priorByGrantId.get(remote.id) ?? null;
-      const companionThreadId =
-        entry.summary.companionThreadId ?? prior?.grant.companionThreadId;
-      if (!companionThreadId) return null;
+      if (entry.summary.workspaceContentAccess === "unavailable") {
+        return {
+          kind: "grant" as const,
+          grant: prior
+            ? ownerSafeGrant(prior.grant)
+            : remoteOwnedGrantDto(remote),
+          sourceAccess: entry.sourceAccess,
+          summary
+        };
+      }
+      const companionThreadId = entry.summary.companionThreadId;
+      if (!companionThreadId) throw new ControlFailure("internal_error");
       const companion = {
         companionThreadId,
         sharedSessionId: remote.id
       };
+      const remoteWithCompanion = remoteOwnedGrantWithCompanion(remote);
       const persisted =
-        prior && remoteGrantMatchesPersisted(remote, prior, identity)
+        prior &&
+        remoteGrantMatchesPersisted(remoteWithCompanion, prior, identity)
           ? prior
           : await persistGrant(
               options.authorityStore,
               identity,
-              remote,
+              remoteWithCompanion,
               prior,
               companion,
               "authoritative_snapshot"
             );
       return {
         kind: "grant" as const,
-        grant: persisted.grant,
+        grant: ownerSafeGrant(persisted.grant),
         sourceAccess: entry.sourceAccess,
         summary
       };
@@ -2968,9 +3031,22 @@ const dispatchGetOwnedShare = async (
     ...identity,
     shareGrantId: entry.grant.id
   });
-  const companionThreadId =
-    entry.summary.companionThreadId ?? prior?.grant.companionThreadId;
-  if (!companionThreadId) throw new ControlFailure("not_available");
+  if (entry.summary.workspaceContentAccess === "unavailable") {
+    const result = success(command, {
+      share: {
+        ...entry,
+        grant: prior
+          ? ownerSafeGrant(prior.grant)
+          : remoteOwnedGrantDto(entry.grant),
+        summary,
+        preview: null
+      }
+    });
+    if (!result) throw new ControlFailure("internal_error");
+    return result;
+  }
+  const companionThreadId = entry.summary.companionThreadId;
+  if (!companionThreadId) throw new ControlFailure("internal_error");
   const companion = {
     companionThreadId,
     sharedSessionId: entry.grant.id
@@ -2978,13 +3054,18 @@ const dispatchGetOwnedShare = async (
   const persisted = await persistGrant(
     options.authorityStore,
     identity,
-    entry.grant,
+    remoteOwnedGrantWithCompanion(entry.grant),
     prior,
     companion,
     "authoritative_snapshot"
   );
   const result = success(command, {
-    share: { ...entry, grant: persisted.grant, summary, preview }
+    share: {
+      ...entry,
+      grant: ownerSafeGrant(persisted.grant),
+      summary,
+      preview
+    }
   });
   if (!result) throw new ControlFailure("internal_error");
   return result;

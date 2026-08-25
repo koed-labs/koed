@@ -844,6 +844,11 @@ function OwnedSharesWorkspace({
           )?.syncState ?? null)
         : null
     );
+    if (listedShare.summary.workspaceContentAccess === "unavailable") {
+      setPreview(null);
+      setPreviewState("ready");
+      return;
+    }
     const requestKey = `${selectedShareKey}:${listedShare.summary.authorizedPreview?.previewHash ?? "none"}`;
     const request =
       detailRequestRef.current?.key === requestKey
@@ -954,6 +959,12 @@ function OwnedSharesWorkspace({
 
   const openDetailChange = useCallback(
     async (share: OwnedShareItem) => {
+      if (share.summary.workspaceContentAccess === "unavailable") {
+        setOperationError(
+          "Workspace access is unavailable. You can still revoke this Share."
+        );
+        return;
+      }
       const sessionId = share.summary.sourceSessionId;
       const shareGrantId =
         share.kind === "grant" ? share.grant.id : share.pendingShare.grantId;
@@ -1153,6 +1164,7 @@ function OwnedSharesWorkspace({
     : null;
   const selectedActive =
     selectedShare &&
+    selectedShare.summary.workspaceContentAccess === "available" &&
     selectedSection === "active" &&
     (selectedShare.kind === "grant" ||
       selectedShare.pendingShare.workspaceAccessState === "active");
@@ -1300,7 +1312,10 @@ function OwnedSharesWorkspace({
             <div className="collab-share-header-actions">
               <button
                 className="collab-share-modify-button"
-                disabled={selectedSection === "revoked"}
+                disabled={
+                  selectedSection === "revoked" ||
+                  selectedShare.summary.workspaceContentAccess === "unavailable"
+                }
                 onClick={() => {
                   setOperationError("");
                   setModifyShareKey(ownedShareKey(selectedShare));
@@ -1349,6 +1364,12 @@ function OwnedSharesWorkspace({
                 ? selectedShare.sourceAccess.mode
                 : "Not allowed"}
             </span>
+            <span>
+              <strong>Workspace access</strong>
+              {selectedShare.summary.workspaceContentAccess === "available"
+                ? "Available"
+                : "Unavailable"}
+            </span>
           </div>
           <section className="collab-share-preview">
             {preview ? (
@@ -1359,15 +1380,24 @@ function OwnedSharesWorkspace({
               </header>
             ) : null}
             <div className="collab-share-preview-window">
-              <OwnedSharePreview
-                authorizedRevision={
-                  selectedShare.summary.authorizedPreview?.sourceRevision ??
-                  null
-                }
-                markdownAdapters={markdownAdapters}
-                preview={preview}
-                state={previewState}
-              />
+              {selectedShare.summary.workspaceContentAccess ===
+              "unavailable" ? (
+                <StateView
+                  icon={<CircleAlert />}
+                  title="Workspace content unavailable"
+                  message="You can manage or revoke this Share, but its Team content and discussion are no longer available to you."
+                />
+              ) : (
+                <OwnedSharePreview
+                  authorizedRevision={
+                    selectedShare.summary.authorizedPreview?.sourceRevision ??
+                    null
+                  }
+                  markdownAdapters={markdownAdapters}
+                  preview={preview}
+                  state={previewState}
+                />
+              )}
               {preview && "previewHash" in preview && preview.nextCursor ? (
                 <button
                   className="collab-share-preview-more secondary"
