@@ -2356,6 +2356,13 @@ describe("collaboration Shared Memory control", () => {
       ok: true,
       data: { grant: { lifecycle: "revoked", grantVersion: 2 } }
     });
+    if (
+      !revoked?.ok ||
+      revoked.command !== "collaboration.revoke_shared_memory"
+    ) {
+      throw new Error("revocation failed");
+    }
+    expect(revoked.data.grant).not.toHaveProperty("companionThreadId");
     expect(shareFixture.grantPersistenceModes).toEqual(["revocation"]);
 
     const changeFixture = createFixture();

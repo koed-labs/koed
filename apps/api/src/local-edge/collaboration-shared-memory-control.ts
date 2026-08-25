@@ -2528,7 +2528,7 @@ const dispatchRevoke = async (
     },
     "revocation"
   );
-  const result = success(command, { grant: persisted.grant });
+  const result = success(command, { grant: ownerSafeGrant(persisted.grant) });
   if (!result) throw new ControlFailure("internal_error");
   return result;
 };

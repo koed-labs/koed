@@ -3118,7 +3118,7 @@ export const collaborationCommandResultSchema = z.union([
   ),
   successResult(
     "collaboration.revoke_shared_memory",
-    z.object({ grant: sharedMemoryGrantSchema }).strict()
+    z.object({ grant: ownedSharedMemoryGrantSchema }).strict()
   ),
   successResult(
     "collaboration.change_shared_memory_fidelity",

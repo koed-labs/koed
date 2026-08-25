@@ -2284,6 +2284,13 @@ describe("CollaborationApp", () => {
       nextCursor: null
     });
     vi.mocked(client.getOwnedShare).mockResolvedValue(share);
+    vi.mocked(client.revokeSharedMemory).mockResolvedValue({
+      ...grant,
+      lifecycle: "revoked",
+      grantVersion: 2,
+      updatedAt: at,
+      revokedAt: at
+    });
 
     let actionGrants: readonly CollaborationActionGrantProjection[] = [];
     const actionGrantListeners = new Set<() => void>();
@@ -2445,6 +2452,20 @@ describe("CollaborationApp", () => {
     expect(modify?.disabled).toBe(true);
     expect(revoke?.disabled).toBe(false);
     expect(client.previewSharedMemoryCandidate).not.toHaveBeenCalled();
+
+    await act(async () => revoke?.click());
+    await click(container, "Revoke Share");
+    await vi.waitFor(() =>
+      expect(client.revokeSharedMemory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          shareGrantId: grant.id,
+          expectedGrantVersion: grant.grantVersion
+        })
+      )
+    );
+    expect(document.body.textContent).toContain("Revoked");
   });
 
   it("keeps the Shares pane while the responsive status view loads", async () => {

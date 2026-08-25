@@ -24,6 +24,7 @@ import {
   type CollaborationSelection,
   type CollaborationSnapshot,
   type OwnedShareItem,
+  type OwnedSharedMemoryGrant,
   type CollaborationSubscription,
   type CollaborationTeamPerson,
   type CollaborationThread,
@@ -377,7 +378,7 @@ export interface CollaborationRendererClient {
     shareGrantId: string;
     expectedGrantVersion: number;
     reasonCode: string;
-  }): Promise<SharedMemoryGrant>;
+  }): Promise<OwnedSharedMemoryGrant>;
   changeSharedMemoryFidelity(input: {
     source: SharedMemorySourceRef;
     sourceCapabilities: SharedMemoryRepresentation[];

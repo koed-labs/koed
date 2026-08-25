@@ -307,6 +307,12 @@ const grant = () => ({
   companionThreadId: ids.thread
 });
 
+const ownedGrant = () => {
+  const { companionThreadId, ...owned } = grant();
+  void companionThreadId;
+  return owned;
+};
+
 const pendingShare = () => ({
   source: capturedSource(),
   sourceCapabilities: capturedSourceCapabilities,
@@ -1971,7 +1977,7 @@ describe("collaboration results and realtime", () => {
         command: "collaboration.revoke_shared_memory",
         data: {
           grant: {
-            ...grant(),
+            ...ownedGrant(),
             lifecycle: "revoked",
             revokedAt: timestamp
           }
