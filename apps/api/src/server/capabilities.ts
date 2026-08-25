@@ -6,6 +6,7 @@ const koedReleaseVersion = releaseManifest.version;
 export const capabilitySchemaVersion = 6;
 export const collaborationRealtimeProtocolVersion =
   COLLABORATION_CONTRACT_VERSION;
+export const sharedMemorySourceAdmissionProtocolVersion = 1;
 
 export const deploymentProfiles = [
   "developer",
@@ -140,6 +141,10 @@ export interface CapabilitiesResponse {
       snapshotEndpoint: "/v1/collaboration/realtime/snapshot";
       streamEndpoint: "/v1/collaboration/realtime/stream";
       acknowledgementEndpoint: "/v1/collaboration/realtime/ack";
+    };
+    sharedMemorySourceAdmission: {
+      version: typeof sharedMemorySourceAdmissionProtocolVersion;
+      candidateEndpoint: "/v1/shared-memory/candidate-previews";
     };
   };
   commercial: {
@@ -692,6 +697,10 @@ export const buildCapabilitiesResponse = (
         snapshotEndpoint: "/v1/collaboration/realtime/snapshot",
         streamEndpoint: "/v1/collaboration/realtime/stream",
         acknowledgementEndpoint: "/v1/collaboration/realtime/ack"
+      },
+      sharedMemorySourceAdmission: {
+        version: sharedMemorySourceAdmissionProtocolVersion,
+        candidateEndpoint: "/v1/shared-memory/candidate-previews"
       }
     },
     commercial: commercialWithFeatureGates,

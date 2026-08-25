@@ -77,6 +77,9 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     listLcmGraphNodes: vi.fn(
       async (): Promise<Array<Record<string, unknown>>> => []
     ),
+    listCapturedSessionSyncEligibleLcmNodeIds: vi.fn(
+      async (): Promise<string[]> => []
+    ),
     listLcmGraphThreads: vi.fn(async () => [
       {
         threads: [
@@ -129,6 +132,10 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
       items: [{ id: "event-1", sequence: 2 }]
     });
     expect(second?.candidateHash).toBe(first?.candidateHash);
+    expect(candidateRepository.listLcmGraphEvents).toHaveBeenCalledWith(
+      { userId: "owner-1" },
+      expect.objectContaining({ canonicalCapturedSessionEventsOnly: true })
+    );
   });
 
   it("builds one owner-bound immutable Personal Note candidate", async () => {
@@ -360,6 +367,9 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
         }
       }
     ]);
+    candidateRepository.listCapturedSessionSyncEligibleLcmNodeIds.mockResolvedValue(
+      ["00000000-0000-4000-8000-000000000002"]
+    );
     const preparation = createLocalSharedMemoryCandidatePreparation({
       repository: candidateRepository as never,
       resolveDeploymentId: () => "deployment-1",
@@ -376,6 +386,34 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     ).resolves.toMatchObject({
       items: [{ lexicalAnchors: ["Approval Activity"] }]
     });
+  });
+
+  it("excludes LCM nodes whose provenance cannot cross the sync boundary", async () => {
+    const candidateRepository = repository();
+    candidateRepository.listLcmGraphNodes.mockResolvedValue([
+      {
+        id: "00000000-0000-4000-8000-000000000003",
+        kind: "leaf",
+        updatedAt: "2026-08-14T10:00:00.000Z",
+        summaryText: "This leaf includes excluded Approval Activity.",
+        sourceEventCount: 2,
+        summaryStructuredJson: {}
+      }
+    ]);
+    const preparation = createLocalSharedMemoryCandidatePreparation({
+      repository: candidateRepository as never,
+      resolveDeploymentId: () => "deployment-1",
+      requestLcmSummaryWork: vi.fn()
+    });
+
+    await expect(
+      preparation.loadCandidatePreview({
+        localOwnerUserId: "owner-1",
+        sessionId: "session-1",
+        representation: "lcm_leaves",
+        mode: "snapshot"
+      })
+    ).resolves.toMatchObject({ items: [], itemCount: 0 });
   });
 
   it("wakes LCM work only while the prepared representation is pending", async () => {

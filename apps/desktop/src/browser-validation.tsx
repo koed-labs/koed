@@ -1958,7 +1958,8 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
           updatedAt: timestamp,
           activatedAt: null,
           revokedAt: null,
-          grantId: null
+          grantId: null,
+          grantVersion: null
         };
         if (parsed.input.source.kind === "personal_note") {
           const activatedGrant: SharedMemoryGrant = {
@@ -1999,7 +2000,8 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
                 parsed.input.mode === "continuous" ? "active" : "stopped",
               operationVersion: 2,
               activatedAt: timestamp,
-              grantId: activatedGrant.id
+              grantId: activatedGrant.id,
+              grantVersion: activatedGrant.grantVersion
             },
             sourceAccess: null,
             preview: interactionNotePreview(
@@ -2162,10 +2164,16 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
           const revokedNoteShare = noteOwnedShare;
           revokedOwnedShares.unshift(revokedNoteShare);
           const revokedGrant = noteGrant;
+          const { companionThreadId, ...revokedOwnedGrant } = revokedGrant;
+          void companionThreadId;
           noteOwnedShare = null;
-          return result(parsed, { grant: revokedGrant });
+          return result(parsed, { grant: revokedOwnedGrant });
         }
-        if (!activeOwnedShare || activeOwnedShare.kind !== "grant") {
+        if (
+          !activeOwnedShare ||
+          activeOwnedShare.kind !== "grant" ||
+          parsed.input.shareGrantId !== activeOwnedShare.grant.id
+        ) {
           return failure(parsed);
         }
         const revoked: OwnedShareItem = {
@@ -2508,7 +2516,8 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
         operationVersion: noteOwnedShare.pendingShare.operationVersion + 1,
         updatedAt: timestamp,
         activatedAt: timestamp,
-        grantId: updatedGrant.id
+        grantId: updatedGrant.id,
+        grantVersion: updatedGrant.grantVersion
       },
       preview: interactionNotePreview(
         note,

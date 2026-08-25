@@ -8266,6 +8266,61 @@ describeDb("memory repository visibility", () => {
       })
     ).resolves.toBe("ready");
 
+    const excludedEvent = await encryptedRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        eventType: "captured",
+        actor: "system",
+        rawEventType: "approval_activity",
+        visibility: "personal",
+        content: "Excluded approval activity",
+        projectId: "sync-lcm-project",
+        sessionId: session.id,
+        idempotencyKey: `sync-lcm-excluded-${randomUUID()}`
+      }
+    );
+    await pool.query(
+      "delete from sync_semantic_changes where origin_event_id=$1",
+      [excludedEvent.id]
+    );
+    const excludedCompaction = await encryptedRepo.createLcmNodes(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        sessionId: session.id,
+        force: true,
+        requestedRepresentation: "lcm_leaves"
+      }
+    );
+    const excludedLeafNodeId = excludedCompaction.leafNodeIds[0]!;
+    await encryptedRepo.updateLcmNodeSummary({
+      nodeId: excludedLeafNodeId,
+      summaryText: "This leaf must remain outside semantic synchronization.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-semantic-summary-v1",
+      summaryTokenEstimate: 8,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Excluded activity",
+        summary_text: "This leaf must remain outside semantic synchronization.",
+        lexical_anchors: ["semantic synchronization"]
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    await expect(
+      encryptedRepo.listCapturedSessionSyncEligibleLcmNodeIds(
+        { userId: owner.id },
+        session.id
+      )
+    ).resolves.not.toContain(excludedLeafNodeId);
+    await expect(
+      encryptedRepo.readCapturedSessionSyncDelta({ relationshipId })
+    ).resolves.toMatchObject({
+      changes: [],
+      summaryNodes: [],
+      summarySnapshotIncluded: false
+    });
+
     await pool.query(
       `update memory_nodes
           set invalidated_at=now(),
@@ -16780,7 +16835,6 @@ describeDb("memory repository visibility", () => {
         }
       }
     );
-
     const projects = await repo.listLcmGraphThreads(
       { userId: alice.id },
       { projectId: "workspace-standalone-thread", limit: 10 }
@@ -18110,6 +18164,15 @@ describeDb("memory repository visibility", () => {
         limit: 10
       }
     );
+    const canonicalEvents = await repo.listLcmGraphEvents(
+      { userId: alice.id },
+      {
+        projectId: workspaceId,
+        threadId: session.externalSessionId ?? undefined,
+        canonicalCapturedSessionEventsOnly: true,
+        limit: 10
+      }
+    );
     const rawRows = await pool.query<{
       source_record_type: string;
       source_event_type: string | null;
@@ -18150,6 +18213,11 @@ describeDb("memory repository visibility", () => {
         segments: [{ kind: "message", sequence: 1, actor: "user" }]
       }
     });
+    expect(canonicalEvents).toHaveLength(1);
+    expect(canonicalEvents[0]).toMatchObject({
+      metadata: { sourceTable: "memory_events" }
+    });
+    expect(canonicalEvents[0]?.id).not.toBe(events[0]?.id);
     expect(rawRows.rows).toHaveLength(1);
     const transcriptRawRow = rawRows.rows.find(
       (row) => row.source_record_type === "event_msg"

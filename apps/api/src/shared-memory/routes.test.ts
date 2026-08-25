@@ -1071,7 +1071,10 @@ const createFixture = () => {
 
 const buildTestServer = async (
   fixture: ReturnType<typeof createFixture>,
-  options: { sessionCreatedAt?: Date } = {}
+  options: {
+    sessionCreatedAt?: Date;
+    reportDiagnostic?: SharedMemoryRouteContext["reportDiagnostic"];
+  } = {}
 ) => {
   const app = Fastify({ logger: false });
   await app.register(cookie);
@@ -1266,7 +1269,8 @@ const buildTestServer = async (
     authenticateDeviceCredential: deviceContext,
     authenticateSessionOrDeviceCredential,
     readRateLimit: noRateLimit,
-    writeRateLimit: noRateLimit
+    writeRateLimit: noRateLimit,
+    reportDiagnostic: options.reportDiagnostic
   });
   return app;
 };
@@ -1351,6 +1355,51 @@ const ownerGrantIndexUrl = (fixture: ReturnType<typeof createFixture>) =>
   `/v1/shared-memory/logical-memories/${fixture.ids.logicalMemory}/share-grants`;
 
 describe("Shared Memory HTTP routes", () => {
+  it("reports Action Grant binding failures with safe reference-only diagnostics", async () => {
+    const fixture = createFixture();
+    const diagnostics: Array<
+      Parameters<NonNullable<SharedMemoryRouteContext["reportDiagnostic"]>>[0]
+    > = [];
+    const app = await buildTestServer(fixture, {
+      reportDiagnostic: (diagnostic) => diagnostics.push(diagnostic)
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/shared-memory/share-grants/${fixture.ids.grant}/transcript-access/revoke`,
+      headers: {
+        authorization: "Koed-Device owner-share:secret",
+        "x-koed-action-grant": "hrg_changed_secret"
+      },
+      payload: {
+        mutationId: randomUUID(),
+        teamId: fixture.ids.teamA,
+        expectedVersion: 1,
+        reasonCode: "owner_revoked",
+        authority: {
+          action: SHARED_MEMORY_AUTHORITY,
+          source: "device_action_grant",
+          referenceId: fixture.ids.actionGrantAuthority
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(jsonBody<{ error: string }>(response)).toEqual({
+      error: "Shared Memory operation is not authorized"
+    });
+    expect(diagnostics).toEqual([
+      {
+        code: "shared_memory_action_grant_binding_failed",
+        operation: "shared_memory.transcript_access.revoke",
+        publicGrantReference: fixture.ids.actionGrantAuthority,
+        failureStage: "action_grant_execution",
+        httpStatus: 403
+      }
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toContain("hrg_changed_secret");
+    await app.close();
+  });
+
   it("grants and revokes independent Team Conversation source access", async () => {
     const fixture = createFixture();
     const app = await buildTestServer(fixture);
@@ -1985,6 +2034,7 @@ describe("Shared Memory HTTP routes", () => {
     for (const response of [share, change]) {
       const pendingShare = response.json().pendingShare;
       expect(pendingShareSchema.safeParse(pendingShare).success).toBe(true);
+      expect(pendingShare.grantVersion).toBeNull();
       expect(pendingShare).not.toHaveProperty("teamWorkspaceId");
       expect(pendingShare).not.toHaveProperty("representation");
       expect(response.body).not.toContain("allowedRepresentations");
@@ -2209,9 +2259,19 @@ describe("Shared Memory HTTP routes", () => {
     expect(jsonBody<Record<string, unknown>>(response)).toMatchObject({
       sharedMemory: {
         grant: {
+          source: {
+            kind: "captured_session",
+            sessionId: fixture.ids.sourceSession,
+            logicalMemoryId: fixture.ids.logicalMemory
+          },
           id: fixture.ids.grant,
           teamId: fixture.ids.teamA,
-          teamWorkspaceId: fixture.ids.workspaceA
+          teamWorkspaceId: fixture.ids.workspaceA,
+          consentId: fixture.ids.consent,
+          fidelityPolicyRevision: 1
+        },
+        representation: {
+          sourceRevisionHash: hash
         },
         companionScope: {
           shareGrantId: fixture.ids.grant,
@@ -2507,7 +2567,6 @@ describe("Shared Memory HTTP routes", () => {
       expect(response.body).not.toContain("remoteReplicaId");
       expect(response.body).not.toContain("ownerPrincipalId");
       expect(response.body).not.toContain("creatorAuthority");
-      expect(response.body).not.toContain("sourceRevisionHash");
       expect(response.body).not.toContain("provenanceHash");
       expect(response.body).not.toContain('"source":');
       expect(response.body).not.toContain('"sessionId":');

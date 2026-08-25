@@ -1936,13 +1936,16 @@ describeDb("Collaboration repository", () => {
     const firstSourceClaims = await authorityStore.claimPendingShareSourceWork({
       limit: 50
     });
-    expect(firstSourceClaims).toContainEqual(
-      expect.objectContaining({
-        pendingShareId,
-        mutationId: firstMutationId,
-        mode: "continuous"
-      })
-    );
+    expect(
+      firstSourceClaims.some(
+        (claim) =>
+          claim.pendingShareId === pendingShareId &&
+          claim.mutationId === firstMutationId &&
+          claim.mode === "continuous" &&
+          claim.source.kind === "personal_note" &&
+          claim.source.noteRevision === 1
+      )
+    ).toBe(true);
     await expect(
       authorityStore.persistPendingShareSourceWork({
         identity,
@@ -1978,13 +1981,16 @@ describeDb("Collaboration repository", () => {
     const secondSourceClaims = await authorityStore.claimPendingShareSourceWork(
       { limit: 50 }
     );
-    expect(secondSourceClaims).toContainEqual(
-      expect.objectContaining({
-        pendingShareId,
-        mutationId: secondMutationId,
-        mode: "continuous"
-      })
-    );
+    expect(
+      secondSourceClaims.some(
+        (claim) =>
+          claim.pendingShareId === pendingShareId &&
+          claim.mutationId === secondMutationId &&
+          claim.mode === "continuous" &&
+          claim.source.kind === "personal_note" &&
+          claim.source.noteRevision === 2
+      )
+    ).toBe(true);
     await Promise.all(
       [...firstSourceClaims, ...secondSourceClaims].map((item) =>
         authorityStore.finishPendingShareSourceWork({

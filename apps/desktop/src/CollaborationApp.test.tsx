@@ -1971,7 +1971,8 @@ describe("CollaborationApp", () => {
         updatedAt: at,
         activatedAt: at,
         revokedAt: null,
-        grantId: uuid(615)
+        grantId: uuid(615),
+        grantVersion: 2
       },
       sourceAccess: null,
       summary: {
@@ -2047,6 +2048,13 @@ describe("CollaborationApp", () => {
       paused.pendingShare
     );
     vi.mocked(client.changeSharedMemoryFidelity).mockResolvedValue(replacement);
+    vi.mocked(client.revokeSharedMemory).mockResolvedValue({
+      ...grant,
+      lifecycle: "revoked",
+      grantVersion: grant.grantVersion + 1,
+      updatedAt: at,
+      revokedAt: at
+    });
     const personalMemoryApi: PersonalDesktopApi = {
       assignSessionProject: vi.fn(async () => ({ projectId: null })),
       listProjects: vi.fn(async () => []),
@@ -2230,6 +2238,29 @@ describe("CollaborationApp", () => {
       expectedOperationVersion: 3,
       action: "pause"
     });
+    await click(container, "Done");
+    await click(container, "Revoke");
+    await click(container, "Revoke Share");
+    await vi.waitFor(() =>
+      expect(client.listOwnedSharedMemoryGrants).toHaveBeenCalledWith({
+        logicalMemoryId: pending.pendingShare.logicalMemoryId
+      })
+    );
+    await vi.waitFor(() =>
+      expect(client.revokeSharedMemory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          shareGrantId: grant.id,
+          expectedGrantVersion: grant.grantVersion,
+          teamId: grant.teamId,
+          workspaceId: grant.workspaceId,
+          reasonCode: "owner_revoked"
+        })
+      )
+    );
+    expect(client.controlPendingShare).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "revoke" })
+    );
+    expect(document.body.textContent).toContain("Revoked");
   });
 
   it("closes Share revocation confirmation after approval while execution continues", async () => {

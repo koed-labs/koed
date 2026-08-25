@@ -992,6 +992,11 @@ const run = async () => {
       "Continuous Note revocation confirmation"
     );
     await trustedClick(alice, `${byText("button", "Cancel")}`);
+    await waitFor(
+      alice,
+      bodyExcludes("Your Personal Memory will not be deleted."),
+      "canceled Continuous Note revocation confirmation"
+    );
     assert.equal(
       (await commands(alice)).filter(
         (command) => command.command === "collaboration.revoke_shared_memory"
@@ -1000,6 +1005,11 @@ const run = async () => {
       "Canceling Continuous Note revocation must preserve access"
     );
     await trustedClick(alice, `${byText("button", "Revoke")}`);
+    await waitFor(
+      alice,
+      bodyIncludes("Your Personal Memory will not be deleted."),
+      "reopened Continuous Note revocation confirmation"
+    );
     await trustedClick(alice, `${byText("button", "Revoke Share")}`);
     await waitFor(
       alice,
@@ -1033,8 +1043,9 @@ const run = async () => {
     );
     await waitFor(
       alice,
-      bodyIncludes(ownerOnlyCredentialSource),
-      "owner-only Personal source preview"
+      `${bodyIncludes(ownerOnlyCredentialSource)} &&
+        document.querySelector('.collab-share-facts .collab-share-state')?.textContent?.trim().toLowerCase() === 'active'`,
+      "active owner-only Personal source preview"
     );
     assert.equal(
       await evaluate(alice, bodyIncludes(teamSafeCredentialSource)),
@@ -1070,9 +1081,20 @@ const run = async () => {
       `Expected reduced transition duration, received ${reducedMotion.transitionDuration}`
     );
 
-    const snapshotRevocationsBeforeCancel = (await commands(alice)).filter(
+    const snapshotRevocationCommandsBeforeCancel = (
+      await commands(alice)
+    ).filter(
       (command) => command.command === "collaboration.revoke_shared_memory"
-    ).length;
+    );
+    assert.deepEqual(
+      snapshotRevocationCommandsBeforeCancel.map(
+        (command) => command.input.shareGrantId
+      ),
+      [ids.noteGrant],
+      "Continuous Note revocation must not revoke another Share Grant"
+    );
+    const snapshotRevocationsBeforeCancel =
+      snapshotRevocationCommandsBeforeCancel.length;
     await trustedClick(alice, `${byText("button", "Revoke")}`);
     await waitFor(
       alice,
@@ -1093,6 +1115,11 @@ const run = async () => {
       "Canceling destructive confirmation must preserve access"
     );
     await trustedClick(alice, `${byText("button", "Revoke")}`);
+    await waitFor(
+      alice,
+      bodyIncludes("Your Personal Memory will not be deleted."),
+      "reopened captured-session revocation confirmation"
+    );
     await trustedClick(alice, `${byText("button", "Revoke Share")}`);
     await waitFor(
       alice,

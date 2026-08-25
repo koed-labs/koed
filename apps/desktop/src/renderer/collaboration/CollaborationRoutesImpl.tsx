@@ -1049,7 +1049,7 @@ function OwnedSharesWorkspace({
 
   const revokeShare = useCallback(
     async (item: OwnedShareItem) => {
-      if (item.kind === "pending") {
+      if (item.kind === "pending" && !item.pendingShare.grantId) {
         const updated = await client.controlPendingShare({
           pendingShareId: item.pendingShare.id,
           expectedOperationVersion: item.pendingShare.operationVersion,
@@ -1063,7 +1063,25 @@ function OwnedSharesWorkspace({
           )
         );
       } else {
-        const shareGrant = item.grant;
+        const shareGrant =
+          item.kind === "grant"
+            ? item.grant
+            : (
+                await client.listOwnedSharedMemoryGrants({
+                  logicalMemoryId: item.pendingShare.logicalMemoryId
+                })
+              ).find(
+                (grant) =>
+                  grant.id === item.pendingShare.grantId &&
+                  grant.logicalMemoryId === item.pendingShare.logicalMemoryId &&
+                  grant.teamId === item.pendingShare.teamId &&
+                  grant.workspaceId === item.pendingShare.workspaceId
+              );
+        if (!shareGrant) {
+          throw new CollaborationInputError(
+            "This Share changed while it was being revoked. Reload it and try again."
+          );
+        }
         if (shareGrant.lifecycle !== "active") {
           throw new CollaborationInputError(
             "This Share is no longer available to revoke."
@@ -1081,7 +1099,22 @@ function OwnedSharesWorkspace({
           (current) =>
             current.map((entry) =>
               ownedShareKey(entry) === ownedShareKey(item)
-                ? { ...entry, grant: revoked }
+                ? entry.kind === "grant"
+                  ? { ...entry, grant: revoked }
+                  : {
+                      ...entry,
+                      pendingShare: {
+                        ...entry.pendingShare,
+                        state: "revoked",
+                        stage: "complete",
+                        workspaceAccessState: "revoked",
+                        sourceUpdateState: "stopped",
+                        operationVersion:
+                          entry.pendingShare.operationVersion + 1,
+                        updatedAt: revoked.updatedAt,
+                        revokedAt: revoked.revokedAt
+                      }
+                    }
                 : entry
             ) as OwnedShareItem[]
         );
@@ -3973,7 +4006,7 @@ function SharedMemoryOwnerModal({
           previewHash: preview.previewHash,
           expiresAt: null
         });
-        if ("grantVersion" in shared) {
+        if ("ownerUserId" in shared) {
           setOwnerGrants((current) => [shared, ...current]);
           completedShareKey = `grant:${shared.id}`;
         } else {

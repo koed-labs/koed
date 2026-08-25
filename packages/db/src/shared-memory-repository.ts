@@ -221,6 +221,7 @@ export interface PendingShareRecord {
   activatedAt: string | null;
   revokedAt: string | null;
   grantId: string | null;
+  grantVersion?: number | null;
 }
 
 export type OwnedShareRecord =
@@ -859,6 +860,9 @@ export interface SharedMemoryRepository {
     input: {
       logicalMemoryId: string;
       source: SharedMemorySourceRef;
+      sourceDeploymentProtocolId?: string;
+      sourceOwnerPrincipalId?: string;
+      deviceCredentialId?: string;
       sourceCapabilities: SharedMemoryRepresentation[];
       activationRepresentation: SharedMemoryRepresentation;
       candidateHash: string;
@@ -930,6 +934,19 @@ export interface SharedMemoryRepository {
   processPendingShares(input?: {
     limit?: number;
     stallThresholdMs?: number;
+    reportActivationFailure?: (input: {
+      pendingShareId: string;
+      failureStage:
+        | "load_context"
+        | "begin_activation"
+        | "authoritative_preview"
+        | "candidate_manifest"
+        | "activation_bundle"
+        | "representation"
+        | "publish";
+      errorClass: string;
+      errorCode: string | null;
+    }) => void;
     ensureCompanion?: (input: {
       actor: ActorContext;
       grant: SharedMemoryGrantRecord;
@@ -1701,6 +1718,176 @@ const ensureLogicalMemorySourceRevision = async (
   };
 };
 
+const ensureCandidateSourceIdentity = async (
+  client: pg.PoolClient,
+  actor: ActorContext,
+  input: {
+    source: SharedMemorySourceRef;
+    sourceDeploymentProtocolId?: string;
+    sourceOwnerPrincipalId?: string;
+    deviceCredentialId?: string;
+  }
+): Promise<string | null> => {
+  const hasDeployment = input.sourceDeploymentProtocolId !== undefined;
+  const hasPrincipal = input.sourceOwnerPrincipalId !== undefined;
+  if (!hasDeployment && !hasPrincipal) return null;
+  if (
+    !input.sourceDeploymentProtocolId ||
+    !input.sourceOwnerPrincipalId ||
+    !input.deviceCredentialId
+  ) {
+    throw new SharedMemoryConflictError(
+      "Candidate source provenance is incomplete"
+    );
+  }
+  assertUuid(input.sourceDeploymentProtocolId, "sourceDeploymentProtocolId");
+  assertUuid(input.sourceOwnerPrincipalId, "sourceOwnerPrincipalId");
+  assertUuid(input.deviceCredentialId, "deviceCredentialId");
+  const expectedLogicalMemoryId = crossIdentitySyncDeterministicUuid(
+    input.source.kind === "personal_note"
+      ? {
+          protocol: "koed.personal-note-share/v1",
+          sourceDeploymentId: input.sourceDeploymentProtocolId,
+          sourceOwnerPrincipalId: input.sourceOwnerPrincipalId,
+          noteId: input.source.noteId,
+          identity: "logical-memory"
+        }
+      : {
+          protocol: "koed.captured-session-sync/v1",
+          sourceDeploymentId: input.sourceDeploymentProtocolId,
+          sourceUserId: input.sourceOwnerPrincipalId,
+          originSessionId: input.source.sessionId,
+          identity: "logical-memory"
+        }
+  );
+  if (expectedLogicalMemoryId !== input.source.logicalMemoryId) {
+    throw new SharedMemoryConflictError(
+      "Candidate source provenance does not match its logical Memory"
+    );
+  }
+  const credential = await client.query<Row>(
+    `select lineage_id
+       from device_credentials
+      where id=$1 and owner_user_id=$2 and revoked_at is null
+        and (expires_at is null or expires_at>now())
+      for update`,
+    [input.deviceCredentialId, actor.userId]
+  );
+  if (!credential.rows[0]) {
+    throw new SharedMemoryAuthorizationError(
+      "Candidate source device authority is unavailable"
+    );
+  }
+  const insertedDeployment = await client.query<Row>(
+    `insert into deployment_identities
+       (protocol_deployment_id,locality,profile)
+     values ($1,'remote','local_personal')
+     on conflict (protocol_deployment_id) do nothing
+     returning id`,
+    [input.sourceDeploymentProtocolId]
+  );
+  const existingDeployment = insertedDeployment.rows[0]
+    ? null
+    : await client.query<Row>(
+        `select id
+           from deployment_identities
+          where protocol_deployment_id=$1 and locality='remote'
+            and profile='local_personal' and disabled_at is null
+          for update`,
+        [input.sourceDeploymentProtocolId]
+      );
+  const deployment = insertedDeployment.rows[0] ?? existingDeployment?.rows[0];
+  if (!deployment) {
+    throw new SharedMemoryConflictError(
+      "Candidate source deployment identity changed"
+    );
+  }
+  const insertedExternalIdentity = await client.query<Row>(
+    `insert into sync_external_user_identities
+       (deployment_identity_id,external_subject_id)
+     values ($1,$2)
+     on conflict (deployment_identity_id,external_subject_id) do nothing
+     returning id`,
+    [deployment.id, input.sourceOwnerPrincipalId]
+  );
+  const existingExternalIdentity = insertedExternalIdentity.rows[0]
+    ? null
+    : await client.query<Row>(
+        `select id
+           from sync_external_user_identities
+          where deployment_identity_id=$1 and external_subject_id=$2
+            and status='active' and revoked_at is null
+          for update`,
+        [deployment.id, input.sourceOwnerPrincipalId]
+      );
+  const externalIdentity =
+    insertedExternalIdentity.rows[0] ?? existingExternalIdentity?.rows[0];
+  if (!externalIdentity) {
+    throw new SharedMemoryConflictError(
+      "Candidate source principal identity is unavailable"
+    );
+  }
+  const remoteUserIdentityId = stringValue(externalIdentity.id);
+  const proofReference = stringValue(credential.rows[0].lineage_id);
+  const insertedPrincipalLink = await client.query<Row>(
+    `insert into sync_principal_links
+       (local_user_id,external_user_identity_id,proof_kind,proof_reference)
+     values ($1,$2,'device_credential_lineage',$3)
+     on conflict do nothing
+     returning id`,
+    [actor.userId, remoteUserIdentityId, proofReference]
+  );
+  const existingPrincipalLink = insertedPrincipalLink.rows[0]
+    ? null
+    : await client.query<Row>(
+        `select id
+           from sync_principal_links
+          where local_user_id=$1 and external_user_identity_id=$2
+            and proof_kind='device_credential_lineage'
+            and proof_reference=$3 and revoked_at is null
+          for update`,
+        [actor.userId, remoteUserIdentityId, proofReference]
+      );
+  if (!insertedPrincipalLink.rows[0] && !existingPrincipalLink?.rows[0]) {
+    throw new SharedMemoryConflictError(
+      "Candidate source principal is bound to another owner"
+    );
+  }
+  const logicalKey =
+    input.source.kind === "personal_note"
+      ? `personal_note:${input.sourceDeploymentProtocolId}:${input.source.noteId}`
+      : `captured-session:${input.source.sessionId}`;
+  const logical = await client.query<Row>(
+    `insert into logical_memories
+       (id,protocol_logical_id,owner_user_id,owner_principal_id,
+        origin_deployment_identity_id,source_kind,logical_key)
+     values ($1,$1,$2,$3,$4,$5,$6)
+     on conflict (id) do update set updated_at=logical_memories.updated_at
+     where logical_memories.owner_user_id=excluded.owner_user_id
+       and logical_memories.owner_principal_id=excluded.owner_principal_id
+       and logical_memories.origin_deployment_identity_id=
+         excluded.origin_deployment_identity_id
+       and logical_memories.source_kind=excluded.source_kind
+       and logical_memories.logical_key=excluded.logical_key
+       and logical_memories.lifecycle='active'
+       and logical_memories.invalidated_at is null
+       and logical_memories.purge_completed_at is null
+     returning id`,
+    [
+      input.source.logicalMemoryId,
+      actor.userId,
+      remoteUserIdentityId,
+      deployment.id,
+      input.source.kind,
+      logicalKey
+    ]
+  );
+  if (!logical.rows[0]) {
+    throw new SharedMemoryConflictError("Candidate source identity changed");
+  }
+  return remoteUserIdentityId;
+};
+
 const pendingShareSourceRefFromRow = (
   row: Row
 ): SharedMemorySourceRef | undefined =>
@@ -2445,7 +2632,11 @@ const mapPendingShare = (row: Row): PendingShareRecord => ({
   updatedAt: iso(row.updated_at),
   activatedAt: nullableIso(row.activated_at),
   revokedAt: nullableIso(row.revoked_at),
-  grantId: row.grant_id === null ? null : stringValue(row.grant_id)
+  grantId: row.grant_id === null ? null : stringValue(row.grant_id),
+  grantVersion:
+    row.grant_version === null || row.grant_version === undefined
+      ? null
+      : numberValue(row.grant_version)
 });
 
 const mapRepresentation = (row: Row): SharedMemoryRepresentationRecord => ({
@@ -3689,6 +3880,7 @@ export const createSharedMemoryRepository = (
     logicalMemoryId: string;
     remoteReplicaId: string;
     localSessionId: string;
+    sourceSessionId: string;
     ownerUserId: string;
     ownerPrincipalId: string;
     teamId: string;
@@ -4219,7 +4411,7 @@ export const createSharedMemoryRepository = (
       artifactId: "",
       source: {
         kind: "captured_session",
-        sessionId: input.context.localSessionId,
+        sessionId: input.context.sourceSessionId,
         logicalMemoryId: input.context.logicalMemoryId
       },
       logicalMemoryId: input.context.logicalMemoryId,
@@ -5581,6 +5773,7 @@ export const createSharedMemoryRepository = (
       ownerUserId: string;
       ownerPrincipalId: string;
       localSessionId: string;
+      sourceSessionId: string;
       syncRelationshipId: string;
       sourceRevision: number;
     }
@@ -5703,7 +5896,7 @@ export const createSharedMemoryRepository = (
     const hashes = sourceMaterialHashes({
       source: {
         kind: "captured_session",
-        sessionId: input.localSessionId,
+        sessionId: input.sourceSessionId,
         logicalMemoryId: input.logicalMemoryId
       },
       representation: input.representation,
@@ -6656,7 +6849,8 @@ export const createSharedMemoryRepository = (
     }
     const rowResult = await client.query<Row>(
       `select lm.id as logical_memory_id,lm.owner_user_id,lm.owner_principal_id,
-              local_memory.local_session_id,lm.latest_source_revision,
+              local_memory.local_session_id,source_binding.source_session_id,
+              lm.latest_source_revision,
               mr.id as remote_replica_id,mr.latest_revision,
               mr.representation_policy_revision as replica_representation_policy_revision,
               mr.content_policy_version as replica_content_policy_version,
@@ -6689,6 +6883,11 @@ export const createSharedMemoryRepository = (
           and sr.local_user_id=$3
           and sr.revoked_at is null
           and sr.state in ('processing','partially_available','ready','stale')
+         join logical_memory_source_revision_bindings source_binding
+           on source_binding.logical_memory_id=lm.id
+          and source_binding.owner_principal_id=lm.owner_principal_id
+          and source_binding.source_revision=sr.target_processing_cursor
+          and source_binding.source_kind='captured_session'
          join device_credentials credential
            on credential.id=sr.device_credential_id
           and credential.owner_user_id=$3
@@ -6715,7 +6914,8 @@ export const createSharedMemoryRepository = (
     if (
       sourceRevision !== numberValue(row.latest_source_revision) ||
       sourceRevision !== numberValue(row.latest_revision) ||
-      nullableString(row.local_session_id) === null
+      nullableString(row.local_session_id) === null ||
+      nullableString(row.source_session_id) === null
     ) {
       throw new SharedMemoryConflictError(
         "Replica revision drift prevents authoritative source preview generation"
@@ -6741,6 +6941,10 @@ export const createSharedMemoryRepository = (
         localSessionId: requireHydratedValue(
           nullableString(row.local_session_id),
           "Target replica session is required"
+        ),
+        sourceSessionId: requireHydratedValue(
+          nullableString(row.source_session_id),
+          "Source Session identity is required"
         ),
         ownerUserId: stringValue(row.owner_user_id),
         ownerPrincipalId: stringValue(row.owner_principal_id),
@@ -6828,6 +7032,7 @@ export const createSharedMemoryRepository = (
           ownerUserId: context.ownerUserId,
           ownerPrincipalId: context.ownerPrincipalId,
           localSessionId: context.localSessionId,
+          sourceSessionId: context.sourceSessionId,
           syncRelationshipId: context.syncRelationshipId,
           sourceRevision: context.sourceRevision
         }
@@ -7088,13 +7293,36 @@ export const createSharedMemoryRepository = (
         ...credential,
         remote_user_identity_id: remoteUserIdentityId
       };
+      const existingLogicalIdentity = await client.query<{
+        owner_principal_id: string;
+      }>(
+        `select owner_principal_id
+           from logical_memories
+          where id=$1 and owner_user_id=$2
+          for update`,
+        [source.logicalMemoryId, actor.userId]
+      );
+      const currentOwnerPrincipalId =
+        existingLogicalIdentity.rows[0]?.owner_principal_id ?? null;
+      const logicalOwnerPrincipalId =
+        currentOwnerPrincipalId === actor.userId
+          ? actor.userId
+          : remoteUserIdentityId;
+      if (
+        currentOwnerPrincipalId !== null &&
+        currentOwnerPrincipalId !== logicalOwnerPrincipalId
+      ) {
+        throw new SharedMemoryConflictError(
+          "Personal Note logical Memory owner changed"
+        );
+      }
       const logicalKey = `personal_note:${input.sourceDeploymentProtocolId}:${source.noteId}`;
       const logicalResult = await client.query<Row>(
         `insert into logical_memories
            (id,protocol_logical_id,owner_user_id,owner_principal_id,
             origin_deployment_identity_id,source_kind,logical_key,
             latest_source_revision)
-         values ($1,$1,$2,$2,$3,'personal_note',$4,$5)
+         values ($1,$1,$2,$3,$4,'personal_note',$5,$6)
          on conflict (id) do update
            set latest_source_revision=excluded.latest_source_revision,
                updated_at=case
@@ -7115,6 +7343,7 @@ export const createSharedMemoryRepository = (
         [
           source.logicalMemoryId,
           actor.userId,
+          logicalOwnerPrincipalId,
           deploymentIdentityId,
           logicalKey,
           source.noteRevision
@@ -7124,7 +7353,7 @@ export const createSharedMemoryRepository = (
       if (
         !logical ||
         logical.owner_user_id !== actor.userId ||
-        logical.owner_principal_id !== actor.userId ||
+        logical.owner_principal_id !== logicalOwnerPrincipalId ||
         logical.origin_deployment_identity_id !== deploymentIdentityId ||
         logical.source_kind !== "personal_note" ||
         numberValue(logical.latest_source_revision) !== source.noteRevision
@@ -7136,7 +7365,7 @@ export const createSharedMemoryRepository = (
       const existingOwnerPolicy = await activePolicy(client, {
         table: "source_owner_representation_policies",
         whereSql: "logical_memory_id=$1 and source_owner_principal_id=$2",
-        parameters: [source.logicalMemoryId, actor.userId]
+        parameters: [source.logicalMemoryId, logicalOwnerPrincipalId]
       });
       const ownerPolicy =
         existingOwnerPolicy &&
@@ -7146,7 +7375,7 @@ export const createSharedMemoryRepository = (
           : proposedSourceOwnerPolicy({
               existing: existingOwnerPolicy,
               logicalMemoryId: source.logicalMemoryId,
-              ownerPrincipalId: actor.userId,
+              ownerPrincipalId: logicalOwnerPrincipalId,
               maximumFidelity: "memory_events",
               includeCuratedMemory: false,
               policyId: existingOwnerPolicy
@@ -7154,7 +7383,7 @@ export const createSharedMemoryRepository = (
                 : crossIdentitySyncDeterministicUuid({
                     protocol: "koed.personal-note-share/v1",
                     logicalMemoryId: source.logicalMemoryId,
-                    ownerPrincipalId: actor.userId,
+                    ownerPrincipalId: logicalOwnerPrincipalId,
                     identity: "source-owner-policy"
                   })
             });
@@ -7299,7 +7528,7 @@ export const createSharedMemoryRepository = (
         remoteReplicaId: null,
         syncRelationshipId: null,
         ownerUserId: actor.userId,
-        ownerPrincipalId: actor.userId,
+        ownerPrincipalId: logicalOwnerPrincipalId,
         teamId: stringValue(pending.team_id),
         teamWorkspaceId: stringValue(pending.team_workspace_id),
         sourceRevision: source.noteRevision,
@@ -8704,12 +8933,50 @@ export const createSharedMemoryRepository = (
       sourceId: string;
       revisionHash: string;
     }>;
-    const authoritativeSourceIds =
+    const localAuthoritativeSourceIds =
       context.representation === "memory_events"
         ? [
             ...new Set(preview.manifest.map((entry) => entry.sourceEventId))
           ].filter((id): id is string => id !== null)
         : preview.manifest.map((entry) => entry.sourceId);
+    const authoritativeSourceIds =
+      context.source.kind !== "captured_session" ||
+      context.representation === "curated_assertions"
+        ? localAuthoritativeSourceIds
+        : await withTransaction(pool, async (client) => {
+            if (!preview.syncRelationshipId) return [];
+            const mappingTable =
+              context.representation === "memory_events"
+                ? {
+                    localColumn: "local_memory_event_id",
+                    originColumn: "origin_event_id",
+                    table: "sync_event_mappings"
+                  }
+                : {
+                    localColumn: "local_memory_node_id",
+                    originColumn: "origin_node_id",
+                    table: "sync_summary_node_mappings"
+                  };
+            const mappings = await client.query<Row>(
+              `select ${mappingTable.localColumn} as local_id,
+                      ${mappingTable.originColumn} as origin_id
+                 from ${mappingTable.table}
+                where sync_relationship_id=$1
+                  and ${mappingTable.localColumn}=any($2::uuid[])
+                  and active=true`,
+              [preview.syncRelationshipId, localAuthoritativeSourceIds]
+            );
+            const originByLocalId = new Map(
+              mappings.rows.map((row) => [
+                stringValue(row.local_id),
+                stringValue(row.origin_id)
+              ])
+            );
+            return localAuthoritativeSourceIds.flatMap((localId) => {
+              const originId = originByLocalId.get(localId);
+              return originId ? [originId] : [];
+            });
+          });
     const reproducedManifest =
       context.source.kind === "personal_note"
         ? preview.manifest.map((entry) => ({
@@ -9362,9 +9629,19 @@ export const createSharedMemoryRepository = (
     stallThresholdMs: number,
     ensureCompanion: NonNullable<
       Parameters<SharedMemoryRepository["processPendingShares"]>[0]
-    >["ensureCompanion"]
+    >["ensureCompanion"],
+    reportActivationFailure: NonNullable<
+      Parameters<SharedMemoryRepository["processPendingShares"]>[0]
+    >["reportActivationFailure"]
   ): Promise<PendingShareProcessingOutcome> => {
     let workerExpected: PendingShareWorkerExpected | null = null;
+    let failureStage: Parameters<
+      NonNullable<
+        NonNullable<
+          Parameters<SharedMemoryRepository["processPendingShares"]>[0]
+        >["reportActivationFailure"]
+      >
+    >[0]["failureStage"] = "load_context";
     try {
       const loaded = await loadPendingShareProcessingContext(
         pendingShareId,
@@ -9379,6 +9656,7 @@ export const createSharedMemoryRepository = (
           readiness
         });
       }
+      failureStage = "begin_activation";
       const activating = await beginPendingShareActivation(
         pendingShareId,
         pending,
@@ -9393,17 +9671,22 @@ export const createSharedMemoryRepository = (
         wantedRevision,
         remoteReplicaId: readiness.remoteReplicaId
       });
+      failureStage = "authoritative_preview";
       const preview = await createPendingShareAuthoritativePreview(context);
+      failureStage = "candidate_manifest";
       if (!(await validatePendingShareCandidateManifest(context, preview))) {
         return "failed";
       }
+      failureStage = "activation_bundle";
       const bundle = await createPendingShareActivationBundle(context, preview);
+      failureStage = "representation";
       const stagedRepresentation = await stagePendingShareRepresentation(
         context,
         preview,
         bundle,
         ensureCompanion
       );
+      failureStage = "publish";
       return (await publishPendingShareActivation(
         context,
         bundle,
@@ -9412,6 +9695,23 @@ export const createSharedMemoryRepository = (
         ? "activated"
         : "skipped";
     } catch (error) {
+      try {
+        reportActivationFailure?.({
+          pendingShareId,
+          failureStage,
+          errorClass: error instanceof Error ? error.name : "UnknownError",
+          errorCode:
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            typeof error.code === "string" &&
+            /^[A-Z0-9_]{1,80}$/.test(error.code)
+              ? error.code
+              : null
+        });
+      } catch {
+        // Diagnostics must not change the worker outcome.
+      }
       return transitionPendingShareActivationError(
         pendingShareId,
         workerExpected,
@@ -9543,7 +9843,8 @@ export const createSharedMemoryRepository = (
       const outcome = await processClaimedPendingShare(
         pendingShareId,
         stallThresholdMs,
-        input.ensureCompanion
+        input.ensureCompanion,
+        input.reportActivationFailure
       );
       if (outcome !== "skipped") totals[outcome] += 1;
     }
@@ -9586,10 +9887,26 @@ export const createSharedMemoryRepository = (
           input.teamId,
           input.teamWorkspaceId
         );
+        const admittedOwnerPrincipalId = await ensureCandidateSourceIdentity(
+          client,
+          actor,
+          {
+            source,
+            sourceDeploymentProtocolId: input.sourceDeploymentProtocolId,
+            sourceOwnerPrincipalId: input.sourceOwnerPrincipalId,
+            deviceCredentialId: input.deviceCredentialId
+          }
+        );
         const requestHash = crossIdentitySyncDigest({
           version: 2,
           ownerUserId: actor.userId,
           source,
+          ...(input.sourceDeploymentProtocolId && input.sourceOwnerPrincipalId
+            ? {
+                sourceDeploymentProtocolId: input.sourceDeploymentProtocolId,
+                sourceOwnerPrincipalId: input.sourceOwnerPrincipalId
+              }
+            : {}),
           sourceCapabilities: input.sourceCapabilities,
           activationRepresentation: input.activationRepresentation,
           logicalMemoryId: input.logicalMemoryId,
@@ -9670,6 +9987,12 @@ export const createSharedMemoryRepository = (
             version: 2,
             ownerUserId: stringValue(row.owner_user_id),
             source: requiredSourceRefFromRow(row),
+            ...(input.sourceDeploymentProtocolId && input.sourceOwnerPrincipalId
+              ? {
+                  sourceDeploymentProtocolId: input.sourceDeploymentProtocolId,
+                  sourceOwnerPrincipalId: input.sourceOwnerPrincipalId
+                }
+              : {}),
             sourceCapabilities: candidate.sourceCapabilities,
             activationRepresentation: candidate.activationRepresentation,
             logicalMemoryId: candidate.logicalMemoryId,
@@ -9786,6 +10109,14 @@ export const createSharedMemoryRepository = (
         if (!sourceOwner.rows[0]) {
           throw new SharedMemoryAuthorizationError(
             "Shared Memory source ownership is unavailable"
+          );
+        }
+        if (
+          admittedOwnerPrincipalId !== null &&
+          sourceOwner.rows[0].owner_principal_id !== admittedOwnerPrincipalId
+        ) {
+          throw new SharedMemoryConflictError(
+            "Candidate source principal changed during admission"
           );
         }
         const exactSourceRevision = await ensureLogicalMemorySourceRevision(
@@ -15052,7 +15383,10 @@ export const createSharedMemoryRepository = (
                   owned.created_at as sort_created_at,owned.record_kind as sort_record_kind,
                   owned.sort_id
              from (
-               select 'pending'::text as record_kind,to_jsonb(p) as payload,
+               select 'pending'::text as record_kind,
+                      to_jsonb(p) || jsonb_build_object(
+                        'grant_version',activated_grant.grant_version
+                      ) as payload,
                       case when source.id is null then null else
                         jsonb_build_object('mode',source.mode,'lifecycle',source.lifecycle,
                                            'version',source.version) end as source_access,
@@ -15076,8 +15410,10 @@ export const createSharedMemoryRepository = (
                    select s.id,s.mode,s.lifecycle,s.version
                      from team_conversation_source_grants s
                     where s.share_grant_id=p.grant_id
-                    order by s.updated_at desc,s.id desc limit 1
+                   order by s.updated_at desc,s.id desc limit 1
                  ) source on true
+                 left join team_memory_share_grant_records activated_grant
+                   on activated_grant.id=p.grant_id
                 where p.owner_user_id=$1
                   and p.created_at<=$4
                   and (($2::boolean and p.state='revoked')

@@ -421,6 +421,12 @@ const createFixture = (
     loadLocalCandidatePreview?: NonNullable<
       CollaborationSharedMemoryControlOptions["loadLocalCandidatePreview"]
     >;
+    resolveCandidateSourceIdentity?: NonNullable<
+      CollaborationSharedMemoryControlOptions["resolveCandidateSourceIdentity"]
+    >;
+    reportDiagnostic?: NonNullable<
+      CollaborationSharedMemoryControlOptions["reportDiagnostic"]
+    >;
     readLocalEdgeClientCredential?: NonNullable<
       CollaborationSharedMemoryControlOptions["readLocalEdgeClientCredential"]
     >;
@@ -1018,6 +1024,13 @@ const createFixture = (
     loadLocalCandidatePreview: overrides.loadLocalCandidatePreview,
     loadPersonalNoteCandidatePreview:
       overrides.loadPersonalNoteCandidatePreview,
+    resolveCandidateSourceIdentity:
+      overrides.resolveCandidateSourceIdentity ??
+      (() => ({
+        sourceDeploymentProtocolId: uuidFor(107),
+        sourceOwnerPrincipalId: ids.localOwner
+      })),
+    reportDiagnostic: overrides.reportDiagnostic,
     requestPendingShareSourceWork: overrides.requestPendingShareSourceWork,
     requestContinuousNoteAdvancementWork:
       overrides.requestContinuousNoteAdvancementWork,
@@ -1068,6 +1081,9 @@ const createFixture = (
               schemaVersion: 6,
               payload: {
                 capabilitySchemaVersion: 6,
+                protocols: {
+                  sharedMemorySourceAdmission: { version: 1 }
+                },
                 capabilities: {
                   "memory.collaboration": { availability: "partial" }
                 }
@@ -1195,6 +1211,9 @@ describe("collaboration Shared Memory control", () => {
             schemaVersion: 6,
             payload: {
               capabilitySchemaVersion: 6,
+              protocols: {
+                sharedMemorySourceAdmission: { version: 1 }
+              },
               capabilities: {
                 "memory.collaboration": { availability: "partial" }
               }
@@ -1618,6 +1637,63 @@ describe("collaboration Shared Memory control", () => {
     ]);
   });
 
+  it("rejects candidate execution when the backend lacks the source-admission protocol", async () => {
+    const base = previewCommand();
+    const fixture = createFixture({
+      readUpstreamRegistry: () => ({
+        schemaVersion: 2,
+        activeBackendId: "team-backend",
+        backends: [
+          {
+            id: "team-backend",
+            baseUrl: "https://team.example.test",
+            routePolicy: {
+              teamWorkspaceRead: "enabled",
+              shareGrantManagement: "enabled"
+            },
+            capabilities: {
+              state: "validated",
+              expiresAt: "2099-01-01T00:00:00.000Z",
+              schemaVersion: 6,
+              payload: {
+                capabilitySchemaVersion: 6,
+                capabilities: {
+                  "memory.collaboration": { availability: "partial" }
+                }
+              }
+            }
+          }
+        ]
+      })
+    });
+
+    const result = await fixture.control.dispatch(
+      {
+        ...base,
+        input: {
+          ...base.input,
+          candidate: {
+            source: capturedSource,
+            sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+            activationRepresentation: "memory_events",
+            candidateHash: hash,
+            sourceRevision: 4,
+            itemCount: 1,
+            excludedItemCount: 0,
+            manifest: [{ sourceId: ids.source, revisionHash: hashB }],
+            byteCount: 128,
+            mode: "continuous",
+            expiresAt: null
+          }
+        }
+      },
+      context()
+    );
+
+    expectFailure(result, "protocol_mismatch");
+    expect(fixture.requests).toHaveLength(0);
+  });
+
   it("reconciles authoritative remote owner grants before listing them", async () => {
     const fixture = createFixture();
     const result = await fixture.control.dispatch(
@@ -1910,6 +1986,33 @@ describe("collaboration Shared Memory control", () => {
       expect.stringMatching(/device-credentials\/status$/),
       "/v1/shared-memory/owned-shares"
     ]);
+  });
+
+  it("reports authority projection failures without logging protected share data", async () => {
+    const diagnostics = vi.fn();
+    const fixture = createFixture({ reportDiagnostic: diagnostics });
+    fixture.readAuthoritativeGrants.mockRejectedValueOnce(
+      new Error(`projection failed for ${hash} and hrg_secret`)
+    );
+
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.list_owned_shares"),
+        input: { cursor: null, limit: 100, history: false }
+      },
+      context()
+    );
+
+    expectFailure(result, "internal_error");
+    expect(diagnostics).toHaveBeenCalledWith({
+      code: "shared_memory_authority_projection_failed",
+      operation: "collaboration.list_owned_shares",
+      publicGrantReference: null,
+      failureStage: "authority_store_projection",
+      httpStatus: 500
+    });
+    expect(JSON.stringify(diagnostics.mock.calls)).not.toContain(hash);
+    expect(JSON.stringify(diagnostics.mock.calls)).not.toContain("hrg_secret");
   });
 
   it("binds owned-share cursors to immutable pagination context", async () => {

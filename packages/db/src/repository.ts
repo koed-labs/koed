@@ -6915,6 +6915,7 @@ export const createMemorySourceRepository = (
             and (
               $6::uuid is not null
               or me.session_id is null
+              or $12::boolean = true
             )
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and (
@@ -7039,6 +7040,7 @@ export const createMemorySourceRepository = (
           cross join cursor_order co
           join sessions s on s.id = msg.session_id
           where ($2::boolean = true or msg.invalidated_at is null)
+            and $12::boolean = false
             and msg.role <> 'tool'
             and ($3::visibility_scope is null or msg.visibility = $3::visibility_scope)
             and (
@@ -7174,6 +7176,7 @@ export const createMemorySourceRepository = (
           cross join cursor_order co
           join sessions s on s.id = te.session_id
           where ($2::boolean = true or te.invalidated_at is null)
+            and $12::boolean = false
             and ($3::visibility_scope is null or te.visibility = $3::visibility_scope)
             and (
               $4::text is null
@@ -7318,6 +7321,7 @@ export const createMemorySourceRepository = (
           cross join cursor_order co
           join sessions s on s.id = ci.session_id
           where ci.visibility = 'personal'
+            and $12::boolean = false
             and ci.owner_user_id = $1
             and ci.personal_deleted_at is null
             and ${approvalConversationItemSql("ci")}
@@ -7369,7 +7373,8 @@ export const createMemorySourceRepository = (
           input.cursorTimestamp ?? null,
           input.cursorSourceSequence ?? null,
           input.cursorId ?? null,
-          limit
+          limit,
+          input.canonicalCapturedSessionEventsOnly ?? false
         ]
       );
       const hydratedRows = await Promise.all(

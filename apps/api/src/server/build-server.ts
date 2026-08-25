@@ -55,7 +55,10 @@ import {
   projectPersonalNoteToMemory
 } from "../collaboration/personal-note-memory.js";
 import { createCollaborationActionGrantLifecycle } from "../local-edge/collaboration-action-grant-lifecycle.js";
-import { createLocalSharedMemoryCandidatePreparation } from "../local-edge/shared-memory-candidate-preparation.js";
+import {
+  createLocalSharedMemoryCandidatePreparation,
+  PersonalNoteCandidatePreparationError
+} from "../local-edge/shared-memory-candidate-preparation.js";
 import {
   createPostgresCollaborationSharedMemoryAuthorityStore,
   type PostgresCollaborationSharedMemoryAuthorityStore
@@ -561,7 +564,18 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     pendingShareWorkerRunning = true;
     void pendingShareWorker({
       limit: 10,
-      ensureCompanion: ensurePendingShareCompanion
+      ensureCompanion: ensurePendingShareCompanion,
+      reportActivationFailure: (failure) =>
+        app.log.warn(
+          {
+            event: { name: "pending_share.activation.failed" },
+            pendingShareId: failure.pendingShareId,
+            failureStage: failure.failureStage,
+            errorClass: failure.errorClass,
+            errorCode: failure.errorCode
+          },
+          "Pending Share activation failed"
+        )
     })
       .catch((error: unknown) => {
         app.log.error(
@@ -807,6 +821,34 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           requestKoedLocalWork(config.koedHome, "lcm-summary")
       })
     : null;
+  type PendingShareSourcePreparationStage =
+    | "deployment_identity"
+    | "personal_note_candidate"
+    | "upstream_authorization"
+    | "source_upload"
+    | "source_upload_response"
+    | "captured_session_sync";
+  class PendingShareSourcePreparationError extends Error {
+    readonly failureStage: PendingShareSourcePreparationStage;
+    readonly statusCode?: number;
+
+    constructor(
+      failureStage: PendingShareSourcePreparationStage,
+      cause: unknown
+    ) {
+      super("Pending Share source preparation failed", { cause });
+      this.name = "PendingShareSourcePreparationError";
+      this.failureStage = failureStage;
+      if (
+        typeof cause === "object" &&
+        cause !== null &&
+        "statusCode" in cause &&
+        typeof cause.statusCode === "number"
+      ) {
+        this.statusCode = cause.statusCode;
+      }
+    }
+  }
   const preparePendingShareSource = async (input: {
     backendId: string;
     localOwnerUserId: string;
@@ -817,91 +859,106 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     mode: "snapshot" | "continuous";
   }): Promise<void> => {
     if (!repository) return;
-    const deploymentId = resolveVerifiedDeploymentId();
-    if (!deploymentId) {
-      throw new Error("Verified deployment identity unavailable");
-    }
-    if (input.source?.kind === "personal_note") {
-      if (!localSharedMemoryCandidatePreparation) {
-        throw new Error("Personal Note candidate preparation is unavailable");
+    let failureStage: PendingShareSourcePreparationStage =
+      "deployment_identity";
+    try {
+      const deploymentId = resolveVerifiedDeploymentId();
+      if (!deploymentId) {
+        throw new Error("Verified deployment identity unavailable");
       }
-      const candidate =
-        await localSharedMemoryCandidatePreparation.loadPersonalNoteCandidatePreview(
+      if (input.source?.kind === "personal_note") {
+        failureStage = "personal_note_candidate";
+        if (!localSharedMemoryCandidatePreparation) {
+          throw new Error("Personal Note candidate preparation is unavailable");
+        }
+        const candidate =
+          await localSharedMemoryCandidatePreparation.loadPersonalNoteCandidatePreview(
+            {
+              localOwnerUserId: input.localOwnerUserId,
+              noteId: input.source.noteId,
+              noteRevision: input.source.noteRevision,
+              mode: input.mode
+            }
+          );
+        if (
+          !candidate ||
+          candidate.source?.kind !== "personal_note" ||
+          candidate.source.memoryEventId !== input.source.memoryEventId ||
+          candidate.logicalMemoryId !== input.source.logicalMemoryId
+        ) {
+          throw new Error("Personal Note source changed before upload");
+        }
+        failureStage = "upstream_authorization";
+        const backend = upstreamBackendById(
+          readLocalEdgeUpstreamRegistry(localEdgeUpstreamBackendsPath),
+          input.backendId
+        );
+        const authorization = backend
+          ? localEdgeResolveUpstreamAuthorization(backend)
+          : null;
+        if (!backend || !authorization) {
+          throw new Error(
+            "Personal Note upstream authorization is unavailable"
+          );
+        }
+        failureStage = "source_upload";
+        const { response } = await fetchBoundedJsonObject(
+          localEdgeFetch,
+          safeUpstreamProxyUrl(
+            backend,
+            `/v1/shared-memory/pending-shares/${input.pendingShareId}/personal-note-source`
+          ),
           {
-            localOwnerUserId: input.localOwnerUserId,
-            noteId: input.source.noteId,
-            noteRevision: input.source.noteRevision,
-            mode: input.mode
-          }
-        );
-      if (
-        !candidate ||
-        candidate.source?.kind !== "personal_note" ||
-        candidate.source.memoryEventId !== input.source.memoryEventId ||
-        candidate.logicalMemoryId !== input.source.logicalMemoryId
-      ) {
-        throw new Error("Personal Note source changed before upload");
-      }
-      const backend = upstreamBackendById(
-        readLocalEdgeUpstreamRegistry(localEdgeUpstreamBackendsPath),
-        input.backendId
-      );
-      const authorization = backend
-        ? localEdgeResolveUpstreamAuthorization(backend)
-        : null;
-      if (!backend || !authorization) {
-        throw new Error("Personal Note upstream authorization is unavailable");
-      }
-      const { response } = await fetchBoundedJsonObject(
-        localEdgeFetch,
-        safeUpstreamProxyUrl(
-          backend,
-          `/v1/shared-memory/pending-shares/${input.pendingShareId}/personal-note-source`
-        ),
-        {
-          method: "PUT",
-          redirect: "error",
-          headers: {
-            accept: "application/json",
-            authorization,
-            "content-type": "application/json",
-            "idempotency-key": input.mutationId
+            method: "PUT",
+            redirect: "error",
+            headers: {
+              accept: "application/json",
+              authorization,
+              "content-type": "application/json",
+              "idempotency-key": input.mutationId
+            },
+            body: JSON.stringify({
+              sourceDeploymentProtocolId: deploymentId,
+              sourceOwnerPrincipalId: input.localOwnerUserId,
+              candidate
+            })
           },
-          body: JSON.stringify({
-            sourceDeploymentProtocolId: deploymentId,
-            sourceOwnerPrincipalId: input.localOwnerUserId,
-            candidate
-          })
-        },
-        { timeoutMs: 30_000, maxBytes: 64 * 1_024 }
-      );
-      if (!response.ok) {
-        throw new Error(
-          `Personal Note source upload failed (${response.status})`
+          { timeoutMs: 30_000, maxBytes: 64 * 1_024 }
         );
+        failureStage = "source_upload_response";
+        if (!response.ok) {
+          throw Object.assign(
+            new Error("Personal Note source upload was rejected"),
+            { statusCode: response.status }
+          );
+        }
+        return;
       }
-      return;
+      failureStage = "captured_session_sync";
+      await prepareSourceSyncRelationship(
+        {
+          deploymentProfile: config.deploymentProfile,
+          resolveVerifiedLocalDeploymentId: () => deploymentId,
+          upstreamBackendsPath: localEdgeUpstreamBackendsPath,
+          fetch: localEdgeFetch,
+          resolveUpstreamAuthorization: localEdgeResolveUpstreamAuthorization,
+          requireRepository: () => repository
+        },
+        {
+          localUserId: input.localOwnerUserId,
+          sessionId:
+            input.source?.kind === "captured_session"
+              ? input.source.sessionId
+              : input.sessionId!,
+          upstreamBackendId: input.backendId,
+          idempotencyKey: input.mutationId,
+          consentedAt: new Date().toISOString()
+        }
+      );
+    } catch (error) {
+      if (error instanceof PendingShareSourcePreparationError) throw error;
+      throw new PendingShareSourcePreparationError(failureStage, error);
     }
-    await prepareSourceSyncRelationship(
-      {
-        deploymentProfile: config.deploymentProfile,
-        resolveVerifiedLocalDeploymentId: () => deploymentId,
-        upstreamBackendsPath: localEdgeUpstreamBackendsPath,
-        fetch: localEdgeFetch,
-        resolveUpstreamAuthorization: localEdgeResolveUpstreamAuthorization,
-        requireRepository: () => repository
-      },
-      {
-        localUserId: input.localOwnerUserId,
-        sessionId:
-          input.source?.kind === "captured_session"
-            ? input.source.sessionId
-            : input.sessionId!,
-        upstreamBackendId: input.backendId,
-        idempotencyKey: input.mutationId,
-        consentedAt: new Date().toISOString()
-      }
-    );
   };
   const collaborationActionGrantLifecycle =
     createCollaborationActionGrantLifecycle({ koedHome: config.koedHome });
@@ -923,6 +980,22 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             localSharedMemoryCandidatePreparation?.loadCandidatePreview,
           loadPersonalNoteCandidatePreview:
             localSharedMemoryCandidatePreparation?.loadPersonalNoteCandidatePreview,
+          resolveCandidateSourceIdentity:
+            localSharedMemoryCandidatePreparation?.resolveCandidateSourceIdentity,
+          reportDiagnostic: (diagnostic) =>
+            app.log.warn(
+              {
+                event: {
+                  name: diagnostic.code,
+                  category: "database",
+                  operation: diagnostic.operation,
+                  public_grant_reference: diagnostic.publicGrantReference,
+                  failure_stage: diagnostic.failureStage,
+                  http_status: diagnostic.httpStatus
+                }
+              },
+              "Shared Memory authority projection failed"
+            ),
           prepareLocalLcmRepresentation:
             localSharedMemoryCandidatePreparation?.prepareLcmRepresentation,
           ensureEnrollmentBinding: (input) =>
@@ -983,8 +1056,38 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
                   event: { name: "pending_share.source_work.retry" },
                   pendingShareId: item.pendingShareId,
                   backendId: item.backendId,
+                  failureStage:
+                    error instanceof PendingShareSourcePreparationError
+                      ? error.failureStage
+                      : "unknown",
                   errorClass:
                     error instanceof Error ? error.name : "UnknownError",
+                  causeClass:
+                    error instanceof Error && error.cause instanceof Error
+                      ? error.cause.name
+                      : null,
+                  candidateStage:
+                    error instanceof Error &&
+                    error.cause instanceof PersonalNoteCandidatePreparationError
+                      ? error.cause.candidateStage
+                      : null,
+                  errorCode:
+                    typeof error === "object" &&
+                    error !== null &&
+                    "code" in error &&
+                    typeof error.code === "string" &&
+                    /^[A-Z0-9_]{1,80}$/.test(error.code)
+                      ? error.code
+                      : typeof error === "object" &&
+                          error !== null &&
+                          "cause" in error &&
+                          typeof error.cause === "object" &&
+                          error.cause !== null &&
+                          "code" in error.cause &&
+                          typeof error.cause.code === "string" &&
+                          /^[A-Z0-9_]{1,80}$/.test(error.cause.code)
+                        ? error.cause.code
+                        : null,
                   statusCode
                 },
                 "Pending Share source work will retry"
@@ -1104,6 +1207,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     createCollaborationActionGrantControl({
       koedHome: config.koedHome,
       fetch: localEdgeFetch,
+      resolveCandidateSourceIdentity:
+        localSharedMemoryCandidatePreparation?.resolveCandidateSourceIdentity,
       actionGrantLifecycle: collaborationActionGrantLifecycle
     });
 
@@ -1436,7 +1541,21 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     authenticateSessionOrDeviceCredential:
       authHelpers.authenticateSessionOrDeviceCredential,
     readRateLimit: rateLimitHandlers.memoryRead,
-    writeRateLimit: rateLimitHandlers.memoryWrite
+    writeRateLimit: rateLimitHandlers.memoryWrite,
+    reportDiagnostic: (diagnostic) =>
+      app.log.warn(
+        {
+          event: {
+            name: diagnostic.code,
+            category: "security",
+            operation: diagnostic.operation,
+            public_grant_reference: diagnostic.publicGrantReference,
+            failure_stage: diagnostic.failureStage,
+            http_status: diagnostic.httpStatus
+          }
+        },
+        "Shared Memory protected operation failed"
+      )
   });
   teamConversationSourceService = createTeamConversationSourceService({
     app,

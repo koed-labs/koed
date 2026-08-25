@@ -224,6 +224,11 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
     .object({
       action: z.literal("shared_memory.candidate_preview"),
       source: createSharedMemoryCandidatePreviewSchema.shape.source,
+      sourceDeploymentProtocolId:
+        createSharedMemoryCandidatePreviewSchema.shape
+          .sourceDeploymentProtocolId,
+      sourceOwnerPrincipalId:
+        createSharedMemoryCandidatePreviewSchema.shape.sourceOwnerPrincipalId,
       sourceCapabilities:
         createSharedMemoryCandidatePreviewSchema.shape.sourceCapabilities,
       logicalMemoryId:

@@ -387,6 +387,10 @@ export interface CrossIdentitySyncRepository {
     fromCursor: number;
     toCursor: number;
   } | null>;
+  listCapturedSessionSyncEligibleLcmNodeIds(
+    actor: ActorContext,
+    sessionId: string
+  ): Promise<string[]>;
   getSharedMemoryLcmSyncState(input: {
     relationshipId: string;
     ownerUserId: string;
@@ -959,12 +963,22 @@ export const createCrossIdentitySyncRepository = (
     }
     const sourceResult = await pool.query<Row>(
       `select source.memory_node_id,source.memory_event_id,source.source_order,
-              event.session_id
+              event.session_id,
+              latest_change.operation as sync_operation,
+              latest_change.memory_event_id as sync_memory_event_id
          from memory_node_sources source
          join memory_events event on event.id=source.memory_event_id
+         left join lateral (
+           select change.operation,change.memory_event_id
+             from sync_semantic_changes change
+            where change.session_id=$2
+              and change.origin_event_id=source.memory_event_id
+            order by change.cursor desc
+            limit 1
+         ) latest_change on true
         where source.memory_node_id=any($1::uuid[])
         order by source.memory_node_id,source.source_order`,
-      [nodeIds]
+      [nodeIds, input.sessionId]
     );
     const childResult = await pool.query<Row>(
       `select parent_memory_node_id,child_memory_node_id,child_order
@@ -974,6 +988,7 @@ export const createCrossIdentitySyncRepository = (
       [nodeIds]
     );
     const sourceIdsByNode = new Map<string, string[]>();
+    const syncEligibleSourceIds = new Set<string>();
     for (const row of sourceResult.rows) {
       if (String(row.session_id) !== input.sessionId) {
         throw new SyncStateConflictError(
@@ -984,6 +999,12 @@ export const createCrossIdentitySyncRepository = (
       const sourceIds = sourceIdsByNode.get(nodeId) ?? [];
       sourceIds.push(String(row.memory_event_id));
       sourceIdsByNode.set(nodeId, sourceIds);
+      if (
+        row.sync_operation === "upsert" &&
+        optionalString(row.sync_memory_event_id) === String(row.memory_event_id)
+      ) {
+        syncEligibleSourceIds.add(String(row.memory_event_id));
+      }
     }
     const childIdsByNode = new Map<string, string[]>();
     const nodeIdSet = new Set(nodeIds);
@@ -999,11 +1020,32 @@ export const createCrossIdentitySyncRepository = (
       childIds.push(childId);
       childIdsByNode.set(nodeId, childIds);
     }
+    const syncEligibleNodeIds = new Set<string>();
+    for (const row of nodeResult.rows) {
+      const nodeId = String(row.id);
+      const sourceIds = sourceIdsByNode.get(nodeId) ?? [];
+      const childIds = childIdsByNode.get(nodeId) ?? [];
+      if (
+        sourceIds.length > 0 &&
+        sourceIds.every((sourceId) => syncEligibleSourceIds.has(sourceId)) &&
+        (row.kind !== "rollup" ||
+          (childIds.length > 0 &&
+            childIds.every((childId) => syncEligibleNodeIds.has(childId))))
+      ) {
+        syncEligibleNodeIds.add(nodeId);
+      }
+    }
     const pendingLeaves = nodeResult.rows.some(
-      (row) => row.kind === "leaf" && !optionalString(row.summary_model)
+      (row) =>
+        syncEligibleNodeIds.has(String(row.id)) &&
+        row.kind === "leaf" &&
+        !optionalString(row.summary_model)
     );
     const pendingRollups = nodeResult.rows.some(
-      (row) => row.kind === "rollup" && !optionalString(row.summary_model)
+      (row) =>
+        syncEligibleNodeIds.has(String(row.id)) &&
+        row.kind === "rollup" &&
+        !optionalString(row.summary_model)
     );
     if (pendingLeaves) {
       return {
@@ -1015,6 +1057,7 @@ export const createCrossIdentitySyncRepository = (
     }
     const nodes: CapturedSessionSyncSummaryNodeV1[] = [];
     for (const row of nodeResult.rows) {
+      if (!syncEligibleNodeIds.has(String(row.id))) continue;
       if (!optionalString(row.summary_model)) continue;
       const originNodeId = String(row.id);
       const kind = String(row.kind);
@@ -2499,6 +2542,10 @@ export const createCrossIdentitySyncRepository = (
         ]
       );
       return "pending";
+    },
+    async listCapturedSessionSyncEligibleLcmNodeIds(actor, sessionId) {
+      const snapshot = await readSessionSummarySnapshot({ actor, sessionId });
+      return snapshot.nodes.map((node) => node.originNodeId);
     },
     async createSyncPackageUploadSession(actor, input) {
       assertSafeControlManifest(input.packageManifest);

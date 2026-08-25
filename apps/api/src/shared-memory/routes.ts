@@ -154,6 +154,13 @@ export interface SharedMemoryRouteContext {
   authenticateSessionOrDeviceCredential: ApiRouteContext["auth"]["authenticateSessionOrDeviceCredential"];
   readRateLimit: ApiRouteContext["rateLimit"]["memoryRead"];
   writeRateLimit: ApiRouteContext["rateLimit"]["memoryWrite"];
+  reportDiagnostic?(diagnostic: {
+    code: "shared_memory_action_grant_binding_failed";
+    operation: string;
+    publicGrantReference: string;
+    failureStage: "action_grant_execution";
+    httpStatus: 403;
+  }): void;
 }
 
 type SharedMemoryPersistedPreviewRecord = Awaited<
@@ -238,6 +245,24 @@ type AuthenticatedSourceOwner =
       authority: SharedMemoryAuthorityContext;
     };
 
+const reportActionGrantBindingFailure = (
+  context: SharedMemoryRouteContext,
+  authenticated: Extract<AuthenticatedSourceOwner, { kind: "device" }>,
+  binding: SharedMemoryActionGrantBinding
+): void => {
+  try {
+    context.reportDiagnostic?.({
+      code: "shared_memory_action_grant_binding_failed",
+      operation: binding.action,
+      publicGrantReference: authenticated.authority.referenceId,
+      failureStage: "action_grant_execution",
+      httpStatus: 403
+    });
+  } catch {
+    // Diagnostics must never alter the fail-closed authorization result.
+  }
+};
+
 const runHighRiskSharedMemoryWrite = async <TBody>(
   context: SharedMemoryRouteContext,
   authenticated: AuthenticatedSourceOwner,
@@ -267,7 +292,10 @@ const runHighRiskSharedMemoryWrite = async <TBody>(
     requestHash: binding.requestHash,
     execute: async ({ sharedMemory }) => execute(sharedMemory)
   });
-  if (!result) throw forbidden();
+  if (!result) {
+    reportActionGrantBindingFailure(context, authenticated, binding);
+    throw forbidden();
+  }
   return result;
 };
 
@@ -303,7 +331,10 @@ const runHighRiskTeamConversationSourceWrite = async <TBody>(
     execute: async ({ teamConversationSource }) =>
       execute(teamConversationSource)
   });
-  if (!result) throw forbidden();
+  if (!result) {
+    reportActionGrantBindingFailure(context, authenticated, binding);
+    throw forbidden();
+  }
   return result;
 };
 
@@ -427,6 +458,7 @@ const ownedShareGrantDto = (grant: SharedMemoryGrantRecord) => {
 };
 
 const teamGrantDto = (grant: SharedMemoryGrantRecord) => ({
+  source: requiredSource(grant.source),
   sourceCapabilities: grant.sourceCapabilities,
   activationRepresentation: grant.activationRepresentation,
   id: grant.id,
@@ -435,9 +467,11 @@ const teamGrantDto = (grant: SharedMemoryGrantRecord) => ({
   ownerUserId: grant.ownerUserId,
   teamId: grant.teamId,
   teamWorkspaceId: grant.teamWorkspaceId,
+  consentId: grant.consentId,
   mode: grant.mode,
   maximumFidelity: grant.maximumFidelity,
   includeCuratedMemory: grant.includeCuratedMemory,
+  fidelityPolicyRevision: grant.fidelityPolicyRevision,
   sourceRevision: grant.sourceRevision,
   grantVersion: grant.grantVersion,
   lifecycle: grant.lifecycle,
@@ -475,7 +509,8 @@ const pendingShareDto = (pendingShare: PendingShareRecord) =>
     updatedAt: pendingShare.updatedAt,
     activatedAt: pendingShare.activatedAt,
     revokedAt: pendingShare.revokedAt,
-    grantId: pendingShare.grantId
+    grantId: pendingShare.grantId,
+    grantVersion: pendingShare.grantVersion ?? null
   });
 
 const transcriptAccessDto = (grant: TeamConversationSourceGrantRecord) => ({
@@ -505,6 +540,7 @@ const representationDto = (
   logicalMemoryId: representation.logicalMemoryId,
   representation: representation.representation,
   sourceRevision: representation.sourceRevision,
+  sourceRevisionHash: representation.sourceRevisionHash,
   sourceOwnerPolicyId: representation.sourceOwnerPolicyId,
   sourceOwnerPolicyVersion: representation.sourceOwnerPolicyVersion,
   teamPolicyId: representation.teamPolicyId,
@@ -719,6 +755,11 @@ export const registerSharedMemoryRoutes = (
                 { userId: authenticated.actor.id },
                 {
                   ...input,
+                  ...(authenticated.kind === "device"
+                    ? {
+                        deviceCredentialId: authenticated.auth.credential.id
+                      }
+                    : {}),
                   authority: authenticated.authority
                 }
               );

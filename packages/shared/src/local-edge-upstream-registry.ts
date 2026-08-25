@@ -36,6 +36,9 @@ export interface LocalEdgeUpstreamBackend {
           version?: number;
           transport?: string;
         };
+        sharedMemorySourceAdmission?: {
+          version?: number;
+        };
       };
       capabilities?: Record<
         string,

@@ -300,6 +300,8 @@ export const createSharedMemoryPreviewSchema = z
 export const createSharedMemoryCandidatePreviewSchema = z
   .object({
     source: sharedMemorySourceRefSchema,
+    sourceDeploymentProtocolId: uuidSchema.optional(),
+    sourceOwnerPrincipalId: uuidSchema.optional(),
     sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
     logicalMemoryId: uuidSchema,
     candidateHash: sha256Schema,
@@ -328,6 +330,16 @@ export const createSharedMemoryCandidatePreviewSchema = z
   })
   .strict()
   .superRefine((input, context) => {
+    if (
+      (input.sourceDeploymentProtocolId === undefined) !==
+      (input.sourceOwnerPrincipalId === undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["sourceDeploymentProtocolId"],
+        message: "Candidate source provenance must be supplied together"
+      });
+    }
     validateEffectiveSelection(input, context);
     validatePersonalNoteSelection(input, context);
   });

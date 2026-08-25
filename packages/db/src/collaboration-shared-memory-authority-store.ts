@@ -2210,7 +2210,7 @@ export const createCollaborationSharedMemoryAuthorityStore = (
               ? {
                   kind: "personal_note" as const,
                   noteId: row.local_note_id!,
-                  noteRevision: row.local_note_revision!,
+                  noteRevision: Number(row.local_note_revision!),
                   memoryEventId: row.local_memory_event_id!,
                   logicalMemoryId: row.logical_memory_id
                 }
@@ -2336,7 +2336,7 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           backendId: row.backend_id,
           localOwnerUserId: row.local_owner_user_id,
           noteId: row.local_note_id,
-          noteRevision: row.local_note_revision
+          noteRevision: Number(row.local_note_revision)
         }));
       });
     },

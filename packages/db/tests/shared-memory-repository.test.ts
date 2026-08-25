@@ -27,6 +27,7 @@ import {
   type SharedMemoryFidelityCeiling,
   type SharedMemoryRepresentation,
   type SharedMemorySemanticMaskedField,
+  type SharedMemorySourceRef,
   type SharedMemorySourceItemInput
 } from "@koed/shared";
 import {
@@ -131,6 +132,7 @@ interface SeededMemoryEvent {
 
 interface SeededNodeItem {
   nodeId: string;
+  originNodeId: string;
   summaryText: string;
   sourceEventIds: string[];
 }
@@ -160,6 +162,7 @@ interface SourceFixture {
   sourceReplicaId: string;
   syncRelationshipId: string;
   sessionId: string;
+  localSessionId: string;
   currentRevision: number;
   currentLabel: string;
   packageSequence: number;
@@ -182,6 +185,7 @@ interface GrantFixture extends SourceFixture {
 }
 
 interface SourceRevisionOptions {
+  distinctTargetSession?: boolean;
   groupedAssistantSources?: boolean;
   assistantActor?: string;
   assistantKind?: string;
@@ -1131,6 +1135,9 @@ describeDb("Shared Memory repository", () => {
        ) values ($1, 'personal', 'codex', 'transcript') returning id`,
       [fixture.ownerUserId]
     );
+    const sourceSessionId = options?.distinctTargetSession
+      ? randomUUID()
+      : session.rows[0]!.id;
     const ownerPrincipalId = randomUUID();
     const logicalMemory = await pool.query<{ id: string }>(
       `with logical_memory as (
@@ -1146,7 +1153,7 @@ describeDb("Shared Memory repository", () => {
        ), local_binding as (
          insert into local_captured_session_logical_memories (
            logical_memory_id,local_session_id,owner_user_id
-         ) select id,$6,$1 from logical_memory
+         ) select id,$7,$1 from logical_memory
        )
        select id from logical_memory`,
       [
@@ -1155,6 +1162,7 @@ describeDb("Shared Memory repository", () => {
         fixture.sourceDeploymentId,
         `logical-${randomUUID()}`,
         0,
+        sourceSessionId,
         session.rows[0]!.id
       ]
     );
@@ -1212,7 +1220,8 @@ describeDb("Shared Memory repository", () => {
       remoteReplicaId,
       sourceReplicaId,
       syncRelationshipId: relationship.rows[0]!.id,
-      sessionId: session.rows[0]!.id,
+      sessionId: sourceSessionId,
+      localSessionId: session.rows[0]!.id,
       currentRevision: 0,
       currentLabel: "",
       packageSequence: 0,
@@ -1220,11 +1229,13 @@ describeDb("Shared Memory repository", () => {
       seededEvents: [],
       leaf: {
         nodeId: "",
+        originNodeId: "",
         summaryText: "",
         sourceEventIds: []
       },
       rollup: {
         nodeId: "",
+        originNodeId: "",
         summaryText: "",
         sourceEventIds: []
       },
@@ -1620,11 +1631,13 @@ describeDb("Shared Memory repository", () => {
     if (options?.includeSummarySnapshot !== false) {
       source.leaf = {
         nodeId: applied.summaryNodeIds[0]!,
+        originNodeId: leafOriginNodeId,
         summaryText: leafSummaryText,
         sourceEventIds: [eventId]
       };
       source.rollup = {
         nodeId: applied.summaryNodeIds[1]!,
+        originNodeId: rollupOriginNodeId,
         summaryText: rollupSummaryText,
         sourceEventIds: [eventId]
       };
@@ -1982,10 +1995,10 @@ describeDb("Shared Memory repository", () => {
   ) => {
     const sourceId =
       representation === "memory_events"
-        ? source.seededEvents[0]!.eventId
+        ? source.seededEvents[0]!.originEventId
         : representation === "lcm_leaves"
-          ? source.leaf.nodeId
-          : source.rollup.nodeId;
+          ? source.leaf.originNodeId
+          : source.rollup.originNodeId;
     return [
       {
         sourceId,
@@ -2949,6 +2962,76 @@ describeDb("Shared Memory repository", () => {
     });
   });
 
+  it("preserves the source Session identity when a target replica uses a different local Session", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "distinct-target-session", {
+      distinctTargetSession: true
+    });
+    expect(source.localSessionId).not.toBe(source.sessionId);
+    await putOwnerPolicy(fixture, source);
+    const shareAuthority = authority(fixture);
+    const candidate = await repository.createSharedMemoryCandidatePreview(
+      actor(fixture.ownerUserId),
+      {
+        ...capturedSourceBinding(source, "memory_events"),
+        logicalMemoryId: source.logicalMemoryId,
+        candidateHash: hash("distinct-target-session-candidate"),
+        sourceRevision: source.currentRevision,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest: candidateManifest(source, "memory_events"),
+        byteCount: 128,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        ...fidelityConsent(allRepresentations),
+        mode: "snapshot",
+        authority: shareAuthority
+      }
+    );
+    expect(candidate).not.toBeNull();
+    const pending = await repository.createPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: randomUUID(),
+        ...capturedSourceBinding(source, "memory_events"),
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        preview: candidate!,
+        previewRevision: candidate!.previewRevision,
+        mode: "snapshot",
+        ...fidelityConsent(allRepresentations),
+        authority: shareAuthority
+      }
+    );
+
+    await expect(
+      processPendingSharesAfterPrivacy(pending.id, {
+        ensureCompanion: ensurePendingShareCompanion
+      })
+    ).resolves.toMatchObject({
+      claimed: 1,
+      activated: 1,
+      failed: 0
+    });
+    await expect(
+      pool.query<{ source_session_id: string }>(
+        `select share_grant.source_session_id
+           from team_memory_share_grant_records share_grant
+          where share_grant.logical_memory_id=$1`,
+        [source.logicalMemoryId]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          source_session_id: source.sessionId
+        }
+      ]
+    });
+  });
+
   it("measures candidate, authoritative preview, pending acceptance, and activation", async () => {
     const fixture = await createWorkspaceFixture();
     const source = await createSource(fixture, 1, "sharing-performance");
@@ -3036,6 +3119,116 @@ describeDb("Shared Memory repository", () => {
         )
     ).toBe(true);
     console.info(JSON.stringify(metrics));
+  });
+
+  it("admits device-bound Personal Note and captured Conversation source identities before candidate preview", async () => {
+    const fixture = await createWorkspaceFixture();
+    const sourceDeploymentProtocolId = randomUUID();
+    const sourceOwnerPrincipalId = randomUUID();
+    const capturedSessionId = randomUUID();
+    const noteId = randomUUID();
+    const sources: SharedMemorySourceRef[] = [
+      {
+        kind: "captured_session",
+        sessionId: capturedSessionId,
+        logicalMemoryId: crossIdentitySyncDeterministicUuid({
+          protocol: "koed.captured-session-sync/v1",
+          sourceDeploymentId: sourceDeploymentProtocolId,
+          sourceUserId: sourceOwnerPrincipalId,
+          originSessionId: capturedSessionId,
+          identity: "logical-memory"
+        })
+      },
+      {
+        kind: "personal_note",
+        noteId,
+        noteRevision: 1,
+        memoryEventId: randomUUID(),
+        logicalMemoryId: crossIdentitySyncDeterministicUuid({
+          protocol: "koed.personal-note-share/v1",
+          sourceDeploymentId: sourceDeploymentProtocolId,
+          sourceOwnerPrincipalId,
+          noteId,
+          identity: "logical-memory"
+        })
+      }
+    ];
+
+    for (const source of sources) {
+      const candidate = await repository.createSharedMemoryCandidatePreview(
+        actor(fixture.ownerUserId),
+        {
+          source,
+          sourceDeploymentProtocolId,
+          sourceOwnerPrincipalId,
+          deviceCredentialId: fixture.deviceCredentialId,
+          sourceCapabilities: ["memory_events"],
+          activationRepresentation: "memory_events",
+          logicalMemoryId: source.logicalMemoryId,
+          candidateHash: hash(`admitted-candidate:${source.kind}`),
+          sourceRevision: 1,
+          itemCount: 1,
+          excludedItemCount: 0,
+          manifest: [
+            {
+              sourceId:
+                source.kind === "captured_session"
+                  ? source.sessionId
+                  : source.memoryEventId,
+              revisionHash: hash(`admitted-revision:${source.kind}`)
+            }
+          ],
+          byteCount: 128,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          mode: "continuous",
+          authority: authority(fixture)
+        }
+      );
+      expect(candidate).toMatchObject({
+        source,
+        logicalMemoryId: source.logicalMemoryId,
+        sourceRevision: 1
+      });
+    }
+
+    const admitted = await pool.query<{
+      id: string;
+      owner_user_id: string;
+      owner_principal_id: string;
+      source_kind: string;
+    }>(
+      `select id,owner_user_id,owner_principal_id,source_kind
+         from logical_memories
+        where id=any($1::uuid[])
+        order by source_kind`,
+      [sources.map((source) => source.logicalMemoryId)]
+    );
+    expect(admitted.rows).toHaveLength(2);
+    expect(admitted.rows.map((row) => row.source_kind)).toEqual([
+      "captured_session",
+      "personal_note"
+    ]);
+    expect(
+      new Set(admitted.rows.map((row) => row.owner_principal_id)).size
+    ).toBe(1);
+    expect(
+      admitted.rows.every((row) => row.owner_user_id === fixture.ownerUserId)
+    ).toBe(true);
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count
+           from sync_principal_links link
+           join device_credentials credential
+             on credential.lineage_id::text=link.proof_reference
+          where credential.id=$1
+            and link.proof_kind='device_credential_lineage'
+            and link.revoked_at is null`,
+        [fixture.deviceCredentialId]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: "1" }] });
   });
 
   it("creates and repairs the companion before exposing an async share", async () => {
@@ -3185,6 +3378,38 @@ describeDb("Shared Memory repository", () => {
         id: pending.id
       })
     ).resolves.toBeNull();
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.ownerUserId), {
+        shareGrantId: grantId!,
+        representation: "memory_events"
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grantId!,
+        representation: "memory_events"
+      })
+    ).resolves.toMatchObject({
+      representation: {
+        shareGrantId: grantId,
+        representation: "memory_events"
+      }
+    });
+    const companion = await pool.query<{ id: string }>(
+      `select id from collaboration_threads where share_grant_id=$1`,
+      [grantId]
+    );
+    expect(companion.rows).toHaveLength(1);
+    await expect(
+      collaboration.getThread(actor(fixture.ownerUserId), {
+        threadId: companion.rows[0]!.id
+      })
+    ).resolves.toBeNull();
+    await expect(
+      collaboration.getThread(actor(fixture.readerUserId), {
+        threadId: companion.rows[0]!.id
+      })
+    ).resolves.toMatchObject({ id: companion.rows[0]!.id });
 
     await pool.query(
       `delete from collaboration_threads where share_grant_id=$1`,
@@ -3483,7 +3708,8 @@ describeDb("Shared Memory repository", () => {
     expect(ownerView.pendingShare).toMatchObject({
       source,
       state: "activated",
-      stage: "complete"
+      stage: "complete",
+      grantVersion: 2
     });
     expect(ownerView.summary.sourceTitle).toBe(
       "The launch password is [SECRET_1]."
@@ -4212,14 +4438,22 @@ describeDb("Shared Memory repository", () => {
       }
     );
 
+    const reportActivationFailure = vi.fn();
     await expect(
       repository.processPendingShares({
-        ensureCompanion: ensurePendingShareCompanion
+        ensureCompanion: ensurePendingShareCompanion,
+        reportActivationFailure
       })
     ).resolves.toMatchObject({
       claimed: 1,
       activated: 0,
       failed: 1
+    });
+    expect(reportActivationFailure).toHaveBeenCalledWith({
+      pendingShareId: pending.id,
+      failureStage: "authoritative_preview",
+      errorClass: "Error",
+      errorCode: null
     });
     const failed = await repository.getOwnerShare(actor(fixture.ownerUserId), {
       kind: "pending",

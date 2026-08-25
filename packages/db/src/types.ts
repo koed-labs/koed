@@ -2544,6 +2544,7 @@ export interface MemorySourceRepository
       includeInvalidated?: boolean;
       includeContent?: boolean;
       includeRaw?: boolean;
+      canonicalCapturedSessionEventsOnly?: boolean;
       limit?: number;
     }
   ): Promise<LcmGraphEvent[]>;

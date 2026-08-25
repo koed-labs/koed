@@ -58,6 +58,7 @@ import { openOpaqueCursor, sealOpaqueCursor } from "./opaque-cursor.js";
 const RESPONSE_LIMIT_BYTES = 2 * 1_024 * 1_024;
 const REQUEST_TIMEOUT_MS = 30_000;
 const CAPABILITY_SCHEMA_VERSION = 6;
+const SOURCE_ADMISSION_PROTOCOL_VERSION = 1;
 const SOURCE_CURSOR_PREFIX = "csmc1";
 const PREVIEW_CURSOR_PREFIX = "csmp1";
 const OWNED_SHARES_CURSOR_PREFIX = "csms1";
@@ -666,12 +667,23 @@ export interface CollaborationSharedMemoryControlOptions {
     noteRevision: number;
     mode: "snapshot" | "continuous";
   }): Promise<SharedMemoryCandidatePreview | null>;
+  resolveCandidateSourceIdentity?(localOwnerUserId: string): {
+    sourceDeploymentProtocolId: string;
+    sourceOwnerPrincipalId: string;
+  } | null;
   requestPendingShareSourceWork?(): void;
   requestContinuousNoteAdvancementWork?(): void;
   readDesktopCredential?: DesktopCredentialReader;
   readLocalEdgeClientCredential?: LocalEdgeCredentialReader;
   readUpstreamRegistry?: (path: string) => LocalEdgeUpstreamRegistry;
   actionGrantLifecycle?: Pick<CollaborationActionGrantLifecycle, "resolve">;
+  reportDiagnostic?(diagnostic: {
+    code: "shared_memory_authority_projection_failed";
+    operation: SharedMemoryControlCommandName;
+    publicGrantReference: string | null;
+    failureStage: "authority_store_projection";
+    httpStatus: 500;
+  }): void;
 }
 
 type SharedDesktopCredentialApi = {
@@ -750,6 +762,7 @@ const safeError = (
     | "rate_limited"
     | "offline"
     | "temporarily_unavailable"
+    | "protocol_mismatch"
     | "representation_pending"
     | "history_expired"
     | "internal_error",
@@ -1006,6 +1019,29 @@ class ControlFailure extends Error {
   }
 }
 
+const runAuthorityProjection = async <T>(
+  options: CollaborationSharedMemoryControlOptions,
+  operation: SharedMemoryControlCommandName,
+  work: () => Promise<T>
+): Promise<T> => {
+  try {
+    return await work();
+  } catch {
+    try {
+      options.reportDiagnostic?.({
+        code: "shared_memory_authority_projection_failed",
+        operation,
+        publicGrantReference: null,
+        failureStage: "authority_store_projection",
+        httpStatus: 500
+      });
+    } catch {
+      // Diagnostics must never replace the safe projection error boundary.
+    }
+    throw new ControlFailure("internal_error");
+  }
+};
+
 const statusFailure = (response: Response): ControlFailure => {
   if (response.status === 400 || response.status === 422) {
     return new ControlFailure("invalid_input");
@@ -1138,6 +1174,12 @@ const supportsSharedMemoryControl = (
   );
 };
 
+const supportsCandidateSourceAdmission = (
+  backend: LocalEdgeUpstreamBackend
+): boolean =>
+  backend.capabilities?.payload?.protocols?.sharedMemorySourceAdmission
+    ?.version === SOURCE_ADMISSION_PROTOCOL_VERSION;
+
 const resolveAuthority = async (
   options: CollaborationSharedMemoryControlOptions,
   command: CollaborationSharedMemoryControlCommand,
@@ -1165,6 +1207,13 @@ const resolveAuthority = async (
   );
   if (!backend || !supportsSharedMemoryControl(backend)) {
     throw new ControlFailure("temporarily_unavailable");
+  }
+  if (
+    command.command === "collaboration.preview_shared_memory" &&
+    command.input.candidate &&
+    !supportsCandidateSourceAdmission(backend)
+  ) {
+    throw new ControlFailure("protocol_mismatch");
   }
   const readLec =
     options.readLocalEdgeClientCredential ??
@@ -2062,8 +2111,12 @@ const dispatchCandidatePreview = async (
           mode: command.input.mode
         })
   );
+  const sourceIdentity = options.resolveCandidateSourceIdentity?.(
+    authority.localOwnerUserId
+  );
   if (
     !candidate.success ||
+    !sourceIdentity ||
     candidate.data.logicalMemoryId !== command.input.logicalMemoryId ||
     crossIdentitySyncDigest(candidate.data.source) !==
       crossIdentitySyncDigest(command.input.candidate.source) ||
@@ -2088,6 +2141,7 @@ const dispatchCandidatePreview = async (
   const binding = sharedMemoryCandidatePreviewActionGrantBinding({
     referenceId: command.input.actionGrant.id,
     source: candidate.data.source,
+    ...sourceIdentity,
     sourceCapabilities: candidate.data.sourceCapabilities,
     logicalMemoryId: command.input.logicalMemoryId,
     candidateHash: candidate.data.candidateHash,
@@ -2542,10 +2596,12 @@ const dispatchListOwnedGrants = async (
   >
 ): Promise<CollaborationCommandResult> => {
   const identity = authorityIdentity(authority);
-  const local = await options.authorityStore.listAuthoritativeGrants({
-    ...identity,
-    logicalMemoryId: command.input.logicalMemoryId
-  });
+  const local = await runAuthorityProjection(options, command.command, () =>
+    options.authorityStore.listAuthoritativeGrants({
+      ...identity,
+      logicalMemoryId: command.input.logicalMemoryId
+    })
+  );
   if (!local) throw new ControlFailure("not_available");
   const localById = new Map(local.map((grant) => [grant.grant.id, grant]));
   const reconciled: CollaborationPersistedSharedMemoryGrant[] = [];
@@ -2759,14 +2815,22 @@ const dispatchListOwnedShares = async (
   const resolvableSourceInputs = sourceInputs.filter(
     (input): input is NonNullable<typeof input> => input !== null
   );
-  const resolvedSourceTargets = options.authorityStore.resolvePreviewTargets
-    ? await options.authorityStore.resolvePreviewTargets(
-        identity,
-        resolvableSourceInputs
-      )
-    : await mapWithBoundedConcurrency(resolvableSourceInputs, 8, (input) =>
-        options.authorityStore.resolvePreviewTarget({ ...identity, ...input })
-      );
+  const resolvedSourceTargets = await runAuthorityProjection(
+    options,
+    command.command,
+    () =>
+      options.authorityStore.resolvePreviewTargets
+        ? options.authorityStore.resolvePreviewTargets(
+            identity,
+            resolvableSourceInputs
+          )
+        : mapWithBoundedConcurrency(resolvableSourceInputs, 8, (input) =>
+            options.authorityStore.resolvePreviewTarget({
+              ...identity,
+              ...input
+            })
+          )
+  );
   let sourceTargetIndex = 0;
   const sourceTargets = sourceInputs.map((input) =>
     input ? (resolvedSourceTargets[sourceTargetIndex++] ?? null) : null
@@ -2777,17 +2841,22 @@ const dispatchListOwnedShares = async (
     ): entry is Extract<(typeof page.data.shares)[number], { kind: "grant" }> =>
       entry.kind === "grant"
   );
-  const priorGrants = options.authorityStore.readAuthoritativeGrants
-    ? await options.authorityStore.readAuthoritativeGrants(
-        identity,
-        grantEntries.map((entry) => entry.grant.id)
-      )
-    : await mapWithBoundedConcurrency(grantEntries, 8, (entry) =>
-        options.authorityStore.readAuthoritativeGrant({
-          ...identity,
-          shareGrantId: entry.grant.id
-        })
-      );
+  const priorGrants = await runAuthorityProjection(
+    options,
+    command.command,
+    () =>
+      options.authorityStore.readAuthoritativeGrants
+        ? options.authorityStore.readAuthoritativeGrants(
+            identity,
+            grantEntries.map((entry) => entry.grant.id)
+          )
+        : mapWithBoundedConcurrency(grantEntries, 8, (entry) =>
+            options.authorityStore.readAuthoritativeGrant({
+              ...identity,
+              shareGrantId: entry.grant.id
+            })
+          )
+  );
   const priorByGrantId = new Map(
     grantEntries.map((entry, index) => [
       entry.grant.id,

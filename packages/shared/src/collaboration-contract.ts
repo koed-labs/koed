@@ -130,6 +130,8 @@ export const collaborationSafeErrorMessages = {
   rate_limited: "Too many requests. Try again shortly.",
   offline: "Collaboration is offline. Personal Memory remains available.",
   temporarily_unavailable: "Collaboration is temporarily unavailable.",
+  protocol_mismatch:
+    "Update Koed on this device and the Team backend, then try again.",
   representation_pending:
     "Koed is preparing this Shared Memory summary on your connected AI Client.",
   history_expired: "Older activity is no longer available. Reload to continue.",
@@ -498,6 +500,7 @@ export const collaborationSafeErrorSchema = z
       "rate_limited",
       "offline",
       "temporarily_unavailable",
+      "protocol_mismatch",
       "representation_pending",
       "history_expired",
       "internal_error"
@@ -2334,7 +2337,8 @@ export const pendingShareSchema = z
     updatedAt: collaborationTimestampSchema,
     activatedAt: collaborationTimestampSchema.nullable(),
     revokedAt: collaborationTimestampSchema.nullable(),
-    grantId: z.uuid().nullable()
+    grantId: z.uuid().nullable(),
+    grantVersion: positiveVersionSchema.nullable().optional()
   })
   .strict()
   .superRefine((pendingShare, context) => {
