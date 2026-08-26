@@ -725,11 +725,13 @@ Team chat, Team sharing and Cross-Identity Sync, Team realtime, Team-scoped
 Memory, enrollment/upstream Team routes, replay background work, and
 device-mediated high-risk operations share one atomic deployment kill switch;
 retention purge remains active as safety maintenance for existing data:
-`KOED_TEAM_COLLABORATION_ENABLED`. Operator-managed server deployments have a
-strict default of `false`; only the exact value `true` enables every Team family
-in both API and Worker. A Desktop-managed local edge defaults to `true` so its
-packaged collaboration client can mediate an enrolled Team backend, while an
-explicit `false` remains a local kill switch. The families may have separate
+`KOED_TEAM_COLLABORATION_ENABLED`. Operator-managed server deployments and
+Desktop-managed local edges default to `false`; only the exact value `true`
+enables every Team family in both API and Worker. Desktop therefore starts
+Personal-only and does not provision the Privacy Filter model unless its
+Operator explicitly sets `KOED_TEAM_COLLABORATION_ENABLED=true` and restarts
+Desktop. Existing Desktop installs retain an explicit environment value, but
+otherwise require this opt-in after upgrade. The families may have separate
 protocol versions and operation-family grants, but they are not independent
 feature flags. A mixed API/Worker value is an invalid deployment because it
 cannot present a coherent fail-closed state.

@@ -278,7 +278,7 @@ describe("PersonalMemoryWorkspace", () => {
     );
     expect(activeProjects).not.toBeNull();
     expect(activeProjects?.textContent).not.toContain("Active");
-    expect(container.textContent).toContain("github.com/koed-labs/koed");
+    expect(container.textContent).toContain("koed-labs/koed");
     const overview = container.querySelector(
       '[data-project-id="project-1"] .personal-project-overview'
     );
@@ -599,22 +599,26 @@ describe("PersonalMemoryWorkspace", () => {
         </Harness>
       );
     });
-    await vi.waitFor(() => expect(container.textContent).toContain("Manage"));
-    expect(container.textContent).toContain("Move to Project:");
-    expect(container.textContent).not.toContain("Automatic");
+    const manage = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Manage Captured Session"]'
+    );
+    expect(manage?.querySelector("svg[aria-hidden='true']")).not.toBeNull();
+    expect(container.textContent).not.toContain("Move to Project:");
     expect(container.textContent).not.toContain("Move to another Project");
+
+    await act(async () => manage?.click());
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Move to Project:")
+    );
     expect(
-      container.querySelector(
-        ".personal-session-assignment > summary > svg[aria-hidden='true']"
-      )
-    ).not.toBeNull();
-    expect(
-      [...container.querySelectorAll("button")]
+      [...document.querySelectorAll("button")]
         .find((button) => button.textContent === "Move")
         ?.classList.contains("personal-move-button")
     ).toBe(true);
 
-    const form = container.querySelector("form");
+    const form = document.querySelector(
+      ".personal-session-assignment-dialog form"
+    );
     await act(async () => {
       const select = form?.querySelector<HTMLSelectElement>("select");
       if (select) select.value = target.id;
@@ -1004,9 +1008,13 @@ describe("PersonalMemoryWorkspace", () => {
       ".personal-session-row .personal-session-link"
     );
     expect(sessionLinks).toHaveLength(2);
-    expect(sessionLinks[0]?.getAttribute("title")).toBe("/tmp/project");
-    expect(sessionLinks[1]?.getAttribute("title")).toBe(
-      "github.com/koed-labs/koed"
+    expect(sessionLinks[0]?.getAttribute("title")).toBeNull();
+    expect(sessionLinks[0]?.getAttribute("data-tooltip")).toBe(
+      "Reveal /tmp/project in file browser"
+    );
+    expect(sessionLinks[1]?.getAttribute("title")).toBeNull();
+    expect(sessionLinks[1]?.getAttribute("data-tooltip")).toBe(
+      "Open koed-labs/koed on GitHub"
     );
     await act(async () => {
       (sessionLinks[0] as HTMLElement).click();
@@ -1016,6 +1024,23 @@ describe("PersonalMemoryWorkspace", () => {
       (sessionLinks[1] as HTMLElement).click();
     });
     expect(openExternal).toHaveBeenCalledWith(
+      "https://github.com/koed-labs/koed"
+    );
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".personal-session-row")
+        ?.click();
+    });
+    const sessionHeaderRepo = container.querySelector(
+      ".personal-session-header-copy .personal-project-repo"
+    );
+    expect(sessionHeaderRepo?.textContent).toContain("koed-labs/koed");
+    expect(sessionHeaderRepo?.textContent).not.toContain("github.com/");
+    await act(async () => {
+      (sessionHeaderRepo as HTMLElement)?.click();
+    });
+    expect(openExternal).toHaveBeenLastCalledWith(
       "https://github.com/koed-labs/koed"
     );
   });

@@ -6,6 +6,14 @@ import type {
 } from "@koed/shared/personal-desktop";
 import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
 import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPopup,
+  DialogTitle
+} from "@koed/ui";
+import {
   BookText,
   Brain,
   Check,
@@ -18,6 +26,7 @@ import {
   MonitorSmartphone,
   Pencil,
   Send,
+  Settings,
   X
 } from "lucide-react";
 import {
@@ -37,6 +46,7 @@ import {
 import {
   projectIsActive,
   relativeTime,
+  repoLabelFromRemoteDisplay,
   repoUrlFromRemoteDisplay,
   sessionPreview,
   sessionSelectionId
@@ -110,13 +120,15 @@ function InlineAction({
   children,
   className,
   onActivate,
-  title
+  title,
+  tooltip = false
 }: {
   ariaLabel: string;
   children: ReactNode;
   className: string;
   onActivate: () => void;
   title: string;
+  tooltip?: boolean;
 }) {
   return (
     <span
@@ -134,7 +146,7 @@ function InlineAction({
       }}
       role="button"
       tabIndex={0}
-      title={title}
+      {...(tooltip ? { "data-tooltip": title } : { title })}
     >
       {children}
     </span>
@@ -148,26 +160,29 @@ function ProjectRepo({
   onOpenRepository?: (url: string) => void;
   remoteDisplay: string;
 }) {
+  const repoLabel = repoLabelFromRemoteDisplay(remoteDisplay);
   if (!onOpenRepository) {
     return (
       <span
-        aria-label={`Repository ${remoteDisplay}`}
+        aria-label={`Repository ${repoLabel}`}
         className="personal-project-repo personal-project-repo-static"
       >
         <Github aria-hidden="true" />
-        <span>{remoteDisplay}</span>
+        <span>{repoLabel}</span>
       </span>
     );
   }
   return (
     <InlineAction
-      ariaLabel={`Open ${remoteDisplay} on GitHub`}
+      ariaLabel={`Open ${repoLabel} on GitHub`}
       className="personal-project-repo"
-      onActivate={() => onOpenRepository(repoUrlFromRemoteDisplay(remoteDisplay))}
-      title={`Open ${remoteDisplay} on GitHub`}
+      onActivate={() =>
+        onOpenRepository(repoUrlFromRemoteDisplay(remoteDisplay))
+      }
+      title={`Open ${repoLabel} on GitHub`}
     >
       <Github aria-hidden="true" />
-      <span>{remoteDisplay}</span>
+      <span>{repoLabel}</span>
     </InlineAction>
   );
 }
@@ -492,6 +507,9 @@ function SessionRow({
   thread: PersonalDesktopProjectThread;
 }) {
   const path = thread.projectPath;
+  const repoLabel = remoteDisplay
+    ? repoLabelFromRemoteDisplay(remoteDisplay)
+    : null;
   return (
     <button
       className="personal-session-row"
@@ -529,19 +547,21 @@ function SessionRow({
                 ariaLabel={`Reveal ${path} in file browser`}
                 className="personal-session-link"
                 onActivate={() => onOpenLocalPath(path)}
-                title={path}
+                title={`Reveal ${path} in file browser`}
+                tooltip
               >
                 <Folder aria-hidden="true" />
               </InlineAction>
             ) : null}
             {remoteDisplay && onOpenRepository ? (
               <InlineAction
-                ariaLabel={`Open ${remoteDisplay} on GitHub`}
+                ariaLabel={`Open ${repoLabel} on GitHub`}
                 className="personal-session-link"
                 onActivate={() =>
                   onOpenRepository(repoUrlFromRemoteDisplay(remoteDisplay))
                 }
-                title={remoteDisplay}
+                title={`Open ${repoLabel} on GitHub`}
+                tooltip
               >
                 <Github aria-hidden="true" />
               </InlineAction>
@@ -1512,6 +1532,7 @@ function SessionAssignment({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [open, setOpen] = useState(false);
   const requestRef = useRef(0);
   const targets = projects.filter(
     (project) =>
@@ -1548,6 +1569,7 @@ function SessionAssignment({
           projectId: result.projectId,
           sessionId: thread.sessionId
         });
+        setOpen(false);
       } catch (cause) {
         if (request !== requestRef.current) return;
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -1560,72 +1582,87 @@ function SessionAssignment({
 
   if (!assign || !thread.sessionId) return null;
   return (
-    <details className="personal-session-assignment">
-      <summary>
-        <ChevronDown aria-hidden="true" />
-        <span className="personal-session-assignment-label">Manage</span>
-      </summary>
-      <form
-        aria-busy={busy}
-        onSubmit={(event) => {
-          event.preventDefault();
-          const targetProjectId = new FormData(event.currentTarget).get(
-            "targetProjectId"
-          );
-          if (typeof targetProjectId !== "string") return;
-          void run({
-            action: "move",
-            sessionId: thread.sessionId!,
-            targetProjectId
-          });
-        }}
+    <Dialog onOpenChange={setOpen} open={open}>
+      <button
+        aria-label="Manage Captured Session"
+        className="personal-session-manage-button"
+        onClick={() => setOpen(true)}
+        title="Manage Captured Session"
+        type="button"
       >
-        <label className="personal-session-move-control">
-          <span>Move to Project:</span>
-          <select
-            defaultValue=""
-            disabled={busy || targets.length === 0}
-            name="targetProjectId"
-            required
-          >
-            <option disabled value="">
-              {targets.length ? "Select destination…" : "No other Projects"}
-            </option>
-            {targets.map((target) => (
-              <option key={target.id} value={target.id}>
-                {target.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          className="personal-move-button"
-          disabled={busy || targets.length === 0}
-          type="submit"
+        <Settings aria-hidden="true" />
+      </button>
+      <DialogPopup className="personal-session-assignment-dialog">
+        <DialogHeader>
+          <DialogTitle>Manage Captured Session</DialogTitle>
+          <DialogDescription>
+            Move this session to another Project.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          aria-busy={busy}
+          onSubmit={(event) => {
+            event.preventDefault();
+            const targetProjectId = new FormData(event.currentTarget).get(
+              "targetProjectId"
+            );
+            if (typeof targetProjectId !== "string") return;
+            void run({
+              action: "move",
+              sessionId: thread.sessionId!,
+              targetProjectId
+            });
+          }}
         >
-          {busy ? "Saving…" : "Move"}
-        </button>
-        {thread.projectAssignmentSource === "user_override" ? (
-          <button
-            disabled={busy}
-            onClick={() =>
-              void run({
-                action: "reset",
-                sessionId: thread.sessionId!
-              })
-            }
-            type="button"
-          >
-            Reset to automatic
-          </button>
-        ) : null}
-      </form>
-      {error ? (
-        <p role="alert" className="personal-memory-error">
-          {error}
-        </p>
-      ) : null}
-    </details>
+          <label className="personal-session-move-control">
+            <span>Move to Project:</span>
+            <select
+              defaultValue=""
+              disabled={busy || targets.length === 0}
+              name="targetProjectId"
+              required
+            >
+              <option disabled value="">
+                {targets.length ? "Select destination…" : "No other Projects"}
+              </option>
+              {targets.map((target) => (
+                <option key={target.id} value={target.id}>
+                  {target.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {error ? (
+            <p role="alert" className="personal-memory-error">
+              {error}
+            </p>
+          ) : null}
+          <DialogFooter className="personal-session-assignment-actions">
+            {thread.projectAssignmentSource === "user_override" ? (
+              <button
+                disabled={busy}
+                onClick={() =>
+                  void run({
+                    action: "reset",
+                    sessionId: thread.sessionId!
+                  })
+                }
+                type="button"
+              >
+                Reset to automatic
+              </button>
+            ) : null}
+            <button
+              className="personal-move-button"
+              disabled={busy || targets.length === 0}
+              type="submit"
+            >
+              {busy ? "Saving…" : "Move"}
+            </button>
+          </DialogFooter>
+        </form>
+      </DialogPopup>
+    </Dialog>
   );
 }
 
@@ -1639,6 +1676,7 @@ function SessionDetail({
   markdownAdapters,
   onAssigned,
   onInspectEvent,
+  onOpenRepository,
   onShare,
   project,
   projects,
@@ -1658,7 +1696,8 @@ function SessionDetail({
   onAssigned?: PersonalMemoryWorkspaceProps["onSessionProjectAssigned"];
   onInspectEvent?: PersonalMemoryWorkspaceProps["onInspectEvent"];
   onShare?: PersonalMemoryWorkspaceProps["onShareToWorkspace"];
-  project: PersonalDesktopProject;
+  onOpenRepository?: (url: string) => void;
+  project: DesktopProject;
   projects: readonly PersonalDesktopProject[];
   records: readonly PersonalMemorySharingRecord[];
   store: PersonalMemoryStore;
@@ -1711,7 +1750,7 @@ function SessionDetail({
   return (
     <section className="personal-session-detail">
       <header>
-        <div>
+        <div className="personal-session-header-copy">
           <small>{project.name} · Private to you</small>
           {editingTitle ? (
             <form
@@ -1780,6 +1819,12 @@ function SessionDetail({
               ) : null}
             </div>
           )}
+          {project.remoteDisplay ? (
+            <ProjectRepo
+              onOpenRepository={onOpenRepository}
+              remoteDisplay={project.remoteDisplay}
+            />
+          ) : null}
           {titleError ? (
             <p className="personal-session-title-error" role="alert">
               {titleError}
@@ -1793,22 +1838,24 @@ function SessionDetail({
             <Brain aria-hidden="true" />
           </p>
         </div>
-        <ShareAffordance
-          candidates={candidates}
-          onShare={onShare}
-          projectId={project.id}
-          records={records}
-          suggestions={suggestions}
-          thread={thread}
-        />
+        <div className="personal-session-header-actions">
+          <ShareAffordance
+            candidates={candidates}
+            onShare={onShare}
+            projectId={project.id}
+            records={records}
+            suggestions={suggestions}
+            thread={thread}
+          />
+          <SessionAssignment
+            assign={assignSessionProject}
+            onAssigned={onAssigned}
+            projects={projects}
+            store={store}
+            thread={thread}
+          />
+        </div>
       </header>
-      <SessionAssignment
-        assign={assignSessionProject}
-        onAssigned={onAssigned}
-        projects={projects}
-        store={store}
-        thread={thread}
-      />
       <div className="personal-conversation-host">
         <StoreConversation
           authorizeManagedConversationTransfer={
@@ -2046,6 +2093,7 @@ export function PersonalMemoryWorkspace({
             markdownAdapters={markdownAdapters}
             onAssigned={onSessionProjectAssigned}
             onInspectEvent={onInspectEvent}
+            onOpenRepository={onOpenRepository}
             onShare={onShareToWorkspace}
             project={selectedProject}
             projects={projects}

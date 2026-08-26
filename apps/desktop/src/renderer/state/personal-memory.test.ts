@@ -99,6 +99,23 @@ describe("PersonalMemoryStore", () => {
     });
   });
 
+  it("renders graph Projects when optional local metadata is unavailable", async () => {
+    const source = project([thread(1)]);
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [source]),
+        listProjectMetadata: vi.fn(async () => {
+          throw new Error("projects.json is unreadable");
+        })
+      })
+    );
+
+    const snapshot = await store.loadProjects();
+
+    expect(snapshot.error).toBeNull();
+    expect(snapshot.projectsById.get(source.id)).toMatchObject(source);
+  });
+
   it("normalizes project shells and preserves unchanged project references", async () => {
     const threads = [thread(1), thread(2)];
     const source = project(threads);

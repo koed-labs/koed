@@ -129,8 +129,10 @@ export class PersonalMemoryStore {
     try {
       const [graphProjects, metadataProjects] = await Promise.all([
         this.#api.listProjects(),
-        this.#api.listProjectMetadata?.() ??
+        (
+          this.#api.listProjectMetadata?.() ??
           Promise.resolve<DesktopProjectMetadata[]>([])
+        ).catch(() => [])
       ]);
       const projects = mergeProjectSources(graphProjects, metadataProjects);
       if (request !== this.#projectRequest) return this.#snapshot;

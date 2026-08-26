@@ -427,7 +427,15 @@ export const startLocalPostgresRuntime = (
     writeFileSync(pwfile, `${runtime.password}\n`, { mode: 0o600 });
     const init = run(
       runtime.initdbBin,
-      ["-D", runtime.dataDir, "--username", runtime.user, "--pwfile", pwfile],
+      [
+        "-D",
+        runtime.dataDir,
+        "--encoding=UTF8",
+        "--username",
+        runtime.user,
+        "--pwfile",
+        pwfile
+      ],
       env,
       spawnSync
     );

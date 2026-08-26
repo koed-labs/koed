@@ -69,6 +69,9 @@ export const ACTIVE_PROJECT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 export const repoUrlFromRemoteDisplay = (remoteDisplay: string): string =>
   `https://${remoteDisplay}`;
 
+export const repoLabelFromRemoteDisplay = (remoteDisplay: string): string =>
+  remoteDisplay.replace(/^github\.com\//i, "");
+
 const normalizedPath = (value: string | null | undefined): string | null => {
   const trimmed = value?.trim().replace(/\/+$/, "");
   return trimmed || null;

@@ -8,6 +8,7 @@ import {
   projectLatestAt,
   reconcileSelectedProjectId,
   relativeTime,
+  repoLabelFromRemoteDisplay,
   repoUrlFromRemoteDisplay,
   sessionPreview,
   sessionSelectionId,
@@ -65,6 +66,17 @@ describe("repoUrlFromRemoteDisplay", () => {
   it("prefixes a normalized remote display with https://", () => {
     expect(repoUrlFromRemoteDisplay("github.com/koed-labs/koed")).toBe(
       "https://github.com/koed-labs/koed"
+    );
+  });
+});
+
+describe("repoLabelFromRemoteDisplay", () => {
+  it("removes the GitHub host without changing other remote displays", () => {
+    expect(repoLabelFromRemoteDisplay("github.com/koed-labs/koed")).toBe(
+      "koed-labs/koed"
+    );
+    expect(repoLabelFromRemoteDisplay("gitlab.example/koed/koed")).toBe(
+      "gitlab.example/koed/koed"
     );
   });
 });
