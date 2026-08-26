@@ -41,6 +41,7 @@ export const desktopCommandNames = [
   "start",
   "start_daemon",
   "open_external",
+  "open_path",
   "open_logs",
   "onboarding_status",
   "onboarding_complete",

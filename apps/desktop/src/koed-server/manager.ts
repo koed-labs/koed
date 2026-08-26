@@ -3681,6 +3681,18 @@ export const createKoedServerManager = ({
         await openExternal(url);
         return { ok: true };
       },
+      open_path: async (args) => {
+        const path = typeof args?.path === "string" ? args.path.trim() : "";
+        if (!path) {
+          return { ok: false, error: "A local path is required." };
+        }
+        if (openPath) {
+          const error = await openPath(path);
+          return error ? { ok: false, error } : { ok: true };
+        }
+        await openExternal(`file://${path}`);
+        return { ok: true };
+      },
       open_logs: async () => {
         const logsDir = resolve(resolveKoedHome(environment), "logs");
         if (openPath) {

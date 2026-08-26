@@ -8,6 +8,7 @@ import {
   projectLatestAt,
   reconcileSelectedProjectId,
   relativeTime,
+  repoUrlFromRemoteDisplay,
   sessionPreview,
   sessionSelectionId,
   type DesktopProjectGroup,
@@ -58,6 +59,14 @@ const graphProject = (
     }
   ],
   ...overrides
+});
+
+describe("repoUrlFromRemoteDisplay", () => {
+  it("prefixes a normalized remote display with https://", () => {
+    expect(repoUrlFromRemoteDisplay("github.com/koed-labs/koed")).toBe(
+      "https://github.com/koed-labs/koed"
+    );
+  });
 });
 
 describe("project memory UI view model", () => {

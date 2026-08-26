@@ -11,6 +11,8 @@ import {
   Check,
   ChevronDown,
   CircleAlert,
+  Folder,
+  Github,
   GitFork,
   LoaderCircle,
   MonitorSmartphone,
@@ -35,6 +37,7 @@ import {
 import {
   projectIsActive,
   relativeTime,
+  repoUrlFromRemoteDisplay,
   sessionPreview,
   sessionSelectionId
 } from "../../../project-memory-ui.js";
@@ -82,6 +85,8 @@ export type PersonalMemoryWorkspaceProps = {
   markdownAdapters?: MarkdownPlatformAdapters;
   onInspectEvent?: (selection: PersonalMemoryInspectorEvent) => void;
   onNavigate: (route: PersonalMemoryRoute) => void;
+  openExternal?: (url: string) => Promise<void>;
+  openLocalPath?: (path: string) => Promise<void>;
   onSessionProjectAssigned?: (input: {
     projectId: string | null;
     sessionId: string;
@@ -97,26 +102,108 @@ export type PersonalMemoryWorkspaceProps = {
 const countLabel = (count: number, singular: string): string =>
   `${count} ${count === 1 ? singular : `${singular}s`}`;
 
-function ProjectOverview({
-  eventCount,
-  sessionCount
+// A non-button clickable region for use inside an ancestor <button> (e.g. a
+// Project or Session row), where nesting a real <button> would be invalid
+// HTML and would also hijack the row's own click/keyboard handling.
+function InlineAction({
+  ariaLabel,
+  children,
+  className,
+  onActivate,
+  title
 }: {
-  eventCount: number;
-  sessionCount: number;
+  ariaLabel: string;
+  children: ReactNode;
+  className: string;
+  onActivate: () => void;
+  title: string;
 }) {
   return (
     <span
-      aria-label={`${countLabel(sessionCount, "Captured Session")} · ${countLabel(eventCount, "Memory Event")}`}
-      className="personal-project-overview"
+      aria-label={ariaLabel}
+      className={className}
+      onClick={(event) => {
+        event.stopPropagation();
+        onActivate();
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onActivate();
+      }}
+      role="button"
+      tabIndex={0}
+      title={title}
     >
-      <span>
-        {sessionCount}
-        <BookText aria-hidden="true" />
+      {children}
+    </span>
+  );
+}
+
+function ProjectRepo({
+  onOpenRepository,
+  remoteDisplay
+}: {
+  onOpenRepository?: (url: string) => void;
+  remoteDisplay: string;
+}) {
+  if (!onOpenRepository) {
+    return (
+      <span
+        aria-label={`Repository ${remoteDisplay}`}
+        className="personal-project-repo personal-project-repo-static"
+      >
+        <Github aria-hidden="true" />
+        <span>{remoteDisplay}</span>
       </span>
-      <span aria-hidden="true">·</span>
-      <span>
-        {eventCount}
-        <Brain aria-hidden="true" />
+    );
+  }
+  return (
+    <InlineAction
+      ariaLabel={`Open ${remoteDisplay} on GitHub`}
+      className="personal-project-repo"
+      onActivate={() => onOpenRepository(repoUrlFromRemoteDisplay(remoteDisplay))}
+      title={`Open ${remoteDisplay} on GitHub`}
+    >
+      <Github aria-hidden="true" />
+      <span>{remoteDisplay}</span>
+    </InlineAction>
+  );
+}
+
+function ProjectOverview({
+  eventCount,
+  onOpenRepository,
+  remoteDisplay,
+  sessionCount
+}: {
+  eventCount: number;
+  onOpenRepository?: (url: string) => void;
+  remoteDisplay?: string | null;
+  sessionCount: number;
+}) {
+  return (
+    <span className="personal-project-overview-group">
+      {remoteDisplay ? (
+        <ProjectRepo
+          onOpenRepository={onOpenRepository}
+          remoteDisplay={remoteDisplay}
+        />
+      ) : null}
+      <span
+        aria-label={`${countLabel(sessionCount, "Captured Session")} · ${countLabel(eventCount, "Memory Event")}`}
+        className="personal-project-overview"
+      >
+        <span>
+          {sessionCount}
+          <BookText aria-hidden="true" />
+        </span>
+        <span aria-hidden="true">·</span>
+        <span>
+          {eventCount}
+          <Brain aria-hidden="true" />
+        </span>
       </span>
     </span>
   );
@@ -251,13 +338,9 @@ function ProjectRow({
       </span>
       <span className="personal-project-row-copy">
         <strong>{project.name}</strong>
-        {project.remoteDisplay ? (
-          <small className="personal-project-remote">
-            {project.remoteDisplay}
-          </small>
-        ) : null}
         <ProjectOverview
           eventCount={project.eventCount}
+          remoteDisplay={project.remoteDisplay}
           sessionCount={project.threads.length}
         />
       </span>
@@ -396,12 +479,19 @@ function ProjectsPane({
 }
 
 function SessionRow({
+  onOpenLocalPath,
+  onOpenRepository,
   onSelect,
+  remoteDisplay,
   thread
 }: {
+  onOpenLocalPath?: (path: string) => void;
+  onOpenRepository?: (url: string) => void;
   onSelect: () => void;
+  remoteDisplay?: string | null;
   thread: PersonalDesktopProjectThread;
 }) {
+  const path = thread.projectPath;
   return (
     <button
       className="personal-session-row"
@@ -432,6 +522,32 @@ function SessionRow({
           <Brain aria-hidden="true" />
         </span>
         <time dateTime={thread.latestAt}>{relativeTime(thread.latestAt)}</time>
+        {path || remoteDisplay ? (
+          <span className="personal-session-links">
+            {path && onOpenLocalPath ? (
+              <InlineAction
+                ariaLabel={`Reveal ${path} in file browser`}
+                className="personal-session-link"
+                onActivate={() => onOpenLocalPath(path)}
+                title={path}
+              >
+                <Folder aria-hidden="true" />
+              </InlineAction>
+            ) : null}
+            {remoteDisplay && onOpenRepository ? (
+              <InlineAction
+                ariaLabel={`Open ${remoteDisplay} on GitHub`}
+                className="personal-session-link"
+                onActivate={() =>
+                  onOpenRepository(repoUrlFromRemoteDisplay(remoteDisplay))
+                }
+                title={remoteDisplay}
+              >
+                <Github aria-hidden="true" />
+              </InlineAction>
+            ) : null}
+          </span>
+        ) : null}
       </span>
     </button>
   );
@@ -575,6 +691,8 @@ function ProjectDetail({
   managedConversationRevision,
   managedConversations,
   onManagedConversationStarted,
+  onOpenLocalPath,
+  onOpenRepository,
   onRetry,
   onSelectSession,
   project
@@ -591,6 +709,8 @@ function ProjectDetail({
   onManagedConversationStarted: (
     conversation: ManagedConversationIdentity
   ) => void;
+  onOpenLocalPath?: (path: string) => void;
+  onOpenRepository?: (url: string) => void;
   onRetry: () => void;
   onSelectSession: (sessionId: string) => void;
   project: DesktopProject | null;
@@ -711,6 +831,8 @@ function ProjectDetail({
           </h2>
           <ProjectOverview
             eventCount={project.eventCount}
+            onOpenRepository={onOpenRepository}
+            remoteDisplay={project.remoteDisplay}
             sessionCount={project.threads.length}
           />
         </div>
@@ -779,28 +901,16 @@ function ProjectDetail({
           {startState.message}
         </p>
       ) : null}
-      <details className="personal-project-details">
-        <summary>Project details</summary>
-        <dl>
-          <div>
-            <dt>Local path:</dt>
-            <dd>{project.path ?? "Unavailable"}</dd>
-          </div>
-          {project.remoteDisplay ? (
-            <div>
-              <dt>Git remote:</dt>
-              <dd>{project.remoteDisplay}</dd>
-            </div>
-          ) : null}
-        </dl>
-      </details>
       <section className="personal-sessions" aria-label="Captured Sessions">
         {threads.length ? (
           <div>
             {threads.map((thread) => (
               <SessionRow
                 key={sessionSelectionId(thread)}
+                onOpenLocalPath={onOpenLocalPath}
+                onOpenRepository={onOpenRepository}
                 onSelect={() => onSelectSession(sessionSelectionId(thread))}
+                remoteDisplay={project.remoteDisplay}
                 thread={thread}
               />
             ))}
@@ -1730,12 +1840,20 @@ export function PersonalMemoryWorkspace({
   onNavigate,
   onSessionProjectAssigned,
   onShareToWorkspace,
+  openExternal,
+  openLocalPath,
   projectWorkspaceSuggestions = [],
   route,
   sharingRecords = [],
   store,
   workspaceCandidates = []
 }: PersonalMemoryWorkspaceProps) {
+  const onOpenRepository = openExternal
+    ? (url: string) => void openExternal(url).catch(() => undefined)
+    : undefined;
+  const onOpenLocalPath = openLocalPath
+    ? (path: string) => void openLocalPath(path).catch(() => undefined)
+    : undefined;
   const snapshot = usePersonalMemorySnapshot(store);
   const requestedRef = useRef(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -1983,6 +2101,8 @@ export function PersonalMemoryWorkspace({
                 sessionId: conversation.capturedSessionId
               });
             }}
+            onOpenLocalPath={onOpenLocalPath}
+            onOpenRepository={onOpenRepository}
             onRetry={() => void store.loadProjects()}
             onSelectSession={(sessionId) => {
               if (!selectedProject) return;

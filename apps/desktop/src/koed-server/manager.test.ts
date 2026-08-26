@@ -3049,4 +3049,51 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       error: "spawn /missing-electron ENOENT"
     });
   });
+
+  it("reveals a local path with the injected openPath dependency", async () => {
+    const openPath = vi.fn(async () => "");
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: {}
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(null, JSON.stringify({ ok: true }), ""),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      openPath
+    });
+
+    await expect(
+      manager.handlers.open_path!({ path: "/Users/jedd/agents/koed" })
+    ).resolves.toEqual({ ok: true });
+    expect(openPath).toHaveBeenCalledWith("/Users/jedd/agents/koed");
+  });
+
+  it("rejects open_path without a path", async () => {
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: {}
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(null, JSON.stringify({ ok: true }), ""),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.open_path!({})).resolves.toMatchObject({
+      ok: false
+    });
+  });
 });

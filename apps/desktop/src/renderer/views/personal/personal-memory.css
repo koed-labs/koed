@@ -190,6 +190,18 @@
   font-weight: 500;
 }
 
+.personal-project-overview-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.8125rem;
+  min-width: 0;
+}
+
+.personal-project-row .personal-project-overview-group {
+  font-size: 0.75rem;
+}
+
 .personal-project-overview,
 .personal-project-overview > span,
 .personal-memory-event-count {
@@ -215,8 +227,43 @@
   width: 0.95em;
 }
 
-.personal-project-row .personal-project-overview {
-  font-size: 0.75rem;
+.personal-project-repo {
+  align-items: center;
+  color: var(--foreground);
+  display: inline-flex;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.personal-project-repo:not(.personal-project-repo-static) {
+  cursor: pointer;
+}
+
+.personal-project-repo svg {
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+  height: 0.95em;
+  width: 0.95em;
+}
+
+.personal-project-repo > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-project-repo:not(.personal-project-repo-static):hover > span,
+.personal-project-repo:not(.personal-project-repo-static):focus-visible
+  > span {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.personal-project-repo:focus-visible {
+  border-radius: 0.2rem;
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 .personal-project-row-copy > *,
@@ -318,15 +365,6 @@
 .personal-project-detail-heading {
   flex: 1;
   min-width: 0;
-}
-
-.personal-project-remote {
-  color: var(--muted-foreground);
-  display: block;
-  font-size: 0.75rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .personal-new-conversation-group {
@@ -464,36 +502,13 @@ button.personal-new-conversation-owner-picker > svg {
   padding: 0 1rem 0.75rem;
 }
 
-.personal-project-details,
 .personal-session-assignment {
   border-block: 1px solid var(--border);
   padding: 0.75rem 1rem;
 }
 
-.personal-project-details dd,
 .personal-session-assignment label {
   overflow-wrap: anywhere;
-}
-
-.personal-project-details dl {
-  margin: 0.5rem 0 0;
-}
-
-.personal-project-details dl > div {
-  align-items: baseline;
-  display: flex;
-  gap: 0.35rem;
-  min-width: 0;
-  padding-block: 0.2rem;
-}
-
-.personal-project-details dt {
-  flex: 0 0 auto;
-}
-
-.personal-project-details dd {
-  margin: 0;
-  min-width: 0;
 }
 
 .personal-session-row {
@@ -518,6 +533,36 @@ button.personal-new-conversation-owner-picker > svg {
 
 .personal-session-meta {
   align-items: flex-end;
+}
+
+.personal-session-links {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.35rem;
+  margin-top: 0.1rem;
+}
+
+.personal-session-link {
+  align-items: center;
+  border-radius: 0.3rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  height: 1.35rem;
+  justify-content: center;
+  width: 1.35rem;
+}
+
+.personal-session-link:hover,
+.personal-session-link:focus-visible {
+  background: var(--accent);
+  color: var(--foreground);
+  outline: none;
+}
+
+.personal-session-link svg {
+  height: 0.95rem;
+  width: 0.95rem;
 }
 
 .personal-session-detail {

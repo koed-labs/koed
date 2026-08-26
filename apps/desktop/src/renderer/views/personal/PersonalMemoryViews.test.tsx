@@ -927,4 +927,96 @@ describe("PersonalMemoryWorkspace", () => {
       container.querySelector(".personal-managed-composer")?.className
     ).toContain("state-reconciling");
   });
+
+  it("surfaces the Git remote inline and opens it, and Sessions link out to their remote and local path", async () => {
+    const source = project([thread(1)]);
+    const metadata: PersonalDesktopProjectMetadata = {
+      schemaVersion: 1,
+      discoveredAt: "2026-07-23T00:00:00.000Z",
+      lastSeenAt: "2026-07-24T00:00:00.000Z",
+      localProjectId: "local-project-1",
+      displayName: source.name,
+      path: { cwd: source.path!, projectRoot: source.path },
+      git: {
+        branch: "main",
+        isWorktree: false,
+        remotes: [{ display: "github.com/koed-labs/koed" }]
+      }
+    };
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [source]),
+        listProjectMetadata: vi.fn(async () => [metadata])
+      })
+    );
+    const openExternal = vi.fn(async () => undefined);
+    const openLocalPath = vi.fn(async () => undefined);
+
+    await act(async () => {
+      root.render(
+        <Harness initialRoute={{ kind: "projects" }}>
+          {({ onNavigate, route }) => (
+            <PersonalMemoryWorkspace
+              onNavigate={onNavigate}
+              openExternal={openExternal}
+              openLocalPath={openLocalPath}
+              route={route}
+              store={store}
+            />
+          )}
+        </Harness>
+      );
+    });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(source.name)
+    );
+
+    const rowRepo = container.querySelector(
+      '[data-project-id="project-1"] .personal-project-repo'
+    );
+    expect(rowRepo?.classList.contains("personal-project-repo-static")).toBe(
+      true
+    );
+    expect(rowRepo?.getAttribute("role")).toBeNull();
+    await act(async () => {
+      (rowRepo as HTMLElement)?.click();
+    });
+    expect(openExternal).not.toHaveBeenCalled();
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-project-id="project-1"]')
+        ?.click();
+    });
+
+    const headerRepo = container.querySelector(
+      ".personal-project-detail-heading .personal-project-repo"
+    );
+    expect(headerRepo?.getAttribute("role")).toBe("button");
+    await act(async () => {
+      (headerRepo as HTMLElement)?.click();
+    });
+    expect(openExternal).toHaveBeenCalledWith(
+      "https://github.com/koed-labs/koed"
+    );
+
+    const sessionLinks = container.querySelectorAll(
+      ".personal-session-row .personal-session-link"
+    );
+    expect(sessionLinks).toHaveLength(2);
+    expect(sessionLinks[0]?.getAttribute("title")).toBe("/tmp/project");
+    expect(sessionLinks[1]?.getAttribute("title")).toBe(
+      "github.com/koed-labs/koed"
+    );
+    await act(async () => {
+      (sessionLinks[0] as HTMLElement).click();
+    });
+    expect(openLocalPath).toHaveBeenCalledWith("/tmp/project");
+    await act(async () => {
+      (sessionLinks[1] as HTMLElement).click();
+    });
+    expect(openExternal).toHaveBeenCalledWith(
+      "https://github.com/koed-labs/koed"
+    );
+  });
 });

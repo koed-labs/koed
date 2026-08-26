@@ -46,6 +46,7 @@ import {
   type DesktopCommand
 } from "./command-palette.js";
 import { DesktopStatusStore } from "./services/desktop-commands.js";
+import { createRendererPlatform } from "./services/platform.js";
 import { PersonalMemoryStore } from "./state/personal-memory.js";
 import { sessionSelectionId } from "../project-memory-ui.js";
 import type { ManagedConversationDesktopApi } from "../ipc/managed-conversation-protocol.js";
@@ -406,6 +407,7 @@ export function App({
       personalMemoryApi ? new PersonalMemoryStore(personalMemoryApi) : null,
     [personalMemoryApi]
   );
+  const platform = useMemo(() => createRendererPlatform(), []);
   const subscribePersonalMemory = useCallback(
     (listener: () => void) =>
       personalMemoryStore?.subscribe(listener) ?? (() => undefined),
@@ -1094,6 +1096,8 @@ export function App({
             managedConversations={managedConversations}
             localAiClients={window.koedDesktop?.localAiClients}
             markdownAdapters={collaboration.markdownAdapters}
+            openExternal={platform.openExternal}
+            openLocalPath={platform.openLocalPath}
             onInspectEvent={(event) => {
               setInspector(event);
               setInspectorOpen(true);
