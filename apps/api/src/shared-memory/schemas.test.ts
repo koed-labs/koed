@@ -17,6 +17,8 @@ const personalNoteCandidate = () => {
   const logicalMemoryId = randomUUID();
   const memoryEventId = randomUUID();
   return {
+    sourceDeploymentProtocolId: randomUUID(),
+    sourceOwnerPrincipalId: randomUUID(),
     source: {
       kind: "personal_note" as const,
       noteId: randomUUID(),

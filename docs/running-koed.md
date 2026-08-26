@@ -120,7 +120,8 @@ Local upstream enrollment orchestration is exposed as machine-readable
 control-plane state for Desktop and headless scripts:
 
 ```bash
-node packages/koed-server/dist/cli.js upstream enroll start --id team-vps --json
+SOURCE_OWNER_PRINCIPAL_ID="<local-owner-user-uuid>"
+node packages/koed-server/dist/cli.js upstream enroll start --id team-vps --source-owner-principal-id "$SOURCE_OWNER_PRINCIPAL_ID" --json
 node packages/koed-server/dist/cli.js upstream enroll status --id team-vps --json
 node packages/koed-server/dist/cli.js upstream activate --id team-vps --json
 node packages/koed-server/dist/cli.js upstream enroll cancel --id team-vps --json
@@ -146,6 +147,9 @@ the Operator enables them explicitly.
 
 `upstream enroll start` requires a registered upstream backend with fresh
 validated capabilities and at least one explicitly enabled route-policy family.
+For headless enrollment, `--source-owner-principal-id` binds Share Grant source
+admission to the exact local owner represented by the approved credential.
+Desktop supplies this binding from its authenticated local owner context.
 It records non-secret local state under `KOED_HOME/run` and reports the next
 browser action. It does not create API Tokens or write reusable device secrets
 to ordinary config. Instead it creates a short-lived upstream browser approval

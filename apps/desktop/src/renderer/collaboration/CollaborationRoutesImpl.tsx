@@ -1063,36 +1063,34 @@ function OwnedSharesWorkspace({
           )
         );
       } else {
-        const shareGrant =
+        const shareGrantId =
+          item.kind === "grant" ? item.grant.id : item.pendingShare.grantId;
+        const expectedGrantVersion =
           item.kind === "grant"
-            ? item.grant
-            : (
-                await client.listOwnedSharedMemoryGrants({
-                  logicalMemoryId: item.pendingShare.logicalMemoryId
-                })
-              ).find(
-                (grant) =>
-                  grant.id === item.pendingShare.grantId &&
-                  grant.logicalMemoryId === item.pendingShare.logicalMemoryId &&
-                  grant.teamId === item.pendingShare.teamId &&
-                  grant.workspaceId === item.pendingShare.workspaceId
-              );
-        if (!shareGrant) {
+            ? item.grant.grantVersion
+            : item.pendingShare.grantVersion;
+        if (!shareGrantId || !expectedGrantVersion) {
           throw new CollaborationInputError(
             "This Share changed while it was being revoked. Reload it and try again."
           );
         }
-        if (shareGrant.lifecycle !== "active") {
+        if (item.kind === "grant" && item.grant.lifecycle !== "active") {
           throw new CollaborationInputError(
             "This Share is no longer available to revoke."
           );
         }
         const revoked = await client.revokeSharedMemory({
           mutationId: crypto.randomUUID(),
-          teamId: shareGrant.teamId,
-          workspaceId: shareGrant.workspaceId,
-          shareGrantId: shareGrant.id,
-          expectedGrantVersion: shareGrant.grantVersion,
+          teamId:
+            item.kind === "grant"
+              ? item.grant.teamId
+              : item.pendingShare.teamId,
+          workspaceId:
+            item.kind === "grant"
+              ? item.grant.workspaceId
+              : item.pendingShare.workspaceId,
+          shareGrantId,
+          expectedGrantVersion,
           reasonCode: "owner_revoked"
         });
         setOwnedShares(
@@ -4768,7 +4766,7 @@ function PersonalNoteShareModal({
             expiresAt: null
           });
       setPendingKey(
-        "grantVersion" in result ? `grant:${result.id}` : `pending:${result.id}`
+        "ownerUserId" in result ? `grant:${result.id}` : `pending:${result.id}`
       );
     });
 

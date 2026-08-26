@@ -356,11 +356,12 @@ Credential are staged in one replacement.
 Supported commands:
 
 ```bash
+SOURCE_OWNER_PRINCIPAL_ID="<local-owner-user-uuid>"
 koed-server upstream register --url https://koed.example.test --id team-vps --name "Team VPS" --profile private_vps --json
 koed-server upstream list --json
 koed-server upstream refresh --id team-vps --json
 koed-server upstream policy --id team-vps --team-workspace-read enabled --share-grant-management enabled --admin enabled --json
-koed-server upstream enroll start --id team-vps --json
+koed-server upstream enroll start --id team-vps --source-owner-principal-id "$SOURCE_OWNER_PRINCIPAL_ID" --json
 koed-server upstream enroll status --id team-vps --json
 koed-server upstream enroll cancel --id team-vps --json
 koed-server upstream disconnect --id team-vps --json

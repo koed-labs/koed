@@ -1086,12 +1086,21 @@ describe("JSON command output", () => {
     const seen: unknown[] = [];
 
     const exitCode = await runKoedServerCli(
-      ["upstream", "enroll", "start", "--id", "team-vps", "--json"],
+      [
+        "upstream",
+        "enroll",
+        "start",
+        "--id",
+        "team-vps",
+        "--source-owner-principal-id",
+        "11111111-1111-4111-8111-111111111111",
+        "--json"
+      ],
       {
         stdout: stdout.stream,
         resolvePaths: () => ({ repoRoot: "/repo" }) as never,
-        startUpstreamEnroll: async (_paths, id) => {
-          seen.push(id);
+        startUpstreamEnroll: async (_paths, id, options) => {
+          seen.push(id, options?.sourceOwnerPrincipalId);
           return {
             ok: true,
             state: "pending",
@@ -1113,7 +1122,7 @@ describe("JSON command output", () => {
     );
 
     expect(exitCode).toBe(0);
-    expect(seen).toEqual(["team-vps"]);
+    expect(seen).toEqual(["team-vps", "11111111-1111-4111-8111-111111111111"]);
     expect(JSON.parse(stdout.text())).toMatchObject({
       ok: true,
       state: "pending",

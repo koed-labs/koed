@@ -1002,6 +1002,7 @@ export {
   SHARED_SOURCE_ARTIFACT_SCHEMA_VERSION,
   SHARED_SOURCE_PREVIEW_SCHEMA_VERSION,
   sharedMemoryGrantScopedSourceId,
+  sharedMemoryGrantScopedPrincipalId,
   sharedSourceArtifactHash,
   sharedSourceArtifactId,
   sharedSourcePreviewHash,

@@ -47,6 +47,9 @@ export const personalNoteSourceArtifactUploadSchema = z
 export const advanceContinuousPersonalNoteRevisionSchema = z
   .object({
     mutationId: uuidSchema,
+    sourceDeploymentProtocolId: uuidSchema,
+    sourceOwnerPrincipalId: uuidSchema,
+    afterShareGrantId: uuidSchema.optional(),
     candidate: sharedMemoryCandidatePreviewSchema
   })
   .strict()
@@ -174,20 +177,24 @@ const validateEffectiveSelection = (
   }
 };
 
+const browserSharedMemoryAuthoritySchema = z
+  .object({
+    action: z.literal(SHARED_MEMORY_AUTHORITY),
+    source: z.literal("browser_session")
+  })
+  .strict();
+
+const deviceSharedMemoryAuthoritySchema = z
+  .object({
+    action: z.literal(SHARED_MEMORY_AUTHORITY),
+    source: z.literal("device_action_grant"),
+    referenceId: uuidSchema
+  })
+  .strict();
+
 export const sharedMemoryAuthoritySchema = z.discriminatedUnion("source", [
-  z
-    .object({
-      action: z.literal(SHARED_MEMORY_AUTHORITY),
-      source: z.literal("browser_session")
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal(SHARED_MEMORY_AUTHORITY),
-      source: z.literal("device_action_grant"),
-      referenceId: uuidSchema
-    })
-    .strict()
+  browserSharedMemoryAuthoritySchema,
+  deviceSharedMemoryAuthoritySchema
 ]);
 
 export const sourceOwnerPolicyParamsSchema = z
@@ -300,8 +307,8 @@ export const createSharedMemoryPreviewSchema = z
 export const createSharedMemoryCandidatePreviewSchema = z
   .object({
     source: sharedMemorySourceRefSchema,
-    sourceDeploymentProtocolId: uuidSchema.optional(),
-    sourceOwnerPrincipalId: uuidSchema.optional(),
+    sourceDeploymentProtocolId: uuidSchema,
+    sourceOwnerPrincipalId: uuidSchema,
     sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
     logicalMemoryId: uuidSchema,
     candidateHash: sha256Schema,
@@ -326,20 +333,10 @@ export const createSharedMemoryCandidatePreviewSchema = z
     ...fidelityConsentShape,
     mode: z.enum(["snapshot", "continuous"]),
     expiresAt: z.string().datetime({ offset: true }).nullable().optional(),
-    authority: sharedMemoryAuthoritySchema
+    authority: deviceSharedMemoryAuthoritySchema
   })
   .strict()
   .superRefine((input, context) => {
-    if (
-      (input.sourceDeploymentProtocolId === undefined) !==
-      (input.sourceOwnerPrincipalId === undefined)
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["sourceDeploymentProtocolId"],
-        message: "Candidate source provenance must be supplied together"
-      });
-    }
     validateEffectiveSelection(input, context);
     validatePersonalNoteSelection(input, context);
   });

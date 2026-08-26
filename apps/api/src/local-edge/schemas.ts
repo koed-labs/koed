@@ -76,6 +76,7 @@ export const createDeviceEnrollmentChallengeSchema = z
     upstream_backend_id: z.string().trim().min(1).max(160),
     device_instance_id: z.string().trim().min(1).max(160).optional(),
     protocol_deployment_id: z.uuid(),
+    source_owner_principal_id: z.uuid().optional(),
     rotate_credential_id: z.uuid().optional(),
     device_label: z.string().trim().min(1).max(160).optional(),
     requested_operation_families: z
@@ -124,6 +125,21 @@ export const createDeviceEnrollmentChallengeSchema = z
         path: ["pending_credential", "operation_families"],
         message:
           "admin operation family cannot be granted through browser-mediated device enrollment"
+      });
+    }
+    const families =
+      input.requested_operation_families ??
+      input.pending_credential?.operation_families ??
+      [];
+    if (
+      families.includes("share_grant_management") &&
+      !input.source_owner_principal_id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["source_owner_principal_id"],
+        message:
+          "Share Grant enrollment requires a source owner principal binding"
       });
     }
   });

@@ -856,7 +856,8 @@ const stagedApiTokenBoundaryRoutes = (openApi, deploymentProfile) => {
         !relevant ||
         acceptsBearer ||
         identity === "public" ||
-        identity === "optional_session"
+        identity === "optional_session" ||
+        identity === "local_edge_client_credential"
       ) {
         continue;
       }

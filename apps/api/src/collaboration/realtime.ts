@@ -30,6 +30,8 @@ import {
   collaborationThreadSchema,
   COLLABORATION_NAME_MAX_CODE_POINTS,
   personalMemoryEntrySchema,
+  sharedMemoryGrantScopedPrincipalId,
+  sharedMemoryGrantScopedSourceId,
   sharedMemorySessionSchema,
   type CollaborationRendererEvent,
   type PersonalMemoryEntry
@@ -43,6 +45,7 @@ import {
   collaborationRealtimeStreamQuerySchema
 } from "./schemas.js";
 import { publicTeamRosterMember } from "../team/presence.js";
+import { publicCollaborationThread } from "./public-thread.js";
 
 const protocolVersion = collaborationRealtimeProtocolVersion;
 const cursorPrefix = "crt1.";
@@ -589,23 +592,24 @@ const rendererThreadFromRecord = (
   thread: CollaborationThreadRecord,
   user: RealtimeAuth["user"]
 ): RendererUpdate | null => {
+  const publicThread = publicCollaborationThread(thread);
   const base = {
-    id: thread.id,
-    logicalId: thread.logicalId,
-    scope: thread.scope,
-    name: thread.name,
-    topic: thread.topic,
-    version: thread.version,
-    lifecycle: thread.lifecycle,
-    canPost: thread.lifecycle === "active",
-    latestSequence: thread.latestSequence,
-    unreadCount: thread.unreadCount,
-    lastReadMessageId: thread.lastReadMessageId,
-    lastReadSequence: thread.lastReadSequence,
-    createdAt: thread.createdAt,
-    updatedAt: thread.updatedAt,
-    lastActivityAt: thread.lastActivityAt,
-    archivedAt: thread.archivedAt
+    id: publicThread.id,
+    logicalId: publicThread.logicalId,
+    scope: publicThread.scope,
+    name: publicThread.name,
+    topic: publicThread.topic,
+    version: publicThread.version,
+    lifecycle: publicThread.lifecycle,
+    canPost: publicThread.lifecycle === "active",
+    latestSequence: publicThread.latestSequence,
+    unreadCount: publicThread.unreadCount,
+    lastReadMessageId: publicThread.lastReadMessageId,
+    lastReadSequence: publicThread.lastReadSequence,
+    createdAt: publicThread.createdAt,
+    updatedAt: publicThread.updatedAt,
+    lastActivityAt: publicThread.lastActivityAt,
+    archivedAt: publicThread.archivedAt
   };
   let candidate: unknown;
   if (
@@ -644,7 +648,7 @@ const rendererThreadFromRecord = (
         ...teamBase,
         kind: thread.kind,
         workspaceId: thread.teamWorkspaceId,
-        sharedLogicalMemoryId: thread.sharedLogicalMemoryId,
+        sharedLogicalMemoryId: publicThread.sharedLogicalMemoryId,
         shareGrantId: thread.shareGrantId
       };
     } else if (thread.kind === "dm" || thread.kind === "group_dm") {
@@ -829,12 +833,15 @@ const rendererSharedSessionFrom = async (
   )?.find((participant) => participant.userId === ownerId);
   const parsed = sharedMemorySessionSchema.safeParse({
     id: grant.shareGrantId,
-    logicalMemoryId: grant.logicalMemoryId,
+    logicalMemoryId: sharedMemoryGrantScopedSourceId(
+      grant.shareGrantId,
+      grant.logicalMemoryId
+    ),
     shareGrantId: grant.shareGrantId,
     teamId: event.teamId,
     workspaceId: event.teamWorkspaceId,
     owner: {
-      id: ownerId,
+      id: sharedMemoryGrantScopedPrincipalId(grant.shareGrantId, ownerId),
       displayName: displayName(owner?.displayName, "Team member"),
       membershipState: "enabled"
     },
@@ -1210,28 +1217,51 @@ const eventEnvelope = (input: {
   cursor: string;
   subscriptionId: string;
   update: RendererUpdate;
-}) => ({
-  protocolVersion,
-  eventId: input.event.id,
-  cursor: input.cursor,
-  type: input.event.family,
-  occurredAt: input.event.occurredAt,
-  subscription: { id: input.subscriptionId },
-  resource: {
-    scope: input.event.scope,
-    type: input.event.resourceType,
-    id: input.event.resourceId,
-    teamId: input.event.teamId,
-    teamWorkspaceId: input.event.teamWorkspaceId,
-    threadId: input.event.threadId,
-    messageId: input.event.messageId,
-    sharedSessionId: input.event.shareGrantId,
-    shareGrantId: input.event.shareGrantId,
-    logicalMemoryId: input.event.logicalMemoryId
-  },
-  actor: { principalId: input.event.actorPrincipalId },
-  update: input.update
-});
+}) => {
+  const grantScopedLogicalMemoryId =
+    input.event.scope === "team" &&
+    input.event.shareGrantId &&
+    input.event.logicalMemoryId
+      ? sharedMemoryGrantScopedSourceId(
+          input.event.shareGrantId,
+          input.event.logicalMemoryId
+        )
+      : input.event.logicalMemoryId;
+  const grantScopedActorPrincipalId =
+    input.event.scope === "team" &&
+    input.event.shareGrantId &&
+    input.event.actorPrincipalId
+      ? sharedMemoryGrantScopedPrincipalId(
+          input.event.shareGrantId,
+          input.event.actorPrincipalId
+        )
+      : input.event.actorPrincipalId;
+  return {
+    protocolVersion,
+    eventId: input.event.id,
+    cursor: input.cursor,
+    type: input.event.family,
+    occurredAt: input.event.occurredAt,
+    subscription: { id: input.subscriptionId },
+    resource: {
+      scope: input.event.scope,
+      type: input.event.resourceType,
+      id:
+        input.event.resourceId === input.event.logicalMemoryId
+          ? grantScopedLogicalMemoryId
+          : input.event.resourceId,
+      teamId: input.event.teamId,
+      teamWorkspaceId: input.event.teamWorkspaceId,
+      threadId: input.event.threadId,
+      messageId: input.event.messageId,
+      sharedSessionId: input.event.shareGrantId,
+      shareGrantId: input.event.shareGrantId,
+      logicalMemoryId: grantScopedLogicalMemoryId
+    },
+    actor: { principalId: grantScopedActorPrincipalId },
+    update: input.update
+  };
+};
 
 const authenticateRealtime = async (
   request: FastifyRequest,
@@ -1812,7 +1842,7 @@ export const createCollaborationRealtimeService = async (
           personalOwnerUserId: snapshot.personalOwnerUserId,
           teamId: snapshot.teamId,
           highWaterCursor: cursor,
-          threads: snapshot.threads
+          threads: snapshot.threads.map(publicCollaborationThread)
         },
         cursor
       };

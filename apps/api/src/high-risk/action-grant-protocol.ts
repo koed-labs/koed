@@ -561,6 +561,10 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
   resolved?: {
     sharedMemoryRemoteReplicaId?: string;
     sharedMemoryPreviewId?: string;
+  },
+  candidateSourceIdentity?: {
+    sourceDeploymentProtocolId: string;
+    sourceOwnerPrincipalId: string;
   }
 ): HighRiskActionGrantIntent | null => {
   collaborationActionGrantIntentSchema.parse(intent);
@@ -653,10 +657,11 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
         }
       };
     case "collaboration.preview_shared_memory":
-      return intent.candidate
+      return intent.candidate && candidateSourceIdentity
         ? {
             action: "shared_memory.candidate_preview",
             source: intent.source,
+            ...candidateSourceIdentity,
             sourceCapabilities: intent.sourceCapabilities,
             logicalMemoryId: intent.logicalMemoryId,
             candidateHash: intent.candidate.candidateHash,

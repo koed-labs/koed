@@ -705,7 +705,7 @@ describe("Cross-Identity Sync processing handshake", () => {
         relationship: {
           packageSequence: 0,
           logicalMemoryId: "99999999-9999-4999-8999-999999999999",
-          localUserId: "source-user",
+          localUserId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           localReplicaId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           remoteReplicaId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
           policyManifest: {
@@ -741,7 +741,7 @@ describe("Cross-Identity Sync processing handshake", () => {
         remoteBaseUrl: "https://team.example.com",
         remoteUpstreamBackendId: backendId,
         remoteCredentialReference: reference,
-        remoteSubjectId: "target-user"
+        remoteSubjectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
       }),
       getSyncPackageBySequence: vi.fn().mockResolvedValue({
         upload: incompleteUpload,
@@ -807,7 +807,7 @@ describe("Cross-Identity Sync processing handshake", () => {
       uploadSessionId: incompleteUpload.id
     });
     expect(createSyncPackageUploadSession).toHaveBeenCalledWith(
-      { userId: "source-user" },
+      { userId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
       expect.objectContaining({
         syncRelationshipId: relationshipId,
         sourceSequence: 1,
@@ -931,7 +931,7 @@ describe("Cross-Identity Sync summary transport", () => {
         relationship: {
           packageSequence: 0,
           logicalMemoryId: "99999999-9999-4999-8999-999999999999",
-          localUserId: "source-user",
+          localUserId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           localReplicaId: sourceReplicaId,
           remoteReplicaId: targetReplicaId,
           policyManifest,
@@ -959,7 +959,7 @@ describe("Cross-Identity Sync summary transport", () => {
         remoteBaseUrl: "https://team.example.com",
         remoteUpstreamBackendId: backendId,
         remoteCredentialReference: reference,
-        remoteSubjectId: "target-user"
+        remoteSubjectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
       }),
       getSyncPackageBySequence: vi.fn().mockResolvedValue(null),
       createSyncPackageUploadSession,
@@ -1101,7 +1101,7 @@ describe("Cross-Identity Sync summary transport", () => {
       getSyncTransportContext: vi.fn().mockResolvedValue({
         relationship: {
           side: "target",
-          localUserId: "target-user",
+          localUserId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
           localReplicaId: targetReplicaId,
           remoteReplicaId: sourceReplicaId,
           policyManifest: { sourceBoundary: "captured_session" },
@@ -1110,7 +1110,7 @@ describe("Cross-Identity Sync summary transport", () => {
         localDeploymentId: "target-local-deployment",
         localProtocolDeploymentId: targetDeploymentId,
         remoteProtocolDeploymentId: sourceDeploymentId,
-        remoteSubjectId: "source-user"
+        remoteSubjectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
       }),
       authorizeTargetSyncProcessing: vi.fn().mockResolvedValue(true),
       getSyncRecipientKey: vi.fn().mockResolvedValue(recipient),
@@ -1203,10 +1203,10 @@ describe("Cross-Identity Sync summary transport", () => {
       relationshipId,
       logicalMemoryId: "88888888-8888-4888-8888-888888888888",
       sourceDeploymentId,
-      sourceUserId: "source-user",
+      sourceUserId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       sourceReplicaId,
       targetDeploymentId,
-      targetUserId: "target-user",
+      targetUserId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       targetReplicaId,
       packageSequence: 1,
       fromCursor: 5,
@@ -1259,7 +1259,10 @@ describe("Cross-Identity Sync summary transport", () => {
       {
         objectClass: "sync_package",
         payload: chunk,
-        scope: { deploymentId: targetDeploymentId, tenantId: "target-user" },
+        scope: {
+          deploymentId: targetDeploymentId,
+          tenantId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        },
         provenance: { rowFamily: "sync_package", sourceId: packageId },
         aad: { relationshipId, packageId }
       }
@@ -1317,7 +1320,7 @@ describe("Cross-Identity Sync summary transport", () => {
       getSyncTransportContext: vi.fn().mockResolvedValue({
         relationship: {
           side: "target",
-          localUserId: "target-user",
+          localUserId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
           localReplicaId: targetReplicaId,
           remoteReplicaId: sourceReplicaId,
           policyManifest,
@@ -1326,7 +1329,7 @@ describe("Cross-Identity Sync summary transport", () => {
         localDeploymentId: "local-deployment",
         localProtocolDeploymentId: targetDeploymentId,
         remoteProtocolDeploymentId: sourceDeploymentId,
-        remoteSubjectId: "source-user"
+        remoteSubjectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
       }),
       authorizeTargetSyncProcessing: vi.fn().mockResolvedValue(true),
       getSyncRecipientKey: vi.fn().mockResolvedValue(recipient),
@@ -1509,10 +1512,10 @@ describe("Cross-Identity Sync inbox binding", () => {
       relationshipId,
       logicalMemoryId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       sourceDeploymentId,
-      sourceUserId: "source-user",
+      sourceUserId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       sourceReplicaId,
       targetDeploymentId,
-      targetUserId: "target-user",
+      targetUserId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       targetReplicaId,
       packageSequence: 1,
       fromCursor: 0,
@@ -1567,7 +1570,10 @@ describe("Cross-Identity Sync inbox binding", () => {
       {
         objectClass: "sync_package",
         payload: chunk,
-        scope: { deploymentId: targetDeploymentId, tenantId: "target-user" },
+        scope: {
+          deploymentId: targetDeploymentId,
+          tenantId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        },
         provenance: { rowFamily: "sync_package", sourceId: packageId },
         aad: { relationshipId, packageId }
       }
@@ -1630,7 +1636,7 @@ describe("Cross-Identity Sync inbox binding", () => {
       getSyncTransportContext: vi.fn().mockResolvedValue({
         relationship: {
           side: "target",
-          localUserId: "target-user",
+          localUserId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
           localReplicaId: targetReplicaId,
           remoteReplicaId: sourceReplicaId,
           policyManifest,
@@ -1639,7 +1645,7 @@ describe("Cross-Identity Sync inbox binding", () => {
         localDeploymentId: "local-deployment",
         localProtocolDeploymentId: targetDeploymentId,
         remoteProtocolDeploymentId: sourceDeploymentId,
-        remoteSubjectId: "source-user"
+        remoteSubjectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
       }),
       authorizeTargetSyncProcessing: vi.fn().mockResolvedValue(true),
       getSyncRecipientKey: vi.fn().mockResolvedValue(material),

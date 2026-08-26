@@ -2338,11 +2338,22 @@ export const pendingShareSchema = z
     activatedAt: collaborationTimestampSchema.nullable(),
     revokedAt: collaborationTimestampSchema.nullable(),
     grantId: z.uuid().nullable(),
-    grantVersion: positiveVersionSchema.nullable().optional()
+    grantVersion: positiveVersionSchema.nullable()
   })
   .strict()
   .superRefine((pendingShare, context) => {
     validateSharedMemorySelection(pendingShare, context);
+    if (
+      (pendingShare.grantId === null) !==
+      (pendingShare.grantVersion === null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["grantVersion"],
+        message:
+          "Activated grant identity and version must be supplied together"
+      });
+    }
   });
 
 export const ownedShareSummarySchema = z

@@ -659,12 +659,12 @@ describeDb("high-risk action grants", () => {
       const actionGrant = createGrantSecret();
       const sourceDeploymentProtocolId = randomUUID();
       const sourceOwnerPrincipalId = randomUUID();
-      const bound = sharedMemoryCandidatePreviewActionGrantBinding({
+      const bindingInput = {
         referenceId: clientRequestId,
         source,
         sourceDeploymentProtocolId,
         sourceOwnerPrincipalId,
-        sourceCapabilities: ["memory_events"],
+        sourceCapabilities: ["memory_events"] as const,
         logicalMemoryId: source.logicalMemoryId,
         candidateHash: hash(`candidate:${source.kind}`),
         sourceRevision: 1,
@@ -682,11 +682,13 @@ describeDb("high-risk action grants", () => {
         byteCount: 128,
         teamId,
         teamWorkspaceId,
-        activationRepresentation: "memory_events",
-        maximumFidelity: "memory_events",
+        activationRepresentation: "memory_events" as const,
+        maximumFidelity: "memory_events" as const,
         includeCuratedMemory: false,
-        mode: "continuous"
-      });
+        mode: "continuous" as const
+      };
+      const bound =
+        sharedMemoryCandidatePreviewActionGrantBinding(bindingInput);
       const operation = {
         ownerUserId: fixture.userId,
         deviceCredentialId: fixture.deviceCredentialId,
@@ -740,8 +742,7 @@ describeDb("high-risk action grants", () => {
       await expect(useCount()).resolves.toBe("0");
 
       const changed = sharedMemoryCandidatePreviewActionGrantBinding({
-        ...bound.body,
-        referenceId: clientRequestId,
+        ...bindingInput,
         candidateHash: hash(`changed-candidate:${source.kind}`)
       });
       await expect(
@@ -889,7 +890,9 @@ describeDb("high-risk action grants", () => {
       const clientRequestId = randomUUID();
       const actionGrant = createGrantSecret();
       const bound = bindingFactory.create(clientRequestId);
-      expect(bound.body.authority.referenceId).toBe(clientRequestId);
+      expect(bound.body).toMatchObject({
+        authority: { referenceId: clientRequestId }
+      });
       const operation = {
         ownerUserId: fixture.userId,
         deviceCredentialId: fixture.deviceCredentialId,
@@ -1102,6 +1105,46 @@ describeDb("high-risk action grants", () => {
         grantCommitment: `v1:${hash(createGrantSecret())}`
       })
     ).resolves.toBeNull();
+  });
+
+  it("revalidates and locks the device credential before executing an approved grant", async () => {
+    const fixture = await createFixture();
+    const repository = createRepository({ pool });
+    const operation = binding(fixture);
+    const grant = await createGrant(repository, fixture, operation);
+    await repository.decideBrowserActivation({
+      selector: grant.selector!,
+      ownerUserId: fixture.userId,
+      userSessionId: fixture.userSessionId,
+      freshlyAuthenticatedAt: new Date(),
+      decision: "approve"
+    });
+
+    const rotation = await pool.connect();
+    const execute = vi.fn(async () => ({
+      statusCode: 200,
+      body: { executed: true }
+    }));
+    try {
+      await rotation.query("begin");
+      await rotation.query(
+        "update device_credentials set revoked_at = now() where id = $1",
+        [fixture.deviceCredentialId]
+      );
+      const execution = repository.executeActionGrant({
+        ...operation,
+        actionGrant: grant.actionGrant,
+        execute
+      });
+      await delay(25);
+      expect(execute).not.toHaveBeenCalled();
+      await rotation.query("commit");
+      await expect(execution).resolves.toBeNull();
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await rotation.query("rollback").catch(() => {});
+      rotation.release();
+    }
   });
 
   it("expires and revokes unused confirmations and grants", async () => {

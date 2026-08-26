@@ -192,6 +192,8 @@ const matrixCases: Array<{
       excludedItemCount: 0,
       manifest: [{ sourceId: uuid(4), revisionHash: "b".repeat(64) }],
       byteCount: 128,
+      sourceDeploymentProtocolId: uuid(5),
+      sourceOwnerPrincipalId: uuid(6),
       teamId: uuid(1),
       teamWorkspaceId: uuid(2),
       maximumFidelity: "lcm_rollups",

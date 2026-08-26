@@ -138,7 +138,7 @@ Commands:
   upstream policy --json  Update explicit upstream route-policy families
   upstream activate --json Select the registered upstream used for remote work
   upstream remove --json Remove an upstream backend
-  upstream enroll start --json Start local upstream enrollment orchestration
+  upstream enroll start --json Start enrollment with --source-owner-principal-id
   upstream enroll status --json Print local upstream enrollment state
   upstream enroll cancel --json Cancel local upstream enrollment orchestration
   upstream disconnect --json Disable local upstream routes and enrollment state
@@ -1005,7 +1005,12 @@ export const runKoedServerCli = async (
       const id = requireFlagValue(args, "--id");
       const result =
         enrollCommand === "start"
-          ? await startUpstreamEnroll(paths, id)
+          ? await startUpstreamEnroll(paths, id, {
+              sourceOwnerPrincipalId: requireFlagValue(
+                args,
+                "--source-owner-principal-id"
+              )
+            })
           : enrollCommand === "status"
             ? await getUpstreamEnrollStatus(paths, id)
             : enrollCommand === "cancel"

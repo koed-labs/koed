@@ -1797,27 +1797,6 @@ describeDb("Collaboration repository", () => {
         sharedSessionId
       ]
     );
-    await pool.query(
-      `insert into collaboration_shared_memory_grants
-         (enrollment_id,companion_binding_id,share_grant_id,logical_grant_id,
-          logical_memory_id,consent_id,team_id,team_workspace_id,
-          maximum_fidelity,include_curated_memory,mode,source_revision,
-          grant_version,lifecycle,protected_dto_hash,protected_dto)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,'memory_events',false,'continuous',1,
-               1,'active',$9,'{}'::jsonb)`,
-      [
-        enrollment.rows[0]!.id,
-        companionBindingId,
-        shareGrantId,
-        logicalGrantId,
-        note.logicalMemoryId,
-        consentId,
-        teamId,
-        workspaceId,
-        "a".repeat(64)
-      ]
-    );
-
     const revised = await repository.updatePersonalNoteBody(
       actor(ownerUserId),
       {
@@ -1835,6 +1814,63 @@ describeDb("Collaboration repository", () => {
         memoryEventId: secondEventId
       })
     ).resolves.toMatchObject({ revision: 2, memoryEventId: secondEventId });
+
+    await expect(
+      pool.query(
+        `select 1 from collaboration_continuous_note_advancement_work
+          where local_owner_user_id=$1`,
+        [ownerUserId]
+      )
+    ).resolves.toHaveProperty("rowCount", 0);
+
+    const authorityStore = createCollaborationSharedMemoryAuthorityStore(pool, {
+      envelopeEncryptionProvider: provider
+    });
+    const activatedAt = new Date().toISOString();
+    await expect(
+      authorityStore.persistAuthoritativeGrant({
+        identity,
+        grant: {
+          source: {
+            kind: "personal_note",
+            noteId: note.noteId,
+            noteRevision: 1,
+            memoryEventId: firstEventId,
+            logicalMemoryId: note.logicalMemoryId
+          },
+          sourceCapabilities: ["memory_events"],
+          activationRepresentation: "memory_events",
+          id: shareGrantId,
+          logicalGrantId,
+          logicalMemoryId: note.logicalMemoryId,
+          ownerUserId: identity.upstreamUserId,
+          teamId,
+          teamWorkspaceId: workspaceId,
+          consentId,
+          mode: "continuous",
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          fidelityPolicyRevision: 1,
+          sourceRevision: 1,
+          grantVersion: 1,
+          lifecycle: "active",
+          createdAt: activatedAt,
+          updatedAt: activatedAt,
+          revokedAt: null,
+          companionScope: {
+            scope: "team",
+            kind: "shared_session_discussion",
+            teamId,
+            teamWorkspaceId: workspaceId,
+            logicalMemoryId: note.logicalMemoryId,
+            shareGrantId
+          }
+        },
+        prior: null,
+        mode: "authoritative_snapshot",
+        companion: { companionThreadId, sharedSessionId }
+      })
+    ).resolves.toMatchObject({ grant: { id: shareGrantId } });
 
     await expect(
       pool.query<{
@@ -1861,9 +1897,6 @@ describeDb("Collaboration repository", () => {
       ]
     });
 
-    const authorityStore = createCollaborationSharedMemoryAuthorityStore(pool, {
-      envelopeEncryptionProvider: provider
-    });
     const claimed =
       await authorityStore.claimContinuousPersonalNoteAdvancementWork({
         limit: 50

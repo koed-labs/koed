@@ -1210,7 +1210,8 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
       updatedAt: timestamp,
       activatedAt: timestamp,
       revokedAt: null,
-      grantId: interactionIds.pendingGrant
+      grantId: interactionIds.pendingGrant,
+      grantVersion: 1
     },
     sourceAccess: null,
     summary: {

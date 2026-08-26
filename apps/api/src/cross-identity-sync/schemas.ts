@@ -195,7 +195,7 @@ export const createTargetSyncRelationshipSchema = z
     logical_memory_id: uuidSchema,
     source_replica_id: uuidSchema,
     source_deployment_id: uuidSchema,
-    source_user_id: z.string().trim().min(1).max(240),
+    source_user_id: uuidSchema,
     origin_session_id: uuidSchema,
     idempotency_key: z.string().trim().min(8).max(240),
     creation_request_hash: sha256Schema,

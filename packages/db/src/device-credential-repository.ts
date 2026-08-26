@@ -219,6 +219,24 @@ const validateCredentialKeyId = (value: string): string => {
   return credentialKeyId;
 };
 
+const assertRotationSourceIdentity = (
+  rotationLineageId: string | null,
+  activeMetadata: Record<string, unknown> | undefined,
+  nextMetadata: Record<string, unknown>
+): void => {
+  if (!rotationLineageId || !activeMetadata) return;
+  if (
+    activeMetadata.protocolDeploymentId !== nextMetadata.protocolDeploymentId ||
+    activeMetadata.sourceOwnerPrincipalId !==
+      nextMetadata.sourceOwnerPrincipalId
+  ) {
+    throw Object.assign(
+      new Error("Device credential rotation cannot change source identity"),
+      { statusCode: 403 }
+    );
+  }
+};
+
 export const createDeviceCredentialRepository = (db: KoedDb) => ({
   async createDeviceEnrollmentChallenge(input: {
     challengeHash: string;
@@ -316,7 +334,8 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
       const activeRows = await tx
         .select({
           id: deviceCredentials.id,
-          lineageId: deviceCredentials.lineageId
+          lineageId: deviceCredentials.lineageId,
+          metadata: deviceCredentials.metadata
         })
         .from(deviceCredentials)
         .where(
@@ -342,6 +361,12 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
           { statusCode: 409 }
         );
       }
+      const metadata = input.metadata ?? challenge.metadata;
+      assertRotationSourceIdentity(
+        challenge.rotationLineageId,
+        activeRows[0]?.metadata,
+        metadata
+      );
       const supersededRows = await tx
         .update(deviceCredentials)
         .set({
@@ -391,7 +416,7 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
               ? (input.publicKeyJwk ?? null)
               : null,
           operationFamilies,
-          metadata: input.metadata ?? challenge.metadata,
+          metadata,
           expiresAt: input.expiresAt ?? null
         })
         .returning();
@@ -489,7 +514,8 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
       const activeRows = await tx
         .select({
           id: deviceCredentials.id,
-          lineageId: deviceCredentials.lineageId
+          lineageId: deviceCredentials.lineageId,
+          metadata: deviceCredentials.metadata
         })
         .from(deviceCredentials)
         .where(
@@ -515,6 +541,12 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
           { statusCode: 409 }
         );
       }
+      const metadata = input.metadata ?? challenge.metadata;
+      assertRotationSourceIdentity(
+        challenge.rotationLineageId,
+        activeRows[0]?.metadata,
+        metadata
+      );
       const supersededRows = await tx
         .update(deviceCredentials)
         .set({
@@ -564,7 +596,7 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
               ? (input.publicKeyJwk ?? null)
               : null,
           operationFamilies,
-          metadata: input.metadata ?? {},
+          metadata,
           expiresAt: input.expiresAt ?? null
         })
         .returning();

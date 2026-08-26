@@ -1,8 +1,10 @@
 import type {
   CollaborationRepository,
   MemorySourceRepository,
-  PersonalNoteRecord
+  PersonalNoteRecord,
+  SharedMemoryRepository
 } from "@koed/db";
+import { sharedMemoryGrantScopedSourceId } from "@koed/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { ApiRouteContext } from "../server/context.js";
@@ -33,6 +35,7 @@ import {
   updateCollaborationTopicSchema,
   workspaceCollaborationParamsSchema
 } from "./schemas.js";
+import { publicCollaborationThread } from "./public-thread.js";
 
 const SMALL_BODY_LIMIT_BYTES = 16 * 1024;
 const MESSAGE_BODY_LIMIT_BYTES = 72 * 1024;
@@ -46,6 +49,10 @@ const badRequest = (message: string) =>
 export interface CollaborationRouteContext {
   requireCollaborationRepository(): CollaborationRepository &
     Pick<MemorySourceRepository, "getPersonalNoteMemoryEvent">;
+  requireSharedMemoryRepository(): Pick<
+    SharedMemoryRepository,
+    "listWorkspaceGrants"
+  >;
   projectPersonalNote(input: {
     ownerUserId: string;
     note: PersonalNoteRecord;
@@ -94,6 +101,47 @@ const parseIdempotencyKey = (request: FastifyRequest): string =>
   collaborationIdempotencyHeadersSchema.parse(request.headers)[
     "idempotency-key"
   ];
+
+const publicTeamThreads = (
+  threads: Awaited<ReturnType<CollaborationRepository["listThreads"]>>
+) => threads?.map(publicCollaborationThread) ?? null;
+
+const resolveCanonicalSharedLogicalMemoryId = async (
+  repository: Pick<SharedMemoryRepository, "listWorkspaceGrants">,
+  actor: { userId: string },
+  input: {
+    teamId: string;
+    teamWorkspaceId: string;
+    shareGrantId: string;
+    publicLogicalMemoryId: string;
+  }
+): Promise<string | null> => {
+  let offset = 0;
+  for (;;) {
+    const page = await repository.listWorkspaceGrants(actor, {
+      teamId: input.teamId,
+      teamWorkspaceId: input.teamWorkspaceId,
+      limit: 100,
+      offset
+    });
+    if (page.limit !== 100 || page.offset !== offset) return null;
+    const grant = page.entries.find(
+      (entry) => entry.shareGrantId === input.shareGrantId
+    );
+    if (grant) {
+      return grant.lifecycle === "active" &&
+        sharedMemoryGrantScopedSourceId(
+          grant.shareGrantId,
+          grant.logicalMemoryId
+        ) === input.publicLogicalMemoryId
+        ? grant.logicalMemoryId
+        : null;
+    }
+    if (!page.hasMore) return null;
+    offset += page.entries.length;
+    if (page.entries.length === 0) return null;
+  }
+};
 
 const requirePersonalThread = async (
   repository: CollaborationRepository,
@@ -352,7 +400,7 @@ export const registerCollaborationRoutes = (
         .requireCollaborationRepository()
         .listThreads({ userId: user.id }, { scope: "team", teamId, ...query });
       if (!threads) throw forbidden();
-      return { threads };
+      return { threads: publicTeamThreads(threads) };
     }
   );
 
@@ -527,6 +575,18 @@ export const registerCollaborationRoutes = (
       const { shareGrantId } = createSharedSessionDiscussionSchema.parse(
         request.body
       );
+      const canonicalLogicalMemoryId =
+        await resolveCanonicalSharedLogicalMemoryId(
+          context.requireSharedMemoryRepository(),
+          { userId: user.id },
+          {
+            teamId,
+            teamWorkspaceId,
+            shareGrantId,
+            publicLogicalMemoryId: sharedLogicalMemoryId
+          }
+        );
+      if (!canonicalLogicalMemoryId) throw forbidden();
       const thread = await context
         .requireCollaborationRepository()
         .createThread(
@@ -536,12 +596,14 @@ export const registerCollaborationRoutes = (
             idempotencyKey: parseIdempotencyKey(request),
             teamId,
             teamWorkspaceId,
-            sharedLogicalMemoryId,
+            sharedLogicalMemoryId: canonicalLogicalMemoryId,
             shareGrantId
           }
         );
       if (!thread) throw forbidden();
-      return reply.status(201).send({ thread });
+      return reply.status(201).send({
+        thread: publicCollaborationThread(thread)
+      });
     }
   );
 
@@ -564,7 +626,7 @@ export const registerCollaborationRoutes = (
         threadId,
         true
       );
-      return { thread };
+      return { thread: publicCollaborationThread(thread) };
     }
   );
 
@@ -588,7 +650,7 @@ export const registerCollaborationRoutes = (
         { threadId, ...input }
       );
       if (!thread) throw forbidden();
-      return { thread };
+      return { thread: publicCollaborationThread(thread) };
     }
   );
 
@@ -612,7 +674,7 @@ export const registerCollaborationRoutes = (
         { threadId, ...input }
       );
       if (!thread) throw forbidden();
-      return { thread };
+      return { thread: publicCollaborationThread(thread) };
     }
   );
 
@@ -636,7 +698,7 @@ export const registerCollaborationRoutes = (
         { threadId, ...input }
       );
       if (!thread) throw forbidden();
-      return { thread };
+      return { thread: publicCollaborationThread(thread) };
     }
   );
 
@@ -660,7 +722,7 @@ export const registerCollaborationRoutes = (
         { threadId, ...input }
       );
       if (!thread) throw forbidden();
-      return { thread };
+      return { thread: publicCollaborationThread(thread) };
     }
   );
 

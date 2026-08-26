@@ -934,6 +934,52 @@ const mapGrant = (
   companionThreadId
 });
 
+const reconcileContinuousPersonalNoteGrant = async (
+  client: pg.PoolClient,
+  input: {
+    enrollmentId: string;
+    localOwnerUserId: string;
+    grant: SharedMemoryGrant;
+  }
+): Promise<void> => {
+  const source = input.grant.source;
+  if (
+    input.grant.mode !== "continuous" ||
+    input.grant.lifecycle !== "active" ||
+    source?.kind !== "personal_note"
+  ) {
+    return;
+  }
+  await client.query(
+    `insert into collaboration_continuous_note_advancement_work
+       (enrollment_id,local_owner_user_id,source_revision_id)
+     select $1,$2,latest.source_revision_id
+       from (
+         select local_revision.source_revision_id
+           from local_personal_note_source_revisions local_revision
+           join personal_note_source_revisions source_revision
+             on source_revision.source_revision_id=local_revision.source_revision_id
+          where local_revision.local_note_id=$3
+            and source_revision.logical_memory_id=$4
+            and source_revision.owner_principal_id=$2
+            and source_revision.revision>$5
+          order by source_revision.revision desc
+          limit 1
+       ) latest
+     on conflict (enrollment_id,source_revision_id) do update
+       set state='pending',available_at=now(),locked_at=null,
+           completed_at=null,redacted_failure_code=null,updated_at=now()
+     where collaboration_continuous_note_advancement_work.state in ('completed','failed')`,
+    [
+      input.enrollmentId,
+      input.localOwnerUserId,
+      source.noteId,
+      input.grant.logicalMemoryId,
+      input.grant.sourceRevision
+    ]
+  );
+};
+
 const selectPreviewSql = `select preview_id, preview_hash, preview_revision,
                                  logical_memory_id, team_id, team_workspace_id,
                                  representation, maximum_fidelity,
@@ -1755,7 +1801,14 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         if (existing) {
           const decoded = await decodeGrant(existing, identity);
           if (!decoded) return null;
-          if (sameDto(decoded, persisted)) return decoded;
+          if (sameDto(decoded, persisted)) {
+            await reconcileContinuousPersonalNoteGrant(client, {
+              enrollmentId: active.id,
+              localOwnerUserId: identity.localOwnerUserId,
+              grant: decoded.grant
+            });
+            return decoded;
+          }
           if (
             mode !== "authoritative_snapshot" ||
             prior === null ||
@@ -1789,7 +1842,13 @@ export const createCollaborationSharedMemoryAuthorityStore = (
               decoded.grant.sourceRevision
             ]
           );
-          return refreshed.rowCount === 1 ? persisted : null;
+          if (refreshed.rowCount !== 1) return null;
+          await reconcileContinuousPersonalNoteGrant(client, {
+            enrollmentId: active.id,
+            localOwnerUserId: identity.localOwnerUserId,
+            grant: persisted.grant
+          });
+          return persisted;
         }
         const latestResult = await client.query<GrantRow>(
           `${selectGrantSql}
@@ -1851,6 +1910,11 @@ export const createCollaborationSharedMemoryAuthorityStore = (
             protectedValue.envelope
           ]
         );
+        await reconcileContinuousPersonalNoteGrant(client, {
+          enrollmentId: active.id,
+          localOwnerUserId: identity.localOwnerUserId,
+          grant: persisted.grant
+        });
         return persisted;
       });
     },

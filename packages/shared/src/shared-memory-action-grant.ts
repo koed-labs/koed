@@ -113,8 +113,8 @@ export const sharedMemoryPreviewActionGrantBinding = (input: {
 export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
   referenceId: string;
   source: SharedMemorySourceRef;
-  sourceDeploymentProtocolId?: string;
-  sourceOwnerPrincipalId?: string;
+  sourceDeploymentProtocolId: string;
+  sourceOwnerPrincipalId: string;
   sourceCapabilities: readonly SharedMemoryRepresentation[];
   logicalMemoryId: string;
   candidateHash: string;
@@ -141,12 +141,8 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
     path: "/v1/shared-memory/candidate-previews",
     body: {
       source: input.source,
-      ...(input.sourceDeploymentProtocolId && input.sourceOwnerPrincipalId
-        ? {
-            sourceDeploymentProtocolId: input.sourceDeploymentProtocolId,
-            sourceOwnerPrincipalId: input.sourceOwnerPrincipalId
-          }
-        : {}),
+      sourceDeploymentProtocolId: input.sourceDeploymentProtocolId,
+      sourceOwnerPrincipalId: input.sourceOwnerPrincipalId,
       sourceCapabilities: input.sourceCapabilities,
       logicalMemoryId: input.logicalMemoryId,
       candidateHash: input.candidateHash,

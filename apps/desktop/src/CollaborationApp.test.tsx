@@ -1478,7 +1478,8 @@ describe("CollaborationApp", () => {
         updatedAt: at,
         activatedAt: null,
         revokedAt: null,
-        grantId: null
+        grantId: null,
+        grantVersion: null
       },
       sourceAccess: null,
       summary: {
@@ -1640,7 +1641,8 @@ describe("CollaborationApp", () => {
       updatedAt: at,
       activatedAt: null,
       revokedAt: null,
-      grantId: null
+      grantId: null,
+      grantVersion: null
     });
 
     await act(async () =>
@@ -1829,7 +1831,8 @@ describe("CollaborationApp", () => {
       updatedAt: at,
       activatedAt: null,
       revokedAt: null,
-      grantId
+      grantId,
+      grantVersion: grant.grantVersion
     };
     vi.mocked(client.previewSharedMemoryCandidate).mockResolvedValue({
       source,
@@ -2239,13 +2242,9 @@ describe("CollaborationApp", () => {
       action: "pause"
     });
     await click(container, "Done");
+    vi.mocked(client.listOwnedSharedMemoryGrants).mockClear();
     await click(container, "Revoke");
     await click(container, "Revoke Share");
-    await vi.waitFor(() =>
-      expect(client.listOwnedSharedMemoryGrants).toHaveBeenCalledWith({
-        logicalMemoryId: pending.pendingShare.logicalMemoryId
-      })
-    );
     await vi.waitFor(() =>
       expect(client.revokeSharedMemory).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -2257,6 +2256,7 @@ describe("CollaborationApp", () => {
         })
       )
     );
+    expect(client.listOwnedSharedMemoryGrants).not.toHaveBeenCalled();
     expect(client.controlPendingShare).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: "revoke" })
     );
@@ -2748,7 +2748,8 @@ describe("CollaborationApp", () => {
         updatedAt: at,
         activatedAt: null,
         revokedAt: null,
-        grantId: null
+        grantId: null,
+        grantVersion: null
       },
       sourceAccess: null,
       summary: {
@@ -3995,7 +3996,8 @@ describe("CollaborationApp", () => {
         updatedAt: at,
         activatedAt: at,
         revokedAt: null,
-        grantId: uuid(605)
+        grantId: uuid(605),
+        grantVersion: 2
       },
       sourceAccess: null,
       summary: {

@@ -1511,6 +1511,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerTeamRoutes(app, routeContext);
   registerCollaborationRoutes(app, {
     requireCollaborationRepository: requireRepository,
+    requireSharedMemoryRepository: requireRepository,
     projectPersonalNote: routeContext.collaboration.projectPersonalNote,
     authenticateSessionOrDeviceCredential:
       authHelpers.authenticateSessionOrDeviceCredential,

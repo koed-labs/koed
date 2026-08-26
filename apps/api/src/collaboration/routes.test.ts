@@ -13,6 +13,10 @@ import {
   CollaborationIdempotencyConflictError,
   CollaborationVersionConflictError
 } from "@koed/db";
+import {
+  sharedMemoryGrantScopedPrincipalId,
+  sharedMemoryGrantScopedSourceId
+} from "@koed/shared";
 import Fastify, { type FastifyRequest } from "fastify";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -47,7 +51,9 @@ const createCollaborationFixture = () => {
     teamB: randomUUID(),
     workspaceA: randomUUID(),
     workspaceB: randomUUID(),
-    deployment: randomUUID()
+    deployment: randomUUID(),
+    logicalMemory: randomUUID(),
+    shareGrant: randomUUID()
   };
   const users = new Map<string, FixtureUser>([
     [
@@ -174,6 +180,14 @@ const createCollaborationFixture = () => {
     teamId: ids.teamA,
     teamWorkspaceId: ids.workspaceA,
     name: "Workspace A"
+  });
+  const sharedSessionThread = newThread({
+    kind: "shared_session_discussion",
+    actorUserId: ids.alice,
+    teamId: ids.teamA,
+    teamWorkspaceId: ids.workspaceA,
+    sharedLogicalMemoryId: ids.logicalMemory,
+    shareGrantId: ids.shareGrant
   });
 
   const teamMember = (userId: string, teamId: string): boolean =>
@@ -679,6 +693,7 @@ const createCollaborationFixture = () => {
     repository,
     personalThread,
     workspaceThread,
+    sharedSessionThread,
     stats: {
       get storedThreadCount() {
         return storedThreadCount;
@@ -733,6 +748,50 @@ const buildTestServer = async (
   };
   registerCollaborationRoutes(app, {
     requireCollaborationRepository: () => fixture.repository,
+    requireSharedMemoryRepository: () => ({
+      async listWorkspaceGrants(_actor, input) {
+        const available =
+          input.teamId === fixture.ids.teamA &&
+          input.teamWorkspaceId === fixture.ids.workspaceA &&
+          input.offset === 0;
+        return {
+          entries: available
+            ? [
+                {
+                  shareGrantId: fixture.ids.shareGrant,
+                  logicalMemoryId: fixture.ids.logicalMemory,
+                  ownerUserId: fixture.ids.alice,
+                  ownerDisplayName: "Alice",
+                  sourceCapabilities: ["memory_events" as const],
+                  activationRepresentation: "memory_events" as const,
+                  maximumFidelity: "memory_events" as const,
+                  includeCuratedMemory: false,
+                  title: "Shared session",
+                  activeRepresentation: "memory_events" as const,
+                  representationState: "available" as const,
+                  representationSourceRevision: 1,
+                  representationUpdatedAt: iso,
+                  freshness: "fresh" as const,
+                  lifecycle: "active" as const,
+                  createdAt: iso,
+                  updatedAt: iso,
+                  companionScope: {
+                    scope: "team" as const,
+                    kind: "shared_session_discussion" as const,
+                    teamId: fixture.ids.teamA,
+                    teamWorkspaceId: fixture.ids.workspaceA,
+                    logicalMemoryId: fixture.ids.logicalMemory,
+                    shareGrantId: fixture.ids.shareGrant
+                  }
+                }
+              ]
+            : [],
+          limit: input.limit,
+          offset: input.offset,
+          hasMore: false
+        };
+      }
+    }),
     projectPersonalNote,
     authenticateApiToken: async (request) => {
       const authorization = request.headers.authorization?.trim() ?? "";
@@ -1073,6 +1132,69 @@ describe("collaboration HTTP routes", () => {
         })
       ).statusCode
     ).toBe(403);
+
+    await app.close();
+  });
+
+  it("uses grant-scoped Shared Session identifiers at the Team collaboration boundary", async () => {
+    const fixture = createCollaborationFixture();
+    const app = await buildTestServer(fixture);
+    const publicLogicalMemoryId = sharedMemoryGrantScopedSourceId(
+      fixture.ids.shareGrant,
+      fixture.ids.logicalMemory
+    );
+
+    const listed = await app.inject({
+      method: "GET",
+      url: `/v1/collaboration/teams/${fixture.ids.teamA}/threads`,
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    expect(listed.statusCode, listed.body).toBe(200);
+    const listedThread = jsonBody<{ threads: CollaborationThreadRecord[] }>(
+      listed
+    ).threads.find((thread) => thread.id === fixture.sharedSessionThread.id);
+    expect(listedThread?.sharedLogicalMemoryId).toBe(publicLogicalMemoryId);
+    expect(listedThread?.createdByUserId).toBe(
+      sharedMemoryGrantScopedPrincipalId(
+        fixture.ids.shareGrant,
+        fixture.ids.alice
+      )
+    );
+    expect(listed.body).not.toContain(fixture.ids.logicalMemory);
+
+    const detail = await app.inject({
+      method: "GET",
+      url: `/v1/collaboration/teams/${fixture.ids.teamA}/threads/${fixture.sharedSessionThread.id}`,
+      headers: sessionHeaders(fixture.ids.alice)
+    });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.body).not.toContain(fixture.ids.alice);
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/v1/collaboration/teams/${fixture.ids.teamA}/workspaces/${fixture.ids.workspaceA}/shared-sessions/${publicLogicalMemoryId}/discussion`,
+      headers: sessionHeaders(fixture.ids.alice, {
+        "idempotency-key": "scoped-shared-session-discussion"
+      }),
+      payload: { shareGrantId: fixture.ids.shareGrant }
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    expect(
+      jsonBody<{ thread: CollaborationThreadRecord }>(created).thread
+        .sharedLogicalMemoryId
+    ).toBe(publicLogicalMemoryId);
+    expect(created.body).not.toContain(fixture.ids.logicalMemory);
+    expect(created.body).not.toContain(fixture.ids.alice);
+
+    const wrongGrant = await app.inject({
+      method: "POST",
+      url: `/v1/collaboration/teams/${fixture.ids.teamA}/workspaces/${fixture.ids.workspaceA}/shared-sessions/${publicLogicalMemoryId}/discussion`,
+      headers: sessionHeaders(fixture.ids.alice, {
+        "idempotency-key": "wrong-scoped-shared-session-discussion"
+      }),
+      payload: { shareGrantId: randomUUID() }
+    });
+    expect(wrongGrant.statusCode).toBe(403);
 
     await app.close();
   });

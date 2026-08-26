@@ -222,20 +222,13 @@ const collaborationActionGrantOperationForIntent = (
     sourceOwnerPrincipalId: string;
   }
 ): CollaborationActionGrantIntentOperation | null => {
-  const unresolvedRemoteIntent =
-    highRiskActionGrantIntentFromCollaborationIntent(
-      backend.baseUrl,
-      intent,
-      resolved
-    );
-  if (!unresolvedRemoteIntent) {
-    return null;
-  }
-  const remoteIntent =
-    unresolvedRemoteIntent.action === "shared_memory.candidate_preview" &&
+  const remoteIntent = highRiskActionGrantIntentFromCollaborationIntent(
+    backend.baseUrl,
+    intent,
+    resolved,
     candidateSourceIdentity
-      ? { ...unresolvedRemoteIntent, ...candidateSourceIdentity }
-      : unresolvedRemoteIntent;
+  );
+  if (!remoteIntent) return null;
   const operation = resolveHighRiskActionGrantOperation({
     clientRequestId: referenceId,
     intent: remoteIntent
@@ -485,39 +478,34 @@ export const createCollaborationActionGrantControl = (
                   sharedMemoryPreviewId: consentPreview?.previewId
                 }
               : undefined;
-          const remoteIntent = highRiskActionGrantIntentFromCollaborationIntent(
-            context.backend.baseUrl,
-            intent,
-            resolved
-          );
-          if (!remoteIntent) {
-            return failure(command, new ControlFailure("invalid_input"));
-          }
+          const isCandidatePreview =
+            intent.intent === "collaboration.preview_shared_memory" &&
+            intent.candidate !== undefined;
           if (
-            remoteIntent.action === "shared_memory.candidate_preview" &&
+            isCandidatePreview &&
             !supportsCandidateSourceAdmission(context.backend)
           ) {
             return failure(command, new ControlFailure("protocol_mismatch"));
           }
           const referenceId = options.randomUuid();
           const candidateSourceIdentity =
-            remoteIntent.action === "shared_memory.candidate_preview" &&
-            context.localOwnerUserId
+            isCandidatePreview && context.localOwnerUserId
               ? (options.resolveCandidateSourceIdentity?.(
                   context.localOwnerUserId
                 ) ?? null)
               : undefined;
-          if (
-            remoteIntent.action === "shared_memory.candidate_preview" &&
-            !candidateSourceIdentity
-          ) {
+          if (isCandidatePreview && !candidateSourceIdentity) {
             return failure(command, new ControlFailure("not_available"));
           }
-          const admittedRemoteIntent =
-            remoteIntent.action === "shared_memory.candidate_preview" &&
-            candidateSourceIdentity
-              ? { ...remoteIntent, ...candidateSourceIdentity }
-              : remoteIntent;
+          const remoteIntent = highRiskActionGrantIntentFromCollaborationIntent(
+            context.backend.baseUrl,
+            intent,
+            resolved,
+            candidateSourceIdentity ?? undefined
+          );
+          if (!remoteIntent) {
+            return failure(command, new ControlFailure("invalid_input"));
+          }
           const operation = collaborationActionGrantOperationForIntent(
             context.backend,
             intent,
@@ -567,7 +555,7 @@ export const createCollaborationActionGrantControl = (
                 version: 1,
                 clientRequestId: stored.referenceId,
                 grantCommitment: `v1:${stored.commitmentHash}`,
-                intent: admittedRemoteIntent
+                intent: remoteIntent
               }
             });
             if (!remote.ok) {

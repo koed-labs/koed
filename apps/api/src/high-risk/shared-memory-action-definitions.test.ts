@@ -30,6 +30,7 @@ const ids = {
   mutation: randomUUID(),
   request: randomUUID()
 };
+const sourceDeploymentProtocolId = randomUUID();
 
 const source = {
   logicalMemoryId: ids.logicalMemory,
@@ -210,6 +211,8 @@ describe("Shared Memory action definitions", () => {
       excludedItemCount: 0,
       manifest: [{ sourceId: ids.preview, revisionHash: "d".repeat(64) }],
       byteCount: 256,
+      sourceDeploymentProtocolId,
+      sourceOwnerPrincipalId: ids.actor,
       teamId: ids.team,
       teamWorkspaceId: ids.workspace,
       maximumFidelity: "lcm_leaves",
@@ -233,6 +236,8 @@ describe("Shared Memory action definitions", () => {
         excludedItemCount: 0,
         manifest: [{ sourceId: ids.preview, revisionHash: "d".repeat(64) }],
         byteCount: 256,
+        sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: ids.actor,
         teamId: ids.team,
         teamWorkspaceId: ids.workspace,
         maximumFidelity: "lcm_leaves",

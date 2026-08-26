@@ -8357,6 +8357,165 @@ describeDb("memory repository visibility", () => {
     ).resolves.toBe("pending");
   });
 
+  it("binds target sync intake atomically to the approved device source identity", async () => {
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64")
+      ),
+      ownerPrivateReplicaEnvelopeEncryptionProvider:
+        createLocalTestKeyEnvelopeEncryptionProvider(
+          randomBytes(32).toString("base64")
+        )
+    });
+    const owner = await encryptedRepo.createUser({
+      email: `sync-intake-owner-${randomUUID()}@example.com`
+    });
+    const sourceDeploymentProtocolId = randomUUID();
+    const sourceUserId = randomUUID();
+    const challengeHash = randomBytes(32).toString("hex");
+    await encryptedRepo.createDeviceEnrollmentChallenge({
+      challengeHash,
+      upstreamBackendId: `sync-source-${randomUUID()}`,
+      deviceInstanceId: `sync-source-device-${randomUUID()}`,
+      requestedOperationFamilies: ["sync"],
+      metadata: {
+        protocolDeploymentId: sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: sourceUserId
+      },
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    const credential = await encryptedRepo.redeemDeviceEnrollmentChallenge(
+      { userId: owner.id },
+      {
+        challengeHash,
+        credentialKeyId: `sync-intake-${randomUUID()}`,
+        verifierKind: "secret_hash",
+        verifierHash: randomBytes(32).toString("hex"),
+        operationFamilies: ["sync"]
+      }
+    );
+    const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
+      profile: "team_self_hosted",
+      protocolDeploymentId: randomUUID()
+    });
+    const relationshipInput = (overrides: Record<string, unknown> = {}) => {
+      const originSessionId = randomUUID();
+      return {
+        relationshipId: randomUUID(),
+        logicalMemoryId: randomUUID(),
+        originSessionId,
+        localDeploymentIdentityId: localDeployment.id,
+        sourceDeploymentProtocolId,
+        sourceUserId,
+        remoteReplicaId: randomUUID(),
+        localReplicaId: randomUUID(),
+        idempotencyKey: `sync-intake-${randomUUID()}`,
+        creationRequestHash: randomBytes(32).toString("hex"),
+        policyManifest: { sourceBoundary: "captured_session" },
+        consentManifest: { consented: true },
+        session: {
+          originSessionId,
+          externalSessionId: `source-session-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "transcript" as const,
+          capturedAt: "2026-07-12T00:00:00.000Z",
+          title: "Atomic sync intake",
+          sourceAdapterVersion: "1"
+        },
+        ...overrides
+      };
+    };
+
+    await expect(
+      encryptedRepo.createTargetSyncRelationship(
+        { userId: owner.id, deviceCredentialId: credential!.id },
+        relationshipInput({ localDeploymentIdentityId: randomUUID() })
+      )
+    ).rejects.toThrow();
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count
+           from deployment_identities
+          where protocol_deployment_id=$1`,
+        [sourceDeploymentProtocolId]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: "0" }] });
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count
+           from sync_principal_links
+          where proof_kind='device_credential_lineage'
+            and proof_reference=$1`,
+        [credential!.lineageId]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: "0" }] });
+
+    await expect(
+      encryptedRepo.createTargetSyncRelationship(
+        { userId: owner.id, deviceCredentialId: credential!.id },
+        relationshipInput()
+      )
+    ).resolves.toMatchObject({ relationship: { side: "target" } });
+    const sourceIdentity = await pool.query<{ id: string }>(
+      `select identity.id
+         from sync_external_user_identities identity
+         join deployment_identities deployment
+           on deployment.id=identity.deployment_identity_id
+        where deployment.protocol_deployment_id=$1
+          and identity.external_subject_id=$2`,
+      [sourceDeploymentProtocolId, sourceUserId]
+    );
+    await pool.query(
+      `update sync_principal_links
+          set revoked_at=now()
+        where external_user_identity_id=$1`,
+      [sourceIdentity.rows[0]!.id]
+    );
+    await expect(
+      encryptedRepo.linkExternalSyncUser(
+        { userId: owner.id },
+        {
+          externalUserIdentityId: sourceIdentity.rows[0]!.id,
+          proofKind: "device_credential_lineage",
+          proofReference: credential!.lineageId
+        }
+      )
+    ).rejects.toThrow("Cross-Identity Sync idempotency conflict");
+    await expect(
+      encryptedRepo.createTargetSyncRelationship(
+        { userId: owner.id, deviceCredentialId: credential!.id },
+        relationshipInput()
+      )
+    ).rejects.toThrow("Sync source principal binding is unavailable");
+    await expect(
+      pool.query<{ active: string; revoked: string }>(
+        `select count(*) filter (where revoked_at is null)::text as active,
+                count(*) filter (where revoked_at is not null)::text as revoked
+           from sync_principal_links
+          where external_user_identity_id=$1`,
+        [sourceIdentity.rows[0]!.id]
+      )
+    ).resolves.toMatchObject({ rows: [{ active: "0", revoked: "1" }] });
+    await pool.query(
+      `update sync_external_user_identities
+          set status='revoked',revoked_at=now()
+        where id=$1`,
+      [sourceIdentity.rows[0]!.id]
+    );
+    await expect(
+      encryptedRepo.upsertExternalSyncUserIdentity({
+        deploymentIdentityId: (
+          await pool.query<{ id: string }>(
+            `select id from deployment_identities
+              where protocol_deployment_id=$1`,
+            [sourceDeploymentProtocolId]
+          )
+        ).rows[0]!.id,
+        externalSubjectId: sourceUserId
+      })
+    ).rejects.toThrow("External sync identity is revoked");
+  });
+
   it("applies target packages once and keeps the synchronized session read-only until ready", async () => {
     const deploymentEncryptionProvider =
       createLocalTestKeyEnvelopeEncryptionProvider(
@@ -8382,11 +8541,17 @@ describeDb("memory repository visibility", () => {
     });
     const credentialChallengeHash = randomBytes(32).toString("hex");
     const sourceDeviceInstanceId = `source-device-${randomUUID()}`;
+    const sourceDeploymentProtocolId = randomUUID();
+    const sourceUserId = randomUUID();
     await encryptedRepo.createDeviceEnrollmentChallenge({
       challengeHash: credentialChallengeHash,
       upstreamBackendId: "sync-source",
       deviceInstanceId: sourceDeviceInstanceId,
       requestedOperationFamilies: ["sync"],
+      metadata: {
+        protocolDeploymentId: sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: sourceUserId
+      },
       expiresAt: new Date(Date.now() + 60_000)
     });
     const syncCredential = await encryptedRepo.redeemDeviceEnrollmentChallenge(
@@ -8404,12 +8569,12 @@ describeDb("memory repository visibility", () => {
       protocolDeploymentId: randomUUID()
     });
     const sourceDeployment = await encryptedRepo.upsertRemoteSyncDeployment({
-      protocolDeploymentId: randomUUID(),
+      protocolDeploymentId: sourceDeploymentProtocolId,
       profile: "local_personal"
     });
     const sourceUser = await encryptedRepo.upsertExternalSyncUserIdentity({
       deploymentIdentityId: sourceDeployment.id,
-      externalSubjectId: "source-user"
+      externalSubjectId: sourceUserId
     });
     await encryptedRepo.linkExternalSyncUser(
       { userId: owner.id },
@@ -8429,8 +8594,8 @@ describeDb("memory repository visibility", () => {
       logicalMemoryId,
       originSessionId,
       localDeploymentIdentityId: localDeployment.id,
-      remoteDeploymentIdentityId: sourceDeployment.id,
-      remoteUserIdentityId: sourceUser.id,
+      sourceDeploymentProtocolId,
+      sourceUserId,
       remoteReplicaId: sourceReplicaId,
       localReplicaId: targetReplicaId,
       idempotencyKey: "sync-target-idempotency",
@@ -8455,6 +8620,30 @@ describeDb("memory repository visibility", () => {
       targetRelationshipInput
     );
     expect(created?.relationship.side).toBe("target");
+    const targetPrincipalBindings = await pool.query<{
+      logical_owner_principal_id: string;
+      replica_owner_principal_id: string;
+      source_binding_owner_principal_id: string;
+    }>(
+      `select logical.owner_principal_id as logical_owner_principal_id,
+              replica.owner_principal_id as replica_owner_principal_id,
+              source.owner_principal_id as source_binding_owner_principal_id
+         from logical_memories logical
+         join memory_replicas replica
+           on replica.logical_memory_id=logical.id and replica.id=$2
+         join captured_session_logical_memories source
+           on source.logical_memory_id=logical.id
+        where logical.id=$1`,
+      [logicalMemoryId, targetReplicaId]
+    );
+    expect(targetPrincipalBindings.rows).toEqual([
+      {
+        logical_owner_principal_id: sourceUserId,
+        replica_owner_principal_id: sourceUserId,
+        source_binding_owner_principal_id: sourceUserId
+      }
+    ]);
+    expect(sourceUser.id).not.toBe(sourceUserId);
     const targetSessionStorage = await pool.query<{
       external_session_id: string | null;
       metadata: Record<string, unknown>;
@@ -8549,6 +8738,33 @@ describeDb("memory repository visibility", () => {
       )
     ).rejects.toThrow("requires authenticated rotation");
     const provenRotationHash = randomBytes(32).toString("hex");
+    const changedIdentityRotationHash = randomBytes(32).toString("hex");
+    await encryptedRepo.createDeviceEnrollmentChallenge({
+      challengeHash: changedIdentityRotationHash,
+      upstreamBackendId: "sync-source",
+      deviceInstanceId: sourceDeviceInstanceId,
+      rotationLineageId: syncCredential!.lineageId,
+      rotationOwnerUserId: owner.id,
+      rotationCredentialId: syncCredential!.id,
+      requestedOperationFamilies: ["sync"],
+      metadata: {
+        protocolDeploymentId: randomUUID(),
+        sourceOwnerPrincipalId: sourceUserId
+      },
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    await expect(
+      encryptedRepo.redeemDeviceEnrollmentChallenge(
+        { userId: owner.id },
+        {
+          challengeHash: changedIdentityRotationHash,
+          credentialKeyId: `sync-credential-${randomUUID()}`,
+          verifierKind: "secret_hash",
+          verifierHash: randomBytes(32).toString("hex"),
+          operationFamilies: ["sync"]
+        }
+      )
+    ).rejects.toThrow("cannot change source identity");
     await encryptedRepo.createDeviceEnrollmentChallenge({
       challengeHash: provenRotationHash,
       upstreamBackendId: "sync-source",
@@ -8557,6 +8773,10 @@ describeDb("memory repository visibility", () => {
       rotationOwnerUserId: owner.id,
       rotationCredentialId: syncCredential!.id,
       requestedOperationFamilies: ["sync"],
+      metadata: {
+        protocolDeploymentId: sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: sourceUserId
+      },
       expiresAt: new Date(Date.now() + 60_000)
     });
     const rotatedCredential =
@@ -8577,10 +8797,11 @@ describeDb("memory repository visibility", () => {
         relationshipId
       )
     ).resolves.toMatchObject({ id: relationshipId });
+    const switchedSourceUserId = randomUUID();
     const switchedSourceUser =
       await encryptedRepo.upsertExternalSyncUserIdentity({
         deploymentIdentityId: sourceDeployment.id,
-        externalSubjectId: "different-source-user"
+        externalSubjectId: switchedSourceUserId
       });
     await expect(
       encryptedRepo.linkExternalSyncUser(
@@ -8606,8 +8827,8 @@ describeDb("memory repository visibility", () => {
           logicalMemoryId: randomUUID(),
           originSessionId: switchedOriginSessionId,
           localDeploymentIdentityId: localDeployment.id,
-          remoteDeploymentIdentityId: sourceDeployment.id,
-          remoteUserIdentityId: switchedSourceUser.id,
+          sourceDeploymentProtocolId,
+          sourceUserId: switchedSourceUserId,
           remoteReplicaId: randomUUID(),
           localReplicaId: randomUUID(),
           idempotencyKey: "switched-source-principal",
@@ -8625,7 +8846,9 @@ describeDb("memory repository visibility", () => {
           }
         }
       )
-    ).rejects.toThrow("already bound to another source principal");
+    ).rejects.toThrow(
+      "Sync source identity does not match the approved device credential"
+    );
     const secondChallengeHash = randomBytes(32).toString("hex");
     await encryptedRepo.createDeviceEnrollmentChallenge({
       challengeHash: secondChallengeHash,
@@ -8676,9 +8899,9 @@ describeDb("memory repository visibility", () => {
         protocolDeploymentId: randomUUID(),
         profile: "local_personal"
       });
-    const otherSourceUser = await encryptedRepo.upsertExternalSyncUserIdentity({
+    await encryptedRepo.upsertExternalSyncUserIdentity({
       deploymentIdentityId: otherSourceDeployment.id,
-      externalSubjectId: "source-user"
+      externalSubjectId: sourceUserId
     });
     const spoofedOriginSessionId = randomUUID();
     await expect(
@@ -8692,8 +8915,9 @@ describeDb("memory repository visibility", () => {
           logicalMemoryId: randomUUID(),
           originSessionId: spoofedOriginSessionId,
           localDeploymentIdentityId: localDeployment.id,
-          remoteDeploymentIdentityId: otherSourceDeployment.id,
-          remoteUserIdentityId: otherSourceUser.id,
+          sourceDeploymentProtocolId:
+            otherSourceDeployment.protocolDeploymentId,
+          sourceUserId,
           remoteReplicaId: randomUUID(),
           localReplicaId: randomUUID(),
           idempotencyKey: "spoofed-source-deployment",
@@ -8711,7 +8935,9 @@ describeDb("memory repository visibility", () => {
           }
         }
       )
-    ).rejects.toThrow("already bound to another source deployment");
+    ).rejects.toThrow(
+      "Sync source identity does not match the approved device credential"
+    );
     const targetSessionId = created!.localReplica.localSessionId!;
     await expect(
       encryptedRepo.createSyncPackageUploadSession(
@@ -9065,6 +9291,14 @@ describeDb("memory repository visibility", () => {
       summaryNodeIds: applied.summaryNodeIds,
       invalidatedSummaryNodeIds: []
     });
+    await expect(
+      pool.query(
+        `select source_cursor
+           from captured_session_source_revisions
+          where logical_memory_id=$1 and source_cursor=$2`,
+        [logicalMemoryId, syncPackage.toCursor]
+      )
+    ).resolves.toMatchObject({ rowCount: 1 });
     await encryptedRepo.markTargetSyncReady({
       relationshipId,
       sourceCursor: 1,
@@ -9687,6 +9921,10 @@ describeDb("memory repository visibility", () => {
       rotationOwnerUserId: owner.id,
       rotationCredentialId: rotatedCredential!.id,
       requestedOperationFamilies: ["sync"],
+      metadata: {
+        protocolDeploymentId: sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: sourceUserId
+      },
       expiresAt: new Date(Date.now() + 60_000)
     });
     const replacementCredential =

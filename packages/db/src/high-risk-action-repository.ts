@@ -282,22 +282,31 @@ const validateOperationBinding = (input: HighRiskOperationBinding): void => {
 const validateCredentialOperationFamily = (
   input: CreateHighRiskActionGrantInput
 ): void => {
-  const expected =
-    input.operationFamily === "admin"
-      ? "action_grant"
-      : input.operationFamily === "share_grant_management"
-        ? "share_grant_management"
-        : input.operationFamily === "source_download"
-          ? "sync"
-          : input.operationFamily === "managed_execution"
-            ? "managed_execution"
-            : null;
+  const expected = credentialOperationFamily(input.operationFamily);
   if (input.credentialOperationFamily !== expected) {
     throw new Error(
       "High-risk credential operation family does not match the protected operation"
     );
   }
 };
+
+const credentialOperationFamily = (
+  operationFamily: string
+):
+  | "action_grant"
+  | "share_grant_management"
+  | "sync"
+  | "managed_execution"
+  | null =>
+  operationFamily === "admin"
+    ? "action_grant"
+    : operationFamily === "share_grant_management"
+      ? "share_grant_management"
+      : operationFamily === "source_download"
+        ? "sync"
+        : operationFamily === "managed_execution"
+          ? "managed_execution"
+          : null;
 
 const operationAuditMetadata = (
   input: Pick<
@@ -1264,6 +1273,35 @@ export const createHighRiskActionRepository = (
           await client.query("set transaction isolation level repeatable read");
         }
         const tx = createDb(client);
+        const requiredCredentialFamily = credentialOperationFamily(
+          input.operationFamily
+        );
+        if (!requiredCredentialFamily) {
+          await client.query("rollback");
+          return null;
+        }
+        const [activeCredential] = await tx
+          .select({ id: deviceCredentials.id })
+          .from(deviceCredentials)
+          .where(
+            and(
+              eq(deviceCredentials.id, input.deviceCredentialId),
+              eq(deviceCredentials.ownerUserId, input.ownerUserId),
+              eq(deviceCredentials.upstreamBackendId, input.upstreamBackendId),
+              sql`${requiredCredentialFamily} = any(${deviceCredentials.operationFamilies})`,
+              isNull(deviceCredentials.revokedAt),
+              or(
+                isNull(deviceCredentials.expiresAt),
+                gt(deviceCredentials.expiresAt, sql`now()`)
+              )
+            )
+          )
+          .limit(1)
+          .for("update");
+        if (!activeCredential) {
+          await client.query("rollback");
+          return null;
+        }
         const [row] = await tx
           .select({
             confirmation: highRiskBrowserConfirmations,

@@ -8,6 +8,7 @@ import {
   classifyApprovalActivity,
   crossIdentitySyncDigest,
   crossIdentitySyncDeterministicUuid,
+  logicalMemorySourceRevisionIdentity,
   type CapturedSessionSyncChangeV1,
   type CapturedSessionSyncContributorV1,
   type CapturedSessionSyncPackageV1,
@@ -83,6 +84,88 @@ const ENCRYPTED_MEMORY_NODE_JSON = {
 
 const hasEncryptableText = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0;
+
+const ensureCapturedSessionSourceRevision = async (
+  client: pg.PoolClient,
+  input: {
+    logicalMemoryId: string;
+    ownerPrincipalId: string;
+    sourceSessionId: string;
+    sourceRevision: number;
+  }
+): Promise<void> => {
+  const identity = logicalMemorySourceRevisionIdentity({
+    source: {
+      kind: "captured_session",
+      sessionId: input.sourceSessionId,
+      logicalMemoryId: input.logicalMemoryId
+    },
+    ownerPrincipalId: input.ownerPrincipalId,
+    sourceRevision: input.sourceRevision
+  });
+  const root = await client.query(
+    `insert into captured_session_logical_memories
+       (logical_memory_id,source_kind,source_session_id,owner_principal_id)
+     values ($1,'captured_session',$2,$3)
+     on conflict (logical_memory_id) do update
+       set source_session_id=captured_session_logical_memories.source_session_id
+     where captured_session_logical_memories.source_session_id=excluded.source_session_id
+       and captured_session_logical_memories.owner_principal_id=excluded.owner_principal_id
+     returning logical_memory_id`,
+    [input.logicalMemoryId, input.sourceSessionId, input.ownerPrincipalId]
+  );
+  if (!root.rows[0]) {
+    throw new SyncStateConflictError("Captured Session identity changed");
+  }
+  const revision = await client.query(
+    `insert into logical_memory_source_revisions
+       (id,logical_memory_id,owner_principal_id,source_kind,revision,binding_hash)
+     values ($1,$2,$3,'captured_session',$4,$5)
+     on conflict (logical_memory_id,revision) do update
+       set binding_hash=logical_memory_source_revisions.binding_hash
+     where logical_memory_source_revisions.id=excluded.id
+       and logical_memory_source_revisions.owner_principal_id=excluded.owner_principal_id
+       and logical_memory_source_revisions.source_kind='captured_session'
+       and logical_memory_source_revisions.binding_hash=excluded.binding_hash
+     returning id`,
+    [
+      identity.id,
+      input.logicalMemoryId,
+      input.ownerPrincipalId,
+      identity.genericRevision,
+      identity.bindingHash
+    ]
+  );
+  if (!revision.rows[0]) {
+    throw new SyncStateConflictError("Captured Session revision changed");
+  }
+  const binding = await client.query(
+    `insert into captured_session_source_revisions
+       (source_revision_id,logical_memory_id,owner_principal_id,
+        source_kind,revision,source_session_id,source_cursor)
+     values ($1,$2,$3,'captured_session',$4,$5,$6)
+     on conflict (source_revision_id) do update
+       set source_cursor=captured_session_source_revisions.source_cursor
+     where captured_session_source_revisions.logical_memory_id=excluded.logical_memory_id
+       and captured_session_source_revisions.owner_principal_id=excluded.owner_principal_id
+       and captured_session_source_revisions.source_session_id=excluded.source_session_id
+       and captured_session_source_revisions.source_cursor=excluded.source_cursor
+     returning source_revision_id`,
+    [
+      identity.id,
+      input.logicalMemoryId,
+      input.ownerPrincipalId,
+      identity.genericRevision,
+      input.sourceSessionId,
+      input.sourceRevision
+    ]
+  );
+  if (!binding.rows[0]) {
+    throw new SyncStateConflictError(
+      "Captured Session source revision changed"
+    );
+  }
+};
 
 export class SyncIdempotencyConflictError extends Error {
   statusCode = 409;
@@ -318,8 +401,8 @@ export interface CrossIdentitySyncRepository {
       logicalMemoryId: string;
       originSessionId: string;
       localDeploymentIdentityId: string;
-      remoteDeploymentIdentityId: string;
-      remoteUserIdentityId: string;
+      sourceDeploymentProtocolId: string;
+      sourceUserId: string;
       remoteReplicaId: string;
       localReplicaId: string;
       idempotencyKey: string;
@@ -791,10 +874,18 @@ const relationshipCredentialClause = (
       from device_credentials bound_credential
       join device_credentials presented_credential
         on presented_credential.id = $${parameter}
+      join deployment_identities source_deployment
+        on source_deployment.id = ${relationshipAlias}.remote_deployment_identity_id
+      join sync_external_user_identities source_user
+        on source_user.id = ${relationshipAlias}.remote_user_identity_id
      where bound_credential.id = ${relationshipAlias}.device_credential_id
        and bound_credential.owner_user_id = presented_credential.owner_user_id
        and bound_credential.upstream_backend_id = presented_credential.upstream_backend_id
        and bound_credential.lineage_id = presented_credential.lineage_id
+       and presented_credential.metadata->>'protocolDeploymentId' =
+         source_deployment.protocol_deployment_id::text
+       and presented_credential.metadata->>'sourceOwnerPrincipalId' =
+         source_user.external_subject_id
   ))`;
 
 const recordSyncAuditEventWithClient = async (
@@ -1324,12 +1415,15 @@ export const createCrossIdentitySyncRepository = (
     },
     async upsertExternalSyncUserIdentity(input) {
       const result = await pool.query(
-        "insert into sync_external_user_identities (deployment_identity_id,external_subject_id) values ($1,$2) on conflict (deployment_identity_id,external_subject_id) do update set status='active',revoked_at=null,updated_at=now() returning *",
+        "insert into sync_external_user_identities (deployment_identity_id,external_subject_id) values ($1,$2) on conflict (deployment_identity_id,external_subject_id) do update set updated_at=sync_external_user_identities.updated_at where sync_external_user_identities.status='active' and sync_external_user_identities.revoked_at is null returning *",
         [
           input.deploymentIdentityId,
           nonEmpty(input.externalSubjectId, "externalSubjectId")
         ]
       );
+      if (!result.rows[0]) {
+        throw new SyncStateConflictError("External sync identity is revoked");
+      }
       return mapExternalUser(result.rows[0] as Row);
     },
     async linkExternalSyncUser(actor, input) {
@@ -1352,7 +1446,7 @@ export const createCrossIdentitySyncRepository = (
       }
       await pool
         .query(
-          "insert into sync_principal_links (local_user_id,external_user_identity_id,proof_kind,proof_reference) values ($1,$2,$3,$4) on conflict (external_user_identity_id) do update set proof_kind=excluded.proof_kind,proof_reference=excluded.proof_reference,verified_at=now(),revoked_at=null where sync_principal_links.local_user_id=excluded.local_user_id returning id",
+          "insert into sync_principal_links (local_user_id,external_user_identity_id,proof_kind,proof_reference) values ($1,$2,$3,$4) on conflict (external_user_identity_id) do update set proof_kind=excluded.proof_kind,proof_reference=excluded.proof_reference,verified_at=now() where sync_principal_links.local_user_id=excluded.local_user_id and sync_principal_links.revoked_at is null returning id",
           [
             actor.userId,
             input.externalUserIdentityId,
@@ -1837,12 +1931,107 @@ export const createCrossIdentitySyncRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
-        if (
-          !actor.deviceCredentialId ||
-          !(await lockActiveSyncDeviceCredential(client, actor))
-        ) {
+        if (!actor.deviceCredentialId) {
           await client.query("rollback");
           return null;
+        }
+        const credentialResult = await client.query<Row>(
+          `select credential.lineage_id,credential.metadata
+             from device_credentials credential
+             join users owner on owner.id=credential.owner_user_id
+            where credential.id=$1 and credential.owner_user_id=$2
+              and credential.revoked_at is null
+              and (credential.expires_at is null or credential.expires_at>now())
+              and 'sync'=any(credential.operation_families)
+              and owner.disabled_at is null and owner.deleted_at is null
+            for update of credential`,
+          [actor.deviceCredentialId, actor.userId]
+        );
+        const credential = credentialResult.rows[0];
+        const credentialMetadata = credential
+          ? objectValue(credential.metadata)
+          : {};
+        if (
+          !credential ||
+          credentialMetadata.protocolDeploymentId !==
+            input.sourceDeploymentProtocolId ||
+          credentialMetadata.sourceOwnerPrincipalId !== input.sourceUserId
+        ) {
+          throw new SyncStateConflictError(
+            "Sync source identity does not match the approved device credential"
+          );
+        }
+        const remoteDeploymentResult = await client.query<{ id: string }>(
+          `insert into deployment_identities
+             (protocol_deployment_id,locality,profile)
+           values ($1,'remote','local_personal')
+           on conflict (protocol_deployment_id) do update
+             set updated_at=deployment_identities.updated_at
+           where deployment_identities.locality='remote'
+             and deployment_identities.disabled_at is null
+           returning id`,
+          [input.sourceDeploymentProtocolId]
+        );
+        const remoteDeploymentIdentityId =
+          remoteDeploymentResult.rows[0]?.id ?? null;
+        if (!remoteDeploymentIdentityId) {
+          throw new SyncStateConflictError(
+            "Sync source deployment identity is unavailable"
+          );
+        }
+        const remoteUserResult = await client.query<{ id: string }>(
+          `insert into sync_external_user_identities
+             (deployment_identity_id,external_subject_id)
+           values ($1,$2)
+           on conflict (deployment_identity_id,external_subject_id) do update
+             set updated_at=sync_external_user_identities.updated_at
+           where sync_external_user_identities.status='active'
+             and sync_external_user_identities.revoked_at is null
+           returning id`,
+          [remoteDeploymentIdentityId, input.sourceUserId]
+        );
+        const remoteUserIdentityId = remoteUserResult.rows[0]?.id ?? null;
+        if (!remoteUserIdentityId) {
+          throw new SyncStateConflictError(
+            "Sync source principal identity is unavailable"
+          );
+        }
+        const proofKind = "device_credential_lineage";
+        const proofReference = String(credential.lineage_id);
+        const conflictingProof = await client.query<Row>(
+          `select local_user_id,external_user_identity_id
+             from sync_principal_links
+            where proof_kind=$1 and proof_reference=$2
+            for update`,
+          [proofKind, proofReference]
+        );
+        if (
+          conflictingProof.rows[0] &&
+          (String(conflictingProof.rows[0].local_user_id) !== actor.userId ||
+            String(conflictingProof.rows[0].external_user_identity_id) !==
+              remoteUserIdentityId)
+        ) {
+          throw new SyncStateConflictError(
+            "Sync credential is bound to another source principal"
+          );
+        }
+        const principalLink = await client.query<Row>(
+          `insert into sync_principal_links
+             (local_user_id,external_user_identity_id,proof_kind,proof_reference)
+           values ($1,$2,$3,$4)
+           on conflict (external_user_identity_id) do update
+             set verified_at=sync_principal_links.verified_at
+           where sync_principal_links.local_user_id=excluded.local_user_id
+             and sync_principal_links.proof_kind=excluded.proof_kind
+             and sync_principal_links.proof_reference=excluded.proof_reference
+             and sync_principal_links.revoked_at is null
+           returning id`,
+          [actor.userId, remoteUserIdentityId, proofKind, proofReference]
+        );
+        if (!principalLink.rows[0]) {
+          throw new SyncStateConflictError(
+            "Sync source principal binding is unavailable"
+          );
         }
         const existingDeviceBinding = await client.query<Row>(
           `select relationship.device_credential_id,
@@ -1858,7 +2047,7 @@ export const createCrossIdentitySyncRepository = (
           existingDeviceBinding.rows[0] &&
           String(
             existingDeviceBinding.rows[0].remote_deployment_identity_id
-          ) !== input.remoteDeploymentIdentityId
+          ) !== remoteDeploymentIdentityId
         ) {
           throw new SyncStateConflictError(
             "Device credential is already bound to another source deployment"
@@ -1867,7 +2056,7 @@ export const createCrossIdentitySyncRepository = (
         if (
           existingDeviceBinding.rows[0] &&
           String(existingDeviceBinding.rows[0].remote_user_identity_id) !==
-            input.remoteUserIdentityId
+            remoteUserIdentityId
         ) {
           throw new SyncStateConflictError(
             "Device credential lineage is already bound to another source principal"
@@ -1907,9 +2096,9 @@ export const createCrossIdentitySyncRepository = (
           [
             input.logicalMemoryId,
             actor.userId,
-            input.remoteDeploymentIdentityId,
+            remoteDeploymentIdentityId,
             `captured-session:${input.originSessionId}`,
-            input.remoteUserIdentityId
+            input.sourceUserId
           ]
         );
         if (!logicalResult.rows[0]) throw new SyncIdempotencyConflictError();
@@ -1920,7 +2109,7 @@ export const createCrossIdentitySyncRepository = (
         });
         const protocolBinding = await client.query(
           "insert into captured_session_logical_memories (logical_memory_id,source_kind,source_session_id,owner_principal_id) values ($1,'captured_session',$2,$3) on conflict (logical_memory_id) do update set source_session_id=captured_session_logical_memories.source_session_id where captured_session_logical_memories.source_session_id=excluded.source_session_id and captured_session_logical_memories.owner_principal_id=excluded.owner_principal_id returning logical_memory_id",
-          [logical.id, input.originSessionId, input.remoteUserIdentityId]
+          [logical.id, input.originSessionId, input.sourceUserId]
         );
         if (!protocolBinding.rows[0]) throw new SyncIdempotencyConflictError();
         const localBinding = await client.query(
@@ -1935,7 +2124,7 @@ export const createCrossIdentitySyncRepository = (
             logical.id,
             input.localDeploymentIdentityId,
             actor.userId,
-            input.remoteUserIdentityId
+            input.sourceUserId
           ]
         );
         if (!replicaResult.rows[0]) throw new SyncIdempotencyConflictError();
@@ -1956,8 +2145,8 @@ export const createCrossIdentitySyncRepository = (
             replica.id,
             actor.userId,
             boundDeviceCredentialId,
-            input.remoteDeploymentIdentityId,
-            input.remoteUserIdentityId,
+            remoteDeploymentIdentityId,
+            remoteUserIdentityId,
             input.remoteReplicaId,
             input.idempotencyKey,
             assertHash(input.creationRequestHash),
@@ -3414,7 +3603,7 @@ export const createCrossIdentitySyncRepository = (
               and 'sync'=any(credential.operation_families)
               and remote_user.status='active'
               and remote_user.revoked_at is null
-            for update of relationship`,
+            for update of relationship,credential`,
           [input.relationshipId, input.uploadSessionId]
         );
         const relationshipRow = relationshipResult.rows[0] as Row | undefined;
@@ -3422,6 +3611,25 @@ export const createCrossIdentitySyncRepository = (
           throw new SyncStateConflictError();
         }
         const relationship = mapRelationship(relationshipRow);
+        const replicaResult = await client.query<Row>(
+          `select local_memory.local_session_id,mr.owner_principal_id
+             from memory_replicas mr
+             join local_captured_session_logical_memories local_memory
+               on local_memory.logical_memory_id=mr.logical_memory_id
+              and local_memory.owner_user_id=mr.owner_user_id
+            where mr.id=$1 and mr.owner_user_id=$2`,
+          [relationship.localReplicaId, relationship.localUserId]
+        );
+        const sessionId =
+          optionalString(replicaResult.rows[0]?.local_session_id) ?? "";
+        const ownerPrincipalId =
+          optionalString(replicaResult.rows[0]?.owner_principal_id) ?? "";
+        if (!sessionId)
+          throw new SyncStateConflictError("Target replica session missing");
+        if (!ownerPrincipalId)
+          throw new SyncStateConflictError(
+            "Target replica owner principal missing"
+          );
         const uploadManifest = objectValue(
           relationshipRow.upload_package_manifest
         );
@@ -3444,6 +3652,12 @@ export const createCrossIdentitySyncRepository = (
           input.package.packageSequence === relationship.packageSequence &&
           input.package.packageId === relationship.lastPackageId
         ) {
+          await ensureCapturedSessionSourceRevision(client, {
+            logicalMemoryId: relationship.logicalMemoryId,
+            ownerPrincipalId,
+            sourceSessionId: input.package.session.originSessionId,
+            sourceRevision: input.package.toCursor
+          });
           const replayMappings = await client.query<Row>(
             "select local_memory_event_id,active from sync_event_mappings where sync_relationship_id=$1 and origin_event_id=any($2::uuid[]) and local_memory_event_id is not null",
             [
@@ -3484,25 +3698,6 @@ export const createCrossIdentitySyncRepository = (
             "Package cursor or identity mismatch"
           );
         }
-        const replicaResult = await client.query<Row>(
-          `select local_memory.local_session_id,mr.owner_principal_id
-             from memory_replicas mr
-             join local_captured_session_logical_memories local_memory
-               on local_memory.logical_memory_id=mr.logical_memory_id
-              and local_memory.owner_user_id=mr.owner_user_id
-            where mr.id=$1 and mr.owner_user_id=$2`,
-          [relationship.localReplicaId, relationship.localUserId]
-        );
-        const sessionId =
-          optionalString(replicaResult.rows[0]?.local_session_id) ?? "";
-        const ownerPrincipalId =
-          optionalString(replicaResult.rows[0]?.owner_principal_id) ?? "";
-        if (!sessionId)
-          throw new SyncStateConflictError("Target replica session missing");
-        if (!ownerPrincipalId)
-          throw new SyncStateConflictError(
-            "Target replica owner principal missing"
-          );
         for (const change of input.package.changes) {
           const active = await client.query<Row>(
             "select * from sync_event_mappings where sync_relationship_id=$1 and origin_event_id=$2 and active=true for update",
@@ -4118,6 +4313,12 @@ export const createCrossIdentitySyncRepository = (
             }
           }
         }
+        await ensureCapturedSessionSourceRevision(client, {
+          logicalMemoryId: relationship.logicalMemoryId,
+          ownerPrincipalId,
+          sourceSessionId: input.package.session.originSessionId,
+          sourceRevision: input.package.toCursor
+        });
         await client.query(
           `update cross_identity_sync_relationships
               set source_cursor = greatest(source_cursor, $2),

@@ -172,3 +172,13 @@ export const sharedMemoryGrantScopedSourceId = (
     shareGrantId,
     sourceId
   });
+
+export const sharedMemoryGrantScopedPrincipalId = (
+  shareGrantId: string,
+  principalId: string
+): string =>
+  crossIdentitySyncDeterministicUuid({
+    kind: "shared_memory_team_principal",
+    shareGrantId,
+    principalId
+  });

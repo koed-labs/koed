@@ -332,6 +332,34 @@ const remoteGrantSchema = z
   })
   .passthrough();
 
+const remoteTeamGrantSchema = z
+  .object({
+    sourceCapabilities: z.array(representationSchema).min(1).max(4),
+    activationRepresentation: representationSchema,
+    id: uuidSchema,
+    logicalMemoryId: uuidSchema,
+    teamId: uuidSchema,
+    teamWorkspaceId: uuidSchema,
+    mode: z.enum(["snapshot", "continuous"]),
+    maximumFidelity: maximumFidelitySchema,
+    includeCuratedMemory: z.boolean(),
+    sourceRevision: z.number().int().safe().min(0),
+    grantVersion: z.number().int().safe().positive(),
+    lifecycle: z.enum([
+      "active",
+      "unavailable",
+      "revoked",
+      "tombstoned",
+      "purge_pending",
+      "purged"
+    ]),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
+    revokedAt: timestampSchema.nullable(),
+    companionScope: companionScopeSchema
+  })
+  .strict();
+
 const remoteOwnedShareGrantSchema = remoteGrantSchema.omit({
   companionScope: true
 });
@@ -961,21 +989,27 @@ const ownedSharesCursorSchema = z
 
 const remoteReadSchema = z
   .object({
-    grant: remoteGrantSchema,
+    grant: remoteTeamGrantSchema,
     representation: z
       .object({
+        id: uuidSchema,
         shareGrantId: uuidSchema,
-        consentId: uuidSchema,
         teamId: uuidSchema,
         teamWorkspaceId: uuidSchema,
         logicalMemoryId: uuidSchema,
         representation: representationSchema,
         sourceRevision: z.number().int().safe().min(0),
-        sourceRevisionHash: hashSchema,
         recordVersion: z.number().int().safe().positive(),
-        state: z.enum(["available", "stale"])
+        state: z.enum(["available", "stale"]),
+        chunkCount: z.number().int().safe().min(0),
+        createdAt: timestampSchema,
+        updatedAt: timestampSchema,
+        availableAt: timestampSchema.nullable(),
+        staleAt: timestampSchema.nullable(),
+        invalidatedAt: timestampSchema.nullable(),
+        invalidationReasonCode: z.string().nullable()
       })
-      .passthrough(),
+      .strict(),
     items: z
       .array(redactedSourceItemSchema)
       .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS),
@@ -1901,7 +1935,6 @@ const dispatchLoadSource = async (
     shareGrantId: binding.shareGrantId,
     representation: binding.representation,
     sourceRevision: remote.representation.sourceRevision,
-    sourceRevisionHash: remote.representation.sourceRevisionHash,
     recordVersion: remote.representation.recordVersion,
     itemCount: remote.sourcePage.itemCount
   });
@@ -1944,11 +1977,17 @@ const dispatchLoadSource = async (
   if (start !== expectedStart || end !== expectedEnd) {
     throw new ControlFailure("history_expired");
   }
+  const sourceRevisionToken = digest({
+    shareGrantId: binding.shareGrantId,
+    representation: binding.representation,
+    sourceRevision: remote.representation.sourceRevision,
+    recordVersion: remote.representation.recordVersion
+  });
   const items = mapSourceItems(
     binding.representation,
     remote.items,
     start,
-    remote.representation.sourceRevisionHash
+    sourceRevisionToken
   );
   if (!items) throw new ControlFailure("internal_error");
   const cursorBase = {
@@ -3495,51 +3534,118 @@ export const createCollaborationSharedMemoryControl = (
       localOwnerUserId: parsedInput.localOwnerUserId,
       desktopCredentialKeyId: desktop.credentialKeyId
     });
-    const payload = await remoteRequest(options, authority, {
-      method: "POST",
-      path: "/v1/shared-memory/personal-note-revisions/advance",
-      body: {
-        mutationId: shared.crossIdentitySyncDeterministicUuid({
-          kind: "continuous_personal_note_revision",
-          sourceDeployment: authority.backendId,
-          localOwnerUserId: parsedInput.localOwnerUserId,
-          noteId: parsedInput.noteId,
-          noteRevision: parsedInput.noteRevision,
-          candidateHash: candidate.candidateHash
-        }),
-        candidate
-      },
-      idempotencyKey: candidate.candidateHash
+    const sourceIdentity = options.resolveCandidateSourceIdentity?.(
+      parsedInput.localOwnerUserId
+    );
+    if (!sourceIdentity) {
+      throw new ControlFailure("not_available");
+    }
+    const mutationId = shared.crossIdentitySyncDeterministicUuid({
+      kind: "continuous_personal_note_revision",
+      sourceDeployment: authority.backendId,
+      localOwnerUserId: parsedInput.localOwnerUserId,
+      noteId: parsedInput.noteId,
+      noteRevision: parsedInput.noteRevision,
+      candidateHash: candidate.candidateHash
     });
-    const response = z
-      .object({ pendingShares: z.array(pendingShareSchema).max(100) })
-      .strict()
-      .parse(payload);
-    for (const pendingShare of response.pendingShares) {
+    const seenCursors = new Set<string>();
+    let afterShareGrantId: string | null = null;
+    let queued = 0;
+    let pendingShareWorkerRequested = false;
+    do {
+      const payload = await remoteRequest(options, authority, {
+        method: "POST",
+        path: "/v1/shared-memory/personal-note-revisions/advance",
+        body: {
+          mutationId,
+          ...sourceIdentity,
+          ...(afterShareGrantId ? { afterShareGrantId } : {}),
+          candidate
+        },
+        idempotencyKey: crossIdentitySyncDigest({
+          candidateHash: candidate.candidateHash,
+          afterShareGrantId
+        })
+      });
+      const response = z
+        .object({
+          pendingShares: z.array(pendingShareSchema).max(100),
+          outcomes: z
+            .array(
+              z.discriminatedUnion("status", [
+                z
+                  .object({
+                    shareGrantId: uuidSchema,
+                    status: z.literal("accepted"),
+                    pendingShareId: uuidSchema
+                  })
+                  .strict(),
+                z
+                  .object({
+                    shareGrantId: uuidSchema,
+                    status: z.literal("rejected"),
+                    reasonCode: z.literal("destination_unavailable")
+                  })
+                  .strict()
+              ])
+            )
+            .max(100),
+          nextShareGrantId: uuidSchema.nullable()
+        })
+        .strict()
+        .parse(payload);
+      const acceptedOutcomesByPendingShareId = new Map(
+        response.outcomes
+          .filter((outcome) => outcome.status === "accepted")
+          .map((outcome) => [outcome.pendingShareId, outcome] as const)
+      );
       if (
-        crossIdentitySyncDigest(pendingShare.source) !==
-          crossIdentitySyncDigest(candidate.source) ||
-        pendingShare.mode !== "continuous" ||
-        pendingShare.state !== "preparing" ||
-        pendingShare.sourceUpdateState !== "preparing"
+        acceptedOutcomesByPendingShareId.size !==
+          response.pendingShares.length ||
+        response.pendingShares.some(
+          (pendingShare) =>
+            pendingShare.grantId === null ||
+            acceptedOutcomesByPendingShareId.get(pendingShare.id)
+              ?.shareGrantId !== pendingShare.grantId
+        )
       ) {
         throw new ControlFailure("permission_denied");
       }
-      const persisted =
-        await options.authorityStore.persistPendingShareSourceWork({
-          identity: authorityIdentity(authority),
-          pendingShareId: pendingShare.id,
-          mutationId: pendingShare.mutationId,
-          mode: pendingShare.mode,
-          source: candidate.source,
-          sourceRevision: pendingShare.sourceRevision
-        });
-      if (!persisted) throw new ControlFailure("not_available");
-    }
-    if (response.pendingShares.length > 0) {
-      options.requestPendingShareSourceWork?.();
-    }
-    return { queued: response.pendingShares.length };
+      for (const pendingShare of response.pendingShares) {
+        if (
+          crossIdentitySyncDigest(pendingShare.source) !==
+            crossIdentitySyncDigest(candidate.source) ||
+          pendingShare.mode !== "continuous" ||
+          pendingShare.state !== "preparing" ||
+          pendingShare.sourceUpdateState !== "preparing"
+        ) {
+          throw new ControlFailure("permission_denied");
+        }
+        const persisted =
+          await options.authorityStore.persistPendingShareSourceWork({
+            identity: authorityIdentity(authority),
+            pendingShareId: pendingShare.id,
+            mutationId: pendingShare.mutationId,
+            mode: pendingShare.mode,
+            source: candidate.source,
+            sourceRevision: pendingShare.sourceRevision
+          });
+        if (!persisted) throw new ControlFailure("not_available");
+      }
+      queued += response.pendingShares.length;
+      if (response.pendingShares.length > 0 && !pendingShareWorkerRequested) {
+        options.requestPendingShareSourceWork?.();
+        pendingShareWorkerRequested = true;
+      }
+      if (
+        response.nextShareGrantId &&
+        !seenCursors.add(response.nextShareGrantId)
+      ) {
+        throw new ControlFailure("permission_denied");
+      }
+      afterShareGrantId = response.nextShareGrantId;
+    } while (afterShareGrantId);
+    return { queued };
   },
   async resolvePreviewTarget(input, contextInput) {
     const context = dispatchContextSchema.safeParse(contextInput);

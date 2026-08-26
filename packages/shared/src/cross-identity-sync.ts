@@ -400,14 +400,10 @@ const validateCapturedSessionSyncPackageV1 = (
     uuid(input.relationshipId) &&
     uuid(input.logicalMemoryId) &&
     uuid(input.sourceDeploymentId) &&
-    typeof input.sourceUserId === "string" &&
-    input.sourceUserId.length > 0 &&
-    input.sourceUserId.length <= 240 &&
+    uuid(input.sourceUserId) &&
     uuid(input.sourceReplicaId) &&
     uuid(input.targetDeploymentId) &&
-    typeof input.targetUserId === "string" &&
-    input.targetUserId.length > 0 &&
-    input.targetUserId.length <= 240 &&
+    uuid(input.targetUserId) &&
     uuid(input.targetReplicaId) &&
     Number.isSafeInteger(input.packageSequence) &&
     input.packageSequence! > 0 &&

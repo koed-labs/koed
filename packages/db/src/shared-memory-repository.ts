@@ -683,6 +683,7 @@ export interface SharedMemoryWorkspaceIndexEntry {
   shareGrantId: string;
   logicalMemoryId: string;
   ownerUserId: string | null;
+  ownerDisplayName: string;
   maximumFidelity: SharedMemoryFidelityCeiling;
   includeCuratedMemory: boolean;
   sourceCapabilities: SharedMemoryRepresentation[];
@@ -854,6 +855,24 @@ export interface SharedMemoryChangeFidelityBundleInput {
   };
 }
 
+export type ContinuousPersonalNoteAdvancementOutcome =
+  | {
+      shareGrantId: string;
+      status: "accepted";
+      pendingShareId: string;
+    }
+  | {
+      shareGrantId: string;
+      status: "rejected";
+      reasonCode: "destination_unavailable";
+    };
+
+export interface ContinuousPersonalNoteAdvancementResult {
+  pendingShares: PendingShareRecord[];
+  outcomes: ContinuousPersonalNoteAdvancementOutcome[];
+  nextShareGrantId: string | null;
+}
+
 export interface SharedMemoryRepository {
   createSharedMemoryCandidatePreview(
     actor: ActorContext,
@@ -921,6 +940,7 @@ export interface SharedMemoryRepository {
       includeCuratedMemory: boolean;
       expiresAt?: string | null;
       authority: SharedMemoryAuthorityContext;
+      deviceCredentialId?: string;
     }
   ): Promise<PendingShareRecord>;
   advanceContinuousPersonalNoteRevision(
@@ -928,9 +948,12 @@ export interface SharedMemoryRepository {
     input: {
       mutationId: string;
       deviceCredentialId: string;
+      sourceDeploymentProtocolId: string;
+      sourceOwnerPrincipalId: string;
+      afterShareGrantId?: string;
       candidate: SharedMemoryCandidatePreview;
     }
-  ): Promise<PendingShareRecord[]>;
+  ): Promise<ContinuousPersonalNoteAdvancementResult>;
   processPendingShares(input?: {
     limit?: number;
     stallThresholdMs?: number;
@@ -1726,11 +1749,21 @@ const ensureCandidateSourceIdentity = async (
     sourceDeploymentProtocolId?: string;
     sourceOwnerPrincipalId?: string;
     deviceCredentialId?: string;
+    requireExternalBinding?: boolean;
   }
-): Promise<string | null> => {
+): Promise<{
+  ownerPrincipalId: string;
+  deploymentIdentityId: string;
+  remoteUserIdentityId: string | null;
+  credential: Row;
+}> => {
   const hasDeployment = input.sourceDeploymentProtocolId !== undefined;
   const hasPrincipal = input.sourceOwnerPrincipalId !== undefined;
-  if (!hasDeployment && !hasPrincipal) return null;
+  if (!hasDeployment && !hasPrincipal) {
+    throw new SharedMemoryAuthorizationError(
+      "Candidate source device provenance is required"
+    );
+  }
   if (
     !input.sourceDeploymentProtocolId ||
     !input.sourceOwnerPrincipalId ||
@@ -1766,10 +1799,13 @@ const ensureCandidateSourceIdentity = async (
     );
   }
   const credential = await client.query<Row>(
-    `select lineage_id
+    `select credential_key_id,upstream_backend_id,device_instance_id,
+            lineage_id,credential_version,verifier_kind,verifier_hash,
+            public_key_jwk,metadata
        from device_credentials
       where id=$1 and owner_user_id=$2 and revoked_at is null
         and (expires_at is null or expires_at>now())
+        and 'share_grant_management'=any(operation_families)
       for update`,
     [input.deviceCredentialId, actor.userId]
   );
@@ -1778,80 +1814,92 @@ const ensureCandidateSourceIdentity = async (
       "Candidate source device authority is unavailable"
     );
   }
-  const insertedDeployment = await client.query<Row>(
-    `insert into deployment_identities
-       (protocol_deployment_id,locality,profile)
-     values ($1,'remote','local_personal')
-     on conflict (protocol_deployment_id) do nothing
-     returning id`,
+  const credentialMetadata = credential.rows[0].metadata;
+  if (
+    !isPlainObject(credentialMetadata) ||
+    credentialMetadata.protocolDeploymentId !==
+      input.sourceDeploymentProtocolId ||
+    credentialMetadata.sourceOwnerPrincipalId !== input.sourceOwnerPrincipalId
+  ) {
+    throw new SharedMemoryAuthorizationError(
+      "Candidate source identity does not match device authority"
+    );
+  }
+  const existingDeployment = await client.query<Row>(
+    `select id,locality
+       from deployment_identities
+      where protocol_deployment_id=$1 and disabled_at is null
+      for update`,
     [input.sourceDeploymentProtocolId]
   );
-  const existingDeployment = insertedDeployment.rows[0]
-    ? null
-    : await client.query<Row>(
-        `select id
-           from deployment_identities
-          where protocol_deployment_id=$1 and locality='remote'
-            and profile='local_personal' and disabled_at is null
-          for update`,
-        [input.sourceDeploymentProtocolId]
-      );
-  const deployment = insertedDeployment.rows[0] ?? existingDeployment?.rows[0];
+  const deployment = existingDeployment.rows[0];
   if (!deployment) {
     throw new SharedMemoryConflictError(
       "Candidate source deployment identity changed"
     );
   }
-  const insertedExternalIdentity = await client.query<Row>(
-    `insert into sync_external_user_identities
-       (deployment_identity_id,external_subject_id)
-     values ($1,$2)
-     on conflict (deployment_identity_id,external_subject_id) do nothing
-     returning id`,
-    [deployment.id, input.sourceOwnerPrincipalId]
+  const localIdentity = await client.query<Row>(
+    `select owner_principal_id
+       from logical_memories
+      where id=$1 and owner_user_id=$2
+        and origin_deployment_identity_id=$3 and source_kind=$4
+        and lifecycle='active' and invalidated_at is null
+        and purge_completed_at is null
+      for update`,
+    [
+      input.source.logicalMemoryId,
+      actor.userId,
+      deployment.id,
+      input.source.kind
+    ]
   );
-  const existingExternalIdentity = insertedExternalIdentity.rows[0]
-    ? null
-    : await client.query<Row>(
-        `select id
-           from sync_external_user_identities
-          where deployment_identity_id=$1 and external_subject_id=$2
-            and status='active' and revoked_at is null
-          for update`,
-        [deployment.id, input.sourceOwnerPrincipalId]
-      );
-  const externalIdentity =
-    insertedExternalIdentity.rows[0] ?? existingExternalIdentity?.rows[0];
+  if (
+    localIdentity.rows[0] &&
+    !input.requireExternalBinding &&
+    deployment.locality === "local" &&
+    stringValue(localIdentity.rows[0].owner_principal_id) === actor.userId
+  ) {
+    return {
+      ownerPrincipalId: stringValue(localIdentity.rows[0].owner_principal_id),
+      deploymentIdentityId: stringValue(deployment.id),
+      remoteUserIdentityId: null,
+      credential: credential.rows[0]
+    };
+  }
+  const externalIdentityResult = await client.query<Row>(
+    `select identity.id
+       from sync_external_user_identities identity
+       join sync_principal_links link
+         on link.external_user_identity_id=identity.id
+        and link.local_user_id=$3 and link.revoked_at is null
+      where identity.deployment_identity_id=$1
+        and identity.external_subject_id=$2
+        and identity.status='active' and identity.revoked_at is null
+      for update of identity,link`,
+    [deployment.id, input.sourceOwnerPrincipalId, actor.userId]
+  );
+  const externalIdentity = externalIdentityResult.rows[0];
   if (!externalIdentity) {
-    throw new SharedMemoryConflictError(
-      "Candidate source principal identity is unavailable"
+    throw new SharedMemoryAuthorizationError(
+      "Candidate source principal is not bound to this User"
     );
   }
   const remoteUserIdentityId = stringValue(externalIdentity.id);
-  const proofReference = stringValue(credential.rows[0].lineage_id);
-  const insertedPrincipalLink = await client.query<Row>(
-    `insert into sync_principal_links
-       (local_user_id,external_user_identity_id,proof_kind,proof_reference)
-     values ($1,$2,'device_credential_lineage',$3)
-     on conflict do nothing
-     returning id`,
-    [actor.userId, remoteUserIdentityId, proofReference]
-  );
-  const existingPrincipalLink = insertedPrincipalLink.rows[0]
-    ? null
-    : await client.query<Row>(
-        `select id
-           from sync_principal_links
-          where local_user_id=$1 and external_user_identity_id=$2
-            and proof_kind='device_credential_lineage'
-            and proof_reference=$3 and revoked_at is null
-          for update`,
-        [actor.userId, remoteUserIdentityId, proofReference]
+  if (localIdentity.rows[0]) {
+    if (
+      stringValue(localIdentity.rows[0].owner_principal_id) !==
+      input.sourceOwnerPrincipalId
+    ) {
+      throw new SharedMemoryConflictError(
+        "Candidate source principal identity changed"
       );
-  if (!insertedPrincipalLink.rows[0] && !existingPrincipalLink?.rows[0]) {
-    throw new SharedMemoryConflictError(
-      "Candidate source principal is bound to another owner"
-    );
+    }
+    return {
+      ownerPrincipalId: input.sourceOwnerPrincipalId,
+      deploymentIdentityId: stringValue(deployment.id),
+      remoteUserIdentityId,
+      credential: credential.rows[0]
+    };
   }
   const logicalKey =
     input.source.kind === "personal_note"
@@ -1876,7 +1924,7 @@ const ensureCandidateSourceIdentity = async (
     [
       input.source.logicalMemoryId,
       actor.userId,
-      remoteUserIdentityId,
+      input.sourceOwnerPrincipalId,
       deployment.id,
       input.source.kind,
       logicalKey
@@ -1885,7 +1933,12 @@ const ensureCandidateSourceIdentity = async (
   if (!logical.rows[0]) {
     throw new SharedMemoryConflictError("Candidate source identity changed");
   }
-  return remoteUserIdentityId;
+  return {
+    ownerPrincipalId: input.sourceOwnerPrincipalId,
+    deploymentIdentityId: stringValue(deployment.id),
+    remoteUserIdentityId,
+    credential: credential.rows[0]
+  };
 };
 
 const pendingShareSourceRefFromRow = (
@@ -2634,9 +2687,15 @@ const mapPendingShare = (row: Row): PendingShareRecord => ({
   revokedAt: nullableIso(row.revoked_at),
   grantId: row.grant_id === null ? null : stringValue(row.grant_id),
   grantVersion:
-    row.grant_version === null || row.grant_version === undefined
+    row.grant_id === null
       ? null
-      : numberValue(row.grant_version)
+      : row.grant_version === null || row.grant_version === undefined
+        ? (() => {
+            throw new SharedMemoryConflictError(
+              "Active Pending Share grant version is unavailable"
+            );
+          })()
+        : numberValue(row.grant_version)
 });
 
 const mapRepresentation = (row: Row): SharedMemoryRepresentationRecord => ({
@@ -2848,6 +2907,9 @@ const mapWorkspaceIndexEntry = (row: Row): SharedMemoryWorkspaceIndexEntry => {
     shareGrantId: grantScope.id,
     logicalMemoryId: grantScope.logicalMemoryId,
     ownerUserId: row.owner_user_id ? stringValue(row.owner_user_id) : null,
+    ownerDisplayName: row.owner_display_name
+      ? stringValue(row.owner_display_name)
+      : "Team member",
     maximumFidelity: stringValue(
       row.maximum_fidelity
     ) as SharedMemoryFidelityCeiling,
@@ -7200,120 +7262,24 @@ export const createSharedMemoryRepository = (
         stringValue(pending.team_id),
         stringValue(pending.team_workspace_id)
       );
-      const credentialResult = await client.query<Row>(
-        `select credential_key_id,upstream_backend_id,device_instance_id,
-                lineage_id,credential_version,verifier_kind,verifier_hash,
-                public_key_jwk
-           from device_credentials
-          where id=$1 and owner_user_id=$2 and revoked_at is null
-            and (expires_at is null or expires_at>now())
-          for update`,
-        [input.deviceCredentialId, actor.userId]
+      const admittedSourceIdentity = await ensureCandidateSourceIdentity(
+        client,
+        actor,
+        {
+          source,
+          sourceDeploymentProtocolId: input.sourceDeploymentProtocolId,
+          sourceOwnerPrincipalId: input.sourceOwnerPrincipalId,
+          deviceCredentialId: input.deviceCredentialId,
+          requireExternalBinding: true
+        }
       );
-      const credential = credentialResult.rows[0];
-      if (!credential) {
+      const deploymentIdentityId = admittedSourceIdentity.deploymentIdentityId;
+      const logicalOwnerPrincipalId = admittedSourceIdentity.ownerPrincipalId;
+      const identity = admittedSourceIdentity.credential;
+      const remoteUserIdentityId = admittedSourceIdentity.remoteUserIdentityId;
+      if (!remoteUserIdentityId) {
         throw new SharedMemoryAuthorizationError(
-          "Verified Personal Note device credential is unavailable"
-        );
-      }
-      const insertedDeployment = await client.query<Row>(
-        `insert into deployment_identities
-           (protocol_deployment_id,locality,profile)
-         values ($1,'remote','local_personal')
-         on conflict (protocol_deployment_id) do nothing
-         returning id`,
-        [input.sourceDeploymentProtocolId]
-      );
-      const existingDeployment = insertedDeployment.rows[0]
-        ? null
-        : await client.query<Row>(
-            `select id
-               from deployment_identities
-              where protocol_deployment_id=$1 and disabled_at is null
-              for update`,
-            [input.sourceDeploymentProtocolId]
-          );
-      const deployment =
-        insertedDeployment.rows[0] ?? existingDeployment?.rows[0];
-      if (!deployment) {
-        throw new SharedMemoryConflictError(
-          "Personal Note source deployment identity changed"
-        );
-      }
-      const deploymentIdentityId = stringValue(deployment.id);
-      const externalIdentityResult = await client.query<Row>(
-        `insert into sync_external_user_identities
-           (deployment_identity_id,external_subject_id)
-         values ($1,$2)
-         on conflict (deployment_identity_id,external_subject_id) do update
-           set status='active',revoked_at=null,updated_at=now()
-         returning id`,
-        [deploymentIdentityId, input.sourceOwnerPrincipalId]
-      );
-      const remoteUserIdentityId = stringValue(
-        externalIdentityResult.rows[0]?.id
-      );
-      const proofKind = "device_credential_lineage";
-      const proofReference = stringValue(credential.lineage_id);
-      const conflictingLink = await client.query<Row>(
-        `select local_user_id,external_user_identity_id
-           from sync_principal_links
-          where proof_kind=$1 and proof_reference=$2
-          limit 1`,
-        [proofKind, proofReference]
-      );
-      if (
-        conflictingLink.rows[0] &&
-        (stringValue(conflictingLink.rows[0].local_user_id) !== actor.userId ||
-          stringValue(conflictingLink.rows[0].external_user_identity_id) !==
-            remoteUserIdentityId)
-      ) {
-        throw new SharedMemoryConflictError(
-          "Personal Note device lineage is already bound to another source principal"
-        );
-      }
-      const linkResult = await client.query<Row>(
-        `insert into sync_principal_links
-           (local_user_id,external_user_identity_id,proof_kind,proof_reference)
-         values ($1,$2,$3,$4)
-         on conflict (external_user_identity_id) do update
-           set proof_kind=excluded.proof_kind,
-               proof_reference=excluded.proof_reference,
-               verified_at=now(),revoked_at=null
-         where sync_principal_links.local_user_id=excluded.local_user_id
-         returning id`,
-        [actor.userId, remoteUserIdentityId, proofKind, proofReference]
-      );
-      if (!linkResult.rows[0]) {
-        throw new SharedMemoryConflictError(
-          "Personal Note source principal is bound to another owner"
-        );
-      }
-      const identity: Row = {
-        ...credential,
-        remote_user_identity_id: remoteUserIdentityId
-      };
-      const existingLogicalIdentity = await client.query<{
-        owner_principal_id: string;
-      }>(
-        `select owner_principal_id
-           from logical_memories
-          where id=$1 and owner_user_id=$2
-          for update`,
-        [source.logicalMemoryId, actor.userId]
-      );
-      const currentOwnerPrincipalId =
-        existingLogicalIdentity.rows[0]?.owner_principal_id ?? null;
-      const logicalOwnerPrincipalId =
-        currentOwnerPrincipalId === actor.userId
-          ? actor.userId
-          : remoteUserIdentityId;
-      if (
-        currentOwnerPrincipalId !== null &&
-        currentOwnerPrincipalId !== logicalOwnerPrincipalId
-      ) {
-        throw new SharedMemoryConflictError(
-          "Personal Note logical Memory owner changed"
+          "Personal Note source principal binding is unavailable"
         );
       }
       const logicalKey = `personal_note:${input.sourceDeploymentProtocolId}:${source.noteId}`;
@@ -7558,7 +7524,7 @@ export const createSharedMemoryRepository = (
         workspacePolicyId: workspacePolicy.policyId,
         workspacePolicyVersion: workspacePolicy.version,
         sourceDeploymentIdentityId: deploymentIdentityId,
-        remoteUserIdentityId: stringValue(identity.remote_user_identity_id),
+        remoteUserIdentityId,
         deviceCredentialId: input.deviceCredentialId,
         deviceProvenanceHash: deviceProvenance
       };
@@ -9887,7 +9853,7 @@ export const createSharedMemoryRepository = (
           input.teamId,
           input.teamWorkspaceId
         );
-        const admittedOwnerPrincipalId = await ensureCandidateSourceIdentity(
+        const admittedSourceIdentity = await ensureCandidateSourceIdentity(
           client,
           actor,
           {
@@ -10112,8 +10078,8 @@ export const createSharedMemoryRepository = (
           );
         }
         if (
-          admittedOwnerPrincipalId !== null &&
-          sourceOwner.rows[0].owner_principal_id !== admittedOwnerPrincipalId
+          sourceOwner.rows[0].owner_principal_id !==
+          admittedSourceIdentity.ownerPrincipalId
         ) {
           throw new SharedMemoryConflictError(
             "Candidate source principal changed during admission"
@@ -10226,7 +10192,11 @@ export const createSharedMemoryRepository = (
           [`pending-share:${input.mutationId}`]
         );
         const existing = await client.query<Row>(
-          "select * from pending_share_operation_records where mutation_id=$1 limit 1",
+          `select pending.*,grant_row.grant_version
+             from pending_share_operation_records pending
+             left join team_memory_share_grants grant_row
+               on grant_row.id=pending.grant_id
+            where pending.mutation_id=$1 limit 1`,
           [input.mutationId]
         );
         if (existing.rows[0]) {
@@ -10457,13 +10427,15 @@ export const createSharedMemoryRepository = (
           [`pending-fidelity-change:${input.mutationId}`]
         );
         const replay = await client.query<Row>(
-          `select p.*,
+          `select p.*,grant_row.grant_version,
                   preview.source_kind as effective_source_kind,
                   preview.source_session_id as effective_source_session_id,
                   preview.source_note_id as effective_source_note_id,
                   preview.source_memory_event_id as effective_source_memory_event_id,
                   preview.source_revision as effective_source_revision
              from pending_share_operations p
+             left join team_memory_share_grants grant_row
+               on grant_row.id=p.grant_id
              join shared_memory_candidate_preview_records preview
                on preview.id=coalesce(p.replacement_preview_id,p.preview_id)
             where p.replacement_mutation_id=$1 limit 1`,
@@ -10523,6 +10495,55 @@ export const createSharedMemoryRepository = (
           (input.authority as { source: string }).source ===
           "continuous_consent";
         if (internalContinuousAuthority) {
+          if (!input.deviceCredentialId) {
+            throw new SharedMemoryAuthorizationError(
+              "Continuous source advancement requires device authority"
+            );
+          }
+          const continuousAuthority = await client.query<Row>(
+            `select credential.id
+               from device_credentials credential
+               join users owner_row
+                 on owner_row.id=credential.owner_user_id
+                and owner_row.disabled_at is null
+                and owner_row.deleted_at is null
+               join teams team_row
+                 on team_row.id=$3 and team_row.lifecycle='active'
+                and team_row.entitlement_status in ('active','grace')
+               join team_memberships membership
+                 on membership.team_id=team_row.id
+                and membership.user_id=credential.owner_user_id
+                and membership.status='enabled'
+                and membership.disabled_at is null
+               join team_workspaces workspace_row
+                 on workspace_row.id=$4 and workspace_row.team_id=team_row.id
+                and workspace_row.lifecycle='active'
+                and workspace_row.archived_at is null
+               join team_workspace_access_grants workspace_access
+                 on workspace_access.team_id=team_row.id
+                and workspace_access.team_workspace_id=workspace_row.id
+                and workspace_access.user_id=credential.owner_user_id
+                and workspace_access.access='write'
+                and workspace_access.can_share_owned_memory=true
+                and workspace_access.disabled_at is null
+              where credential.id=$1 and credential.owner_user_id=$2
+                and credential.revoked_at is null
+                and (credential.expires_at is null or credential.expires_at>now())
+                and 'share_grant_management'=any(credential.operation_families)
+              for update of credential,owner_row,team_row,membership,
+                            workspace_row,workspace_access`,
+            [
+              input.deviceCredentialId,
+              actor.userId,
+              input.teamId,
+              input.teamWorkspaceId
+            ]
+          );
+          if (!continuousAuthority.rows[0]) {
+            throw new SharedMemoryAuthorizationError(
+              "Continuous source advancement authority is unavailable"
+            );
+          }
           const continuousConsent = await client.query<Row>(
             `select id from source_owner_representation_consents
               where id=$1 and id=$2 and logical_memory_id=$3
@@ -10707,6 +10728,7 @@ export const createSharedMemoryRepository = (
         });
         return mapPendingShare({
           ...pending,
+          grant_version: grant.grant_version,
           effective_source_kind: preview.source_kind,
           effective_source_session_id: preview.source_session_id,
           effective_source_note_id: preview.source_note_id,
@@ -10718,6 +10740,14 @@ export const createSharedMemoryRepository = (
     async advanceContinuousPersonalNoteRevision(actor, input) {
       assertUuid(input.mutationId, "mutationId");
       assertUuid(input.deviceCredentialId, "deviceCredentialId");
+      assertUuid(
+        input.sourceDeploymentProtocolId,
+        "sourceDeploymentProtocolId"
+      );
+      assertUuid(input.sourceOwnerPrincipalId, "sourceOwnerPrincipalId");
+      if (input.afterShareGrantId) {
+        assertUuid(input.afterShareGrantId, "afterShareGrantId");
+      }
       const candidate = input.candidate;
       const source = sharedMemorySourceRefSchema.parse(candidate.source);
       if (
@@ -10757,17 +10787,23 @@ export const createSharedMemoryRepository = (
             and g.source_kind='personal_note' and g.source_note_id=$3
             and g.source_revision<$4 and g.mode='continuous'
             and g.lifecycle='active' and g.revoked_at is null
-          order by g.id`,
+            and ($6::uuid is null or g.id>$6::uuid)
+          order by g.id
+          limit $7`,
         [
           actor.userId,
           source.logicalMemoryId,
           source.noteId,
           source.noteRevision,
-          input.deviceCredentialId
+          input.deviceCredentialId,
+          input.afterShareGrantId ?? null,
+          101
         ]
       );
+      const pageRows = authorization.rows.slice(0, 100);
       const pendingShares: PendingShareRecord[] = [];
-      for (const row of authorization.rows) {
+      const outcomes: ContinuousPersonalNoteAdvancementOutcome[] = [];
+      for (const row of pageRows) {
         const shareGrantId = stringValue(row.grant_id);
         const consentId = stringValue(row.consent_id);
         const authority = {
@@ -10775,65 +10811,102 @@ export const createSharedMemoryRepository = (
           source: "continuous_consent",
           referenceId: consentId
         } as unknown as SharedMemoryAuthorityContext;
-        const preview = await repository.createSharedMemoryCandidatePreview(
-          actor,
-          {
-            logicalMemoryId: source.logicalMemoryId,
-            source,
-            sourceCapabilities: ["memory_events"],
-            activationRepresentation: "memory_events",
-            candidateHash: candidate.candidateHash,
-            sourceRevision: source.noteRevision,
-            itemCount: 1,
-            excludedItemCount: 0,
-            manifest: candidate.manifest,
-            byteCount: candidate.byteCount,
-            teamId: stringValue(row.team_id),
-            teamWorkspaceId: stringValue(row.team_workspace_id),
-            mode: "continuous",
-            maximumFidelity: "memory_events",
-            includeCuratedMemory: false,
-            expiresAt: null,
-            authority
-          }
-        );
-        if (!preview) {
-          throw new SharedMemoryConflictError(
-            "Continuous Personal Note preview is outside current Team policy"
-          );
-        }
-        pendingShares.push(
-          await repository.createPendingFidelityChange(actor, {
-            source,
-            sourceCapabilities: ["memory_events"],
-            activationRepresentation: "memory_events",
-            mutationId: crossIdentitySyncDeterministicUuid({
-              kind: "continuous_personal_note_revision",
-              mutationId: input.mutationId,
-              shareGrantId,
+        try {
+          const preview = await repository.createSharedMemoryCandidatePreview(
+            actor,
+            {
+              logicalMemoryId: source.logicalMemoryId,
+              source,
+              sourceDeploymentProtocolId: input.sourceDeploymentProtocolId,
+              sourceOwnerPrincipalId: input.sourceOwnerPrincipalId,
+              deviceCredentialId: input.deviceCredentialId,
+              sourceCapabilities: ["memory_events"],
+              activationRepresentation: "memory_events",
+              candidateHash: candidate.candidateHash,
               sourceRevision: source.noteRevision,
-              sourceHash: candidate.candidateHash
-            }),
-            consentId,
-            logicalMemoryId: source.logicalMemoryId,
-            teamId: stringValue(row.team_id),
-            teamWorkspaceId: stringValue(row.team_workspace_id),
+              itemCount: 1,
+              excludedItemCount: 0,
+              manifest: candidate.manifest,
+              byteCount: candidate.byteCount,
+              teamId: stringValue(row.team_id),
+              teamWorkspaceId: stringValue(row.team_workspace_id),
+              mode: "continuous",
+              maximumFidelity: "memory_events",
+              includeCuratedMemory: false,
+              expiresAt: null,
+              authority
+            }
+          );
+          if (!preview) {
+            outcomes.push({
+              shareGrantId,
+              status: "rejected",
+              reasonCode: "destination_unavailable"
+            });
+            continue;
+          }
+          const pendingShare = await repository.createPendingFidelityChange(
+            actor,
+            {
+              source,
+              sourceCapabilities: ["memory_events"],
+              activationRepresentation: "memory_events",
+              mutationId: crossIdentitySyncDeterministicUuid({
+                kind: "continuous_personal_note_revision",
+                mutationId: input.mutationId,
+                shareGrantId,
+                sourceRevision: source.noteRevision,
+                sourceHash: candidate.candidateHash
+              }),
+              consentId,
+              logicalMemoryId: source.logicalMemoryId,
+              teamId: stringValue(row.team_id),
+              teamWorkspaceId: stringValue(row.team_workspace_id),
+              shareGrantId,
+              expectedGrantVersion: numberValue(row.grant_version),
+              preview: {
+                previewId: preview.previewId,
+                previewHash: preview.previewHash
+              },
+              previewRevision: preview.previewRevision,
+              mode: "continuous",
+              maximumFidelity: "memory_events",
+              includeCuratedMemory: false,
+              expiresAt: null,
+              authority,
+              deviceCredentialId: input.deviceCredentialId
+            }
+          );
+          pendingShares.push(pendingShare);
+          outcomes.push({
             shareGrantId,
-            expectedGrantVersion: numberValue(row.grant_version),
-            preview: {
-              previewId: preview.previewId,
-              previewHash: preview.previewHash
-            },
-            previewRevision: preview.previewRevision,
-            mode: "continuous",
-            maximumFidelity: "memory_events",
-            includeCuratedMemory: false,
-            expiresAt: null,
-            authority
-          })
-        );
+            status: "accepted",
+            pendingShareId: pendingShare.id
+          });
+        } catch (error) {
+          if (
+            !(
+              error instanceof SharedMemoryAuthorizationError ||
+              error instanceof SharedMemoryConflictError
+            )
+          ) {
+            throw error;
+          }
+          outcomes.push({
+            shareGrantId,
+            status: "rejected",
+            reasonCode: "destination_unavailable"
+          });
+        }
       }
-      return pendingShares;
+      return {
+        pendingShares,
+        outcomes,
+        nextShareGrantId:
+          authorization.rows.length > pageRows.length
+            ? stringValue(pageRows.at(-1)?.grant_id)
+            : null
+      };
     },
     async processPendingShares(input = {}) {
       return processPendingShareWorkflow(input);
@@ -10843,13 +10916,15 @@ export const createSharedMemoryRepository = (
       assertUuid(input.mutationId, "mutationId");
       return withTransaction(pool, async (client) => {
         const result = await client.query<Row>(
-          `select p.*,
+          `select p.*,grant_row.grant_version,
                   preview.source_kind as effective_source_kind,
                   preview.source_session_id as effective_source_session_id,
                   preview.source_note_id as effective_source_note_id,
                   preview.source_memory_event_id as effective_source_memory_event_id,
                   preview.source_revision as effective_source_revision
              from pending_share_operations p
+             left join team_memory_share_grants grant_row
+               on grant_row.id=p.grant_id
              join shared_memory_candidate_preview_records preview
                on preview.id=coalesce(p.replacement_preview_id,p.preview_id)
             where p.id=$1 for update of p`,
@@ -11019,6 +11094,7 @@ export const createSharedMemoryRepository = (
         });
         return mapPendingShare({
           ...updated.rows[0]!,
+          grant_version: pending.grant_version,
           effective_source_kind: pending.effective_source_kind,
           effective_source_session_id: pending.effective_source_session_id,
           effective_source_note_id: pending.effective_source_note_id,
@@ -15184,7 +15260,8 @@ export const createSharedMemoryRepository = (
           "read"
         );
         const result = await client.query<Row>(
-          `select g.id as share_grant_id,g.logical_memory_id,g.owner_user_id,g.display_title,
+          `select g.id as share_grant_id,g.logical_memory_id,g.owner_user_id,
+                share_owner.display_name as owner_display_name,g.display_title,
                 g.team_id,g.team_workspace_id,g.maximum_fidelity,
                 g.include_curated_memory,g.source_capabilities,
                 g.activation_representation,
@@ -15203,6 +15280,8 @@ export const createSharedMemoryRepository = (
            join team_memberships tm on tm.team_id=g.team_id and tm.user_id=$1
              and tm.status='enabled' and tm.disabled_at is null
            join users u on u.id=tm.user_id and u.disabled_at is null and u.deleted_at is null
+           left join users share_owner on share_owner.id=g.owner_user_id
+             and share_owner.disabled_at is null and share_owner.deleted_at is null
            join team_workspaces tw on tw.id=g.team_workspace_id and tw.team_id=g.team_id
              and tw.lifecycle='active' and tw.archived_at is null
            join team_workspace_access_grants wa on wa.team_workspace_id=tw.id
@@ -15371,7 +15450,8 @@ export const createSharedMemoryRepository = (
                     'workspaceContentAccess',case when workspace_access.available
                       then 'available' else 'unavailable' end,
                     'mode',coalesce(c.mode,owned.share_mode),
-                    'authorizedPreview',case when coalesce(c.preview_id,owned.preview_id) is null
+                    'authorizedPreview',case when not workspace_access.available
+                      or coalesce(c.preview_id,owned.preview_id) is null
                       then null else jsonb_build_object(
                         'previewId',coalesce(c.preview_id,owned.preview_id),
                         'previewHash',coalesce(c.preview_hash,owned.preview_hash),

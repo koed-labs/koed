@@ -81,25 +81,27 @@ never authoritative inputs.
 
 ## Transitions
 
-| Transition                        | User intent                                            | Checks and authoritative mutation                                                                                                                                                                                                                                                                                           | Retry/interruption result                                                                                                                                      |
-| --------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cross-Identity Sync becomes ready | Make owned Personal Memory available for sharing       | Bind source owner, enrolled device, relationship, replica, revision, provenance, and representation snapshot                                                                                                                                                                                                                | Pending is retryable; revoked/mismatched identity fails closed                                                                                                 |
-| Create candidate preview          | Inspect what could be shared before synchronization    | Reserve the session's semantic sync cursor, build a bounded local candidate at that revision, bind the source deployment and owner principal through the current device-credential lineage, validate destination/policy remotely, and persist its exact expiring binding; create no relationship, upload, replica, or grant | Expiry, protocol mismatch, or binding drift requires a fresh candidate                                                                                         |
-| Page preview                      | Inspect the rest of the same snapshot                  | Verify signed cursor identity, preview hash/ID, snapshot key, offset, and stored preview                                                                                                                                                                                                                                    | Expired or changed snapshot returns history-expired, never a new page silently                                                                                 |
-| Change destination before consent | Share somewhere else                                   | No in-place retargeting; request a new preview bound to the new Team and Workspace                                                                                                                                                                                                                                          | Old preview/consent conflicts                                                                                                                                  |
-| Accept Pending Share              | Share this snapshot under selected mode/representation | Persist consent binding, stable mutation/logical-grant identity, Pending Share, safe progress state, audit, and outbox before returning; Workspace access remains `none`                                                                                                                                                    | Exact retry returns the same operation; divergent mutation reuse conflicts                                                                                     |
-| Activate Pending Share            | Complete the accepted share asynchronously             | Start sync only after acceptance; reproduce the complete ordered candidate manifest; stage an unreadable representation; resolve the deterministic companion; publish representation, grant, companion, and Pending Share atomically                                                                                        | Worker restart reuses durable identities; companion failures remain quarantined and repairable without owner-list side effects                                 |
-| Activate Personal Note revision   | Share one reviewed Note Memory Event                   | Re-authorize the Note and destination; upload one standalone encrypted artifact; materialize one `memory_events` representation; create the deterministic companion; create no replica or sync relationship                                                                                                                 | Exact artifact, materialization, grant, and companion identities converge across retries; source or policy drift fails closed                                  |
-| Advance Continuous Personal Note  | Publish a newer revision of the same Note              | Projection writes a durable local queue item; rapid edits coalesce; the enrolled device submits the exact revision; privacy and encrypted materialization complete before grant and representation switch atomically                                                                                                        | The prior ready revision remains readable; stale jobs cannot replace a newer revision; pause stops advancement, resume catches up, and revocation fails closed |
-| Change representation             | Replace/reactivate the representation                  | Persist a durable replacement from the current grant version and fresh candidate preview; prepare it in background; create its authoritative preview and consent; switch grant and materialized representation inside one transaction                                                                                       | The prior representation remains readable during preparation; concurrent changes conflict; restart replay sees either the old or completed new representation  |
-| Continuous propagation            | Keep a continuous grant current                        | Repository advances only authorized source revisions under current replica, policies, lifecycle, and encryption context                                                                                                                                                                                                     | Revocation/sync loss stops advancement and retains only the last authorized revision as stale                                                                  |
-| Pause or resume updates           | Stop or continue future continuous revisions           | Change only the continuous consent/update state; keep the last activated representation and Workspace access while paused; append an owner lifecycle event                                                                                                                                                                  | Exact retries are stable; snapshot shares and stale versions fail closed                                                                                       |
-| Revoke                            | End destination authority                              | Lock grant/retention scope, require owner and expected version, invalidate representations, advance revocation epoch, revoke attached Conversation Source Access, close source streams, schedule retention work, and append outbox                                                                                          | Exact retry returns the same revoked grant and repairs stale derived lifecycle state; divergent reuse conflicts                                                |
+| Transition                        | User intent                                            | Checks and authoritative mutation                                                                                                                                                                                                                                                                                                                                    | Retry/interruption result                                                                                                                                                                                                      |
+| --------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Cross-Identity Sync becomes ready | Make owned Personal Memory available for sharing       | Bind source owner, enrolled device, relationship, replica, revision, provenance, and representation snapshot                                                                                                                                                                                                                                                         | Pending is retryable; revoked/mismatched identity fails closed                                                                                                                                                                 |
+| Create candidate preview          | Inspect what could be shared before synchronization    | Reserve the session's semantic sync cursor, build a bounded local candidate at that revision, bind the source deployment and owner principal through the current device-credential lineage, validate destination/policy remotely, and persist its exact expiring binding; create no relationship, upload, replica, or grant                                          | Expiry, protocol mismatch, or binding drift requires a fresh candidate                                                                                                                                                         |
+| Page preview                      | Inspect the rest of the same snapshot                  | Verify signed cursor identity, preview hash/ID, snapshot key, offset, and stored preview                                                                                                                                                                                                                                                                             | Expired or changed snapshot returns history-expired, never a new page silently                                                                                                                                                 |
+| Change destination before consent | Share somewhere else                                   | No in-place retargeting; request a new preview bound to the new Team and Workspace                                                                                                                                                                                                                                                                                   | Old preview/consent conflicts                                                                                                                                                                                                  |
+| Accept Pending Share              | Share this snapshot under selected mode/representation | Persist consent binding, stable mutation/logical-grant identity, Pending Share, safe progress state, audit, and outbox before returning; Workspace access remains `none`                                                                                                                                                                                             | Exact retry returns the same operation; divergent mutation reuse conflicts                                                                                                                                                     |
+| Activate Pending Share            | Complete the accepted share asynchronously             | Start sync only after acceptance; reproduce the complete ordered candidate manifest; stage an unreadable representation; resolve the deterministic companion; publish representation, grant, companion, and Pending Share atomically                                                                                                                                 | Worker restart reuses durable identities; companion failures remain quarantined and repairable without owner-list side effects                                                                                                 |
+| Activate Personal Note revision   | Share one reviewed Note Memory Event                   | Re-authorize the Note and destination; upload one standalone encrypted artifact; materialize one `memory_events` representation; create the deterministic companion; create no replica or sync relationship                                                                                                                                                          | Exact artifact, materialization, grant, and companion identities converge across retries; source or policy drift fails closed                                                                                                  |
+| Advance Continuous Personal Note  | Publish a newer revision of the same Note              | Projection writes a durable local queue item; initial grant persistence reconciles any revision projected during activation; rapid edits coalesce; the enrolled device submits the exact revision; each destination is authorized independently; privacy and encrypted materialization complete before that destination's grant and representation switch atomically | The prior ready revision remains readable; stale jobs cannot replace a newer revision; one unavailable destination cannot block eligible destinations; pause stops advancement, resume catches up, and revocation fails closed |
+| Change representation             | Replace/reactivate the representation                  | Persist a durable replacement from the current grant version and fresh candidate preview; prepare it in background; create its authoritative preview and consent; switch grant and materialized representation inside one transaction                                                                                                                                | The prior representation remains readable during preparation; concurrent changes conflict; restart replay sees either the old or completed new representation                                                                  |
+| Continuous propagation            | Keep a continuous grant current                        | Repository advances only authorized source revisions under current replica, policies, lifecycle, and encryption context                                                                                                                                                                                                                                              | Revocation/sync loss stops advancement and retains only the last authorized revision as stale                                                                                                                                  |
+| Pause or resume updates           | Stop or continue future continuous revisions           | Change only the continuous consent/update state; keep the last activated representation and Workspace access while paused; append an owner lifecycle event                                                                                                                                                                                                           | Exact retries are stable; snapshot shares and stale versions fail closed                                                                                                                                                       |
+| Revoke                            | End destination authority                              | Lock grant/retention scope, require owner and expected version, invalidate representations, advance revocation epoch, revoke attached Conversation Source Access, close source streams, schedule retention work, and append outbox                                                                                                                                   | Exact retry returns the same revoked grant and repairs stale derived lifecycle state; divergent reuse conflicts                                                                                                                |
 
 Owner-management responses state whether current Workspace content access is
 available. When unavailable, they omit the companion binding and source
 preview while retaining Team, Workspace, title, fidelity, lifecycle, and the
 authority needed to revoke. Owner-list reads never create or repair a companion.
+Team representation responses contain the current source revision needed for
+ordering, but never expose owner-private source or revision hashes.
 
 ## Why the repository seam owns bundle invariants
 
@@ -116,27 +118,28 @@ policy, and enforce optimistic versions and idempotency. Tests in
 stale sync, destination uniqueness, concurrent retries, exact revocation replay,
 policy changes, and encrypted materialization.
 
-Candidate previews store the authority kind and authority reference. A browser
-session can authorize multiple distinct candidates. A one-use device Action
-Grant can authorize only one binding. Pending Share records store the same
-authority source. Thus, a restarted worker does not treat browser authority as
-device authority.
+Candidate previews store the authority kind and authority reference. Remote
+candidate admission requires a one-use device Action Grant for one exact
+binding. Browser sessions create authoritative previews only from source state
+already owned by the backend. Pending Share records retain the same authority
+source, so a restarted worker never treats browser authority as device
+authority.
 
 Device candidate admission also carries `sourceDeploymentProtocolId` and
 `sourceOwnerPrincipalId`. The remote backend recomputes the deterministic
-logical Memory ID, binds the remote principal through the authenticated
-device-credential lineage, and creates a missing logical source identity before
-it records the source revision. Both provenance fields and the public Action
-Grant reference remain in the exact request hash. Revoked deployments,
-principals, links, or device credentials are never revived by admission.
+logical Memory ID, verifies the claimed deployment against the authenticated
+device credential, and requires the remote principal to have an existing active
+Cross-Identity Sync binding to the authenticated User before it creates a
+missing logical source identity. Share review cannot establish or reactivate a
+principal binding. Both provenance fields and the public Action Grant reference
+remain in the exact request hash. Revoked deployments, principals, links, or
+device credentials are never revived by admission.
 
 Capability discovery advertises
 `protocols.sharedMemorySourceAdmission.version = 1`. Deploy the Team backend
 first, revalidate its cached capabilities, and then deploy Desktop/local-server
-clients. The new backend continues to accept the prior optional-provenance shape
-for already admitted logical sources. A new client does not send source
-provenance to a backend that lacks version 1; it returns the explicit safe
-`protocol_mismatch` result before Action Grant creation.
+clients. Missing source provenance or a backend without version 1 fails closed
+with the explicit safe `protocol_mismatch` result before Action Grant creation.
 
 The candidate row also retains the immutable ordered source identities and
 per-source revision hashes, representation, semantic source revision, item and
@@ -163,11 +166,21 @@ Continuous Share advances only to a strictly newer projected revision of the
 same Note and logical Memory. The standalone artifact is sufficient source
 custody; replica and sync relationship identities are invalid for this source
 branch.
+If a Note edit is projected while its initial Continuous grant is activating,
+authoritative grant persistence reconciles the latest eligible projection into
+durable advancement work. Advancement reports a terminal, redacted outcome for
+each destination: eligible destinations queue independently, while a destination
+that has lost current access or policy eligibility is skipped without delaying
+the others. Destination admission is cursor-paged in bounded batches; the local
+edge persists every page before advancing its cursor, so a large destination set
+cannot exceed a response bound or strand later destinations. Unexpected storage
+failures still fail the operation and retry.
 The authenticated upload carries the local source principal that was used to
 hash the reviewed candidate. The Team Backend verifies the deterministic Note
-identity, binds the source deployment and principal to the authenticated device
-lineage, and then stores the standalone artifact for the remote User. This
-identity binding does not create a Cross-Identity Sync relationship.
+identity, requires the source deployment and principal to match both the device
+credential and an existing active principal binding, and then stores the
+standalone artifact for the remote User. The upload cannot establish or revive
+identity authority and does not create a Cross-Identity Sync relationship.
 
 Owner-local source titles remain Personal metadata. The Team-visible Share label
 is derived from the privacy-filtered semantic representation and is published
@@ -186,10 +199,9 @@ local authority snapshots, and never creates or repairs a companion. Activation
 and quarantined recovery are the only companion creation paths.
 An activated Pending Share owner DTO also carries the current Share Grant
 version. Desktop uses that exact version for protected revocation instead of
-the Pending Share operation version. The field remains optional at the shared
-contract boundary for a mixed-version rollout; a compatible Desktop connected
-to an older local server refetches the exact owned Share Grant before it asks
-for revocation approval.
+the Pending Share operation version. The identity and version are returned
+together and Desktop submits that exact pair when asking for revocation
+approval.
 An accepted Personal Note Pending Share remains owner-visible before its
 standalone logical-memory row is materialized. This lets the Shares view report
 source-upload progress or failure instead of filtering out the operation.

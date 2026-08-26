@@ -1507,35 +1507,44 @@ describe("desktop collaboration broker", () => {
       order.push("validate-new-backend");
       return { ok: true, state: "validated", message: "validated" } as const;
     });
-    const startEnrollment = vi.fn(async (_paths, backendId: string) => {
-      order.push("start-new-enrollment");
-      return {
-        ok: true,
-        state: "exchanged" as const,
-        enrollment: {
-          backendId,
-          requestId: "new-enrollment",
+    const startEnrollment = vi.fn(
+      async (
+        _paths,
+        backendId: string,
+        options?: { sourceOwnerPrincipalId?: string }
+      ) => {
+        order.push("start-new-enrollment");
+        expect(options?.sourceOwnerPrincipalId).toBe(
+          "11111111-1111-4111-8111-111111111111"
+        );
+        return {
+          ok: true,
           state: "exchanged" as const,
-          activationUrl: null,
-          requestedOperationFamilies: [
-            "personal_collaboration_read",
-            "personal_collaboration_write",
-            "team_workspace_read",
-            "team_chat_read",
-            "team_chat_write",
-            "share_grant_management",
-            "sync",
-            "managed_execution",
-            "action_grant"
-          ],
-          createdAt: "2026-07-18T08:30:00.000Z",
-          updatedAt: "2026-07-18T08:30:00.000Z",
-          expiresAt: "2026-07-18T09:30:00.000Z",
-          credential: { status: "configured" as const }
-        },
-        message: "exchanged"
-      };
-    });
+          enrollment: {
+            backendId,
+            requestId: "new-enrollment",
+            state: "exchanged" as const,
+            activationUrl: null,
+            requestedOperationFamilies: [
+              "personal_collaboration_read",
+              "personal_collaboration_write",
+              "team_workspace_read",
+              "team_chat_read",
+              "team_chat_write",
+              "share_grant_management",
+              "sync",
+              "managed_execution",
+              "action_grant"
+            ],
+            createdAt: "2026-07-18T08:30:00.000Z",
+            updatedAt: "2026-07-18T08:30:00.000Z",
+            expiresAt: "2026-07-18T09:30:00.000Z",
+            credential: { status: "configured" as const }
+          },
+          message: "exchanged"
+        };
+      }
+    );
     const sent: DesktopCollaborationBrokerChildMessage[] = [];
     const broker = createDesktopCollaborationBroker({
       environment,
