@@ -6107,6 +6107,100 @@ describeDb("memory repository visibility", () => {
     expect(counts.rows[0]).toEqual({ active: "1", total: "1" });
   });
 
+  it("binds an enrolled Personal source identity before its first sync or share", async () => {
+    const user = await repo.createUser({
+      email: `device-source-binding-${randomUUID()}@example.com`,
+      displayName: "Device Source Binding User"
+    });
+    const protocolDeploymentId = randomUUID();
+    const sourceOwnerPrincipalId = randomUUID();
+    const challenge = await repo.createDeviceEnrollmentChallenge({
+      challengeHash: `challenge-${randomUUID()}-${randomUUID()}`,
+      upstreamBackendId: "team-vps",
+      deviceInstanceId: `desktop-${randomUUID()}`,
+      requestedOperationFamilies: ["share_grant_management", "sync"],
+      metadata: { protocolDeploymentId, sourceOwnerPrincipalId },
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+
+    const credential = await repo.approveDeviceEnrollmentChallenge(
+      { userId: user.id },
+      challenge.id,
+      {
+        credentialKeyId: `device-key-${randomUUID()}`,
+        verifierKind: "secret_hash",
+        verifierHash: `verifier-${randomUUID()}-${randomUUID()}`
+      }
+    );
+
+    expect(credential).not.toBeNull();
+    const binding = await pool.query<{
+      locality: string;
+      profile: string;
+      external_subject_id: string;
+      local_user_id: string;
+      proof_kind: string;
+      proof_reference: string;
+      revoked_at: Date | null;
+    }>(
+      `select deployment.locality,
+              deployment.profile,
+              external_identity.external_subject_id,
+              principal_link.local_user_id,
+              principal_link.proof_kind,
+              principal_link.proof_reference,
+              principal_link.revoked_at
+         from deployment_identities deployment
+         join sync_external_user_identities external_identity
+           on external_identity.deployment_identity_id=deployment.id
+         join sync_principal_links principal_link
+           on principal_link.external_user_identity_id=external_identity.id
+        where deployment.protocol_deployment_id=$1
+          and external_identity.external_subject_id=$2`,
+      [protocolDeploymentId, sourceOwnerPrincipalId]
+    );
+    expect(binding.rows).toEqual([
+      {
+        locality: "remote",
+        profile: "local_personal",
+        external_subject_id: sourceOwnerPrincipalId,
+        local_user_id: user.id,
+        proof_kind: "device_credential_lineage",
+        proof_reference: credential!.lineageId,
+        revoked_at: null
+      }
+    ]);
+
+    const otherUser = await repo.createUser({
+      email: `device-source-binding-conflict-${randomUUID()}@example.com`
+    });
+    const conflictingChallenge = await repo.createDeviceEnrollmentChallenge({
+      challengeHash: `challenge-${randomUUID()}-${randomUUID()}`,
+      upstreamBackendId: "team-vps",
+      deviceInstanceId: `desktop-${randomUUID()}`,
+      requestedOperationFamilies: ["share_grant_management"],
+      metadata: { protocolDeploymentId, sourceOwnerPrincipalId },
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    await expect(
+      repo.approveDeviceEnrollmentChallenge(
+        { userId: otherUser.id },
+        conflictingChallenge.id,
+        {
+          credentialKeyId: `device-key-${randomUUID()}`,
+          verifierKind: "secret_hash",
+          verifierHash: `verifier-${randomUUID()}-${randomUUID()}`
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      repo.listDeviceCredentials(
+        { userId: otherUser.id },
+        { upstreamBackendId: "team-vps" }
+      )
+    ).resolves.toEqual([]);
+  });
+
   it("rejects ambiguous device credential key ids", async () => {
     const user = await repo.createUser({
       email: `invalid-device-key-${randomUUID()}@example.com`
@@ -8357,7 +8451,7 @@ describeDb("memory repository visibility", () => {
     ).resolves.toBe("pending");
   });
 
-  it("binds target sync intake atomically to the approved device source identity", async () => {
+  it("uses the enrolled source identity for fail-closed target sync intake", async () => {
     const encryptedRepo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
         randomBytes(32).toString("base64")
@@ -8439,7 +8533,7 @@ describeDb("memory repository visibility", () => {
           where protocol_deployment_id=$1`,
         [sourceDeploymentProtocolId]
       )
-    ).resolves.toMatchObject({ rows: [{ count: "0" }] });
+    ).resolves.toMatchObject({ rows: [{ count: "1" }] });
     await expect(
       pool.query<{ count: string }>(
         `select count(*)::text as count
@@ -8448,7 +8542,7 @@ describeDb("memory repository visibility", () => {
             and proof_reference=$1`,
         [credential!.lineageId]
       )
-    ).resolves.toMatchObject({ rows: [{ count: "0" }] });
+    ).resolves.toMatchObject({ rows: [{ count: "1" }] });
 
     await expect(
       encryptedRepo.createTargetSyncRelationship(

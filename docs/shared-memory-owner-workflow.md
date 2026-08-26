@@ -128,10 +128,11 @@ authority.
 Device candidate admission also carries `sourceDeploymentProtocolId` and
 `sourceOwnerPrincipalId`. The remote backend recomputes the deterministic
 logical Memory ID, verifies the claimed deployment against the authenticated
-device credential, and requires the remote principal to have an existing active
-Cross-Identity Sync binding to the authenticated User before it creates a
-missing logical source identity. Share review cannot establish or reactivate a
-principal binding. Both provenance fields and the public Action Grant reference
+device credential, and requires the remote principal to have the active binding
+established when that credential was browser-approved by the authenticated
+User. This identity-only enrollment binding does not start Cross-Identity Sync
+or move content. Share review cannot establish or reactivate a principal
+binding. Both provenance fields and the public Action Grant reference
 remain in the exact request hash. Revoked deployments, principals, links, or
 device credentials are never revived by admission.
 
@@ -178,7 +179,7 @@ failures still fail the operation and retry.
 The authenticated upload carries the local source principal that was used to
 hash the reviewed candidate. The Team Backend verifies the deterministic Note
 identity, requires the source deployment and principal to match both the device
-credential and an existing active principal binding, and then stores the
+credential and its active enrolled principal binding, and then stores the
 standalone artifact for the remote User. The upload cannot establish or revive
 identity authority and does not create a Cross-Identity Sync relationship.
 

@@ -150,6 +150,82 @@ const validateOperationFamilies = (families: string[]): string[] => {
 
 type DeviceCredentialTransaction = Pick<KoedDb, "execute" | "update">;
 
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const bindEnrolledSourcePrincipal = async (
+  tx: DeviceCredentialTransaction,
+  actor: ActorContext,
+  credential: Pick<
+    DeviceCredentialRecord,
+    "lineageId" | "metadata" | "operationFamilies"
+  >
+): Promise<boolean> => {
+  const participatesInSourceAdmission = credential.operationFamilies.some(
+    (family) => family === "share_grant_management" || family === "sync"
+  );
+  const protocolDeploymentId = credential.metadata.protocolDeploymentId;
+  const sourceOwnerPrincipalId = credential.metadata.sourceOwnerPrincipalId;
+  if (
+    !participatesInSourceAdmission ||
+    typeof protocolDeploymentId !== "string" ||
+    typeof sourceOwnerPrincipalId !== "string"
+  ) {
+    return false;
+  }
+  if (
+    !uuidPattern.test(protocolDeploymentId) ||
+    !uuidPattern.test(sourceOwnerPrincipalId)
+  ) {
+    throw Object.assign(
+      new Error("Device credential source identity is invalid"),
+      { statusCode: 400 }
+    );
+  }
+
+  const result = await tx.execute(sql`
+    with source_deployment as (
+      insert into deployment_identities
+        (protocol_deployment_id, locality, profile)
+      values (${protocolDeploymentId}::uuid, 'remote', 'local_personal')
+      on conflict (protocol_deployment_id) do update
+        set updated_at = deployment_identities.updated_at
+      where deployment_identities.locality = 'remote'
+        and deployment_identities.disabled_at is null
+      returning id
+    ), source_identity as (
+      insert into sync_external_user_identities
+        (deployment_identity_id, external_subject_id)
+      select id, ${sourceOwnerPrincipalId}
+        from source_deployment
+      on conflict (deployment_identity_id, external_subject_id) do update
+        set updated_at = sync_external_user_identities.updated_at
+      where sync_external_user_identities.status = 'active'
+        and sync_external_user_identities.revoked_at is null
+      returning id
+    )
+    insert into sync_principal_links
+      (local_user_id, external_user_identity_id, proof_kind, proof_reference)
+    select ${actor.userId}::uuid, id, 'device_credential_lineage',
+           ${credential.lineageId}
+      from source_identity
+    on conflict (external_user_identity_id) do update
+      set verified_at = now()
+    where sync_principal_links.local_user_id = excluded.local_user_id
+      and sync_principal_links.proof_kind = excluded.proof_kind
+      and sync_principal_links.proof_reference = excluded.proof_reference
+      and sync_principal_links.revoked_at is null
+    returning id
+  `);
+  if (result.rows.length !== 1) {
+    throw Object.assign(
+      new Error("Device credential source identity is already bound"),
+      { statusCode: 409 }
+    );
+  }
+  return true;
+};
+
 const revokeCredentialSubscriptions = async (
   tx: DeviceCredentialTransaction,
   credentialIds: string[]
@@ -422,6 +498,11 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         .returning();
 
       const credential = mapDeviceCredentialRecord(credentialRows[0]!);
+      const sourcePrincipalBound = await bindEnrolledSourcePrincipal(
+        tx,
+        actor,
+        credential
+      );
       if (supersededRows.length > 0) {
         await revokeCredentialSubscriptions(
           tx,
@@ -454,7 +535,8 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
           targetTable: "device_credentials",
           targetId: credential.id,
           metadata: deviceCredentialAuditMetadata(credential, {
-            enrollmentChallengeId: credential.enrollmentChallengeId
+            enrollmentChallengeId: credential.enrollmentChallengeId,
+            sourcePrincipalBound
           })
         })
       );
@@ -602,6 +684,11 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         .returning();
 
       const credential = mapDeviceCredentialRecord(credentialRows[0]!);
+      const sourcePrincipalBound = await bindEnrolledSourcePrincipal(
+        tx,
+        actor,
+        credential
+      );
       if (supersededRows.length > 0) {
         await revokeCredentialSubscriptions(
           tx,
@@ -634,7 +721,8 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
           targetTable: "device_credentials",
           targetId: credential.id,
           metadata: deviceCredentialAuditMetadata(credential, {
-            enrollmentChallengeId: credential.enrollmentChallengeId
+            enrollmentChallengeId: credential.enrollmentChallengeId,
+            sourcePrincipalBound
           })
         })
       );

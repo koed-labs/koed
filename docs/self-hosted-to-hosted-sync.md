@@ -112,10 +112,11 @@ updates can be paused without removing the last authorized Workspace
 representation; revocation is a separate operation.
 
 Candidate admission is device-only. Enrollment binds the source deployment and
-source owner principal to the approved credential, and candidate creation must
-match both values and an active principal binding already established by
-Cross-Identity Sync. Share review and Personal Note upload cannot create or
-reactivate source identity authority. Team-facing Shared Memory responses
+source owner principal to both the approved credential and the authenticated
+remote User. Candidate creation must match both values and that active enrolled
+principal binding. Cross-Identity Sync may use the same binding, but is not a
+precondition for Personal Note sharing. Share review and source upload cannot
+create or reactivate source identity authority. Team-facing Shared Memory responses
 expose grant-scoped logical and revision identifiers rather than stable
 Personal or Cross-Identity Sync identifiers, so separate Team grants cannot be
 correlated through internal source identity. Human owner attribution is a
