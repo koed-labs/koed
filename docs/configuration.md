@@ -13,7 +13,10 @@ pnpm env:setup
 This creates `.env` and generates `API_DATA_ENCRYPTION_KEY`,
 `API_TOKEN_PEPPER`, `EMBEDDING_SERVICE_TOKEN`, `PRIVACY_SERVICE_TOKEN`, and a
 local `POSTGRES_PASSWORD`. If `.env` already exists, the command preserves
-existing values and adds any missing keys from `.env.example`.
+existing values and adds any missing keys from `.env.example`. It also migrates
+the old documented accelerator microbatch defaults (`8192`) to the safer `512`
+value in existing `.env` files; other explicit Operator overrides remain
+unchanged.
 
 For server/private VPS deployments, treat `koed-server` as the application
 deployment unit and Postgres, queue backend, Embedding Service, reverse

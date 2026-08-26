@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
+  migrateLegacyEmbeddingAccelerationDefaults,
   parseEnv,
   renderSetupEnv,
   retainedCompatibilityKeys
@@ -51,6 +52,24 @@ test("fresh setup generates the root API Team Memory key", async () => {
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("migrates the old accelerator microbatch defaults", () => {
+  const migrated = parseEnv(
+    migrateLegacyEmbeddingAccelerationDefaults(
+      [
+        "EMBEDDING_LLAMA_N_UBATCH=8192",
+        "EMBEDDING_RERANKER_LLAMA_N_UBATCH=8192",
+        "EMBEDDING_LLAMA_N_BATCH=1024",
+        "CUSTOM_SETTING=8192"
+      ].join("\n")
+    )
+  );
+
+  assert.equal(migrated.get("EMBEDDING_LLAMA_N_UBATCH"), "512");
+  assert.equal(migrated.get("EMBEDDING_RERANKER_LLAMA_N_UBATCH"), "512");
+  assert.equal(migrated.get("EMBEDDING_LLAMA_N_BATCH"), "1024");
+  assert.equal(migrated.get("CUSTOM_SETTING"), "8192");
 });
 
 test("retains compatibility-sensitive values from an existing env", () => {
