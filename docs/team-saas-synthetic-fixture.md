@@ -94,6 +94,12 @@ API process variables `BROWSER_PUBLIC_URL`, `CORS_ORIGINS`, and
 dedicated initialized `KOED_HOME` so its verified deployment identity remains
 bound to the fixture database.
 
+For a disposable WSL fixture opened by a Windows browser, use the loopback
+hostname that the browser actually receives as `BROWSER_PUBLIC_URL` and allow
+both `http://localhost:<port>` and `http://127.0.0.1:<port>` in
+`CORS_ORIGINS`. Verify login with an `Origin` header matching the browser URL;
+a command-line login without `Origin` does not prove the browser-origin check.
+
 The fixture API and Worker must use the same `DATABASE_URL`, queue backend,
 application and Team encryption-provider lineage, and Privacy Filter Service.
 When starting `apps/worker` directly, set `PRIVACY_SERVICE_URL` and

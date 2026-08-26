@@ -435,6 +435,14 @@ their `API_*` supervisor inputs are read directly. `BROWSER_PUBLIC_URL` and
 host, and port. For an HTTP loopback fixture, set `COOKIE_SECURE=false`; remote
 dogfood uses HTTPS and secure cookies.
 
+When WSL hands the approval URL to a Windows browser, configure
+`BROWSER_PUBLIC_URL` with the hostname that Windows opens. For the disposable
+loopback fixture, include both `http://localhost:<port>` and
+`http://127.0.0.1:<port>` in `CORS_ORIGINS`; do not carry this alias allowance
+into a real remote deployment. Test `/auth/login` with the browser's `Origin`
+header. A request without `Origin` can succeed while the actual browser is
+correctly rejected as an invalid origin.
+
 Use a dedicated remote-backend `KOED_HOME` and host-proof store. Initialize its
 device identity before first API startup, then keep that identity with the
 fixture database. The API's verified deployment identity and the database's
