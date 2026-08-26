@@ -95,15 +95,15 @@ Use `measured_tokens_per_second` where available. `tokens_per_second` is based
 on the requested fixture size and remains an estimate for endpoints that do not
 return prompt token usage.
 
-## Current CPU Defaults
+## Current Production Defaults
 
 Embedding:
 
 ```bash
-LLAMA_N_CTX=32768
+LLAMA_N_CTX=8192
 LLAMA_N_BATCH=8192
 LLAMA_BATCH_TOKEN_HEADROOM=8
-LLAMA_N_UBATCH=8192
+LLAMA_N_UBATCH=512
 LLAMA_PARALLEL=1
 ```
 
@@ -124,6 +124,30 @@ Important knobs to sweep:
 - `LLAMA_N_UBATCH`
 - `LLAMA_PARALLEL`
 - `RERANKER_PARALLEL`
+
+## Apple Metal Context Benchmark
+
+The production-path acceleration benchmark compared the former 32K embedding
+context with the 8K default on an Apple Silicon host with 16 GiB unified
+memory. Both runs used the Qwen3 0.6B Q8 embedding model, an 8,192-token logical
+batch, a 512-token physical microbatch, one parallel slot, synthetic
+256/1,024/2,048-token Memory Event inputs, and three warm iterations. The runs
+were sequential under normal Desktop load, so system-wide free-memory and swap
+figures are operational pressure signals rather than isolated process metrics.
+
+| Metric                      |    32K context |     8K context |                Change |
+| --------------------------- | -------------: | -------------: | --------------------: |
+| Metal peak process-tree RAM |      4,642 MiB |      2,078 MiB |                  -55% |
+| Minimum system-free memory  |            19% |            40% | +21 percentage points |
+| System swap change          |     +1,637 MiB |       -152 MiB | no new swapping at 8K |
+| Metal warm throughput       | 1,725 tokens/s | 1,607 tokens/s |                   -7% |
+| Metal startup               |       1,766 ms |       1,274 ms |                  -28% |
+| Warm speedup over CPU       |          4.64x |          4.99x |            maintained |
+
+Both configurations completed without a process failure. The minimum CPU/Metal
+cosine agreement was `0.999561` in both runs. The 8K context therefore removes
+about 2.5 GiB of peak Metal memory while retaining approximately 93% of warm
+throughput for the measured workload.
 
 The production runtime in this branch does not import `llama-cpp-python`, and
 the benchmark-maintained direct `llama-cpp-python` embedding comparator has

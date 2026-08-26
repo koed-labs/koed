@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
+  migrateLegacyEmbeddingAccelerationDefaults,
   parseEnv,
   renderSetupEnv,
   retainedCompatibilityKeys
@@ -48,6 +49,70 @@ test("fresh setup generates the root API Team Memory key", async () => {
     assert.ok(teamKey);
     assert.equal(Buffer.from(teamKey, "base64").length, 32);
     assert.equal(rendered.has("TEAM_MEMORY_DATA_ENCRYPTION_KEY"), false);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("migrates old accelerator allocation defaults", () => {
+  const migrated = parseEnv(
+    migrateLegacyEmbeddingAccelerationDefaults(
+      [
+        "EMBEDDING_LLAMA_N_CTX=32768",
+        "EMBEDDING_LLAMA_N_UBATCH=8192",
+        "EMBEDDING_RERANKER_LLAMA_N_UBATCH=8192",
+        "EMBEDDING_LLAMA_N_BATCH=8192",
+        "CUSTOM_SETTING=32768"
+      ].join("\n")
+    )
+  );
+
+  assert.equal(migrated.get("EMBEDDING_LLAMA_N_CTX"), "8192");
+  assert.equal(migrated.get("EMBEDDING_LLAMA_N_UBATCH"), "512");
+  assert.equal(migrated.get("EMBEDDING_RERANKER_LLAMA_N_UBATCH"), "512");
+  assert.equal(migrated.get("EMBEDDING_LLAMA_N_BATCH"), "8192");
+  assert.equal(migrated.get("CUSTOM_SETTING"), "32768");
+});
+
+test("preserves explicit accelerator allocation overrides", () => {
+  const migrated = parseEnv(
+    migrateLegacyEmbeddingAccelerationDefaults(
+      [
+        "EMBEDDING_LLAMA_N_CTX=16384",
+        "EMBEDDING_LLAMA_N_UBATCH=256",
+        "EMBEDDING_RERANKER_LLAMA_N_UBATCH=1024"
+      ].join("\n")
+    )
+  );
+
+  assert.equal(migrated.get("EMBEDDING_LLAMA_N_CTX"), "16384");
+  assert.equal(migrated.get("EMBEDDING_LLAMA_N_UBATCH"), "256");
+  assert.equal(migrated.get("EMBEDDING_RERANKER_LLAMA_N_UBATCH"), "1024");
+});
+
+test("setup migrates old accelerator defaults in an existing env", async () => {
+  const tempRoot = await mkdtemp(resolve(tmpdir(), "koed-setup-env-"));
+  const envPath = resolve(tempRoot, ".env");
+  try {
+    await writeFile(
+      envPath,
+      [
+        "EMBEDDING_LLAMA_N_CTX=32768",
+        "EMBEDDING_LLAMA_N_UBATCH=8192",
+        "EMBEDDING_RERANKER_LLAMA_N_UBATCH=1024"
+      ].join("\n")
+    );
+    const result = spawnSync(process.execPath, ["scripts/setup-env.mjs"], {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      encoding: "utf8",
+      env: { ...process.env, KOED_ENV_PATH: envPath }
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    const rendered = parseEnv(await readFile(envPath, "utf8"));
+    assert.equal(rendered.get("EMBEDDING_LLAMA_N_CTX"), "8192");
+    assert.equal(rendered.get("EMBEDDING_LLAMA_N_UBATCH"), "512");
+    assert.equal(rendered.get("EMBEDDING_RERANKER_LLAMA_N_UBATCH"), "1024");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

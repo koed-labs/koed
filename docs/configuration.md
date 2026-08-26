@@ -14,6 +14,10 @@ This creates `.env` and generates `API_DATA_ENCRYPTION_KEY`,
 `API_TOKEN_PEPPER`, `EMBEDDING_SERVICE_TOKEN`, `PRIVACY_SERVICE_TOKEN`, and a
 local `POSTGRES_PASSWORD`. If `.env` already exists, the command preserves
 existing values and adds any missing keys from `.env.example`.
+It also migrates the old documented accelerator allocation defaults—32,768
+embedding context tokens and 8,192-token microbatches—to the safer 8,192-token
+context and 512-token microbatch values. Other explicit Operator overrides are
+preserved.
 
 For server/private VPS deployments, treat `koed-server` as the application
 deployment unit and Postgres, queue backend, Embedding Service, reverse
@@ -745,7 +749,7 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `KOED_RERANKER_ACCELERATION`: independent reranker acceleration policy. Defaults to `cpu` to avoid unexpected VRAM contention with embedding work.
 - `KOED_RERANKER_DEVICE`: optional exact llama-server device identifier for the reranker.
 - `KOED_RERANKER_GPU_IDLE_UNLOAD_SECONDS`: independent accelerated reranker idle-unload delay. Defaults to `300`; `0` keeps it resident.
-- `EMBEDDING_LLAMA_N_BATCH` and `EMBEDDING_LLAMA_N_UBATCH`: logical batch and micro-batch sizes. The defaults are 8192 and 512. The bounded micro-batch avoids allocating accelerator buffers for the entire logical batch while preserving the configured context and embedding chunk contract.
+- `EMBEDDING_LLAMA_N_CTX`, `EMBEDDING_LLAMA_N_BATCH`, and `EMBEDDING_LLAMA_N_UBATCH`: context, logical batch, and physical microbatch sizes. The defaults are 8192, 8192, and 512. The bounded context and microbatch avoid allocating accelerator buffers for unused 32K context or the entire logical batch while preserving the 4096-token embedding input contract.
 - `KOED_PACKAGED_DESKTOP=1`: selects packaged Desktop resolver behavior. Packaged mode does not use source-checkout fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `status --json` and `doctor --json` include runtime artifact source diagnostics such as `koed-home-runtime`, `packaged-resource`, or `source-checkout`.
 - `KOED_EMBEDDING_HOST`, `KOED_EMBEDDING_PORT`: host and port for the native bundled-local Embedding Service. Defaults to `127.0.0.1` and `EMBEDDING_SERVICE_HOST_PORT`/`3800`.
 - `KOED_PDS_LAN_PORT`: private-network Desktop pairing and local PDS relay
@@ -840,7 +844,7 @@ provenance manifest; ordinary CI and local setup do not compile CUDA.
 - `EMBEDDING_MAX_TOKENS`: Koed adapter chunking limit and the hard cap for a single projected source item before forced split metadata is used. Default `4096`; values above `32768` are clamped by the embedding service and values above the configured llama context or batch envelope are reduced to that limit.
 - `EMBEDDING_MAX_TEXT_CHARS`: transport and abuse guard for the maximum characters accepted for any single embedding or reranking text before model processing. The Worker divides a larger logical source into bounded transport segments without splitting Unicode characters, then restores one continuous source-level embedding chunk sequence from the responses. It is not a semantic chunking limit.
 - `EMBEDDING_MAX_REQUEST_CHARS`: transport and abuse guard for the maximum total characters the Worker sends, and the Embedding Service accepts, in one embedding or reranking request before model processing. It is not a semantic chunking limit.
-- `EMBEDDING_LLAMA_N_CTX`: llama.cpp context size for the embedding service. Default `32768`; values above `32768` are clamped by the embedding service.
+- `EMBEDDING_LLAMA_N_CTX`: llama.cpp context size for the embedding service. Default `8192`; values above `32768` are clamped by the embedding service. The default leaves headroom above the 4096-token embedding input limit without reserving an unused 32K accelerator context.
 - `EMBEDDING_LLAMA_N_BATCH`: llama-server logical execution batch capacity. This is a runtime throughput and capacity knob, not Koed's semantic chunk size; keep it large enough for `EMBEDDING_MAX_TOKENS` plus batching/headroom.
 - `EMBEDDING_LLAMA_N_UBATCH`: llama-server physical microbatch capacity. Current llama.cpp embedding servers reduce the effective logical batch to this value when it is lower than `EMBEDDING_LLAMA_N_BATCH`, so Koed uses the smaller capacity for chunking and batching. Default `512`.
 - `EMBEDDING_LLAMA_BATCH_TOKEN_HEADROOM`: token safety margin subtracted from `EMBEDDING_LLAMA_N_BATCH` when chunking and batching embedding texts. Default `8`; this avoids tokenizer boundary cases where a nominal 8192-token text becomes 8193 tokens at model execution time.

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   DEFAULT_LLAMA_SERVER_BINARY,
+  DEFAULT_LLAMA_N_CTX,
   QWEN_OPERATIONAL_MAX_TOKENS,
   boolEnv,
   intEnv,
@@ -175,6 +176,10 @@ describe("Embedding Service env config", () => {
 
     expect(config.embeddingAccelerationPolicy).toBe("auto");
     expect(config.rerankerAccelerationPolicy).toBe("cpu");
+    expect(config.llamaNCtx).toBe(DEFAULT_LLAMA_N_CTX);
+    expect(config.llamaNBatch).toBe(8192);
+    expect(config.llamaNUbatch).toBe(512);
+    expect(config.llamaParallel).toBe(1);
   });
 
   it("rejects unknown acceleration policies", () => {

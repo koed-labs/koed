@@ -11,6 +11,15 @@ export const retainedCompatibilityKeys = new Set([
   "API_TEAM_MEMORY_DATA_ENCRYPTION_KEY"
 ]);
 
+// Existing .env files are normally preserved by setup. Migrate only the old
+// documented accelerator defaults and leave intentional Operator overrides
+// untouched.
+export const legacyEmbeddingAccelerationDefaults = new Map([
+  ["EMBEDDING_LLAMA_N_CTX", { from: "32768", to: "8192" }],
+  ["EMBEDDING_LLAMA_N_UBATCH", { from: "8192", to: "512" }],
+  ["EMBEDDING_RERANKER_LLAMA_N_UBATCH", { from: "8192", to: "512" }]
+]);
+
 export const splitEnvLine = (line) => {
   const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
   return match ? { key: match[1], value: match[2] } : null;
@@ -26,6 +35,21 @@ export const parseEnv = (contents) => {
   }
   return values;
 };
+
+export const migrateLegacyEmbeddingAccelerationDefaults = (contents) =>
+  contents
+    .split(/\r?\n/)
+    .map((line) => {
+      const entry = splitEnvLine(line);
+      const migration = entry
+        ? legacyEmbeddingAccelerationDefaults.get(entry.key)
+        : undefined;
+      if (migration === undefined || entry.value.trim() !== migration.from) {
+        return line;
+      }
+      return `${entry.key}=${migration.to}`;
+    })
+    .join("\n");
 
 export const shouldGenerateValue = (generatedValues, key, value) =>
   generatedValues.has(key) &&
