@@ -549,10 +549,7 @@ function AiClientSetup({
         <header className="koed-setup-header">
           <div>
             <h1 id="koed-client-setup-title">Connect AI Clients</h1>
-            <p>
-              Core setup is complete. Choose which AI clients to connect —
-              detecting a client doesn't select it for you.
-            </p>
+            <p>Core setup is complete. Choose which AI clients to connect.</p>
           </div>
         </header>
         <fieldset
@@ -560,7 +557,7 @@ function AiClientSetup({
           className="koed-client-fieldset"
           disabled={busyCommand !== null || activeClient !== null}
         >
-          <legend id="koed-client-setup-description">
+          <legend className="koed-sr-only" id="koed-client-setup-description">
             Select AI Clients to set up or verify
           </legend>
           <div aria-label="AI Client choices" className="koed-client-grid">
@@ -657,7 +654,10 @@ function AiClientSetup({
                     <strong>{label}</strong>
                     <span className={`koed-client-pill ${pillClass}`}>
                       {isActive ? (
-                        <Spinner aria-hidden="true" className="koed-client-spin" />
+                        <Spinner
+                          aria-hidden="true"
+                          className="koed-client-spin"
+                        />
                       ) : null}
                       {pillText}
                     </span>
@@ -709,8 +709,11 @@ function AiClientSetup({
         {activeClient ? (
           <p className="koed-sr-only" role="status">
             Setting up{" "}
-            {onboardingClients.find((client) => client.id === activeClient)
-              ?.label}…
+            {
+              onboardingClients.find((client) => client.id === activeClient)
+                ?.label
+            }
+            …
           </p>
         ) : null}
         <footer className="koed-setup-footer">
