@@ -78,6 +78,23 @@ export const createDesktopSetupWorkflow = ({
       }))
     );
     const stages = checks.map(({ stage, check }) => pendingStage(stage, check));
+    const verificationIndex = stages.findIndex(
+      ({ id }) => id === "verification"
+    );
+    const prerequisitesComplete = stages.every(
+      ({ id, state }) => id === "verification" || state === "complete"
+    );
+    if (verificationIndex >= 0 && !prerequisitesComplete) {
+      const verification = stages[verificationIndex]!;
+      stages[verificationIndex] = {
+        ...verification,
+        message:
+          verification.state === "complete"
+            ? "Complete the preceding setup steps before final verification."
+            : verification.message,
+        state: "pending"
+      };
+    }
     return {
       activeStage: null,
       error: null,
