@@ -3,7 +3,11 @@ import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { parseEnv, renderSetupEnv } from "./setup-env-lib.mjs";
+import {
+  migrateLegacyEmbeddingAccelerationDefaults,
+  parseEnv,
+  renderSetupEnv
+} from "./setup-env-lib.mjs";
 
 const envPath = process.env.KOED_ENV_PATH?.trim()
   ? resolve(process.env.KOED_ENV_PATH)
@@ -29,7 +33,9 @@ if (syncResult.status !== 0) {
 }
 
 const example = readFileSync(examplePath, "utf8");
-const existing = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
+const existing = migrateLegacyEmbeddingAccelerationDefaults(
+  existsSync(envPath) ? readFileSync(envPath, "utf8") : ""
+);
 const currentValues = parseEnv(existing);
 const exampleValues = parseEnv(example);
 

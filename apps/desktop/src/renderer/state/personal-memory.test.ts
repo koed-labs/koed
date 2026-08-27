@@ -3,6 +3,7 @@ import type {
   PersonalDesktopChange,
   PersonalDesktopConversationEvent,
   PersonalDesktopProject,
+  PersonalDesktopProjectMetadata,
   PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
 import { PERSONAL_DESKTOP_CONTRACT_VERSION } from "@koed/shared/personal-desktop";
@@ -67,6 +68,54 @@ const api = (overrides: Partial<PersonalDesktopApi> = {}) =>
   }) satisfies PersonalDesktopApi;
 
 describe("PersonalMemoryStore", () => {
+  it("merges local Project metadata into the rendered Project index", async () => {
+    const source = project([thread(1)]);
+    const metadata: PersonalDesktopProjectMetadata = {
+      schemaVersion: 1,
+      discoveredAt: "2026-07-22T00:00:00.000Z",
+      lastSeenAt: "2026-07-23T00:00:00.000Z",
+      localProjectId: "local-project",
+      displayName: "Koed",
+      path: { cwd: "/tmp/project", projectRoot: "/tmp/project" },
+      git: {
+        branch: "main",
+        isWorktree: false,
+        remotes: [{ display: "github.com/koed-labs/koed" }]
+      }
+    };
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [source]),
+        listProjectMetadata: vi.fn(async () => [metadata])
+      })
+    );
+
+    const snapshot = await store.loadProjects();
+
+    expect(snapshot.projectsById.get(source.id)).toMatchObject({
+      name: "Koed",
+      remoteDisplay: "github.com/koed-labs/koed",
+      branch: "main"
+    });
+  });
+
+  it("renders graph Projects when optional local metadata is unavailable", async () => {
+    const source = project([thread(1)]);
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [source]),
+        listProjectMetadata: vi.fn(async () => {
+          throw new Error("projects.json is unreadable");
+        })
+      })
+    );
+
+    const snapshot = await store.loadProjects();
+
+    expect(snapshot.error).toBeNull();
+    expect(snapshot.projectsById.get(source.id)).toMatchObject(source);
+  });
+
   it("normalizes project shells and preserves unchanged project references", async () => {
     const threads = [thread(1), thread(2)];
     const source = project(threads);

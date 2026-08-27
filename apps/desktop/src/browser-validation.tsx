@@ -11,6 +11,7 @@ import {
   type CollaborationRendererCommand,
   type CollaborationSnapshot,
   type OwnedShareItem,
+  type SharedMemoryGrant,
   type SharedMemoryPreview
 } from "@koed/shared/collaboration";
 import type {
@@ -1209,14 +1210,21 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
       updatedAt: timestamp,
       activatedAt: timestamp,
       revokedAt: null,
-      grantId: interactionIds.pendingGrant
+      grantId: interactionIds.pendingGrant,
+      grantVersion: 1
     },
     sourceAccess: null,
     summary: {
+      source: {
+        kind: "captured_session",
+        sessionId: interactionIds.alphaSession,
+        logicalMemoryId: interactionIds.alphaMemory
+      },
       sourceSessionId: interactionIds.alphaSession,
       sourceTitle: "Packaged asynchronous sharing",
       teamName: "Electron Team App",
       workspaceName: "Electron Team App",
+      workspaceContentAccess: "available",
       mode: "continuous",
       authorizedPreview: {
         previewId: interactionIds.pendingPreview,
@@ -1257,15 +1265,20 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
       lifecycle: "active",
       createdAt: timestamp,
       updatedAt: timestamp,
-      revokedAt: null,
-      companionThreadId: interactionIds.alphaDiscussion
+      revokedAt: null
     },
     sourceAccess: null,
     summary: {
+      source: {
+        kind: "captured_session",
+        sessionId: interactionIds.alphaSession,
+        logicalMemoryId: interactionIds.alphaMemory
+      },
       sourceSessionId: interactionIds.alphaSession,
       sourceTitle: "Packaged revocation fixture",
       teamName: "Electron Team App",
       workspaceName: "Electron Team App",
+      workspaceContentAccess: "available",
       mode: "snapshot",
       authorizedPreview: null,
       lastReadyRevision: 12,
@@ -1274,8 +1287,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
   };
   let noteOwnedShare: Extract<OwnedShareItem, { kind: "pending" }> | null =
     null;
-  let noteGrant: Extract<OwnedShareItem, { kind: "grant" }>["grant"] | null =
-    null;
+  let noteGrant: SharedMemoryGrant | null = null;
   let latestProjectedNote: PersonalDesktopNote | null = null;
   const projectedNotesByRevision = new Map<number, PersonalDesktopNote>([
     [1, interactionNote(actor, "Browser launch note", 1)]
@@ -1947,13 +1959,11 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
           updatedAt: timestamp,
           activatedAt: null,
           revokedAt: null,
-          grantId: null
+          grantId: null,
+          grantVersion: null
         };
         if (parsed.input.source.kind === "personal_note") {
-          const activatedGrant: Extract<
-            OwnedShareItem,
-            { kind: "grant" }
-          >["grant"] = {
+          const activatedGrant: SharedMemoryGrant = {
             source: parsed.input.source,
             sourceCapabilities: ["memory_events"],
             activationRepresentation: "memory_events",
@@ -1991,7 +2001,8 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
                 parsed.input.mode === "continuous" ? "active" : "stopped",
               operationVersion: 2,
               activatedAt: timestamp,
-              grantId: activatedGrant.id
+              grantId: activatedGrant.id,
+              grantVersion: activatedGrant.grantVersion
             },
             sourceAccess: null,
             preview: interactionNotePreview(
@@ -2001,10 +2012,12 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
               1
             ),
             summary: {
+              source: acceptedPendingShare.source,
               sourceSessionId: null,
               sourceTitle: "Browser launch note",
               teamName: "Electron Team App",
               workspaceName: "Electron Team App",
+              workspaceContentAccess: "available",
               mode: parsed.input.mode,
               authorizedPreview: {
                 previewId: interactionIds.notePreview,
@@ -2040,7 +2053,14 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
         return result(parsed, {
           grants: [
             ...(noteGrant ? [noteGrant] : []),
-            ...(activeOwnedShare ? [activeOwnedShare.grant] : [])
+            ...(activeOwnedShare
+              ? [
+                  {
+                    ...activeOwnedShare.grant,
+                    companionThreadId: interactionIds.alphaDiscussion
+                  }
+                ]
+              : [])
           ].filter(
             (grant) =>
               !parsed.input.logicalMemoryId ||
@@ -2145,10 +2165,16 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
           const revokedNoteShare = noteOwnedShare;
           revokedOwnedShares.unshift(revokedNoteShare);
           const revokedGrant = noteGrant;
+          const { companionThreadId, ...revokedOwnedGrant } = revokedGrant;
+          void companionThreadId;
           noteOwnedShare = null;
-          return result(parsed, { grant: revokedGrant });
+          return result(parsed, { grant: revokedOwnedGrant });
         }
-        if (!activeOwnedShare || activeOwnedShare.kind !== "grant") {
+        if (
+          !activeOwnedShare ||
+          activeOwnedShare.kind !== "grant" ||
+          parsed.input.shareGrantId !== activeOwnedShare.grant.id
+        ) {
           return failure(parsed);
         }
         const revoked: OwnedShareItem = {
@@ -2491,7 +2517,8 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
         operationVersion: noteOwnedShare.pendingShare.operationVersion + 1,
         updatedAt: timestamp,
         activatedAt: timestamp,
-        grantId: updatedGrant.id
+        grantId: updatedGrant.id,
+        grantVersion: updatedGrant.grantVersion
       },
       preview: interactionNotePreview(
         note,

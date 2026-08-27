@@ -4036,6 +4036,29 @@ const createFakeRepository = () => {
       memoryQuestions.set(completed.id, completed);
       return completed;
     },
+    async recoverPendingDesktopAsks(actor, input) {
+      let recovered = 0;
+      const now = new Date().toISOString();
+      for (const question of memoryQuestions.values()) {
+        if (
+          question.ownerUserId !== actor.userId ||
+          question.origin !== "desktop_ask" ||
+          question.status !== "pending"
+        ) {
+          continue;
+        }
+        memoryQuestions.set(question.id, {
+          ...question,
+          errorMessage: input.errorMessage,
+          status: "error",
+          updatedAt: now,
+          answeredAt: now,
+          attemptCount: Math.max(question.attemptCount, 1)
+        });
+        recovered += 1;
+      }
+      return { recovered };
+    },
     async listDesktopAskThreads(actor, input = {}) {
       const grouped = new Map<string, MemoryQuestionDetailRecord[]>();
       for (const question of memoryQuestions.values()) {
@@ -8362,6 +8385,7 @@ describe("account and access flows", () => {
     });
     const otherCookie = cookieHeader(otherUser);
     const initialChallengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+    const sourceOwnerPrincipalId = randomUUID();
     const initialKeyId = `device-key-${randomUUID()}`;
     const initialSecret = `device-secret-${randomUUID()}`;
     await app.inject({
@@ -8372,6 +8396,7 @@ describe("account and access flows", () => {
         challenge_hash: initialChallengeHash,
         upstream_backend_id: "team-vps",
         protocol_deployment_id: testProtocolDeploymentId,
+        source_owner_principal_id: sourceOwnerPrincipalId,
         device_instance_id: "desktop-rotation-1",
         requested_operation_families: ["sync"]
       }
@@ -8390,6 +8415,36 @@ describe("account and access flows", () => {
     const initialCredential = jsonBody<{
       credential: { id: string };
     }>(initialRedeem).credential;
+    const changedDeploymentRotation = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: {
+        authorization: `Koed-Device ${initialKeyId}:${initialSecret}`
+      },
+      payload: {
+        challenge_hash: `challenge-${randomUUID()}-${randomUUID()}`,
+        upstream_backend_id: "team-vps",
+        protocol_deployment_id: randomUUID(),
+        source_owner_principal_id: sourceOwnerPrincipalId,
+        rotate_credential_id: initialCredential.id,
+        requested_operation_families: ["sync"]
+      }
+    });
+    const changedPrincipalRotation = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: {
+        authorization: `Koed-Device ${initialKeyId}:${initialSecret}`
+      },
+      payload: {
+        challenge_hash: `challenge-${randomUUID()}-${randomUUID()}`,
+        upstream_backend_id: "team-vps",
+        protocol_deployment_id: testProtocolDeploymentId,
+        source_owner_principal_id: randomUUID(),
+        rotate_credential_id: initialCredential.id,
+        requested_operation_families: ["sync"]
+      }
+    });
     const rotationChallengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
     const rotationChallenge = await app.inject({
       method: "POST",
@@ -8401,6 +8456,7 @@ describe("account and access flows", () => {
         challenge_hash: rotationChallengeHash,
         upstream_backend_id: "team-vps",
         protocol_deployment_id: testProtocolDeploymentId,
+        source_owner_principal_id: sourceOwnerPrincipalId,
         rotate_credential_id: initialCredential.id,
         requested_operation_families: ["sync"]
       }
@@ -8419,6 +8475,7 @@ describe("account and access flows", () => {
         challenge_hash: siblingRotationChallengeHash,
         upstream_backend_id: "team-vps",
         protocol_deployment_id: testProtocolDeploymentId,
+        source_owner_principal_id: sourceOwnerPrincipalId,
         rotate_credential_id: initialCredential.id,
         requested_operation_families: ["sync"]
       }
@@ -8491,6 +8548,8 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(initialRedeem.statusCode).toBe(200);
+    expect(changedDeploymentRotation.statusCode).toBe(403);
+    expect(changedPrincipalRotation.statusCode).toBe(403);
     expect(rotationChallenge.statusCode).toBe(200);
     expect(siblingRotationChallenge.statusCode).toBe(200);
     expect(crossUserDenial.statusCode).toBe(200);
@@ -12618,6 +12677,7 @@ describe("account and access flows", () => {
       return originalSearchMemoryNodes(actor, input);
     };
     const teamCandidateId = randomUUID();
+    const teamShareGrantId = randomUUID();
     const teamSourceArtifactId = randomUUID();
     const teamNoteId = randomUUID();
     const teamMemoryEventId = randomUUID();
@@ -12633,7 +12693,7 @@ describe("account and access flows", () => {
           logicalMemoryId: teamLogicalMemoryId
         },
         candidateId: teamCandidateId,
-        shareGrantId: randomUUID(),
+        shareGrantId: teamShareGrantId,
         sourceArtifactId: teamSourceArtifactId,
         sourceRevisionHash: teamSourceRevisionHash,
         representationId: randomUUID(),
@@ -12877,20 +12937,27 @@ describe("account and access flows", () => {
         maxAllowed: 1
       })
     );
-    expect(
-      jsonBody<{
-        hits: Array<{ visibilityProvenance: Record<string, unknown> }>;
-      }>(deviceTeamSearch).hits[0]?.visibilityProvenance
-    ).toMatchObject({
-      sourceArtifactId: teamSourceArtifactId,
-      sourceRevisionHash: teamSourceRevisionHash,
-      source: {
-        kind: "personal_note",
-        noteId: teamNoteId,
-        memoryEventId: teamMemoryEventId,
-        logicalMemoryId: teamLogicalMemoryId
-      }
+    const teamVisibilityProvenance = jsonBody<{
+      hits: Array<{ visibilityProvenance: Record<string, unknown> }>;
+    }>(deviceTeamSearch).hits[0]?.visibilityProvenance;
+    expect(teamVisibilityProvenance).toEqual({
+      shareGrantId: teamShareGrantId,
+      representation: "lcm_rollups",
+      sourceRevision: 1
     });
+    expect(JSON.stringify(deviceTeamSearch.json())).not.toContain(teamNoteId);
+    expect(JSON.stringify(deviceTeamSearch.json())).not.toContain(
+      teamMemoryEventId
+    );
+    expect(JSON.stringify(deviceTeamSearch.json())).not.toContain(
+      teamLogicalMemoryId
+    );
+    expect(JSON.stringify(deviceTeamSearch.json())).not.toContain(
+      teamSourceArtifactId
+    );
+    expect(JSON.stringify(deviceTeamSearch.json())).not.toContain(
+      teamSourceRevisionHash
+    );
     expect(scoreScan.retrieval.stages).toContainEqual(
       expect.objectContaining({
         name: "fresh_pending_search",
@@ -12928,6 +12995,12 @@ describe("account and access flows", () => {
     );
     const repository = createFakeRepository();
     const expandInputs: Array<Record<string, unknown>> = [];
+    const teamShareGrantId = randomUUID();
+    const teamSourceArtifactId = randomUUID();
+    const teamRepresentationId = randomUUID();
+    const teamSourceRevisionHash = "b".repeat(64);
+    const teamProvenanceHash = "a".repeat(64);
+    const pseudonymousSourceId = randomUUID();
     repository.expandMemoryNode = async (nodeId, _actor, input) => {
       expandInputs.push({ nodeId, ...(input as Record<string, unknown>) });
       return {
@@ -12944,16 +13017,21 @@ describe("account and access flows", () => {
       expandInputs.push(input as unknown as Record<string, unknown>);
       return {
         parent: {
+          source: {
+            kind: "captured_session" as const,
+            sessionId: randomUUID(),
+            logicalMemoryId: randomUUID()
+          },
           candidateId: input.candidateId,
-          shareGrantId: randomUUID(),
-          sourceArtifactId: randomUUID(),
-          sourceRevisionHash: "b".repeat(64),
-          representationId: randomUUID(),
+          shareGrantId: teamShareGrantId,
+          sourceArtifactId: teamSourceArtifactId,
+          sourceRevisionHash: teamSourceRevisionHash,
+          representationId: teamRepresentationId,
           representation: "lcm_rollups" as const,
-          pseudonymousSourceId: randomUUID(),
+          pseudonymousSourceId,
           sourceItemIndex: 0,
           sourceRevision: 1,
-          provenanceHash: "a".repeat(64),
+          provenanceHash: teamProvenanceHash,
           representationPolicyRevision: 1,
           contentPolicyVersion: 1,
           classifierVersion: 1,
@@ -12967,7 +13045,17 @@ describe("account and access flows", () => {
           score: 1,
           freshness: "fresh" as const
         },
-        items: []
+        items: [
+          {
+            candidateId: randomUUID(),
+            pseudonymousSourceId,
+            sourceChunkIndex: 0,
+            itemType: "lcm_leaf" as const,
+            occurredAt: null,
+            text: "Authorized Team evidence.",
+            lexicalAnchors: []
+          }
+        ]
       };
     };
     const app = await buildServer({ repository });
@@ -13015,6 +13103,24 @@ describe("account and access flows", () => {
     );
     expect(deviceExpand.statusCode).toBe(200);
     expect(sessionExpand.statusCode).toBe(200);
+    const expanded = jsonBody<{
+      expanded: {
+        visibilityProvenance: Record<string, unknown>;
+        generation?: unknown;
+        sourceItems: Array<Record<string, unknown>>;
+      };
+    }>(deviceExpand).expanded;
+    expect(expanded.visibilityProvenance).toEqual({
+      shareGrantId: teamShareGrantId,
+      representation: "lcm_rollups",
+      sourceRevision: 1
+    });
+    expect(expanded).not.toHaveProperty("generation");
+    expect(expanded.sourceItems[0]).not.toHaveProperty("sourceTable");
+    expect(JSON.stringify(expanded)).not.toContain(teamSourceArtifactId);
+    expect(JSON.stringify(expanded)).not.toContain(teamRepresentationId);
+    expect(JSON.stringify(expanded)).not.toContain(teamSourceRevisionHash);
+    expect(JSON.stringify(expanded)).not.toContain(teamProvenanceHash);
     expect(expandInputs).toEqual([
       { teamWorkspaceId, candidateId: nodeId, searchDomain: "global" },
       { teamWorkspaceId, candidateId: nodeId, searchDomain: "global" }
@@ -15673,6 +15779,12 @@ describe("account and access flows", () => {
       headers,
       payload: { status: "error", error_message: "must not replace answer" }
     });
+    const recovered = await app.inject({
+      method: "POST",
+      url: "/v1/memory/ask/questions/recover-pending",
+      headers,
+      payload: {}
+    });
     const threads = await app.inject({
       method: "GET",
       url: "/v1/memory/ask/threads?limit=50",
@@ -15743,6 +15855,9 @@ describe("account and access flows", () => {
     expect(
       jsonBody<MemoryQuestionResponse>(completedAgain).question.status
     ).toBe("answered");
+    expect(jsonBody<{ recovered: number }>(recovered)).toEqual({
+      recovered: 1
+    });
     expect(jsonBody<{ threads: unknown[] }>(threads).threads).toEqual([
       expect.objectContaining({
         askThreadId: initialQuestion.askThreadId,
@@ -15755,6 +15870,13 @@ describe("account and access flows", () => {
         thread
       ).questions.map((question) => question.askTurnIndex)
     ).toEqual([0, 1]);
+    expect(
+      jsonBody<{ questions: MemoryQuestionDetailRecord[] }>(thread).questions[1]
+    ).toMatchObject({
+      status: "error",
+      errorMessage:
+        "This Ask was interrupted when the Local AI Runtime stopped. Try again."
+    });
     expect(hidden.statusCode).toBe(404);
     expect(malformed.statusCode).toBe(400);
   });

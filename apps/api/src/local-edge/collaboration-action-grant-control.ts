@@ -118,6 +118,10 @@ export interface CollaborationActionGrantControlOptions {
   actionGrantTtlMs?: number;
   ambiguousResponseWindowMs?: number;
   random?: () => number;
+  resolveCandidateSourceIdentity?(localOwnerUserId: string): {
+    sourceDeploymentProtocolId: string;
+    sourceOwnerPrincipalId: string;
+  } | null;
 }
 
 export interface CollaborationActionGrantControl {
@@ -145,6 +149,7 @@ class ControlFailure extends Error {
       | "conflict"
       | "rate_limited"
       | "temporarily_unavailable"
+      | "protocol_mismatch"
       | "internal_error",
     readonly retryAfterMs: number | null = null
   ) {
@@ -211,16 +216,19 @@ const collaborationActionGrantOperationForIntent = (
   resolved?: {
     sharedMemoryRemoteReplicaId?: string;
     sharedMemoryPreviewId?: string;
+  },
+  candidateSourceIdentity?: {
+    sourceDeploymentProtocolId: string;
+    sourceOwnerPrincipalId: string;
   }
 ): CollaborationActionGrantIntentOperation | null => {
   const remoteIntent = highRiskActionGrantIntentFromCollaborationIntent(
     backend.baseUrl,
     intent,
-    resolved
+    resolved,
+    candidateSourceIdentity
   );
-  if (!remoteIntent) {
-    return null;
-  }
+  if (!remoteIntent) return null;
   const operation = resolveHighRiskActionGrantOperation({
     clientRequestId: referenceId,
     intent: remoteIntent
@@ -357,6 +365,12 @@ const mapPermanentFailure = (status: number): ControlFailure => {
 const decisionResponseMayBeAmbiguous = (status: number): boolean =>
   status >= 500;
 
+const supportsCandidateSourceAdmission = (
+  backend: LocalEdgeUpstreamBackend
+): boolean =>
+  backend.capabilities?.payload?.protocols?.sharedMemorySourceAdmission
+    ?.version === 1;
+
 const hasDeviceContext = (
   context: CollaborationActionGrantControlContext
 ): context is CollaborationActionGrantControlContext & {
@@ -383,7 +397,8 @@ export const createCollaborationActionGrantControl = (
     actionGrantTtlMs: input.actionGrantTtlMs ?? ACTION_GRANT_TTL_MS,
     ambiguousResponseWindowMs:
       input.ambiguousResponseWindowMs ?? AMBIGUOUS_RESPONSE_WINDOW_MS,
-    random: input.random ?? Math.random
+    random: input.random ?? Math.random,
+    resolveCandidateSourceIdentity: input.resolveCandidateSourceIdentity
   };
   const lifecycle =
     input.actionGrantLifecycle ??
@@ -463,20 +478,40 @@ export const createCollaborationActionGrantControl = (
                   sharedMemoryPreviewId: consentPreview?.previewId
                 }
               : undefined;
+          const isCandidatePreview =
+            intent.intent === "collaboration.preview_shared_memory" &&
+            intent.candidate !== undefined;
+          if (
+            isCandidatePreview &&
+            !supportsCandidateSourceAdmission(context.backend)
+          ) {
+            return failure(command, new ControlFailure("protocol_mismatch"));
+          }
+          const referenceId = options.randomUuid();
+          const candidateSourceIdentity =
+            isCandidatePreview && context.localOwnerUserId
+              ? (options.resolveCandidateSourceIdentity?.(
+                  context.localOwnerUserId
+                ) ?? null)
+              : undefined;
+          if (isCandidatePreview && !candidateSourceIdentity) {
+            return failure(command, new ControlFailure("not_available"));
+          }
           const remoteIntent = highRiskActionGrantIntentFromCollaborationIntent(
             context.backend.baseUrl,
             intent,
-            resolved
+            resolved,
+            candidateSourceIdentity ?? undefined
           );
           if (!remoteIntent) {
             return failure(command, new ControlFailure("invalid_input"));
           }
-          const referenceId = options.randomUuid();
           const operation = collaborationActionGrantOperationForIntent(
             context.backend,
             intent,
             referenceId,
-            resolved
+            resolved,
+            candidateSourceIdentity ?? undefined
           );
           if (!operation) {
             return failure(command, new ControlFailure("invalid_input"));
@@ -740,10 +775,20 @@ export const createCollaborationActionGrantControl = (
     intent: CollaborationActionGrantIntent;
     context: CollaborationActionGrantControlContext;
   }): Promise<string | null> => {
+    const candidateSourceIdentity =
+      input.intent.intent === "collaboration.preview_shared_memory" &&
+      input.intent.candidate &&
+      input.context.localOwnerUserId
+        ? (options.resolveCandidateSourceIdentity?.(
+            input.context.localOwnerUserId
+          ) ?? undefined)
+        : undefined;
     const operation = collaborationActionGrantOperationForIntent(
       input.context.backend,
       input.intent,
-      input.reference.id
+      input.reference.id,
+      undefined,
+      candidateSourceIdentity
     );
     const deviceCredentialId = input.context.upstreamDeviceCredentialId;
     if (

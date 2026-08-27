@@ -50,6 +50,22 @@ describe("local edge enrollment schemas", () => {
     ).toBe(true);
   });
 
+  it("binds Share Grant enrollment to an approved source principal", () => {
+    const request = {
+      ...challenge,
+      requested_operation_families: ["share_grant_management"]
+    };
+    expect(
+      createDeviceEnrollmentChallengeSchema.safeParse(request).success
+    ).toBe(false);
+    expect(
+      createDeviceEnrollmentChallengeSchema.safeParse({
+        ...request,
+        source_owner_principal_id: "00000000-0000-4000-8000-000000000002"
+      }).success
+    ).toBe(true);
+  });
+
   it("rejects an explicitly empty credential scope", () => {
     expect(
       redeemDeviceEnrollmentChallengeSchema.safeParse({

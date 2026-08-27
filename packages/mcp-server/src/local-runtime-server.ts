@@ -295,6 +295,9 @@ export interface LocalAiRuntimeServiceDependencies {
   startClaudeTranscriptWatcher: typeof startClaudeTranscriptWatcher;
   startPiTranscriptWatcher?: typeof startPiTranscriptWatcher;
   startAiClientCapabilityPublisher?: typeof startAiClientCapabilityPublisher;
+  recoverPendingDesktopAsks?: (
+    apiClient: MemoryApiClient
+  ) => Promise<{ recovered: number }>;
   createExecutor(
     apiClient: MemoryApiClient,
     environment: NodeJS.ProcessEnv,
@@ -315,6 +318,8 @@ const defaultServiceDependencies: LocalAiRuntimeServiceDependencies = {
   startClaudeTranscriptWatcher,
   startPiTranscriptWatcher,
   startAiClientCapabilityPublisher,
+  recoverPendingDesktopAsks: (apiClient) =>
+    apiClient.recoverPendingDesktopAsks(),
   createExecutor: (apiClient, environment, services) =>
     new MemoryToolExecutor(apiClient, environment, services)
 };
@@ -327,6 +332,7 @@ export const startDefaultLocalAiRuntimeServices = async (
   }: Parameters<LocalAiRuntimeServiceFactory>[0],
   dependencies: LocalAiRuntimeServiceDependencies = defaultServiceDependencies
 ): Promise<LocalAiRuntimeServices> => {
+  await dependencies.recoverPendingDesktopAsks?.(apiClient);
   const lcmSummaryService = dependencies.startLcmSummaryService(apiClient, {
     serviceConfig: resolveLcmSummaryServiceConfig(environment),
     workerConfig: resolveLcmSummaryWorkerConfig(environment)

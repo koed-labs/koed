@@ -688,6 +688,7 @@ export const createFixtureRuntime = async (
     sharedMemoryDeviceProvenanceHash: db.sharedMemoryDeviceProvenanceHash,
     sharedMemorySanitizedSemanticSourceBinding:
       db.sharedMemorySanitizedSemanticSourceBinding,
+    sharedMemorySanitizedDisplayTitle: db.sharedMemorySanitizedDisplayTitle,
     sharedMemorySanitizedSemanticSourceRevisionHash:
       db.sharedMemorySanitizedSemanticSourceRevisionHash,
     sharedMemorySemanticEmbeddingSourceBinding:
@@ -1095,14 +1096,27 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
   ];
   const manifestHash = runtime.shared.crossIdentitySyncDigest(manifest);
   const sourceContentHash = runtime.shared.crossIdentitySyncDigest([item]);
-  const sourceHash = runtime.shared.crossIdentitySyncDigest({
-    kind: "shared_memory_authoritative_source",
+  const source = {
+    kind: "captured_session",
+    sessionId: memory.sessionId,
+    logicalMemoryId: memory.logicalMemoryId
+  };
+  const sourceHash = runtime.shared.capturedSessionSourceFrontierHash({
+    source,
     representation: memory.representation,
-    logicalMemoryId: memory.logicalMemoryId,
-    sourceRevision: 1,
     sourceCursor: 1,
     manifestHash,
     sourceContentHash
+  });
+  const genericSourceRevision = 2;
+  const sourceRevisionId = fixtureUuid(`memory:${memory.key}:source-revision`);
+  const sourceRevisionBindingHash = runtime.shared.crossIdentitySyncDigest({
+    kind: "logical_memory_source_revision_binding",
+    version: 1,
+    source,
+    ownerPrincipalId: memory.ownerPrincipalId,
+    genericRevision: genericSourceRevision,
+    sourceRevision: 1
   });
   const binding = {
     sourceRevision: 1,
@@ -1137,10 +1151,10 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
   await client.query(
     `insert into logical_memories (
        id, protocol_logical_id, owner_user_id, owner_principal_id,
-       origin_deployment_identity_id, source_boundary, origin_source_id,
-       local_session_id, logical_key, latest_source_revision, metadata
+       origin_deployment_identity_id, source_kind, logical_key,
+       latest_source_revision, metadata
      ) values (
-       $1, $2, $3, $4, $5, 'captured_session', $6, $7, $8, 1, $9::jsonb
+       $1, $2, $3, $4, $5, 'captured_session', $6, 1, $7::jsonb
      )`,
     [
       memory.logicalMemoryId,
@@ -1149,20 +1163,56 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       memory.ownerPrincipalId,
       fixtureInfrastructure.sourceDeploymentId,
       `${FIXTURE_VERSION}:${memory.key}`,
-      memory.sessionId,
-      `${FIXTURE_VERSION}:${memory.key}`,
       json({ fixture: FIXTURE_VERSION, memoryKey: memory.key })
+    ]
+  );
+  await client.query(
+    `insert into captured_session_logical_memories (
+       logical_memory_id, source_kind, source_session_id, owner_principal_id
+     ) values ($1, 'captured_session', $2, $3)`,
+    [memory.logicalMemoryId, memory.sessionId, memory.ownerPrincipalId]
+  );
+  await client.query(
+    `insert into local_captured_session_logical_memories (
+       logical_memory_id, local_session_id, owner_user_id
+     ) values ($1, $2, $3)`,
+    [memory.logicalMemoryId, memory.sessionId, owner.id]
+  );
+  await client.query(
+    `insert into logical_memory_source_revisions (
+       id, logical_memory_id, owner_principal_id, source_kind,
+       revision, binding_hash
+     ) values ($1, $2, $3, 'captured_session', $4, $5)`,
+    [
+      sourceRevisionId,
+      memory.logicalMemoryId,
+      memory.ownerPrincipalId,
+      genericSourceRevision,
+      sourceRevisionBindingHash
+    ]
+  );
+  await client.query(
+    `insert into captured_session_source_revisions (
+       source_revision_id, logical_memory_id, owner_principal_id,
+       source_kind, revision, source_session_id, source_cursor
+     ) values ($1, $2, $3, 'captured_session', $4, $5, 1)`,
+    [
+      sourceRevisionId,
+      memory.logicalMemoryId,
+      memory.ownerPrincipalId,
+      genericSourceRevision,
+      memory.sessionId
     ]
   );
   await client.query(
     `insert into memory_replicas (
        id, logical_memory_id, deployment_identity_id, owner_user_id,
-       owner_principal_id, replica_role, source_boundary, local_session_id,
+       owner_principal_id, replica_role, source_boundary,
        latest_revision, lifecycle, encryption_scope, freshness_status,
        representation_policy_revision, content_policy_version, last_synced_at
      ) values (
-       $1, $2, $3, $4, $5, 'target', 'captured_session', $6,
-       1, 'active', 'owner_private_replica', 'fresh', 1, 1, $7
+       $1, $2, $3, $4, $5, 'target', 'captured_session',
+       1, 'active', 'owner_private_replica', 'fresh', 1, 1, $6
      )`,
     [
       memory.remoteReplicaId,
@@ -1170,7 +1220,6 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       fixtureInfrastructure.targetDeploymentId,
       owner.id,
       memory.ownerPrincipalId,
-      memory.sessionId,
       memory.capturedAt
     ]
   );
@@ -1302,7 +1351,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
 
   await client.query(
     `insert into shared_source_artifacts (
-       id, logical_memory_id, remote_replica_id, sync_relationship_id,
+       id, logical_memory_id, source_revision_id, remote_replica_id, sync_relationship_id,
        owner_user_id, owner_principal_id, team_id, team_workspace_id,
        representation, artifact_schema_version, source_revision,
        source_cursor, package_sequence, source_hash, manifest_hash,
@@ -1314,16 +1363,17 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        content_policy_version, content_policy_hash, classifier_version,
        classifier_hash, source_deployment_identity_id,
        remote_user_identity_id, device_credential_id,
-       device_provenance_hash, source_kind, source_session_id,
+       device_provenance_hash,
        source_capabilities, activation_representation
      ) values (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,1,1,1,1,$10,$11,$12,$13,$14,
-       $15,$16,1,$17,1,$18,1,1,$19,1,$20,$21,$22,$23,$24,$25,$26,
-       'captured_session',$27,array[$9]::shared_memory_representation[],$9
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,1,1,1,1,$11,$12,$13,$14,$15,
+       $16,$17,1,$18,1,$19,1,1,$20,1,$21,$22,$23,$24,$25,$26,$27,
+       array[$10]::shared_memory_representation[],$10
      )`,
     [
       artifactId,
       memory.logicalMemoryId,
+      sourceRevisionId,
       memory.remoteReplicaId,
       memory.syncRelationshipId,
       owner.id,
@@ -1347,8 +1397,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       fixtureInfrastructure.sourceDeploymentId,
       ownerInfrastructure.remoteUserIdentityId,
       ownerInfrastructure.deviceCredentialId,
-      deviceProvenanceHash,
-      memory.sessionId
+      deviceProvenanceHash
     ]
   );
   await runtime.upsertEncryptedFieldPayloadWithClient(
@@ -1382,21 +1431,22 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
   );
   await client.query(
     `insert into shared_source_previews (
-       id, source_artifact_id, logical_memory_id, remote_replica_id,
+       id, source_artifact_id, logical_memory_id, source_revision_id, remote_replica_id,
        owner_user_id, owner_principal_id, team_id, team_workspace_id,
        representation, preview_schema_version, preview_revision,
        preview_hash, source_revision, source_hash, source_content_hash,
-       source_kind, source_session_id, source_capabilities,
+       source_capabilities,
        activation_representation, mode
      ) values (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,1,1,$10,1,$11,$12,
-       'captured_session',$13,array[$9]::shared_memory_representation[],$9,
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,1,1,$11,1,$12,$13,
+       array[$10]::shared_memory_representation[],$10,
        'continuous'
      )`,
     [
       previewId,
       artifactId,
       memory.logicalMemoryId,
+      sourceRevisionId,
       memory.remoteReplicaId,
       owner.id,
       memory.ownerPrincipalId,
@@ -1405,8 +1455,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       memory.representation,
       previewHash,
       sourceHash,
-      sourceContentHash,
-      memory.sessionId
+      sourceContentHash
     ]
   );
   await runtime.upsertEncryptedFieldPayloadWithClient(
@@ -1437,7 +1486,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
 
   await client.query(
     `insert into source_owner_representation_consents (
-       id, logical_memory_id, remote_replica_id, source_owner_principal_id,
+       id, logical_memory_id, source_revision_id, remote_replica_id, source_owner_principal_id,
        team_id, team_workspace_id, source_owner_policy_id,
        source_owner_policy_version, team_policy_id, team_policy_version,
        workspace_policy_id, workspace_policy_version, mode, state,
@@ -1446,16 +1495,17 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        maximum_authorized_source_revision, source_hash,
        fidelity_policy_revision, fidelity_policy_hash,
        content_policy_version, content_policy_hash, classifier_version,
-       classifier_hash, source_content_hash, activated_at, source_kind,
-       source_session_id, source_capabilities, activation_representation
+       classifier_hash, source_content_hash, activated_at,
+       source_capabilities, activation_representation
      ) values (
-       $1,$2,$3,$4,$5,$6,$7,1,$8,1,$9,1,'continuous','active',1,
-       $10,$11,$12,1,$13,1,null,$14,1,$15,1,$16,$17,$18,$19,$20,
-       'captured_session',$21,array[$22]::shared_memory_representation[],$22
+       $1,$2,$3,$4,$5,$6,$7,$8,1,$9,1,$10,1,'continuous','active',1,
+       $11,$12,$13,1,$14,1,null,$15,1,$16,1,$17,$18,$19,$20,$21,
+       array[$22]::shared_memory_representation[],$22
      )`,
     [
       memory.consentId,
       memory.logicalMemoryId,
+      sourceRevisionId,
       memory.remoteReplicaId,
       memory.ownerPrincipalId,
       fixtureTeam.id,
@@ -1474,7 +1524,6 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       classifierHash,
       sourceContentHash,
       memory.capturedAt,
-      memory.sessionId,
       memory.representation
     ]
   );
@@ -1482,9 +1531,9 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
   const revoked = memory.shareState === "revoked";
   const personalDeleted = memory.shareState === "personal_deleted_retained";
   await client.query(
-    `insert into team_session_share_grants (
-       id, logical_grant_id, logical_memory_id, remote_replica_id,
-       owner_user_id, owner_principal_id, session_id, team_id,
+    `insert into team_memory_share_grants (
+       id, logical_grant_id, logical_memory_id, source_revision_id, remote_replica_id,
+       owner_user_id, owner_principal_id, team_id,
        team_workspace_id, consent_id, source_owner_policy_id,
        source_owner_policy_version, team_policy_id, team_policy_version,
        workspace_policy_id, workspace_policy_version,
@@ -1494,23 +1543,23 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        creator_authority, granted_by_user_id, revoked_at,
        revoked_by_user_id, revocation_reason, personal_deleted_at,
        personal_deleted_by_user_id, personal_deletion_reason,
-       retained_by_team_at, retention_reason, source_kind,
+       retained_by_team_at, retention_reason,
        source_capabilities, activation_representation, mode
      ) values (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,1,$13,1,
        $14,$15,1,1,$16,1,1,$17,
-       'fixture_browser_session',$5,$18,$19,$20,$21,$22,$23,$24,$25,
-       'captured_session',array[$26]::shared_memory_representation[],$26,
+       'fixture_browser_session',$6,$18,$19,$20,$21,$22,$23,$24,$25,
+       array[$26]::shared_memory_representation[],$26,
        'continuous'
      )`,
     [
       memory.shareGrantId,
       fixtureUuid(`memory:${memory.key}:logical-grant`),
       memory.logicalMemoryId,
+      sourceRevisionId,
       memory.remoteReplicaId,
       owner.id,
       memory.ownerPrincipalId,
-      memory.sessionId,
       fixtureTeam.id,
       workspace.id,
       memory.consentId,
@@ -1576,6 +1625,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     sourceItemIdentityHash,
     sourceItemCount: 1,
     sanitizedContentHash,
+    displayTitle: runtime.sharedMemorySanitizedDisplayTitle([item]),
     items: [item],
     embeddingSourceBindings: [
       runtime.sharedMemorySemanticEmbeddingSourceBinding(
@@ -1751,18 +1801,17 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        privacy_classifier_generation_id, privacy_classifier_hash,
        effective_privacy_policy_hash, source_manifest_hash,
        sanitized_content_hash, team_id, team_workspace_id, logical_memory_id,
-       representation, source_revision, source_revision_hash,
+       source_revision_id, representation, source_revision, source_revision_hash,
        provenance_hash, source_owner_policy_id,
        source_owner_policy_version, team_policy_id, team_policy_version,
        workspace_policy_id, workspace_policy_version,
        fidelity_policy_revision, content_policy_version,
        classifier_version, record_version, state, chunk_count,
        freshness_evaluated_at, available_at, invalidated_at,
-       invalidation_reason_code, source_kind, source_session_id
+       invalidation_reason_code
      ) values (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,1,$16,$17,
-       $18,1,$19,1,$20,1,1,1,$21,1,$22,1,$23,$23,$24,$25,
-       'captured_session',$26
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,1,$17,$18,
+       $19,1,$20,1,$21,1,1,1,$22,1,$23,1,$24,$24,$25,$26
      )`,
     [
       memory.representationId,
@@ -1779,6 +1828,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       fixtureTeam.id,
       workspace.id,
       memory.logicalMemoryId,
+      sourceRevisionId,
       memory.representation,
       sourceRevisionHash,
       provenanceHash,
@@ -1789,8 +1839,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       revoked ? "invalidated" : "available",
       memory.capturedAt,
       revoked ? memory.capturedAt : null,
-      revoked ? "share_revoked" : null,
-      memory.sessionId
+      revoked ? "share_revoked" : null
     ]
   );
   const chunkAad = {
@@ -2328,7 +2377,7 @@ export const resetFixture = async (client) => {
       `create temporary table fixture_reset_share_grants
          on commit drop as
        select id
-         from team_session_share_grants
+         from team_memory_share_grants
         where team_id = $1 or id = any($2::uuid[])`,
       [fixtureTeam.id, fixtureShareGrantIds]
     );
@@ -2546,7 +2595,7 @@ export const resetFixture = async (client) => {
       [fixtureTeam.id]
     );
     await client.query(
-      `update team_session_share_grants
+      `update team_memory_share_grants
           set active_retention_decision_id = null,
               active_purge_job_id = null
         where id in (select id from fixture_reset_share_grants)
@@ -2676,7 +2725,7 @@ export const resetFixture = async (client) => {
       [fixtureEventIds, fixtureConversationItemIds]
     );
     await client.query(
-      `delete from team_session_share_grants
+      `delete from team_memory_share_grants
         where id in (select id from fixture_reset_share_grants)`
     );
     await client.query(
@@ -2730,6 +2779,11 @@ export const resetFixture = async (client) => {
       `delete from memory_replicas
        where id = any($1::uuid[])`,
       [fixtureReplicaIds]
+    );
+    await client.query(
+      `delete from logical_memory_source_revisions
+       where logical_memory_id = any($1::uuid[])`,
+      [fixtureLogicalMemoryIds]
     );
     await client.query(
       "delete from logical_memories where id = any($1::uuid[])",
@@ -3612,7 +3666,10 @@ const assertMemoryState = async (client, key, expected) => {
       join memory_events me on me.id = mns.memory_event_id
       join messages msg on msg.id = mns.message_id
       join sessions s on s.id = me.session_id
-      left join team_session_share_grants tssg on tssg.session_id = s.id
+      left join local_captured_session_logical_memories local_memory
+        on local_memory.local_session_id = s.id
+      left join team_memory_share_grants tssg
+        on tssg.logical_memory_id = local_memory.logical_memory_id
       where mn.id = $1
     `,
     [memory.nodeId]
@@ -3887,8 +3944,8 @@ export const normalizedFixtureSnapshot = async (client, runtime) => {
       [logicalMemoryIds]
     ],
     [
-      "team_session_share_grants",
-      "select * from team_session_share_grants where id = any($1::uuid[])",
+      "team_memory_share_grants",
+      "select * from team_memory_share_grants where id = any($1::uuid[])",
       [fixtureShareGrantIds]
     ],
     [
@@ -4109,7 +4166,7 @@ export const validateFixture = async (client, runtime) => {
   await assertCount(
     client,
     `select count(*)::int as count
-     from team_session_share_grants
+     from team_memory_share_grants
      where id = any($1::uuid[])`,
     [
       fixtureMemoryRows

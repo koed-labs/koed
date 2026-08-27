@@ -1925,7 +1925,7 @@ describe("local collaboration realtime broker", () => {
       type: "access_revoked",
       resource: {
         ...remoteEvent(eventA, eventCursorA).resource,
-        type: "team_session_share_grant",
+        type: "team_memory_share_grant",
         id: sharedSessionId,
         threadId: null,
         messageId: null,

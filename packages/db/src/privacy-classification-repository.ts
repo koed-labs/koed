@@ -769,7 +769,7 @@ export const createPrivacyClassificationRepository = (
       `select source_grant.owner_user_id, source_grant.team_id,
               source_grant.team_workspace_id
          from team_conversation_source_grants source_grant
-         join team_session_share_grants share_grant
+         join team_memory_share_grants share_grant
            on share_grant.id=source_grant.share_grant_id
           and share_grant.owner_user_id=source_grant.owner_user_id
           and share_grant.team_id=source_grant.team_id
@@ -1283,7 +1283,7 @@ export const createPrivacyClassificationRepository = (
                   else null
                 end as source_closure_hash
            from team_conversation_source_grants source_grant
-           join team_session_share_grants share_grant
+           join team_memory_share_grants share_grant
              on share_grant.id=source_grant.share_grant_id
             and share_grant.owner_user_id=source_grant.owner_user_id
             and share_grant.team_id=source_grant.team_id
@@ -1405,7 +1405,7 @@ export const createPrivacyClassificationRepository = (
            and source_grant.team_id=a.team_id
            and source_grant.team_workspace_id=a.team_workspace_id
            and source_grant.lifecycle='active' and source_grant.revoked_at is null
-          join team_session_share_grants share_grant
+          join team_memory_share_grants share_grant
             on share_grant.id=source_grant.share_grant_id
            and share_grant.owner_user_id=source_grant.owner_user_id
            and share_grant.team_id=source_grant.team_id
@@ -2113,7 +2113,7 @@ export const createPrivacyClassificationRepository = (
              and source_grant.team_id=$3
              and source_grant.team_workspace_id=$4
              and source_grant.lifecycle='active' and source_grant.revoked_at is null
-            join team_session_share_grants share_grant
+            join team_memory_share_grants share_grant
               on share_grant.id=source_grant.share_grant_id
              and share_grant.owner_user_id=source_grant.owner_user_id
              and share_grant.team_id=source_grant.team_id
@@ -2472,7 +2472,7 @@ export const createPrivacyClassificationRepository = (
           `select source_grant.owner_user_id, source_grant.team_id,
                   source_grant.team_workspace_id
              from team_conversation_source_grants source_grant
-             join team_session_share_grants share_grant
+             join team_memory_share_grants share_grant
                on share_grant.id=source_grant.share_grant_id
               and share_grant.owner_user_id=source_grant.owner_user_id
               and share_grant.team_id=source_grant.team_id

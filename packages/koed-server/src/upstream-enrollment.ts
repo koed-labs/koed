@@ -127,6 +127,7 @@ export interface UpstreamEnrollmentDeps {
   randomId?: () => string;
   randomBytes?: typeof randomBytes;
   beforeEnrollmentEffect?: (boundary: string) => void;
+  sourceOwnerPrincipalId?: string;
 }
 
 const depsWithDefaults = (
@@ -140,7 +141,8 @@ const depsWithDefaults = (
   now: deps.now ?? (() => new Date()),
   randomId: deps.randomId ?? randomUUID,
   randomBytes: deps.randomBytes ?? randomBytes,
-  beforeEnrollmentEffect: deps.beforeEnrollmentEffect ?? (() => undefined)
+  beforeEnrollmentEffect: deps.beforeEnrollmentEffect ?? (() => undefined),
+  sourceOwnerPrincipalId: deps.sourceOwnerPrincipalId ?? ""
 });
 
 const defaultStore = (now: string): UpstreamEnrollmentStore => ({
@@ -588,6 +590,7 @@ const createUpstreamChallenge = async (
     backendId: string;
     deviceInstanceId: string;
     protocolDeploymentId: string;
+    sourceOwnerPrincipalId: string;
     challengeHash: string;
     credentialKeyId: string;
     verifierSecret: string;
@@ -618,6 +621,9 @@ const createUpstreamChallenge = async (
         upstream_backend_id: input.backendId,
         device_instance_id: input.deviceInstanceId,
         protocol_deployment_id: input.protocolDeploymentId,
+        ...(input.sourceOwnerPrincipalId
+          ? { source_owner_principal_id: input.sourceOwnerPrincipalId }
+          : {}),
         ...(input.rotation
           ? { rotate_credential_id: input.rotation.credentialId }
           : {}),
@@ -1096,6 +1102,18 @@ const startUpstreamEnrollmentWithFetch = async (
       message: `Upstream backend ${backendId} has no browser-enrollable route-policy families.`
     };
   }
+  if (
+    operationFamilies.includes("share_grant_management") &&
+    !uuidPattern.test(resolvedDeps.sourceOwnerPrincipalId)
+  ) {
+    return {
+      ok: false,
+      state: "failed",
+      backend,
+      message:
+        "Share Grant enrollment requires the authenticated local owner principal."
+    };
+  }
 
   let store = readStore(paths, resolvedDeps);
   let expectedRecord = latestEnrollment(store, backendId);
@@ -1387,6 +1405,7 @@ const startUpstreamEnrollmentWithFetch = async (
         backendId,
         deviceInstanceId,
         protocolDeploymentId: identity.deploymentId!,
+        sourceOwnerPrincipalId: resolvedDeps.sourceOwnerPrincipalId,
         challengeHash,
         credentialKeyId,
         verifierSecret,

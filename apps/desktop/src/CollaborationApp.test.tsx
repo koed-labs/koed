@@ -3,6 +3,7 @@
 import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
+  PERSONAL_DESKTOP_CONTRACT_VERSION,
   collaborationSafeErrorMessages,
   collaborationSnapshotSchema,
   type CollaborationMessage,
@@ -1084,12 +1085,21 @@ const click = async (container: HTMLElement, label: string) => {
   const button = [...document.body.querySelectorAll("button")].find(
     (item) =>
       item.getAttribute("aria-label") === label ||
+      item.querySelector("strong")?.textContent?.trim() === label ||
       item.querySelector(".desktop-sidebar-nav-label")?.textContent?.trim() ===
         label ||
       item.textContent?.replace(/\s+/g, " ").trim() === label
   ) as HTMLButtonElement | undefined;
   if (!button) throw new Error(`Missing button: ${label}`);
   await act(async () => button.click());
+};
+
+const clickNoteBody = async () => {
+  const body = document.body.querySelector<HTMLElement>(
+    '[aria-label="Edit Note content"]'
+  );
+  if (!body) throw new Error("Missing Note body edit trigger");
+  await act(async () => body.click());
 };
 
 const setValue = (
@@ -1479,7 +1489,7 @@ describe("CollaborationApp", () => {
     );
     await act(async () =>
       container
-        .querySelector<HTMLButtonElement>(".personal-session-row")
+        .querySelector<HTMLButtonElement>(".personal-session-row-select")
         ?.click()
     );
     await vi.waitFor(() =>
@@ -1536,14 +1546,21 @@ describe("CollaborationApp", () => {
         updatedAt: at,
         activatedAt: null,
         revokedAt: null,
-        grantId: null
+        grantId: null,
+        grantVersion: null
       },
       sourceAccess: null,
       summary: {
+        source: {
+          kind: "captured_session",
+          sessionId: entry.id,
+          logicalMemoryId: entry.logicalMemoryId!
+        },
         sourceSessionId: entry.id,
         sourceTitle: entry.title,
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: {
           previewId: uuid(624),
@@ -1692,7 +1709,8 @@ describe("CollaborationApp", () => {
       updatedAt: at,
       activatedAt: null,
       revokedAt: null,
-      grantId: null
+      grantId: null,
+      grantVersion: null
     });
 
     await act(async () =>
@@ -1881,7 +1899,8 @@ describe("CollaborationApp", () => {
       updatedAt: at,
       activatedAt: null,
       revokedAt: null,
-      grantId
+      grantId,
+      grantVersion: grant.grantVersion
     };
     vi.mocked(client.previewSharedMemoryCandidate).mockResolvedValue({
       source,
@@ -2023,14 +2042,21 @@ describe("CollaborationApp", () => {
         updatedAt: at,
         activatedAt: at,
         revokedAt: null,
-        grantId: uuid(615)
+        grantId: uuid(615),
+        grantVersion: 2
       },
       sourceAccess: null,
       summary: {
+        source: {
+          kind: "captured_session",
+          sessionId: ids.eventSession,
+          logicalMemoryId: ids.logicalMemory
+        },
         sourceSessionId: ids.eventSession,
         sourceTitle: "Owner-wide active route fixture",
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: {
           previewId: uuid(616),
@@ -2093,6 +2119,13 @@ describe("CollaborationApp", () => {
       paused.pendingShare
     );
     vi.mocked(client.changeSharedMemoryFidelity).mockResolvedValue(replacement);
+    vi.mocked(client.revokeSharedMemory).mockResolvedValue({
+      ...grant,
+      lifecycle: "revoked",
+      grantVersion: grant.grantVersion + 1,
+      updatedAt: at,
+      revokedAt: at
+    });
     const personalMemoryApi: PersonalDesktopApi = {
       assignSessionProject: vi.fn(async () => ({ projectId: null })),
       listProjects: vi.fn(async () => []),
@@ -2182,7 +2215,13 @@ describe("CollaborationApp", () => {
       [...document.body.querySelectorAll(".collab-share-facts strong")].map(
         (label) => label.textContent
       )
-    ).toEqual(["Status", "Shared detail", "Updates", "Source access"]);
+    ).toEqual([
+      "Status",
+      "Shared detail",
+      "Updates",
+      "Source access",
+      "Workspace access"
+    ]);
     expect(document.body.textContent).not.toContain("Authorized preview");
     expect(
       [...document.body.querySelectorAll("button")].some(
@@ -2270,6 +2309,26 @@ describe("CollaborationApp", () => {
       expectedOperationVersion: 3,
       action: "pause"
     });
+    await click(container, "Done");
+    vi.mocked(client.listOwnedSharedMemoryGrants).mockClear();
+    await click(container, "Revoke");
+    await click(container, "Revoke Share");
+    await vi.waitFor(() =>
+      expect(client.revokeSharedMemory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          shareGrantId: grant.id,
+          expectedGrantVersion: grant.grantVersion,
+          teamId: grant.teamId,
+          workspaceId: grant.workspaceId,
+          reasonCode: "owner_revoked"
+        })
+      )
+    );
+    expect(client.listOwnedSharedMemoryGrants).not.toHaveBeenCalled();
+    expect(client.controlPendingShare).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "revoke" })
+    );
+    expect(document.body.textContent).toContain("Revoked");
   });
 
   it("closes Share revocation confirmation after approval while execution continues", async () => {
@@ -2306,10 +2365,12 @@ describe("CollaborationApp", () => {
       grant,
       sourceAccess: null,
       summary: {
+        source: grant.source,
         sourceSessionId: ids.eventSession,
         sourceTitle: "Approval-tracked revoke fixture",
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: null,
         lastReadyRevision: 12,
@@ -2322,6 +2383,13 @@ describe("CollaborationApp", () => {
       nextCursor: null
     });
     vi.mocked(client.getOwnedShare).mockResolvedValue(share);
+    vi.mocked(client.revokeSharedMemory).mockResolvedValue({
+      ...grant,
+      lifecycle: "revoked",
+      grantVersion: 2,
+      updatedAt: at,
+      revokedAt: at
+    });
 
     let actionGrants: readonly CollaborationActionGrantProjection[] = [];
     const actionGrantListeners = new Set<() => void>();
@@ -2394,6 +2462,109 @@ describe("CollaborationApp", () => {
         revokedAt: at
       })
     );
+  });
+
+  it("keeps owner controls without exposing Workspace content after access is removed", async () => {
+    const snapshot = baseSnapshot();
+    const grant: Extract<OwnedShareItem, { kind: "grant" }>["grant"] = {
+      source: {
+        kind: "captured_session",
+        sessionId: ids.eventSession,
+        logicalMemoryId: ids.logicalMemory
+      },
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      mode: "continuous",
+      id: uuid(626),
+      logicalGrantId: uuid(627),
+      logicalMemoryId: ids.logicalMemory,
+      ownerUserId: ids.remoteMark,
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      consentId: uuid(628),
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      fidelityPolicyRevision: 1,
+      sourceRevision: 12,
+      grantVersion: 1,
+      lifecycle: "active",
+      createdAt: at,
+      updatedAt: at,
+      revokedAt: null
+    };
+    const share: OwnedShareItem = {
+      kind: "grant",
+      grant,
+      sourceAccess: null,
+      summary: {
+        source: grant.source,
+        sourceSessionId: ids.eventSession,
+        companionThreadId: null,
+        sourceTitle: "Retained owner Share",
+        teamName: "Atlas Research",
+        workspaceName: "Launch Plans",
+        workspaceContentAccess: "unavailable",
+        mode: "continuous",
+        authorizedPreview: null,
+        lastReadyRevision: 12,
+        lastSuccessfulUpdateAt: at
+      }
+    };
+    const client = createClient(snapshot);
+    vi.mocked(client.listOwnedShares).mockResolvedValue({
+      shares: [share],
+      nextCursor: null
+    });
+    vi.mocked(client.getOwnedShare).mockResolvedValue(share);
+
+    await act(async () =>
+      root.render(
+        <PersonalMemoryView
+          client={client}
+          initialSection="shares"
+          markdownAdapters={{ openExternal: vi.fn(), writeClipboard: vi.fn() }}
+          onShare={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain(share.summary.sourceTitle)
+    );
+    await act(async () =>
+      (
+        document.body.querySelector(".collab-share-row") as HTMLButtonElement
+      ).click()
+    );
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain(
+        "Workspace content unavailable"
+      )
+    );
+
+    const modify = [...document.body.querySelectorAll("button")].find(
+      (button) => button.textContent === "Modify"
+    );
+    const revoke = [...document.body.querySelectorAll("button")].find(
+      (button) => button.textContent === "Revoke"
+    );
+    expect(modify?.disabled).toBe(true);
+    expect(revoke?.disabled).toBe(false);
+    expect(client.previewSharedMemoryCandidate).not.toHaveBeenCalled();
+
+    await act(async () => revoke?.click());
+    await click(container, "Revoke Share");
+    await vi.waitFor(() =>
+      expect(client.revokeSharedMemory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          shareGrantId: grant.id,
+          expectedGrantVersion: grant.grantVersion
+        })
+      )
+    );
+    expect(document.body.textContent).toContain("Revoked");
   });
 
   it("keeps the Shares pane while the responsive status view loads", async () => {
@@ -2645,14 +2816,21 @@ describe("CollaborationApp", () => {
         updatedAt: at,
         activatedAt: null,
         revokedAt: null,
-        grantId: null
+        grantId: null,
+        grantVersion: null
       },
       sourceAccess: null,
       summary: {
+        source: {
+          kind: "captured_session",
+          sessionId: source.id,
+          logicalMemoryId: source.logicalMemoryId!
+        },
         sourceSessionId: source.id,
         sourceTitle: source.title,
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: null,
         lastReadyRevision: null,
@@ -3886,14 +4064,21 @@ describe("CollaborationApp", () => {
         updatedAt: at,
         activatedAt: at,
         revokedAt: null,
-        grantId: uuid(605)
+        grantId: uuid(605),
+        grantVersion: 2
       },
       sourceAccess: null,
       summary: {
+        source: {
+          kind: "captured_session",
+          sessionId: ids.eventSession,
+          logicalMemoryId: ids.logicalMemory
+        },
         sourceSessionId: ids.eventSession,
         sourceTitle: "Async sharing fixture",
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: {
           previewId: uuid(606),
@@ -4863,6 +5048,149 @@ pnpm test
     await vi.waitFor(() =>
       expect(document.body.textContent).toContain("Local durable Note")
     );
+  });
+
+  it("reuses Note mutation keys after ambiguous create and update failures", async () => {
+    const client = createClient();
+    const personalMemoryApi = createPersonalMemoryApi();
+    const savedNote = testNote(2, "Durable retry Note");
+    personalMemoryApi.createNote = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce(savedNote);
+    personalMemoryApi.listNotes = vi.fn(async () => ({
+      notes: [savedNote],
+      nextBeforeSequence: null
+    }));
+    personalMemoryApi.loadNote = vi.fn(async () => savedNote);
+    await render(client, personalMemoryApi);
+
+    await click(container, "Notes");
+    await click(container, "New Note");
+    const createEditor = document.body.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Note content"]'
+    )!;
+    await act(async () => setValue(createEditor, savedNote.body));
+    await click(container, "Save Note");
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("could not be saved")
+    );
+    await click(container, "Save Note");
+    await vi.waitFor(() =>
+      expect(personalMemoryApi.createNote).toHaveBeenCalledTimes(2)
+    );
+    const createCalls = vi.mocked(personalMemoryApi.createNote!).mock.calls;
+    expect(createCalls[1]?.[0].idempotencyKey).toBe(
+      createCalls[0]?.[0].idempotencyKey
+    );
+
+    personalMemoryApi.updateNote = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce({
+        ...savedNote,
+        body: "Updated retry body",
+        revision: 2
+      });
+    await clickNoteBody();
+    const updateEditor = document.body.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Note content"]'
+    )!;
+    await act(async () => setValue(updateEditor, "Updated retry body"));
+    await click(container, "Save");
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("could not be saved")
+    );
+    await click(container, "Save");
+    await vi.waitFor(() =>
+      expect(personalMemoryApi.updateNote).toHaveBeenCalledTimes(2)
+    );
+    const updateCalls = vi.mocked(personalMemoryApi.updateNote!).mock.calls;
+    expect(updateCalls[1]?.[0].idempotencyKey).toBe(
+      updateCalls[0]?.[0].idempotencyKey
+    );
+  });
+
+  it("preserves an active Note draft across unrelated Note invalidations", async () => {
+    const client = createClient();
+    const personalMemoryApi = createPersonalMemoryApi();
+    let publishChange!: Parameters<PersonalDesktopApi["subscribe"]>[0];
+    personalMemoryApi.subscribe = vi.fn((listener) => {
+      publishChange = listener;
+      return () => undefined;
+    });
+    await render(client, personalMemoryApi);
+
+    await click(container, "Notes");
+    await click(container, "Check the Shared Memory split view.");
+    await clickNoteBody();
+    const editor = document.body.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Note content"]'
+    )!;
+    await act(async () => setValue(editor, "Unsaved local draft"));
+    await act(async () =>
+      publishChange({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        type: "notes_changed",
+        noteIds: [uuid(9_999)]
+      })
+    );
+
+    await vi.waitFor(() =>
+      expect(
+        document.body.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Note content"]'
+        )?.value
+      ).toBe("Unsaved local draft")
+    );
+    expect(document.body.textContent).toContain("Save");
+  });
+
+  it("ignores a Note save completion after the editor selection changes", async () => {
+    const client = createClient();
+    const personalMemoryApi = createPersonalMemoryApi();
+    const noteA = testNote(10, "Note A body");
+    const noteB = testNote(11, "Note B body");
+    personalMemoryApi.listNotes = vi.fn(async () => ({
+      notes: [noteB, noteA],
+      nextBeforeSequence: null
+    }));
+    personalMemoryApi.loadNote = vi.fn(async ({ noteId }) =>
+      noteId === noteA.noteId ? noteA : noteB
+    );
+    let resolveUpdate!: (note: PersonalDesktopNote) => void;
+    personalMemoryApi.updateNote = vi.fn(
+      () =>
+        new Promise<PersonalDesktopNote>((resolve) => {
+          resolveUpdate = resolve;
+        })
+    );
+    await render(client, personalMemoryApi);
+
+    await click(container, "Notes");
+    await click(container, noteA.title);
+    await clickNoteBody();
+    const editor = document.body.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Note content"]'
+    )!;
+    await act(async () => setValue(editor, "Note A saved body"));
+    await click(container, "Save");
+    await click(container, noteB.title);
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Note B body")
+    );
+    await click(container, noteA.title);
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Note A body")
+    );
+    await act(async () =>
+      resolveUpdate({ ...noteA, body: "Note A saved body", revision: 2 })
+    );
+
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Note A body")
+    );
+    expect(document.body.textContent).not.toContain("Note A saved body");
   });
 
   it("does not carry an unsaved Note draft across navigation", async () => {

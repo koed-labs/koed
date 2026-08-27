@@ -94,6 +94,7 @@ export const SUPPORTED_RERANKER_MODELS: Record<string, SupportedRerankerModel> =
 
 export const DEFAULT_EMBEDDING_MODEL_KEY = "qwen3-0.6b";
 export const DEFAULT_EMBEDDING_MAX_TOKENS = 4096;
+export const DEFAULT_LLAMA_N_CTX = 8192;
 export const DEFAULT_LLAMA_BATCH_TOKEN_HEADROOM = 8;
 export const DEFAULT_LLAMA_SERVER_BINARY = "/opt/llama.cpp/llama-server";
 export const QWEN_OPERATIONAL_MAX_TOKENS = 32768;
@@ -392,7 +393,7 @@ export const resolveEnv = (
     intAlias(
       environment,
       ["LLAMA_N_CTX", "EMBEDDING_LLAMA_N_CTX"],
-      QWEN_OPERATIONAL_MAX_TOKENS
+      DEFAULT_LLAMA_N_CTX
     ),
     QWEN_OPERATIONAL_MAX_TOKENS
   );

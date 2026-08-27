@@ -625,7 +625,11 @@ test("staged remote validation exercises Team semantic evidence and keeps graph/
                   "x-koed-identity": "local_edge_client_credential",
                   "x-koed-domain": "future_remote",
                   "x-koed-team-authority": "future_request_time",
-                  "x-koed-deployment-modes": ["developer", "local_personal"]
+                  "x-koed-deployment-modes": [
+                    "developer",
+                    "local_personal",
+                    "team_self_hosted"
+                  ]
                 }
               }
             }

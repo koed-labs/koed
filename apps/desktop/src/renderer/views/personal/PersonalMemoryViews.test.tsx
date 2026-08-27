@@ -4,6 +4,7 @@ import type {
   PersonalDesktopApi,
   PersonalDesktopConversationEvent,
   PersonalDesktopProject,
+  PersonalDesktopProjectMetadata,
   PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
 import { act, useState, type ReactNode } from "react";
@@ -236,8 +237,24 @@ describe("PersonalMemoryWorkspace", () => {
 
   it("loads the normalized Project index and restores focus through drilldown", async () => {
     const source = project([thread(1, { sourceAiClient: "pi" })]);
+    const metadata: PersonalDesktopProjectMetadata = {
+      schemaVersion: 1,
+      discoveredAt: "2026-07-23T00:00:00.000Z",
+      lastSeenAt: "2026-07-24T00:00:00.000Z",
+      localProjectId: "local-project-1",
+      displayName: source.name,
+      path: { cwd: source.path!, projectRoot: source.path },
+      git: {
+        branch: "main",
+        isWorktree: false,
+        remotes: [{ display: "github.com/koed-labs/koed" }]
+      }
+    };
     const store = new PersonalMemoryStore(
-      api({ listProjects: vi.fn(async () => [source]) })
+      api({
+        listProjects: vi.fn(async () => [source]),
+        listProjectMetadata: vi.fn(async () => [metadata])
+      })
     );
 
     await act(async () => {
@@ -261,6 +278,7 @@ describe("PersonalMemoryWorkspace", () => {
     );
     expect(activeProjects).not.toBeNull();
     expect(activeProjects?.textContent).not.toContain("Active");
+    expect(container.textContent).toContain("koed-labs/koed");
     const overview = container.querySelector(
       '[data-project-id="project-1"] .personal-project-overview'
     );
@@ -632,22 +650,26 @@ describe("PersonalMemoryWorkspace", () => {
         </Harness>
       );
     });
-    await vi.waitFor(() => expect(container.textContent).toContain("Manage"));
-    expect(container.textContent).toContain("Move to Project:");
-    expect(container.textContent).not.toContain("Automatic");
+    const manage = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Manage Captured Session"]'
+    );
+    expect(manage?.querySelector("svg[aria-hidden='true']")).not.toBeNull();
+    expect(container.textContent).not.toContain("Move to Project:");
     expect(container.textContent).not.toContain("Move to another Project");
+
+    await act(async () => manage?.click());
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Move to Project:")
+    );
     expect(
-      container.querySelector(
-        ".personal-session-assignment > summary > svg[aria-hidden='true']"
-      )
-    ).not.toBeNull();
-    expect(
-      [...container.querySelectorAll("button")]
+      [...document.querySelectorAll("button")]
         .find((button) => button.textContent === "Move")
         ?.classList.contains("personal-move-button")
     ).toBe(true);
 
-    const form = container.querySelector("form");
+    const form = document.querySelector(
+      ".personal-session-assignment-dialog form"
+    );
     await act(async () => {
       const select = form?.querySelector<HTMLSelectElement>("select");
       if (select) select.value = target.id;
@@ -959,5 +981,222 @@ describe("PersonalMemoryWorkspace", () => {
     expect(
       container.querySelector(".personal-managed-composer")?.className
     ).toContain("state-reconciling");
+  });
+
+  it("surfaces provider-aware Git links and keeps Session actions outside the row selection button", async () => {
+    const source = project([thread(1)]);
+    const metadata: PersonalDesktopProjectMetadata = {
+      schemaVersion: 1,
+      discoveredAt: "2026-07-23T00:00:00.000Z",
+      lastSeenAt: "2026-07-24T00:00:00.000Z",
+      localProjectId: `lp_${"1".repeat(32)}`,
+      displayName: source.name,
+      path: { cwd: source.path!, projectRoot: source.path },
+      git: {
+        branch: "main",
+        isWorktree: false,
+        remotes: [{ display: "github.com/koed-labs/koed" }]
+      }
+    };
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [source]),
+        listProjectMetadata: vi.fn(async () => [metadata])
+      })
+    );
+    const openExternal = vi.fn(async () => undefined);
+    const revealLocalProject = vi.fn(async () => undefined);
+
+    await act(async () => {
+      root.render(
+        <Harness initialRoute={{ kind: "projects" }}>
+          {({ onNavigate, route }) => (
+            <PersonalMemoryWorkspace
+              onNavigate={onNavigate}
+              openExternal={openExternal}
+              revealLocalProject={revealLocalProject}
+              route={route}
+              store={store}
+            />
+          )}
+        </Harness>
+      );
+    });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(source.name)
+    );
+
+    const rowRepo = container.querySelector(
+      '[data-project-id="project-1"] .personal-project-repo'
+    );
+    expect(rowRepo?.classList.contains("personal-project-repo-static")).toBe(
+      true
+    );
+    expect(rowRepo?.getAttribute("role")).toBeNull();
+    await act(async () => {
+      (rowRepo as HTMLElement)?.click();
+    });
+    expect(openExternal).not.toHaveBeenCalled();
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-project-id="project-1"]')
+        ?.click();
+    });
+
+    const headerRepo = container.querySelector(
+      ".personal-project-detail-heading .personal-project-repo"
+    );
+    expect(headerRepo?.tagName).toBe("BUTTON");
+    await act(async () => {
+      (headerRepo as HTMLElement)?.click();
+    });
+    expect(openExternal).toHaveBeenCalledWith(
+      "https://github.com/koed-labs/koed"
+    );
+
+    const sessionRow = container.querySelector(".personal-session-row");
+    const sessionSelect = sessionRow?.querySelector(
+      ".personal-session-row-select"
+    );
+    expect(sessionRow?.tagName).toBe("DIV");
+    expect(sessionSelect?.tagName).toBe("BUTTON");
+    expect(sessionSelect?.querySelector(".personal-session-link")).toBeNull();
+    const sessionLinks = Array.from(
+      sessionRow?.querySelectorAll(".personal-session-link") ?? []
+    );
+    expect(sessionLinks).toHaveLength(2);
+    expect(sessionLinks[0]?.getAttribute("title")).toBeNull();
+    expect(sessionLinks[0]?.getAttribute("data-tooltip")).toBe(
+      `Reveal ${source.name} in file browser`
+    );
+    expect(sessionLinks[1]?.getAttribute("title")).toBeNull();
+    expect(sessionLinks[1]?.getAttribute("data-tooltip")).toBe(
+      "Open koed-labs/koed on GitHub"
+    );
+    await act(async () => {
+      (sessionLinks[0] as HTMLElement).click();
+    });
+    expect(revealLocalProject).toHaveBeenCalledWith(metadata.localProjectId);
+    await act(async () => {
+      (sessionLinks[1] as HTMLElement).click();
+    });
+    expect(openExternal).toHaveBeenCalledWith(
+      "https://github.com/koed-labs/koed"
+    );
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".personal-session-row-select")
+        ?.click();
+    });
+    const sessionHeaderRepo = container.querySelector(
+      ".personal-session-header-copy .personal-project-repo"
+    );
+    expect(sessionHeaderRepo?.textContent).toContain("koed-labs/koed");
+    expect(sessionHeaderRepo?.textContent).not.toContain("github.com/");
+    await act(async () => {
+      (sessionHeaderRepo as HTMLElement)?.click();
+    });
+    expect(openExternal).toHaveBeenLastCalledWith(
+      "https://github.com/koed-labs/koed"
+    );
+  });
+
+  it("uses generic repository semantics for non-GitHub remotes", async () => {
+    const source = project([thread(1)]);
+    const metadata: PersonalDesktopProjectMetadata = {
+      schemaVersion: 1,
+      discoveredAt: "2026-07-23T00:00:00.000Z",
+      lastSeenAt: "2026-07-24T00:00:00.000Z",
+      localProjectId: `lp_${"2".repeat(32)}`,
+      displayName: source.name,
+      path: { cwd: source.path!, projectRoot: source.path },
+      git: {
+        branch: "main",
+        isWorktree: false,
+        remotes: [{ display: "gitlab.example/koed-labs/koed" }]
+      }
+    };
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [source]),
+        listProjectMetadata: vi.fn(async () => [metadata])
+      })
+    );
+    const openExternal = vi.fn(async () => undefined);
+
+    await act(async () => {
+      root.render(
+        <PersonalMemoryWorkspace
+          onNavigate={vi.fn()}
+          openExternal={openExternal}
+          route={{ kind: "project", projectId: source.id }}
+          store={store}
+        />
+      );
+    });
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector(
+          ".personal-project-detail-heading .personal-project-repo"
+        )
+      ).not.toBeNull()
+    );
+
+    const repository = container.querySelector<HTMLButtonElement>(
+      ".personal-project-detail-heading .personal-project-repo"
+    );
+    expect(repository?.dataset.repositoryProvider).toBe("git");
+    expect(repository?.getAttribute("aria-label")).toBe(
+      "Open repository gitlab.example/koed-labs/koed"
+    );
+    expect(repository?.querySelector(".lucide-git-fork")).not.toBeNull();
+    expect(repository?.querySelector(".lucide-github")).toBeNull();
+    await act(async () => repository?.click());
+    expect(openExternal).toHaveBeenCalledWith(
+      "https://gitlab.example/koed-labs/koed"
+    );
+  });
+
+  it("shows catalogue activity for a Project without Captured Sessions", async () => {
+    const metadata: PersonalDesktopProjectMetadata = {
+      schemaVersion: 1,
+      discoveredAt: "2026-07-23T00:00:00.000Z",
+      lastSeenAt: "2026-07-24T00:00:00.000Z",
+      localProjectId: `lp_${"3".repeat(32)}`,
+      displayName: "Catalogue only",
+      path: { cwd: "/tmp/catalogue-only", projectRoot: null }
+    };
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => []),
+        listProjectMetadata: vi.fn(async () => [metadata])
+      })
+    );
+
+    await act(async () => {
+      root.render(
+        <PersonalMemoryWorkspace
+          onNavigate={vi.fn()}
+          route={{ kind: "projects" }}
+          store={store}
+        />
+      );
+    });
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector(
+          `[data-project-id="${metadata.localProjectId}"]`
+        )
+      ).not.toBeNull()
+    );
+
+    const projectRow = container.querySelector(
+      `[data-project-id="${metadata.localProjectId}"]`
+    );
+    const activity = projectRow?.querySelector("time");
+    expect(activity?.dateTime).toBe(metadata.lastSeenAt);
+    expect(activity?.textContent).not.toBe("No activity");
   });
 });

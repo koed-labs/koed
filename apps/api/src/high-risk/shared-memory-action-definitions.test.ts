@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
@@ -29,6 +30,7 @@ const ids = {
   mutation: randomUUID(),
   request: randomUUID()
 };
+const sourceDeploymentProtocolId = randomUUID();
 
 const source = {
   logicalMemoryId: ids.logicalMemory,
@@ -196,6 +198,56 @@ const fidelityIntent = (
   }) as const satisfies HighRiskActionGrantIntent;
 
 describe("Shared Memory action definitions", () => {
+  it("uses the public admission reference for candidate-preview execution", async () => {
+    const intent = {
+      action: "shared_memory.candidate_preview",
+      source: capturedSource,
+      sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+      activationRepresentation: "lcm_leaves",
+      logicalMemoryId: ids.logicalMemory,
+      candidateHash: "c".repeat(64),
+      sourceRevision: 4,
+      itemCount: 1,
+      excludedItemCount: 0,
+      manifest: [{ sourceId: ids.preview, revisionHash: "d".repeat(64) }],
+      byteCount: 256,
+      sourceDeploymentProtocolId,
+      sourceOwnerPrincipalId: ids.actor,
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      maximumFidelity: "lcm_leaves",
+      includeCuratedMemory: false,
+      mode: "snapshot",
+      expiresAt: null
+    } as const satisfies HighRiskActionGrantIntent;
+
+    const admitted = await admit(intent);
+
+    expect(admitted).toMatchObject({
+      operation: sharedMemoryCandidatePreviewActionGrantBinding({
+        referenceId: ids.request,
+        source: capturedSource,
+        sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+        activationRepresentation: "lcm_leaves",
+        logicalMemoryId: ids.logicalMemory,
+        candidateHash: "c".repeat(64),
+        sourceRevision: 4,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest: [{ sourceId: ids.preview, revisionHash: "d".repeat(64) }],
+        byteCount: 256,
+        sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId: ids.actor,
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace,
+        maximumFidelity: "lcm_leaves",
+        includeCuratedMemory: false,
+        mode: "snapshot",
+        expiresAt: null
+      })
+    });
+  });
+
   it("admits an exact authoritative preview as Direct", async () => {
     const repo = repository();
     const intent = {

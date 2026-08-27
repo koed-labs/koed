@@ -239,7 +239,7 @@ describeDb("Collaboration repository", () => {
         expires_at timestamptz,
         revoked_at timestamptz
       );
-      create temp table team_session_share_grants (
+      create temp table team_memory_share_grants (
         id uuid primary key,
         logical_memory_id uuid not null,
         remote_replica_id uuid not null,
@@ -454,7 +454,7 @@ describeDb("Collaboration repository", () => {
         ]
       );
       await authorizationPool.query(
-        `insert into team_session_share_grants (
+        `insert into team_memory_share_grants (
            id,logical_memory_id,remote_replica_id,owner_principal_id,team_id,
            team_workspace_id,consent_id,source_owner_policy_id,
            source_owner_policy_version,team_policy_id,team_policy_version,
@@ -507,7 +507,7 @@ describeDb("Collaboration repository", () => {
       maximumFidelity: FidelityCeiling
     ): Promise<void> => {
       await authorizationPool.query(
-        `update team_session_share_grants
+        `update team_memory_share_grants
             set maximum_fidelity=$2 where id=$1`,
         [scope.shareGrantId, maximumFidelity]
       );
@@ -544,7 +544,7 @@ describeDb("Collaboration repository", () => {
       included: boolean
     ): Promise<void> => {
       const updates = {
-        grant: ["team_session_share_grants", "id", scope.shareGrantId],
+        grant: ["team_memory_share_grants", "id", scope.shareGrantId],
         consent: [
           "source_owner_representation_consents",
           "id",
@@ -657,9 +657,7 @@ describeDb("Collaboration repository", () => {
         eventTeamWorkspaceId?: string;
         eventLogicalMemoryId?: string;
         eventShareGrantId?: string;
-        resourceType?:
-          | "team_session_share_grant"
-          | "team_memory_representation";
+        resourceType?: "team_memory_share_grant" | "team_memory_representation";
       }
     ) => {
       const eventId = randomUUID();
@@ -680,7 +678,7 @@ describeDb("Collaboration repository", () => {
           input?.eventTeamWorkspaceId ?? scope.teamWorkspaceId,
           shareGrantId,
           input?.eventLogicalMemoryId ?? scope.logicalMemoryId,
-          input?.resourceType ?? "team_session_share_grant",
+          input?.resourceType ?? "team_memory_share_grant",
           randomUUID()
         ]
       );
@@ -705,6 +703,13 @@ describeDb("Collaboration repository", () => {
   beforeAll(async () => {
     pool = createDbPool({ connectionString: databaseUrl });
     await runDbMigrations(pool);
+    await pool.query(
+      `insert into deployment_identities
+         (protocol_deployment_id,locality,profile,display_name)
+       values ($1,'local','local_personal','Collaboration test device')
+       on conflict do nothing`,
+      [randomUUID()]
+    );
     competingPool = createDbPool({ connectionString: databaseUrl });
     provider = createLocalTestKeyEnvelopeEncryptionProvider(
       Buffer.alloc(32, 73).toString("base64")
@@ -887,7 +892,7 @@ describeDb("Collaboration repository", () => {
       await expect(isAuthorized(downgrade)).resolves.toBe(true);
 
       await harness.pool.query(
-        `update team_session_share_grants
+        `update team_memory_share_grants
             set lifecycle='revoked',revoked_at=now()
           where id=$1`,
         [scope.shareGrantId]
@@ -1722,10 +1727,10 @@ describeDb("Collaboration repository", () => {
       upstreamUserId: randomUUID()
     };
     const remoteDeviceId = randomUUID();
-    await pool.query(
+    const enrollment = await pool.query<{ id: string }>(
       `insert into collaboration_shared_memory_enrollments
          (backend_id,local_owner_user_id,upstream_user_id,remote_device_id)
-       values ($1,$2,$3,$4)`,
+       values ($1,$2,$3,$4) returning id`,
       [
         identity.backendId,
         identity.localOwnerUserId,
@@ -1760,7 +1765,38 @@ describeDb("Collaboration repository", () => {
         memoryEventId: firstEventId
       })
     ).resolves.toMatchObject({ revision: 1, memoryEventId: firstEventId });
+    await expect(
+      pool.query(
+        `select 1 from collaboration_continuous_note_advancement_work
+          where local_owner_user_id=$1`,
+        [ownerUserId]
+      )
+    ).resolves.toHaveProperty("rowCount", 0);
 
+    const companionBindingId = randomUUID();
+    const shareGrantId = randomUUID();
+    const logicalGrantId = randomUUID();
+    const consentId = randomUUID();
+    const teamId = randomUUID();
+    const workspaceId = randomUUID();
+    const companionThreadId = randomUUID();
+    const sharedSessionId = randomUUID();
+    await pool.query(
+      `insert into collaboration_shared_memory_companion_bindings
+         (id,enrollment_id,share_grant_id,logical_memory_id,team_id,
+          team_workspace_id,companion_thread_id,shared_session_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        companionBindingId,
+        enrollment.rows[0]!.id,
+        shareGrantId,
+        note.logicalMemoryId,
+        teamId,
+        workspaceId,
+        companionThreadId,
+        sharedSessionId
+      ]
+    );
     const revised = await repository.updatePersonalNoteBody(
       actor(ownerUserId),
       {
@@ -1780,23 +1816,79 @@ describeDb("Collaboration repository", () => {
     ).resolves.toMatchObject({ revision: 2, memoryEventId: secondEventId });
 
     await expect(
+      pool.query(
+        `select 1 from collaboration_continuous_note_advancement_work
+          where local_owner_user_id=$1`,
+        [ownerUserId]
+      )
+    ).resolves.toHaveProperty("rowCount", 0);
+
+    const authorityStore = createCollaborationSharedMemoryAuthorityStore(pool, {
+      envelopeEncryptionProvider: provider
+    });
+    const activatedAt = new Date().toISOString();
+    await expect(
+      authorityStore.persistAuthoritativeGrant({
+        identity,
+        grant: {
+          source: {
+            kind: "personal_note",
+            noteId: note.noteId,
+            noteRevision: 1,
+            memoryEventId: firstEventId,
+            logicalMemoryId: note.logicalMemoryId
+          },
+          sourceCapabilities: ["memory_events"],
+          activationRepresentation: "memory_events",
+          id: shareGrantId,
+          logicalGrantId,
+          logicalMemoryId: note.logicalMemoryId,
+          ownerUserId: identity.upstreamUserId,
+          teamId,
+          teamWorkspaceId: workspaceId,
+          consentId,
+          mode: "continuous",
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          fidelityPolicyRevision: 1,
+          sourceRevision: 1,
+          grantVersion: 1,
+          lifecycle: "active",
+          createdAt: activatedAt,
+          updatedAt: activatedAt,
+          revokedAt: null,
+          companionScope: {
+            scope: "team",
+            kind: "shared_session_discussion",
+            teamId,
+            teamWorkspaceId: workspaceId,
+            logicalMemoryId: note.logicalMemoryId,
+            shareGrantId
+          }
+        },
+        prior: null,
+        mode: "authoritative_snapshot",
+        companion: { companionThreadId, sharedSessionId }
+      })
+    ).resolves.toMatchObject({ grant: { id: shareGrantId } });
+
+    await expect(
       pool.query<{
         local_note_revision: number;
         state: string;
         redacted_failure_code: string | null;
       }>(
-        `select local_note_revision,state,redacted_failure_code
-           from collaboration_continuous_note_advancement_work
-          where local_note_id=$1 order by local_note_revision`,
+        `select local_revision.revision as local_note_revision,
+                work.state,work.redacted_failure_code
+           from collaboration_continuous_note_advancement_work work
+           join local_personal_note_source_revisions local_revision
+             on local_revision.source_revision_id=work.source_revision_id
+          where local_revision.local_note_id=$1
+          order by local_revision.revision`,
         [note.noteId]
       )
     ).resolves.toMatchObject({
       rows: [
-        {
-          local_note_revision: 1,
-          state: "completed",
-          redacted_failure_code: "superseded"
-        },
         {
           local_note_revision: 2,
           state: "pending",
@@ -1805,9 +1897,6 @@ describeDb("Collaboration repository", () => {
       ]
     });
 
-    const authorityStore = createCollaborationSharedMemoryAuthorityStore(pool, {
-      envelopeEncryptionProvider: provider
-    });
     const claimed =
       await authorityStore.claimContinuousPersonalNoteAdvancementWork({
         limit: 50
@@ -1854,13 +1943,20 @@ describeDb("Collaboration repository", () => {
     const pendingShareId = randomUUID();
     const firstMutationId = randomUUID();
     const secondMutationId = randomUUID();
-    const logicalMemoryId = randomUUID();
+    const logicalMemory = await pool.query<{ logical_memory_id: string }>(
+      `select logical_memory_id
+         from local_personal_note_logical_memories
+        where local_note_id=$1 and owner_user_id=$2`,
+      [note.noteId, ownerUserId]
+    );
+    const logicalMemoryId = logicalMemory.rows[0]!.logical_memory_id;
     await expect(
       authorityStore.persistPendingShareSourceWork({
         identity,
         pendingShareId,
         mutationId: firstMutationId,
         mode: "continuous",
+        sourceRevision: 1,
         source: {
           kind: "personal_note",
           noteId: note.noteId,
@@ -1873,19 +1969,23 @@ describeDb("Collaboration repository", () => {
     const firstSourceClaims = await authorityStore.claimPendingShareSourceWork({
       limit: 50
     });
-    expect(firstSourceClaims).toContainEqual(
-      expect.objectContaining({
-        pendingShareId,
-        mutationId: firstMutationId,
-        mode: "continuous"
-      })
-    );
+    expect(
+      firstSourceClaims.some(
+        (claim) =>
+          claim.pendingShareId === pendingShareId &&
+          claim.mutationId === firstMutationId &&
+          claim.mode === "continuous" &&
+          claim.source.kind === "personal_note" &&
+          claim.source.noteRevision === 1
+      )
+    ).toBe(true);
     await expect(
       authorityStore.persistPendingShareSourceWork({
         identity,
         pendingShareId,
         mutationId: secondMutationId,
         mode: "continuous",
+        sourceRevision: 2,
         source: {
           kind: "personal_note",
           noteId: note.noteId,
@@ -1897,10 +1997,12 @@ describeDb("Collaboration repository", () => {
     ).resolves.toBe(true);
     await expect(
       pool.query<{ mutation_id: string; state: string }>(
-        `select mutation_id,state
-           from collaboration_pending_share_source_work
-          where pending_share_id=$1
-          order by local_note_revision`,
+        `select work.mutation_id,work.state
+           from collaboration_pending_share_source_work work
+           join local_personal_note_source_revisions local_revision
+             on local_revision.source_revision_id=work.source_revision_id
+          where work.pending_share_id=$1
+          order by local_revision.revision`,
         [pendingShareId]
       )
     ).resolves.toMatchObject({
@@ -1912,13 +2014,16 @@ describeDb("Collaboration repository", () => {
     const secondSourceClaims = await authorityStore.claimPendingShareSourceWork(
       { limit: 50 }
     );
-    expect(secondSourceClaims).toContainEqual(
-      expect.objectContaining({
-        pendingShareId,
-        mutationId: secondMutationId,
-        mode: "continuous"
-      })
-    );
+    expect(
+      secondSourceClaims.some(
+        (claim) =>
+          claim.pendingShareId === pendingShareId &&
+          claim.mutationId === secondMutationId &&
+          claim.mode === "continuous" &&
+          claim.source.kind === "personal_note" &&
+          claim.source.noteRevision === 2
+      )
+    ).toBe(true);
     await Promise.all(
       [...firstSourceClaims, ...secondSourceClaims].map((item) =>
         authorityStore.finishPendingShareSourceWork({
@@ -1927,6 +2032,63 @@ describeDb("Collaboration repository", () => {
         })
       )
     );
+  });
+
+  it("invalidates a stale Personal Note projection before it can be embedded", async () => {
+    const ownerUserId = await createUser("Racing Note Owner");
+    const note = await repository.createPersonalNote(actor(ownerUserId), {
+      body: "Original revision",
+      idempotencyKey: `racing-note:${randomUUID()}`
+    });
+    const event = await pool.query<{ id: string }>(
+      `insert into memory_events
+         (owner_user_id,visibility,event_type,capture_method,payload,
+          include_in_embedding,idempotency_key,source_sequence)
+       values ($1,'personal','captured','api',$2::jsonb,true,$3,1)
+       returning id`,
+      [
+        ownerUserId,
+        JSON.stringify({
+          rawEventType: "personal_note_revision",
+          metadata: {
+            personalNoteId: note.noteId,
+            personalNoteRevision: 1
+          }
+        }),
+        `personal-note:${note.noteId}:revision:1`
+      ]
+    );
+    await repository.updatePersonalNoteBody(actor(ownerUserId), {
+      noteId: note.noteId,
+      expectedRevision: 1,
+      body: "Winning revision",
+      idempotencyKey: `racing-note-update:${randomUUID()}`
+    });
+
+    await expect(
+      repository.markPersonalNoteProjectionAvailable(actor(ownerUserId), {
+        noteId: note.noteId,
+        revision: 1,
+        memoryEventId: event.rows[0]!.id
+      })
+    ).resolves.toBeNull();
+    await expect(
+      pool.query<{
+        include_in_embedding: boolean;
+        invalidation_reason: string | null;
+      }>(
+        `select include_in_embedding,invalidation_reason
+           from memory_events where id=$1`,
+        [event.rows[0]!.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          include_in_embedding: false,
+          invalidation_reason: "personal_note_projection_race"
+        }
+      ]
+    });
   });
 
   it("keeps encrypted collaboration metadata out of structural and JSON payload records", async () => {

@@ -353,7 +353,7 @@ export const createTeamConversationSourceService = (options: {
     await context.requireRepository().recordAuditEvent({
       actorUserId: input.viewerId,
       action: "team_conversation_source.access_denied",
-      targetTable: "team_session_share_grants",
+      targetTable: "team_memory_share_grants",
       targetId: input.shareGrantId,
       metadata: { operation: input.operation }
     });

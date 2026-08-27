@@ -72,6 +72,14 @@ const backend = (
     admin: "enabled",
     shareGrantManagement: "enabled"
   },
+  capabilities: {
+    state: "validated",
+    schemaVersion: 6,
+    payload: {
+      capabilitySchemaVersion: 6,
+      protocols: { sharedMemorySourceAdmission: { version: 1 } }
+    }
+  },
   ...overrides
 });
 
@@ -168,7 +176,11 @@ describe("collaboration Action Grant control", () => {
       now: () => nowRef.value,
       randomUuid: () => ids.actionGrant,
       randomBytes: (size) => Buffer.alloc(size, 0x41),
-      random: () => 0.25
+      random: () => 0.25,
+      resolveCandidateSourceIdentity: () => ({
+        sourceDeploymentProtocolId: "00000000-0000-4000-8000-000000000015",
+        sourceOwnerPrincipalId: ids.principal
+      })
     });
     const context: CollaborationActionGrantControlContext = {
       backend: input.backend ?? backend(),
@@ -385,6 +397,117 @@ describe("collaboration Action Grant control", () => {
       mode: "continuous",
       maximumFidelity: "memory_events",
       includeCuratedMemory: false
+    });
+  });
+
+  it("rejects candidate source admission with an explicit protocol mismatch before creating a grant", async () => {
+    const command = previewGrantCommand();
+    const fixture = createFixture({
+      backend: backend({
+        capabilities: {
+          state: "validated",
+          schemaVersion: 6,
+          payload: { capabilitySchemaVersion: 6 }
+        }
+      }),
+      context: {
+        operationFamilies: new Set(["share_grant_management"]),
+        localOwnerUserId: ids.principal
+      }
+    });
+
+    const result = await fixture.control.dispatch(
+      {
+        ...command,
+        input: {
+          intent: {
+            ...command.input.intent,
+            candidate: {
+              source: capturedSource,
+              sourceCapabilities: [
+                "lcm_rollups",
+                "lcm_leaves",
+                "memory_events"
+              ],
+              activationRepresentation: "memory_events",
+              candidateHash: "a".repeat(64),
+              sourceRevision: 1,
+              itemCount: 1,
+              excludedItemCount: 0,
+              manifest: [
+                { sourceId: ids.localSession, revisionHash: "b".repeat(64) }
+              ],
+              byteCount: 128,
+              mode: "continuous",
+              expiresAt: null
+            }
+          }
+        }
+      },
+      fixture.context
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "protocol_mismatch",
+        userMessage:
+          "Update Koed on this device and the Team backend, then try again.",
+        retryable: false
+      }
+    });
+    expect(fixture.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("binds candidate source provenance into the admitted Action Grant request", async () => {
+    const command = previewGrantCommand();
+    const fixture = createFixture({
+      context: {
+        operationFamilies: new Set(["share_grant_management"]),
+        localOwnerUserId: ids.principal
+      }
+    });
+
+    const result = await fixture.control.dispatch(
+      {
+        ...command,
+        input: {
+          intent: {
+            ...command.input.intent,
+            candidate: {
+              source: capturedSource,
+              sourceCapabilities: [
+                "lcm_rollups",
+                "lcm_leaves",
+                "memory_events"
+              ],
+              activationRepresentation: "memory_events",
+              candidateHash: "a".repeat(64),
+              sourceRevision: 1,
+              itemCount: 1,
+              excludedItemCount: 0,
+              manifest: [
+                { sourceId: ids.localSession, revisionHash: "b".repeat(64) }
+              ],
+              byteCount: 128,
+              mode: "continuous",
+              expiresAt: null
+            }
+          }
+        }
+      },
+      fixture.context
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    const [, init] = fixture.fetchMock.mock.calls[0]!;
+    const payload = JSON.parse(String(init?.body)) as {
+      intent: Record<string, unknown>;
+    };
+    expect(payload.intent).toMatchObject({
+      action: "shared_memory.candidate_preview",
+      sourceDeploymentProtocolId: "00000000-0000-4000-8000-000000000015",
+      sourceOwnerPrincipalId: ids.principal
     });
   });
 

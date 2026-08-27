@@ -21,11 +21,20 @@ import {
   getUpstreamEnrollmentStatus,
   invalidateUpstreamEnrollmentReferences,
   readUpstreamEnrollmentBinding,
-  startUpstreamEnrollment
+  startUpstreamEnrollment as startUpstreamEnrollmentImpl
 } from "./upstream-enrollment.js";
 
 const remotePrincipalUserId = "11111111-1111-4111-8111-111111111111";
 const remoteDeviceCredentialId = "22222222-2222-4222-8222-222222222222";
+const startUpstreamEnrollment: typeof startUpstreamEnrollmentImpl = (
+  paths,
+  backendId,
+  deps = {}
+) =>
+  startUpstreamEnrollmentImpl(paths, backendId, {
+    ...deps,
+    sourceOwnerPrincipalId: deps.sourceOwnerPrincipalId ?? remotePrincipalUserId
+  });
 const activeCredentialPayload = {
   ok: true,
   user: { id: remotePrincipalUserId },

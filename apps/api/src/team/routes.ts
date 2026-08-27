@@ -1,4 +1,7 @@
-import { teamPresenceStatusCatalogue } from "@koed/shared";
+import {
+  sharedMemoryGrantScopedSourceId,
+  teamPresenceStatusCatalogue
+} from "@koed/shared";
 import {
   defaultFreshAuthenticationMaxAgeMs,
   type DeviceCredentialAuthContext,
@@ -38,6 +41,7 @@ import {
   publicTeamManagementMember,
   publicTeamRosterMember
 } from "./presence.js";
+import { publicCollaborationThread } from "../collaboration/public-thread.js";
 import {
   teamAdminRequestHash,
   teamAdminScopeHash
@@ -430,26 +434,35 @@ export const registerTeamRoutes = (
               return {
                 teamWorkspace,
                 access,
-                shareGrants: grants.entries.map((grant) => ({
-                  id: grant.shareGrantId,
-                  logicalMemoryId: grant.logicalMemoryId,
-                  ownerUserId: grant.ownerUserId,
-                  sourceCapabilities: grant.sourceCapabilities,
-                  activationRepresentation: grant.activationRepresentation,
-                  maximumFidelity: grant.maximumFidelity,
-                  includeCuratedMemory: grant.includeCuratedMemory,
-                  title: grant.title,
-                  activeRepresentation: grant.activeRepresentation,
-                  representationState: grant.representationState,
-                  representationSourceRevision:
-                    grant.representationSourceRevision,
-                  representationUpdatedAt: grant.representationUpdatedAt,
-                  freshness: grant.freshness,
-                  lifecycle: grant.lifecycle,
-                  createdAt: grant.createdAt,
-                  updatedAt: grant.updatedAt,
-                  companionScope: grant.companionScope
-                }))
+                shareGrants: grants.entries.map((grant) => {
+                  const logicalMemoryId = sharedMemoryGrantScopedSourceId(
+                    grant.shareGrantId,
+                    grant.logicalMemoryId
+                  );
+                  return {
+                    id: grant.shareGrantId,
+                    logicalMemoryId,
+                    ownerDisplayName: grant.ownerDisplayName,
+                    sourceCapabilities: grant.sourceCapabilities,
+                    activationRepresentation: grant.activationRepresentation,
+                    maximumFidelity: grant.maximumFidelity,
+                    includeCuratedMemory: grant.includeCuratedMemory,
+                    title: grant.title,
+                    activeRepresentation: grant.activeRepresentation,
+                    representationState: grant.representationState,
+                    representationSourceRevision:
+                      grant.representationSourceRevision,
+                    representationUpdatedAt: grant.representationUpdatedAt,
+                    freshness: grant.freshness,
+                    lifecycle: grant.lifecycle,
+                    createdAt: grant.createdAt,
+                    updatedAt: grant.updatedAt,
+                    companionScope: {
+                      ...grant.companionScope,
+                      logicalMemoryId
+                    }
+                  };
+                })
               };
             })
           );
@@ -457,7 +470,7 @@ export const registerTeamRoutes = (
             team,
             membership,
             members: members.map((member) => publicTeamRosterMember(member)),
-            threads: snapshot.threads,
+            threads: snapshot.threads.map(publicCollaborationThread),
             highWaterCursor: snapshot.highWaterCursor,
             workspaces
           };

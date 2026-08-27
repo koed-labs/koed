@@ -844,6 +844,11 @@ function OwnedSharesWorkspace({
           )?.syncState ?? null)
         : null
     );
+    if (listedShare.summary.workspaceContentAccess === "unavailable") {
+      setPreview(null);
+      setPreviewState("ready");
+      return;
+    }
     const requestKey = `${selectedShareKey}:${listedShare.summary.authorizedPreview?.previewHash ?? "none"}`;
     const request =
       detailRequestRef.current?.key === requestKey
@@ -954,6 +959,12 @@ function OwnedSharesWorkspace({
 
   const openDetailChange = useCallback(
     async (share: OwnedShareItem) => {
+      if (share.summary.workspaceContentAccess === "unavailable") {
+        setOperationError(
+          "Workspace access is unavailable. You can still revoke this Share."
+        );
+        return;
+      }
       const sessionId = share.summary.sourceSessionId;
       const shareGrantId =
         share.kind === "grant" ? share.grant.id : share.pendingShare.grantId;
@@ -1052,47 +1063,59 @@ function OwnedSharesWorkspace({
           )
         );
       } else {
-        const shareGrant =
+        const shareGrantId =
+          item.kind === "grant" ? item.grant.id : item.pendingShare.grantId;
+        const expectedGrantVersion =
           item.kind === "grant"
-            ? item.grant
-            : (
-                await client.listOwnedSharedMemoryGrants({
-                  logicalMemoryId: item.pendingShare.logicalMemoryId
-                })
-              ).find((grant) => grant.id === item.pendingShare.grantId);
-        if (!shareGrant || shareGrant.lifecycle !== "active") {
+            ? item.grant.grantVersion
+            : item.pendingShare.grantVersion;
+        if (!shareGrantId || !expectedGrantVersion) {
+          throw new CollaborationInputError(
+            "This Share changed while it was being revoked. Reload it and try again."
+          );
+        }
+        if (item.kind === "grant" && item.grant.lifecycle !== "active") {
           throw new CollaborationInputError(
             "This Share is no longer available to revoke."
           );
         }
         const revoked = await client.revokeSharedMemory({
           mutationId: crypto.randomUUID(),
-          teamId: shareGrant.teamId,
-          workspaceId: shareGrant.workspaceId,
-          shareGrantId: shareGrant.id,
-          expectedGrantVersion: shareGrant.grantVersion,
+          teamId:
+            item.kind === "grant"
+              ? item.grant.teamId
+              : item.pendingShare.teamId,
+          workspaceId:
+            item.kind === "grant"
+              ? item.grant.workspaceId
+              : item.pendingShare.workspaceId,
+          shareGrantId,
+          expectedGrantVersion,
           reasonCode: "owner_revoked"
         });
-        if (item.kind === "pending") {
-          const refreshed = await client.getOwnedShare({
-            kind: "pending",
-            id: item.pendingShare.id
-          });
-          setOwnedShares((current) =>
+        setOwnedShares(
+          (current) =>
             current.map((entry) =>
-              ownedShareKey(entry) === ownedShareKey(item) ? refreshed : entry
-            )
-          );
-        } else {
-          setOwnedShares(
-            (current) =>
-              current.map((entry) =>
-                ownedShareKey(entry) === ownedShareKey(item)
+              ownedShareKey(entry) === ownedShareKey(item)
+                ? entry.kind === "grant"
                   ? { ...entry, grant: revoked }
-                  : entry
-              ) as OwnedShareItem[]
-          );
-        }
+                  : {
+                      ...entry,
+                      pendingShare: {
+                        ...entry.pendingShare,
+                        state: "revoked",
+                        stage: "complete",
+                        workspaceAccessState: "revoked",
+                        sourceUpdateState: "stopped",
+                        operationVersion:
+                          entry.pendingShare.operationVersion + 1,
+                        updatedAt: revoked.updatedAt,
+                        revokedAt: revoked.revokedAt
+                      }
+                    }
+                : entry
+            ) as OwnedShareItem[]
+        );
       }
       setShareAnnouncement(
         `${item.summary.sourceTitle}: Workspace access revoked`
@@ -1153,6 +1176,7 @@ function OwnedSharesWorkspace({
     : null;
   const selectedActive =
     selectedShare &&
+    selectedShare.summary.workspaceContentAccess === "available" &&
     selectedSection === "active" &&
     (selectedShare.kind === "grant" ||
       selectedShare.pendingShare.workspaceAccessState === "active");
@@ -1300,7 +1324,10 @@ function OwnedSharesWorkspace({
             <div className="collab-share-header-actions">
               <button
                 className="collab-share-modify-button"
-                disabled={selectedSection === "revoked"}
+                disabled={
+                  selectedSection === "revoked" ||
+                  selectedShare.summary.workspaceContentAccess === "unavailable"
+                }
                 onClick={() => {
                   setOperationError("");
                   setModifyShareKey(ownedShareKey(selectedShare));
@@ -1349,6 +1376,12 @@ function OwnedSharesWorkspace({
                 ? selectedShare.sourceAccess.mode
                 : "Not allowed"}
             </span>
+            <span>
+              <strong>Workspace access</strong>
+              {selectedShare.summary.workspaceContentAccess === "available"
+                ? "Available"
+                : "Unavailable"}
+            </span>
           </div>
           <section className="collab-share-preview">
             {preview ? (
@@ -1359,15 +1392,24 @@ function OwnedSharesWorkspace({
               </header>
             ) : null}
             <div className="collab-share-preview-window">
-              <OwnedSharePreview
-                authorizedRevision={
-                  selectedShare.summary.authorizedPreview?.sourceRevision ??
-                  null
-                }
-                markdownAdapters={markdownAdapters}
-                preview={preview}
-                state={previewState}
-              />
+              {selectedShare.summary.workspaceContentAccess ===
+              "unavailable" ? (
+                <StateView
+                  icon={<CircleAlert />}
+                  title="Workspace content unavailable"
+                  message="You can manage or revoke this Share, but its Team content and discussion are no longer available to you."
+                />
+              ) : (
+                <OwnedSharePreview
+                  authorizedRevision={
+                    selectedShare.summary.authorizedPreview?.sourceRevision ??
+                    null
+                  }
+                  markdownAdapters={markdownAdapters}
+                  preview={preview}
+                  state={previewState}
+                />
+              )}
               {preview && "previewHash" in preview && preview.nextCursor ? (
                 <button
                   className="collab-share-preview-more secondary"
@@ -3701,7 +3743,7 @@ function SharedMemoryOwnerModal({
         requireDestination();
         if (!currentEntry.logicalMemoryId) {
           throw new CollaborationInputError(
-            "Prepare this Personal Memory before sharing it."
+            "This Personal Memory source is not ready yet."
           );
         }
         const source =
@@ -3846,7 +3888,9 @@ function SharedMemoryOwnerModal({
         reasonCode: "owner_revoked"
       });
       setOwnerGrants((current) =>
-        current.map((item) => (item.id === revoked.id ? revoked : item))
+        current.map((item) =>
+          item.id === revoked.id ? { ...item, ...revoked } : item
+        )
       );
       setRevokingGrantId(null);
     });
@@ -3960,7 +4004,7 @@ function SharedMemoryOwnerModal({
           previewHash: preview.previewHash,
           expiresAt: null
         });
-        if ("grantVersion" in shared) {
+        if ("ownerUserId" in shared) {
           setOwnerGrants((current) => [shared, ...current]);
           completedShareKey = `grant:${shared.id}`;
         } else {
@@ -4722,7 +4766,7 @@ function PersonalNoteShareModal({
             expiresAt: null
           });
       setPendingKey(
-        "grantVersion" in result ? `grant:${result.id}` : `pending:${result.id}`
+        "ownerUserId" in result ? `grant:${result.id}` : `pending:${result.id}`
       );
     });
 

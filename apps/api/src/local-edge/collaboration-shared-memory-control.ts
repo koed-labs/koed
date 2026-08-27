@@ -28,6 +28,7 @@ import {
   conversationSourceAccessSchema,
   pendingShareSchema,
   ownedShareSummarySchema,
+  ownedSharedMemoryGrantSchema,
   sharedMemorySourceItemSchema,
   sharedMemorySourceRefSchema,
   type CollaborationCommandResult,
@@ -57,6 +58,7 @@ import { openOpaqueCursor, sealOpaqueCursor } from "./opaque-cursor.js";
 const RESPONSE_LIMIT_BYTES = 2 * 1_024 * 1_024;
 const REQUEST_TIMEOUT_MS = 30_000;
 const CAPABILITY_SCHEMA_VERSION = 6;
+const SOURCE_ADMISSION_PROTOCOL_VERSION = 1;
 const SOURCE_CURSOR_PREFIX = "csmc1";
 const PREVIEW_CURSOR_PREFIX = "csmp1";
 const OWNED_SHARES_CURSOR_PREFIX = "csms1";
@@ -330,6 +332,38 @@ const remoteGrantSchema = z
   })
   .passthrough();
 
+const remoteTeamGrantSchema = z
+  .object({
+    sourceCapabilities: z.array(representationSchema).min(1).max(4),
+    activationRepresentation: representationSchema,
+    id: uuidSchema,
+    logicalMemoryId: uuidSchema,
+    teamId: uuidSchema,
+    teamWorkspaceId: uuidSchema,
+    mode: z.enum(["snapshot", "continuous"]),
+    maximumFidelity: maximumFidelitySchema,
+    includeCuratedMemory: z.boolean(),
+    sourceRevision: z.number().int().safe().min(0),
+    grantVersion: z.number().int().safe().positive(),
+    lifecycle: z.enum([
+      "active",
+      "unavailable",
+      "revoked",
+      "tombstoned",
+      "purge_pending",
+      "purged"
+    ]),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
+    revokedAt: timestampSchema.nullable(),
+    companionScope: companionScopeSchema
+  })
+  .strict();
+
+const remoteOwnedShareGrantSchema = remoteGrantSchema.omit({
+  companionScope: true
+});
+
 const remoteOwnerGrantPageSchema = z
   .object({
     shareGrants: z.array(remoteGrantSchema).max(100),
@@ -367,7 +401,7 @@ const remoteOwnedSharesPageSchema = z
           z
             .object({
               kind: z.literal("grant"),
-              grant: remoteGrantSchema,
+              grant: remoteOwnedShareGrantSchema,
               summary: ownedShareSummarySchema,
               sourceAccess: z
                 .object({
@@ -435,6 +469,53 @@ const persistedGrantSchema = z
 export type CollaborationPersistedSharedMemoryGrant = z.infer<
   typeof persistedGrantSchema
 >;
+
+const ownerSafeGrant = (
+  grant: CollaborationPersistedSharedMemoryGrant["grant"]
+) => {
+  const { companionThreadId: _companionThreadId, ...safeGrant } = grant;
+  void _companionThreadId;
+  return safeGrant;
+};
+
+const remoteOwnedGrantDto = (
+  grant: z.infer<typeof remoteOwnedShareGrantSchema>
+) => ({
+  source: grant.source,
+  sourceCapabilities: grant.sourceCapabilities,
+  activationRepresentation: grant.activationRepresentation,
+  id: grant.id,
+  logicalGrantId: grant.logicalGrantId,
+  logicalMemoryId: grant.logicalMemoryId,
+  ownerUserId: grant.ownerUserId,
+  teamId: grant.teamId,
+  workspaceId: grant.teamWorkspaceId,
+  consentId: grant.consentId,
+  mode: grant.mode,
+  maximumFidelity: grant.maximumFidelity,
+  includeCuratedMemory: grant.includeCuratedMemory,
+  fidelityPolicyRevision: grant.fidelityPolicyRevision,
+  sourceRevision: grant.sourceRevision,
+  grantVersion: grant.grantVersion,
+  lifecycle: grant.lifecycle,
+  createdAt: grant.createdAt,
+  updatedAt: grant.updatedAt,
+  revokedAt: grant.revokedAt
+});
+
+const remoteOwnedGrantWithCompanion = (
+  grant: z.infer<typeof remoteOwnedShareGrantSchema>
+): z.infer<typeof remoteGrantSchema> => ({
+  ...grant,
+  companionScope: {
+    scope: "team",
+    kind: "shared_session_discussion",
+    teamId: grant.teamId,
+    teamWorkspaceId: grant.teamWorkspaceId,
+    logicalMemoryId: grant.logicalMemoryId,
+    shareGrantId: grant.id
+  }
+});
 
 const previewTargetSchema = z
   .object({
@@ -534,8 +615,7 @@ export interface CollaborationSharedMemoryAuthorityStore {
     mutationId: string;
     mode: "snapshot" | "continuous";
     source: shared.SharedMemorySourceRef;
-    /** Additive Captured Session compatibility field. */
-    localSessionId?: string;
+    sourceRevision: number;
   }): Promise<boolean>;
   claimPendingShareSourceWork(input?: { limit?: number }): Promise<
     Array<{
@@ -615,12 +695,23 @@ export interface CollaborationSharedMemoryControlOptions {
     noteRevision: number;
     mode: "snapshot" | "continuous";
   }): Promise<SharedMemoryCandidatePreview | null>;
+  resolveCandidateSourceIdentity?(localOwnerUserId: string): {
+    sourceDeploymentProtocolId: string;
+    sourceOwnerPrincipalId: string;
+  } | null;
   requestPendingShareSourceWork?(): void;
   requestContinuousNoteAdvancementWork?(): void;
   readDesktopCredential?: DesktopCredentialReader;
   readLocalEdgeClientCredential?: LocalEdgeCredentialReader;
   readUpstreamRegistry?: (path: string) => LocalEdgeUpstreamRegistry;
   actionGrantLifecycle?: Pick<CollaborationActionGrantLifecycle, "resolve">;
+  reportDiagnostic?(diagnostic: {
+    code: "shared_memory_authority_projection_failed";
+    operation: SharedMemoryControlCommandName;
+    publicGrantReference: string | null;
+    failureStage: "authority_store_projection";
+    httpStatus: 500;
+  }): void;
 }
 
 type SharedDesktopCredentialApi = {
@@ -634,6 +725,7 @@ const readStoredDesktopCredential: DesktopCredentialReader = (koedHome) => {
 
 export interface CollaborationSharedMemoryControl {
   advanceContinuousPersonalNoteRevision(input: {
+    backendId: string;
     localOwnerUserId: string;
     noteId: string;
     noteRevision: number;
@@ -698,6 +790,7 @@ const safeError = (
     | "rate_limited"
     | "offline"
     | "temporarily_unavailable"
+    | "protocol_mismatch"
     | "representation_pending"
     | "history_expired"
     | "internal_error",
@@ -896,21 +989,27 @@ const ownedSharesCursorSchema = z
 
 const remoteReadSchema = z
   .object({
-    grant: remoteGrantSchema,
+    grant: remoteTeamGrantSchema,
     representation: z
       .object({
+        id: uuidSchema,
         shareGrantId: uuidSchema,
-        consentId: uuidSchema,
         teamId: uuidSchema,
         teamWorkspaceId: uuidSchema,
         logicalMemoryId: uuidSchema,
         representation: representationSchema,
         sourceRevision: z.number().int().safe().min(0),
-        sourceRevisionHash: hashSchema,
         recordVersion: z.number().int().safe().positive(),
-        state: z.enum(["available", "stale"])
+        state: z.enum(["available", "stale"]),
+        chunkCount: z.number().int().safe().min(0),
+        createdAt: timestampSchema,
+        updatedAt: timestampSchema,
+        availableAt: timestampSchema.nullable(),
+        staleAt: timestampSchema.nullable(),
+        invalidatedAt: timestampSchema.nullable(),
+        invalidationReasonCode: z.string().nullable()
       })
-      .passthrough(),
+      .strict(),
     items: z
       .array(redactedSourceItemSchema)
       .max(COLLABORATION_SOURCE_PAGE_MAX_ITEMS),
@@ -953,6 +1052,29 @@ class ControlFailure extends Error {
     super("Collaboration Shared Memory control failed");
   }
 }
+
+const runAuthorityProjection = async <T>(
+  options: CollaborationSharedMemoryControlOptions,
+  operation: SharedMemoryControlCommandName,
+  work: () => Promise<T>
+): Promise<T> => {
+  try {
+    return await work();
+  } catch {
+    try {
+      options.reportDiagnostic?.({
+        code: "shared_memory_authority_projection_failed",
+        operation,
+        publicGrantReference: null,
+        failureStage: "authority_store_projection",
+        httpStatus: 500
+      });
+    } catch {
+      // Diagnostics must never replace the safe projection error boundary.
+    }
+    throw new ControlFailure("internal_error");
+  }
+};
 
 const statusFailure = (response: Response): ControlFailure => {
   if (response.status === 400 || response.status === 422) {
@@ -1086,6 +1208,12 @@ const supportsSharedMemoryControl = (
   );
 };
 
+const supportsCandidateSourceAdmission = (
+  backend: LocalEdgeUpstreamBackend
+): boolean =>
+  backend.capabilities?.payload?.protocols?.sharedMemorySourceAdmission
+    ?.version === SOURCE_ADMISSION_PROTOCOL_VERSION;
+
 const resolveAuthority = async (
   options: CollaborationSharedMemoryControlOptions,
   command: CollaborationSharedMemoryControlCommand,
@@ -1113,6 +1241,13 @@ const resolveAuthority = async (
   );
   if (!backend || !supportsSharedMemoryControl(backend)) {
     throw new ControlFailure("temporarily_unavailable");
+  }
+  if (
+    command.command === "collaboration.preview_shared_memory" &&
+    command.input.candidate &&
+    !supportsCandidateSourceAdmission(backend)
+  ) {
+    throw new ControlFailure("protocol_mismatch");
   }
   const readLec =
     options.readLocalEdgeClientCredential ??
@@ -1800,7 +1935,6 @@ const dispatchLoadSource = async (
     shareGrantId: binding.shareGrantId,
     representation: binding.representation,
     sourceRevision: remote.representation.sourceRevision,
-    sourceRevisionHash: remote.representation.sourceRevisionHash,
     recordVersion: remote.representation.recordVersion,
     itemCount: remote.sourcePage.itemCount
   });
@@ -1843,11 +1977,17 @@ const dispatchLoadSource = async (
   if (start !== expectedStart || end !== expectedEnd) {
     throw new ControlFailure("history_expired");
   }
+  const sourceRevisionToken = digest({
+    shareGrantId: binding.shareGrantId,
+    representation: binding.representation,
+    sourceRevision: remote.representation.sourceRevision,
+    recordVersion: remote.representation.recordVersion
+  });
   const items = mapSourceItems(
     binding.representation,
     remote.items,
     start,
-    remote.representation.sourceRevisionHash
+    sourceRevisionToken
   );
   if (!items) throw new ControlFailure("internal_error");
   const cursorBase = {
@@ -2010,8 +2150,12 @@ const dispatchCandidatePreview = async (
           mode: command.input.mode
         })
   );
+  const sourceIdentity = options.resolveCandidateSourceIdentity?.(
+    authority.localOwnerUserId
+  );
   if (
     !candidate.success ||
+    !sourceIdentity ||
     candidate.data.logicalMemoryId !== command.input.logicalMemoryId ||
     crossIdentitySyncDigest(candidate.data.source) !==
       crossIdentitySyncDigest(command.input.candidate.source) ||
@@ -2036,6 +2180,7 @@ const dispatchCandidatePreview = async (
   const binding = sharedMemoryCandidatePreviewActionGrantBinding({
     referenceId: command.input.actionGrant.id,
     source: candidate.data.source,
+    ...sourceIdentity,
     sourceCapabilities: candidate.data.sourceCapabilities,
     logicalMemoryId: command.input.logicalMemoryId,
     candidateHash: candidate.data.candidateHash,
@@ -2403,9 +2548,7 @@ const dispatchShare = async (
       mutationId: command.input.mutationId,
       mode: command.input.mode,
       source: pendingSource,
-      ...(pendingSource.kind === "captured_session"
-        ? { localSessionId: pendingSource.sessionId }
-        : {})
+      sourceRevision: pendingShare.data.sourceRevision
     });
   if (!persistedWork) throw new ControlFailure("not_available");
   options.requestPendingShareSourceWork?.();
@@ -2478,7 +2621,7 @@ const dispatchRevoke = async (
     },
     "revocation"
   );
-  const result = success(command, { grant: persisted.grant });
+  const result = success(command, { grant: ownerSafeGrant(persisted.grant) });
   if (!result) throw new ControlFailure("internal_error");
   return result;
 };
@@ -2492,10 +2635,12 @@ const dispatchListOwnedGrants = async (
   >
 ): Promise<CollaborationCommandResult> => {
   const identity = authorityIdentity(authority);
-  const local = await options.authorityStore.listAuthoritativeGrants({
-    ...identity,
-    logicalMemoryId: command.input.logicalMemoryId
-  });
+  const local = await runAuthorityProjection(options, command.command, () =>
+    options.authorityStore.listAuthoritativeGrants({
+      ...identity,
+      logicalMemoryId: command.input.logicalMemoryId
+    })
+  );
   if (!local) throw new ControlFailure("not_available");
   const localById = new Map(local.map((grant) => [grant.grant.id, grant]));
   const reconciled: CollaborationPersistedSharedMemoryGrant[] = [];
@@ -2673,7 +2818,7 @@ const dispatchListOwnedShares = async (
       }
     | {
         kind: "grant";
-        grant: z.infer<typeof sharedMemoryGrantSchema>;
+        grant: z.infer<typeof ownedSharedMemoryGrantSchema>;
         summary: z.infer<typeof ownedShareSummarySchema>;
         sourceAccess: {
           mode: "snapshot" | "continuous";
@@ -2709,14 +2854,22 @@ const dispatchListOwnedShares = async (
   const resolvableSourceInputs = sourceInputs.filter(
     (input): input is NonNullable<typeof input> => input !== null
   );
-  const resolvedSourceTargets = options.authorityStore.resolvePreviewTargets
-    ? await options.authorityStore.resolvePreviewTargets(
-        identity,
-        resolvableSourceInputs
-      )
-    : await mapWithBoundedConcurrency(resolvableSourceInputs, 8, (input) =>
-        options.authorityStore.resolvePreviewTarget({ ...identity, ...input })
-      );
+  const resolvedSourceTargets = await runAuthorityProjection(
+    options,
+    command.command,
+    () =>
+      options.authorityStore.resolvePreviewTargets
+        ? options.authorityStore.resolvePreviewTargets(
+            identity,
+            resolvableSourceInputs
+          )
+        : mapWithBoundedConcurrency(resolvableSourceInputs, 8, (input) =>
+            options.authorityStore.resolvePreviewTarget({
+              ...identity,
+              ...input
+            })
+          )
+  );
   let sourceTargetIndex = 0;
   const sourceTargets = sourceInputs.map((input) =>
     input ? (resolvedSourceTargets[sourceTargetIndex++] ?? null) : null
@@ -2727,17 +2880,22 @@ const dispatchListOwnedShares = async (
     ): entry is Extract<(typeof page.data.shares)[number], { kind: "grant" }> =>
       entry.kind === "grant"
   );
-  const priorGrants = options.authorityStore.readAuthoritativeGrants
-    ? await options.authorityStore.readAuthoritativeGrants(
-        identity,
-        grantEntries.map((entry) => entry.grant.id)
-      )
-    : await mapWithBoundedConcurrency(grantEntries, 8, (entry) =>
-        options.authorityStore.readAuthoritativeGrant({
-          ...identity,
-          shareGrantId: entry.grant.id
-        })
-      );
+  const priorGrants = await runAuthorityProjection(
+    options,
+    command.command,
+    () =>
+      options.authorityStore.readAuthoritativeGrants
+        ? options.authorityStore.readAuthoritativeGrants(
+            identity,
+            grantEntries.map((entry) => entry.grant.id)
+          )
+        : mapWithBoundedConcurrency(grantEntries, 8, (entry) =>
+            options.authorityStore.readAuthoritativeGrant({
+              ...identity,
+              shareGrantId: entry.grant.id
+            })
+          )
+  );
   const priorByGrantId = new Map(
     grantEntries.map((entry, index) => [
       entry.grant.id,
@@ -2764,27 +2922,38 @@ const dispatchListOwnedShares = async (
         throw new ControlFailure("permission_denied");
       }
       const prior = priorByGrantId.get(remote.id) ?? null;
-      const companionThreadId =
-        entry.summary.companionThreadId ?? prior?.grant.companionThreadId;
-      if (!companionThreadId) return null;
+      if (entry.summary.workspaceContentAccess === "unavailable") {
+        return {
+          kind: "grant" as const,
+          grant: prior
+            ? ownerSafeGrant(prior.grant)
+            : remoteOwnedGrantDto(remote),
+          sourceAccess: entry.sourceAccess,
+          summary
+        };
+      }
+      const companionThreadId = entry.summary.companionThreadId;
+      if (!companionThreadId) throw new ControlFailure("internal_error");
       const companion = {
         companionThreadId,
         sharedSessionId: remote.id
       };
+      const remoteWithCompanion = remoteOwnedGrantWithCompanion(remote);
       const persisted =
-        prior && remoteGrantMatchesPersisted(remote, prior, identity)
+        prior &&
+        remoteGrantMatchesPersisted(remoteWithCompanion, prior, identity)
           ? prior
           : await persistGrant(
               options.authorityStore,
               identity,
-              remote,
+              remoteWithCompanion,
               prior,
               companion,
               "authoritative_snapshot"
             );
       return {
         kind: "grant" as const,
-        grant: persisted.grant,
+        grant: ownerSafeGrant(persisted.grant),
         sourceAccess: entry.sourceAccess,
         summary
       };
@@ -2970,9 +3139,22 @@ const dispatchGetOwnedShare = async (
     ...identity,
     shareGrantId: entry.grant.id
   });
-  const companionThreadId =
-    entry.summary.companionThreadId ?? prior?.grant.companionThreadId;
-  if (!companionThreadId) throw new ControlFailure("not_available");
+  if (entry.summary.workspaceContentAccess === "unavailable") {
+    const result = success(command, {
+      share: {
+        ...entry,
+        grant: prior
+          ? ownerSafeGrant(prior.grant)
+          : remoteOwnedGrantDto(entry.grant),
+        summary,
+        preview: null
+      }
+    });
+    if (!result) throw new ControlFailure("internal_error");
+    return result;
+  }
+  const companionThreadId = entry.summary.companionThreadId;
+  if (!companionThreadId) throw new ControlFailure("internal_error");
   const companion = {
     companionThreadId,
     sharedSessionId: entry.grant.id
@@ -2980,13 +3162,18 @@ const dispatchGetOwnedShare = async (
   const persisted = await persistGrant(
     options.authorityStore,
     identity,
-    entry.grant,
+    remoteOwnedGrantWithCompanion(entry.grant),
     prior,
     companion,
     "authoritative_snapshot"
   );
   const result = success(command, {
-    share: { ...entry, grant: persisted.grant, summary, preview }
+    share: {
+      ...entry,
+      grant: ownerSafeGrant(persisted.grant),
+      summary,
+      preview
+    }
   });
   if (!result) throw new ControlFailure("internal_error");
   return result;
@@ -3033,9 +3220,7 @@ const dispatchControlPendingShare = async (
         mutationId: pendingShare.data.mutationId,
         mode: pendingShare.data.mode,
         source,
-        ...(source.kind === "captured_session"
-          ? { localSessionId: source.sessionId }
-          : {})
+        sourceRevision: pendingShare.data.sourceRevision
       });
     if (!persistedWork) throw new ControlFailure("not_available");
     options.requestPendingShareSourceWork?.();
@@ -3248,9 +3433,7 @@ const dispatchChangeFidelity = async (
       mutationId: command.input.mutationId,
       mode: pendingShare.data.mode,
       source,
-      ...(source.kind === "captured_session"
-        ? { localSessionId: source.sessionId }
-        : {})
+      sourceRevision: pendingShare.data.sourceRevision
     });
   if (!persistedWork) throw new ControlFailure("not_available");
   options.requestPendingShareSourceWork?.();
@@ -3299,6 +3482,7 @@ export const createCollaborationSharedMemoryControl = (
   async advanceContinuousPersonalNoteRevision(input) {
     const parsedInput = z
       .object({
+        backendId: z.string().trim().min(1),
         localOwnerUserId: uuidSchema,
         noteId: uuidSchema,
         noteRevision: z.number().int().safe().positive()
@@ -3322,7 +3506,9 @@ export const createCollaborationSharedMemoryControl = (
     const readRegistry =
       options.readUpstreamRegistry ?? readLocalEdgeUpstreamRegistry;
     const registry = readRegistry(options.upstreamBackendsPath);
-    if (!registry.activeBackendId) return { queued: 0 };
+    if (!upstreamBackendById(registry, parsedInput.backendId)) {
+      throw new ControlFailure("temporarily_unavailable");
+    }
     const readDesktop =
       options.readDesktopCredential ?? readStoredDesktopCredential;
     const desktop = readDesktop(options.koedHome);
@@ -3344,54 +3530,122 @@ export const createCollaborationSharedMemoryControl = (
       throw new ControlFailure("internal_error");
     }
     const authority = await resolveAuthority(options, command, {
-      upstreamBackendId: registry.activeBackendId,
+      upstreamBackendId: parsedInput.backendId,
       localOwnerUserId: parsedInput.localOwnerUserId,
       desktopCredentialKeyId: desktop.credentialKeyId
     });
-    const payload = await remoteRequest(options, authority, {
-      method: "POST",
-      path: "/v1/shared-memory/personal-note-revisions/advance",
-      body: {
-        mutationId: shared.crossIdentitySyncDeterministicUuid({
-          kind: "continuous_personal_note_revision",
-          sourceDeployment: authority.backendId,
-          localOwnerUserId: parsedInput.localOwnerUserId,
-          noteId: parsedInput.noteId,
-          noteRevision: parsedInput.noteRevision,
-          candidateHash: candidate.candidateHash
-        }),
-        candidate
-      },
-      idempotencyKey: candidate.candidateHash
+    const sourceIdentity = options.resolveCandidateSourceIdentity?.(
+      parsedInput.localOwnerUserId
+    );
+    if (!sourceIdentity) {
+      throw new ControlFailure("not_available");
+    }
+    const mutationId = shared.crossIdentitySyncDeterministicUuid({
+      kind: "continuous_personal_note_revision",
+      sourceDeployment: authority.backendId,
+      localOwnerUserId: parsedInput.localOwnerUserId,
+      noteId: parsedInput.noteId,
+      noteRevision: parsedInput.noteRevision,
+      candidateHash: candidate.candidateHash
     });
-    const response = z
-      .object({ pendingShares: z.array(pendingShareSchema).max(100) })
-      .strict()
-      .parse(payload);
-    for (const pendingShare of response.pendingShares) {
+    const seenCursors = new Set<string>();
+    let afterShareGrantId: string | null = null;
+    let queued = 0;
+    let pendingShareWorkerRequested = false;
+    do {
+      const payload = await remoteRequest(options, authority, {
+        method: "POST",
+        path: "/v1/shared-memory/personal-note-revisions/advance",
+        body: {
+          mutationId,
+          ...sourceIdentity,
+          ...(afterShareGrantId ? { afterShareGrantId } : {}),
+          candidate
+        },
+        idempotencyKey: crossIdentitySyncDigest({
+          candidateHash: candidate.candidateHash,
+          afterShareGrantId
+        })
+      });
+      const response = z
+        .object({
+          pendingShares: z.array(pendingShareSchema).max(100),
+          outcomes: z
+            .array(
+              z.discriminatedUnion("status", [
+                z
+                  .object({
+                    shareGrantId: uuidSchema,
+                    status: z.literal("accepted"),
+                    pendingShareId: uuidSchema
+                  })
+                  .strict(),
+                z
+                  .object({
+                    shareGrantId: uuidSchema,
+                    status: z.literal("rejected"),
+                    reasonCode: z.literal("destination_unavailable")
+                  })
+                  .strict()
+              ])
+            )
+            .max(100),
+          nextShareGrantId: uuidSchema.nullable()
+        })
+        .strict()
+        .parse(payload);
+      const acceptedOutcomesByPendingShareId = new Map(
+        response.outcomes
+          .filter((outcome) => outcome.status === "accepted")
+          .map((outcome) => [outcome.pendingShareId, outcome] as const)
+      );
       if (
-        crossIdentitySyncDigest(pendingShare.source) !==
-          crossIdentitySyncDigest(candidate.source) ||
-        pendingShare.mode !== "continuous" ||
-        pendingShare.state !== "preparing" ||
-        pendingShare.sourceUpdateState !== "preparing"
+        acceptedOutcomesByPendingShareId.size !==
+          response.pendingShares.length ||
+        response.pendingShares.some(
+          (pendingShare) =>
+            pendingShare.grantId === null ||
+            acceptedOutcomesByPendingShareId.get(pendingShare.id)
+              ?.shareGrantId !== pendingShare.grantId
+        )
       ) {
         throw new ControlFailure("permission_denied");
       }
-      const persisted =
-        await options.authorityStore.persistPendingShareSourceWork({
-          identity: authorityIdentity(authority),
-          pendingShareId: pendingShare.id,
-          mutationId: pendingShare.mutationId,
-          mode: pendingShare.mode,
-          source: candidate.source
-        });
-      if (!persisted) throw new ControlFailure("not_available");
-    }
-    if (response.pendingShares.length > 0) {
-      options.requestPendingShareSourceWork?.();
-    }
-    return { queued: response.pendingShares.length };
+      for (const pendingShare of response.pendingShares) {
+        if (
+          crossIdentitySyncDigest(pendingShare.source) !==
+            crossIdentitySyncDigest(candidate.source) ||
+          pendingShare.mode !== "continuous" ||
+          pendingShare.state !== "preparing" ||
+          pendingShare.sourceUpdateState !== "preparing"
+        ) {
+          throw new ControlFailure("permission_denied");
+        }
+        const persisted =
+          await options.authorityStore.persistPendingShareSourceWork({
+            identity: authorityIdentity(authority),
+            pendingShareId: pendingShare.id,
+            mutationId: pendingShare.mutationId,
+            mode: pendingShare.mode,
+            source: candidate.source,
+            sourceRevision: pendingShare.sourceRevision
+          });
+        if (!persisted) throw new ControlFailure("not_available");
+      }
+      queued += response.pendingShares.length;
+      if (response.pendingShares.length > 0 && !pendingShareWorkerRequested) {
+        options.requestPendingShareSourceWork?.();
+        pendingShareWorkerRequested = true;
+      }
+      if (
+        response.nextShareGrantId &&
+        !seenCursors.add(response.nextShareGrantId)
+      ) {
+        throw new ControlFailure("permission_denied");
+      }
+      afterShareGrantId = response.nextShareGrantId;
+    } while (afterShareGrantId);
+    return { queued };
   },
   async resolvePreviewTarget(input, contextInput) {
     const context = dispatchContextSchema.safeParse(contextInput);

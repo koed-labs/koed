@@ -125,11 +125,18 @@ const scalarCounts = async (
        (select count(*)::int from conversation_projection_processing_outbox where event_id=any($1::uuid[])) as queued,
        (select count(*)::int from affected_nodes) as nodes,
        (select count(distinct sem.sync_relationship_id)::int from sync_event_mappings sem where sem.local_memory_event_id=any($1::uuid[]) and sem.active=true and sem.invalidated_at is null) as replicas,
-       (select count(*)::int from team_session_share_grants share_grant join source_owner_representation_consents consent on consent.id=share_grant.consent_id join logical_memories memory on memory.id=share_grant.logical_memory_id where memory.local_session_id=any($2::uuid[]) and consent.mode='continuous' and share_grant.lifecycle='active') as continuous_shares,
-       (select count(distinct share_grant.id)::int
-          from team_session_share_grants share_grant
+       (select count(*)::int
+          from team_memory_share_grants share_grant
           join source_owner_representation_consents consent on consent.id=share_grant.consent_id
-          join logical_memories memory on memory.id=share_grant.logical_memory_id
+          join local_captured_session_logical_memories local_memory
+            on local_memory.logical_memory_id=share_grant.logical_memory_id
+         where local_memory.local_session_id=any($2::uuid[])
+           and consent.mode='continuous' and share_grant.lifecycle='active') as continuous_shares,
+       (select count(distinct share_grant.id)::int
+          from team_memory_share_grants share_grant
+          join source_owner_representation_consents consent on consent.id=share_grant.consent_id
+          join local_captured_session_logical_memories local_memory
+            on local_memory.logical_memory_id=share_grant.logical_memory_id
           join memory_events event on event.id=any($1::uuid[])
           left join lateral (
             select max(mapping.source_cursor) as upsert_cursor
@@ -137,15 +144,16 @@ const scalarCounts = async (
              where mapping.local_memory_event_id=event.id
                and mapping.active=true and mapping.invalidated_at is null
           ) semantic on true
-         where memory.local_session_id=event.session_id
+         where local_memory.local_session_id=event.session_id
            and consent.mode='snapshot'
            and share_grant.lifecycle='active'
            and semantic.upsert_cursor is not null
            and semantic.upsert_cursor <= consent.source_revision) as snapshot_shares,
        (select count(distinct share_grant.id)::int
-          from team_session_share_grants share_grant
+          from team_memory_share_grants share_grant
           join source_owner_representation_consents consent on consent.id=share_grant.consent_id
-          join logical_memories memory on memory.id=share_grant.logical_memory_id
+          join local_captured_session_logical_memories local_memory
+            on local_memory.logical_memory_id=share_grant.logical_memory_id
           join memory_events event on event.id=any($1::uuid[])
           left join lateral (
             select max(mapping.source_cursor) as upsert_cursor
@@ -153,11 +161,17 @@ const scalarCounts = async (
              where mapping.local_memory_event_id=event.id
                and mapping.active=true and mapping.invalidated_at is null
           ) semantic on true
-         where memory.local_session_id=event.session_id
+         where local_memory.local_session_id=event.session_id
            and consent.mode='snapshot'
            and share_grant.lifecycle='active'
            and semantic.upsert_cursor is null) as ambiguous_snapshot_shares,
-       (select count(*)::int from team_conversation_source_grants source_grant join team_session_share_grants share_grant on share_grant.id=source_grant.share_grant_id where share_grant.session_id=any($2::uuid[]) and source_grant.lifecycle='active') as source_grants,
+       (select count(*)::int
+          from team_conversation_source_grants source_grant
+          join team_memory_share_grants share_grant on share_grant.id=source_grant.share_grant_id
+          join local_captured_session_logical_memories local_memory
+            on local_memory.logical_memory_id=share_grant.logical_memory_id
+         where local_memory.local_session_id=any($2::uuid[])
+           and source_grant.lifecycle='active') as source_grants,
        (select count(*)::int from conversation_source_artifacts artifact where artifact.session_id=any($2::uuid[]) and artifact.lifecycle='active') as source_artifacts`,
     [eventIds, sessionIds]
   );
@@ -299,9 +313,10 @@ export const correctApprovalActivity = async (
     const ambiguousSnapshots = eventIds.length
       ? await client.query<{ id: string }>(
           `select distinct share_grant.id
-             from team_session_share_grants share_grant
+             from team_memory_share_grants share_grant
              join source_owner_representation_consents consent on consent.id=share_grant.consent_id
-             join logical_memories memory on memory.id=share_grant.logical_memory_id
+             join local_captured_session_logical_memories local_memory
+               on local_memory.logical_memory_id=share_grant.logical_memory_id
              join memory_events event on event.id=any($1::uuid[])
              left join lateral (
                select max(mapping.source_cursor) as upsert_cursor
@@ -309,7 +324,7 @@ export const correctApprovalActivity = async (
                 where mapping.local_memory_event_id=event.id
                   and mapping.active=true and mapping.invalidated_at is null
              ) semantic on true
-            where memory.local_session_id=event.session_id
+            where local_memory.local_session_id=event.session_id
               and consent.mode='snapshot'
               and share_grant.lifecycle='active'
               and semantic.upsert_cursor is null
@@ -338,15 +353,16 @@ export const correctApprovalActivity = async (
           team_workspace_id: string;
           logical_memory_id: string;
         }>(
-          `update team_session_share_grants as share_grant
+          `update team_memory_share_grants as share_grant
               set lifecycle='revoked',revoked_at=coalesce(share_grant.revoked_at,now()),
                   revocation_reason='approval_content_remediation',
                   revoked_by_user_id=coalesce(share_grant.revoked_by_user_id,share_grant.owner_user_id),
                   grant_version=share_grant.grant_version+1,
                   revocation_epoch=share_grant.revocation_epoch+1,updated_at=now()
-             from source_owner_representation_consents consent,logical_memories memory
+             from source_owner_representation_consents consent,
+                  local_captured_session_logical_memories local_memory
             where consent.id=share_grant.consent_id
-              and memory.id=share_grant.logical_memory_id
+              and local_memory.logical_memory_id=share_grant.logical_memory_id
               and consent.mode='snapshot'
               and share_grant.lifecycle='active'
               and exists (
@@ -359,7 +375,7 @@ export const correctApprovalActivity = async (
                        and mapping.active=true and mapping.invalidated_at is null
                   ) semantic on true
                  where event.id=any($1::uuid[])
-                   and event.session_id=memory.local_session_id
+                   and event.session_id=local_memory.local_session_id
                    and semantic.upsert_cursor is not null
                    and semantic.upsert_cursor <= consent.source_revision
               )
@@ -379,7 +395,7 @@ export const correctApprovalActivity = async (
         `insert into audit_events
            (actor_user_id,owner_user_id,visibility,action,target_table,target_id,metadata)
          values ($1,$1,'personal','shared_memory.snapshot.remediated',
-                 'team_session_share_grants',$2,$3::jsonb)`,
+                 'team_memory_share_grants',$2,$3::jsonb)`,
         [
           shareGrant.owner_user_id,
           shareGrant.id,
@@ -398,7 +414,7 @@ export const correctApprovalActivity = async (
            share_grant_id,logical_memory_id,resource_type,resource_id,
            actor_principal_id,mutation_id,replay_until
          ) values (1,'access_revoked','team',$1,$2,$3,$4,
-                   'team_session_share_grants',$3,$5,$6,now()+interval '30 days')
+                   'team_memory_share_grants',$3,$5,$6,now()+interval '30 days')
          on conflict (mutation_id,family) do nothing`,
         [
           shareGrant.team_id,
@@ -430,19 +446,19 @@ export const correctApprovalActivity = async (
           team_workspace_id: string;
           logical_memory_id: string;
         }>(
-          `update team_session_share_grants as share_grant
+          `update team_memory_share_grants as share_grant
               set lifecycle='unavailable',grant_version=grant_version+1,
                   updated_at=now()
              from source_owner_representation_consents consent,
-                  logical_memories memory
+                  local_captured_session_logical_memories local_memory
             where consent.id=share_grant.consent_id
-              and memory.id=share_grant.logical_memory_id
+              and local_memory.logical_memory_id=share_grant.logical_memory_id
               and consent.mode='continuous'
               and share_grant.lifecycle='active'
               and exists (
                 select 1 from memory_events event
                  where event.id=any($1::uuid[])
-                   and event.session_id=memory.local_session_id
+                   and event.session_id=local_memory.local_session_id
               )
           returning share_grant.id,share_grant.owner_user_id,
                     share_grant.team_id,share_grant.team_workspace_id,
@@ -526,7 +542,7 @@ export const correctApprovalActivity = async (
         `insert into audit_events
            (actor_user_id,owner_user_id,visibility,action,target_table,target_id,metadata)
          values ($1,$1,'personal','shared_memory.continuous.quarantined',
-                 'team_session_share_grants',$2,$3::jsonb)`,
+                 'team_memory_share_grants',$2,$3::jsonb)`,
         [
           shareGrant.owner_user_id,
           shareGrant.id,
@@ -567,7 +583,7 @@ export const correctApprovalActivity = async (
            share_grant_id,logical_memory_id,resource_type,resource_id,
            actor_principal_id,mutation_id,replay_until
          ) values (1,'share_grant_lifecycle','team',$1,$2,$3,$4,
-                   'team_session_share_grant',$3,$5,$6,now()+interval '30 days')
+                   'team_memory_share_grant',$3,$5,$6,now()+interval '30 days')
          on conflict (mutation_id,family) do nothing`,
         [
           shareGrant.team_id,

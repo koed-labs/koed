@@ -111,6 +111,20 @@ Retries reuse the original mutation and logical-grant identities. Continuous
 updates can be paused without removing the last authorized Workspace
 representation; revocation is a separate operation.
 
+Candidate admission is device-only. Enrollment binds the source deployment and
+source owner principal to both the approved credential and the authenticated
+remote User. Candidate creation must match both values and that active enrolled
+principal binding. Cross-Identity Sync may use the same binding, but is not a
+precondition for Personal Note sharing. Share review and source upload cannot
+create or reactivate source identity authority. Team-facing Shared Memory responses
+expose grant-scoped logical and revision identifiers rather than stable
+Personal or Cross-Identity Sync identifiers, so separate Team grants cannot be
+correlated through internal source identity. Human owner attribution is a
+Team-safe display label; Team responses never expose the owner's global User
+identifier. Team semantic search and Memory Answer follow the same DTO boundary:
+citations use grant-scoped source identity and expose no canonical Personal
+source IDs, source objects, revision hashes, or internal representation hashes.
+
 ## Architecture Principles
 
 - Use an application-level sync package, not PostgreSQL replication as the
@@ -189,6 +203,14 @@ The V1 Captured Session package contains:
   - chunk checksums.
   - total byte count.
   - content hashes for deduplication.
+
+Applying a Captured Session package must persist the stable logical-memory
+root, its immutable generic source revision, and the Captured Session's typed
+revision binding in the same transaction that advances the relationship
+cursor. A package is not acknowledged when any binding is missing or
+conflicting. This keeps later preview and sharing authorization tied to the
+exact accepted source revision rather than reconstructing authority from
+mutable session state.
 
 Source embeddings, Memory Nodes, LCM Summaries, raw transcripts, and unrelated
 Project or Personal Memory data are not synchronized. The target rebuilds
@@ -286,24 +308,38 @@ The sync contract must distinguish all of these identifiers:
 Mapping must be explicit and auditable. A package should not be accepted merely
 because two email addresses match.
 
-Target intake authorizes the receiving User, enrolled device lineage, external
-principal mapping, package tenant binding, and sync policy. It does not apply a
-Team entitlement before decrypt because the replica is still Team-personal and
-has no Team or Workspace scope. Team entitlement, Membership, Workspace Access,
-and Share Grants are separate request-time checks when that ready replica is
-later shared or recalled through a Team Workspace.
+Target intake authorizes the receiving User, enrolled device lineage, source
+deployment and principal recorded by browser-approved enrollment, package
+tenant binding, and sync policy. The first relationship establishes the
+external principal mapping inside the same locked transaction; any failure
+rolls back the deployment, identity, mapping, and relationship together. Later
+intake must match that exact active mapping. Revoked deployments, external
+identities, principal links, and credential lineages are never silently
+reactivated; restoring them requires explicit re-enrollment or authenticated
+credential rotation. Target intake does not apply a Team entitlement before
+decrypt because the replica is still Team-personal and has no Team or Workspace
+scope. Team entitlement, Membership, Workspace Access, and Share Grants are
+separate request-time checks when that ready replica is later shared or recalled
+through a Team Workspace.
 
 On the target, each sync relationship is bound to the exact enrolled source
 device lineage that created it. A credential for another device owned by the
 same User does not inherit access to that relationship. A replacement
 credential may continue it only through an authenticated rotation request that
-proves the active credential being replaced. Reusing the client-supplied device
+proves the active credential being replaced and preserves its approved source
+deployment and principal. Reusing the client-supplied device
 instance identifier does not prove lineage. The target assigns the opaque
 lineage identifier, and the first relationship permanently binds that lineage
 to one source deployment identity; later requests cannot use it to claim
 another source deployment. Every target intake mutation rechecks the presented
-credential's owner, expiry, revocation state, and `sync` operation family inside
-the same database transaction that changes sync state.
+credential's owner, expiry, revocation state, `sync` operation family, and
+approved source deployment/principal metadata inside the same database
+transaction that changes sync state.
+
+High-risk Action Grant execution applies the same rule. It locks and revalidates
+the bound device credential in the transaction that performs the protected
+side effect, so revocation or authenticated rotation cannot race an already
+approved grant into executing under stale authority.
 
 The same mapped User may verify another enrolled device and create a separate
 sync relationship from that device. Re-verification rotates the principal's

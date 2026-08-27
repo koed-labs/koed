@@ -29,6 +29,8 @@ describe("Shared Memory fidelity action grant bindings", () => {
       sessionId: randomUUID(),
       logicalMemoryId: randomUUID()
     },
+    sourceDeploymentProtocolId: randomUUID(),
+    sourceOwnerPrincipalId: randomUUID(),
     sourceCapabilities: [
       "memory_events" as const,
       "lcm_leaves" as const,
@@ -213,6 +215,8 @@ describe("Shared Memory source action grant bindings", () => {
     ];
     const candidateInput = {
       referenceId,
+      sourceDeploymentProtocolId: randomUUID(),
+      sourceOwnerPrincipalId: randomUUID(),
       logicalMemoryId: boundSource.logicalMemoryId,
       candidateHash: "b".repeat(64),
       sourceRevision: 1,

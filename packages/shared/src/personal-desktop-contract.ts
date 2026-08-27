@@ -231,6 +231,36 @@ export const personalDesktopProjectSchema = z
   })
   .strict();
 
+const personalDesktopProjectMetadataRemoteSchema = z
+  .object({
+    display: z.string().trim().min(1).max(512).nullable()
+  })
+  .strict();
+
+export const personalDesktopProjectMetadataSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    discoveredAt: timestampSchema,
+    lastSeenAt: timestampSchema,
+    localProjectId: identifierSchema,
+    displayName: projectNameSchema,
+    path: z
+      .object({
+        cwd: localProjectPathSchema,
+        projectRoot: localProjectPathSchema.nullable()
+      })
+      .strict(),
+    git: z
+      .object({
+        branch: z.string().trim().min(1).max(512).nullable(),
+        isWorktree: z.boolean(),
+        remotes: z.array(personalDesktopProjectMetadataRemoteSchema).max(100)
+      })
+      .strict()
+      .optional()
+  })
+  .strict();
+
 export const personalDesktopConversationEventSchema = z
   .object({
     id: z.uuid(),
@@ -500,6 +530,13 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.projects.metadata.list"),
+      input: z.object({}).strict()
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       operation: z.literal("personal.events.load_page"),
       input: personalDesktopEventPageInputSchema
     })
@@ -579,6 +616,12 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
 export const personalDesktopProjectsDataSchema = z
   .object({
     projects: z.array(personalDesktopProjectSchema).max(500)
+  })
+  .strict();
+
+export const personalDesktopProjectMetadataDataSchema = z
+  .object({
+    projects: z.array(personalDesktopProjectMetadataSchema).max(500)
   })
   .strict();
 
@@ -667,6 +710,15 @@ export const personalDesktopResultSchema = z.union([
     })
     .strict(),
   failedResult("personal.projects.list"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.projects.metadata.list"),
+      ok: z.literal(true),
+      data: personalDesktopProjectMetadataDataSchema
+    })
+    .strict(),
+  failedResult("personal.projects.metadata.list"),
   z
     .object({
       ...resultBase,
@@ -773,6 +825,9 @@ export type PersonalDesktopProjectThread = z.infer<
 >;
 export type PersonalDesktopProject = z.infer<
   typeof personalDesktopProjectSchema
+>;
+export type PersonalDesktopProjectMetadata = z.infer<
+  typeof personalDesktopProjectMetadataSchema
 >;
 export type PersonalDesktopConversationEvent = z.infer<
   typeof personalDesktopConversationEventSchema
@@ -905,6 +960,7 @@ export const conversationToolKindAndLabel = (
 
 export interface PersonalDesktopApi {
   listProjects: () => Promise<PersonalDesktopProject[]>;
+  listProjectMetadata?: () => Promise<PersonalDesktopProjectMetadata[]>;
   loadEventPage: (
     input: PersonalDesktopEventPageInput
   ) => Promise<PersonalDesktopConversationEvent[]>;

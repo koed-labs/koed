@@ -332,6 +332,7 @@ export {
   sharedMemorySanitizedSemanticProvenanceHash,
   sharedMemorySanitizedSemanticSourceBinding,
   sharedMemorySanitizedSemanticSourceRevisionHash,
+  sharedMemorySanitizedDisplayTitle,
   sharedMemorySemanticEmbeddingSourceBinding,
   sharedMemorySemanticPreviewPayloadBindingHash,
   sharedMemorySourceItemIdentityHash,

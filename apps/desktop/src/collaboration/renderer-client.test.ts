@@ -617,7 +617,8 @@ const success = (
           updatedAt: timestamp,
           activatedAt: null,
           revokedAt: null,
-          grantId: null
+          grantId: null,
+          grantVersion: null
         }
       };
       break;

@@ -191,6 +191,15 @@ These need the staging cloud backend or a dedicated staging stub:
 
 Any failed launch blocker should be linked to a Linear ticket before release.
 
+Shared Memory source-admission rollouts are backend-first. The Team backend
+must advertise `protocols.sharedMemorySourceAdmission.version = 1` before a
+compatible Desktop/local-server build creates candidate Action Grants. Refresh
+the upstream capability cache after the backend deployment. A missing or
+different version must produce the safe `protocol_mismatch` result before the
+candidate request or Action Grant is created. Candidate admission requires the
+source deployment and owner-principal provenance bound to the enrolled device
+credential.
+
 ## Relationship To The Fixture
 
 The fixture is the shared synthetic data set. This launch validation layer is

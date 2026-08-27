@@ -14,6 +14,7 @@ import {
 const ownerUserId = "33333333-3333-4333-8333-333333333333";
 const note: PersonalNoteRecord = {
   noteId: "11111111-1111-4111-8111-111111111111",
+  logicalMemoryId: "55555555-5555-4555-8555-555555555555",
   title: "Launch date",
   titleVersion: 1,
   body: "The launch date is September 14.",
@@ -137,6 +138,30 @@ describe("Personal Note memory Projection", () => {
       )
     ).rejects.toThrow("superseded Personal Note revision");
     expect(createMemoryEvent).not.toHaveBeenCalled();
+    expect(enqueueEmbedding).not.toHaveBeenCalled();
+  });
+
+  it("does not enqueue an embedding when the revision advances during projection", async () => {
+    const createMemoryEvent = vi.fn(async () => ({
+      id: projectedNote.memoryEventId
+    }));
+    const markPersonalNoteProjectionAvailable = vi.fn(async () => null);
+    const enqueueEmbedding = vi.fn();
+
+    await expect(
+      projectPersonalNoteToMemory(
+        {
+          repository: {
+            createMemoryEvent,
+            markPersonalNoteProjectionAvailable
+          } as unknown as Parameters<
+            typeof projectPersonalNoteToMemory
+          >[0]["repository"],
+          enqueueEmbedding
+        },
+        { ownerUserId, note }
+      )
+    ).rejects.toThrow("advanced while its revision was projected");
     expect(enqueueEmbedding).not.toHaveBeenCalled();
   });
 

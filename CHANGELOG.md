@@ -1,5 +1,87 @@
 # Koed
 
+## 0.5.0
+
+### Minor Changes
+
+- 569285d: Add agent-directed hybrid Memory retrieval, exact-grounded LCM lexical anchors,
+  Team-safe semantic evidence and expansion, and a reproducible Retrieval Arena
+  covering quality, cost, performance, encryption, and resource behavior.
+- bdf3b16: Decouple Koed core readiness from AI Clients: `setup core --json` now bootstraps the database, embedding runtime, and Personal API Token without requiring any AI Client, and zero configured AI Clients is a healthy state. Add a typed AI Client capability and readiness contract shared across the MCP Server, API, koed-server, worker, and Desktop, with per-instance capability snapshots, fail-closed assignment revalidation, and no cross-client fallback. Desktop onboarding is now client-neutral with optional multi-select AI Client setup (Codex, Claude Code, Pi), per-client consent, safe repair and removal, and snapshot-backed per-client readiness. Preferences gains per-flow AI Client and model selectors for Memory Answer, LCM Summary, session titles, and Curated Memory Review. Managed Conversations now bind to an explicit AI Client instance with capability-gated admission and config-identity binding; Pi managed Conversations remain explicitly unsupported.
+- d4b3ea6: Add staged Shared Memory creation and representation changes with owner-visible
+  progress, recovery controls, authorized candidate previews, and durable status
+  updates. Exclude Approval Activity from Projection-derived semantic memory and
+  sharing while retaining its exact-source audit display.
+- 108fbc1: Automatically discover and import bounded recent Codex history during local onboarding with resumable progress and live-safe capacity admission.
+- 0bd556a: Calibrate embedding capacity and expose authorized semantic backlog, throughput, coverage, and completion estimates for local and hosted operations.
+- c76eeca: Add clone-safe local deployment and device identity with redacted inspection, explicit rotation, and fail-closed remote-operation gating.
+- 00a2aaa: Add supervised continuous Codex transcript watching with durable live recovery, bounded rescans, Capture Policy enforcement, and Hook-independent Personal Memory capture.
+- 5c1d845: Add Claude Code as a supported local AI Client, including transcript capture,
+  managed Conversation resume, provider-selectable Memory workflows, and
+  multi-component Conversation Source replication. Add independently authorized
+  Team sharing for encrypted Conversation Source journals, including redacted
+  manifests, exact segment access, durable live streams, revocation, and verified
+  fork snapshots.
+- 56c2e0f: Add policy-gated historical import with durable provenance, idempotent progress, and bounded backpressure that prioritizes interactive and live capture work across local and BullMQ queues.
+- 7ca1b65: Add a reproducible Terminal-Bench 3.0 experience-replay benchmark covering
+  canonical Memory ingestion, product Recall, isolated replay conditions,
+  security controls, cost admission, and publication-safe reporting.
+- 6e2e9f0: License Koed and its repository history under the Apache License 2.0.
+- 01c62d2: Add Pi as a supported AI Client Integration with isolated RPC synthesis, Koed memory tools, persistent-session transcript capture, historical import, setup diagnostics, Pi-sourced Project threads in Desktop, and compact AI Client source marks on Captured Sessions. Improve Desktop first-run setup by detecting installed Claude Code and Pi profiles, showing every detected AI Client, and offering optional explicit per-client selection and consent for capture and recall alongside Codex; detection never configures a client automatically. Refresh Advanced Diagnostics whenever it opens so startup health does not remain stale after services become ready.
+- 171dc13: Add toolbar koed-server status badge.
+- 7a38929: Add push-based Team member presence with automatic activity levels and manual availability controls.
+- 3153645: Use GPT-5.6 Luna with low reasoning by default for local Memory Answer, LCM Summary, session-title, and Curated Memory synthesis.
+- d702b30: Install and diagnose managed Codex global guidance for proactive Personal and Team Memory recall.
+- 18cda8d: Add authoritative collaboration unread counts and scalable aggregate sent,
+  delivered, and read receipts with durable realtime updates.
+- e4ea6c7: Move browser-mediated Step-up actions and device enrollment onto dedicated
+  approval pages served by the existing Koed API.
+
+  Operators upgrading from an Explorer deployment must remove the retired
+  Explorer service and its health checks, then point `BROWSER_PUBLIC_URL` (or the
+  `API_BROWSER_PUBLIC_URL` Compose setting) at the public origin of the existing
+  Koed API. Approval pages, authentication, and approval JSON are now served from
+  that same API origin; no separate browser service is required.
+
+- e4ab0d5: Add selective PII protection for Team-shared transcripts, Memory Events, LCM
+  summaries, semantic embeddings, evidence, and exports while preserving exact
+  Personal Memory for its owner.
+- b1999c8: Add independently authorized Team sharing for encrypted Conversation Source
+  journals, including redacted manifests, exact segment access, durable live
+  streams, revocation, and verified fork snapshots.
+- 02d2b04: Adopt the MCP 2026-07-28 protocol with a stateless Codex adapter backed by a
+  supervised Local AI Runtime. Keep transcript capture, LCM summaries, Curated
+  Memory review, and Memory Answer execution in the local runtime, make Memory
+  Questions terminal-owned, and remove the legacy asynchronous question bridge.
+- 4b346ec: Add tiered approval flow across platform.
+- a69b856: Add encrypted Personal and Team collaboration, durable realtime messaging,
+  Shared Memory representations with companion discussions, and the Electron
+  collaboration experience with guided setup and resilient recovery flows.
+  Introduce verified source replication, managed Conversation continuation,
+  development workspace snapshots, cross-platform protected Personal Device
+  Sync, portable Memory Event, embedding, and LCM artifact reuse, and explicit
+  same-network device pairing with one-use encrypted QR links.
+- a7a3f4c: Add verified automatic CPU, Apple Metal, and NVIDIA CUDA acceleration for
+  embedding and reranking, including pinned native runtime variants, independent
+  resource policies, five-minute idle model unloading, a persistent Desktop
+  acceleration control, reproducible CPU/GPU performance evidence, truthful
+  capacity telemetry, and a CUDA Compose deployment path.
+
+### Patch Changes
+
+- de715fc: Update CI for fast fail, migrate cold build to version release.
+- b22d28d: Prevent the retention purge worker from repeatedly querying an empty queue while preserving immediate processing for queued purge work.
+- 108fbc1: Fix two historical-onboarding correctness bugs found in review: a recently active Conversation whose final JSONL record exceeds the transcript-activity scan window no longer gets wrongly excluded by the 30-day cutoff (it read the transcript's creation time instead of the record's own timestamp), and a trailing agent_message with no response_item yet in view is now deferred across historical batches instead of being committed as its own item, preventing a duplicate projected representation of the same assistant turn once the response_item arrives.
+- 108fbc1: Fix Curated Memory Review assignment being permanently unsavable for Claude models (e.g. Haiku) that report no explicit reasoning-effort support: the "none" sentinel is now resolved consistently by the Claude capability publisher, the default assignment, and the Desktop settings UI instead of leaving the field stuck on an unsatisfiable value.
+- 093b98f: Cleanup desktop UI components.
+- 108fbc1: Allowlist historical-import resume state before persisting it: only the fields real Codex/Claude adapters actually produce for mid-parse resume are stored, so arbitrary or oversized content passed as parser state can no longer be written to or read back from the historical import cursor.
+- 2f0659f: Harden Personal Device Sync governance retries, certificate repair, and final-device recovery Key Bundle access.
+- 108fbc1: Fix bounded historical onboarding getting permanently stuck when a single Codex JSONL record cannot fit within the historical batch byte/row limits: the source is now marked skipped instead of retried forever, so newer Conversations in the cohort continue to import.
+- 3ae1802: Harden collaboration selection reconciliation and Team Presence realtime event
+  validation.
+- 92ef240: Keep CPU embedding capacity identities valid when llama-server reports a generic device listing.
+- 6d3bd83: Keep open Personal Memory conversations visible while realtime updates refresh their latest events.
+
 ## 0.4.4
 
 ### Patch Changes

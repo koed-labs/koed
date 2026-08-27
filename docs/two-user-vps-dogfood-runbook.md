@@ -43,6 +43,17 @@ mutable-collaboration replication design.
 - Distinct local API, Postgres, and Embedding Service ports.
 - One remote Team and one Workspace shared by both Users.
 
+Profiles produced by `pnpm multi-device:prepare` are local-only by default.
+Before using one in this topology, set
+`KOED_TEAM_COLLABORATION_ENABLED=true` in that profile's environment. Keep
+`KOED_AUTO_PORTS=1` on every start, restart, status, and Desktop command so the
+profile continues using its persisted lease rather than colliding with the
+remote fixture dependencies. Pass the same read-only `KOED_MODELS_DIR` to the
+supervisor and Desktop when profiles share downloaded model assets; Team
+collaboration startup also requires the Privacy Filter model to be installed
+before launch. Do not treat a model download or first inference as Share
+latency when recording the flow.
+
 Never share these between the two local profiles:
 
 - `KOED_HOME`;
@@ -124,6 +135,12 @@ passes `KOED_HOME`, `KOED_ENV_PATH`, `CODEX_HOME`, and `CODEX_CONFIG_PATH`
 deliberately. Synthetic profiles on one machine may share the same verified,
 read-only `KOED_MODELS_DIR` to avoid duplicate model downloads, but the
 supervisor and Desktop processes must receive the same value.
+
+Keep each generated environment with its database for the lifetime of that
+disposable profile. If the application-layer encryption key lineage changes,
+discard the profile database and environment together. Reusing encrypted rows
+with newly generated keys is an invalid fixture state and must fail rather than
+skip unreadable rows.
 
 Pass `KOED_AUTO_PORTS=1` when first starting each local profile or Desktop.
 The supervisor records automatic-port mode in its runtime state, so later
@@ -396,14 +413,78 @@ source, or blocks local capture and Recall while the relay is unavailable.
 
 ## Enrollment And Team Setup
 
+Before opening Desktop, verify the remote backend itself advertises the
+expected contract. A developer fixture backend must report Team Workspaces,
+collaboration, Share Grants, and device enrollment as `partial` or `available`;
+a merely healthy Personal backend is not a valid Team fixture target.
+
+Before exercising Share preparation, verify the remote API and Worker use the
+same `DATABASE_URL`, queue backend, application encryption provider, Team
+encryption provider, and key lineage. The Worker must have
+`PRIVACY_SERVICE_URL` and `PRIVACY_SERVICE_TOKEN`; host and port variables used
+to launch the standalone Privacy Filter Service do not configure its Worker
+client. Reject a fixture where the API accepts a Share into one database while
+the Worker consumes another, or where privacy materialization is disabled.
+
+When the remote fixture API is started through `koed-server`, configure the
+documented supervisor-facing `API_*` variables. When `apps/api` is started
+directly for an isolated developer fixture, use the API process variables
+`BROWSER_PUBLIC_URL`, `CORS_ORIGINS`, and `COOKIE_SECURE` instead of assuming
+their `API_*` supervisor inputs are read directly. `BROWSER_PUBLIC_URL` and
+`CORS_ORIGINS` must name the exact origin entered in Desktop, including scheme,
+host, and port. For an HTTP loopback fixture, set `COOKIE_SECURE=false`; remote
+dogfood uses HTTPS and secure cookies.
+
+When WSL hands the approval URL to a Windows browser, configure
+`BROWSER_PUBLIC_URL` with the hostname that Windows opens. For the disposable
+loopback fixture, include both `http://localhost:<port>` and
+`http://127.0.0.1:<port>` in `CORS_ORIGINS`; do not carry this alias allowance
+into a real remote deployment. Test `/auth/login` with the browser's `Origin`
+header. A request without `Origin` can succeed while the actual browser is
+correctly rejected as an invalid origin.
+
+Use a dedicated remote-backend `KOED_HOME` and host-proof store. Initialize its
+device identity before first API startup, then keep that identity with the
+fixture database. The API's verified deployment identity and the database's
+single local deployment identity must reconcile; do not reuse an unrelated
+Operator `KOED_HOME` or patch the identity row to bypass the fail-closed check.
+Set `KOED_DEVELOPER_TEAM_BACKEND_ENABLED=true` only for an isolated developer
+fixture. Never enable that override in a shared deployment profile.
+
+The deterministic fixture does not invent password credentials. Before manual
+browser validation, provision a disposable fixture User password through the
+production Argon2id password-hash path and verify `/auth/login`. A later fixture
+seed preserves a valid existing fixture password hash, but a fresh fixture User
+is passwordless until this is done. Never record that password in this runbook
+or a committed environment file.
+
 For each User independently:
 
 1. Paste the remote HTTPS URL into the Team connection surface.
 2. Validate remote capabilities.
 3. Complete browser login in that User's browser profile.
 4. Approve the exact pending device enrollment.
-5. Confirm Desktop stores a credential reference, not credential plaintext.
-6. Confirm reconnect succeeds without another login.
+   The enrollment source owner must be the local Personal owner identifier from
+   that Desktop profile, not the remote fixture User identifier. Browser
+   approval binds the local source deployment and owner to the authenticated
+   remote User without starting sync or sharing content.
+5. Wait for Desktop to finish the exchange. If diagnosing outside Desktop,
+   `koed-server upstream enroll status --id <backend-id> --json` must report
+   `exchanged`; `upstream list --json` must report the credential as
+   `configured`.
+6. Confirm Desktop stores a credential reference, not credential plaintext.
+7. Force one collaboration navigation load and confirm the connection is
+   `live`, the remote principal is the expected User, and at least the expected
+   Team is present. A validated backend with an `unknown` credential or an
+   empty Team list is not a successful connection.
+8. Confirm reconnect succeeds without another login.
+9. Before creating a Captured Session sync relationship, create a fresh
+   Personal Note, reach its authoritative Share preview, approve the browser
+   Action Grant, and wait for the Share to become active. The Desktop's waiting
+   state before browser approval is not privacy-processing latency. This proves
+   that first-use Note sharing relies on the enrolled source identity rather
+   than an unrelated prior sync and that the remote Worker can complete privacy
+   materialization.
 
 As Alice:
 

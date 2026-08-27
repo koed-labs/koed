@@ -222,6 +222,23 @@ const grantResponse = (
   }
 });
 
+const teamGrantResponse = (input: Parameters<typeof grantResponse>[0] = {}) => {
+  const {
+    source: _source,
+    logicalGrantId: _logicalGrantId,
+    ownerUserId: _ownerUserId,
+    consentId: _consentId,
+    fidelityPolicyRevision: _fidelityPolicyRevision,
+    ...grant
+  } = grantResponse(input);
+  void _source;
+  void _logicalGrantId;
+  void _ownerUserId;
+  void _consentId;
+  void _fidelityPolicyRevision;
+  return grant;
+};
+
 const remoteReadResponse = (
   input: {
     representation?: TestRepresentation;
@@ -230,21 +247,27 @@ const remoteReadResponse = (
     items?: PreviewItem[];
   } = {}
 ) => ({
-  grant: grantResponse({
+  grant: teamGrantResponse({
     maximumFidelity: input.maximumFidelity,
     includeCuratedMemory: input.includeCuratedMemory
   }),
   representation: {
+    id: uuidFor(91),
     shareGrantId: ids.grant,
-    consentId: ids.consent,
     teamId: ids.team,
     teamWorkspaceId: ids.workspace,
     logicalMemoryId: ids.logicalMemory,
     representation: input.representation ?? "memory_events",
     sourceRevision: 4,
-    sourceRevisionHash: hash,
     recordVersion: 1,
-    state: "available" as const
+    state: "available" as const,
+    chunkCount: 1,
+    createdAt: iso,
+    updatedAt: iso,
+    availableAt: iso,
+    staleAt: null,
+    invalidatedAt: null,
+    invalidationReasonCode: null
   },
   items:
     input.items ??
@@ -421,6 +444,21 @@ const createFixture = (
     loadLocalCandidatePreview?: NonNullable<
       CollaborationSharedMemoryControlOptions["loadLocalCandidatePreview"]
     >;
+    resolveCandidateSourceIdentity?: NonNullable<
+      CollaborationSharedMemoryControlOptions["resolveCandidateSourceIdentity"]
+    >;
+    reportDiagnostic?: NonNullable<
+      CollaborationSharedMemoryControlOptions["reportDiagnostic"]
+    >;
+    readLocalEdgeClientCredential?: NonNullable<
+      CollaborationSharedMemoryControlOptions["readLocalEdgeClientCredential"]
+    >;
+    resolveUpstreamAuthorization?: NonNullable<
+      CollaborationSharedMemoryControlOptions["resolveUpstreamAuthorization"]
+    >;
+    readUpstreamRegistry?: NonNullable<
+      CollaborationSharedMemoryControlOptions["readUpstreamRegistry"]
+    >;
     remoteRead?: RemoteReadResponse;
     remoteOwnerGrants?: ReturnType<typeof grantResponse>[];
     remoteOwnedShares?: Record<string, unknown>[];
@@ -444,7 +482,7 @@ const createFixture = (
     source: NonNullable<
       CollaborationPersistedSharedMemoryGrant["grant"]["source"]
     >;
-    localSessionId?: string;
+    sourceRevision: number;
   }> = [];
   const previews = new Map<string, CollaborationPersistedSharedMemoryPreview>();
   const consents = new Map<string, CollaborationPersistedSharedMemoryConsent>();
@@ -581,9 +619,7 @@ const createFixture = (
         mutationId: input.mutationId,
         mode: input.mode,
         source: input.source,
-        ...(input.localSessionId
-          ? { localSessionId: input.localSessionId }
-          : {})
+        sourceRevision: input.sourceRevision
       });
       return overrides.persistPendingSourceWork ?? true;
     },
@@ -667,9 +703,18 @@ const createFixture = (
               updatedAt: iso,
               activatedAt: iso,
               revokedAt: null,
-              grantId: ids.grant
+              grantId: ids.grant,
+              grantVersion: 1
             }
-          ]
+          ],
+          outcomes: [
+            {
+              shareGrantId: ids.grant,
+              status: "accepted",
+              pendingShareId: uuidFor(720)
+            }
+          ],
+          nextShareGrantId: null
         };
       } else if (
         recorded.method === "POST" &&
@@ -746,7 +791,8 @@ const createFixture = (
             updatedAt: iso,
             activatedAt: null,
             revokedAt: null,
-            grantId: null
+            grantId: null,
+            grantVersion: null
           }
         };
       } else if (
@@ -787,7 +833,8 @@ const createFixture = (
             updatedAt: iso,
             activatedAt: iso,
             revokedAt: null,
-            grantId: ids.grant
+            grantId: ids.grant,
+            grantVersion: 1
           }
         };
       } else if (
@@ -833,7 +880,8 @@ const createFixture = (
               updatedAt: iso,
               activatedAt: null,
               revokedAt: recorded.body?.action === "revoke" ? iso : null,
-              grantId: null
+              grantId: null,
+              grantVersion: null
             }
           } as Record<string, unknown>);
       } else if (
@@ -999,16 +1047,25 @@ const createFixture = (
     koedHome: "/tmp/koed-control-test",
     upstreamBackendsPath: "/tmp/upstreams.json",
     fetch: fetcher as typeof fetch,
-    resolveUpstreamAuthorization: () =>
-      overrides.upstreamAuthorization === undefined
-        ? "Koed-Device upstream-key:upstream-secret"
-        : overrides.upstreamAuthorization,
+    resolveUpstreamAuthorization:
+      overrides.resolveUpstreamAuthorization ??
+      (() =>
+        overrides.upstreamAuthorization === undefined
+          ? "Koed-Device upstream-key:upstream-secret"
+          : overrides.upstreamAuthorization),
     authorityStore: store,
     prepareLocalLcmRepresentation:
       overrides.prepareLocalLcmRepresentation ?? (async () => "ready"),
     loadLocalCandidatePreview: overrides.loadLocalCandidatePreview,
     loadPersonalNoteCandidatePreview:
       overrides.loadPersonalNoteCandidatePreview,
+    resolveCandidateSourceIdentity:
+      overrides.resolveCandidateSourceIdentity ??
+      (() => ({
+        sourceDeploymentProtocolId: uuidFor(107),
+        sourceOwnerPrincipalId: ids.localOwner
+      })),
+    reportDiagnostic: overrides.reportDiagnostic,
     requestPendingShareSourceWork: overrides.requestPendingShareSourceWork,
     requestContinuousNoteAdvancementWork:
       overrides.requestContinuousNoteAdvancementWork,
@@ -1028,41 +1085,48 @@ const createFixture = (
         "personal_collaboration_write"
       ]
     }),
-    readLocalEdgeClientCredential: () => ({
-      authorization:
-        overrides.lecAuthorization ?? "Koed-Device lec-key:lec-secret",
-      backendId: "team-backend",
-      credentialKeyId: "lec-key",
-      operationFamilies: overrides.lecFamilies ?? [
-        "team_workspace_read",
-        "share_grant_management"
-      ]
-    }),
-    readUpstreamRegistry: () => ({
-      schemaVersion: 2,
-      activeBackendId: "team-backend",
-      backends: [
-        {
-          id: "team-backend",
-          baseUrl: "https://team.example.test",
-          routePolicy: {
-            teamWorkspaceRead: "enabled",
-            shareGrantManagement: "enabled"
-          },
-          capabilities: {
-            state: "validated",
-            expiresAt: "2099-01-01T00:00:00.000Z",
-            schemaVersion: 6,
-            payload: {
-              capabilitySchemaVersion: 6,
-              capabilities: {
-                "memory.collaboration": { availability: "partial" }
+    readLocalEdgeClientCredential:
+      overrides.readLocalEdgeClientCredential ??
+      (() => ({
+        authorization:
+          overrides.lecAuthorization ?? "Koed-Device lec-key:lec-secret",
+        backendId: "team-backend",
+        credentialKeyId: "lec-key",
+        operationFamilies: overrides.lecFamilies ?? [
+          "team_workspace_read",
+          "share_grant_management"
+        ]
+      })),
+    readUpstreamRegistry:
+      overrides.readUpstreamRegistry ??
+      (() => ({
+        schemaVersion: 2,
+        activeBackendId: "team-backend",
+        backends: [
+          {
+            id: "team-backend",
+            baseUrl: "https://team.example.test",
+            routePolicy: {
+              teamWorkspaceRead: "enabled",
+              shareGrantManagement: "enabled"
+            },
+            capabilities: {
+              state: "validated",
+              expiresAt: "2099-01-01T00:00:00.000Z",
+              schemaVersion: 6,
+              payload: {
+                capabilitySchemaVersion: 6,
+                protocols: {
+                  sharedMemorySourceAdmission: { version: 1 }
+                },
+                capabilities: {
+                  "memory.collaboration": { availability: "partial" }
+                }
               }
             }
           }
-        }
-      ]
-    }),
+        ]
+      })),
     actionGrantLifecycle: {
       resolve: () =>
         overrides.actionGrantSecret === undefined
@@ -1126,6 +1190,7 @@ describe("collaboration Shared Memory control", () => {
 
     await expect(
       fixture.control.advanceContinuousPersonalNoteRevision({
+        backendId: "team-backend",
         localOwnerUserId: ids.localOwner,
         noteId: ids.note,
         noteRevision: 2
@@ -1147,10 +1212,231 @@ describe("collaboration Shared Memory control", () => {
         pendingShareId: uuidFor(720),
         mutationId: expect.any(String),
         mode: "continuous",
-        source: noteSourceV2
+        source: noteSourceV2,
+        sourceRevision: 2
       }
     ]);
     expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it("pages continuous Personal Note destinations without dropping later shares", async () => {
+    const wake = vi.fn();
+    const cursor = uuidFor(721);
+    const secondPendingShareId = uuidFor(722);
+    const secondShareGrantId = uuidFor(723);
+    const fixture = createFixture({
+      requestPendingShareSourceWork: wake,
+      loadPersonalNoteCandidatePreview: async () => noteCandidateV2,
+      mutateResponse: (request, response) => {
+        if (
+          !request.pathname.endsWith(
+            "/v1/shared-memory/personal-note-revisions/advance"
+          )
+        ) {
+          return response;
+        }
+        if (!request.body?.afterShareGrantId) {
+          return { ...response, nextShareGrantId: cursor };
+        }
+        const firstPendingShare = (
+          response.pendingShares as Array<Record<string, unknown>>
+        )[0]!;
+        return {
+          pendingShares: [
+            {
+              ...firstPendingShare,
+              id: secondPendingShareId,
+              grantId: secondShareGrantId
+            }
+          ],
+          outcomes: [
+            {
+              shareGrantId: secondShareGrantId,
+              status: "accepted",
+              pendingShareId: secondPendingShareId
+            }
+          ],
+          nextShareGrantId: null
+        };
+      }
+    });
+
+    await expect(
+      fixture.control.advanceContinuousPersonalNoteRevision({
+        backendId: "team-backend",
+        localOwnerUserId: ids.localOwner,
+        noteId: ids.note,
+        noteRevision: 2
+      })
+    ).resolves.toEqual({ queued: 2 });
+
+    const requests = fixture.requests.filter((entry) =>
+      entry.pathname.endsWith(
+        "/v1/shared-memory/personal-note-revisions/advance"
+      )
+    );
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.body).not.toHaveProperty("afterShareGrantId");
+    expect(requests[1]?.body).toMatchObject({ afterShareGrantId: cursor });
+    expect(fixture.pendingSourceWork).toHaveLength(2);
+    expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it("treats a rejected continuous Note destination as a terminal non-queued outcome", async () => {
+    const wake = vi.fn();
+    const fixture = createFixture({
+      requestPendingShareSourceWork: wake,
+      loadPersonalNoteCandidatePreview: async () => noteCandidateV2,
+      mutateResponse: (request, response) =>
+        request.pathname.endsWith(
+          "/v1/shared-memory/personal-note-revisions/advance"
+        )
+          ? {
+              pendingShares: [],
+              outcomes: [
+                {
+                  shareGrantId: ids.grant,
+                  status: "rejected",
+                  reasonCode: "destination_unavailable"
+                }
+              ],
+              nextShareGrantId: null
+            }
+          : response
+    });
+
+    await expect(
+      fixture.control.advanceContinuousPersonalNoteRevision({
+        backendId: "team-backend",
+        localOwnerUserId: ids.localOwner,
+        noteId: ids.note,
+        noteRevision: 2
+      })
+    ).resolves.toEqual({ queued: 0 });
+
+    expect(fixture.pendingSourceWork).toEqual([]);
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("rejects mismatched accepted continuous Note outcomes", async () => {
+    const fixture = createFixture({
+      loadPersonalNoteCandidatePreview: async () => noteCandidateV2,
+      mutateResponse: (request, response) =>
+        request.pathname.endsWith(
+          "/v1/shared-memory/personal-note-revisions/advance"
+        )
+          ? {
+              ...response,
+              outcomes: [
+                {
+                  shareGrantId: ids.grant,
+                  status: "accepted",
+                  pendingShareId: randomUUID()
+                }
+              ]
+            }
+          : response
+    });
+
+    await expect(
+      fixture.control.advanceContinuousPersonalNoteRevision({
+        backendId: "team-backend",
+        localOwnerUserId: ids.localOwner,
+        noteId: ids.note,
+        noteRevision: 2
+      })
+    ).rejects.toMatchObject({ code: "permission_denied" });
+    expect(fixture.pendingSourceWork).toEqual([]);
+  });
+
+  it("rejects an accepted continuous Note outcome bound to the wrong grant", async () => {
+    const fixture = createFixture({
+      loadPersonalNoteCandidatePreview: async () => noteCandidateV2,
+      mutateResponse: (request, response) =>
+        request.pathname.endsWith(
+          "/v1/shared-memory/personal-note-revisions/advance"
+        )
+          ? {
+              ...response,
+              outcomes: [
+                {
+                  shareGrantId: randomUUID(),
+                  status: "accepted",
+                  pendingShareId: uuidFor(720)
+                }
+              ]
+            }
+          : response
+    });
+
+    await expect(
+      fixture.control.advanceContinuousPersonalNoteRevision({
+        backendId: "team-backend",
+        localOwnerUserId: ids.localOwner,
+        noteId: ids.note,
+        noteRevision: 2
+      })
+    ).rejects.toMatchObject({ code: "permission_denied" });
+    expect(fixture.pendingSourceWork).toEqual([]);
+  });
+
+  it("advances continuous Personal Note work through its claimed non-active backend", async () => {
+    const fixture = createFixture({
+      loadPersonalNoteCandidatePreview: async () => noteCandidateV2,
+      resolveUpstreamAuthorization: (backend) =>
+        `Koed-Device ${backend.id}-key:${backend.id}-secret`,
+      readLocalEdgeClientCredential: (_koedHome, backendId) => ({
+        authorization: `Koed-Device ${backendId}-key:${backendId}-secret`,
+        backendId,
+        credentialKeyId: `${backendId}-key`,
+        operationFamilies: ["share_grant_management"]
+      }),
+      readUpstreamRegistry: () => ({
+        schemaVersion: 2,
+        activeBackendId: "active-backend",
+        backends: ["active-backend", "claimed-backend"].map((id) => ({
+          id,
+          baseUrl: `https://${id}.example.test`,
+          routePolicy: {
+            teamWorkspaceRead: "enabled",
+            shareGrantManagement: "enabled"
+          },
+          capabilities: {
+            state: "validated",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+            schemaVersion: 6,
+            payload: {
+              capabilitySchemaVersion: 6,
+              protocols: {
+                sharedMemorySourceAdmission: { version: 1 }
+              },
+              capabilities: {
+                "memory.collaboration": { availability: "partial" }
+              }
+            }
+          }
+        }))
+      })
+    });
+
+    await expect(
+      fixture.control.advanceContinuousPersonalNoteRevision({
+        backendId: "claimed-backend",
+        localOwnerUserId: ids.localOwner,
+        noteId: ids.note,
+        noteRevision: 2
+      })
+    ).resolves.toEqual({ queued: 1 });
+
+    expect(
+      fixture.requests.find((request) =>
+        request.pathname.endsWith(
+          "/v1/shared-memory/personal-note-revisions/advance"
+        )
+      )
+    ).toMatchObject({
+      authorization: "Koed-Device claimed-backend-key:claimed-backend-secret"
+    });
   });
 
   it("requeues the latest continuous Personal Note revision when its Share resumes", async () => {
@@ -1186,7 +1472,8 @@ describe("collaboration Shared Memory control", () => {
           updatedAt: iso,
           activatedAt: iso,
           revokedAt: null,
-          grantId: ids.grant
+          grantId: ids.grant,
+          grantVersion: 1
         }
       }
     });
@@ -1255,7 +1542,8 @@ describe("collaboration Shared Memory control", () => {
           updatedAt: iso,
           activatedAt: null,
           revokedAt: null,
-          grantId: ids.grant
+          grantId: ids.grant,
+          grantVersion: 1
         }
       }
     });
@@ -1282,7 +1570,8 @@ describe("collaboration Shared Memory control", () => {
         pendingShareId,
         mutationId: sourceMutationId,
         mode: "snapshot",
-        source: noteSourceV2
+        source: noteSourceV2,
+        sourceRevision: 2
       }
     ]);
     expect(wake).toHaveBeenCalledOnce();
@@ -1343,7 +1632,8 @@ describe("collaboration Shared Memory control", () => {
           updatedAt: iso,
           activatedAt: null,
           revokedAt: null,
-          grantId: ids.grant
+          grantId: ids.grant,
+          grantVersion: 1
         }
       }
     });
@@ -1546,6 +1836,63 @@ describe("collaboration Shared Memory control", () => {
     ]);
   });
 
+  it("rejects candidate execution when the backend lacks the source-admission protocol", async () => {
+    const base = previewCommand();
+    const fixture = createFixture({
+      readUpstreamRegistry: () => ({
+        schemaVersion: 2,
+        activeBackendId: "team-backend",
+        backends: [
+          {
+            id: "team-backend",
+            baseUrl: "https://team.example.test",
+            routePolicy: {
+              teamWorkspaceRead: "enabled",
+              shareGrantManagement: "enabled"
+            },
+            capabilities: {
+              state: "validated",
+              expiresAt: "2099-01-01T00:00:00.000Z",
+              schemaVersion: 6,
+              payload: {
+                capabilitySchemaVersion: 6,
+                capabilities: {
+                  "memory.collaboration": { availability: "partial" }
+                }
+              }
+            }
+          }
+        ]
+      })
+    });
+
+    const result = await fixture.control.dispatch(
+      {
+        ...base,
+        input: {
+          ...base.input,
+          candidate: {
+            source: capturedSource,
+            sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+            activationRepresentation: "memory_events",
+            candidateHash: hash,
+            sourceRevision: 4,
+            itemCount: 1,
+            excludedItemCount: 0,
+            manifest: [{ sourceId: ids.source, revisionHash: hashB }],
+            byteCount: 128,
+            mode: "continuous",
+            expiresAt: null
+          }
+        }
+      },
+      context()
+    );
+
+    expectFailure(result, "protocol_mismatch");
+    expect(fixture.requests).toHaveLength(0);
+  });
+
   it("reconciles authoritative remote owner grants before listing them", async () => {
     const fixture = createFixture();
     const result = await fixture.control.dispatch(
@@ -1642,6 +1989,10 @@ describe("collaboration Shared Memory control", () => {
     const pendingShareId = uuidFor(812);
     const inaccessibleGrant = {
       ...grantResponse(),
+      source: {
+        ...capturedSource,
+        logicalMemoryId: inaccessibleLogicalMemoryId
+      },
       id: inaccessibleGrantId,
       logicalGrantId: uuidFor(813),
       logicalMemoryId: inaccessibleLogicalMemoryId,
@@ -1681,14 +2032,18 @@ describe("collaboration Shared Memory control", () => {
         updatedAt: iso,
         activatedAt: null,
         revokedAt: null,
-        grantId: null
+        grantId: null,
+        grantVersion: null
       },
       sourceAccess: null,
       summary: {
+        source: capturedSource,
         sourceSessionId: uuidFor(818),
         sourceTitle: "Pending owner share",
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
+        companionThreadId: ids.companion,
         mode: "continuous",
         authorizedPreview: {
           previewId: ids.preview,
@@ -1710,6 +2065,8 @@ describe("collaboration Shared Memory control", () => {
           summary: {
             ...pending.summary,
             sourceTitle: "Inaccessible historical grant",
+            workspaceContentAccess: "unavailable",
+            companionThreadId: null,
             authorizedPreview: null
           }
         }
@@ -1733,6 +2090,15 @@ describe("collaboration Shared Memory control", () => {
             kind: "pending",
             pendingShare: { id: pendingShareId, state: "preparing" },
             summary: { sourceSessionId: ids.localSession }
+          },
+          {
+            kind: "grant",
+            grant: { id: inaccessibleGrant.id },
+            summary: {
+              sourceTitle: "Inaccessible historical grant",
+              workspaceContentAccess: "unavailable",
+              companionThreadId: null
+            }
           }
         ],
         nextCursor: null
@@ -1770,11 +2136,13 @@ describe("collaboration Shared Memory control", () => {
         grant: remoteGrant,
         sourceAccess: null,
         summary: {
+          source: { ...capturedSource, logicalMemoryId },
           sourceSessionId: ids.localSession,
           companionThreadId: ids.companion,
           sourceTitle: `Shared source ${index + 1}`,
           teamName: "Atlas Research",
           workspaceName: "Launch Plans",
+          workspaceContentAccess: "available",
           mode: "continuous" as const,
           authorizedPreview: null,
           lastReadyRevision: 4,
@@ -1818,6 +2186,33 @@ describe("collaboration Shared Memory control", () => {
       expect.stringMatching(/device-credentials\/status$/),
       "/v1/shared-memory/owned-shares"
     ]);
+  });
+
+  it("reports authority projection failures without logging protected share data", async () => {
+    const diagnostics = vi.fn();
+    const fixture = createFixture({ reportDiagnostic: diagnostics });
+    fixture.readAuthoritativeGrants.mockRejectedValueOnce(
+      new Error(`projection failed for ${hash} and hrg_secret`)
+    );
+
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.list_owned_shares"),
+        input: { cursor: null, limit: 100, history: false }
+      },
+      context()
+    );
+
+    expectFailure(result, "internal_error");
+    expect(diagnostics).toHaveBeenCalledWith({
+      code: "shared_memory_authority_projection_failed",
+      operation: "collaboration.list_owned_shares",
+      publicGrantReference: null,
+      failureStage: "authority_store_projection",
+      httpStatus: 500
+    });
+    expect(JSON.stringify(diagnostics.mock.calls)).not.toContain(hash);
+    expect(JSON.stringify(diagnostics.mock.calls)).not.toContain("hrg_secret");
   });
 
   it("binds owned-share cursors to immutable pagination context", async () => {
@@ -1886,10 +2281,13 @@ describe("collaboration Shared Memory control", () => {
       grant: grantResponse(),
       sourceAccess: null,
       summary: {
+        source: capturedSource,
         sourceSessionId: uuidFor(48),
+        companionThreadId: ids.companion,
         sourceTitle: "Owner preview",
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: {
           previewId: ids.preview,
@@ -1962,14 +2360,17 @@ describe("collaboration Shared Memory control", () => {
         updatedAt: iso,
         activatedAt: iso,
         revokedAt: null,
-        grantId: ids.grant
+        grantId: ids.grant,
+        grantVersion: 1
       },
       sourceAccess: null,
       summary: {
+        source: capturedSource,
         sourceSessionId: ids.localSession,
         sourceTitle: "Activated owner preview",
         teamName: "Atlas Research",
         workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
         mode: "continuous",
         authorizedPreview: {
           previewId: ids.preview,
@@ -2259,6 +2660,13 @@ describe("collaboration Shared Memory control", () => {
       ok: true,
       data: { grant: { lifecycle: "revoked", grantVersion: 2 } }
     });
+    if (
+      !revoked?.ok ||
+      revoked.command !== "collaboration.revoke_shared_memory"
+    ) {
+      throw new Error("revocation failed");
+    }
+    expect(revoked.data.grant).not.toHaveProperty("companionThreadId");
     expect(shareFixture.grantPersistenceModes).toEqual(["revocation"]);
 
     const changeFixture = createFixture();
@@ -2319,7 +2727,8 @@ describe("collaboration Shared Memory control", () => {
           includeCuratedMemory: false,
           workspaceAccessState: "active",
           state: "preparing",
-          grantId: ids.grant
+          grantId: ids.grant,
+          grantVersion: 1
         }
       }
     });
@@ -2339,7 +2748,8 @@ describe("collaboration Shared Memory control", () => {
     });
     expect(changeFixture.pendingSourceWork.at(-1)).toMatchObject({
       pendingShareId: uuidFor(701),
-      localSessionId: ids.localSession
+      source: capturedSource,
+      sourceRevision: 4
     });
   });
 
@@ -2410,6 +2820,7 @@ describe("collaboration Shared Memory control", () => {
           source: noteSourceV2,
           sourceRevision: 2,
           grantId: ids.grant,
+          grantVersion: 1,
           state: "preparing"
         }
       }
@@ -2527,7 +2938,7 @@ describe("collaboration Shared Memory control", () => {
         mutationId,
         mode: "continuous",
         source: capturedSource,
-        localSessionId: ids.localSession
+        sourceRevision: 4
       }
     ]);
     expect(requestPendingShareSourceWork).toHaveBeenCalledTimes(1);
@@ -2571,7 +2982,8 @@ describe("collaboration Shared Memory control", () => {
           state: "preparing",
           stage: "accepted",
           workspaceAccessState: "none",
-          grantId: null
+          grantId: null,
+          grantVersion: null
         }
       }
     });
@@ -2897,25 +3309,12 @@ describe("collaboration Shared Memory control", () => {
   });
 
   it("rejects cross-Workspace and representation-substituted source results", async () => {
+    const validRead = remoteReadResponse();
     const wrongWorkspace = createFixture({
       remoteRead: {
-        grant: { ...grantResponse(), teamWorkspaceId: uuidFor(999) },
-        representation: {
-          shareGrantId: ids.grant,
-          consentId: ids.consent,
-          teamId: ids.team,
-          teamWorkspaceId: ids.workspace,
-          logicalMemoryId: ids.logicalMemory,
-          representation: "memory_events",
-          sourceRevision: 4,
-          sourceRevisionHash: hash,
-          recordVersion: 1,
-          state: "available"
-        },
-        items: [sourceItem()],
-        sourcePage: { itemOffset: 0, itemCount: 1 },
-        freshness: "fresh",
-        companionScope: grantResponse().companionScope
+        ...validRead,
+        grant: { ...validRead.grant, teamWorkspaceId: uuidFor(999) },
+        items: [sourceItem()]
       }
     });
     expectFailure(

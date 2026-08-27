@@ -101,6 +101,22 @@ export const registerQuestionRoutes = (
     }
   );
 
+  app.post(
+    "/v1/memory/ask/questions/recover-pending",
+    { preHandler: memoryWriteRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticateApiToken(request);
+      return repo.recoverPendingDesktopAsks(
+        { userId: user.id },
+        {
+          errorMessage:
+            "This Ask was interrupted when the Local AI Runtime stopped. Try again."
+        }
+      );
+    }
+  );
+
   app.patch(
     "/v1/memory/ask/questions/:questionId",
     { preHandler: memoryWriteRateLimit },

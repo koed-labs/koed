@@ -365,6 +365,8 @@ export {
   personalDesktopNoteSchema,
   personalDesktopNoteSummarySchema,
   personalDesktopNotesDataSchema,
+  personalDesktopProjectMetadataDataSchema,
+  personalDesktopProjectMetadataSchema,
   personalDesktopProjectSchema,
   personalDesktopProjectsDataSchema,
   personalDesktopProjectThreadSchema,
@@ -409,6 +411,7 @@ export type {
   PersonalDesktopNoteLoadInput,
   PersonalDesktopNoteRenameInput,
   PersonalDesktopNoteSummary,
+  PersonalDesktopProjectMetadata,
   PersonalDesktopProject,
   PersonalDesktopProjectThread,
   PersonalDesktopRequest,
@@ -509,6 +512,7 @@ export {
   sharedMemoryRepresentationSchema,
   sharedMemorySourceCapabilitiesSchema,
   sharedMemoryGrantSchema,
+  ownedSharedMemoryGrantSchema,
   pendingShareSchema,
   ownedShareSummarySchema,
   ownedShareItemSchema,
@@ -556,6 +560,7 @@ export type {
   CollaborationWorkspaceAccess,
   SharedMemoryConsent,
   SharedMemoryGrant,
+  OwnedSharedMemoryGrant,
   PendingShare,
   ConversationSourceAccess,
   SharedMemoryPreview,
@@ -735,6 +740,8 @@ export type {
 export {
   assertPersonalNoteSourceSelection,
   personalNoteSourceRevisionHash,
+  capturedSessionSourceFrontierHash,
+  logicalMemorySourceRevisionIdentity,
   personalNoteSourceSelectionIssues,
   sharedMemorySourceCanReplace,
   sharedMemorySourceKinds,
@@ -742,6 +749,7 @@ export {
 } from "./shared-memory-source.js";
 export type {
   SharedMemoryRepresentationCapability,
+  LogicalMemorySourceRevisionIdentity,
   SharedMemorySourceRef,
   SharedMemorySourceSelection
 } from "./shared-memory-source.js";
@@ -997,6 +1005,7 @@ export {
   SHARED_SOURCE_ARTIFACT_SCHEMA_VERSION,
   SHARED_SOURCE_PREVIEW_SCHEMA_VERSION,
   sharedMemoryGrantScopedSourceId,
+  sharedMemoryGrantScopedPrincipalId,
   sharedSourceArtifactHash,
   sharedSourceArtifactId,
   sharedSourcePreviewHash,

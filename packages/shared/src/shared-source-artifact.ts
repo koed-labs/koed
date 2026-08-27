@@ -85,7 +85,7 @@ export interface SharedSourceArtifactV1 {
   schemaVersion: typeof SHARED_SOURCE_ARTIFACT_SCHEMA_VERSION;
   artifactId: string;
   logicalMemoryId: string;
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
   representation: SharedSourceArtifactRepresentation;
   binding: SharedSourceArtifactBindingV1;
   /** Present only for Captured Session sources. Personal Note revisions are standalone. */
@@ -103,7 +103,7 @@ export interface SharedSourcePreviewV1 {
   previewId: string;
   artifactId: string;
   logicalMemoryId: string;
-  source?: SharedMemorySourceRef;
+  source: SharedMemorySourceRef;
   representation: SharedSourceArtifactRepresentation;
   binding: SharedSourceArtifactBindingV1;
   items: SharedSourceArtifactItemV1[];
@@ -171,4 +171,14 @@ export const sharedMemoryGrantScopedSourceId = (
     kind: "shared_memory_team_source",
     shareGrantId,
     sourceId
+  });
+
+export const sharedMemoryGrantScopedPrincipalId = (
+  shareGrantId: string,
+  principalId: string
+): string =>
+  crossIdentitySyncDeterministicUuid({
+    kind: "shared_memory_team_principal",
+    shareGrantId,
+    principalId
   });

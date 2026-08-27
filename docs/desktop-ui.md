@@ -173,6 +173,11 @@ parallel. At narrow widths it becomes accessible **Source** and
 - current, pending, stale, unavailable, or revoked state; and
 - destination Team and Workspace.
 
+The Personal Shares view continues to list an owned Share after the owner loses
+Workspace Access. It marks Workspace content unavailable, disables content and
+detail actions, and keeps revocation available without exposing the source
+preview or companion discussion.
+
 Memory Event bodies and LCM summaries use the same secure rich-text renderer in
 the Shared Memory route and the source-owner consent preview. This keeps
 headings, lists, tables, links, and fenced code consistent before and after a

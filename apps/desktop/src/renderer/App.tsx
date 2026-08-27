@@ -52,6 +52,7 @@ import {
   type DesktopCommand
 } from "./command-palette.js";
 import { DesktopStatusStore } from "./services/desktop-commands.js";
+import { createRendererPlatform } from "./services/platform.js";
 import { PersonalMemoryStore } from "./state/personal-memory.js";
 import { sessionSelectionId } from "../project-memory-ui.js";
 import type { ManagedConversationDesktopApi } from "../ipc/managed-conversation-protocol.js";
@@ -467,6 +468,7 @@ export function App({
       personalMemoryApi ? new PersonalMemoryStore(personalMemoryApi) : null,
     [personalMemoryApi]
   );
+  const platform = useMemo(() => createRendererPlatform(), []);
   const subscribePersonalMemory = useCallback(
     (listener: () => void) =>
       personalMemoryStore?.subscribe(listener) ?? (() => undefined),
@@ -1217,10 +1219,10 @@ export function App({
               route: { kind: "personal-memory-notes", newNote: true }
             })
           }
-          onSave={async (body) => {
+          onSave={async (body, idempotencyKey) => {
             const created = await personalMemoryApi.createNote!({
               body,
-              idempotencyKey: crypto.randomUUID()
+              idempotencyKey
             });
             navigate({
               authority: currentNavigationEntry(navigation).authority,
@@ -1231,7 +1233,8 @@ export function App({
             });
           }}
           onShare={
-            (snapshot?.navigation.teams.some(
+            snapshot?.connection.state === "live" &&
+            snapshot.navigation.teams.some(
               (team) =>
                 team.lifecycle === "active" &&
                 team.workspaces.some(
@@ -1239,7 +1242,7 @@ export function App({
                     workspace.lifecycle === "active" &&
                     workspace.access === "write"
                 )
-            ) ?? false)
+            )
               ? (note) =>
                   collaboration.setModal({
                     kind: "share_personal_note",
@@ -1360,6 +1363,8 @@ export function App({
             managedConversationRevision={managedConversationRevision}
             managedConversations={managedConversations}
             markdownAdapters={collaboration.markdownAdapters}
+            openExternal={platform.openExternal}
+            revealLocalProject={platform.revealLocalProject}
             onInspectEvent={(event) => {
               setInspector(event);
               setInspectorOpen(true);

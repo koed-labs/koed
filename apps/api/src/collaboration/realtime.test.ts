@@ -13,6 +13,8 @@ import type {
 import {
   COLLABORATION_CONTRACT_VERSION,
   collaborationRealtimeEventFamilySchema,
+  sharedMemoryGrantScopedPrincipalId,
+  sharedMemoryGrantScopedSourceId,
   type SharedMemoryRepresentation
 } from "@koed/shared";
 import Fastify, { type FastifyRequest } from "fastify";
@@ -160,7 +162,7 @@ const createRepositoryFixture = () => {
   const events: CollaborationOutboxEventRecord[] = [
     event({
       cursor: 1,
-      scope: "team",
+      scope: "team" as const,
       teamId: ids.teamA,
       actorPrincipalId: ids.alice
     }),
@@ -681,7 +683,10 @@ const createTeamSnapshot = async (
   return jsonBody<{
     cursor: string;
     subscription: CollaborationSubscriptionRecord;
-    snapshot: { highWaterCursor: string };
+    snapshot: {
+      highWaterCursor: string;
+      threads: CollaborationThreadRecord[];
+    };
   }>(response);
 };
 
@@ -921,6 +926,7 @@ const workspaceGrantPage = (
             shareGrantId: fixture.ids.shareGrant,
             logicalMemoryId: fixture.ids.logicalMemory,
             ownerUserId: fixture.ids.alice,
+            ownerDisplayName: "Alice",
             sourceCapabilities: ["memory_events" as const],
             activationRepresentation: "memory_events" as const,
             maximumFidelity: "memory_events" as const,
@@ -1075,6 +1081,40 @@ describe("collaboration realtime protocol", () => {
     expect(snapshot.snapshot.highWaterCursor).toBe(snapshot.cursor);
     expect(snapshot.subscription.scope).toBe("team");
     expect(snapshot.subscription.teamId).toBe(fixture.ids.teamA);
+  });
+
+  it("scopes Shared Session identities in realtime snapshots", async () => {
+    const fixture = createRepositoryFixture();
+    const companion = sharedCompanionThread(fixture);
+    fixture.repository.getAuthorizedSnapshot = vi.fn(async () => ({
+      scope: "team" as const,
+      personalOwnerUserId: null,
+      teamId: fixture.ids.teamA,
+      highWaterCursor: 0,
+      threads: [companion]
+    }));
+    const app = await buildTestServer(fixture);
+    const snapshot = await createTeamSnapshot(
+      app,
+      fixture.ids.alice,
+      fixture.ids.teamA
+    );
+
+    expect(snapshot.snapshot.threads[0]?.sharedLogicalMemoryId).toBe(
+      sharedMemoryGrantScopedSourceId(
+        fixture.ids.shareGrant,
+        fixture.ids.logicalMemory
+      )
+    );
+    expect(JSON.stringify(snapshot.snapshot)).not.toContain(
+      fixture.ids.logicalMemory
+    );
+    expect(snapshot.snapshot.threads[0]?.createdByUserId).toBe(
+      sharedMemoryGrantScopedPrincipalId(
+        fixture.ids.shareGrant,
+        fixture.ids.alice
+      )
+    );
   });
 
   it("keeps an idle TCP realtime response open until the client disconnects", async () => {
@@ -1395,6 +1435,7 @@ describe("collaboration realtime protocol", () => {
         teamWorkspaceId: fixture.ids.workspace,
         shareGrantId: fixture.ids.shareGrant,
         logicalMemoryId: fixture.ids.logicalMemory,
+        actorPrincipalId: fixture.ids.alice,
         messageId: null,
         family: "share_grant_lifecycle",
         resourceType: "shared_memory_grant",
@@ -1487,6 +1528,7 @@ describe("collaboration realtime protocol", () => {
         teamWorkspaceId: fixture.ids.workspace,
         shareGrantId: fixture.ids.shareGrant,
         logicalMemoryId: fixture.ids.logicalMemory,
+        actorPrincipalId: fixture.ids.alice,
         messageId: null,
         family: "memory_event_available",
         resourceType: "shared_memory_representation",
@@ -1528,11 +1570,32 @@ describe("collaboration realtime protocol", () => {
     });
     expect(eventData(body, "collaboration_event")).toMatchObject({
       type: "memory_event_available",
+      resource: {
+        logicalMemoryId: sharedMemoryGrantScopedSourceId(
+          fixture.ids.shareGrant,
+          fixture.ids.logicalMemory
+        )
+      },
+      actor: {
+        principalId: sharedMemoryGrantScopedPrincipalId(
+          fixture.ids.shareGrant,
+          fixture.ids.alice
+        )
+      },
       update: {
         type: "shared_session_upserted",
         session: {
           id: fixture.ids.shareGrant,
-          logicalMemoryId: fixture.ids.logicalMemory,
+          logicalMemoryId: sharedMemoryGrantScopedSourceId(
+            fixture.ids.shareGrant,
+            fixture.ids.logicalMemory
+          ),
+          owner: {
+            id: sharedMemoryGrantScopedPrincipalId(
+              fixture.ids.shareGrant,
+              fixture.ids.alice
+            )
+          },
           companionThreadId: fixture.ids.companionThread,
           maximumFidelity: "memory_events",
           includeCuratedMemory: false,
@@ -1555,6 +1618,7 @@ describe("collaboration realtime protocol", () => {
         threadId: fixture.ids.companionThread,
         shareGrantId: fixture.ids.shareGrant,
         logicalMemoryId: fixture.ids.logicalMemory,
+        actorPrincipalId: fixture.ids.alice,
         messageId: null,
         family: "thread_lifecycle",
         resourceType: "collaboration_thread",
@@ -1587,11 +1651,32 @@ describe("collaboration realtime protocol", () => {
     });
     expect(eventData(body, "collaboration_event")).toMatchObject({
       type: "thread_lifecycle",
+      resource: {
+        logicalMemoryId: sharedMemoryGrantScopedSourceId(
+          fixture.ids.shareGrant,
+          fixture.ids.logicalMemory
+        )
+      },
+      actor: {
+        principalId: sharedMemoryGrantScopedPrincipalId(
+          fixture.ids.shareGrant,
+          fixture.ids.alice
+        )
+      },
       update: {
         type: "shared_session_upserted",
         session: {
           id: fixture.ids.shareGrant,
-          logicalMemoryId: fixture.ids.logicalMemory,
+          logicalMemoryId: sharedMemoryGrantScopedSourceId(
+            fixture.ids.shareGrant,
+            fixture.ids.logicalMemory
+          ),
+          owner: {
+            id: sharedMemoryGrantScopedPrincipalId(
+              fixture.ids.shareGrant,
+              fixture.ids.alice
+            )
+          },
           companionThreadId: fixture.ids.companionThread,
           maximumFidelity: "memory_events",
           includeCuratedMemory: false,
@@ -1730,6 +1815,12 @@ describe("collaboration realtime protocol", () => {
   it("materializes owner-only Pending Share lifecycle status without Team authority", async () => {
     const ownerId = randomUUID();
     const pendingShareId = randomUUID();
+    const logicalMemoryId = randomUUID();
+    const source = {
+      kind: "captured_session" as const,
+      sessionId: randomUUID(),
+      logicalMemoryId
+    };
     const eventRecord = event({
       cursor: 1,
       scope: "personal",
@@ -1750,6 +1841,7 @@ describe("collaboration realtime protocol", () => {
       getOwnerShare: vi.fn(async () => ({
         kind: "pending" as const,
         pendingShare: {
+          source,
           sourceCapabilities: [
             "lcm_rollups",
             "lcm_leaves",
@@ -1760,7 +1852,7 @@ describe("collaboration realtime protocol", () => {
           mutationId: randomUUID(),
           logicalGrantId: randomUUID(),
           consentId: randomUUID(),
-          logicalMemoryId: randomUUID(),
+          logicalMemoryId,
           teamId: randomUUID(),
           teamWorkspaceId: randomUUID(),
           representation: "memory_events" as const,
@@ -1780,15 +1872,18 @@ describe("collaboration realtime protocol", () => {
           updatedAt: iso,
           activatedAt: null,
           revokedAt: null,
-          grantId: null
+          grantId: null,
+          grantVersion: null
         },
         sourceAccess: null,
         summary: {
-          sourceSessionId: randomUUID(),
+          source,
+          sourceSessionId: source.sessionId,
           companionThreadId: null,
           sourceTitle: "Owner conversation",
           teamName: "Team",
           workspaceName: "Workspace",
+          workspaceContentAccess: "unavailable" as const,
           mode: "continuous" as const,
           authorizedPreview: null,
           lastReadyRevision: null,

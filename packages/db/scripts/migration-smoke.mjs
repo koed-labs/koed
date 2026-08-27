@@ -1166,6 +1166,17 @@ try {
     preMultiComponentSourceFolder,
     journal.entries.slice(0, preMultiComponentSourceIndex + 1)
   );
+  const preGenericSharedMemoryIndex = expectedLatestMigrationIndex - 1;
+  const preGenericSharedMemoryFolder = await createMigrationSlice(
+    journal,
+    preGenericSharedMemoryIndex,
+    { folderPrefix: "koed-pre-generic-shared-memory-" }
+  );
+  temporaryFolders.add(preGenericSharedMemoryFolder);
+  const preGenericSharedMemoryRecords = await migrationRecords(
+    preGenericSharedMemoryFolder,
+    journal.entries.slice(0, preGenericSharedMemoryIndex + 1)
+  );
 
   await runScenario("clean-full-migration", async () => {
     const target = await createDisposableDatabase("clean_full");
@@ -1173,6 +1184,56 @@ try {
       await runDbMigrations(pool);
       await assertMigrationLedger(pool, fullRecords);
       await assertCurrentSchema(pool);
+    });
+  });
+
+  await runScenario("generic-shared-memory-requires-alpha-reset", async () => {
+    const target = await createDisposableDatabase("generic_memory_reset");
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, {
+        migrationsFolder: preGenericSharedMemoryFolder
+      });
+      await assertMigrationLedger(pool, preGenericSharedMemoryRecords);
+      const ownerUserId = randomUUID();
+      const deploymentIdentityId = randomUUID();
+      await pool.query("insert into users (id, email) values ($1, $2)", [
+        ownerUserId,
+        `generic-memory-reset-${ownerUserId}@example.test`
+      ]);
+      await pool.query(
+        `insert into deployment_identities
+           (id,protocol_deployment_id,locality,profile)
+         values ($1,$2,'local','local_personal')`,
+        [deploymentIdentityId, randomUUID()]
+      );
+      await pool.query(
+        `insert into logical_memories
+           (owner_user_id,source_boundary,logical_key,
+            origin_deployment_identity_id,origin_source_id,owner_principal_id)
+         values ($1,'captured_session',$2,$3,$4,$1)`,
+        [
+          ownerUserId,
+          `generic-memory-reset:${randomUUID()}`,
+          deploymentIdentityId,
+          `session:${randomUUID()}`
+        ]
+      );
+      const migrationError = await runDbMigrations(pool).then(
+        () => null,
+        (error) => error
+      );
+      if (!migrationError) {
+        throw new Error("Populated pre-0035 database unexpectedly upgraded");
+      }
+      const messages = errorMessages(migrationError);
+      if (
+        !messages.includes(
+          "Koed alpha data reset required before enabling generic Shared Memory sources"
+        )
+      ) {
+        throw new Error(`Missing reset-required diagnostic: ${messages}`);
+      }
+      await assertMigrationLedger(pool, preGenericSharedMemoryRecords);
     });
   });
 

@@ -189,32 +189,40 @@ describeDb("Collaboration Shared Memory authority store", () => {
       [fixture.sessionId, fixture.identity.localOwnerUserId]
     );
     await pool.query(
-      `insert into logical_memories
-         (id, owner_user_id, owner_principal_id, origin_deployment_identity_id,
-          source_boundary, origin_source_id, local_session_id, logical_key)
-       values ($1, $2, $2, $3, 'captured_session', $4, $5, $6)`,
+      `with logical_memory as (
+         insert into logical_memories
+           (id, owner_user_id, owner_principal_id, origin_deployment_identity_id,
+            source_kind, logical_key)
+         values ($1, $2, $2, $3, 'captured_session', $4)
+         returning id
+       ), protocol_binding as (
+         insert into captured_session_logical_memories
+           (logical_memory_id,source_session_id,owner_principal_id)
+         select id,$5,$2 from logical_memory
+       )
+       insert into local_captured_session_logical_memories
+         (logical_memory_id,local_session_id,owner_user_id)
+       select id,$5,$2 from logical_memory`,
       [
         fixture.logicalMemoryId,
         fixture.identity.localOwnerUserId,
         localDeploymentId,
-        `session:${fixture.sessionId}`,
-        fixture.sessionId,
-        `captured-session:${fixture.sessionId}`
+        `captured-session:${fixture.sessionId}`,
+        fixture.sessionId
       ]
     );
     await pool.query(
       `insert into memory_replicas
          (id, logical_memory_id, deployment_identity_id, owner_user_id,
-          owner_principal_id, replica_role, source_boundary, local_session_id,
+          owner_principal_id, replica_role, source_boundary,
           encryption_scope, freshness_status)
-       values ($1, $2, $3, $4, $4, 'source', 'captured_session', $5,
+       values ($1, $2, $3, $4, $4, 'source', 'captured_session',
                'personal', 'fresh')`,
       [
         localReplicaId,
         fixture.logicalMemoryId,
         localDeploymentId,
-        fixture.identity.localOwnerUserId,
-        fixture.sessionId
+        fixture.identity.localOwnerUserId
       ]
     );
     await pool.query(
@@ -422,7 +430,7 @@ describeDb("Collaboration Shared Memory authority store", () => {
           )
           and column_name in (
             'maximum_fidelity', 'include_curated_memory',
-            'active_representation'
+            'active_representation', 'mode'
           )
         order by table_name, column_name`
     );
@@ -444,6 +452,10 @@ describeDb("Collaboration Shared Memory authority store", () => {
         column_name: "maximum_fidelity"
       },
       {
+        table_name: "collaboration_shared_memory_grants",
+        column_name: "mode"
+      },
+      {
         table_name: "collaboration_shared_memory_previews",
         column_name: "include_curated_memory"
       },
@@ -452,6 +464,52 @@ describeDb("Collaboration Shared Memory authority store", () => {
         column_name: "maximum_fidelity"
       }
     ]);
+  });
+
+  it("persists a Continuous Personal Note preview with one exact Memory Event", async () => {
+    const fixture = await createFixture();
+    await bindFixture(fixture);
+    const memoryEventId = randomUUID();
+    const preview = previewFor(fixture, {
+      source: {
+        kind: "personal_note",
+        noteId: randomUUID(),
+        noteRevision: 3,
+        memoryEventId,
+        logicalMemoryId: fixture.logicalMemoryId
+      },
+      sourceCapabilities: ["memory_events"],
+      activationRepresentation: "memory_events",
+      maximumFidelity: "memory_events",
+      includeCuratedMemory: false,
+      mode: "continuous",
+      sourceRevision: 3,
+      binding: {
+        ...previewFor(fixture).binding,
+        sourceRevision: 3
+      },
+      items: [
+        {
+          itemType: "user_message",
+          schemaVersion: 1,
+          sourceId: memoryEventId,
+          sourceLogicalMemoryId: fixture.logicalMemoryId,
+          sourceRevision: 3,
+          occurredAt: timestamp,
+          content: { text: "privacy-filtered Personal Note" }
+        }
+      ]
+    });
+
+    await expect(
+      store.persistAuthoritativePreview({
+        identity: fixture.identity,
+        preview
+      })
+    ).resolves.toMatchObject({
+      mode: "continuous",
+      source: { kind: "personal_note", memoryEventId }
+    });
   });
 
   it("resolves preview authority from the exact active sync relationship", async () => {
@@ -1058,6 +1116,14 @@ describeDb("Collaboration Shared Memory authority store", () => {
         logicalMemoryId: fixture.logicalMemoryId
       })
     ).resolves.toEqual([second]);
+    const unavailableGrantId = randomUUID();
+    await expect(
+      store.readAuthoritativeGrants(fixture.identity, [
+        unavailableGrantId,
+        remoteGrant.id,
+        remoteGrant.id
+      ])
+    ).resolves.toEqual([null, second, second]);
     await expect(
       store.listAuthoritativeGrants({
         ...fixture.otherOwnerIdentity,

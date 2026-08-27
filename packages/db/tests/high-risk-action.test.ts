@@ -2,7 +2,15 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   createLocalTestKeyEnvelopeEncryptionProvider,
-  highRiskActionGrantCommitment
+  highRiskActionGrantCommitment,
+  sharedMemoryCandidatePreviewActionGrantBinding,
+  sharedMemoryFidelityBundleActionGrantBinding,
+  sharedMemoryPendingShareActionGrantBinding,
+  sharedMemoryPreviewActionGrantBinding,
+  sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryTranscriptAccessActionGrantBinding,
+  sharedMemoryTranscriptRevokeActionGrantBinding,
+  type SharedMemorySourceRef
 } from "@koed/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -278,8 +286,12 @@ describeDb("high-risk action grants", () => {
       expect(notified).toEqual(
         new Set([directRequestId, browser.clientRequestId, nativeRequestId])
       );
-      const audits = await pool.query<{ approval_tier: string }>(
-        `select metadata ->> 'approvalTier' as approval_tier
+      const audits = await pool.query<{
+        approval_tier: string;
+        public_reference_id: string;
+      }>(
+        `select metadata ->> 'approvalTier' as approval_tier,
+                metadata ->> 'publicReferenceId' as public_reference_id
            from audit_events
           where owner_user_id = $1
             and action = 'high_risk.action_grant.issued'
@@ -291,6 +303,11 @@ describeDb("high-risk action grants", () => {
         "native_review",
         "step_up"
       ]);
+      expect(
+        new Set(audits.rows.map((row) => row.public_reference_id))
+      ).toEqual(
+        new Set([directRequestId, browser.clientRequestId, nativeRequestId])
+      );
     } finally {
       await listener.query("unlisten koed_high_risk_action_grants");
       listener.release();
@@ -429,7 +446,22 @@ describeDb("high-risk action grants", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     );
     expect(created?.selector).not.toBe(clientRequestId);
+    expect(created?.id).toBe(clientRequestId);
     expect(created?.state).toBe("pending");
+    const storedIdentity = await pool.query<{
+      internal_grant_id: string;
+      public_reference_id: string;
+    }>(
+      `select action_grant.id as internal_grant_id,
+              confirmation.client_request_id as public_reference_id
+         from high_risk_device_action_grants action_grant
+         join high_risk_browser_confirmations confirmation
+           on confirmation.id=action_grant.confirmation_id
+        where confirmation.client_request_id=$1
+          and confirmation.device_credential_id=$2`,
+      [clientRequestId, fixture.deviceCredentialId]
+    );
+    expect(storedIdentity.rows).toHaveLength(0);
     expect(
       await repository.getActionGrant({
         clientRequestId,
@@ -451,6 +483,22 @@ describeDb("high-risk action grants", () => {
       decision: "approve"
     });
     expect(approved?.state).toBe("approved");
+    const issuedIdentity = await pool.query<{
+      internal_grant_id: string;
+      public_reference_id: string;
+    }>(
+      `select action_grant.id as internal_grant_id,
+              confirmation.client_request_id as public_reference_id
+         from high_risk_device_action_grants action_grant
+         join high_risk_browser_confirmations confirmation
+           on confirmation.id=action_grant.confirmation_id
+        where confirmation.client_request_id=$1
+          and confirmation.device_credential_id=$2`,
+      [clientRequestId, fixture.deviceCredentialId]
+    );
+    expect(issuedIdentity.rows).toHaveLength(1);
+    expect(issuedIdentity.rows[0]?.public_reference_id).toBe(clientRequestId);
+    expect(issuedIdentity.rows[0]?.internal_grant_id).not.toBe(clientRequestId);
     await expect(
       repository.decideBrowserActivation({
         selector: created!.selector,
@@ -519,6 +567,16 @@ describeDb("high-risk action grants", () => {
         upstreamBackendId: fixture.upstreamBackendId
       })
     ).resolves.toMatchObject({ state: "consumed" });
+    const consumedAudit = await pool.query<{ public_reference_id: string }>(
+      `select metadata ->> 'publicReferenceId' as public_reference_id
+         from audit_events
+        where owner_user_id=$1
+          and action='high_risk.action_grant.consumed'
+        order by audit_sequence desc
+        limit 1`,
+      [fixture.userId]
+    );
+    expect(consumedAudit.rows[0]?.public_reference_id).toBe(clientRequestId);
 
     const replay = await repository.executeActionGrant({
       ...operation,
@@ -570,6 +628,354 @@ describeDb("high-risk action grants", () => {
         }
       })
     ).rejects.toThrow();
+  });
+
+  it("database-executes exact one-use candidate grants for Personal Note and captured Conversation sources", async () => {
+    const fixture = await createFixture(["share_grant_management"]);
+    const repository = createRepository({ pool });
+    const team = await pool.query<{ id: string }>(
+      `insert into teams (name) values ($1) returning id`,
+      [`Action Grant source fixture ${randomUUID()}`]
+    );
+    const teamId = team.rows[0]!.id;
+    const teamWorkspaceId = randomUUID();
+    const sources: SharedMemorySourceRef[] = [
+      {
+        kind: "personal_note",
+        noteId: randomUUID(),
+        noteRevision: 1,
+        memoryEventId: randomUUID(),
+        logicalMemoryId: randomUUID()
+      },
+      {
+        kind: "captured_session",
+        sessionId: randomUUID(),
+        logicalMemoryId: randomUUID()
+      }
+    ];
+
+    for (const source of sources) {
+      const clientRequestId = randomUUID();
+      const actionGrant = createGrantSecret();
+      const sourceDeploymentProtocolId = randomUUID();
+      const sourceOwnerPrincipalId = randomUUID();
+      const bindingInput = {
+        referenceId: clientRequestId,
+        source,
+        sourceDeploymentProtocolId,
+        sourceOwnerPrincipalId,
+        sourceCapabilities: ["memory_events"] as const,
+        logicalMemoryId: source.logicalMemoryId,
+        candidateHash: hash(`candidate:${source.kind}`),
+        sourceRevision: 1,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest: [
+          {
+            sourceId:
+              source.kind === "personal_note"
+                ? source.memoryEventId
+                : source.sessionId,
+            revisionHash: hash(`revision:${source.kind}`)
+          }
+        ],
+        byteCount: 128,
+        teamId,
+        teamWorkspaceId,
+        activationRepresentation: "memory_events" as const,
+        maximumFidelity: "memory_events" as const,
+        includeCuratedMemory: false,
+        mode: "continuous" as const
+      };
+      const bound =
+        sharedMemoryCandidatePreviewActionGrantBinding(bindingInput);
+      const operation = {
+        ownerUserId: fixture.userId,
+        deviceCredentialId: fixture.deviceCredentialId,
+        upstreamBackendId: fixture.upstreamBackendId,
+        teamId: bound.teamId,
+        operationFamily: bound.operationFamily,
+        action: bound.action,
+        targetId: bound.targetId,
+        scopeHash: bound.scopeHash,
+        requestHash: bound.requestHash
+      };
+      const created = await repository.createActionGrant({
+        ...operation,
+        clientRequestId,
+        credentialOperationFamily: "share_grant_management",
+        approvalTier: "step_up",
+        review: {
+          version: 1,
+          title: "Review this Shared Memory candidate?",
+          description: "Review the exact candidate source and destination.",
+          consequence: "The bound candidate preview may execute once.",
+          confirmLabel: "Preview candidate",
+          details: []
+        },
+        grantCommitment: highRiskActionGrantCommitment(actionGrant)
+      });
+      expect(created).toMatchObject({
+        id: clientRequestId,
+        state: "pending",
+        requestHash: bound.requestHash
+      });
+      await repository.decideBrowserActivation({
+        selector: created!.selector,
+        ownerUserId: fixture.userId,
+        userSessionId: fixture.userSessionId,
+        freshlyAuthenticatedAt: new Date(),
+        decision: "approve"
+      });
+      const useCount = async (): Promise<string | undefined> => {
+        const result = await pool.query<{ use_count: string }>(
+          `select action_grant.use_count::text as use_count
+             from high_risk_device_action_grants action_grant
+             join high_risk_browser_confirmations confirmation
+               on confirmation.id=action_grant.confirmation_id
+            where confirmation.client_request_id=$1
+              and confirmation.device_credential_id=$2`,
+          [clientRequestId, fixture.deviceCredentialId]
+        );
+        return result.rows[0]?.use_count;
+      };
+      await expect(useCount()).resolves.toBe("0");
+
+      const changed = sharedMemoryCandidatePreviewActionGrantBinding({
+        ...bindingInput,
+        candidateHash: hash(`changed-candidate:${source.kind}`)
+      });
+      await expect(
+        repository.executeActionGrant({
+          ...operation,
+          requestHash: changed.requestHash,
+          actionGrant,
+          execute: async () => ({ statusCode: 201, body: { admitted: true } })
+        })
+      ).resolves.toBeNull();
+      await expect(useCount()).resolves.toBe("0");
+
+      await expect(
+        repository.executeActionGrant({
+          ...operation,
+          actionGrant,
+          execute: async () => ({
+            statusCode: 201,
+            body: { sourceKind: source.kind }
+          })
+        })
+      ).resolves.toEqual({
+        statusCode: 201,
+        body: { sourceKind: source.kind },
+        replayed: false
+      });
+      await expect(useCount()).resolves.toBe("1");
+    }
+  });
+
+  it("preserves one public reference through every Shared Memory management grant", async () => {
+    const fixture = await createFixture(["share_grant_management"]);
+    const repository = createRepository({ pool });
+    const team = await pool.query<{ id: string }>(
+      `insert into teams (name) values ($1) returning id`,
+      [`Action Grant management fixture ${randomUUID()}`]
+    );
+    const teamId = team.rows[0]!.id;
+    const teamWorkspaceId = randomUUID();
+    const logicalMemoryId = randomUUID();
+    const shareGrantId = randomUUID();
+    const source: SharedMemorySourceRef = {
+      kind: "captured_session",
+      sessionId: randomUUID(),
+      logicalMemoryId
+    };
+    const commonPreview = {
+      source,
+      sourceCapabilities: ["memory_events" as const],
+      activationRepresentation: "memory_events" as const,
+      logicalMemoryId,
+      teamId,
+      teamWorkspaceId,
+      maximumFidelity: "memory_events" as const,
+      includeCuratedMemory: false,
+      mode: "continuous" as const
+    };
+    const operationIds = {
+      remoteReplicaId: randomUUID(),
+      mutationId: randomUUID(),
+      logicalGrantId: randomUUID(),
+      consentId: randomUUID(),
+      pendingPreviewId: randomUUID(),
+      fidelityPreviewId: randomUUID()
+    };
+    const bindingFactories = [
+      {
+        label: "preview",
+        create: (referenceId: string) =>
+          sharedMemoryPreviewActionGrantBinding({
+            ...commonPreview,
+            referenceId,
+            remoteReplicaId: operationIds.remoteReplicaId
+          })
+      },
+      {
+        label: "pending share",
+        create: (referenceId: string) =>
+          sharedMemoryPendingShareActionGrantBinding({
+            ...commonPreview,
+            referenceId,
+            mutationId: operationIds.mutationId,
+            logicalGrantId: operationIds.logicalGrantId,
+            consentId: operationIds.consentId,
+            previewId: operationIds.pendingPreviewId,
+            previewRevision: 1,
+            previewHash: hash("pending-share-preview")
+          })
+      },
+      {
+        label: "revoke",
+        create: (referenceId: string) =>
+          sharedMemoryRevokeActionGrantBinding({
+            referenceId,
+            mutationId: operationIds.mutationId,
+            teamId,
+            teamWorkspaceId,
+            shareGrantId,
+            expectedGrantVersion: 1,
+            reasonCode: "owner_withdrawal"
+          })
+      },
+      {
+        label: "change fidelity",
+        create: (referenceId: string) =>
+          sharedMemoryFidelityBundleActionGrantBinding({
+            ...commonPreview,
+            referenceId,
+            mutationId: operationIds.mutationId,
+            consentId: operationIds.consentId,
+            shareGrantId,
+            previewId: operationIds.fidelityPreviewId,
+            previewRevision: 1,
+            previewHash: hash("fidelity-preview"),
+            expectedGrantVersion: 1
+          })
+      },
+      {
+        label: "Conversation Source Access grant",
+        create: (referenceId: string) =>
+          sharedMemoryTranscriptAccessActionGrantBinding({
+            referenceId,
+            mutationId: operationIds.mutationId,
+            teamId,
+            shareGrantId,
+            expectedVersion: 0,
+            mode: "continuous"
+          })
+      },
+      {
+        label: "Conversation Source Access revoke",
+        create: (referenceId: string) =>
+          sharedMemoryTranscriptRevokeActionGrantBinding({
+            referenceId,
+            mutationId: operationIds.mutationId,
+            teamId,
+            shareGrantId,
+            expectedVersion: 1,
+            reasonCode: "owner_withdrawal"
+          })
+      }
+    ];
+
+    for (const bindingFactory of bindingFactories) {
+      const clientRequestId = randomUUID();
+      const actionGrant = createGrantSecret();
+      const bound = bindingFactory.create(clientRequestId);
+      expect(bound.body).toMatchObject({
+        authority: { referenceId: clientRequestId }
+      });
+      const operation = {
+        ownerUserId: fixture.userId,
+        deviceCredentialId: fixture.deviceCredentialId,
+        upstreamBackendId: fixture.upstreamBackendId,
+        teamId: bound.teamId,
+        operationFamily: bound.operationFamily,
+        action: bound.action,
+        targetId: bound.targetId,
+        scopeHash: bound.scopeHash,
+        requestHash: bound.requestHash
+      };
+      const created = await repository.createActionGrant({
+        ...operation,
+        clientRequestId,
+        credentialOperationFamily: "share_grant_management",
+        approvalTier: "step_up",
+        review: {
+          version: 1,
+          title: `Review ${bindingFactory.label}?`,
+          description: "Review the exact Shared Memory operation.",
+          consequence: "The bound operation may execute once.",
+          confirmLabel: "Continue",
+          details: []
+        },
+        grantCommitment: highRiskActionGrantCommitment(actionGrant)
+      });
+      await repository.decideBrowserActivation({
+        selector: created!.selector,
+        ownerUserId: fixture.userId,
+        userSessionId: fixture.userSessionId,
+        freshlyAuthenticatedAt: new Date(),
+        decision: "approve"
+      });
+      const readUseCount = async () => {
+        const result = await pool.query<{ use_count: string }>(
+          `select action_grant.use_count::text as use_count
+             from high_risk_device_action_grants action_grant
+             join high_risk_browser_confirmations confirmation
+               on confirmation.id=action_grant.confirmation_id
+            where confirmation.client_request_id=$1`,
+          [clientRequestId]
+        );
+        return result.rows[0]?.use_count;
+      };
+      await expect(readUseCount()).resolves.toBe("0");
+
+      const changedReference = bindingFactory.create(randomUUID());
+      await expect(
+        repository.executeActionGrant({
+          ...operation,
+          requestHash: changedReference.requestHash,
+          actionGrant,
+          execute: async () => ({ statusCode: 204, body: null })
+        })
+      ).resolves.toBeNull();
+      await expect(readUseCount()).resolves.toBe("0");
+
+      await expect(
+        repository.executeActionGrant({
+          ...operation,
+          actionGrant,
+          execute: async () => ({
+            statusCode: 200,
+            body: { operation: bindingFactory.label }
+          })
+        })
+      ).resolves.toEqual({
+        statusCode: 200,
+        body: { operation: bindingFactory.label },
+        replayed: false
+      });
+      await expect(readUseCount()).resolves.toBe("1");
+      const audit = await pool.query<{ public_reference_id: string }>(
+        `select metadata ->> 'publicReferenceId' as public_reference_id
+           from audit_events
+          where owner_user_id=$1
+            and action='high_risk.action_grant.consumed'
+          order by audit_sequence desc
+          limit 1`,
+        [fixture.userId]
+      );
+      expect(audit.rows[0]?.public_reference_id).toBe(clientRequestId);
+    }
   });
 
   it("serializes concurrent consumption and returns a replay receipt", async () => {
@@ -699,6 +1105,46 @@ describeDb("high-risk action grants", () => {
         grantCommitment: `v1:${hash(createGrantSecret())}`
       })
     ).resolves.toBeNull();
+  });
+
+  it("revalidates and locks the device credential before executing an approved grant", async () => {
+    const fixture = await createFixture();
+    const repository = createRepository({ pool });
+    const operation = binding(fixture);
+    const grant = await createGrant(repository, fixture, operation);
+    await repository.decideBrowserActivation({
+      selector: grant.selector!,
+      ownerUserId: fixture.userId,
+      userSessionId: fixture.userSessionId,
+      freshlyAuthenticatedAt: new Date(),
+      decision: "approve"
+    });
+
+    const rotation = await pool.connect();
+    const execute = vi.fn(async () => ({
+      statusCode: 200,
+      body: { executed: true }
+    }));
+    try {
+      await rotation.query("begin");
+      await rotation.query(
+        "update device_credentials set revoked_at = now() where id = $1",
+        [fixture.deviceCredentialId]
+      );
+      const execution = repository.executeActionGrant({
+        ...operation,
+        actionGrant: grant.actionGrant,
+        execute
+      });
+      await delay(25);
+      expect(execute).not.toHaveBeenCalled();
+      await rotation.query("commit");
+      await expect(execution).resolves.toBeNull();
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await rotation.query("rollback").catch(() => {});
+      rotation.release();
+    }
   });
 
   it("expires and revokes unused confirmations and grants", async () => {

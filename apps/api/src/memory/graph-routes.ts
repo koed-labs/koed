@@ -564,18 +564,8 @@ export const registerGraphRoutes = (
                 sourceRevision: expansion.parent.sourceRevision,
                 visibilityProvenance: {
                   shareGrantId: expansion.parent.shareGrantId,
-                  representationId: expansion.parent.representationId,
                   representation: expansion.parent.representation,
-                  provenanceHash: expansion.parent.provenanceHash
-                },
-                generation: {
-                  representationPolicyRevision:
-                    expansion.parent.representationPolicyRevision,
-                  contentPolicyVersion: expansion.parent.contentPolicyVersion,
-                  classifierVersion: expansion.parent.classifierVersion,
-                  embeddingModel: expansion.parent.embeddingModel,
-                  embeddingDimensions: expansion.parent.embeddingDimensions,
-                  embeddingVersion: expansion.parent.embeddingVersion
+                  sourceRevision: expansion.parent.sourceRevision
                 },
                 sourceItems: expansion.items.map((item, position) => {
                   const sourceType =
@@ -588,7 +578,6 @@ export const registerGraphRoutes = (
                       sourceType === "memory_node"
                         ? "lcm_child"
                         : "memory_event",
-                    sourceTable: "team_memory_representations",
                     sourceId: item.pseudonymousSourceId,
                     canonicalSourceIdentity: canonicalEvidenceSourceIdentity(
                       sourceType,
@@ -603,13 +592,6 @@ export const registerGraphRoutes = (
                       representation: expansion.parent.representation,
                       sourceRevision: expansion.parent.sourceRevision,
                       freshness: expansion.parent.freshness,
-                      provenanceHash: expansion.parent.provenanceHash,
-                      representationPolicyRevision:
-                        expansion.parent.representationPolicyRevision,
-                      contentPolicyVersion:
-                        expansion.parent.contentPolicyVersion,
-                      classifierVersion: expansion.parent.classifierVersion,
-                      embeddingVersion: expansion.parent.embeddingVersion,
                       sourceContract: teamEvidenceSourceContract(
                         sourceType === "memory_node"
                           ? "lcm_leaves"

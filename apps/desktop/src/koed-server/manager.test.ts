@@ -217,6 +217,90 @@ describe("Koed server desktop manager", () => {
     });
   });
 
+  it("returns sanitized local Project metadata through the Desktop boundary", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-metadata-"));
+    const configPath = resolve(koedHome, "config");
+    mkdirSync(configPath, { recursive: true });
+    writeFileSync(
+      resolve(configPath, "projects.json"),
+      JSON.stringify({
+        schemaVersion: 3,
+        updatedAt: "2026-07-24T00:00:00.000Z",
+        deviceSaltId: "pms_test",
+        projects: [
+          {
+            schemaVersion: 1,
+            discoveredAt: "2026-07-23T00:00:00.000Z",
+            lastSeenAt: "2026-07-24T00:00:00.000Z",
+            localProjectId: "local-project",
+            displayName: "koed",
+            path: {
+              cwd: "/private/operator/koed",
+              projectRoot: "/private/operator/koed",
+              basename: "koed",
+              localPathHash: "hmac_sha256:path"
+            },
+            git: {
+              rootHash: "hmac_sha256:root",
+              commonDirHash: null,
+              branch: "main",
+              headCommit: "deadbeef",
+              isWorktree: false,
+              worktreeHash: null,
+              remoteAliases: [],
+              remotes: [
+                {
+                  name: "origin",
+                  host: "github.com",
+                  namespace: "koed-labs",
+                  repo: "koed",
+                  display: "github.com/koed-labs/koed",
+                  fingerprint: "gr_remote"
+                }
+              ]
+            },
+            packages: []
+          }
+        ]
+      })
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(null, JSON.stringify({ ok: true }), ""),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.projects.metadata.list",
+        input: {}
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        projects: [
+          {
+            localProjectId: "local-project",
+            git: {
+              remotes: [{ display: "github.com/koed-labs/koed" }]
+            }
+          }
+        ]
+      }
+    });
+  });
+
   it("persists and restarts after changing hardware acceleration", async () => {
     const koedHome = mkdtempSync(
       resolve(tmpdir(), "koed-desktop-acceleration-")
@@ -802,7 +886,7 @@ describe("Koed server desktop manager", () => {
     ).toMatchObject({
       KOED_RUNTIME_MODE: "local-personal",
       KOED_DEPENDENCY_MODE: "bundled-local",
-      KOED_TEAM_COLLABORATION_ENABLED: "true",
+      KOED_TEAM_COLLABORATION_ENABLED: "false",
       WORK_QUEUE_BACKEND: "local",
       KOED_AUTO_PORTS: "1"
     });
@@ -821,7 +905,7 @@ describe("Koed server desktop manager", () => {
     expect(packagedEnvironment).toMatchObject({
       KOED_RUNTIME_MODE: "local-personal",
       KOED_DEPENDENCY_MODE: "bundled-local",
-      KOED_TEAM_COLLABORATION_ENABLED: "true",
+      KOED_TEAM_COLLABORATION_ENABLED: "false",
       WORK_QUEUE_BACKEND: "local",
       KOED_AUTO_PORTS: "1",
       KOED_PACKAGED_DESKTOP: "1",
@@ -857,7 +941,7 @@ describe("Koed server desktop manager", () => {
       KOED_REPO_ROOT: "/repo",
       KOED_RUNTIME_MODE: "local-personal",
       KOED_DEPENDENCY_MODE: "bundled-local",
-      KOED_TEAM_COLLABORATION_ENABLED: "true",
+      KOED_TEAM_COLLABORATION_ENABLED: "false",
       WORK_QUEUE_BACKEND: "local",
       KOED_AUTO_PORTS: "1"
     });
@@ -1942,6 +2026,76 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       JSON.parse(String(personalMemoryFetch.mock.calls[0]?.[1]?.body))
     ).toEqual({ title: "Release planning" });
     expect(JSON.stringify(result)).not.toContain("must-strip");
+  });
+
+  it("accepts a non-empty Personal Note summary list from the API", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "main_only_token" })
+    );
+    const updatedAt = "2026-08-20T12:00:00.000Z";
+    const personalMemoryFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          notes: [
+            {
+              noteId: "11111111-1111-4111-8111-111111111111",
+              title: "Durable Note",
+              titleVersion: 1,
+              revisionId: "22222222-2222-4222-8222-222222222222",
+              revision: 1,
+              contentHash: "a".repeat(64),
+              memoryEventId: null,
+              projectionState: "pending",
+              projectionFailureCode: null,
+              createdAt: updatedAt,
+              updatedAt,
+              sourceSequence: 1
+            }
+          ],
+          nextBeforeSequence: null
+        })
+      )
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) => {
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://localhost:4170" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch
+    });
+
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.notes.list",
+        input: { limit: 50 }
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        notes: [{ title: "Durable Note", projectionState: "pending" }]
+      }
+    });
   });
 
   it("creates a Personal Note through the fixed local owner-scoped route", async () => {
@@ -3451,5 +3605,107 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       state: "needs_attention",
       error: "spawn /missing-electron ENOENT"
     });
+  });
+
+  it("reveals only a trusted path resolved from local Project metadata", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-reveal-"));
+    const configPath = resolve(koedHome, "config");
+    const trustedPath = resolve(koedHome, "projects", "koed");
+    const localProjectId = `lp_${"1".repeat(32)}`;
+    mkdirSync(configPath, { recursive: true });
+    writeFileSync(
+      resolve(configPath, "projects.json"),
+      JSON.stringify({
+        schemaVersion: 3,
+        updatedAt: "2026-07-24T00:00:00.000Z",
+        deviceSaltId: "pms_test",
+        projects: [
+          {
+            schemaVersion: 1,
+            discoveredAt: "2026-07-23T00:00:00.000Z",
+            lastSeenAt: "2026-07-24T00:00:00.000Z",
+            localProjectId,
+            displayName: "koed",
+            path: {
+              cwd: trustedPath,
+              projectRoot: trustedPath,
+              basename: "koed",
+              localPathHash: "hmac_sha256:path"
+            },
+            packages: []
+          }
+        ]
+      })
+    );
+    const revealPath = vi.fn();
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: (path) => path === trustedPath,
+      execFile: (_command, _args, _options, callback) =>
+        callback(null, JSON.stringify({ ok: true }), ""),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      revealPath
+    });
+
+    await expect(
+      manager.handlers.reveal_local_project!({ localProjectId })
+    ).resolves.toEqual({ ok: true });
+    expect(revealPath).toHaveBeenCalledWith(trustedPath);
+
+    revealPath.mockClear();
+    await expect(
+      manager.handlers.reveal_local_project!({
+        localProjectId: `lp_${"2".repeat(32)}`
+      })
+    ).resolves.toEqual({
+      ok: false,
+      error: "Local Project path is unavailable."
+    });
+    expect(revealPath).not.toHaveBeenCalled();
+
+    await expect(
+      manager.handlers.reveal_local_project!({
+        path: "/Applications/Calculator.app"
+      })
+    ).rejects.toThrow("Desktop command arguments are invalid");
+    expect(revealPath).not.toHaveBeenCalled();
+    rmSync(koedHome, { recursive: true, force: true });
+  });
+
+  it("does not fall back to opening a file URL when Project reveal is unavailable", async () => {
+    const openExternal = vi.fn(async () => undefined);
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: {}
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(null, JSON.stringify({ ok: true }), ""),
+      spawn: () => childProcess() as never,
+      openExternal
+    });
+
+    await expect(
+      manager.handlers.reveal_local_project!({
+        localProjectId: `lp_${"1".repeat(32)}`
+      })
+    ).resolves.toEqual({
+      ok: false,
+      error: "Local Project reveal is unavailable."
+    });
+    expect(openExternal).not.toHaveBeenCalled();
   });
 });

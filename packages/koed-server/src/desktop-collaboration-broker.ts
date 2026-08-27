@@ -83,6 +83,8 @@ const requestResultCacheMaxBytesPerOwner = 16 * 1024 * 1024;
 const capabilityRefreshLeadMs = 60_000;
 const capabilityRefreshRetryMs = 30_000;
 const disconnectCleanupRetryMs = 5_000;
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface BrowserOpenRequest {
   ownerId: string;
@@ -1444,7 +1446,8 @@ export const createDesktopCollaborationBroker = (
   };
 
   const connectBackend = async (
-    remoteUrl: string
+    remoteUrl: string,
+    sourceOwnerPrincipalId: string
   ): Promise<
     | {
         ok: true;
@@ -1470,7 +1473,8 @@ export const createDesktopCollaborationBroker = (
     const policy = enableCollaborationRoutePolicy(paths, registered.backend.id);
     if (!policy.ok) return { ok: false };
     const enrollment = await startEnrollment(paths, registered.backend.id, {
-      fetch: upstreamFetcher
+      fetch: upstreamFetcher,
+      sourceOwnerPrincipalId
     });
     const enrollmentState = resultState(enrollment);
     if (
@@ -1485,7 +1489,7 @@ export const createDesktopCollaborationBroker = (
     return backend ? { ok: true, backend, enrollment } : { ok: false };
   };
 
-  const reconnectBackend = async () => {
+  const reconnectBackend = async (sourceOwnerPrincipalId: string) => {
     const backend = backendIdentityFromSummary(getActiveUpstreamBackend(paths));
     if (!backend) return { ok: false as const };
     if (!(await ensureBackendCapabilities(backend.id))) {
@@ -1506,13 +1510,40 @@ export const createDesktopCollaborationBroker = (
     if (state === "pending" || state === "approved" || state === "exchanged") {
       return { ok: true as const, backend, enrollment };
     }
-    const restarted = await connectBackend(backend.baseUrl);
+    const restarted = await connectBackend(
+      backend.baseUrl,
+      sourceOwnerPrincipalId
+    );
     if (!restarted.ok) return { ok: false as const };
     enrollment = restarted.enrollment;
     state = resultState(enrollment);
     return state
       ? { ok: true as const, backend, enrollment }
       : { ok: false as const };
+  };
+
+  const resolveLocalOwnerPrincipalId = async (
+    ownerId: string
+  ): Promise<string | null> => {
+    const durableOwnerId = readDesktopLocalCredentialAuthorization(
+      paths.koedHome
+    )?.ownerUserId;
+    if (durableOwnerId && uuidPattern.test(durableOwnerId)) {
+      return durableOwnerId;
+    }
+    const owner = ownerContext(ownerId);
+    const cachedOwnerId = owner.snapshot?.navigation.personalOwner.id;
+    if (cachedOwnerId && uuidPattern.test(cachedOwnerId)) {
+      return cachedOwnerId;
+    }
+    const loaded = await loadSnapshot(
+      randomUUID(),
+      transportContextForOwner(ownerId)
+    );
+    if (!loaded.ok) return null;
+    owner.snapshot = loaded.snapshot;
+    const loadedOwnerId = loaded.snapshot.navigation.personalOwner.id;
+    return uuidPattern.test(loadedOwnerId) ? loadedOwnerId : null;
   };
 
   const handleLifecycleCommand = async (
@@ -1592,6 +1623,13 @@ export const createDesktopCollaborationBroker = (
       });
     }
 
+    const sourceOwnerPrincipalId = await resolveLocalOwnerPrincipalId(ownerId);
+    if (!sourceOwnerPrincipalId) {
+      return lifecycleFailure(
+        command,
+        collaborationSafeError("temporarily_unavailable")
+      );
+    }
     let connectResult;
     await retryRevokedBackendDurableCleanup();
     if (upstreamDisconnectCleanupPending(paths)) {
@@ -1635,10 +1673,10 @@ export const createDesktopCollaborationBroker = (
         }
       }
       connectResult = sameBackend
-        ? await reconnectBackend()
-        : await connectBackend(parsedTarget.data);
+        ? await reconnectBackend(sourceOwnerPrincipalId)
+        : await connectBackend(parsedTarget.data, sourceOwnerPrincipalId);
     } else {
-      connectResult = await reconnectBackend();
+      connectResult = await reconnectBackend(sourceOwnerPrincipalId);
     }
     if (!connectResult.ok) {
       return lifecycleFailure(command, collaborationSafeError("not_available"));

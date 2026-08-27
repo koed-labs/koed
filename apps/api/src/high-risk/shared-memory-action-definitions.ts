@@ -131,6 +131,8 @@ export const bindSharedMemoryCandidatePreviewOperation = (
   sharedMemoryCandidatePreviewActionGrantBinding({
     referenceId,
     source: intent.source,
+    sourceDeploymentProtocolId: intent.sourceDeploymentProtocolId,
+    sourceOwnerPrincipalId: intent.sourceOwnerPrincipalId,
     sourceCapabilities: intent.sourceCapabilities,
     logicalMemoryId: intent.logicalMemoryId,
     candidateHash: intent.candidateHash,

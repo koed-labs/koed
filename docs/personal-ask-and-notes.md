@@ -15,6 +15,12 @@ Each turn has this lifecycle:
 3. The runtime completes the same row as `answered` or `error`.
 4. Desktop shows the final, display-safe turn.
 
+If the Local AI Runtime stops after creating a turn but before completing it,
+the pending row remains durable. Before a successor runtime accepts new Ask
+work, it atomically converts pending Desktop Ask turns owned by the same User
+into an explicit retryable error. This prevents an interrupted request from
+remaining indefinitely pending while preserving the original thread and turn.
+
 For a global question without retrieval hints, the runtime uses one hydrated
 search across the Personal Memory stages. This search avoids duplicate query
 embeddings before the worker starts. Questions with retrieval hints retain the

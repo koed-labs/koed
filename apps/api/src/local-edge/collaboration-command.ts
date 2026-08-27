@@ -516,7 +516,7 @@ const remoteSharedGrantIndexSchema = z
   .object({
     id: z.uuid(),
     logicalMemoryId: z.uuid(),
-    ownerUserId: z.uuid().nullable(),
+    ownerDisplayName: z.string().trim().min(1).max(160),
     sourceCapabilities: z
       .array(
         z.enum([
@@ -1924,10 +1924,12 @@ const loadRemoteTeamNavigation = async (input: {
             teamId: team.id,
             workspaceId: workspace.id,
             owner: {
-              id: grant.ownerUserId ?? input.context.principal.id,
-              displayName:
-                people.find((person) => person.userId === grant.ownerUserId)
-                  ?.displayName ?? "Team member",
+              id: shared.crossIdentitySyncDeterministicUuid({
+                kind: "team_shared_memory_owner_attribution",
+                teamId: team.id,
+                shareGrantId: grant.id
+              }),
+              displayName: grant.ownerDisplayName,
               membershipState: "enabled"
             },
             title: grant.title,

@@ -119,11 +119,10 @@
 }
 
 .personal-project-row,
-.personal-session-row {
+.personal-session-row-select {
   align-items: center;
   background: transparent;
   border: 0;
-  border-radius: var(--radius);
   color: inherit;
   display: grid;
   gap: 0.75rem;
@@ -195,6 +194,18 @@
   font-weight: 500;
 }
 
+.personal-project-overview-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.8125rem;
+  min-width: 0;
+}
+
+.personal-project-row .personal-project-overview-group {
+  font-size: 0.75rem;
+}
+
 .personal-project-overview,
 .personal-project-overview > span,
 .personal-memory-event-count {
@@ -220,8 +231,47 @@
   width: 0.95em;
 }
 
-.personal-project-row .personal-project-overview {
-  font-size: 0.75rem;
+.personal-project-repo {
+  align-items: center;
+  color: var(--foreground);
+  display: inline-flex;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.personal-project-repo:not(.personal-project-repo-static) {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+.personal-project-repo svg {
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+  height: 0.95em;
+  width: 0.95em;
+}
+
+.personal-project-repo > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-project-repo:not(.personal-project-repo-static):hover > span,
+.personal-project-repo:not(.personal-project-repo-static):focus-visible > span {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.personal-project-repo:focus-visible {
+  border-radius: 0.2rem;
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 .personal-project-row-copy > *,
@@ -326,9 +376,33 @@
 }
 
 .personal-new-conversation-group {
+  --personal-new-conversation-control-height: 2.5rem;
+  --personal-new-conversation-disabled-picker-width: 2.5rem;
+  --personal-new-conversation-control-width: 3.75rem;
+
   align-items: stretch;
   display: inline-flex;
   flex: 0 0 auto;
+}
+
+.personal-new-conversation-group > .personal-new-conversation,
+.personal-new-conversation-group > .personal-new-conversation-owner-picker {
+  box-sizing: border-box;
+  flex: 0 0 var(--personal-new-conversation-control-width);
+  height: var(--personal-new-conversation-control-height);
+  width: var(--personal-new-conversation-control-width);
+}
+
+.personal-new-conversation-group
+  > button.personal-new-conversation-owner-picker {
+  flex-basis: var(--personal-new-conversation-disabled-picker-width);
+  width: var(--personal-new-conversation-disabled-picker-width);
+}
+
+.personal-new-conversation-group[data-starting="true"]
+  > .personal-new-conversation {
+  flex-basis: auto;
+  width: auto;
 }
 
 .personal-new-conversation {
@@ -346,6 +420,11 @@
   color: var(--primary-foreground);
   min-height: 2.25rem;
   padding: 0.45rem 0.8rem;
+}
+
+.personal-new-conversation-standalone {
+  border-radius: var(--radius);
+  border-right: 1px solid var(--primary);
 }
 
 .personal-new-conversation svg,
@@ -375,9 +454,11 @@ button.personal-new-conversation-owner-picker {
   border-start-start-radius: 0;
   border-start-end-radius: var(--radius);
   color: var(--primary-foreground);
+  box-sizing: border-box;
   display: inline-flex;
   gap: 0.3rem;
   height: 100%;
+  justify-content: center;
   list-style: none;
   min-height: 2.25rem;
   padding: 0.45rem 0.55rem;
@@ -385,6 +466,7 @@ button.personal-new-conversation-owner-picker {
 
 .personal-new-conversation-owner-picker > summary {
   cursor: pointer;
+  min-width: 100%;
 }
 
 .personal-new-conversation-owner-picker > summary::-webkit-details-marker {
@@ -460,43 +542,25 @@ button.personal-new-conversation-owner-picker > svg {
   padding: 0 1rem 0.75rem;
 }
 
-.personal-project-details,
-.personal-session-assignment {
-  border-block: 1px solid var(--border);
-  padding: 0.75rem 1rem;
-}
-
-.personal-project-details dd,
-.personal-session-assignment label {
-  overflow-wrap: anywhere;
-}
-
-.personal-project-details dl {
-  margin: 0.5rem 0 0;
-}
-
-.personal-project-details dl > div {
-  align-items: baseline;
-  display: flex;
-  gap: 0.35rem;
-  min-width: 0;
-  padding-block: 0.2rem;
-}
-
-.personal-project-details dt {
-  flex: 0 0 auto;
-}
-
-.personal-project-details dd {
-  margin: 0;
-  min-width: 0;
-}
-
 .personal-session-row {
+  align-items: center;
+  background: transparent;
   border-bottom: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+}
+
+.personal-session-row-select {
   border-radius: 0;
   grid-template-columns: 2rem minmax(0, 1fr) auto;
-  padding: 0.75rem 1rem;
+  min-width: 0;
+  padding: 0.75rem 0 0.75rem 1rem;
+}
+
+.personal-session-row-select:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }
 
 .personal-session-copy > span {
@@ -516,6 +580,73 @@ button.personal-new-conversation-owner-picker > svg {
   align-items: flex-end;
 }
 
+.personal-session-links {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.35rem;
+  padding: 0 1rem 0 0.75rem;
+}
+
+.personal-session-link {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0.3rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  height: 1.35rem;
+  justify-content: center;
+  padding: 0;
+  position: relative;
+  width: 1.35rem;
+}
+
+.personal-session-link::after {
+  background: var(--foreground);
+  border-radius: 0.3rem;
+  bottom: calc(100% + 0.35rem);
+  color: var(--background);
+  content: attr(data-tooltip);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.2;
+  max-width: 18rem;
+  opacity: 0;
+  padding: 0.35rem 0.45rem;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  text-align: left;
+  transform: translateY(0.15rem);
+  transition:
+    opacity 0s,
+    transform 0s,
+    visibility 0s;
+  visibility: hidden;
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.personal-session-link:hover::after,
+.personal-session-link:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+}
+
+.personal-session-link:hover,
+.personal-session-link:focus-visible {
+  background: var(--accent);
+  color: var(--foreground);
+  outline: none;
+}
+
+.personal-session-link svg {
+  height: 0.95rem;
+  width: 0.95rem;
+}
+
 .personal-session-detail {
   display: flex;
   flex-direction: column;
@@ -529,6 +660,24 @@ button.personal-new-conversation-owner-picker > svg {
 .personal-session-detail > header .personal-memory-event-count {
   color: var(--muted-foreground);
   margin: 0.2rem 0 0;
+}
+
+.personal-session-header-copy {
+  min-width: 0;
+}
+
+.personal-session-header-copy .personal-project-repo {
+  display: flex;
+  font-size: 0.8125rem;
+  margin-top: 0.35rem;
+  width: fit-content;
+}
+
+.personal-session-header-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.35rem;
 }
 
 .personal-session-title-row,
@@ -563,15 +712,31 @@ button.personal-new-conversation-owner-picker > svg {
   padding: 0.3rem;
 }
 
+.personal-session-manage-button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted-foreground);
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  min-height: 2.25rem;
+  min-width: 2.25rem;
+  padding: 0.5rem;
+}
+
 .personal-session-title-edit:hover,
-.personal-session-title-editor button:hover:not(:disabled) {
+.personal-session-title-editor button:hover:not(:disabled),
+.personal-session-manage-button:hover:not(:disabled) {
   background: var(--accent);
   color: var(--foreground);
 }
 
 .personal-session-title-edit:focus-visible,
 .personal-session-title-editor button:focus-visible,
-.personal-session-title-editor input:focus-visible {
+.personal-session-title-editor input:focus-visible,
+.personal-session-manage-button:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
@@ -580,6 +745,11 @@ button.personal-new-conversation-owner-picker > svg {
 .personal-session-title-editor button svg {
   height: 0.9rem;
   width: 0.9rem;
+}
+
+.personal-session-manage-button svg {
+  height: 1.1rem;
+  width: 1.1rem;
 }
 
 .personal-session-title-spinner {
@@ -614,44 +784,26 @@ button.personal-new-conversation-owner-picker > svg {
   flex: 0 0 auto;
 }
 
-.personal-session-assignment form {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  padding-top: 0.75rem;
+.personal-session-assignment-dialog {
+  max-width: min(28rem, calc(100vw - 2rem));
 }
 
-.personal-session-assignment > summary {
-  align-items: center;
-  display: flex;
-  gap: 0.75rem;
+.personal-session-assignment-dialog form {
+  display: grid;
+  gap: 1rem;
 }
 
-.personal-session-assignment > summary > svg {
-  flex: 0 0 auto;
-  height: 1rem;
-  transition: transform 150ms ease;
-  width: 1rem;
-}
-
-.personal-session-assignment[open] > summary > svg {
-  transform: rotate(180deg);
-}
-
-.personal-session-assignment-label {
-  flex: 1;
-}
-
-.personal-session-assignment .personal-session-move-control {
-  align-items: center;
-  display: inline-flex;
-  gap: 0.75rem;
+.personal-session-move-control {
+  display: grid;
+  gap: 0.45rem;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .personal-session-move-control > span {
   flex: 0 0 auto;
+  font-size: 0.8125rem;
+  font-weight: 600;
 }
 
 .personal-session-move-control select {
@@ -662,6 +814,15 @@ button.personal-new-conversation-owner-picker > svg {
   min-height: 2.25rem;
   min-width: 12rem;
   padding: 0.45rem 2rem 0.45rem 0.65rem;
+  width: 100%;
+}
+
+.personal-session-assignment-actions {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  justify-content: space-between;
+  margin-top: 0.25rem;
+  padding-top: 1rem;
 }
 
 .personal-conversation-host {
@@ -1274,7 +1435,6 @@ button.personal-new-conversation-owner-picker > svg {
   .personal-memory-empty-detail .personal-loading-icon,
   .personal-projects-narrow-state .personal-loading-icon,
   .native-conversation-loading-icon,
-  .personal-session-assignment > summary > svg,
   .native-tool-group-disclosure {
     animation: none;
     transition: none;
@@ -1585,9 +1745,61 @@ button.personal-new-conversation-owner-picker > svg {
 
 .personal-note-markdown {
   box-sizing: border-box;
+}
+
+.personal-note-body-trigger {
+  box-sizing: border-box;
   margin: 0 auto;
   padding: clamp(1.25rem, 4vw, 3.5rem);
   width: min(55rem, 100%);
+}
+
+.personal-note-body-trigger[data-editable="true"] {
+  cursor: text;
+}
+
+.personal-note-body-trigger:has(.sr-only:focus-visible) {
+  border-radius: var(--radius);
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.personal-note-detail article > form {
+  box-sizing: border-box;
+  padding: 1rem;
+  width: 100%;
+}
+
+.personal-note-edit-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.personal-note-edit-actions button {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  display: inline-flex;
+  justify-content: center;
+  min-height: 2.25rem;
+  padding: 0.45rem 0.8rem;
+}
+
+.personal-note-edit-actions button[type="submit"] {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.personal-note-edit-actions button[type="button"] {
+  background: transparent;
+  color: var(--foreground);
+}
+
+.personal-note-edit-actions button:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .personal-note-detail textarea {

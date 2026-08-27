@@ -168,7 +168,8 @@ Local upstream enrollment orchestration is exposed as machine-readable
 control-plane state for Desktop and headless scripts:
 
 ```bash
-node packages/koed-server/dist/cli.js upstream enroll start --id team-vps --json
+SOURCE_OWNER_PRINCIPAL_ID="<local-owner-user-uuid>"
+node packages/koed-server/dist/cli.js upstream enroll start --id team-vps --source-owner-principal-id "$SOURCE_OWNER_PRINCIPAL_ID" --json
 node packages/koed-server/dist/cli.js upstream enroll status --id team-vps --json
 node packages/koed-server/dist/cli.js upstream activate --id team-vps --json
 node packages/koed-server/dist/cli.js upstream enroll cancel --id team-vps --json
@@ -188,12 +189,21 @@ API and Worker must receive the same `KOED_TEAM_COLLABORATION_ENABLED` value.
 Changing it requires restarting both processes. Disabling it removes Team
 capabilities and Team routes/jobs while retaining Personal collaboration and
 Personal Memory. See [Configuration](configuration.md) for the exact disabled
-surface and required collaboration secrets. Desktop-managed local edges default
-the shared value to `true`; standalone server deployments remain disabled until
-the Operator enables them explicitly.
+surface and required collaboration secrets. Desktop-managed local edges and
+standalone server deployments both default the shared value to `false`. An
+Operator must explicitly set
+`KOED_TEAM_COLLABORATION_ENABLED=true` and restart API and Worker before using
+Team collaboration.
 
 `upstream enroll start` requires a registered upstream backend with fresh
 validated capabilities and at least one explicitly enabled route-policy family.
+For headless enrollment, `--source-owner-principal-id` binds Share Grant source
+admission to the exact local Personal owner represented by the approved
+credential. This is the local Koed owner identifier, not the remote login User
+identifier. Desktop supplies it from its authenticated local owner context.
+Browser approval atomically binds that source deployment and principal to the
+remote User through the credential lineage. It does not start Cross-Identity
+Sync or share any content.
 It records non-secret local state under `KOED_HOME/run` and reports the next
 browser action. It does not create API Tokens or write reusable device secrets
 to ordinary config. Instead it creates a short-lived upstream browser approval
@@ -410,6 +420,12 @@ it does not recursively discover child repositories, submodules, or monorepo
 packages. Worktrees retain separate local Project ids while a salted Git
 common-directory hash identifies worktrees backed by the same device-local Git
 repository. Local-only repositories have no portable remote signal.
+
+Desktop reveals a Project in the platform file browser only through its opaque,
+device-local Project id. Electron main resolves that id against the local
+Project metadata store, requires the stored absolute path to still exist, and
+uses the platform show-in-folder operation. The renderer cannot submit an
+arbitrary local path or fall back to opening a `file://` URL.
 
 Captured Sessions adopt one unambiguous detected Personal Project immediately.
 Ambiguous or signal-free captures remain `Unassigned`. Users can move a

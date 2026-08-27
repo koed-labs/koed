@@ -257,52 +257,76 @@ describe("Claude AI Client migration", () => {
 });
 
 describe("Personal Note Share Grant migrations", () => {
-  it("adds typed Captured Session defaults and constrains both source shapes after the alpha reset", async () => {
+  it("requires an explicit alpha reset before replacing populated source identities", async () => {
+    const migrationSql = await readDrizzleFile("0035_concerned_the_twelve.sql");
+    const resetGuard = migrationSql.indexOf(
+      "Koed alpha data reset required before enabling generic Shared Memory sources"
+    );
+    const firstRequiredColumn = migrationSql.indexOf(
+      'ALTER TABLE "collaboration_pending_share_source_work" ADD COLUMN "mode"'
+    );
+
+    expect(resetGuard).toBeGreaterThan(-1);
+    expect(firstRequiredColumn).toBeGreaterThan(resetGuard);
+    expect(migrationSql).toContain(
+      "Migration 0035 replaces source identity and sharing records that cannot be inferred safely from the previous schema."
+    );
+  });
+
+  it("creates generic immutable revisions with typed source bindings", async () => {
     const migrationSql = await readDrizzleFile("0035_concerned_the_twelve.sql");
 
     expect(migrationSql).toContain("ENUM('captured_session', 'personal_note')");
     expect(migrationSql).toContain(
-      '"source_kind" "shared_memory_source_kind" DEFAULT \'captured_session\' NOT NULL'
+      'CREATE TABLE "logical_memory_source_revisions"'
     );
     expect(migrationSql).toContain(
-      '"shared_source_artifacts"."remote_replica_id" is null'
+      'CREATE TABLE "captured_session_source_revisions"'
     );
     expect(migrationSql).toContain(
-      '"team_session_share_grants"."session_id" is null'
+      'CREATE TABLE "personal_note_source_revisions"'
     );
     expect(migrationSql).toContain(
-      '"shared_memory_candidate_previews"."item_count" = 1'
+      '"logical_memory_source_revisions_revision_hash_check" CHECK ("logical_memory_source_revisions"."revision" > 0'
+    );
+    expect(migrationSql).toContain(
+      '"captured_session_source_revisions_cursor_check" CHECK ("captured_session_source_revisions"."source_kind" = \'captured_session\''
+    );
+    expect(migrationSql).toContain(
+      '"captured_session_source_revisions"."source_cursor" >= 0'
     );
   });
 
-  it("requires complete typed source work because 0034 already rejects populated alpha sharing state", async () => {
+  it("binds generic workflow records to exact immutable source revisions", async () => {
     const migrationSql = await readDrizzleFile("0035_concerned_the_twelve.sql");
 
+    for (const table of [
+      "collaboration_pending_share_source_work",
+      "pending_share_operations",
+      "shared_memory_candidate_previews",
+      "shared_source_artifacts",
+      "shared_source_previews",
+      "source_owner_representation_consents",
+      "team_memory_representations"
+    ]) {
+      expect(migrationSql).toContain(
+        `ALTER TABLE "${table}" ADD COLUMN "source_revision_id" uuid`
+      );
+    }
     expect(migrationSql).toContain(
-      'ADD COLUMN "logical_memory_id" uuid NOT NULL'
+      'CREATE VIEW "logical_memory_source_revision_bindings" AS'
     );
     expect(migrationSql).toContain(
-      'ADD COLUMN "source_kind" "shared_memory_source_kind" DEFAULT \'captured_session\' NOT NULL'
+      "Logical Memory source revision must have exactly one matching source binding"
     );
-    expect(migrationSql).not.toContain(
-      "source_binding_migration_review_required"
-    );
-  });
-
-  it("does not constrain cross-deployment source identities to local rows", async () => {
-    const migrationSql = await readDrizzleFile("0035_concerned_the_twelve.sql");
-
     expect(migrationSql).toContain(
-      'ALTER TABLE "shared_source_artifacts" ADD COLUMN "source_memory_event_id" uuid'
+      'CREATE OR REPLACE FUNCTION "koed_enforce_immutable_source_identity"()'
     );
-    expect(migrationSql).not.toContain(
-      "shared_source_artifacts_source_memory_event_id_memory_events_id_fk"
+    expect(migrationSql).toContain(
+      'CREATE OR REPLACE FUNCTION "koed_assert_workflow_source_revision_binding"()'
     );
-    expect(migrationSql).not.toContain(
-      "team_session_share_grants_source_memory_event_id_memory_events_id_fk"
-    );
-    expect(migrationSql).not.toContain(
-      "shared_memory_candidate_previews_source_session_id_sessions_id_fk"
+    expect(migrationSql).toContain(
+      "Workflow source revision must match its immutable source binding"
     );
   });
 });

@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import pg from "pg";
 import type { MemoryActor } from "@koed/core";
+import { crossIdentitySyncDeterministicUuid } from "@koed/shared";
 import type {
   ActorContext,
   CaptureMethod,
@@ -131,6 +132,84 @@ type CapturedSessionRow = {
   created_at: Date;
 };
 
+const ensureCapturedSessionLogicalMemory = async (
+  client: pg.PoolClient,
+  ownerUserId: string,
+  sessionId: string
+): Promise<string | null> => {
+  const deployment = await client.query<{
+    id: string;
+    protocol_deployment_id: string;
+  }>(
+    `select id,protocol_deployment_id
+       from deployment_identities
+      where locality='local' and disabled_at is null
+      limit 1`
+  );
+  const localDeployment = deployment.rows[0];
+  if (!localDeployment) {
+    return null;
+  }
+  const logicalMemoryId = crossIdentitySyncDeterministicUuid({
+    protocol: "koed.captured-session-sync/v1",
+    sourceDeploymentId: localDeployment.protocol_deployment_id,
+    sourceUserId: ownerUserId,
+    originSessionId: sessionId,
+    identity: "logical-memory"
+  });
+  const logical = await client.query<{ id: string }>(
+    `insert into logical_memories (
+       id,protocol_logical_id,owner_user_id,owner_principal_id,
+       origin_deployment_identity_id,source_kind,logical_key
+     ) values ($1,$1,$2,$2,$3,'captured_session',$4)
+     on conflict (id) do update set updated_at=logical_memories.updated_at
+     where logical_memories.owner_user_id=excluded.owner_user_id
+       and logical_memories.owner_principal_id=excluded.owner_principal_id
+       and logical_memories.origin_deployment_identity_id=excluded.origin_deployment_identity_id
+       and logical_memories.source_kind=excluded.source_kind
+       and logical_memories.logical_key=excluded.logical_key
+     returning id`,
+    [
+      logicalMemoryId,
+      ownerUserId,
+      localDeployment.id,
+      `captured-session:${sessionId}`
+    ]
+  );
+  if (!logical.rows[0]) {
+    throw new Error("Captured Session logical Memory identity conflicts");
+  }
+  const root = await client.query<{ logical_memory_id: string }>(
+    `insert into captured_session_logical_memories
+       (logical_memory_id,source_session_id,owner_principal_id)
+     values ($1,$2,$3)
+     on conflict (logical_memory_id) do update
+       set source_session_id=captured_session_logical_memories.source_session_id
+     where captured_session_logical_memories.source_session_id=excluded.source_session_id
+       and captured_session_logical_memories.owner_principal_id=excluded.owner_principal_id
+     returning logical_memory_id`,
+    [logicalMemoryId, sessionId, ownerUserId]
+  );
+  if (!root.rows[0]) {
+    throw new Error("Captured Session source identity conflicts");
+  }
+  const local = await client.query<{ logical_memory_id: string }>(
+    `insert into local_captured_session_logical_memories
+       (logical_memory_id,local_session_id,owner_user_id)
+     values ($1,$2,$3)
+     on conflict (logical_memory_id) do update
+       set local_session_id=local_captured_session_logical_memories.local_session_id
+     where local_captured_session_logical_memories.local_session_id=excluded.local_session_id
+       and local_captured_session_logical_memories.owner_user_id=excluded.owner_user_id
+     returning logical_memory_id`,
+    [logicalMemoryId, sessionId, ownerUserId]
+  );
+  if (!local.rows[0]) {
+    throw new Error("Local Captured Session identity conflicts");
+  }
+  return logicalMemoryId;
+};
+
 type CapturedSessionTitleCandidateRow = {
   id: string;
   external_session_id: string | null;
@@ -208,11 +287,14 @@ export const getCapturedSessionSummaryWithClient = async (
        and me.visibility = 'personal'
        and me.invalidated_at is null
        and me.personal_deleted_at is null
+      left join local_captured_session_logical_memories local_memory
+        on local_memory.local_session_id = s.id
+       and local_memory.owner_user_id = $1
       left join logical_memories lm
-        on lm.local_session_id = s.id
+        on lm.id = local_memory.logical_memory_id
        and lm.owner_user_id = $1
        and lm.owner_principal_id = $1
-       and lm.source_boundary = 'captured_session'
+       and lm.source_kind = 'captured_session'
        and lm.lifecycle in ('active', 'stale')
       left join lateral (
         select relationship.state, relationship.revoked_at,
@@ -224,7 +306,6 @@ export const getCapturedSessionSummaryWithClient = async (
             select replica.id
             from memory_replicas replica
             where replica.logical_memory_id = lm.id
-              and replica.local_session_id = s.id
               and replica.owner_user_id = $1
               and replica.owner_principal_id = $1
               and replica.replica_role = 'source'
@@ -562,6 +643,11 @@ export const createCapturedSessionRepository = (
               { statusCode: 409 }
             );
           }
+          await ensureCapturedSessionLogicalMemory(
+            client,
+            actor.userId,
+            convergedRow.id
+          );
           if (ownsTransaction) {
             await client.query("commit");
           }
@@ -755,6 +841,7 @@ export const createCapturedSessionRepository = (
           { statusCode: 409 }
         );
       }
+      await ensureCapturedSessionLogicalMemory(client, actor.userId, row.id);
       if (ownsTransaction) {
         await client.query("commit");
       }
@@ -895,11 +982,14 @@ export const createCapturedSessionRepository = (
          and me.visibility = 'personal'
          and me.invalidated_at is null
          and me.personal_deleted_at is null
+        left join local_captured_session_logical_memories local_memory
+          on local_memory.local_session_id = s.id
+         and local_memory.owner_user_id = $1
         left join logical_memories lm
-          on lm.local_session_id = s.id
+          on lm.id = local_memory.logical_memory_id
          and lm.owner_user_id = $1
          and lm.owner_principal_id = $1
-         and lm.source_boundary = 'captured_session'
+         and lm.source_kind = 'captured_session'
          and lm.lifecycle in ('active', 'stale')
         left join lateral (
           select relationship.state, relationship.revoked_at,
@@ -911,7 +1001,6 @@ export const createCapturedSessionRepository = (
               select replica.id
               from memory_replicas replica
               where replica.logical_memory_id = lm.id
-                and replica.local_session_id = s.id
                 and replica.owner_user_id = $1
                 and replica.owner_principal_id = $1
                 and replica.replica_role = 'source'
@@ -940,10 +1029,13 @@ export const createCapturedSessionRepository = (
 
   async getCapturedSessionSummaryByLogicalMemoryId(actor, logicalMemoryId) {
     const result = await pool.query<{ local_session_id: string }>(
-      `select logical.local_session_id
+      `select local_memory.local_session_id
          from logical_memories logical
+         join local_captured_session_logical_memories local_memory
+           on local_memory.logical_memory_id=logical.id
+          and local_memory.owner_user_id=logical.owner_user_id
          join sessions session
-           on session.id = logical.local_session_id
+           on session.id = local_memory.local_session_id
           and session.owner_user_id = logical.owner_user_id
           and session.visibility = 'personal'
           and session.invalidated_at is null
@@ -951,7 +1043,7 @@ export const createCapturedSessionRepository = (
         where logical.id = $2
           and logical.owner_user_id = $1
           and logical.owner_principal_id = $1
-          and logical.source_boundary = 'captured_session'
+          and logical.source_kind = 'captured_session'
           and logical.lifecycle in ('active', 'stale')
         limit 1`,
       [actor.userId, logicalMemoryId]

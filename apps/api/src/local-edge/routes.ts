@@ -455,6 +455,23 @@ export const registerLocalEdgeRoutes = (
         rotationOwnerUserId = rotation.credential.ownerUserId;
         rotationCredentialId = rotation.credential.id;
         deviceInstanceId = rotation.credential.deviceInstanceId;
+        const currentDeploymentId =
+          rotation.credential.metadata.protocolDeploymentId;
+        const currentSourcePrincipalId =
+          rotation.credential.metadata.sourceOwnerPrincipalId;
+        if (
+          currentDeploymentId !== input.protocol_deployment_id ||
+          (typeof currentSourcePrincipalId === "string"
+            ? currentSourcePrincipalId
+            : undefined) !== input.source_owner_principal_id
+        ) {
+          throw Object.assign(
+            new Error(
+              "Device credential rotation cannot change source identity"
+            ),
+            { statusCode: 403 }
+          );
+        }
       }
       const pendingCredential = pendingDeviceCredentialFromInput(
         input.pending_credential,
@@ -484,6 +501,9 @@ export const registerLocalEdgeRoutes = (
       }
       const metadata = redactOptionalMetadata(input.metadata) ?? {};
       metadata.protocolDeploymentId = input.protocol_deployment_id;
+      if (input.source_owner_principal_id) {
+        metadata.sourceOwnerPrincipalId = input.source_owner_principal_id;
+      }
       if (pendingCredential) {
         metadata[pendingDeviceCredentialMetadataKey] = pendingCredential;
       }

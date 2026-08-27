@@ -1,6 +1,6 @@
 {
-  "id": "548bd3f5-fd62-4299-a4ea-bc65c40c2af2",
-  "prevId": "8acfccd9-29de-4a85-92d0-e2342966177c",
+  "id": "bff25311-11d4-4ab8-a3cc-2193b8433a6c",
+  "prevId": "a5820db0-add1-4dac-9cc2-8d1a29ac5ac0",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -720,6 +720,206 @@
       },
       "isRLSEnabled": false
     },
+    "public.captured_session_logical_memories": {
+      "name": "captured_session_logical_memories",
+      "schema": "",
+      "columns": {
+        "logical_memory_id": {
+          "name": "logical_memory_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "source_kind": {
+          "name": "source_kind",
+          "type": "shared_memory_source_kind",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'captured_session'"
+        },
+        "source_session_id": {
+          "name": "source_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_principal_id": {
+          "name": "owner_principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "captured_session_logical_memories_logical_memory_id_logical_memories_id_fk": {
+          "name": "captured_session_logical_memories_logical_memory_id_logical_memories_id_fk",
+          "tableFrom": "captured_session_logical_memories",
+          "tableTo": "logical_memories",
+          "columnsFrom": ["logical_memory_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "captured_session_logical_memories_identity_fk": {
+          "name": "captured_session_logical_memories_identity_fk",
+          "tableFrom": "captured_session_logical_memories",
+          "tableTo": "logical_memories",
+          "columnsFrom": [
+            "logical_memory_id",
+            "source_kind",
+            "owner_principal_id"
+          ],
+          "columnsTo": ["id", "source_kind", "owner_principal_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "captured_session_logical_memories_session_unique": {
+          "name": "captured_session_logical_memories_session_unique",
+          "nullsNotDistinct": false,
+          "columns": ["source_session_id"]
+        },
+        "captured_session_logical_memories_memory_session_unique": {
+          "name": "captured_session_logical_memories_memory_session_unique",
+          "nullsNotDistinct": false,
+          "columns": ["logical_memory_id", "source_session_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "captured_session_logical_memories_kind_check": {
+          "name": "captured_session_logical_memories_kind_check",
+          "value": "\"captured_session_logical_memories\".\"source_kind\" = 'captured_session'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.captured_session_source_revisions": {
+      "name": "captured_session_source_revisions",
+      "schema": "",
+      "columns": {
+        "source_revision_id": {
+          "name": "source_revision_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "logical_memory_id": {
+          "name": "logical_memory_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_principal_id": {
+          "name": "owner_principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_kind": {
+          "name": "source_kind",
+          "type": "shared_memory_source_kind",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'captured_session'"
+        },
+        "revision": {
+          "name": "revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_session_id": {
+          "name": "source_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_cursor": {
+          "name": "source_cursor",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "captured_session_source_revisions_source_revision_id_logical_memory_source_revisions_id_fk": {
+          "name": "captured_session_source_revisions_source_revision_id_logical_memory_source_revisions_id_fk",
+          "tableFrom": "captured_session_source_revisions",
+          "tableTo": "logical_memory_source_revisions",
+          "columnsFrom": ["source_revision_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "captured_session_source_revisions_revision_fk": {
+          "name": "captured_session_source_revisions_revision_fk",
+          "tableFrom": "captured_session_source_revisions",
+          "tableTo": "logical_memory_source_revisions",
+          "columnsFrom": [
+            "source_revision_id",
+            "logical_memory_id",
+            "owner_principal_id",
+            "source_kind",
+            "revision"
+          ],
+          "columnsTo": [
+            "id",
+            "logical_memory_id",
+            "owner_principal_id",
+            "source_kind",
+            "revision"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "captured_session_source_revisions_source_fk": {
+          "name": "captured_session_source_revisions_source_fk",
+          "tableFrom": "captured_session_source_revisions",
+          "tableTo": "captured_session_logical_memories",
+          "columnsFrom": ["logical_memory_id", "source_session_id"],
+          "columnsTo": ["logical_memory_id", "source_session_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "captured_session_source_revisions_memory_cursor_unique": {
+          "name": "captured_session_source_revisions_memory_cursor_unique",
+          "nullsNotDistinct": false,
+          "columns": ["logical_memory_id", "source_cursor"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "captured_session_source_revisions_cursor_check": {
+          "name": "captured_session_source_revisions_cursor_check",
+          "value": "\"captured_session_source_revisions\".\"source_kind\" = 'captured_session'\n        and \"captured_session_source_revisions\".\"revision\" > 0\n        and \"captured_session_source_revisions\".\"source_cursor\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.collaboration_continuous_note_advancement_work": {
       "name": "collaboration_continuous_note_advancement_work",
       "schema": "",
@@ -743,20 +943,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "local_note_id": {
-          "name": "local_note_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "local_note_revision": {
-          "name": "local_note_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "local_memory_event_id": {
-          "name": "local_memory_event_id",
+        "source_revision_id": {
+          "name": "source_revision_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -863,22 +1051,13 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "collaboration_continuous_note_advancement_work_local_note_id_personal_notes_id_fk": {
-          "name": "collaboration_continuous_note_advancement_work_local_note_id_personal_notes_id_fk",
+        "collaboration_continuous_note_advancement_work_source_revision_id_personal_note_source_revisions_source_revision_id_fk": {
+          "name": "collaboration_continuous_note_advancement_work_source_revision_id_personal_note_source_revisions_source_revision_id_fk",
           "tableFrom": "collaboration_continuous_note_advancement_work",
-          "tableTo": "personal_notes",
-          "columnsFrom": ["local_note_id"],
-          "columnsTo": ["id"],
+          "tableTo": "personal_note_source_revisions",
+          "columnsFrom": ["source_revision_id"],
+          "columnsTo": ["source_revision_id"],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "collaboration_continuous_note_advancement_work_local_memory_event_id_memory_events_id_fk": {
-          "name": "collaboration_continuous_note_advancement_work_local_memory_event_id_memory_events_id_fk",
-          "tableFrom": "collaboration_continuous_note_advancement_work",
-          "tableTo": "memory_events",
-          "columnsFrom": ["local_memory_event_id"],
-          "columnsTo": ["id"],
-          "onDelete": "restrict",
           "onUpdate": "no action"
         },
         "csm_note_advancement_enrollment_owner_fk": {
@@ -889,15 +1068,6 @@
           "columnsTo": ["id", "local_owner_user_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "csm_note_advancement_note_owner_fk": {
-          "name": "csm_note_advancement_note_owner_fk",
-          "tableFrom": "collaboration_continuous_note_advancement_work",
-          "tableTo": "personal_notes",
-          "columnsFrom": ["local_note_id", "local_owner_user_id"],
-          "columnsTo": ["id", "owner_user_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -905,14 +1075,14 @@
         "csm_note_advancement_revision_unique": {
           "name": "csm_note_advancement_revision_unique",
           "nullsNotDistinct": false,
-          "columns": ["enrollment_id", "local_note_id", "local_note_revision"]
+          "columns": ["enrollment_id", "source_revision_id"]
         }
       },
       "policies": {},
       "checkConstraints": {
         "csm_note_advancement_state_check": {
           "name": "csm_note_advancement_state_check",
-          "value": "\"collaboration_continuous_note_advancement_work\".\"state\" in ('pending','processing','completed','failed')\n        and \"collaboration_continuous_note_advancement_work\".\"local_note_revision\" > 0\n        and \"collaboration_continuous_note_advancement_work\".\"attempt_count\" >= 0"
+          "value": "\"collaboration_continuous_note_advancement_work\".\"state\" in ('pending','processing','completed','failed')\n        and \"collaboration_continuous_note_advancement_work\".\"attempt_count\" >= 0"
         }
       },
       "isRLSEnabled": false
@@ -1712,37 +1882,11 @@
           "primaryKey": false,
           "notNull": true
         },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "shared_memory_source_kind",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'captured_session'"
-        },
-        "local_session_id": {
-          "name": "local_session_id",
+        "source_revision_id": {
+          "name": "source_revision_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
-        },
-        "local_note_id": {
-          "name": "local_note_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "local_note_revision": {
-          "name": "local_note_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "local_memory_event_id": {
-          "name": "local_memory_event_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "state": {
           "name": "state",
@@ -1837,30 +1981,21 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "collaboration_pending_share_source_work_local_session_id_sessions_id_fk": {
-          "name": "collaboration_pending_share_source_work_local_session_id_sessions_id_fk",
+        "collaboration_pending_share_source_work_source_revision_id_logical_memory_source_revisions_id_fk": {
+          "name": "collaboration_pending_share_source_work_source_revision_id_logical_memory_source_revisions_id_fk",
           "tableFrom": "collaboration_pending_share_source_work",
-          "tableTo": "sessions",
-          "columnsFrom": ["local_session_id"],
+          "tableTo": "logical_memory_source_revisions",
+          "columnsFrom": ["source_revision_id"],
           "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "collaboration_pending_share_source_work_local_note_id_personal_notes_id_fk": {
-          "name": "collaboration_pending_share_source_work_local_note_id_personal_notes_id_fk",
+        "csm_pending_source_work_revision_fk": {
+          "name": "csm_pending_source_work_revision_fk",
           "tableFrom": "collaboration_pending_share_source_work",
-          "tableTo": "personal_notes",
-          "columnsFrom": ["local_note_id"],
-          "columnsTo": ["id"],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "collaboration_pending_share_source_work_local_memory_event_id_memory_events_id_fk": {
-          "name": "collaboration_pending_share_source_work_local_memory_event_id_memory_events_id_fk",
-          "tableFrom": "collaboration_pending_share_source_work",
-          "tableTo": "memory_events",
-          "columnsFrom": ["local_memory_event_id"],
-          "columnsTo": ["id"],
+          "tableTo": "logical_memory_source_revisions",
+          "columnsFrom": ["source_revision_id", "logical_memory_id"],
+          "columnsTo": ["id", "logical_memory_id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         }
@@ -1878,10 +2013,6 @@
         "csm_pending_source_work_state_check": {
           "name": "csm_pending_source_work_state_check",
           "value": "\"collaboration_pending_share_source_work\".\"state\" in ('pending','processing','completed','failed')\n        and \"collaboration_pending_share_source_work\".\"attempt_count\" >= 0"
-        },
-        "csm_pending_source_work_source_check": {
-          "name": "csm_pending_source_work_source_check",
-          "value": "(\"collaboration_pending_share_source_work\".\"source_kind\" = 'captured_session'\n          and \"collaboration_pending_share_source_work\".\"local_session_id\" is not null\n          and \"collaboration_pending_share_source_work\".\"local_note_id\" is null\n          and \"collaboration_pending_share_source_work\".\"local_note_revision\" is null\n          and \"collaboration_pending_share_source_work\".\"local_memory_event_id\" is null)\n        or (\"collaboration_pending_share_source_work\".\"source_kind\" = 'personal_note'\n          and \"collaboration_pending_share_source_work\".\"local_session_id\" is null\n          and \"collaboration_pending_share_source_work\".\"local_note_id\" is not null\n          and \"collaboration_pending_share_source_work\".\"local_note_revision\" > 0\n          and \"collaboration_pending_share_source_work\".\"local_memory_event_id\" is not null)"
         }
       },
       "isRLSEnabled": false
@@ -2783,6 +2914,13 @@
         "include_curated_memory": {
           "name": "include_curated_memory",
           "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mode": {
+          "name": "mode",
+          "type": "shared_memory_consent_mode",
+          "typeSchema": "public",
           "primaryKey": false,
           "notNull": true
         },
@@ -3952,10 +4090,10 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "collaboration_threads_share_grant_id_team_session_share_grants_id_fk": {
-          "name": "collaboration_threads_share_grant_id_team_session_share_grants_id_fk",
+        "collaboration_threads_share_grant_id_team_memory_share_grants_id_fk": {
+          "name": "collaboration_threads_share_grant_id_team_memory_share_grants_id_fk",
           "tableFrom": "collaboration_threads",
-          "tableTo": "team_session_share_grants",
+          "tableTo": "team_memory_share_grants",
           "columnsFrom": ["share_grant_id"],
           "columnsTo": ["id"],
           "onDelete": "restrict",
@@ -3982,7 +4120,7 @@
         "collaboration_threads_share_scope_fk": {
           "name": "collaboration_threads_share_scope_fk",
           "tableFrom": "collaboration_threads",
-          "tableTo": "team_session_share_grants",
+          "tableTo": "team_memory_share_grants",
           "columnsFrom": [
             "share_grant_id",
             "team_id",
@@ -12341,6 +12479,87 @@
       },
       "isRLSEnabled": false
     },
+    "public.local_captured_session_logical_memories": {
+      "name": "local_captured_session_logical_memories",
+      "schema": "",
+      "columns": {
+        "logical_memory_id": {
+          "name": "logical_memory_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "local_session_id": {
+          "name": "local_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "local_captured_session_logical_memories_logical_memory_id_captured_session_logical_memories_logical_memory_id_fk": {
+          "name": "local_captured_session_logical_memories_logical_memory_id_captured_session_logical_memories_logical_memory_id_fk",
+          "tableFrom": "local_captured_session_logical_memories",
+          "tableTo": "captured_session_logical_memories",
+          "columnsFrom": ["logical_memory_id"],
+          "columnsTo": ["logical_memory_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_captured_session_logical_memories_local_session_id_sessions_id_fk": {
+          "name": "local_captured_session_logical_memories_local_session_id_sessions_id_fk",
+          "tableFrom": "local_captured_session_logical_memories",
+          "tableTo": "sessions",
+          "columnsFrom": ["local_session_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "local_captured_session_logical_memories_owner_user_id_users_id_fk": {
+          "name": "local_captured_session_logical_memories_owner_user_id_users_id_fk",
+          "tableFrom": "local_captured_session_logical_memories",
+          "tableTo": "users",
+          "columnsFrom": ["owner_user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "local_captured_session_logical_memories_session_owner_fk": {
+          "name": "local_captured_session_logical_memories_session_owner_fk",
+          "tableFrom": "local_captured_session_logical_memories",
+          "tableTo": "sessions",
+          "columnsFrom": ["local_session_id", "owner_user_id"],
+          "columnsTo": ["id", "owner_user_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "local_captured_session_logical_memories_session_unique": {
+          "name": "local_captured_session_logical_memories_session_unique",
+          "nullsNotDistinct": false,
+          "columns": ["local_session_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.local_edge_collaboration_subscriptions": {
       "name": "local_edge_collaboration_subscriptions",
       "schema": "",
@@ -12769,6 +12988,199 @@
       },
       "isRLSEnabled": false
     },
+    "public.local_personal_note_logical_memories": {
+      "name": "local_personal_note_logical_memories",
+      "schema": "",
+      "columns": {
+        "logical_memory_id": {
+          "name": "logical_memory_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "local_note_id": {
+          "name": "local_note_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "local_personal_note_logical_memories_logical_memory_id_personal_note_logical_memories_logical_memory_id_fk": {
+          "name": "local_personal_note_logical_memories_logical_memory_id_personal_note_logical_memories_logical_memory_id_fk",
+          "tableFrom": "local_personal_note_logical_memories",
+          "tableTo": "personal_note_logical_memories",
+          "columnsFrom": ["logical_memory_id"],
+          "columnsTo": ["logical_memory_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_personal_note_logical_memories_local_note_id_personal_notes_id_fk": {
+          "name": "local_personal_note_logical_memories_local_note_id_personal_notes_id_fk",
+          "tableFrom": "local_personal_note_logical_memories",
+          "tableTo": "personal_notes",
+          "columnsFrom": ["local_note_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "local_personal_note_logical_memories_owner_user_id_users_id_fk": {
+          "name": "local_personal_note_logical_memories_owner_user_id_users_id_fk",
+          "tableFrom": "local_personal_note_logical_memories",
+          "tableTo": "users",
+          "columnsFrom": ["owner_user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "local_personal_note_logical_memories_note_owner_fk": {
+          "name": "local_personal_note_logical_memories_note_owner_fk",
+          "tableFrom": "local_personal_note_logical_memories",
+          "tableTo": "personal_notes",
+          "columnsFrom": ["local_note_id", "owner_user_id"],
+          "columnsTo": ["id", "owner_user_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "local_personal_note_logical_memories_note_unique": {
+          "name": "local_personal_note_logical_memories_note_unique",
+          "nullsNotDistinct": false,
+          "columns": ["local_note_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.local_personal_note_source_revisions": {
+      "name": "local_personal_note_source_revisions",
+      "schema": "",
+      "columns": {
+        "source_revision_id": {
+          "name": "source_revision_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "note_revision_id": {
+          "name": "note_revision_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "local_note_id": {
+          "name": "local_note_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "local_memory_event_id": {
+          "name": "local_memory_event_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "local_personal_note_source_revisions_source_revision_id_personal_note_source_revisions_source_revision_id_fk": {
+          "name": "local_personal_note_source_revisions_source_revision_id_personal_note_source_revisions_source_revision_id_fk",
+          "tableFrom": "local_personal_note_source_revisions",
+          "tableTo": "personal_note_source_revisions",
+          "columnsFrom": ["source_revision_id"],
+          "columnsTo": ["source_revision_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_personal_note_source_revisions_note_revision_id_personal_note_revisions_id_fk": {
+          "name": "local_personal_note_source_revisions_note_revision_id_personal_note_revisions_id_fk",
+          "tableFrom": "local_personal_note_source_revisions",
+          "tableTo": "personal_note_revisions",
+          "columnsFrom": ["note_revision_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "local_personal_note_source_revisions_local_note_id_personal_notes_id_fk": {
+          "name": "local_personal_note_source_revisions_local_note_id_personal_notes_id_fk",
+          "tableFrom": "local_personal_note_source_revisions",
+          "tableTo": "personal_notes",
+          "columnsFrom": ["local_note_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "local_personal_note_source_revisions_local_memory_event_id_memory_events_id_fk": {
+          "name": "local_personal_note_source_revisions_local_memory_event_id_memory_events_id_fk",
+          "tableFrom": "local_personal_note_source_revisions",
+          "tableTo": "memory_events",
+          "columnsFrom": ["local_memory_event_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "local_personal_note_source_revisions_note_revision_fk": {
+          "name": "local_personal_note_source_revisions_note_revision_fk",
+          "tableFrom": "local_personal_note_source_revisions",
+          "tableTo": "personal_note_revisions",
+          "columnsFrom": ["local_note_id", "revision"],
+          "columnsTo": ["note_id", "revision"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "local_personal_note_source_revisions_note_revision_unique": {
+          "name": "local_personal_note_source_revisions_note_revision_unique",
+          "nullsNotDistinct": false,
+          "columns": ["local_note_id", "revision"]
+        },
+        "local_personal_note_source_revisions_revision_id_unique": {
+          "name": "local_personal_note_source_revisions_revision_id_unique",
+          "nullsNotDistinct": false,
+          "columns": ["note_revision_id"]
+        },
+        "local_personal_note_source_revisions_memory_event_unique": {
+          "name": "local_personal_note_source_revisions_memory_event_unique",
+          "nullsNotDistinct": false,
+          "columns": ["local_memory_event_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.local_work_queue": {
       "name": "local_work_queue",
       "schema": "",
@@ -13030,24 +13442,12 @@
           "primaryKey": false,
           "notNull": true
         },
-        "source_boundary": {
-          "name": "source_boundary",
-          "type": "sync_source_boundary",
+        "source_kind": {
+          "name": "source_kind",
+          "type": "shared_memory_source_kind",
           "typeSchema": "public",
           "primaryKey": false,
           "notNull": true
-        },
-        "origin_source_id": {
-          "name": "origin_source_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "local_session_id": {
-          "name": "local_session_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         },
         "logical_key": {
           "name": "logical_key",
@@ -13137,30 +13537,8 @@
         }
       },
       "indexes": {
-        "logical_memories_owner_session_unique": {
-          "name": "logical_memories_owner_session_unique",
-          "columns": [
-            {
-              "expression": "owner_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "local_session_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"logical_memories\".\"local_session_id\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "logical_memories_owner_boundary_idx": {
-          "name": "logical_memories_owner_boundary_idx",
+        "logical_memories_owner_source_kind_idx": {
+          "name": "logical_memories_owner_source_kind_idx",
           "columns": [
             {
               "expression": "owner_principal_id",
@@ -13169,7 +13547,7 @@
               "nulls": "last"
             },
             {
-              "expression": "source_boundary",
+              "expression": "source_kind",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -13205,15 +13583,6 @@
           "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
-        },
-        "logical_memories_local_session_id_sessions_id_fk": {
-          "name": "logical_memories_local_session_id_sessions_id_fk",
-          "tableFrom": "logical_memories",
-          "tableTo": "sessions",
-          "columnsFrom": ["local_session_id"],
-          "columnsTo": ["id"],
-          "onDelete": "set null",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -13223,27 +13592,24 @@
           "nullsNotDistinct": false,
           "columns": ["protocol_logical_id"]
         },
+        "logical_memories_id_owner_user_unique": {
+          "name": "logical_memories_id_owner_user_unique",
+          "nullsNotDistinct": false,
+          "columns": ["id", "owner_user_id"]
+        },
+        "logical_memories_source_owner_scope_unique": {
+          "name": "logical_memories_source_owner_scope_unique",
+          "nullsNotDistinct": false,
+          "columns": ["id", "source_kind", "owner_principal_id"]
+        },
         "logical_memories_owner_key_unique": {
           "name": "logical_memories_owner_key_unique",
           "nullsNotDistinct": false,
           "columns": ["owner_principal_id", "logical_key"]
-        },
-        "logical_memories_origin_unique": {
-          "name": "logical_memories_origin_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "origin_deployment_identity_id",
-            "source_boundary",
-            "origin_source_id"
-          ]
         }
       },
       "policies": {},
       "checkConstraints": {
-        "logical_memories_captured_session_source_check": {
-          "name": "logical_memories_captured_session_source_check",
-          "value": "\"logical_memories\".\"source_boundary\" <> 'captured_session' or length(trim(\"logical_memories\".\"origin_source_id\")) > 0"
-        },
         "logical_memories_logical_key_not_empty_check": {
           "name": "logical_memories_logical_key_not_empty_check",
           "value": "length(trim(\"logical_memories\".\"logical_key\")) > 0"
@@ -13255,6 +13621,156 @@
         "logical_memories_lifecycle_check": {
           "name": "logical_memories_lifecycle_check",
           "value": "(\"logical_memories\".\"lifecycle\" in ('active', 'stale', 'revoked') and \"logical_memories\".\"purge_completed_at\" is null)\n        or (\"logical_memories\".\"lifecycle\" in ('tombstoned', 'purge_pending') and \"logical_memories\".\"tombstoned_at\" is not null and \"logical_memories\".\"purge_completed_at\" is null)\n        or (\"logical_memories\".\"lifecycle\" = 'purged' and \"logical_memories\".\"tombstoned_at\" is not null and \"logical_memories\".\"purge_completed_at\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.logical_memory_source_revisions": {
+      "name": "logical_memory_source_revisions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "logical_memory_id": {
+          "name": "logical_memory_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_principal_id": {
+          "name": "owner_principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_kind": {
+          "name": "source_kind",
+          "type": "shared_memory_source_kind",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_hash": {
+          "name": "binding_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "logical_memory_source_revisions_owner_idx": {
+          "name": "logical_memory_source_revisions_owner_idx",
+          "columns": [
+            {
+              "expression": "owner_principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "logical_memory_source_revisions_logical_memory_id_logical_memories_id_fk": {
+          "name": "logical_memory_source_revisions_logical_memory_id_logical_memories_id_fk",
+          "tableFrom": "logical_memory_source_revisions",
+          "tableTo": "logical_memories",
+          "columnsFrom": ["logical_memory_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "logical_memory_source_revisions_identity_fk": {
+          "name": "logical_memory_source_revisions_identity_fk",
+          "tableFrom": "logical_memory_source_revisions",
+          "tableTo": "logical_memories",
+          "columnsFrom": [
+            "logical_memory_id",
+            "source_kind",
+            "owner_principal_id"
+          ],
+          "columnsTo": ["id", "source_kind", "owner_principal_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "logical_memory_source_revisions_memory_revision_unique": {
+          "name": "logical_memory_source_revisions_memory_revision_unique",
+          "nullsNotDistinct": false,
+          "columns": ["logical_memory_id", "revision"]
+        },
+        "logical_memory_source_revisions_id_memory_revision_unique": {
+          "name": "logical_memory_source_revisions_id_memory_revision_unique",
+          "nullsNotDistinct": false,
+          "columns": ["id", "logical_memory_id", "revision"]
+        },
+        "logical_memory_source_revisions_id_memory_unique": {
+          "name": "logical_memory_source_revisions_id_memory_unique",
+          "nullsNotDistinct": false,
+          "columns": ["id", "logical_memory_id"]
+        },
+        "logical_memory_source_revisions_id_memory_owner_unique": {
+          "name": "logical_memory_source_revisions_id_memory_owner_unique",
+          "nullsNotDistinct": false,
+          "columns": ["id", "logical_memory_id", "owner_principal_id"]
+        },
+        "logical_memory_source_revisions_owner_revision_unique": {
+          "name": "logical_memory_source_revisions_owner_revision_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "logical_memory_id",
+            "owner_principal_id",
+            "revision"
+          ]
+        },
+        "logical_memory_source_revisions_scope_unique": {
+          "name": "logical_memory_source_revisions_scope_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "logical_memory_id",
+            "owner_principal_id",
+            "source_kind",
+            "revision"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "logical_memory_source_revisions_revision_hash_check": {
+          "name": "logical_memory_source_revisions_revision_hash_check",
+          "value": "\"logical_memory_source_revisions\".\"revision\" > 0 and length(\"logical_memory_source_revisions\".\"binding_hash\") = 64"
         }
       },
       "isRLSEnabled": false
@@ -17369,12 +17885,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "local_session_id": {
-          "name": "local_session_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "external_replica_id": {
           "name": "external_replica_id",
           "type": "text",
@@ -17563,15 +18073,6 @@
           "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
-        },
-        "memory_replicas_local_session_id_sessions_id_fk": {
-          "name": "memory_replicas_local_session_id_sessions_id_fk",
-          "tableFrom": "memory_replicas",
-          "tableTo": "sessions",
-          "columnsFrom": ["local_session_id"],
-          "columnsTo": ["id"],
-          "onDelete": "set null",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -17598,10 +18099,6 @@
       },
       "policies": {},
       "checkConstraints": {
-        "memory_replicas_captured_session_source_check": {
-          "name": "memory_replicas_captured_session_source_check",
-          "value": "\"memory_replicas\".\"source_boundary\" <> 'captured_session' or \"memory_replicas\".\"local_session_id\" is not null"
-        },
         "memory_replicas_freshness_status_check": {
           "name": "memory_replicas_freshness_status_check",
           "value": "\"memory_replicas\".\"freshness_status\" in ('unknown', 'fresh', 'stale', 'revoked', 'failed')"
@@ -21325,31 +21822,11 @@
           "primaryKey": false,
           "notNull": true
         },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "shared_memory_source_kind",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'captured_session'"
-        },
-        "source_session_id": {
-          "name": "source_session_id",
+        "source_revision_id": {
+          "name": "source_revision_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
-        },
-        "source_note_id": {
-          "name": "source_note_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_memory_event_id": {
-          "name": "source_memory_event_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "team_id": {
           "name": "team_id",
@@ -21603,6 +22080,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "replacement_source_revision_id": {
+          "name": "replacement_source_revision_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "replacement_source_revision": {
           "name": "replacement_source_revision",
           "type": "bigint",
@@ -21682,6 +22165,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "pending_share_operations_source_revision_idx": {
+          "name": "pending_share_operations_source_revision_idx",
+          "columns": [
+            {
+              "expression": "source_revision_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -21703,13 +22201,31 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "pending_share_operations_grant_id_team_session_share_grants_id_fk": {
-          "name": "pending_share_operations_grant_id_team_session_share_grants_id_fk",
+        "pending_share_operations_grant_id_team_memory_share_grants_id_fk": {
+          "name": "pending_share_operations_grant_id_team_memory_share_grants_id_fk",
           "tableFrom": "pending_share_operations",
-          "tableTo": "team_session_share_grants",
+          "tableTo": "team_memory_share_grants",
           "columnsFrom": ["grant_id"],
           "columnsTo": ["id"],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "pending_share_operations_source_revision_fk": {
+          "name": "pending_share_operations_source_revision_fk",
+          "tableFrom": "pending_share_operations",
+          "tableTo": "logical_memory_source_revisions",
+          "columnsFrom": ["source_revision_id", "logical_memory_id"],
+          "columnsTo": ["id", "logical_memory_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "pending_share_operations_source_owner_fk": {
+          "name": "pending_share_operations_source_owner_fk",
+          "tableFrom": "pending_share_operations",
+          "tableTo": "logical_memories",
+          "columnsFrom": ["logical_memory_id", "owner_user_id"],
+          "columnsTo": ["id", "owner_user_id"],
+          "onDelete": "restrict",
           "onUpdate": "no action"
         },
         "pending_share_operations_workspace_team_fk": {
@@ -21732,6 +22248,7 @@
             "logical_memory_id",
             "team_id",
             "team_workspace_id",
+            "replacement_source_revision_id",
             "replacement_source_revision"
           ],
           "columnsTo": [
@@ -21741,6 +22258,7 @@
             "logical_memory_id",
             "team_id",
             "team_workspace_id",
+            "source_revision_id",
             "source_revision"
           ],
           "onDelete": "restrict",
@@ -21757,6 +22275,7 @@
             "logical_memory_id",
             "team_id",
             "team_workspace_id",
+            "source_revision_id",
             "source_revision"
           ],
           "columnsTo": [
@@ -21766,6 +22285,7 @@
             "logical_memory_id",
             "team_id",
             "team_workspace_id",
+            "source_revision_id",
             "source_revision"
           ],
           "onDelete": "restrict",
@@ -21817,11 +22337,11 @@
         },
         "pending_share_operations_replacement_values_check": {
           "name": "pending_share_operations_replacement_values_check",
-          "value": "(\"pending_share_operations\".\"replacement_mutation_id\" is null and\n             \"pending_share_operations\".\"replacement_request_hash\" is null and\n             \"pending_share_operations\".\"replacement_consent_id\" is null and\n             \"pending_share_operations\".\"replacement_authority_source\" is null and\n             \"pending_share_operations\".\"replacement_authority_reference_id\" is null and\n             \"pending_share_operations\".\"replacement_preview_id\" is null and\n             \"pending_share_operations\".\"replacement_preview_hash\" is null and\n             \"pending_share_operations\".\"replacement_preview_revision\" is null and\n             \"pending_share_operations\".\"replacement_representation\" is null and\n             \"pending_share_operations\".\"replacement_maximum_fidelity\" is null and\n             \"pending_share_operations\".\"replacement_include_curated_memory\" is null and\n             \"pending_share_operations\".\"replacement_mode\" is null and\n             \"pending_share_operations\".\"replacement_source_revision\" is null and\n             \"pending_share_operations\".\"replacement_source_hash\" is null and\n             \"pending_share_operations\".\"replacement_expected_grant_version\" is null)\n        or (\"pending_share_operations\".\"replacement_mutation_id\" is not null and\n             length(\"pending_share_operations\".\"replacement_request_hash\") = 64 and\n             \"pending_share_operations\".\"replacement_consent_id\" is not null and\n             \"pending_share_operations\".\"replacement_authority_source\" in ('browser_session','device_action_grant','continuous_consent') and\n             \"pending_share_operations\".\"replacement_authority_reference_id\" is not null and\n             \"pending_share_operations\".\"replacement_preview_id\" is not null and\n             length(\"pending_share_operations\".\"replacement_preview_hash\") = 64 and\n             \"pending_share_operations\".\"replacement_preview_revision\" > 0 and\n             \"pending_share_operations\".\"replacement_representation\" is not null and\n             \"pending_share_operations\".\"replacement_maximum_fidelity\" is not null and\n             \"pending_share_operations\".\"replacement_include_curated_memory\" is not null and\n             \"pending_share_operations\".\"replacement_mode\" is not null and\n             \"pending_share_operations\".\"replacement_source_revision\" >= 0 and\n             length(\"pending_share_operations\".\"replacement_source_hash\") = 64 and\n             \"pending_share_operations\".\"replacement_expected_grant_version\" > 0)"
+          "value": "(\"pending_share_operations\".\"replacement_mutation_id\" is null and\n             \"pending_share_operations\".\"replacement_request_hash\" is null and\n             \"pending_share_operations\".\"replacement_consent_id\" is null and\n             \"pending_share_operations\".\"replacement_authority_source\" is null and\n             \"pending_share_operations\".\"replacement_authority_reference_id\" is null and\n             \"pending_share_operations\".\"replacement_preview_id\" is null and\n             \"pending_share_operations\".\"replacement_preview_hash\" is null and\n             \"pending_share_operations\".\"replacement_preview_revision\" is null and\n             \"pending_share_operations\".\"replacement_representation\" is null and\n             \"pending_share_operations\".\"replacement_maximum_fidelity\" is null and\n             \"pending_share_operations\".\"replacement_include_curated_memory\" is null and\n             \"pending_share_operations\".\"replacement_mode\" is null and\n             \"pending_share_operations\".\"replacement_source_revision_id\" is null and\n             \"pending_share_operations\".\"replacement_source_revision\" is null and\n             \"pending_share_operations\".\"replacement_source_hash\" is null and\n             \"pending_share_operations\".\"replacement_expected_grant_version\" is null)\n        or (\"pending_share_operations\".\"replacement_mutation_id\" is not null and\n             length(\"pending_share_operations\".\"replacement_request_hash\") = 64 and\n             \"pending_share_operations\".\"replacement_consent_id\" is not null and\n             \"pending_share_operations\".\"replacement_authority_source\" in ('browser_session','device_action_grant','continuous_consent') and\n             \"pending_share_operations\".\"replacement_authority_reference_id\" is not null and\n             \"pending_share_operations\".\"replacement_preview_id\" is not null and\n             length(\"pending_share_operations\".\"replacement_preview_hash\") = 64 and\n             \"pending_share_operations\".\"replacement_preview_revision\" > 0 and\n             \"pending_share_operations\".\"replacement_representation\" is not null and\n             \"pending_share_operations\".\"replacement_maximum_fidelity\" is not null and\n             \"pending_share_operations\".\"replacement_include_curated_memory\" is not null and\n             \"pending_share_operations\".\"replacement_mode\" is not null and\n             \"pending_share_operations\".\"replacement_source_revision_id\" is not null and\n             \"pending_share_operations\".\"replacement_source_revision\" >= 0 and\n             length(\"pending_share_operations\".\"replacement_source_hash\") = 64 and\n             \"pending_share_operations\".\"replacement_expected_grant_version\" > 0)"
         },
         "pending_share_operations_source_binding_check": {
           "name": "pending_share_operations_source_binding_check",
-          "value": "cardinality(\"pending_share_operations\".\"source_capabilities\") > 0\n        and \"pending_share_operations\".\"activation_representation\" = any(\"pending_share_operations\".\"source_capabilities\")\n        and ((\"pending_share_operations\".\"activation_representation\" = 'memory_events' and \"pending_share_operations\".\"maximum_fidelity\" = 'memory_events')\n          or (\"pending_share_operations\".\"activation_representation\" = 'lcm_leaves' and \"pending_share_operations\".\"maximum_fidelity\" in ('memory_events','lcm_leaves'))\n          or (\"pending_share_operations\".\"activation_representation\" = 'lcm_rollups')\n          or (\"pending_share_operations\".\"activation_representation\"::text = 'curated_assertions' and \"pending_share_operations\".\"include_curated_memory\" = true))\n        and ((\"pending_share_operations\".\"source_kind\" = 'captured_session'\n          and \"pending_share_operations\".\"source_session_id\" is not null\n          and \"pending_share_operations\".\"source_note_id\" is null\n          and \"pending_share_operations\".\"source_memory_event_id\" is null)\n        or (\"pending_share_operations\".\"source_kind\" = 'personal_note'\n          and \"pending_share_operations\".\"source_session_id\" is null\n          and \"pending_share_operations\".\"source_note_id\" is not null\n          and \"pending_share_operations\".\"source_memory_event_id\" is not null\n          and \"pending_share_operations\".\"mode\" in ('snapshot','continuous')\n          and \"pending_share_operations\".\"representation\" = 'memory_events'\n          and \"pending_share_operations\".\"maximum_fidelity\" = 'memory_events'\n          and \"pending_share_operations\".\"include_curated_memory\" = false\n          and \"pending_share_operations\".\"source_revision\" > 0\n          and \"pending_share_operations\".\"source_capabilities\" = array['memory_events']::shared_memory_representation[]\n          and \"pending_share_operations\".\"activation_representation\" = 'memory_events'))"
+          "value": "cardinality(\"pending_share_operations\".\"source_capabilities\") > 0\n        and \"pending_share_operations\".\"activation_representation\" = any(\"pending_share_operations\".\"source_capabilities\")\n        and ((\"pending_share_operations\".\"activation_representation\" = 'memory_events' and \"pending_share_operations\".\"maximum_fidelity\" = 'memory_events')\n          or (\"pending_share_operations\".\"activation_representation\" = 'lcm_leaves' and \"pending_share_operations\".\"maximum_fidelity\" in ('memory_events','lcm_leaves'))\n          or (\"pending_share_operations\".\"activation_representation\" = 'lcm_rollups')\n          or (\"pending_share_operations\".\"activation_representation\"::text = 'curated_assertions' and \"pending_share_operations\".\"include_curated_memory\" = true))"
         }
       },
       "isRLSEnabled": false
@@ -23052,6 +23572,91 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.personal_note_logical_memories": {
+      "name": "personal_note_logical_memories",
+      "schema": "",
+      "columns": {
+        "logical_memory_id": {
+          "name": "logical_memory_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "source_kind": {
+          "name": "source_kind",
+          "type": "shared_memory_source_kind",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'personal_note'"
+        },
+        "source_note_id": {
+          "name": "source_note_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_principal_id": {
+          "name": "owner_principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "personal_note_logical_memories_logical_memory_id_logical_memories_id_fk": {
+          "name": "personal_note_logical_memories_logical_memory_id_logical_memories_id_fk",
+          "tableFrom": "personal_note_logical_memories",
+          "tableTo": "logical_memories",
+          "columnsFrom": ["logical_memory_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "personal_note_logical_memories_identity_fk": {
+          "name": "personal_note_logical_memories_identity_fk",
+          "tableFrom": "personal_note_logical_memories",
+          "tableTo": "logical_memories",
+          "columnsFrom": [
+            "logical_memory_id",
+            "source_kind",
+            "owner_principal_id"
+          ],
+          "columnsTo": ["id", "source_kind", "owner_principal_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "personal_note_logical_memories_note_unique": {
+          "name": "personal_note_logical_memories_note_unique",
+          "nullsNotDistinct": false,
+          "columns": ["source_note_id"]
+        },
+        "personal_note_logical_memories_memory_note_unique": {
+          "name": "personal_note_logical_memories_memory_note_unique",
+          "nullsNotDistinct": false,
+          "columns": ["logical_memory_id", "source_note_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "personal_note_logical_memories_kind_check": {
+          "name": "personal_note_logical_memories_kind_check",
+          "value": "\"personal_note_logical_memories\".\"source_kind\" = 'personal_note'"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.personal_note_revisions": {
       "name": "personal_note_revisions",
       "schema": "",
@@ -23260,6 +23865,126 @@
         "personal_note_revisions_projection_check": {
           "name": "personal_note_revisions_projection_check",
           "value": "(\"personal_note_revisions\".\"projection_state\" = 'pending' and \"personal_note_revisions\".\"memory_event_id\" is null and \"personal_note_revisions\".\"projected_at\" is null and \"personal_note_revisions\".\"projection_failure_code\" is null)\n        or (\"personal_note_revisions\".\"projection_state\" = 'available' and \"personal_note_revisions\".\"memory_event_id\" is not null and \"personal_note_revisions\".\"projected_at\" is not null and \"personal_note_revisions\".\"projection_failure_code\" is null)\n        or (\"personal_note_revisions\".\"projection_state\" = 'failed' and \"personal_note_revisions\".\"memory_event_id\" is null and \"personal_note_revisions\".\"projected_at\" is null and length(trim(\"personal_note_revisions\".\"projection_failure_code\")) > 0)\n        or (\"personal_note_revisions\".\"projection_state\" = 'superseded' and \"personal_note_revisions\".\"superseded_at\" is not null\n          and ((\"personal_note_revisions\".\"memory_event_id\" is null and \"personal_note_revisions\".\"projected_at\" is null)\n            or (\"personal_note_revisions\".\"memory_event_id\" is not null and \"personal_note_revisions\".\"projected_at\" is not null)))"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.personal_note_source_revisions": {
+      "name": "personal_note_source_revisions",
+      "schema": "",
+      "columns": {
+        "source_revision_id": {
+          "name": "source_revision_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "logical_memory_id": {
+          "name": "logical_memory_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_principal_id": {
+          "name": "owner_principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_kind": {
+          "name": "source_kind",
+          "type": "shared_memory_source_kind",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'personal_note'"
+        },
+        "source_note_id": {
+          "name": "source_note_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_memory_event_id": {
+          "name": "source_memory_event_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "personal_note_source_revisions_source_revision_id_logical_memory_source_revisions_id_fk": {
+          "name": "personal_note_source_revisions_source_revision_id_logical_memory_source_revisions_id_fk",
+          "tableFrom": "personal_note_source_revisions",
+          "tableTo": "logical_memory_source_revisions",
+          "columnsFrom": ["source_revision_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "personal_note_source_revisions_revision_fk": {
+          "name": "personal_note_source_revisions_revision_fk",
+          "tableFrom": "personal_note_source_revisions",
+          "tableTo": "logical_memory_source_revisions",
+          "columnsFrom": [
+            "source_revision_id",
+            "logical_memory_id",
+            "owner_principal_id",
+            "source_kind",
+            "revision"
+          ],
+          "columnsTo": [
+            "id",
+            "logical_memory_id",
+            "owner_principal_id",
+            "source_kind",
+            "revision"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "personal_note_source_revisions_source_fk": {
+          "name": "personal_note_source_revisions_source_fk",
+          "tableFrom": "personal_note_source_revisions",
+          "tableTo": "personal_note_logical_memories",
+          "columnsFrom": ["logical_memory_id", "source_note_id"],
+          "columnsTo": ["logical_memory_id", "source_note_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "personal_note_source_revisions_note_revision_unique": {
+          "name": "personal_note_source_revisions_note_revision_unique",
+          "nullsNotDistinct": false,
+          "columns": ["source_note_id", "revision"]
+        },
+        "personal_note_source_revisions_memory_event_unique": {
+          "name": "personal_note_source_revisions_memory_event_unique",
+          "nullsNotDistinct": false,
+          "columns": ["source_memory_event_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "personal_note_source_revisions_revision_check": {
+          "name": "personal_note_source_revisions_revision_check",
+          "value": "\"personal_note_source_revisions\".\"source_kind\" = 'personal_note' and \"personal_note_source_revisions\".\"revision\" > 0"
         }
       },
       "isRLSEnabled": false
@@ -24592,10 +25317,10 @@
         }
       },
       "foreignKeys": {
-        "privacy_sanitized_source_artifacts_share_grant_id_team_session_share_grants_id_fk": {
-          "name": "privacy_sanitized_source_artifacts_share_grant_id_team_session_share_grants_id_fk",
+        "privacy_sanitized_source_artifacts_share_grant_id_team_memory_share_grants_id_fk": {
+          "name": "privacy_sanitized_source_artifacts_share_grant_id_team_memory_share_grants_id_fk",
           "tableFrom": "privacy_sanitized_source_artifacts",
-          "tableTo": "team_session_share_grants",
+          "tableTo": "team_memory_share_grants",
           "columnsFrom": ["share_grant_id"],
           "columnsTo": ["id"],
           "onDelete": "cascade",
@@ -26146,7 +26871,7 @@
         "retention_policies_grant_scope_fk": {
           "name": "retention_policies_grant_scope_fk",
           "tableFrom": "retention_policies",
-          "tableTo": "team_session_share_grants",
+          "tableTo": "team_memory_share_grants",
           "columnsFrom": [
             "share_grant_id",
             "team_id",
@@ -27250,6 +27975,11 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
+        "sessions_id_owner_unique": {
+          "name": "sessions_id_owner_unique",
+          "nullsNotDistinct": false,
+          "columns": ["id", "owner_user_id"]
+        },
         "sessions_logical_identity_unique": {
           "name": "sessions_logical_identity_unique",
           "nullsNotDistinct": false,
@@ -27321,31 +28051,11 @@
           "primaryKey": false,
           "notNull": true
         },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "shared_memory_source_kind",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'captured_session'"
-        },
-        "source_session_id": {
-          "name": "source_session_id",
+        "source_revision_id": {
+          "name": "source_revision_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
-        },
-        "source_note_id": {
-          "name": "source_note_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_memory_event_id": {
-          "name": "source_memory_event_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "team_id": {
           "name": "team_id",
@@ -27554,6 +28264,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "shared_memory_candidate_previews_source_revision_idx": {
+          "name": "shared_memory_candidate_previews_source_revision_idx",
+          "columns": [
+            {
+              "expression": "source_revision_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -27572,6 +28297,24 @@
           "tableTo": "teams",
           "columnsFrom": ["team_id"],
           "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "shared_memory_candidate_previews_source_revision_fk": {
+          "name": "shared_memory_candidate_previews_source_revision_fk",
+          "tableFrom": "shared_memory_candidate_previews",
+          "tableTo": "logical_memory_source_revisions",
+          "columnsFrom": ["source_revision_id", "logical_memory_id"],
+          "columnsTo": ["id", "logical_memory_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "shared_memory_candidate_previews_source_owner_fk": {
+          "name": "shared_memory_candidate_previews_source_owner_fk",
+          "tableFrom": "shared_memory_candidate_previews",
+          "tableTo": "logical_memories",
+          "columnsFrom": ["logical_memory_id", "owner_user_id"],
+          "columnsTo": ["id", "owner_user_id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -27602,6 +28345,7 @@
             "logical_memory_id",
             "team_id",
             "team_workspace_id",
+            "source_revision_id",
             "source_revision"
           ]
         }
@@ -27618,7 +28362,7 @@
         },
         "shared_memory_candidate_previews_source_binding_check": {
           "name": "shared_memory_candidate_previews_source_binding_check",
-          "value": "cardinality(\"shared_memory_candidate_previews\".\"source_capabilities\") > 0\n        and \"shared_memory_candidate_previews\".\"activation_representation\" = any(\"shared_memory_candidate_previews\".\"source_capabilities\")\n        and ((\"shared_memory_candidate_previews\".\"activation_representation\" = 'memory_events' and \"shared_memory_candidate_previews\".\"maximum_fidelity\" = 'memory_events')\n          or (\"shared_memory_candidate_previews\".\"activation_representation\" = 'lcm_leaves' and \"shared_memory_candidate_previews\".\"maximum_fidelity\" in ('memory_events','lcm_leaves'))\n          or (\"shared_memory_candidate_previews\".\"activation_representation\" = 'lcm_rollups')\n          or (\"shared_memory_candidate_previews\".\"activation_representation\"::text = 'curated_assertions' and \"shared_memory_candidate_previews\".\"include_curated_memory\" = true))\n        and ((\"shared_memory_candidate_previews\".\"source_kind\" = 'captured_session'\n          and \"shared_memory_candidate_previews\".\"source_session_id\" is not null\n          and \"shared_memory_candidate_previews\".\"source_note_id\" is null\n          and \"shared_memory_candidate_previews\".\"source_memory_event_id\" is null)\n        or (\"shared_memory_candidate_previews\".\"source_kind\" = 'personal_note'\n          and \"shared_memory_candidate_previews\".\"source_session_id\" is null\n          and \"shared_memory_candidate_previews\".\"source_note_id\" is not null\n          and \"shared_memory_candidate_previews\".\"source_memory_event_id\" is not null\n          and \"shared_memory_candidate_previews\".\"mode\" in ('snapshot','continuous')\n          and \"shared_memory_candidate_previews\".\"representation\" = 'memory_events'\n          and \"shared_memory_candidate_previews\".\"maximum_fidelity\" = 'memory_events'\n          and \"shared_memory_candidate_previews\".\"include_curated_memory\" = false\n          and \"shared_memory_candidate_previews\".\"source_revision\" > 0\n          and \"shared_memory_candidate_previews\".\"item_count\" = 1\n          and \"shared_memory_candidate_previews\".\"excluded_item_count\" = 0\n          and \"shared_memory_candidate_previews\".\"source_capabilities\" = array['memory_events']::shared_memory_representation[]\n          and \"shared_memory_candidate_previews\".\"activation_representation\" = 'memory_events'))"
+          "value": "cardinality(\"shared_memory_candidate_previews\".\"source_capabilities\") > 0\n        and \"shared_memory_candidate_previews\".\"activation_representation\" = any(\"shared_memory_candidate_previews\".\"source_capabilities\")\n        and ((\"shared_memory_candidate_previews\".\"activation_representation\" = 'memory_events' and \"shared_memory_candidate_previews\".\"maximum_fidelity\" = 'memory_events')\n          or (\"shared_memory_candidate_previews\".\"activation_representation\" = 'lcm_leaves' and \"shared_memory_candidate_previews\".\"maximum_fidelity\" in ('memory_events','lcm_leaves'))\n          or (\"shared_memory_candidate_previews\".\"activation_representation\" = 'lcm_rollups')\n          or (\"shared_memory_candidate_previews\".\"activation_representation\"::text = 'curated_assertions' and \"shared_memory_candidate_previews\".\"include_curated_memory\" = true))"
         }
       },
       "isRLSEnabled": false
@@ -27640,31 +28384,11 @@
           "primaryKey": false,
           "notNull": true
         },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "shared_memory_source_kind",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'captured_session'"
-        },
-        "source_session_id": {
-          "name": "source_session_id",
+        "source_revision_id": {
+          "name": "source_revision_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
-        },
-        "source_note_id": {
-          "name": "source_note_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_memory_event_id": {
-          "name": "source_memory_event_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "remote_replica_id": {
           "name": "remote_replica_id",
@@ -27980,6 +28704,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "shared_source_artifacts_source_revision_idx": {
+          "name": "shared_source_artifacts_source_revision_idx",
+          "columns": [
+            {
+              "expression": "source_revision_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -28055,6 +28794,19 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
+        "shared_source_artifacts_source_revision_fk": {
+          "name": "shared_source_artifacts_source_revision_fk",
+          "tableFrom": "shared_source_artifacts",
+          "tableTo": "logical_memory_source_revisions",
+          "columnsFrom": [
+            "source_revision_id",
+            "logical_memory_id",
+            "owner_principal_id"
+          ],
+          "columnsTo": ["id", "logical_memory_id", "owner_principal_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
         "shared_source_artifacts_workspace_team_fk": {
           "name": "shared_source_artifacts_workspace_team_fk",
           "tableFrom": "shared_source_artifacts",
@@ -28123,7 +28875,7 @@
         },
         "shared_source_artifacts_source_binding_check": {
           "name": "shared_source_artifacts_source_binding_check",
-          "value": "cardinality(\"shared_source_artifacts\".\"source_capabilities\") > 0\n        and \"shared_source_artifacts\".\"activation_representation\" = any(\"shared_source_artifacts\".\"source_capabilities\")\n        and ((\"shared_source_artifacts\".\"activation_representation\" = 'memory_events' and \"shared_source_artifacts\".\"maximum_fidelity\" = 'memory_events')\n          or (\"shared_source_artifacts\".\"activation_representation\" = 'lcm_leaves' and \"shared_source_artifacts\".\"maximum_fidelity\" in ('memory_events','lcm_leaves'))\n          or (\"shared_source_artifacts\".\"activation_representation\" = 'lcm_rollups')\n          or (\"shared_source_artifacts\".\"activation_representation\"::text = 'curated_assertions' and \"shared_source_artifacts\".\"include_curated_memory\" = true))\n        and ((\"shared_source_artifacts\".\"source_kind\" = 'captured_session'\n          and \"shared_source_artifacts\".\"source_session_id\" is not null\n          and \"shared_source_artifacts\".\"source_note_id\" is null\n          and \"shared_source_artifacts\".\"source_memory_event_id\" is null\n          and \"shared_source_artifacts\".\"remote_replica_id\" is not null\n          and \"shared_source_artifacts\".\"sync_relationship_id\" is not null)\n        or (\"shared_source_artifacts\".\"source_kind\" = 'personal_note'\n          and \"shared_source_artifacts\".\"source_session_id\" is null\n          and \"shared_source_artifacts\".\"source_note_id\" is not null\n          and \"shared_source_artifacts\".\"source_memory_event_id\" is not null\n          and \"shared_source_artifacts\".\"remote_replica_id\" is null\n          and \"shared_source_artifacts\".\"sync_relationship_id\" is null\n          and \"shared_source_artifacts\".\"representation\" = 'memory_events'\n          and \"shared_source_artifacts\".\"source_revision\" > 0\n          and \"shared_source_artifacts\".\"source_cursor\" = \"shared_source_artifacts\".\"source_revision\"\n          and \"shared_source_artifacts\".\"package_sequence\" = 1\n          and \"shared_source_artifacts\".\"source_capabilities\" = array['memory_events']::shared_memory_representation[]\n          and \"shared_source_artifacts\".\"activation_representation\" = 'memory_events'))"
+          "value": "cardinality(\"shared_source_artifacts\".\"source_capabilities\") > 0\n        and \"shared_source_artifacts\".\"activation_representation\" = any(\"shared_source_artifacts\".\"source_capabilities\")\n        and ((\"shared_source_artifacts\".\"activation_representation\" = 'memory_events' and \"shared_source_artifacts\".\"maximum_fidelity\" = 'memory_events')\n          or (\"shared_source_artifacts\".\"activation_representation\" = 'lcm_leaves' and \"shared_source_artifacts\".\"maximum_fidelity\" in ('memory_events','lcm_leaves'))\n          or (\"shared_source_artifacts\".\"activation_representation\" = 'lcm_rollups')\n          or (\"shared_source_artifacts\".\"activation_representation\"::text = 'curated_assertions' and \"shared_source_artifacts\".\"include_curated_memory\" = true))"
         }
       },
       "isRLSEnabled": false
@@ -28151,31 +28903,11 @@
           "primaryKey": false,
           "notNull": true
         },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "shared_memory_source_kind",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'captured_session'"
-        },
-        "source_session_id": {
-          "name": "source_session_id",
+        "source_revision_id": {
+          "name": "source_revision_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
-        },
-        "source_note_id": {
-          "name": "source_note_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_memory_event_id": {
-          "name": "source_memory_event_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "remote_replica_id": {
           "name": "remote_replica_id",
@@ -28341,6 +29073,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "shared_source_previews_source_revision_idx": {
+          "name": "shared_source_previews_source_revision_idx",
+          "columns": [
+            {
+              "expression": "source_revision_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -28389,6 +29136,19 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
+        "shared_source_previews_source_revision_fk": {
+          "name": "shared_source_previews_source_revision_fk",
+          "tableFrom": "shared_source_previews",
+          "tableTo": "logical_memory_source_revisions",
+          "columnsFrom": [
+            "source_revision_id",
+            "logical_memory_id",
+            "owner_principal_id"
+          ],
+          "columnsTo": ["id", "logical_memory_id", "owner_principal_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
         "shared_source_previews_workspace_team_fk": {
           "name": "shared_source_previews_workspace_team_fk",
           "tableFrom": "shared_source_previews",
@@ -28431,7 +29191,7 @@
         },
         "shared_source_previews_source_binding_check": {
           "name": "shared_source_previews_source_binding_check",
-          "value": "cardinality(\"shared_source_previews\".\"source_capabilities\") > 0\n        and \"shared_source_previews\".\"activation_representation\" = any(\"shared_source_previews\".\"source_capabilities\")\n        and ((\"shared_source_previews\".\"source_kind\" = 'captured_session'\n          and \"shared_source_previews\".\"source_session_id\" is not null\n          and \"shared_source_previews\".\"source_note_id\" is null\n          and \"shared_source_previews\".\"source_memory_event_id\" is null\n          and \"shared_source_previews\".\"remote_replica_id\" is not null)\n        or (\"shared_source_previews\".\"source_kind\" = 'personal_note'\n          and \"shared_source_previews\".\"source_session_id\" is null\n          and \"shared_source_previews\".\"source_note_id\" is not null\n          and \"shared_source_previews\".\"source_memory_event_id\" is not null\n          and \"shared_source_previews\".\"remote_replica_id\" is null\n          and \"shared_source_previews\".\"representation\" = 'memory_events'\n          and \"shared_source_previews\".\"source_revision\" > 0\n          and \"shared_source_previews\".\"source_capabilities\" = array['memory_events']::shared_memory_representation[]\n          and \"shared_source_previews\".\"activation_representation\" = 'memory_events'))"
+          "value": "cardinality(\"shared_source_previews\".\"source_capabilities\") > 0\n        and \"shared_source_previews\".\"activation_representation\" = any(\"shared_source_previews\".\"source_capabilities\")\n        and \"shared_source_previews\".\"source_revision\" >= 0"
         }
       },
       "isRLSEnabled": false
@@ -28922,31 +29682,11 @@
           "primaryKey": false,
           "notNull": true
         },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "shared_memory_source_kind",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'captured_session'"
-        },
-        "source_session_id": {
-          "name": "source_session_id",
+        "source_revision_id": {
+          "name": "source_revision_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
-        },
-        "source_note_id": {
-          "name": "source_note_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_memory_event_id": {
-          "name": "source_memory_event_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "remote_replica_id": {
           "name": "remote_replica_id",
@@ -29208,6 +29948,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "source_owner_consents_source_revision_idx": {
+          "name": "source_owner_consents_source_revision_idx",
+          "columns": [
+            {
+              "expression": "source_revision_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -29244,6 +29999,19 @@
           "tableTo": "shared_source_previews",
           "columnsFrom": ["preview_id"],
           "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "source_owner_consents_source_revision_fk": {
+          "name": "source_owner_consents_source_revision_fk",
+          "tableFrom": "source_owner_representation_consents",
+          "tableTo": "logical_memory_source_revisions",
+          "columnsFrom": [
+            "source_revision_id",
+            "logical_memory_id",
+            "source_owner_principal_id"
+          ],
+          "columnsTo": ["id", "logical_memory_id", "owner_principal_id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -29343,7 +30111,7 @@
         },
         "source_owner_consents_source_binding_check": {
           "name": "source_owner_consents_source_binding_check",
-          "value": "cardinality(\"source_owner_representation_consents\".\"source_capabilities\") > 0\n        and \"source_owner_representation_consents\".\"activation_representation\" = any(\"source_owner_representation_consents\".\"source_capabilities\")\n        and ((\"source_owner_representation_consents\".\"activation_representation\" = 'memory_events' and \"source_owner_representation_consents\".\"maximum_fidelity\" = 'memory_events')\n          or (\"source_owner_representation_consents\".\"activation_representation\" = 'lcm_leaves' and \"source_owner_representation_consents\".\"maximum_fidelity\" in ('memory_events','lcm_leaves'))\n          or (\"source_owner_representation_consents\".\"activation_representation\" = 'lcm_rollups')\n          or (\"source_owner_representation_consents\".\"activation_representation\"::text = 'curated_assertions' and \"source_owner_representation_consents\".\"include_curated_memory\" = true))\n        and ((\"source_owner_representation_consents\".\"source_kind\" = 'captured_session'\n          and \"source_owner_representation_consents\".\"source_session_id\" is not null\n          and \"source_owner_representation_consents\".\"source_note_id\" is null\n          and \"source_owner_representation_consents\".\"source_memory_event_id\" is null\n          and \"source_owner_representation_consents\".\"remote_replica_id\" is not null)\n        or (\"source_owner_representation_consents\".\"source_kind\" = 'personal_note'\n          and \"source_owner_representation_consents\".\"source_session_id\" is null\n          and \"source_owner_representation_consents\".\"source_note_id\" is not null\n          and \"source_owner_representation_consents\".\"source_memory_event_id\" is not null\n          and \"source_owner_representation_consents\".\"remote_replica_id\" is null\n          and \"source_owner_representation_consents\".\"maximum_fidelity\" = 'memory_events'\n          and \"source_owner_representation_consents\".\"include_curated_memory\" = false\n          and \"source_owner_representation_consents\".\"source_revision\" > 0\n          and \"source_owner_representation_consents\".\"source_capabilities\" = array['memory_events']::shared_memory_representation[]\n          and \"source_owner_representation_consents\".\"activation_representation\" = 'memory_events'))"
+          "value": "cardinality(\"source_owner_representation_consents\".\"source_capabilities\") > 0\n        and \"source_owner_representation_consents\".\"activation_representation\" = any(\"source_owner_representation_consents\".\"source_capabilities\")\n        and ((\"source_owner_representation_consents\".\"activation_representation\" = 'memory_events' and \"source_owner_representation_consents\".\"maximum_fidelity\" = 'memory_events')\n          or (\"source_owner_representation_consents\".\"activation_representation\" = 'lcm_leaves' and \"source_owner_representation_consents\".\"maximum_fidelity\" in ('memory_events','lcm_leaves'))\n          or (\"source_owner_representation_consents\".\"activation_representation\" = 'lcm_rollups')\n          or (\"source_owner_representation_consents\".\"activation_representation\"::text = 'curated_assertions' and \"source_owner_representation_consents\".\"include_curated_memory\" = true))"
         },
         "source_owner_consents_lifecycle_check": {
           "name": "source_owner_consents_lifecycle_check",
@@ -31392,7 +32160,7 @@
         "team_conversation_source_grants_share_scope_fk": {
           "name": "team_conversation_source_grants_share_scope_fk",
           "tableFrom": "team_conversation_source_grants",
-          "tableTo": "team_session_share_grants",
+          "tableTo": "team_memory_share_grants",
           "columnsFrom": ["share_grant_id", "team_id", "team_workspace_id"],
           "columnsTo": ["id", "team_id", "team_workspace_id"],
           "onDelete": "cascade",
@@ -32182,31 +32950,11 @@
           "primaryKey": false,
           "notNull": true
         },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "shared_memory_source_kind",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'captured_session'"
-        },
-        "source_session_id": {
-          "name": "source_session_id",
+        "source_revision_id": {
+          "name": "source_revision_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
-        },
-        "source_note_id": {
-          "name": "source_note_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_memory_event_id": {
-          "name": "source_memory_event_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "representation": {
           "name": "representation",
@@ -32405,6 +33153,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "team_memory_representations_source_revision_idx": {
+          "name": "team_memory_representations_source_revision_idx",
+          "columns": [
+            {
+              "expression": "source_revision_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -32432,6 +33195,15 @@
           "tableTo": "shared_source_semantic_previews",
           "columnsFrom": ["sanitized_source_preview_id"],
           "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "team_memory_representations_source_revision_fk": {
+          "name": "team_memory_representations_source_revision_fk",
+          "tableFrom": "team_memory_representations",
+          "tableTo": "logical_memory_source_revisions",
+          "columnsFrom": ["source_revision_id", "logical_memory_id"],
+          "columnsTo": ["id", "logical_memory_id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -32477,7 +33249,7 @@
         "team_memory_representations_grant_scope_fk": {
           "name": "team_memory_representations_grant_scope_fk",
           "tableFrom": "team_memory_representations",
-          "tableTo": "team_session_share_grants",
+          "tableTo": "team_memory_share_grants",
           "columnsFrom": [
             "share_grant_id",
             "team_id",
@@ -32597,10 +33369,6 @@
         "team_memory_representations_hash_check": {
           "name": "team_memory_representations_hash_check",
           "value": "length(\"team_memory_representations\".\"source_revision_hash\") = 64\n        and length(\"team_memory_representations\".\"provenance_hash\") = 64\n        and \"team_memory_representations\".\"privacy_classifier_hash\" ~ '^[0-9a-f]{64}$'\n        and \"team_memory_representations\".\"effective_privacy_policy_hash\" ~ '^[0-9a-f]{64}$'\n        and \"team_memory_representations\".\"source_manifest_hash\" ~ '^[0-9a-f]{64}$'\n        and \"team_memory_representations\".\"sanitized_content_hash\" ~ '^[0-9a-f]{64}$'"
-        },
-        "team_memory_representations_source_binding_check": {
-          "name": "team_memory_representations_source_binding_check",
-          "value": "(\"team_memory_representations\".\"source_kind\" = 'captured_session'\n          and \"team_memory_representations\".\"source_note_id\" is null\n          and \"team_memory_representations\".\"source_memory_event_id\" is null)\n        or (\"team_memory_representations\".\"source_kind\" = 'personal_note'\n          and \"team_memory_representations\".\"source_session_id\" is null\n          and \"team_memory_representations\".\"source_note_id\" is not null\n          and \"team_memory_representations\".\"source_memory_event_id\" is not null\n          and \"team_memory_representations\".\"representation\" = 'memory_events'\n            and \"team_memory_representations\".\"source_revision\" > 0)"
         },
         "team_memory_representations_lifecycle_check": {
           "name": "team_memory_representations_lifecycle_check",
@@ -33103,177 +33871,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.team_representation_policies": {
-      "name": "team_representation_policies",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "policy_id": {
-          "name": "policy_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "team_id": {
-          "name": "team_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "maximum_fidelity": {
-          "name": "maximum_fidelity",
-          "type": "shared_memory_representation",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "include_curated_memory": {
-          "name": "include_curated_memory",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "policy_hash": {
-          "name": "policy_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_by_user_id": {
-          "name": "created_by_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "effective_at": {
-          "name": "effective_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "superseded_at": {
-          "name": "superseded_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "team_representation_policies_active_unique": {
-          "name": "team_representation_policies_active_unique",
-          "columns": [
-            {
-              "expression": "team_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"team_representation_policies\".\"superseded_at\" is null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "team_representation_policies_history_idx": {
-          "name": "team_representation_policies_history_idx",
-          "columns": [
-            {
-              "expression": "team_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "version",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "team_representation_policies_team_id_teams_id_fk": {
-          "name": "team_representation_policies_team_id_teams_id_fk",
-          "tableFrom": "team_representation_policies",
-          "tableTo": "teams",
-          "columnsFrom": ["team_id"],
-          "columnsTo": ["id"],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "team_representation_policies_created_by_user_id_users_id_fk": {
-          "name": "team_representation_policies_created_by_user_id_users_id_fk",
-          "tableFrom": "team_representation_policies",
-          "tableTo": "users",
-          "columnsFrom": ["created_by_user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "team_representation_policies_version_unique": {
-          "name": "team_representation_policies_version_unique",
-          "nullsNotDistinct": false,
-          "columns": ["policy_id", "version"]
-        },
-        "team_representation_policies_scope_unique": {
-          "name": "team_representation_policies_scope_unique",
-          "nullsNotDistinct": false,
-          "columns": ["policy_id", "version", "team_id"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "team_representation_policies_version_check": {
-          "name": "team_representation_policies_version_check",
-          "value": "\"team_representation_policies\".\"version\" > 0"
-        },
-        "team_representation_policies_fidelity_check": {
-          "name": "team_representation_policies_fidelity_check",
-          "value": "\"team_representation_policies\".\"maximum_fidelity\" in ('memory_events','lcm_leaves','lcm_rollups')"
-        },
-        "team_representation_policies_hash_check": {
-          "name": "team_representation_policies_hash_check",
-          "value": "length(\"team_representation_policies\".\"policy_hash\") = 64"
-        },
-        "team_representation_policies_lifecycle_check": {
-          "name": "team_representation_policies_lifecycle_check",
-          "value": "\"team_representation_policies\".\"superseded_at\" is null or \"team_representation_policies\".\"superseded_at\" > \"team_representation_policies\".\"effective_at\""
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.team_session_share_grants": {
-      "name": "team_session_share_grants",
+    "public.team_memory_share_grants": {
+      "name": "team_memory_share_grants",
       "schema": "",
       "columns": {
         "id": {
@@ -33296,22 +33895,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "shared_memory_source_kind",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'captured_session'"
-        },
-        "source_note_id": {
-          "name": "source_note_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_memory_event_id": {
-          "name": "source_memory_event_id",
+        "source_revision_id": {
+          "name": "source_revision_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -33330,12 +33915,6 @@
         },
         "owner_principal_id": {
           "name": "owner_principal_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "session_id": {
-          "name": "session_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -33612,8 +34191,8 @@
         }
       },
       "indexes": {
-        "team_session_share_grants_destination_unique": {
-          "name": "team_session_share_grants_destination_unique",
+        "team_memory_share_grants_destination_unique": {
+          "name": "team_memory_share_grants_destination_unique",
           "columns": [
             {
               "expression": "logical_memory_id",
@@ -33629,13 +34208,13 @@
             }
           ],
           "isUnique": true,
-          "where": "\"team_session_share_grants\".\"logical_memory_id\" is not null",
+          "where": "\"team_memory_share_grants\".\"logical_memory_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
         },
-        "team_session_share_grants_workspace_active_idx": {
-          "name": "team_session_share_grants_workspace_active_idx",
+        "team_memory_share_grants_workspace_active_idx": {
+          "name": "team_memory_share_grants_workspace_active_idx",
           "columns": [
             {
               "expression": "team_workspace_id",
@@ -33651,13 +34230,13 @@
             }
           ],
           "isUnique": false,
-          "where": "\"team_session_share_grants\".\"revoked_at\" is null",
+          "where": "\"team_memory_share_grants\".\"revoked_at\" is null",
           "concurrently": false,
           "method": "btree",
           "with": {}
         },
-        "team_session_share_grants_owner_idx": {
-          "name": "team_session_share_grants_owner_idx",
+        "team_memory_share_grants_owner_idx": {
+          "name": "team_memory_share_grants_owner_idx",
           "columns": [
             {
               "expression": "owner_principal_id",
@@ -33676,111 +34255,130 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "team_memory_share_grants_source_revision_idx": {
+          "name": "team_memory_share_grants_source_revision_idx",
+          "columns": [
+            {
+              "expression": "source_revision_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
-        "team_session_share_grants_logical_memory_id_logical_memories_id_fk": {
-          "name": "team_session_share_grants_logical_memory_id_logical_memories_id_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_logical_memory_id_logical_memories_id_fk": {
+          "name": "team_memory_share_grants_logical_memory_id_logical_memories_id_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "logical_memories",
           "columnsFrom": ["logical_memory_id"],
           "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "team_session_share_grants_remote_replica_id_memory_replicas_id_fk": {
-          "name": "team_session_share_grants_remote_replica_id_memory_replicas_id_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_remote_replica_id_memory_replicas_id_fk": {
+          "name": "team_memory_share_grants_remote_replica_id_memory_replicas_id_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "memory_replicas",
           "columnsFrom": ["remote_replica_id"],
           "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "team_session_share_grants_owner_user_id_users_id_fk": {
-          "name": "team_session_share_grants_owner_user_id_users_id_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_owner_user_id_users_id_fk": {
+          "name": "team_memory_share_grants_owner_user_id_users_id_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "users",
           "columnsFrom": ["owner_user_id"],
           "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
-        "team_session_share_grants_session_id_sessions_id_fk": {
-          "name": "team_session_share_grants_session_id_sessions_id_fk",
-          "tableFrom": "team_session_share_grants",
-          "tableTo": "sessions",
-          "columnsFrom": ["session_id"],
-          "columnsTo": ["id"],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "team_session_share_grants_team_id_teams_id_fk": {
-          "name": "team_session_share_grants_team_id_teams_id_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_team_id_teams_id_fk": {
+          "name": "team_memory_share_grants_team_id_teams_id_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "teams",
           "columnsFrom": ["team_id"],
           "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "team_session_share_grants_granted_by_user_id_users_id_fk": {
-          "name": "team_session_share_grants_granted_by_user_id_users_id_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_granted_by_user_id_users_id_fk": {
+          "name": "team_memory_share_grants_granted_by_user_id_users_id_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "users",
           "columnsFrom": ["granted_by_user_id"],
           "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
-        "team_session_share_grants_revoked_by_user_id_users_id_fk": {
-          "name": "team_session_share_grants_revoked_by_user_id_users_id_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_revoked_by_user_id_users_id_fk": {
+          "name": "team_memory_share_grants_revoked_by_user_id_users_id_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "users",
           "columnsFrom": ["revoked_by_user_id"],
           "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
-        "team_session_share_grants_personal_deleted_by_user_id_users_id_fk": {
-          "name": "team_session_share_grants_personal_deleted_by_user_id_users_id_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_personal_deleted_by_user_id_users_id_fk": {
+          "name": "team_memory_share_grants_personal_deleted_by_user_id_users_id_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "users",
           "columnsFrom": ["personal_deleted_by_user_id"],
           "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
-        "team_session_share_grants_active_retention_decision_id_retention_decisions_id_fk": {
-          "name": "team_session_share_grants_active_retention_decision_id_retention_decisions_id_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_active_retention_decision_id_retention_decisions_id_fk": {
+          "name": "team_memory_share_grants_active_retention_decision_id_retention_decisions_id_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "retention_decisions",
           "columnsFrom": ["active_retention_decision_id"],
           "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "team_session_share_grants_active_purge_job_id_purge_jobs_id_fk": {
-          "name": "team_session_share_grants_active_purge_job_id_purge_jobs_id_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_active_purge_job_id_purge_jobs_id_fk": {
+          "name": "team_memory_share_grants_active_purge_job_id_purge_jobs_id_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "purge_jobs",
           "columnsFrom": ["active_purge_job_id"],
           "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "team_session_share_grants_workspace_team_fk": {
-          "name": "team_session_share_grants_workspace_team_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_source_revision_fk": {
+          "name": "team_memory_share_grants_source_revision_fk",
+          "tableFrom": "team_memory_share_grants",
+          "tableTo": "logical_memory_source_revisions",
+          "columnsFrom": [
+            "source_revision_id",
+            "logical_memory_id",
+            "owner_principal_id"
+          ],
+          "columnsTo": ["id", "logical_memory_id", "owner_principal_id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "team_memory_share_grants_workspace_team_fk": {
+          "name": "team_memory_share_grants_workspace_team_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "team_workspaces",
           "columnsFrom": ["team_workspace_id", "team_id"],
           "columnsTo": ["id", "team_id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "team_session_share_grants_consent_scope_fk": {
-          "name": "team_session_share_grants_consent_scope_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_consent_scope_fk": {
+          "name": "team_memory_share_grants_consent_scope_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "source_owner_representation_consents",
           "columnsFrom": [
             "consent_id",
@@ -33801,9 +34399,9 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "team_session_share_grants_owner_policy_fk": {
-          "name": "team_session_share_grants_owner_policy_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_owner_policy_fk": {
+          "name": "team_memory_share_grants_owner_policy_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "source_owner_representation_policies",
           "columnsFrom": [
             "source_owner_policy_id",
@@ -33820,18 +34418,18 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "team_session_share_grants_team_policy_fk": {
-          "name": "team_session_share_grants_team_policy_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_team_policy_fk": {
+          "name": "team_memory_share_grants_team_policy_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "team_representation_policies",
           "columnsFrom": ["team_policy_id", "team_policy_version", "team_id"],
           "columnsTo": ["policy_id", "version", "team_id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "team_session_share_grants_workspace_policy_fk": {
-          "name": "team_session_share_grants_workspace_policy_fk",
-          "tableFrom": "team_session_share_grants",
+        "team_memory_share_grants_workspace_policy_fk": {
+          "name": "team_memory_share_grants_workspace_policy_fk",
+          "tableFrom": "team_memory_share_grants",
           "tableTo": "workspace_representation_policies",
           "columnsFrom": [
             "workspace_policy_id",
@@ -33846,43 +34444,212 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "team_session_share_grants_logical_id_unique": {
-          "name": "team_session_share_grants_logical_id_unique",
+        "team_memory_share_grants_logical_id_unique": {
+          "name": "team_memory_share_grants_logical_id_unique",
           "nullsNotDistinct": false,
           "columns": ["logical_grant_id"]
         },
-        "team_session_share_grants_scope_unique": {
-          "name": "team_session_share_grants_scope_unique",
+        "team_memory_share_grants_scope_unique": {
+          "name": "team_memory_share_grants_scope_unique",
           "nullsNotDistinct": false,
           "columns": ["id", "team_id", "team_workspace_id", "logical_memory_id"]
         },
-        "team_session_share_grants_source_scope_unique": {
-          "name": "team_session_share_grants_source_scope_unique",
+        "team_memory_share_grants_source_scope_unique": {
+          "name": "team_memory_share_grants_source_scope_unique",
           "nullsNotDistinct": false,
           "columns": ["id", "team_id", "team_workspace_id"]
         }
       },
       "policies": {},
       "checkConstraints": {
-        "team_session_share_grants_identity_check": {
-          "name": "team_session_share_grants_identity_check",
-          "value": "\"team_session_share_grants\".\"logical_memory_id\" is not null\n        and \"team_session_share_grants\".\"owner_principal_id\" is not null\n        and \"team_session_share_grants\".\"consent_id\" is not null\n        and \"team_session_share_grants\".\"source_owner_policy_id\" is not null\n        and \"team_session_share_grants\".\"source_owner_policy_version\" > 0\n        and \"team_session_share_grants\".\"team_policy_id\" is not null\n        and \"team_session_share_grants\".\"team_policy_version\" > 0\n        and \"team_session_share_grants\".\"workspace_policy_id\" is not null\n        and \"team_session_share_grants\".\"workspace_policy_version\" > 0\n        and \"team_session_share_grants\".\"creator_authority\" is not null\n        and length(trim(\"team_session_share_grants\".\"creator_authority\")) > 0\n        and cardinality(\"team_session_share_grants\".\"source_capabilities\") > 0\n        and \"team_session_share_grants\".\"activation_representation\" = any(\"team_session_share_grants\".\"source_capabilities\")\n        and ((\"team_session_share_grants\".\"source_kind\" = 'captured_session'\n            and \"team_session_share_grants\".\"session_id\" is not null\n            and \"team_session_share_grants\".\"source_note_id\" is null\n            and \"team_session_share_grants\".\"source_memory_event_id\" is null\n            and \"team_session_share_grants\".\"remote_replica_id\" is not null)\n          or (\"team_session_share_grants\".\"source_kind\" = 'personal_note'\n            and \"team_session_share_grants\".\"session_id\" is null\n            and \"team_session_share_grants\".\"source_note_id\" is not null\n            and \"team_session_share_grants\".\"source_memory_event_id\" is not null\n            and \"team_session_share_grants\".\"remote_replica_id\" is null\n            and \"team_session_share_grants\".\"source_capabilities\" = array['memory_events']::shared_memory_representation[]\n            and \"team_session_share_grants\".\"activation_representation\" = 'memory_events'))"
+        "team_memory_share_grants_identity_check": {
+          "name": "team_memory_share_grants_identity_check",
+          "value": "\"team_memory_share_grants\".\"logical_memory_id\" is not null\n        and \"team_memory_share_grants\".\"owner_principal_id\" is not null\n        and \"team_memory_share_grants\".\"source_revision_id\" is not null\n        and \"team_memory_share_grants\".\"consent_id\" is not null\n        and \"team_memory_share_grants\".\"source_owner_policy_id\" is not null\n        and \"team_memory_share_grants\".\"source_owner_policy_version\" > 0\n        and \"team_memory_share_grants\".\"team_policy_id\" is not null\n        and \"team_memory_share_grants\".\"team_policy_version\" > 0\n        and \"team_memory_share_grants\".\"workspace_policy_id\" is not null\n        and \"team_memory_share_grants\".\"workspace_policy_version\" > 0\n        and \"team_memory_share_grants\".\"creator_authority\" is not null\n        and length(trim(\"team_memory_share_grants\".\"creator_authority\")) > 0\n        and cardinality(\"team_memory_share_grants\".\"source_capabilities\") > 0\n        and \"team_memory_share_grants\".\"activation_representation\" = any(\"team_memory_share_grants\".\"source_capabilities\")"
         },
-        "team_session_share_grants_fidelity_check": {
-          "name": "team_session_share_grants_fidelity_check",
-          "value": "\"team_session_share_grants\".\"maximum_fidelity\" in ('memory_events','lcm_leaves','lcm_rollups')\n        and \"team_session_share_grants\".\"include_curated_memory\" is not null\n        and ((\"team_session_share_grants\".\"activation_representation\" = 'memory_events' and \"team_session_share_grants\".\"maximum_fidelity\" = 'memory_events')\n          or (\"team_session_share_grants\".\"activation_representation\" = 'lcm_leaves' and \"team_session_share_grants\".\"maximum_fidelity\" in ('memory_events','lcm_leaves'))\n          or (\"team_session_share_grants\".\"activation_representation\" = 'lcm_rollups')\n          or (\"team_session_share_grants\".\"activation_representation\"::text = 'curated_assertions' and \"team_session_share_grants\".\"include_curated_memory\" = true))\n        and \"team_session_share_grants\".\"fidelity_policy_revision\" > 0\n        and \"team_session_share_grants\".\"content_policy_version\" > 0\n        and \"team_session_share_grants\".\"classifier_version\" > 0\n        and \"team_session_share_grants\".\"source_revision\" >= 0\n        and (\"team_session_share_grants\".\"source_kind\" <> 'personal_note'\n          or (\"team_session_share_grants\".\"maximum_fidelity\" = 'memory_events'\n            and \"team_session_share_grants\".\"include_curated_memory\" = false\n          and \"team_session_share_grants\".\"source_revision\" > 0))"
+        "team_memory_share_grants_fidelity_check": {
+          "name": "team_memory_share_grants_fidelity_check",
+          "value": "\"team_memory_share_grants\".\"maximum_fidelity\" in ('memory_events','lcm_leaves','lcm_rollups')\n        and \"team_memory_share_grants\".\"include_curated_memory\" is not null\n        and ((\"team_memory_share_grants\".\"activation_representation\" = 'memory_events' and \"team_memory_share_grants\".\"maximum_fidelity\" = 'memory_events')\n          or (\"team_memory_share_grants\".\"activation_representation\" = 'lcm_leaves' and \"team_memory_share_grants\".\"maximum_fidelity\" in ('memory_events','lcm_leaves'))\n          or (\"team_memory_share_grants\".\"activation_representation\" = 'lcm_rollups')\n          or (\"team_memory_share_grants\".\"activation_representation\"::text = 'curated_assertions' and \"team_memory_share_grants\".\"include_curated_memory\" = true))\n        and \"team_memory_share_grants\".\"fidelity_policy_revision\" > 0\n        and \"team_memory_share_grants\".\"content_policy_version\" > 0\n        and \"team_memory_share_grants\".\"classifier_version\" > 0\n        and \"team_memory_share_grants\".\"source_revision\" >= 0"
         },
-        "team_session_share_grants_version_check": {
-          "name": "team_session_share_grants_version_check",
-          "value": "\"team_session_share_grants\".\"grant_version\" > 0 and \"team_session_share_grants\".\"revocation_epoch\" >= 0"
+        "team_memory_share_grants_version_check": {
+          "name": "team_memory_share_grants_version_check",
+          "value": "\"team_memory_share_grants\".\"grant_version\" > 0 and \"team_memory_share_grants\".\"revocation_epoch\" >= 0"
         },
-        "team_session_share_grants_retention_check": {
-          "name": "team_session_share_grants_retention_check",
-          "value": "(\"team_session_share_grants\".\"retention_policy_id\" is null and \"team_session_share_grants\".\"retention_policy_version\" is null)\n        or (\"team_session_share_grants\".\"retention_policy_id\" is not null and \"team_session_share_grants\".\"retention_policy_version\" > 0)"
+        "team_memory_share_grants_retention_check": {
+          "name": "team_memory_share_grants_retention_check",
+          "value": "(\"team_memory_share_grants\".\"retention_policy_id\" is null and \"team_memory_share_grants\".\"retention_policy_version\" is null)\n        or (\"team_memory_share_grants\".\"retention_policy_id\" is not null and \"team_memory_share_grants\".\"retention_policy_version\" > 0)"
         },
-        "team_session_share_grants_active_retention_check": {
-          "name": "team_session_share_grants_active_retention_check",
-          "value": "(\n        \"team_session_share_grants\".\"active_retention_decision_id\" is null\n        and \"team_session_share_grants\".\"active_purge_job_id\" is null\n      ) or (\n        \"team_session_share_grants\".\"active_retention_decision_id\" is not null\n        and \"team_session_share_grants\".\"active_purge_job_id\" is not null\n        and \"team_session_share_grants\".\"retention_policy_id\" is not null\n        and \"team_session_share_grants\".\"retention_policy_version\" > 0\n        and \"team_session_share_grants\".\"retention_triggered_at\" is not null\n        and \"team_session_share_grants\".\"retain_until\" is not null\n      )"
+        "team_memory_share_grants_active_retention_check": {
+          "name": "team_memory_share_grants_active_retention_check",
+          "value": "(\n        \"team_memory_share_grants\".\"active_retention_decision_id\" is null\n        and \"team_memory_share_grants\".\"active_purge_job_id\" is null\n      ) or (\n        \"team_memory_share_grants\".\"active_retention_decision_id\" is not null\n        and \"team_memory_share_grants\".\"active_purge_job_id\" is not null\n        and \"team_memory_share_grants\".\"retention_policy_id\" is not null\n        and \"team_memory_share_grants\".\"retention_policy_version\" > 0\n        and \"team_memory_share_grants\".\"retention_triggered_at\" is not null\n        and \"team_memory_share_grants\".\"retain_until\" is not null\n      )"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.team_representation_policies": {
+      "name": "team_representation_policies",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "policy_id": {
+          "name": "policy_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "maximum_fidelity": {
+          "name": "maximum_fidelity",
+          "type": "shared_memory_representation",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "include_curated_memory": {
+          "name": "include_curated_memory",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "policy_hash": {
+          "name": "policy_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "effective_at": {
+          "name": "effective_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "superseded_at": {
+          "name": "superseded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "team_representation_policies_active_unique": {
+          "name": "team_representation_policies_active_unique",
+          "columns": [
+            {
+              "expression": "team_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"team_representation_policies\".\"superseded_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "team_representation_policies_history_idx": {
+          "name": "team_representation_policies_history_idx",
+          "columns": [
+            {
+              "expression": "team_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "version",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "team_representation_policies_team_id_teams_id_fk": {
+          "name": "team_representation_policies_team_id_teams_id_fk",
+          "tableFrom": "team_representation_policies",
+          "tableTo": "teams",
+          "columnsFrom": ["team_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "team_representation_policies_created_by_user_id_users_id_fk": {
+          "name": "team_representation_policies_created_by_user_id_users_id_fk",
+          "tableFrom": "team_representation_policies",
+          "tableTo": "users",
+          "columnsFrom": ["created_by_user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "team_representation_policies_version_unique": {
+          "name": "team_representation_policies_version_unique",
+          "nullsNotDistinct": false,
+          "columns": ["policy_id", "version"]
+        },
+        "team_representation_policies_scope_unique": {
+          "name": "team_representation_policies_scope_unique",
+          "nullsNotDistinct": false,
+          "columns": ["policy_id", "version", "team_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "team_representation_policies_version_check": {
+          "name": "team_representation_policies_version_check",
+          "value": "\"team_representation_policies\".\"version\" > 0"
+        },
+        "team_representation_policies_fidelity_check": {
+          "name": "team_representation_policies_fidelity_check",
+          "value": "\"team_representation_policies\".\"maximum_fidelity\" in ('memory_events','lcm_leaves','lcm_rollups')"
+        },
+        "team_representation_policies_hash_check": {
+          "name": "team_representation_policies_hash_check",
+          "value": "length(\"team_representation_policies\".\"policy_hash\") = 64"
+        },
+        "team_representation_policies_lifecycle_check": {
+          "name": "team_representation_policies_lifecycle_check",
+          "value": "\"team_representation_policies\".\"superseded_at\" is null or \"team_representation_policies\".\"superseded_at\" > \"team_representation_policies\".\"effective_at\""
         }
       },
       "isRLSEnabled": false

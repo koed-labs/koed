@@ -3,11 +3,15 @@ import {
   PERSONAL_DESKTOP_OLDER_EVENT_LIMIT,
   type PersonalDesktopApi,
   type PersonalDesktopConversationEvent,
-  type PersonalDesktopProject,
   type PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
 
 import { mergeConversationEvents } from "../../desktop-conversation.js";
+import {
+  mergeProjectSources,
+  type DesktopProject,
+  type DesktopProjectMetadata
+} from "../../project-memory-ui.js";
 
 export const personalMemoryCacheLimit = 32;
 export const personalMemoryCacheRetentionMs = 15 * 60 * 1000;
@@ -30,7 +34,7 @@ export type PersonalMemorySnapshot = {
   error: string | null;
   loading: boolean;
   projectOrder: string[];
-  projectsById: ReadonlyMap<string, PersonalDesktopProject>;
+  projectsById: ReadonlyMap<string, DesktopProject>;
   revision: number;
   threadsByKey: ReadonlyMap<string, PersonalDesktopProjectThread>;
 };
@@ -124,9 +128,16 @@ export class PersonalMemoryStore {
       this.#replace({ ...this.#snapshot, loading: true, error: null });
     }
     try {
-      const projects = await this.#api.listProjects();
+      const [graphProjects, metadataProjects] = await Promise.all([
+        this.#api.listProjects(),
+        (
+          this.#api.listProjectMetadata?.() ??
+          Promise.resolve<DesktopProjectMetadata[]>([])
+        ).catch(() => [])
+      ]);
+      const projects = mergeProjectSources(graphProjects, metadataProjects);
       if (request !== this.#projectRequest) return this.#snapshot;
-      const projectsById = new Map<string, PersonalDesktopProject>();
+      const projectsById = new Map<string, DesktopProject>();
       const threadsByKey = new Map<string, PersonalDesktopProjectThread>();
       for (const project of projects) {
         const previous = this.#snapshot.projectsById.get(project.id);

@@ -39,7 +39,8 @@ const ids = {
   source: "00000000-0000-4000-8000-000000000013",
   deployment: "00000000-0000-4000-8000-000000000014",
   replica: "00000000-0000-4000-8000-000000000015",
-  relationship: "00000000-0000-4000-8000-000000000016"
+  relationship: "00000000-0000-4000-8000-000000000016",
+  sourceRevision: "00000000-0000-4000-8000-000000000017"
 } as const;
 
 const iso = "2026-08-13T00:00:00.000Z";
@@ -131,6 +132,12 @@ const loadedFor = (
 ): SharedMemoryDecryptedSemanticTarget => ({
   target,
   preview: {
+    source: {
+      kind: "captured_session",
+      sessionId: ids.source,
+      logicalMemoryId: ids.logicalMemory
+    },
+    sourceRevisionId: ids.sourceRevision,
     sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
     activationRepresentation: "memory_events",
     mode: "continuous",

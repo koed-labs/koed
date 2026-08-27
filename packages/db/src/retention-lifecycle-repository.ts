@@ -1929,7 +1929,7 @@ export const lockShareGrantRetentionScopeWithClient = async (
     }
   >(
     `select team_id, team_workspace_id
-       from team_session_share_grants
+       from team_memory_share_grants
       where id = $1`,
     [shareGrantId]
   );
@@ -1966,7 +1966,7 @@ export const scheduleShareGrantRevocationRetentionWithClient = async (
     }
   >(
     `select id, team_id, team_workspace_id, logical_memory_id, lifecycle
-       from team_session_share_grants
+       from team_memory_share_grants
       where id = $1
       for update`,
     [input.shareGrantId]
@@ -2164,7 +2164,7 @@ export const scheduleShareGrantRevocationRetentionWithClient = async (
   }
 
   await client.query(
-    `update team_session_share_grants
+    `update team_memory_share_grants
         set retention_policy_id = $2, retention_policy_version = $3,
             retention_triggered_at = $4, retain_until = $5,
             active_retention_decision_id = $6, active_purge_job_id = $7,
@@ -2206,7 +2206,7 @@ export const scheduleShareGrantRevocationRetentionWithClient = async (
     `insert into audit_events (
        actor_user_id, action, target_table, target_id, metadata
      ) values ($1, 'share_grant.retention_started',
-       'team_session_share_grants', $2, $3::jsonb)`,
+       'team_memory_share_grants', $2, $3::jsonb)`,
     [
       input.actorUserId,
       input.shareGrantId,
@@ -2250,7 +2250,7 @@ export const cancelShareGrantRevocationRetentionWithClient = async (
     }
   >(
     `select retention_triggered_at, active_purge_job_id
-       from team_session_share_grants
+       from team_memory_share_grants
       where id = $1
       for update`,
     [input.shareGrantId]
@@ -2311,7 +2311,7 @@ export const cancelShareGrantRevocationRetentionWithClient = async (
   );
   if (!canceled.rowCount) return "purge_started";
   await client.query(
-    `update team_session_share_grants
+    `update team_memory_share_grants
         set retention_policy_id = null, retention_policy_version = null,
             retention_triggered_at = null, retain_until = null,
             active_retention_decision_id = null, active_purge_job_id = null,
@@ -2339,7 +2339,7 @@ export const cancelShareGrantRevocationRetentionWithClient = async (
     `insert into audit_events (
        actor_user_id, action, target_table, target_id, metadata
      ) values ($1, 'share_grant.retention_canceled',
-       'team_session_share_grants', $2, $3::jsonb)`,
+       'team_memory_share_grants', $2, $3::jsonb)`,
     [
       input.actorUserId,
       input.shareGrantId,
@@ -2570,7 +2570,7 @@ const cleanupTeamSearchIndex = async (
     [teamId, observedAt]
   );
   const shareGrants = await client.query(
-    `update team_session_share_grants
+    `update team_memory_share_grants
           set lifecycle = 'purged',
               tombstoned_at = coalesce(tombstoned_at, $2),
               purge_completed_at = $2,
@@ -2690,16 +2690,17 @@ const loadOwnerPrivateCleanupTarget = async (
       local_session_id: string;
     }
   >(
-    `select id, logical_memory_id, owner_user_id, owner_principal_id,
-            local_session_id
-       from memory_replicas
-      where id = $1 and logical_memory_id = $2
-        and replica_role = 'target'
-        and encryption_scope = 'owner_private_replica'
-        and owner_user_id is not null
-        and owner_principal_id is not null
-        and local_session_id is not null
-      for update`,
+    `select replica.id,replica.logical_memory_id,replica.owner_user_id,
+            replica.owner_principal_id,local_memory.local_session_id
+       from memory_replicas replica
+       join local_captured_session_logical_memories local_memory
+         on local_memory.logical_memory_id=replica.logical_memory_id
+      where replica.id = $1 and replica.logical_memory_id = $2
+        and replica.replica_role = 'target'
+        and replica.encryption_scope = 'owner_private_replica'
+        and replica.owner_user_id is not null
+        and replica.owner_principal_id is not null
+      for update of replica,local_memory`,
     [ownerPrivateReplicaId, logicalMemoryId]
   );
   const row = result.rows[0];
@@ -2818,12 +2819,14 @@ const cleanupOwnerPrivateOutboxReplay = async (
 
 const ownerPrivatePayloadDeleteSql = `with
   target as materialized (
-    select id, logical_memory_id, owner_user_id, owner_principal_id,
-           local_session_id
-      from memory_replicas
-     where id = $1 and logical_memory_id = $2
-       and replica_role = 'target'
-       and encryption_scope = 'owner_private_replica'
+    select replica.id,replica.logical_memory_id,replica.owner_user_id,
+           replica.owner_principal_id,local_memory.local_session_id
+      from memory_replicas replica
+      join local_captured_session_logical_memories local_memory
+        on local_memory.logical_memory_id=replica.logical_memory_id
+     where replica.id = $1 and replica.logical_memory_id = $2
+       and replica.replica_role = 'target'
+       and replica.encryption_scope = 'owner_private_replica'
   ),
   target_relationships as materialized (
     select id from cross_identity_sync_relationships
@@ -3072,7 +3075,7 @@ const cleanupOwnerPrivateDatabaseRows = async (
 
   const references = await client.query<QueryResultRow>(
     `select (
-       exists(select 1 from team_session_share_grants where remote_replica_id = $1)
+       exists(select 1 from team_memory_share_grants where remote_replica_id = $1)
        or exists(select 1 from shared_source_artifacts where remote_replica_id = $1)
        or exists(select 1 from shared_source_previews where remote_replica_id = $1)
        or exists(select 1 from source_owner_representation_consents where remote_replica_id = $1)
@@ -3127,7 +3130,7 @@ const cleanupOwnerPrivateDatabaseRows = async (
                and replica.lifecycle <> 'purged'
           )
           and not exists (
-            select 1 from team_session_share_grants grant_row
+            select 1 from team_memory_share_grants grant_row
              where grant_row.logical_memory_id = logical.id
           )`,
       [target.logicalMemoryId, observedAt]
@@ -3275,7 +3278,7 @@ const markShareGrantPurgePending = async (
   observedAt: Date
 ): Promise<void> => {
   const grant = await client.query(
-    `update team_session_share_grants
+    `update team_memory_share_grants
         set lifecycle = 'purge_pending',
             tombstoned_at = coalesce(tombstoned_at, $2),
             updated_at = $2
@@ -3285,7 +3288,7 @@ const markShareGrantPurgePending = async (
   );
   if (!grant.rowCount) {
     const current = await client.query<{ lifecycle: string }>(
-      "select lifecycle from team_session_share_grants where id = $1",
+      "select lifecycle from team_memory_share_grants where id = $1",
       [target.shareGrantId]
     );
     if (current.rows[0]?.lifecycle !== "purge_pending") {
@@ -3599,7 +3602,7 @@ const cleanupShareGrantDatabaseRows = async (
     [target.shareGrantId, target.teamId, target.teamWorkspaceId]
   );
   const grants = await client.query(
-    `update team_session_share_grants
+    `update team_memory_share_grants
         set lifecycle = 'purged',
             active_retention_decision_id = null, active_purge_job_id = null,
             tombstoned_at = coalesce(tombstoned_at, $4),
@@ -4915,7 +4918,7 @@ export const createRetentionLifecycleRepository = (
           [input.teamId, triggeredAt, retainUntil]
         );
         await client.query(
-          `update team_session_share_grants
+          `update team_memory_share_grants
               set lifecycle = 'purge_pending',
                   tombstoned_at = coalesce(tombstoned_at, $2),
                   retention_policy_id = $3,
@@ -5322,7 +5325,7 @@ export const createRetentionLifecycleRepository = (
 
         const teamReferences = await client.query<QueryResultRow>(
           `select (
-             exists(select 1 from team_session_share_grants where remote_replica_id = $1)
+             exists(select 1 from team_memory_share_grants where remote_replica_id = $1)
              or exists(select 1 from shared_source_artifacts where remote_replica_id = $1)
              or exists(select 1 from shared_source_previews where remote_replica_id = $1)
              or exists(select 1 from source_owner_representation_consents where remote_replica_id = $1)

@@ -206,7 +206,7 @@ const remoteSharedGrant = {
   activationRepresentation: "memory_events" as const,
   id: ids.sharedGrant,
   logicalMemoryId: ids.sharedLogicalMemory,
-  ownerUserId: ids.participant,
+  ownerDisplayName: "Bob",
   maximumFidelity: "memory_events",
   includeCuratedMemory: false,
   title: "Shared Memory",

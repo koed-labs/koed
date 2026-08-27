@@ -200,22 +200,6 @@ export const registerCrossIdentitySyncRoutes = (
       }
       const repository = repo();
       const localDeployment = target.localDeployment;
-      const remoteDeployment = await repository.upsertRemoteSyncDeployment({
-        protocolDeploymentId: input.source_deployment_id,
-        profile: "local_personal"
-      });
-      const remoteUser = await repository.upsertExternalSyncUserIdentity({
-        deploymentIdentityId: remoteDeployment.id,
-        externalSubjectId: input.source_user_id
-      });
-      await repository.linkExternalSyncUser(
-        { userId: auth.user.id },
-        {
-          externalUserIdentityId: remoteUser.id,
-          proofKind: "device_credential_lineage",
-          proofReference: auth.credential.lineageId
-        }
-      );
       const localReplicaId = crossIdentitySyncDeterministicUuid({
         protocol: "koed.captured-session-sync/v1",
         relationshipId: input.relationship_id,
@@ -233,8 +217,8 @@ export const registerCrossIdentitySyncRoutes = (
           logicalMemoryId: input.logical_memory_id,
           originSessionId: input.origin_session_id,
           localDeploymentIdentityId: localDeployment.id,
-          remoteDeploymentIdentityId: remoteDeployment.id,
-          remoteUserIdentityId: remoteUser.id,
+          sourceDeploymentProtocolId: input.source_deployment_id,
+          sourceUserId: input.source_user_id,
           remoteReplicaId: input.source_replica_id,
           localReplicaId,
           idempotencyKey: input.idempotency_key,

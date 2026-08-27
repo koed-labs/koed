@@ -282,22 +282,31 @@ const validateOperationBinding = (input: HighRiskOperationBinding): void => {
 const validateCredentialOperationFamily = (
   input: CreateHighRiskActionGrantInput
 ): void => {
-  const expected =
-    input.operationFamily === "admin"
-      ? "action_grant"
-      : input.operationFamily === "share_grant_management"
-        ? "share_grant_management"
-        : input.operationFamily === "source_download"
-          ? "sync"
-          : input.operationFamily === "managed_execution"
-            ? "managed_execution"
-            : null;
+  const expected = credentialOperationFamily(input.operationFamily);
   if (input.credentialOperationFamily !== expected) {
     throw new Error(
       "High-risk credential operation family does not match the protected operation"
     );
   }
 };
+
+const credentialOperationFamily = (
+  operationFamily: string
+):
+  | "action_grant"
+  | "share_grant_management"
+  | "sync"
+  | "managed_execution"
+  | null =>
+  operationFamily === "admin"
+    ? "action_grant"
+    : operationFamily === "share_grant_management"
+      ? "share_grant_management"
+      : operationFamily === "source_download"
+        ? "sync"
+        : operationFamily === "managed_execution"
+          ? "managed_execution"
+          : null;
 
 const operationAuditMetadata = (
   input: Pick<
@@ -333,14 +342,20 @@ const confirmationAuditMetadata = (
       action: row.action,
       targetId: row.targetId
     },
-    { approvalTier: row.approvalTier, ...extra }
+    {
+      publicReferenceId: row.clientRequestId,
+      approvalTier: row.approvalTier,
+      ...extra
+    }
   );
 
 const grantAuditMetadata = (
   row: ActionGrantRow,
+  publicReferenceId: string,
   extra: Record<string, unknown> = {}
 ) =>
   operationAuditMetadata(row, {
+    publicReferenceId,
     confirmationId: row.confirmationId,
     ...extra
   });
@@ -739,7 +754,7 @@ export const createHighRiskActionRepository = (
       action: "high_risk.action_grant.issued",
       targetTable: "high_risk_device_action_grants",
       targetId: grant.id,
-      metadata: grantAuditMetadata(grant, {
+      metadata: grantAuditMetadata(grant, input.confirmation.clientRequestId, {
         approvalTier: input.confirmation.approvalTier
       })
     });
@@ -1258,6 +1273,35 @@ export const createHighRiskActionRepository = (
           await client.query("set transaction isolation level repeatable read");
         }
         const tx = createDb(client);
+        const requiredCredentialFamily = credentialOperationFamily(
+          input.operationFamily
+        );
+        if (!requiredCredentialFamily) {
+          await client.query("rollback");
+          return null;
+        }
+        const [activeCredential] = await tx
+          .select({ id: deviceCredentials.id })
+          .from(deviceCredentials)
+          .where(
+            and(
+              eq(deviceCredentials.id, input.deviceCredentialId),
+              eq(deviceCredentials.ownerUserId, input.ownerUserId),
+              eq(deviceCredentials.upstreamBackendId, input.upstreamBackendId),
+              sql`${requiredCredentialFamily} = any(${deviceCredentials.operationFamilies})`,
+              isNull(deviceCredentials.revokedAt),
+              or(
+                isNull(deviceCredentials.expiresAt),
+                gt(deviceCredentials.expiresAt, sql`now()`)
+              )
+            )
+          )
+          .limit(1)
+          .for("update");
+        if (!activeCredential) {
+          await client.query("rollback");
+          return null;
+        }
         const [row] = await tx
           .select({
             confirmation: highRiskBrowserConfirmations,
@@ -1389,7 +1433,7 @@ export const createHighRiskActionRepository = (
           action: "high_risk.action_grant.consumed",
           targetTable: "high_risk_device_action_grants",
           targetId: grant.id,
-          metadata: grantAuditMetadata(grant)
+          metadata: grantAuditMetadata(grant, confirmation.clientRequestId)
         });
         await notifyActionGrant(client, confirmation.clientRequestId);
 
@@ -1473,14 +1517,48 @@ export const createHighRiskActionRepository = (
           )
           .returning();
 
+        const publicReferences =
+          rows.length === 0
+            ? new Map<string, string>()
+            : new Map(
+                (
+                  await tx
+                    .select({
+                      grantId: highRiskDeviceActionGrants.id,
+                      publicReferenceId:
+                        highRiskBrowserConfirmations.clientRequestId
+                    })
+                    .from(highRiskDeviceActionGrants)
+                    .innerJoin(
+                      highRiskBrowserConfirmations,
+                      eq(
+                        highRiskBrowserConfirmations.id,
+                        highRiskDeviceActionGrants.confirmationId
+                      )
+                    )
+                    .where(
+                      inArray(
+                        highRiskDeviceActionGrants.id,
+                        rows.map((grant) => grant.id)
+                      )
+                    )
+                ).map((row) => [row.grantId, row.publicReferenceId])
+              );
+
         for (const grant of rows) {
+          const publicReferenceId = publicReferences.get(grant.id);
+          if (!publicReferenceId) {
+            throw new Error(
+              "Expired Action Grant is missing its public reference"
+            );
+          }
           await insertAudit(tx, {
             ownerUserId: grant.ownerUserId,
             teamId: grant.teamId,
             action: "high_risk.action_grant.expired",
             targetTable: "high_risk_device_action_grants",
             targetId: grant.id,
-            metadata: grantAuditMetadata(grant)
+            metadata: grantAuditMetadata(grant, publicReferenceId)
           });
         }
         return rows.length;
