@@ -274,7 +274,10 @@ const fixture = async (input?: {
         )
       )
     },
-    privacyService: { classify },
+    privacyService: {
+      capabilities: vi.fn(async () => ({}) as never),
+      classify
+    },
     classificationEncryptionProvider: provider,
     teamEncryptionProvider: provider,
     koedHome,

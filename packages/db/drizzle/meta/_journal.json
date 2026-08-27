@@ -253,6 +253,13 @@
       "when": 1787558270742,
       "tag": "0035_concerned_the_twelve",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1787827076005,
+      "tag": "0036_gifted_leader",
+      "breakpoints": true
     }
   ]
 }

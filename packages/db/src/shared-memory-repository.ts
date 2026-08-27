@@ -10,6 +10,7 @@ import {
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest,
   logicalMemorySourceRevisionIdentity,
+  privacyClassificationResultManifestHash,
   sharedMemoryGrantScopedSourceId,
   sharedMemorySourceCanReplace,
   sharedMemorySourceRefSchema,
@@ -23,11 +24,14 @@ import {
   extractSharedMemorySemanticClassificationFields,
   sharedMemoryRepresentations,
   SharedMemoryConflictError,
+  SharedMemorySemanticResourceLimitError,
   SharedMemorySourceItemRejectedError,
   teamSemanticEmbeddingGeneration,
   validateSharedMemoryCanonicalSourceItem,
   validateSharedMemorySemanticSanitizedReconstruction,
   SHARED_MEMORY_AUTHORITY_ACTION,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS,
   SHARED_SOURCE_ARTIFACT_SCHEMA_VERSION,
   SHARED_SOURCE_PREVIEW_SCHEMA_VERSION,
   type SharedSourceArtifactReference,
@@ -72,6 +76,7 @@ import {
   lockShareGrantRetentionScopeWithClient,
   scheduleShareGrantRevocationRetentionWithClient
 } from "./retention-lifecycle-repository.js";
+
 import {
   resolveMonotonicPrivacyPolicySet,
   type PrivacyContentPolicyRecord
@@ -81,7 +86,12 @@ import {
   type PendingShareSourceReadinessDecision
 } from "./pending-share-processing-workflow.js";
 
+const SEMANTIC_PRIVACY_FINALIZATION_ADVISORY_LOCK = [
+  1_263_485_252, 1_179_802_737
+] as const;
+
 export const SHARED_MEMORY_AUTHORITY = SHARED_MEMORY_AUTHORITY_ACTION;
+export const SHARED_MEMORY_PRIVACY_BACKGROUND_MAX_WAIT_MS = 120_000;
 
 export type SharedMemoryConsentMode = "snapshot" | "continuous";
 export type SharedMemoryConsentState =
@@ -209,6 +219,7 @@ export interface PendingShareRecord {
     | "uploading"
     | "processing"
     | "activating"
+    | "privacy_filtering"
     | "complete";
   workspaceAccessState: "none" | "active" | "revoked";
   sourceUpdateState: "preparing" | "active" | "paused" | "failed" | "stopped";
@@ -389,8 +400,12 @@ export interface SharedMemorySemanticPreviewRecord {
   teamId: string;
   teamWorkspaceId: string;
   representation: SharedMemoryRepresentation;
-  classificationResultId: string | null;
-  classificationPayloadBindingHash: string | null;
+  expectedManifestHash: string | null;
+  expectedChunkCount: number | null;
+  completedChunkCount: number;
+  resultManifestHash: string | null;
+  classificationFieldCount: number | null;
+  classificationByteCount: number | null;
   classifierGenerationId: string;
   classifierVersion: number;
   classifierHash: string;
@@ -404,6 +419,16 @@ export interface SharedMemorySemanticPreviewRecord {
   lastErrorClass: string | null;
   attemptCount: number;
   nextAttemptAt: string | null;
+  schedulingClass: "foreground" | "background";
+  workReason:
+    | "share_activation"
+    | "source_revision_classification"
+    | "policy_remasking"
+    | "classifier_rematerialization"
+    | "background_repair";
+  eligibleAt: string;
+  enqueuedAt: string;
+  continuationChunkIndex: number;
   createdAt: string;
   updatedAt: string;
   readyAt: string | null;
@@ -411,6 +436,60 @@ export interface SharedMemorySemanticPreviewRecord {
   staleAt: string | null;
   invalidatedAt: string | null;
   invalidationReasonCode: string | null;
+}
+
+export interface SharedMemorySemanticClassificationChunkRecord {
+  id: string;
+  semanticPreviewId: string;
+  chunkIndex: number;
+  firstFieldIndex: number;
+  fieldCount: number;
+  inputIdentityHash: string;
+  orderedInputHash: string;
+  classificationResultId: string | null;
+  classificationPayloadBindingHash: string | null;
+  status: "pending" | "ready";
+  createdAt: string;
+  readyAt: string | null;
+}
+
+export interface SharedMemorySemanticPrivacyClaim {
+  semanticPreviewId: string;
+  workIdentity: string;
+  claimantId: string;
+  claimGeneration: number;
+  claimToken: string;
+  expiresAt: string;
+}
+
+export interface SharedMemorySemanticPrivacyFinalizationLease {
+  release(): Promise<void>;
+}
+
+export interface SharedMemorySemanticPrivacyBacklogDiagnostics {
+  counts: {
+    pending: number;
+    leased: number;
+    deferred: number;
+    ready: number;
+    failed: number;
+    stale: number;
+    invalidated: number;
+  };
+  bySchedulingClass: Record<"foreground" | "background", number>;
+  byWorkReason: Record<
+    | "share_activation"
+    | "source_revision_classification"
+    | "policy_remasking"
+    | "classifier_rematerialization"
+    | "background_repair",
+    number
+  >;
+  oldestBackgroundWaitMs: number | null;
+  completionEstimate: {
+    status: "unavailable";
+    reason: "insufficient_measured_throughput";
+  };
 }
 
 export interface SharedMemoryPendingSemanticTarget extends SharedMemorySemanticPreviewRecord {
@@ -454,8 +533,9 @@ export interface SharedMemorySanitizedSemanticPreviewPayload {
   teamId: string;
   teamWorkspaceId: string;
   representation: SharedMemoryRepresentation;
-  classificationResultId: string;
-  classificationPayloadBindingHash: string;
+  expectedManifestHash: string;
+  expectedChunkCount: number;
+  resultManifestHash: string;
   classifierGenerationId: string;
   classifierVersion: number;
   classifierHash: string;
@@ -969,6 +1049,11 @@ export interface SharedMemoryRepository {
         | "publish";
       errorClass: string;
       errorCode: string | null;
+      resourceLimit?: {
+        kind: SharedMemorySemanticResourceLimitError["limitKind"];
+        observed: number;
+        maximum: number;
+      };
     }) => void;
     ensureCompanion?: (input: {
       actor: ActorContext;
@@ -980,6 +1065,7 @@ export interface SharedMemoryRepository {
     waiting: number;
     failed: number;
   }>;
+  getNextPendingShareWorkAt(): Promise<string | null>;
   controlPendingShare(
     actor: ActorContext,
     input: {
@@ -1184,6 +1270,59 @@ export interface SharedMemoryRepository {
       expectedEffectivePrivacyPolicyHash: string;
     }
   ): Promise<SharedMemoryDecryptedSemanticTarget | null>;
+  claimSemanticPrivacyTarget(
+    actor: ActorContext,
+    input: {
+      semanticPreviewId: string;
+      claimantId: string;
+      leaseMs: number;
+      expectedWorkIdentity: string;
+    }
+  ): Promise<SharedMemorySemanticPrivacyClaim | null>;
+  renewSemanticPrivacyClaim(
+    actor: ActorContext,
+    input: SharedMemorySemanticPrivacyClaim & { leaseMs: number }
+  ): Promise<SharedMemorySemanticPrivacyClaim | null>;
+  releaseSemanticPrivacyClaim(
+    actor: ActorContext,
+    input: SharedMemorySemanticPrivacyClaim & {
+      completed: boolean;
+      nextChunkIndex: number;
+    }
+  ): Promise<boolean>;
+  initializeSemanticPrivacyManifest(
+    actor: ActorContext,
+    input: {
+      claim: SharedMemorySemanticPrivacyClaim;
+      expectedManifestHash: string;
+      fieldCount: number;
+      fieldByteCount: number;
+      chunks: Array<{
+        chunkIndex: number;
+        firstFieldIndex: number;
+        fieldCount: number;
+        inputIdentityHash: string;
+        orderedInputHash: string;
+      }>;
+    }
+  ): Promise<SharedMemorySemanticClassificationChunkRecord[]>;
+  attachSemanticPrivacyChunkResult(
+    actor: ActorContext,
+    input: {
+      claim: SharedMemorySemanticPrivacyClaim;
+      chunkIndex: number;
+      inputIdentityHash: string;
+      orderedInputHash: string;
+      classificationResultId: string;
+      classificationPayloadBindingHash: string;
+    }
+  ): Promise<SharedMemorySemanticClassificationChunkRecord>;
+  listSemanticPrivacyManifest(
+    actor: ActorContext,
+    input: {
+      claim: SharedMemorySemanticPrivacyClaim;
+    }
+  ): Promise<SharedMemorySemanticClassificationChunkRecord[]>;
   storeSanitizedSemanticPreview(
     actor: ActorContext,
     input: {
@@ -1195,7 +1334,9 @@ export interface SharedMemoryRepository {
       expectedSourceItemIdentityHash: string;
       expectedClassifierHash: string;
       expectedEffectivePrivacyPolicyHash: string;
-      classificationResultId: string;
+      claim: SharedMemorySemanticPrivacyClaim;
+      expectedManifestHash: string;
+      expectedResultManifestHash: string;
       items: SharedMemoryCanonicalSourceItemDto[];
       sanitizedContentHash: string;
     }
@@ -1225,7 +1366,9 @@ export interface SharedMemoryRepository {
       errorClass: string;
     }
   ): Promise<string | null>;
-  getNextSemanticPrivacyRetryAt(): Promise<string | null>;
+  getNextSemanticPrivacyWorkAt(): Promise<string | null>;
+  getSemanticPrivacyBacklogDiagnostics(): Promise<SharedMemorySemanticPrivacyBacklogDiagnostics>;
+  tryAcquireSemanticPrivacyFinalizationLease(): Promise<SharedMemorySemanticPrivacyFinalizationLease | null>;
   invalidateSemanticPreview(
     actor: ActorContext,
     input: {
@@ -1486,8 +1629,9 @@ export const requireReadySharedMemorySemanticDerivative = (
   }
   if (
     candidate.record.status !== "ready" ||
-    candidate.record.classificationResultId === null ||
-    candidate.record.classificationPayloadBindingHash === null ||
+    candidate.record.expectedManifestHash === null ||
+    candidate.record.expectedChunkCount === null ||
+    candidate.record.resultManifestHash === null ||
     candidate.record.sourceItemIdentityHash === null ||
     candidate.record.sourceItemCount === null ||
     candidate.record.sanitizedContentHash === null ||
@@ -2167,6 +2311,31 @@ export const sharedMemorySemanticPreviewPayloadBindingHash = (
   payload: SharedMemorySanitizedSemanticPreviewPayload
 ): string => crossIdentitySyncDigest(payload);
 
+export const sharedMemorySemanticPrivacyWorkIdentity = (
+  target: Pick<
+    SharedMemorySemanticPreviewRecord,
+    | "id"
+    | "sourcePreviewHash"
+    | "sourceArtifactHash"
+    | "sourceManifestHash"
+    | "sourceRevision"
+    | "classifierGenerationId"
+    | "classifierHash"
+    | "effectivePrivacyPolicyHash"
+  >
+): string =>
+  crossIdentitySyncDigest({
+    domain: "koed:shared-memory-semantic-privacy-work:v1",
+    semanticPreviewId: target.id,
+    sourcePreviewHash: target.sourcePreviewHash,
+    sourceArtifactHash: target.sourceArtifactHash,
+    sourceManifestHash: target.sourceManifestHash,
+    sourceRevision: target.sourceRevision,
+    classifierGenerationId: target.classifierGenerationId,
+    classifierHash: target.classifierHash,
+    effectivePrivacyPolicyHash: target.effectivePrivacyPolicyHash
+  });
+
 export const sharedMemorySanitizedSemanticSourceRevisionHash = (input: {
   sourcePreviewId: string;
   sourcePreviewHash: string;
@@ -2220,8 +2389,9 @@ export const sharedMemorySanitizedSemanticProvenanceHash = (input: {
   sourceArtifactHash: string;
   sourceManifestHash: string;
   sanitizedSourcePreviewId: string;
-  classificationResultId: string;
-  classificationPayloadBindingHash: string;
+  expectedManifestHash: string;
+  expectedChunkCount: number;
+  resultManifestHash: string;
   sourceItemIdentityHash: string;
   sourceItemCount: number;
   semanticPayloadBindingHash: string;
@@ -2759,12 +2929,27 @@ const mapSemanticPreview = (row: Row): SharedMemorySemanticPreviewRecord => ({
   teamId: stringValue(row.team_id),
   teamWorkspaceId: stringValue(row.team_workspace_id),
   representation: stringValue(row.representation) as SharedMemoryRepresentation,
-  classificationResultId: row.classification_result_id
-    ? stringValue(row.classification_result_id)
+  expectedManifestHash: row.expected_manifest_hash
+    ? stringValue(row.expected_manifest_hash)
     : null,
-  classificationPayloadBindingHash: row.classification_payload_binding_hash
-    ? stringValue(row.classification_payload_binding_hash)
+  expectedChunkCount:
+    row.expected_chunk_count === null || row.expected_chunk_count === undefined
+      ? null
+      : numberValue(row.expected_chunk_count),
+  completedChunkCount: numberValue(row.completed_chunk_count),
+  resultManifestHash: row.result_manifest_hash
+    ? stringValue(row.result_manifest_hash)
     : null,
+  classificationFieldCount:
+    row.classification_field_count === null ||
+    row.classification_field_count === undefined
+      ? null
+      : numberValue(row.classification_field_count),
+  classificationByteCount:
+    row.classification_byte_count === null ||
+    row.classification_byte_count === undefined
+      ? null
+      : numberValue(row.classification_byte_count),
   classifierGenerationId: stringValue(row.classifier_generation_id),
   classifierVersion: numberValue(row.classifier_version),
   classifierHash: stringValue(row.classifier_hash),
@@ -2789,6 +2974,15 @@ const mapSemanticPreview = (row: Row): SharedMemorySemanticPreviewRecord => ({
     : null,
   attemptCount: numberValue(row.attempt_count),
   nextAttemptAt: nullableIso(row.next_attempt_at),
+  schedulingClass: stringValue(row.scheduling_class) as
+    | "foreground"
+    | "background",
+  workReason: stringValue(
+    row.work_reason
+  ) as SharedMemorySemanticPreviewRecord["workReason"],
+  eligibleAt: iso(row.eligible_at),
+  enqueuedAt: iso(row.enqueued_at),
+  continuationChunkIndex: numberValue(row.continuation_chunk_index),
   createdAt: iso(row.created_at),
   updatedAt: iso(row.updated_at),
   readyAt: nullableIso(row.ready_at),
@@ -2798,6 +2992,27 @@ const mapSemanticPreview = (row: Row): SharedMemorySemanticPreviewRecord => ({
   invalidationReasonCode: row.invalidation_reason_code
     ? stringValue(row.invalidation_reason_code)
     : null
+});
+
+const mapSemanticClassificationChunk = (
+  row: Row
+): SharedMemorySemanticClassificationChunkRecord => ({
+  id: stringValue(row.id),
+  semanticPreviewId: stringValue(row.semantic_preview_id),
+  chunkIndex: numberValue(row.chunk_index),
+  firstFieldIndex: numberValue(row.first_field_index),
+  fieldCount: numberValue(row.field_count),
+  inputIdentityHash: stringValue(row.input_identity_hash),
+  orderedInputHash: stringValue(row.ordered_input_hash),
+  classificationResultId: row.classification_result_id
+    ? stringValue(row.classification_result_id)
+    : null,
+  classificationPayloadBindingHash: row.classification_payload_binding_hash
+    ? stringValue(row.classification_payload_binding_hash)
+    : null,
+  status: stringValue(row.status) as "pending" | "ready",
+  createdAt: iso(row.created_at),
+  readyAt: nullableIso(row.ready_at)
 });
 
 const mapArtifact = (row: Row): SharedMemorySourceArtifactRecord => ({
@@ -5955,6 +6170,8 @@ export const createSharedMemoryRepository = (
         "Authoritative Shared Memory source material is empty or invalid"
       );
     }
+    // Admission and Privacy use the same complete semantic-preview bounds.
+    extractSharedMemorySemanticClassificationFields(items);
     const hashes = sourceMaterialHashes({
       source: {
         kind: "captured_session",
@@ -8172,7 +8389,8 @@ export const createSharedMemoryRepository = (
     client: pg.PoolClient,
     actor: ActorContext,
     semanticPreviewId: string,
-    lock: boolean
+    lock: boolean,
+    skipLocked = false
   ): Promise<{
     row: Row;
     target: SharedMemoryPendingSemanticTarget;
@@ -8274,7 +8492,7 @@ export const createSharedMemoryRepository = (
           and semantic.status='pending'
           and ${cumulativeRepresentationAuthorizationSql("semantic.representation")}
         limit 1
-        ${lock ? "for update of semantic,grant_lock" : ""}`,
+        ${lock ? `for update of semantic,grant_lock${skipLocked ? " skip locked" : ""}` : ""}`,
       [semanticPreviewId, actor.userId]
     );
     const row = result.rows[0];
@@ -8406,9 +8624,9 @@ export const createSharedMemoryRepository = (
       payload.teamId !== record.teamId ||
       payload.teamWorkspaceId !== record.teamWorkspaceId ||
       payload.representation !== record.representation ||
-      payload.classificationResultId !== record.classificationResultId ||
-      payload.classificationPayloadBindingHash !==
-        record.classificationPayloadBindingHash ||
+      payload.expectedManifestHash !== record.expectedManifestHash ||
+      payload.expectedChunkCount !== record.expectedChunkCount ||
+      payload.resultManifestHash !== record.resultManifestHash ||
       payload.classifierGenerationId !== record.classifierGenerationId ||
       payload.classifierVersion !== record.classifierVersion ||
       payload.classifierHash !== record.classifierHash ||
@@ -9534,7 +9752,18 @@ export const createSharedMemoryRepository = (
         await client.query(
           `update pending_share_outbox
                 set state='pending',locked_at=null,
-                    available_at=now()+interval '5 seconds',updated_at=now()
+                    available_at=coalesce((
+                      select min(semantic.next_attempt_at)
+                        from shared_source_semantic_previews semantic,
+                             pending_share_operations pending
+                       where pending.id=$1
+                         and semantic.logical_memory_id=pending.logical_memory_id
+                         and semantic.owner_user_id=pending.owner_user_id
+                         and semantic.team_id=pending.team_id
+                         and semantic.team_workspace_id=pending.team_workspace_id
+                         and semantic.status='pending'
+                         and semantic.next_attempt_at is not null
+                    ),now()+interval '5 minutes'),updated_at=now()
               where pending_share_id=$1`,
           [pendingShareId]
         );
@@ -9673,7 +9902,16 @@ export const createSharedMemoryRepository = (
             typeof error.code === "string" &&
             /^[A-Z0-9_]{1,80}$/.test(error.code)
               ? error.code
-              : null
+              : null,
+          ...(error instanceof SharedMemorySemanticResourceLimitError
+            ? {
+                resourceLimit: {
+                  kind: error.limitKind,
+                  observed: error.observed,
+                  maximum: error.maximum
+                }
+              }
+            : {})
         });
       } catch {
         // Diagnostics must not change the worker outcome.
@@ -10910,6 +11148,22 @@ export const createSharedMemoryRepository = (
     },
     async processPendingShares(input = {}) {
       return processPendingShareWorkflow(input);
+    },
+    async getNextPendingShareWorkAt() {
+      const next = await pool.query<{ work_at: Date | null }>(
+        `select min(case
+                  when outbox.state='processing'
+                    then outbox.locked_at+interval '5 minutes'
+                  else outbox.available_at
+                end) as work_at
+           from pending_share_outbox outbox
+           join pending_share_operation_records pending
+             on pending.id=outbox.pending_share_id
+          where pending.state in ('preparing','needs_attention')
+            and pending.revoked_at is null
+            and outbox.state in ('pending','failed','processing')`
+      );
+      return next.rows[0]?.work_at?.toISOString() ?? null;
     },
     async controlPendingShare(actor, input) {
       assertUuid(input.pendingShareId, "pendingShareId");
@@ -12892,7 +13146,8 @@ export const createSharedMemoryRepository = (
                   preview.logical_memory_id,preview.owner_user_id,
                   preview.owner_principal_id,preview.team_id,
                   preview.team_workspace_id,preview.representation,
-                  g.id as share_grant_id,c.id as consent_id,g.grant_version
+                  g.id as share_grant_id,c.id as consent_id,g.grant_version,
+                  g.lifecycle as grant_lifecycle
              from shared_source_preview_records preview
              join shared_source_artifact_records artifact
                on artifact.id=preview.source_artifact_id
@@ -12975,8 +13230,11 @@ export const createSharedMemoryRepository = (
         );
         const targets: SharedMemoryPendingSemanticTarget[] = [];
         const seenTargetIds = new Set<string>();
+        const candidateByPreviewId = new Map<
+          string,
+          { row: Row; effectivePolicyHash: string }
+        >();
         for (const candidate of candidates.rows) {
-          if (targets.length >= limit) break;
           const effectivePolicy = await resolveCurrentPrivacyPolicy(client, {
             ownerUserId: stringValue(candidate.owner_user_id),
             teamId: stringValue(candidate.team_id),
@@ -13002,7 +13260,40 @@ export const createSharedMemoryRepository = (
             superseded.rows,
             "privacy_binding_superseded"
           );
+          let workReason: SharedMemorySemanticPreviewRecord["workReason"] =
+            "share_activation";
+          if (superseded.rows.length > 0) {
+            workReason = superseded.rows.some(
+              (row) =>
+                stringValue(row.classifier_generation_id) !== classifier.id
+            )
+              ? "classifier_rematerialization"
+              : "policy_remasking";
+          } else {
+            const priorRevision = await client.query(
+              `select 1 from shared_source_semantic_previews
+                where logical_memory_id=$1 and owner_user_id=$2
+                  and team_id=$3 and team_workspace_id=$4
+                  and representation=$5 and source_revision<$6
+                limit 1`,
+              [
+                candidate.logical_memory_id,
+                candidate.owner_user_id,
+                candidate.team_id,
+                candidate.team_workspace_id,
+                candidate.representation,
+                candidate.source_revision
+              ]
+            );
+            if (priorRevision.rows[0]) {
+              workReason = "source_revision_classification";
+            }
+          }
           const semanticPreviewId = randomUUID();
+          candidateByPreviewId.set(stringValue(candidate.source_preview_id), {
+            row: candidate,
+            effectivePolicyHash: effectivePolicy.effectivePolicyHash
+          });
           await client.query(
             `insert into shared_source_semantic_previews (
                id,source_preview_id,source_artifact_id,
@@ -13010,9 +13301,10 @@ export const createSharedMemoryRepository = (
                source_manifest_hash,source_revision,source_hash,logical_memory_id,
                owner_user_id,owner_principal_id,team_id,team_workspace_id,
                representation,classifier_generation_id,classifier_version,
-               classifier_hash,effective_privacy_policy_hash,status
+               classifier_hash,effective_privacy_policy_hash,
+               scheduling_class,work_reason,status
              ) values (
-               $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+               $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
                'pending'
              )
              on conflict do nothing`,
@@ -13035,35 +13327,63 @@ export const createSharedMemoryRepository = (
               classifier.id,
               classifier.version,
               classifier.classifierHash,
-              effectivePolicy.effectivePolicyHash
+              effectivePolicy.effectivePolicyHash,
+              "foreground",
+              workReason
             ]
           );
-          const pending = await client.query<Row>(
-            `select semantic.*,$4::uuid as share_grant_id,
-                    $5::uuid as consent_id,$6::integer as grant_version
+        }
+        if (candidateByPreviewId.size === 0) return targets;
+        const pending = await client.query<Row>(
+          `select semantic.*
                from shared_source_semantic_previews semantic
-              where semantic.source_preview_id=$1
+              where semantic.source_preview_id=any($1::uuid[])
                 and semantic.classifier_generation_id=$2
-                and semantic.effective_privacy_policy_hash=$3
                 and semantic.status='pending'
+                and semantic.eligible_at<=now()
                 and (semantic.next_attempt_at is null
                   or semantic.next_attempt_at<=now())
-              limit 1`,
-            [
-              candidate.source_preview_id,
-              classifier.id,
-              effectivePolicy.effectivePolicyHash,
-              candidate.share_grant_id,
-              candidate.consent_id,
-              candidate.grant_version
-            ]
+                and not exists (
+                  select 1 from shared_source_semantic_privacy_work_claims claim
+                   where claim.semantic_preview_id=semantic.id
+                     and claim.state='active' and claim.expires_at>now()
+                )
+              order by
+                case
+                  when semantic.scheduling_class='background'
+                    and semantic.enqueued_at<=now()-interval '2 minutes' then 0
+                  when semantic.scheduling_class='foreground' then 1
+                  else 2
+                end,
+                semantic.eligible_at,semantic.enqueued_at,semantic.id
+              limit $3`,
+          [
+            [...candidateByPreviewId.keys()],
+            classifier.id,
+            Math.min(limit * 8, 800)
+          ]
+        );
+        for (const row of pending.rows) {
+          if (targets.length >= limit) break;
+          const candidate = candidateByPreviewId.get(
+            stringValue(row.source_preview_id)
           );
-          if (pending.rows[0]) {
-            const target = mapPendingSemanticTarget(pending.rows[0]);
-            if (!seenTargetIds.has(target.id)) {
-              seenTargetIds.add(target.id);
-              targets.push(target);
-            }
+          if (
+            !candidate ||
+            stringValue(row.effective_privacy_policy_hash) !==
+              candidate.effectivePolicyHash
+          ) {
+            continue;
+          }
+          const target = mapPendingSemanticTarget({
+            ...row,
+            share_grant_id: candidate.row.share_grant_id,
+            consent_id: candidate.row.consent_id,
+            grant_version: candidate.row.grant_version
+          });
+          if (!seenTargetIds.has(target.id)) {
+            seenTargetIds.add(target.id);
+            targets.push(target);
           }
         }
         return targets;
@@ -13144,9 +13464,362 @@ export const createSharedMemoryRepository = (
       });
     },
 
+    async claimSemanticPrivacyTarget(actor, input) {
+      assertUuid(input.semanticPreviewId, "semanticPreviewId");
+      assertHash(input.expectedWorkIdentity, "expectedWorkIdentity");
+      if (!input.claimantId.trim() || input.claimantId.length > 200) {
+        throw new TypeError("claimantId is invalid");
+      }
+      if (!Number.isSafeInteger(input.leaseMs) || input.leaseMs < 1_000) {
+        throw new TypeError("leaseMs must be at least 1000");
+      }
+      return withTransaction(pool, async (client) => {
+        const loaded = await loadAuthorizedPendingSemanticTarget(
+          client,
+          actor,
+          input.semanticPreviewId,
+          true,
+          true
+        );
+        if (!loaded) return null;
+        if (
+          sharedMemorySemanticPrivacyWorkIdentity(loaded.target) !==
+          input.expectedWorkIdentity
+        ) {
+          throw new SharedMemoryConflictError(
+            "Semantic privacy work identity changed"
+          );
+        }
+        const existing = await client.query<Row>(
+          `select claim.*,
+                  (claim.state='active' and claim.expires_at>now()) as lease_active
+             from shared_source_semantic_privacy_work_claims claim
+            where semantic_preview_id=$1 for update`,
+          [input.semanticPreviewId]
+        );
+        const prior = existing.rows[0];
+        if (prior?.lease_active === true) {
+          return null;
+        }
+        const generation = prior ? numberValue(prior.claim_generation) + 1 : 1;
+        const claimToken = randomUUID();
+        const claimed = await client.query<Row>(
+          `insert into shared_source_semantic_privacy_work_claims (
+             id,semantic_preview_id,work_identity,claimant_id,claim_generation,
+             claim_token,state,created_at,heartbeat_at,expires_at
+           ) values ($1,$2,$3,$4,$5,$6,'active',now(),now(),
+             now()+($7::integer * interval '1 millisecond'))
+           on conflict (semantic_preview_id) do update set
+             work_identity=excluded.work_identity,
+             claimant_id=excluded.claimant_id,
+             claim_generation=excluded.claim_generation,
+             claim_token=excluded.claim_token,
+             state='active',created_at=now(),heartbeat_at=now(),
+             expires_at=excluded.expires_at,released_at=null,completed_at=null
+           returning *`,
+          [
+            randomUUID(),
+            input.semanticPreviewId,
+            input.expectedWorkIdentity,
+            input.claimantId,
+            generation,
+            claimToken,
+            input.leaseMs
+          ]
+        );
+        const row = claimed.rows[0]!;
+        return {
+          semanticPreviewId: input.semanticPreviewId,
+          workIdentity: input.expectedWorkIdentity,
+          claimantId: input.claimantId,
+          claimGeneration: generation,
+          claimToken,
+          expiresAt: iso(row.expires_at)
+        };
+      });
+    },
+
+    async renewSemanticPrivacyClaim(actor, input) {
+      assertUuid(input.semanticPreviewId, "semanticPreviewId");
+      assertUuid(input.claimToken, "claimToken");
+      const renewed = await pool.query<Row>(
+        `update shared_source_semantic_privacy_work_claims claim
+            set heartbeat_at=now(),
+                expires_at=now()+($6::integer * interval '1 millisecond')
+           from shared_source_semantic_previews semantic
+          where claim.semantic_preview_id=$1 and claim.claim_token=$2
+            and claim.claim_generation=$3 and claim.claimant_id=$4
+            and claim.work_identity=$5 and claim.state='active'
+            and claim.expires_at>now()
+            and semantic.id=claim.semantic_preview_id
+            and semantic.owner_user_id=$7 and semantic.status='pending'
+          returning claim.*`,
+        [
+          input.semanticPreviewId,
+          input.claimToken,
+          input.claimGeneration,
+          input.claimantId,
+          input.workIdentity,
+          input.leaseMs,
+          actor.userId
+        ]
+      );
+      const row = renewed.rows[0];
+      return row ? { ...input, expiresAt: iso(row.expires_at) } : null;
+    },
+
+    async releaseSemanticPrivacyClaim(actor, input) {
+      return withTransaction(pool, async (client) => {
+        const released = await client.query(
+          `update shared_source_semantic_privacy_work_claims claim
+              set state=$6,released_at=case when $7::boolean then null else now() end,
+                  completed_at=case when $7::boolean then now() else null end
+             from shared_source_semantic_previews semantic
+            where claim.semantic_preview_id=$1 and claim.claim_token=$2
+              and claim.claim_generation=$3 and claim.claimant_id=$4
+              and claim.work_identity=$5 and claim.state='active'
+              and claim.expires_at>now() and semantic.id=claim.semantic_preview_id
+              and semantic.owner_user_id=$8`,
+          [
+            input.semanticPreviewId,
+            input.claimToken,
+            input.claimGeneration,
+            input.claimantId,
+            input.workIdentity,
+            input.completed ? "completed" : "released",
+            input.completed,
+            actor.userId
+          ]
+        );
+        if ((released.rowCount ?? 0) !== 1) return false;
+        if (!input.completed) {
+          await client.query(
+            `update shared_source_semantic_previews
+                set continuation_chunk_index=$2,eligible_at=now(),updated_at=now()
+              where id=$1 and owner_user_id=$3 and status='pending'`,
+            [input.semanticPreviewId, input.nextChunkIndex, actor.userId]
+          );
+        }
+        return true;
+      });
+    },
+
+    async initializeSemanticPrivacyManifest(actor, input) {
+      assertHash(input.expectedManifestHash, "expectedManifestHash");
+      if (
+        input.chunks.length < 1 ||
+        !Number.isSafeInteger(input.fieldCount) ||
+        input.fieldCount < 1 ||
+        input.fieldCount > SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS ||
+        !Number.isSafeInteger(input.fieldByteCount) ||
+        input.fieldByteCount < 0 ||
+        input.fieldByteCount > SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES
+      ) {
+        throw new TypeError("Semantic privacy manifest must contain fields");
+      }
+      let nextFieldIndex = 0;
+      for (const [index, chunk] of input.chunks.entries()) {
+        assertHash(chunk.inputIdentityHash, "inputIdentityHash");
+        assertHash(chunk.orderedInputHash, "orderedInputHash");
+        if (
+          chunk.chunkIndex !== index ||
+          chunk.firstFieldIndex !== nextFieldIndex ||
+          !Number.isSafeInteger(chunk.fieldCount) ||
+          chunk.fieldCount < 1 ||
+          chunk.fieldCount > 16
+        ) {
+          throw new SharedMemoryConflictError(
+            "Semantic privacy manifest field ranges are invalid"
+          );
+        }
+        nextFieldIndex += chunk.fieldCount;
+      }
+      if (nextFieldIndex !== input.fieldCount) {
+        throw new SharedMemoryConflictError(
+          "Semantic privacy manifest does not cover every field"
+        );
+      }
+      return withTransaction(pool, async (client) => {
+        const claim = await client.query<Row>(
+          `select claim.* from shared_source_semantic_privacy_work_claims claim
+             join shared_source_semantic_previews semantic
+               on semantic.id=claim.semantic_preview_id
+            where claim.semantic_preview_id=$1 and claim.claim_token=$2
+              and claim.claim_generation=$3 and claim.work_identity=$4
+              and claim.state='active' and claim.expires_at>now()
+              and semantic.owner_user_id=$5 and semantic.status='pending'
+            for update of semantic,claim`,
+          [
+            input.claim.semanticPreviewId,
+            input.claim.claimToken,
+            input.claim.claimGeneration,
+            input.claim.workIdentity,
+            actor.userId
+          ]
+        );
+        if (!claim.rows[0]) {
+          throw new SharedMemoryConflictError("Semantic privacy claim expired");
+        }
+        for (const chunk of input.chunks) {
+          await client.query(
+            `insert into shared_source_semantic_preview_classification_chunks (
+               id,semantic_preview_id,chunk_index,first_field_index,field_count,
+               input_identity_hash,ordered_input_hash,status
+             ) values ($1,$2,$3,$4,$5,$6,$7,'pending')
+             on conflict (semantic_preview_id,chunk_index) do nothing`,
+            [
+              randomUUID(),
+              input.claim.semanticPreviewId,
+              chunk.chunkIndex,
+              chunk.firstFieldIndex,
+              chunk.fieldCount,
+              chunk.inputIdentityHash,
+              chunk.orderedInputHash
+            ]
+          );
+        }
+        const rows = await client.query<Row>(
+          `select * from shared_source_semantic_preview_classification_chunks
+            where semantic_preview_id=$1 order by chunk_index`,
+          [input.claim.semanticPreviewId]
+        );
+        const mapped = rows.rows.map(mapSemanticClassificationChunk);
+        if (
+          mapped.length !== input.chunks.length ||
+          mapped.some((row, index) => {
+            const expected = input.chunks[index];
+            return (
+              !expected ||
+              row.chunkIndex !== expected.chunkIndex ||
+              row.firstFieldIndex !== expected.firstFieldIndex ||
+              row.fieldCount !== expected.fieldCount ||
+              row.inputIdentityHash !== expected.inputIdentityHash ||
+              row.orderedInputHash !== expected.orderedInputHash
+            );
+          })
+        ) {
+          throw new SharedMemoryConflictError(
+            "Semantic privacy manifest binding changed"
+          );
+        }
+        const updated = await client.query(
+          `update shared_source_semantic_previews
+              set expected_manifest_hash=$2,expected_chunk_count=$3,
+                  classification_field_count=$4,classification_byte_count=$5,
+                  updated_at=now()
+            where id=$1 and owner_user_id=$6 and status='pending'
+              and (expected_manifest_hash is null or expected_manifest_hash=$2)
+              and (expected_chunk_count is null or expected_chunk_count=$3)`,
+          [
+            input.claim.semanticPreviewId,
+            input.expectedManifestHash,
+            input.chunks.length,
+            input.fieldCount,
+            input.fieldByteCount,
+            actor.userId
+          ]
+        );
+        if ((updated.rowCount ?? 0) !== 1) {
+          throw new SharedMemoryConflictError(
+            "Semantic privacy manifest could not be initialized"
+          );
+        }
+        return mapped;
+      });
+    },
+
+    async attachSemanticPrivacyChunkResult(actor, input) {
+      assertUuid(input.classificationResultId, "classificationResultId");
+      assertHash(
+        input.classificationPayloadBindingHash,
+        "classificationPayloadBindingHash"
+      );
+      return withTransaction(pool, async (client) => {
+        const attached = await client.query<Row>(
+          `update shared_source_semantic_preview_classification_chunks chunk
+              set classification_result_id=$6,
+                  classification_payload_binding_hash=$7,status='ready',
+                  ready_at=coalesce(chunk.ready_at,now())
+             from shared_source_semantic_privacy_work_claims claim,
+                  shared_source_semantic_previews semantic,
+                  privacy_classification_results result
+            where chunk.semantic_preview_id=$1 and chunk.chunk_index=$5
+              and chunk.input_identity_hash=$8 and chunk.ordered_input_hash=$9
+              and claim.semantic_preview_id=chunk.semantic_preview_id
+              and claim.claim_token=$2 and claim.claim_generation=$3
+              and claim.work_identity=$4 and claim.state='active'
+              and claim.expires_at>now()
+              and semantic.id=chunk.semantic_preview_id
+              and semantic.owner_user_id=$10 and semantic.status='pending'
+              and result.id=$6 and result.owner_user_id=$10
+              and result.owner_content_fingerprint=$8
+              and result.payload_binding_hash=$7 and result.status='ready'
+              and (chunk.status='pending' or
+                (chunk.classification_result_id=$6 and
+                 chunk.classification_payload_binding_hash=$7))
+            returning chunk.*`,
+          [
+            input.claim.semanticPreviewId,
+            input.claim.claimToken,
+            input.claim.claimGeneration,
+            input.claim.workIdentity,
+            input.chunkIndex,
+            input.classificationResultId,
+            input.classificationPayloadBindingHash,
+            input.inputIdentityHash,
+            input.orderedInputHash,
+            actor.userId
+          ]
+        );
+        if (!attached.rows[0]) {
+          throw new SharedMemoryConflictError(
+            "Semantic privacy chunk result binding was rejected"
+          );
+        }
+        await client.query(
+          `update shared_source_semantic_previews
+              set completed_chunk_count=(
+                select count(*) from shared_source_semantic_preview_classification_chunks
+                 where semantic_preview_id=$1 and status='ready'
+              ),updated_at=now()
+            where id=$1 and owner_user_id=$2 and status='pending'`,
+          [input.claim.semanticPreviewId, actor.userId]
+        );
+        return mapSemanticClassificationChunk(attached.rows[0]);
+      });
+    },
+
+    async listSemanticPrivacyManifest(actor, input) {
+      const result = await pool.query<Row>(
+        `select chunk.*
+           from shared_source_semantic_preview_classification_chunks chunk
+           join shared_source_semantic_privacy_work_claims claim
+             on claim.semantic_preview_id=chunk.semantic_preview_id
+           join shared_source_semantic_previews semantic
+             on semantic.id=chunk.semantic_preview_id
+          where chunk.semantic_preview_id=$1 and claim.claim_token=$2
+            and claim.claim_generation=$3 and claim.work_identity=$4
+            and claim.state='active' and claim.expires_at>now()
+            and semantic.owner_user_id=$5 and semantic.status='pending'
+          order by chunk.chunk_index`,
+        [
+          input.claim.semanticPreviewId,
+          input.claim.claimToken,
+          input.claim.claimGeneration,
+          input.claim.workIdentity,
+          actor.userId
+        ]
+      );
+      return result.rows.map(mapSemanticClassificationChunk);
+    },
+
     async storeSanitizedSemanticPreview(actor, input) {
       assertUuid(input.semanticPreviewId, "semanticPreviewId");
-      assertUuid(input.classificationResultId, "classificationResultId");
+      assertHash(input.expectedManifestHash, "expectedManifestHash");
+      assertHash(
+        input.expectedResultManifestHash,
+        "expectedResultManifestHash"
+      );
       assertHash(input.expectedSourcePreviewHash, "expectedSourcePreviewHash");
       assertHash(
         input.expectedSourceArtifactHash,
@@ -13200,8 +13873,9 @@ export const createSharedMemoryRepository = (
             currentRecord.classifierHash !== input.expectedClassifierHash ||
             currentRecord.effectivePrivacyPolicyHash !==
               input.expectedEffectivePrivacyPolicyHash ||
-            currentRecord.classificationResultId !==
-              input.classificationResultId ||
+            currentRecord.expectedManifestHash !== input.expectedManifestHash ||
+            currentRecord.resultManifestHash !==
+              input.expectedResultManifestHash ||
             currentRecord.sanitizedContentHash !== input.sanitizedContentHash
           ) {
             throw new SharedMemoryConflictError(
@@ -13260,31 +13934,52 @@ export const createSharedMemoryRepository = (
             "Semantic privacy target source binding mismatch"
           );
         }
-        const classification = await client.query<Row>(
-          `select result.*
-             from privacy_classification_results result
-             join privacy_classifier_generations generation
-               on generation.id=result.classifier_generation_id
-              and generation.classifier_hash=result.classifier_hash
-              and generation.status='active' and generation.revoked_at is null
-            where result.id=$1 and result.owner_user_id=$2
-              and result.classifier_generation_id=$3
-              and result.classifier_hash=$4
-              and result.status='ready' and result.invalidated_at is null
-              and result.payload_binding_hash is not null
-            limit 1
-            for share of result,generation`,
+        const activeClaim = await client.query<Row>(
+          `select * from shared_source_semantic_privacy_work_claims
+            where semantic_preview_id=$1 and claim_token=$2
+              and claim_generation=$3 and work_identity=$4
+              and state='active' and expires_at>now()
+            for update`,
           [
-            input.classificationResultId,
-            actor.userId,
-            target.classifierGenerationId,
-            target.classifierHash
+            input.claim.semanticPreviewId,
+            input.claim.claimToken,
+            input.claim.claimGeneration,
+            input.claim.workIdentity
           ]
         );
-        const classificationRow = classification.rows[0];
-        if (!classificationRow) {
+        if (!activeClaim.rows[0]) {
+          throw new SharedMemoryConflictError("Semantic privacy claim expired");
+        }
+        if (
+          currentRecord.expectedManifestHash !== input.expectedManifestHash ||
+          currentRecord.expectedChunkCount === null ||
+          currentRecord.completedChunkCount !== currentRecord.expectedChunkCount
+        ) {
           throw new SharedMemoryConflictError(
-            "Ready privacy classification result does not match the target"
+            "Semantic privacy manifest is incomplete"
+          );
+        }
+        const manifest = await client.query<Row>(
+          `select chunk.*,result.owner_user_id as result_owner_user_id,
+                  result.classifier_generation_id as result_classifier_generation_id,
+                  result.classifier_hash as result_classifier_hash,
+                  result.owner_content_fingerprint,
+                  result.payload_binding_hash as result_payload_binding_hash,
+                  result.status as result_status,
+                  result.invalidated_at as result_invalidated_at
+             from shared_source_semantic_preview_classification_chunks chunk
+             join privacy_classification_results result
+               on result.id=chunk.classification_result_id
+            where chunk.semantic_preview_id=$1 and chunk.status='ready'
+            order by chunk.chunk_index
+            for share of chunk,result`,
+          [target.id]
+        );
+        const expectedClassificationFields =
+          extractSharedMemorySemanticClassificationFields(source.preview.items);
+        if (manifest.rows.length !== currentRecord.expectedChunkCount) {
+          throw new SharedMemoryConflictError(
+            "Semantic privacy result manifest is incomplete"
           );
         }
         const classificationProvider =
@@ -13292,54 +13987,101 @@ export const createSharedMemoryRepository = (
             ownerUserId: actor.userId,
             purpose: "decrypt"
           });
-        const decryptedClassification =
-          await decryptAuthorizedEncryptedFieldPayloadWithClient(
-            client,
-            actor,
-            classificationProvider,
-            {
-              sourceTable: "privacy_classification_results",
-              sourceId: input.classificationResultId,
-              sourceColumn: "detected_spans"
-            }
+        let nextFieldIndex = 0;
+        for (const [manifestIndex, row] of manifest.rows.entries()) {
+          const chunkIndex = numberValue(row.chunk_index);
+          const firstFieldIndex = numberValue(row.first_field_index);
+          const fieldCount = numberValue(row.field_count);
+          if (
+            chunkIndex !== manifestIndex ||
+            firstFieldIndex !== nextFieldIndex ||
+            fieldCount < 1 ||
+            stringValue(row.result_owner_user_id) !== actor.userId ||
+            stringValue(row.result_classifier_generation_id) !==
+              target.classifierGenerationId ||
+            stringValue(row.result_classifier_hash) !== target.classifierHash ||
+            stringValue(row.owner_content_fingerprint) !==
+              stringValue(row.input_identity_hash) ||
+            stringValue(row.result_payload_binding_hash) !==
+              stringValue(row.classification_payload_binding_hash) ||
+            stringValue(row.result_status) !== "ready" ||
+            row.result_invalidated_at !== null
+          ) {
+            throw new SharedMemoryConflictError(
+              "Semantic privacy result manifest binding is invalid"
+            );
+          }
+          const resultId = stringValue(row.classification_result_id);
+          const decrypted =
+            await decryptAuthorizedEncryptedFieldPayloadWithClient(
+              client,
+              actor,
+              classificationProvider,
+              {
+                sourceTable: "privacy_classification_results",
+                sourceId: resultId,
+                sourceColumn: "detected_spans"
+              }
+            );
+          const payload = decrypted?.plaintext;
+          const fields =
+            isPlainObject(payload) && Array.isArray(payload.fields)
+              ? payload.fields
+              : null;
+          const expectedFields = expectedClassificationFields.slice(
+            firstFieldIndex,
+            firstFieldIndex + fieldCount
           );
-        if (
-          !decryptedClassification ||
-          !isPlainObject(decryptedClassification.plaintext)
-        ) {
+          if (
+            !decrypted ||
+            !isPlainObject(payload) ||
+            payload.resultId !== resultId ||
+            payload.ownerUserId !== actor.userId ||
+            payload.classifierGenerationId !== target.classifierGenerationId ||
+            payload.classifierHash !== target.classifierHash ||
+            decrypted.record.envelope.aad.payloadBindingHash !==
+              row.result_payload_binding_hash ||
+            !fields ||
+            fields.length !== expectedFields.length ||
+            fields.some((field, index) => {
+              const expected = expectedFields[index];
+              return (
+                !isPlainObject(field) ||
+                !expected ||
+                field.path !== expected.path ||
+                field.inputSha256 !== expected.inputSha256 ||
+                field.inputByteLength !== expected.inputByteLength
+              );
+            })
+          ) {
+            throw new SharedMemoryConflictError(
+              "Privacy classification payload is not bound to the authoritative preview inputs"
+            );
+          }
+          nextFieldIndex += fieldCount;
+        }
+        if (nextFieldIndex !== expectedClassificationFields.length) {
           throw new SharedMemoryConflictError(
-            "Privacy classification payload is unavailable"
+            "Semantic privacy result manifest does not cover every field"
           );
         }
-        const classificationPayload = decryptedClassification.plaintext;
-        const classificationFields = Array.isArray(classificationPayload.fields)
-          ? classificationPayload.fields
-          : null;
-        const expectedClassificationFields =
-          extractSharedMemorySemanticClassificationFields(source.preview.items);
-        if (
-          !classificationFields ||
-          classificationPayload.resultId !== input.classificationResultId ||
-          classificationPayload.ownerUserId !== actor.userId ||
-          classificationPayload.classifierGenerationId !==
-            target.classifierGenerationId ||
-          classificationPayload.classifierHash !== target.classifierHash ||
-          decryptedClassification.record.envelope.aad.payloadBindingHash !==
-            classificationRow.payload_binding_hash ||
-          classificationFields.length !== expectedClassificationFields.length ||
-          classificationFields.some((field, fieldIndex) => {
-            if (!isPlainObject(field)) return true;
-            const expectedField = expectedClassificationFields[fieldIndex];
-            return (
-              !expectedField ||
-              field.path !== expectedField.path ||
-              field.inputSha256 !== expectedField.inputSha256 ||
-              field.inputByteLength !== expectedField.inputByteLength
-            );
-          })
-        ) {
+        const resultManifestHash = privacyClassificationResultManifestHash({
+          expectedManifestHash: input.expectedManifestHash,
+          chunks: manifest.rows.map((row) => ({
+            chunkIndex: numberValue(row.chunk_index),
+            firstFieldIndex: numberValue(row.first_field_index),
+            fieldCount: numberValue(row.field_count),
+            inputIdentityHash: stringValue(row.input_identity_hash),
+            orderedInputHash: stringValue(row.ordered_input_hash),
+            classificationResultId: stringValue(row.classification_result_id),
+            classificationPayloadBindingHash: stringValue(
+              row.classification_payload_binding_hash
+            )
+          }))
+        });
+        if (resultManifestHash !== input.expectedResultManifestHash) {
           throw new SharedMemoryConflictError(
-            "Privacy classification payload is not bound to the authoritative preview inputs"
+            "Semantic privacy result manifest hash changed"
           );
         }
         if (input.items.length === 0 || input.items.length > MAX_SOURCE_ITEMS) {
@@ -13381,9 +14123,6 @@ export const createSharedMemoryRepository = (
             source.artifactBody.manifest[sourceItemIndex]!
           )
         );
-        const classificationPayloadBindingHash = stringValue(
-          classificationRow.payload_binding_hash
-        );
         const displayTitle = sharedMemorySanitizedDisplayTitle(items);
         const payload: SharedMemorySanitizedSemanticPreviewPayload = {
           schemaVersion: SHARED_MEMORY_SEMANTIC_PREVIEW_FORMAT_VERSION,
@@ -13402,8 +14141,9 @@ export const createSharedMemoryRepository = (
           teamId: target.teamId,
           teamWorkspaceId: target.teamWorkspaceId,
           representation: target.representation,
-          classificationResultId: input.classificationResultId,
-          classificationPayloadBindingHash,
+          expectedManifestHash: input.expectedManifestHash,
+          expectedChunkCount: manifest.rows.length,
+          resultManifestHash,
           classifierGenerationId: target.classifierGenerationId,
           classifierVersion: target.classifierVersion,
           classifierHash: target.classifierHash,
@@ -13466,8 +14206,9 @@ export const createSharedMemoryRepository = (
             teamId: target.teamId,
             teamWorkspaceId: target.teamWorkspaceId,
             representation: target.representation,
-            classificationResultId: input.classificationResultId,
-            classificationPayloadBindingHash,
+            expectedManifestHash: input.expectedManifestHash,
+            expectedChunkCount: manifest.rows.length,
+            resultManifestHash,
             classifierGenerationId: target.classifierGenerationId,
             classifierVersion: target.classifierVersion,
             classifierHash: target.classifierHash,
@@ -13480,24 +14221,25 @@ export const createSharedMemoryRepository = (
         });
         const ready = await client.query<Row>(
           `update shared_source_semantic_previews
-              set classification_result_id=$2,
-                  classification_payload_binding_hash=$3,
-                  source_item_identity_hash=$4,source_item_count=$5,
-                  sanitized_content_hash=$6,payload_binding_hash=$7,
+              set result_manifest_hash=$2,
+                  source_item_identity_hash=$3,source_item_count=$4,
+                  sanitized_content_hash=$5,payload_binding_hash=$6,
                   status='ready',ready_at=now(),updated_at=now(),
                   last_error_class=null,attempt_count=0,next_attempt_at=null
-            where id=$1 and owner_user_id=$8 and status='pending'
-              and source_preview_hash=$9
-              and classifier_hash=$10
-              and effective_privacy_policy_hash=$11
-              and source_artifact_hash=$12
-              and source_manifest_hash=$13
-              and source_revision=$14
+            where id=$1 and owner_user_id=$7 and status='pending'
+              and source_preview_hash=$8
+              and classifier_hash=$9
+              and effective_privacy_policy_hash=$10
+              and source_artifact_hash=$11
+              and source_manifest_hash=$12
+              and source_revision=$13
+              and expected_manifest_hash=$14
+              and expected_chunk_count=$15
+              and completed_chunk_count=expected_chunk_count
             returning *`,
           [
             target.id,
-            input.classificationResultId,
-            classificationPayloadBindingHash,
+            resultManifestHash,
             sourceItemIdentityHash,
             items.length,
             input.sanitizedContentHash,
@@ -13508,12 +14250,32 @@ export const createSharedMemoryRepository = (
             input.expectedEffectivePrivacyPolicyHash,
             input.expectedSourceArtifactHash,
             input.expectedSourceManifestHash,
-            input.expectedSourceRevision
+            input.expectedSourceRevision,
+            input.expectedManifestHash,
+            manifest.rows.length
           ]
         );
         if (!ready.rows[0]) {
           throw new SharedMemoryConflictError(
             "Semantic privacy target could not transition to ready"
+          );
+        }
+        const completedClaim = await client.query(
+          `update shared_source_semantic_privacy_work_claims
+              set state='completed',completed_at=now(),released_at=null
+            where semantic_preview_id=$1 and claim_token=$2
+              and claim_generation=$3 and work_identity=$4
+              and state='active' and expires_at>now()`,
+          [
+            input.claim.semanticPreviewId,
+            input.claim.claimToken,
+            input.claim.claimGeneration,
+            input.claim.workIdentity
+          ]
+        );
+        if ((completedClaim.rowCount ?? 0) !== 1) {
+          throw new SharedMemoryConflictError(
+            "Semantic privacy claim expired before publication"
           );
         }
         const titledGrant = await client.query(
@@ -13568,6 +14330,19 @@ export const createSharedMemoryRepository = (
             actor.userId,
             target.sourceRevision
           ]
+        );
+        await client.query(
+          `update pending_share_outbox outbox
+              set state='pending',available_at=now(),locked_at=null,updated_at=now()
+             from pending_share_operations pending
+            where pending.id=outbox.pending_share_id
+              and pending.grant_id=$1 and pending.owner_user_id=$2
+              and pending.state='preparing' and pending.stage='privacy_filtering'
+              and pending.revoked_at is null`,
+          [target.shareGrantId, actor.userId]
+        );
+        await client.query(
+          "select pg_notify('koed_pending_share_activation','work')"
         );
         return mapSemanticPreview(ready.rows[0]);
       });
@@ -13658,7 +14433,39 @@ export const createSharedMemoryRepository = (
             input.expectedEffectivePrivacyPolicyHash
           ]
         );
-        return (result.rowCount ?? 0) > 0;
+        if ((result.rowCount ?? 0) === 0) return false;
+        const terminal = await client.query<Row>(
+          `update pending_share_operations
+              set state='needs_attention',stage='privacy_filtering',
+                  source_update_state='failed',redacted_failure_code=$2,
+                  last_progress_at=now(),updated_at=now(),
+                  operation_version=operation_version+1
+            where grant_id=$1 and owner_user_id=$3
+              and state='preparing' and stage='privacy_filtering'
+              and revoked_at is null
+            returning id,operation_version`,
+          [target.shareGrantId, input.failureCode, actor.userId]
+        );
+        for (const pending of terminal.rows) {
+          const pendingShareId = stringValue(pending.id);
+          await client.query(
+            `update pending_share_outbox
+                set state='completed',locked_at=null,updated_at=now()
+              where pending_share_id=$1`,
+            [pendingShareId]
+          );
+          await appendPendingShareOwnerEvent(client, {
+            mutationId: crossIdentitySyncDeterministicUuid({
+              kind: "pending_share_privacy_failed",
+              pendingShareId,
+              reason: input.failureCode,
+              operationVersion: numberValue(pending.operation_version)
+            }),
+            ownerUserId: actor.userId,
+            pendingShareId
+          });
+        }
+        return true;
       });
     },
 
@@ -13704,13 +14511,146 @@ export const createSharedMemoryRepository = (
       return deferred.rows[0]?.next_attempt_at.toISOString() ?? null;
     },
 
-    async getNextSemanticPrivacyRetryAt() {
-      const next = await pool.query<{ next_attempt_at: Date | null }>(
-        `select min(next_attempt_at) as next_attempt_at
-           from shared_source_semantic_previews
-          where status='pending' and next_attempt_at is not null`
+    async getNextSemanticPrivacyWorkAt() {
+      const next = await pool.query<{ work_at: Date | null }>(
+        `select min(work_at) as work_at
+           from (
+             select semantic.next_attempt_at as work_at
+               from shared_source_semantic_previews semantic
+              where semantic.status='pending'
+                and semantic.next_attempt_at is not null
+             union all
+             select claim.expires_at as work_at
+               from shared_source_semantic_privacy_work_claims claim
+               join shared_source_semantic_previews semantic
+                 on semantic.id=claim.semantic_preview_id
+              where semantic.status='pending' and claim.state='active'
+           ) wake_times`
       );
-      return next.rows[0]?.next_attempt_at?.toISOString() ?? null;
+      return next.rows[0]?.work_at?.toISOString() ?? null;
+    },
+
+    async tryAcquireSemanticPrivacyFinalizationLease() {
+      const client = await pool.connect();
+      try {
+        const lock = await client.query<{ acquired: boolean }>(
+          "select pg_try_advisory_lock($1,$2) as acquired",
+          [...SEMANTIC_PRIVACY_FINALIZATION_ADVISORY_LOCK]
+        );
+        if (lock.rows[0]?.acquired !== true) {
+          client.release();
+          return null;
+        }
+        let released = false;
+        return {
+          async release() {
+            if (released) return;
+            released = true;
+            try {
+              await client.query("select pg_advisory_unlock($1,$2)", [
+                ...SEMANTIC_PRIVACY_FINALIZATION_ADVISORY_LOCK
+              ]);
+            } finally {
+              client.release();
+            }
+          }
+        };
+      } catch (error) {
+        client.release();
+        throw error;
+      }
+    },
+
+    async getSemanticPrivacyBacklogDiagnostics() {
+      const [totals, classes, reasons] = await Promise.all([
+        pool.query<Row>(
+          `select
+             count(*) filter (
+               where semantic.status='pending'
+                 and coalesce(semantic.next_attempt_at,semantic.eligible_at)<=now()
+                 and (claim.id is null or claim.state<>'active' or claim.expires_at<=now())
+             )::integer as pending,
+             count(*) filter (
+               where semantic.status='pending' and claim.state='active'
+                 and claim.expires_at>now()
+             )::integer as leased,
+             count(*) filter (
+               where semantic.status='pending' and semantic.next_attempt_at>now()
+             )::integer as deferred,
+             count(*) filter (where semantic.status='ready')::integer as ready,
+             count(*) filter (where semantic.status='failed')::integer as failed,
+             count(*) filter (where semantic.status='stale')::integer as stale,
+             count(*) filter (where semantic.status='invalidated')::integer as invalidated,
+             extract(epoch from (now()-min(semantic.enqueued_at) filter (
+               where semantic.status='pending' and semantic.scheduling_class='background'
+             )))*1000 as oldest_background_wait_ms
+           from shared_source_semantic_previews semantic
+           left join shared_source_semantic_privacy_work_claims claim
+             on claim.semantic_preview_id=semantic.id`
+        ),
+        pool.query<Row>(
+          `select scheduling_class,count(*)::integer as count
+             from shared_source_semantic_previews
+            where status='pending'
+            group by scheduling_class`
+        ),
+        pool.query<Row>(
+          `select work_reason,count(*)::integer as count
+             from shared_source_semantic_previews
+            where status='pending'
+            group by work_reason`
+        )
+      ]);
+      const total = totals.rows[0] ?? {};
+      const bySchedulingClass = {
+        foreground: 0,
+        background: 0
+      };
+      for (const row of classes.rows) {
+        if (row.scheduling_class === "foreground") {
+          bySchedulingClass.foreground = numberValue(row.count);
+        } else if (row.scheduling_class === "background") {
+          bySchedulingClass.background = numberValue(row.count);
+        }
+      }
+      const byWorkReason = {
+        share_activation: 0,
+        source_revision_classification: 0,
+        policy_remasking: 0,
+        classifier_rematerialization: 0,
+        background_repair: 0
+      };
+      for (const row of reasons.rows) {
+        const workReason = nullableString(row.work_reason);
+        if (workReason && Object.hasOwn(byWorkReason, workReason)) {
+          byWorkReason[workReason as keyof typeof byWorkReason] = numberValue(
+            row.count
+          );
+        }
+      }
+      const oldestBackgroundWaitMs = total.oldest_background_wait_ms;
+      return {
+        counts: {
+          pending: numberValue(total.pending ?? 0),
+          leased: numberValue(total.leased ?? 0),
+          deferred: numberValue(total.deferred ?? 0),
+          ready: numberValue(total.ready ?? 0),
+          failed: numberValue(total.failed ?? 0),
+          stale: numberValue(total.stale ?? 0),
+          invalidated: numberValue(total.invalidated ?? 0)
+        },
+        bySchedulingClass,
+        byWorkReason,
+        oldestBackgroundWaitMs:
+          oldestBackgroundWaitMs === null ||
+          oldestBackgroundWaitMs === undefined
+            ? null
+            : Math.max(numberValue(oldestBackgroundWaitMs), 0),
+        completionEstimate: {
+          status: "unavailable" as const,
+          reason: "insufficient_measured_throughput" as const
+        }
+      };
     },
 
     async invalidateSemanticPreview(actor, input) {
@@ -14381,9 +15321,9 @@ export const createSharedMemoryRepository = (
           sourceArtifactHash: artifact.artifactHash,
           sourceManifestHash: artifact.manifestHash,
           sanitizedSourcePreviewId: sanitized.record.id,
-          classificationResultId: sanitized.payload.classificationResultId,
-          classificationPayloadBindingHash:
-            sanitized.payload.classificationPayloadBindingHash,
+          expectedManifestHash: sanitized.payload.expectedManifestHash,
+          expectedChunkCount: sanitized.payload.expectedChunkCount,
+          resultManifestHash: sanitized.payload.resultManifestHash,
           sourceItemIdentityHash: sanitized.payload.sourceItemIdentityHash,
           sourceItemCount: sanitized.payload.sourceItemCount,
           semanticPayloadBindingHash: sanitized.record.payloadBindingHash!,
@@ -17322,8 +18262,9 @@ export const createSharedMemoryRepository = (
                 r.record_version,r.state as representation_state,r.chunk_count,
                 r.created_at as representation_created_at,r.updated_at as representation_updated_at,
                 r.available_at,r.stale_at,r.invalidated_at,r.invalidation_reason_code,
-                semantic.classification_result_id,
-                semantic.classification_payload_binding_hash,
+                semantic.expected_manifest_hash,
+                semantic.expected_chunk_count,
+                semantic.result_manifest_hash,
                 semantic.source_item_identity_hash,
                 semantic.source_item_count,
                 semantic.payload_binding_hash as semantic_payload_binding_hash,
@@ -17533,10 +18474,9 @@ export const createSharedMemoryRepository = (
             sourceArtifactHash: stringValue(row.representation_artifact_hash),
             sourceManifestHash: representation.sourceManifestHash,
             sanitizedSourcePreviewId: representation.sanitizedSourcePreviewId,
-            classificationResultId: stringValue(row.classification_result_id),
-            classificationPayloadBindingHash: stringValue(
-              row.classification_payload_binding_hash
-            ),
+            expectedManifestHash: stringValue(row.expected_manifest_hash),
+            expectedChunkCount: numberValue(row.expected_chunk_count),
+            resultManifestHash: stringValue(row.result_manifest_hash),
             sourceItemIdentityHash: stringValue(row.source_item_identity_hash),
             sourceItemCount: numberValue(row.source_item_count),
             semanticPayloadBindingHash: stringValue(

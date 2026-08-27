@@ -1,17 +1,35 @@
 import { createHash } from "node:crypto";
 
 export {
+  createNotificationDrainController,
+  type NotificationDrainClient,
+  type NotificationDrainController,
+  type NotificationDrainPool
+} from "./notification-drain-controller.js";
+
+export {
   PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
-  PRIVACY_CLASSIFICATION_AGGREGATE_FIELD_LIMIT,
+  PRIVACY_CLASSIFICATION_CACHE_FIELD_LIMIT,
+  PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES,
+  PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES,
+  PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES,
+  PRIVACY_CLASSIFICATION_MANIFEST_VERSION,
   PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT,
+  PRIVACY_MAX_CONCURRENT_REQUESTS,
+  PRIVACY_MAX_FIELD_TOKENS,
   PRIVACY_REPLACEMENT_CONTRACT_VERSION,
+  PRIVACY_WINDOW_CONTEXT_TOKENS,
+  PRIVACY_WINDOW_CORE_TOKENS,
+  PRIVACY_WINDOW_MAX_TOKENS,
   allPrivacyLabelsPolicy,
   derivePrivacyFingerprintKey,
   noPrivacyLabelsPolicy,
-  privacyClassificationAggregateResponseSchema,
   privacyClassificationFieldRequestSchema,
   privacyClassificationRequestSchema,
   privacyClassificationResponseSchema,
+  privacyClassificationExpectedManifestHash,
+  privacyClassificationOrderedInputHash,
+  privacyClassificationResultManifestHash,
   privacyClassifiedFieldSchema,
   privacyClassifierHash,
   privacyContentPolicyHash,
@@ -19,6 +37,7 @@ export {
   privacyLabelPolicySchema,
   privacyLabelSchema,
   privacyLabels,
+  privacyServiceCapabilitiesSchema,
   resolveEffectivePrivacyPolicy,
   sanitizeTextWithPrivacySpans
 } from "./privacy-filter-contract.js";
@@ -26,10 +45,13 @@ export type {
   PrivacyClassificationFieldRequest,
   PrivacyClassificationRequest,
   PrivacyClassificationResponse,
+  PrivacyClassificationManifestChunk,
+  PrivacyClassificationResultManifestChunk,
   PrivacyClassifiedField,
   PrivacyDetectedSpan,
   PrivacyLabel,
   PrivacyLabelPolicy,
+  PrivacyServiceCapabilities,
   SanitizedPrivacyText
 } from "./privacy-filter-contract.js";
 export {
@@ -981,7 +1003,13 @@ export {
   extractSharedMemorySemanticClassificationFields,
   reconstructSharedMemorySemanticSanitizedItems,
   sharedMemoryRepresentations,
+  SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ITEMS,
   SharedMemoryConflictError,
+  SharedMemorySemanticResourceLimitError,
   SharedMemorySourceItemRejectedError,
   validateSharedMemoryCanonicalSourceItem,
   validateSharedMemorySemanticSanitizedReconstruction,

@@ -89,6 +89,7 @@ import {
 } from "../memory/index.js";
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
+  createNotificationDrainController,
   crossIdentitySyncDeterministicUuid,
   createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
   createTeamMemoryEnvelopeEncryptionProviderFromEnvironment,
@@ -558,40 +559,57 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         }
       }
     : undefined;
-  let pendingShareWorkerRunning = false;
-  const runPendingShareWorker = () => {
-    if (!pendingShareWorker || pendingShareWorkerRunning) return;
-    pendingShareWorkerRunning = true;
-    void pendingShareWorker({
-      limit: 10,
-      ensureCompanion: ensurePendingShareCompanion,
-      reportActivationFailure: (failure) =>
-        app.log.warn(
-          {
-            event: { name: "pending_share.activation.failed" },
-            pendingShareId: failure.pendingShareId,
-            failureStage: failure.failureStage,
-            errorClass: failure.errorClass,
-            errorCode: failure.errorCode
-          },
-          "Pending Share activation failed"
-        )
-    })
-      .catch((error: unknown) => {
-        app.log.error(
-          { err: error, event: { name: "pending_share.worker.failed" } },
-          "Pending Share worker failed"
+  const processPendingShareWork = pendingShareWorker
+    ? async () => {
+        const result = await pendingShareWorker({
+          limit: 10,
+          ensureCompanion: ensurePendingShareCompanion,
+          reportActivationFailure: (failure) =>
+            app.log.warn(
+              {
+                event: { name: "pending_share.activation.failed" },
+                pendingShareId: failure.pendingShareId,
+                failureStage: failure.failureStage,
+                errorClass: failure.errorClass,
+                errorCode: failure.errorCode,
+                resourceLimit: failure.resourceLimit ?? null
+              },
+              "Pending Share activation failed"
+            )
+        });
+        pendingShareDrain?.scheduleRetry(
+          (await repository?.getNextPendingShareWorkAt()) ?? null
         );
-      })
-      .finally(() => {
-        pendingShareWorkerRunning = false;
-      });
-  };
-  const pendingShareWorkerTimer = pendingShareWorker
-    ? setInterval(runPendingShareWorker, 5_000)
+        return result;
+      }
     : null;
-  pendingShareWorkerTimer?.unref();
-  runPendingShareWorker();
+  const pendingShareDrain =
+    processPendingShareWork && pool
+      ? createNotificationDrainController({
+          channels: [
+            "koed_pending_share_activation",
+            "koed_collaboration_realtime"
+          ],
+          wakePool: pool,
+          processOnce: processPendingShareWork,
+          shouldContinue: (result) => result.claimed === 10,
+          onProcessError: (error) =>
+            app.log.error(
+              { err: error, event: { name: "pending_share.worker.failed" } },
+              "Pending Share worker failed"
+            )
+        })
+      : null;
+  if (pendingShareDrain) {
+    pendingShareDrain.start();
+  } else if (processPendingShareWork) {
+    void processPendingShareWork().catch((error: unknown) =>
+      app.log.error(
+        { err: error, event: { name: "pending_share.worker.failed" } },
+        "Pending Share worker failed"
+      )
+    );
+  }
   const hashSecret = createHashSecret(config.apiTokenPepper);
   app.addHook("onClose", async () => {
     graphStreamService?.close();
@@ -599,7 +617,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     await collaborationRealtimeBroker?.close();
     await teamConversationSourceService?.close();
     if (relayCleanupTimer) clearInterval(relayCleanupTimer);
-    if (pendingShareWorkerTimer) clearInterval(pendingShareWorkerTimer);
+    await pendingShareDrain?.stop();
     if (pendingShareSourceWorkerTimer) {
       clearInterval(pendingShareSourceWorkerTimer);
     }

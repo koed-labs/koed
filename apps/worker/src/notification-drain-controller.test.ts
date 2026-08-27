@@ -169,7 +169,39 @@ describe("notification drain controller", () => {
     expect(processOnce).toHaveBeenCalledTimes(1);
     controller.scheduleRetry("2026-08-21T00:00:10.000Z");
     controller.scheduleRetry("2026-08-21T00:00:05.000Z");
+    controller.scheduleRetry(null);
+    controller.scheduleRetry("2026-08-21T00:00:08.000Z");
     await vi.advanceTimersByTimeAsync(4_999);
+    expect(processOnce).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(processOnce).toHaveBeenCalledTimes(2);
+
+    await controller.stop();
+    vi.useRealTimers();
+  });
+
+  it("retries transient processing failures with bounded backoff", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-21T00:00:00.000Z"));
+    const client = wakeClient();
+    const processOnce = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("temporarily unavailable"))
+      .mockResolvedValue(undefined);
+    const onProcessError = vi.fn();
+    const controller = createNotificationDrainController({
+      channels: ["wake_channel"],
+      wakePool: { connect: vi.fn(async () => client) },
+      processOnce,
+      onProcessError,
+      processRetryBaseMs: 25
+    });
+
+    controller.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(processOnce).toHaveBeenCalledTimes(1);
+    expect(onProcessError).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(24);
     expect(processOnce).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(processOnce).toHaveBeenCalledTimes(2);

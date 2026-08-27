@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PRIVACY_CLASSIFICATION_CONTRACT_VERSION } from "@koed/shared";
 import { validateClassifyRequest } from "./schemas.js";
 
-const limits = { maxFields: 2, maxFieldChars: 5, maxRequestChars: 7 };
+const limits = { maxFields: 2, maxFieldBytes: 5, maxRequestFieldBytes: 7 };
 const request = (fields: Array<{ path: string; text: string }>) => ({
   schemaVersion: 1,
   inputContractVersion: PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
@@ -41,7 +41,7 @@ describe("classification request schema", () => {
     ).toThrow(/maximum/);
     expect(() =>
       validateClassifyRequest(request([{ path: "a", text: "123456" }]), limits)
-    ).toThrow(/character limit/);
+    ).toThrow(/byte limit/);
     expect(() =>
       validateClassifyRequest(
         request([
@@ -50,7 +50,7 @@ describe("classification request schema", () => {
         ]),
         limits
       )
-    ).toThrow(/total character/);
+    ).toThrow(/total UTF-8 byte/);
     expect(() =>
       validateClassifyRequest(
         request([

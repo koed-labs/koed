@@ -3,8 +3,10 @@ import {
   PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
   privacyClassificationRequestSchema,
   privacyClassificationResponseSchema,
+  privacyServiceCapabilitiesSchema,
   type PrivacyClassificationFieldRequest,
-  type PrivacyClassificationResponse
+  type PrivacyClassificationResponse,
+  type PrivacyServiceCapabilities
 } from "./privacy-filter-contract.js";
 
 export class PrivacyServiceUnavailableError extends Error {
@@ -24,6 +26,7 @@ export class PrivacyServiceContractError extends Error {
 }
 
 export interface PrivacyServiceClient {
+  capabilities(): Promise<PrivacyServiceCapabilities>;
   classify(
     fields: readonly PrivacyClassificationFieldRequest[]
   ): Promise<PrivacyClassificationResponse>;
@@ -84,6 +87,35 @@ export const createPrivacyServiceClient = (
   const fetchImpl = options.fetchImpl ?? fetch;
 
   return {
+    async capabilities() {
+      try {
+        const response = await fetchImpl(`${baseUrl}/v1/capabilities`, {
+          method: "GET",
+          headers: {
+            "x-koed-privacy-token": token,
+            "x-request-id": randomUUID()
+          },
+          signal: AbortSignal.timeout(timeoutMs)
+        });
+        if (!response.ok) {
+          throw new PrivacyServiceContractError(
+            `Privacy capability request was rejected (${response.status})`
+          );
+        }
+        const parsed = privacyServiceCapabilitiesSchema.safeParse(
+          await response.json()
+        );
+        if (!parsed.success) throw new PrivacyServiceContractError();
+        return parsed.data;
+      } catch (error) {
+        if (error instanceof PrivacyServiceContractError) throw error;
+        throw new PrivacyServiceUnavailableError(
+          error instanceof Error && error.name === "TimeoutError"
+            ? "Privacy capability request timed out"
+            : undefined
+        );
+      }
+    },
     async classify(fields) {
       const request = privacyClassificationRequestSchema.parse({
         schemaVersion: 1,

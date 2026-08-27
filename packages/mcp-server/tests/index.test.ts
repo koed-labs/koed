@@ -1485,12 +1485,13 @@ describe("LCM summary background service", () => {
           limit: 10,
           config: {
             ...resolveMemoryAnswerWorkerConfig({
+              KOED_HOME: directory,
               MEMORY_ANSWER_PROVIDER: "codex",
               MEMORY_ANSWER_TIMEOUT_MS: "5000",
               MEMORY_ANSWER_MAX_ATTEMPTS: "1",
               MEMORY_ANSWER_MAX_SEARCHES: "2",
               MEMORY_ANSWER_MAX_EXPANSIONS: "0",
-              MEMORY_ANSWER_CODEX_BINARY:
+              MEMORY_CODEX_APP_SERVER_BINARY:
                 writeFakeMemoryAnswerAppServer(directory)
             }),
             cwd: "/tmp"
@@ -1975,12 +1976,13 @@ describe("LCM summary background service", () => {
           limit: 10,
           config: {
             ...resolveMemoryAnswerWorkerConfig({
+              KOED_HOME: directory,
               MEMORY_ANSWER_PROVIDER: "codex",
               MEMORY_ANSWER_TIMEOUT_MS: "5000",
               MEMORY_ANSWER_MAX_ATTEMPTS: "1",
               MEMORY_ANSWER_MAX_SEARCHES: "2",
               MEMORY_ANSWER_MAX_EXPANSIONS: "0",
-              MEMORY_ANSWER_CODEX_BINARY: appServerBinary
+              MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary
             }),
             cwd: "/tmp"
           }

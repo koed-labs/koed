@@ -4028,6 +4028,92 @@ describe("CollaborationApp", () => {
     expect(document.body.textContent).toContain("Renderer cutover");
   });
 
+  it("renders a Privacy filtering terminal Pending Share as needing attention", async () => {
+    const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
+    const item: OwnedShareItem = {
+      kind: "pending",
+      pendingShare: {
+        source: {
+          kind: "captured_session",
+          sessionId: ids.eventSession,
+          logicalMemoryId: ids.logicalMemory
+        },
+        sourceCapabilities: ["memory_events"],
+        activationRepresentation: "memory_events",
+        id: uuid(591),
+        mutationId: uuid(592),
+        logicalGrantId: uuid(593),
+        consentId: uuid(594),
+        logicalMemoryId: ids.logicalMemory,
+        teamId: ids.team,
+        workspaceId: ids.workspace,
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
+        mode: "continuous",
+        sourceRevision: 12,
+        state: "needs_attention",
+        stage: "privacy_filtering",
+        workspaceAccessState: "none",
+        sourceUpdateState: "failed",
+        operationVersion: 3,
+        attemptCount: 1,
+        redactedFailureCode: "privacy_classification_terminal",
+        lastProgressAt: at,
+        createdAt: at,
+        updatedAt: at,
+        activatedAt: null,
+        revokedAt: null,
+        grantId: null,
+        grantVersion: null
+      },
+      sourceAccess: null,
+      summary: {
+        source: {
+          kind: "captured_session",
+          sessionId: ids.eventSession,
+          logicalMemoryId: ids.logicalMemory
+        },
+        sourceSessionId: ids.eventSession,
+        sourceTitle: "Privacy filtering fixture",
+        teamName: "Atlas Research",
+        workspaceName: "Launch Plans",
+        workspaceContentAccess: "unavailable",
+        mode: "continuous",
+        authorizedPreview: null,
+        lastReadyRevision: null,
+        lastSuccessfulUpdateAt: null
+      }
+    };
+    const client = createClient(snapshot);
+    vi.mocked(client.listOwnedShares).mockResolvedValue({
+      shares: [item],
+      nextCursor: null
+    });
+
+    await act(async () =>
+      root.render(
+        <PersonalMemoryView
+          client={client}
+          initialSection="shares"
+          markdownAdapters={{ openExternal: vi.fn(), writeClipboard: vi.fn() }}
+          onShare={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+
+    await vi.waitFor(() =>
+      expect(
+        document.body.querySelector(
+          '[aria-label="Privacy filtering fixture, Launch Plans, Needs attention"]'
+        )
+      ).not.toBeNull()
+    );
+    expect(
+      document.body.querySelector(".collab-share-row-error")
+    ).not.toBeNull();
+  });
+
   it("keeps Shares detail focus stable while a continuous Pending Share pauses", async () => {
     const setInterval = vi.spyOn(window, "setInterval");
     const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });

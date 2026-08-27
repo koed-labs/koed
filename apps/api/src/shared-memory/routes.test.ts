@@ -563,6 +563,9 @@ const createFixture = () => {
     async processPendingShares() {
       return { claimed: 0, activated: 0, waiting: 0, failed: 0 };
     },
+    async getNextPendingShareWorkAt() {
+      return null;
+    },
     async controlPendingShare() {
       throw new SharedMemoryAuthorizationError();
     },
@@ -605,6 +608,24 @@ const createFixture = () => {
     async readPendingSemanticPrivacyTarget() {
       return null;
     },
+    async claimSemanticPrivacyTarget() {
+      return null;
+    },
+    async renewSemanticPrivacyClaim() {
+      return null;
+    },
+    async releaseSemanticPrivacyClaim() {
+      return false;
+    },
+    async initializeSemanticPrivacyManifest() {
+      return [];
+    },
+    async attachSemanticPrivacyChunkResult() {
+      throw new Error("not used by route tests");
+    },
+    async listSemanticPrivacyManifest() {
+      return [];
+    },
     async storeSanitizedSemanticPreview() {
       throw new Error("not used by route tests");
     },
@@ -614,7 +635,36 @@ const createFixture = () => {
     async deferSemanticPrivacyTarget() {
       return null;
     },
-    async getNextSemanticPrivacyRetryAt() {
+    async getNextSemanticPrivacyWorkAt() {
+      return null;
+    },
+    async getSemanticPrivacyBacklogDiagnostics() {
+      return {
+        counts: {
+          pending: 0,
+          leased: 0,
+          deferred: 0,
+          ready: 0,
+          failed: 0,
+          stale: 0,
+          invalidated: 0
+        },
+        bySchedulingClass: { foreground: 0, background: 0 },
+        byWorkReason: {
+          share_activation: 0,
+          source_revision_classification: 0,
+          policy_remasking: 0,
+          classifier_rematerialization: 0,
+          background_repair: 0
+        },
+        oldestBackgroundWaitMs: null,
+        completionEstimate: {
+          status: "unavailable",
+          reason: "insufficient_measured_throughput"
+        }
+      };
+    },
+    async tryAcquireSemanticPrivacyFinalizationLease() {
       return null;
     },
     async invalidateSemanticPreview() {

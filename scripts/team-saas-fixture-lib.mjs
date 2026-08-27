@@ -1595,6 +1595,54 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
   const classificationPayloadBindingHash = fixtureHash(
     `memory:${memory.key}:privacy-classification-payload`
   );
+  const classificationFields =
+    runtime.shared.extractSharedMemorySemanticClassificationFields([item]);
+  const classificationInputFields = classificationFields.map(
+    ({ path, text }) => ({ path, text })
+  );
+  const classificationInputIdentityHash =
+    runtime.privacyRepository.classificationInputIdentity({
+      actor: { userId: owner.id },
+      fields: classificationInputFields
+    });
+  const orderedInputHash = runtime.shared.privacyClassificationOrderedInputHash(
+    classificationInputFields
+  );
+  const classificationChunk = {
+    chunkIndex: 0,
+    firstFieldIndex: 0,
+    fieldCount: classificationFields.length,
+    inputIdentityHash: classificationInputIdentityHash,
+    orderedInputHash
+  };
+  const expectedManifestHash =
+    runtime.shared.privacyClassificationExpectedManifestHash({
+      semanticPreviewId: sanitizedSourcePreviewId,
+      sourcePreviewHash: previewHash,
+      sourceArtifactHash: artifactHash,
+      sourceManifestHash: manifestHash,
+      sourceRevision: 1,
+      classifierGenerationId,
+      classifierHash,
+      effectivePrivacyPolicyHash: contentPolicyHash,
+      fieldCount: classificationFields.length,
+      chunks: [classificationChunk]
+    });
+  const resultManifestHash =
+    runtime.shared.privacyClassificationResultManifestHash({
+      expectedManifestHash,
+      chunks: [
+        {
+          ...classificationChunk,
+          classificationResultId,
+          classificationPayloadBindingHash
+        }
+      ]
+    });
+  const classificationByteCount = classificationFields.reduce(
+    (total, field) => total + field.inputByteLength,
+    0
+  );
   const sourceItemIdentityHash = runtime.sharedMemorySourceItemIdentityHash([
     item
   ]);
@@ -1616,8 +1664,9 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     teamId: fixtureTeam.id,
     teamWorkspaceId: workspace.id,
     representation: memory.representation,
-    classificationResultId,
-    classificationPayloadBindingHash,
+    expectedManifestHash,
+    expectedChunkCount: 1,
+    resultManifestHash,
     classifierGenerationId,
     classifierVersion,
     classifierHash,
@@ -1649,8 +1698,8 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       owner.id,
       classifierGenerationId,
       classifierHash,
-      fixtureHash(`memory:${memory.key}:owner-content`),
-      Buffer.byteLength(JSON.stringify([item]), "utf8"),
+      classificationInputIdentityHash,
+      classificationByteCount,
       classificationPayloadBindingHash,
       memory.capturedAt
     ]
@@ -1685,8 +1734,9 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
         teamId: fixtureTeam.id,
         teamWorkspaceId: workspace.id,
         representation: memory.representation,
-        classificationResultId,
-        classificationPayloadBindingHash,
+        expectedManifestHash,
+        expectedChunkCount: 1,
+        resultManifestHash,
         classifierGenerationId,
         classifierVersion,
         classifierHash,
@@ -1704,14 +1754,16 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        source_preview_hash, source_artifact_hash, source_manifest_hash,
        source_revision, source_hash, logical_memory_id, owner_user_id,
        owner_principal_id, team_id, team_workspace_id, representation,
-       classification_result_id, classification_payload_binding_hash,
+       expected_manifest_hash, expected_chunk_count, completed_chunk_count,
+       result_manifest_hash, classification_field_count,
+       classification_byte_count,
        classifier_generation_id, classifier_version, classifier_hash,
        effective_privacy_policy_hash, source_item_identity_hash,
        source_item_count, sanitized_content_hash, payload_binding_hash,
        status, ready_at
      ) values (
-       $1,$2,$3,1,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-       $18,$19,$20,1,$21,$22,'ready',$23
+       $1,$2,$3,1,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,$13,$14,1,1,$15,$16,$17,
+       $18,$19,$20,$21,$22,1,$23,$24,'ready',$25
      )`,
     [
       sanitizedSourcePreviewId,
@@ -1727,8 +1779,10 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       fixtureTeam.id,
       workspace.id,
       memory.representation,
-      classificationResultId,
-      classificationPayloadBindingHash,
+      expectedManifestHash,
+      resultManifestHash,
+      classificationFields.length,
+      classificationByteCount,
       classifierGenerationId,
       classifierVersion,
       classifierHash,
@@ -1736,6 +1790,23 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       sourceItemIdentityHash,
       sanitizedContentHash,
       semanticPayloadBindingHash,
+      memory.capturedAt
+    ]
+  );
+  await client.query(
+    `insert into shared_source_semantic_preview_classification_chunks (
+       id, semantic_preview_id, chunk_index, first_field_index, field_count,
+       input_identity_hash, ordered_input_hash, classification_result_id,
+       classification_payload_binding_hash, status, ready_at
+     ) values ($1,$2,0,0,$3,$4,$5,$6,$7,'ready',$8)`,
+    [
+      fixtureUuid(`memory:${memory.key}:privacy-chunk:0`),
+      sanitizedSourcePreviewId,
+      classificationFields.length,
+      classificationInputIdentityHash,
+      orderedInputHash,
+      classificationResultId,
+      classificationPayloadBindingHash,
       memory.capturedAt
     ]
   );
@@ -1778,8 +1849,9 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
     sourceArtifactHash: artifactHash,
     sourceManifestHash: manifestHash,
     sanitizedSourcePreviewId,
-    classificationResultId,
-    classificationPayloadBindingHash,
+    expectedManifestHash,
+    expectedChunkCount: 1,
+    resultManifestHash,
     sourceItemIdentityHash,
     sourceItemCount: 1,
     semanticPayloadBindingHash,
@@ -2415,10 +2487,12 @@ export const resetFixture = async (client) => {
     await client.query(
       `create temporary table fixture_reset_privacy_classifications
          on commit drop as
-       select distinct classification_result_id as id
-         from shared_source_semantic_previews
-        where source_preview_id in (select id from fixture_reset_shared_previews)
-           or logical_memory_id = any($1::uuid[])
+       select distinct chunk.classification_result_id as id
+         from shared_source_semantic_preview_classification_chunks chunk
+         join shared_source_semantic_previews preview
+           on preview.id=chunk.semantic_preview_id
+        where preview.source_preview_id in (select id from fixture_reset_shared_previews)
+           or preview.logical_memory_id = any($1::uuid[])
        union
        select unnest($2::uuid[])`,
       [

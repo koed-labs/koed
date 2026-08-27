@@ -4,8 +4,13 @@ import {
   derivePrivacyFingerprintKey,
   noPrivacyLabelsPolicy,
   PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
+  PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES,
+  PRIVACY_MAX_FIELD_TOKENS,
   privacyClassificationRequestSchema,
   privacyClassificationResponseSchema,
+  privacyClassificationExpectedManifestHash,
+  privacyClassificationOrderedInputHash,
+  privacyClassificationResultManifestHash,
   privacyContentPolicyHash,
   resolveEffectivePrivacyPolicy,
   sanitizeTextWithPrivacySpans
@@ -21,6 +26,48 @@ describe("privacy filter contract", () => {
       Buffer.from(derivePrivacyFingerprintKey("root-b"))
     );
     expect(() => derivePrivacyFingerprintKey(" ")).toThrow();
+  });
+
+  it("binds ordered inputs, expected chunks, and result chunks separately", () => {
+    const fields = [
+      { path: "/0/content/text", text: "first" },
+      { path: "/1/content/text", text: "second" }
+    ];
+    const chunk = {
+      chunkIndex: 0,
+      firstFieldIndex: 0,
+      fieldCount: 2,
+      inputIdentityHash: "1".repeat(64),
+      orderedInputHash: privacyClassificationOrderedInputHash(fields)
+    };
+    expect(chunk.orderedInputHash).not.toBe(
+      privacyClassificationOrderedInputHash([...fields].reverse())
+    );
+    const expectedManifestHash = privacyClassificationExpectedManifestHash({
+      semanticPreviewId: "00000000-0000-4000-8000-000000000001",
+      sourcePreviewHash: "2".repeat(64),
+      sourceArtifactHash: "3".repeat(64),
+      sourceManifestHash: "4".repeat(64),
+      sourceRevision: 1,
+      classifierGenerationId: "00000000-0000-4000-8000-000000000002",
+      classifierHash: "5".repeat(64),
+      effectivePrivacyPolicyHash: "6".repeat(64),
+      fieldCount: 2,
+      chunks: [chunk]
+    });
+    expect(expectedManifestHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(
+      privacyClassificationResultManifestHash({
+        expectedManifestHash,
+        chunks: [
+          {
+            ...chunk,
+            classificationResultId: "00000000-0000-4000-8000-000000000003",
+            classificationPayloadBindingHash: "7".repeat(64)
+          }
+        ]
+      })
+    ).not.toBe(expectedManifestHash);
   });
   it("requires distinct field paths and a bound classifier identity", () => {
     expect(
@@ -62,6 +109,42 @@ describe("privacy filter contract", () => {
         ]
       }).success
     ).toBe(true);
+  });
+
+  it("admits maximum-size UTF-8 fields under the pinned byte-token bound", () => {
+    const repeatedCode = "const value = await lookup(input);\n";
+    const byteHeavy = Array.from({ length: 128 }, (_, index) =>
+      String.fromCharCode(index)
+    ).join("");
+    const fixtures = [
+      "a".repeat(PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES),
+      "é".repeat(PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES / 2),
+      "😀".repeat(PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES / 4),
+      repeatedCode
+        .repeat(
+          Math.ceil(
+            PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES /
+              Buffer.byteLength(repeatedCode, "utf8")
+          )
+        )
+        .slice(0, PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES),
+      byteHeavy.repeat(
+        PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES /
+          Buffer.byteLength(byteHeavy, "utf8")
+      )
+    ];
+    for (const text of fixtures) {
+      const utf8Bytes = Buffer.from(text, "utf8");
+      expect(utf8Bytes).toHaveLength(PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES);
+      expect(utf8Bytes.length).toBeLessThanOrEqual(PRIVACY_MAX_FIELD_TOKENS);
+      expect(
+        privacyClassificationRequestSchema.safeParse({
+          schemaVersion: 1,
+          inputContractVersion: PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
+          fields: [{ path: "/content/text", text }]
+        }).success
+      ).toBe(true);
+    }
   });
 
   it("resolves policy as a monotonic union", () => {
