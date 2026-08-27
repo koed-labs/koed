@@ -189,6 +189,8 @@ const createJournalFixture = async (
     {
       sessionId: session.id,
       ...sourceIdentity(keys),
+      sourceRuntime: pi ? "pi" : "codex-cli",
+      sourceAdapterVersion: pi ? "pi-session-v1" : "codex-transcript-v1",
       sourceKind: pi ? "pi" : "codex",
       externalSessionId,
       sourceFingerprint: digest(`artifact:${externalSessionId}`),
