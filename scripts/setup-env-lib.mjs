@@ -11,12 +11,13 @@ export const retainedCompatibilityKeys = new Set([
   "API_TEAM_MEMORY_DATA_ENCRYPTION_KEY"
 ]);
 
-// PR #351 lowered these llama.cpp accelerator microbatches. Existing .env
-// files are normally preserved by setup, so migrate only the old documented
-// defaults and leave intentional Operator overrides untouched.
+// Existing .env files are normally preserved by setup. Migrate only the old
+// documented accelerator defaults and leave intentional Operator overrides
+// untouched.
 export const legacyEmbeddingAccelerationDefaults = new Map([
-  ["EMBEDDING_LLAMA_N_UBATCH", "8192"],
-  ["EMBEDDING_RERANKER_LLAMA_N_UBATCH", "8192"]
+  ["EMBEDDING_LLAMA_N_CTX", { from: "32768", to: "8192" }],
+  ["EMBEDDING_LLAMA_N_UBATCH", { from: "8192", to: "512" }],
+  ["EMBEDDING_RERANKER_LLAMA_N_UBATCH", { from: "8192", to: "512" }]
 ]);
 
 export const splitEnvLine = (line) => {
@@ -40,12 +41,13 @@ export const migrateLegacyEmbeddingAccelerationDefaults = (contents) =>
     .split(/\r?\n/)
     .map((line) => {
       const entry = splitEnvLine(line);
-      const legacyValue = entry
+      const migration = entry
         ? legacyEmbeddingAccelerationDefaults.get(entry.key)
         : undefined;
-      return legacyValue !== undefined && entry.value.trim() === legacyValue
-        ? `${entry.key}=512`
-        : line;
+      if (migration === undefined || entry.value.trim() !== migration.from) {
+        return line;
+      }
+      return `${entry.key}=${migration.to}`;
     })
     .join("\n");
 
