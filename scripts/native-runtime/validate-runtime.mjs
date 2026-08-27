@@ -403,13 +403,14 @@ try {
     console.log(
       "Usage: native-runtime:validate -- --runtime-root <path> [--platform darwin|linux] [--json]"
     );
-    process.exit(0);
+    process.exitCode = 0;
+  } else {
+    const result = await runValidation(options);
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else if (!result.ok) console.error(result.errors.join("\n"));
+    else console.log("Native runtime validation passed.");
+    process.exitCode = result.ok ? 0 : 1;
   }
-  const result = await runValidation(options);
-  if (options.json) console.log(JSON.stringify(result, null, 2));
-  else if (!result.ok) console.error(result.errors.join("\n"));
-  else console.log("Native runtime validation passed.");
-  process.exit(result.ok ? 0 : 1);
 } catch (error) {
   if (process.argv.includes("--json"))
     console.log(
@@ -423,5 +424,5 @@ try {
       )
     );
   else console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  process.exitCode = 1;
 }

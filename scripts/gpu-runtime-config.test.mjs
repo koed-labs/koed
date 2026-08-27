@@ -71,6 +71,12 @@ test("Linux native artifact CI installs and requires the pinned CUDA toolkit", (
     /key:[^\n]*(?:loader-validation|validate-runtime)/
   );
   assert.doesNotMatch(releaseJob, /cuda-toolkit|Cold-build/);
+  assert.equal(
+    releaseJob.match(/jq '\{ok, errors, timings, postgresExtensions:/g)?.length,
+    2,
+    "both Linux release validations should emit compact failure diagnostics"
+  );
+  assert.doesNotMatch(releaseJob, /run: pnpm native-runtime:validate/);
   assert.match(
     buildScript,
     /Pinned CUDA runtime is required for the Linux x64 artifact/
