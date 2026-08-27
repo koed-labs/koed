@@ -45,9 +45,9 @@ import {
 } from "../../../NativeConversationSurface.js";
 import {
   projectIsActive,
+  projectLatestAt,
   relativeTime,
-  repoLabelFromRemoteDisplay,
-  repoUrlFromRemoteDisplay,
+  repositoryPresentationFromRemoteDisplay,
   sessionPreview,
   sessionSelectionId
 } from "../../../project-memory-ui.js";
@@ -96,7 +96,7 @@ export type PersonalMemoryWorkspaceProps = {
   onInspectEvent?: (selection: PersonalMemoryInspectorEvent) => void;
   onNavigate: (route: PersonalMemoryRoute) => void;
   openExternal?: (url: string) => Promise<void>;
-  openLocalPath?: (path: string) => Promise<void>;
+  revealLocalProject?: (localProjectId: string) => Promise<void>;
   onSessionProjectAssigned?: (input: {
     projectId: string | null;
     sessionId: string;
@@ -112,47 +112,6 @@ export type PersonalMemoryWorkspaceProps = {
 const countLabel = (count: number, singular: string): string =>
   `${count} ${count === 1 ? singular : `${singular}s`}`;
 
-// A non-button clickable region for use inside an ancestor <button> (e.g. a
-// Project or Session row), where nesting a real <button> would be invalid
-// HTML and would also hijack the row's own click/keyboard handling.
-function InlineAction({
-  ariaLabel,
-  children,
-  className,
-  onActivate,
-  title,
-  tooltip = false
-}: {
-  ariaLabel: string;
-  children: ReactNode;
-  className: string;
-  onActivate: () => void;
-  title: string;
-  tooltip?: boolean;
-}) {
-  return (
-    <span
-      aria-label={ariaLabel}
-      className={className}
-      onClick={(event) => {
-        event.stopPropagation();
-        onActivate();
-      }}
-      onKeyDown={(event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        event.stopPropagation();
-        onActivate();
-      }}
-      role="button"
-      tabIndex={0}
-      {...(tooltip ? { "data-tooltip": title } : { title })}
-    >
-      {children}
-    </span>
-  );
-}
-
 function ProjectRepo({
   onOpenRepository,
   remoteDisplay
@@ -160,30 +119,36 @@ function ProjectRepo({
   onOpenRepository?: (url: string) => void;
   remoteDisplay: string;
 }) {
-  const repoLabel = repoLabelFromRemoteDisplay(remoteDisplay);
+  const repository = repositoryPresentationFromRemoteDisplay(remoteDisplay);
+  const RepositoryIcon = repository.provider === "github" ? Github : GitFork;
+  const actionLabel =
+    repository.provider === "github"
+      ? `Open ${repository.label} on GitHub`
+      : `Open repository ${repository.label}`;
   if (!onOpenRepository) {
     return (
       <span
-        aria-label={`Repository ${repoLabel}`}
+        aria-label={`Repository ${repository.label}`}
         className="personal-project-repo personal-project-repo-static"
+        data-repository-provider={repository.provider}
       >
-        <Github aria-hidden="true" />
-        <span>{repoLabel}</span>
+        <RepositoryIcon aria-hidden="true" />
+        <span>{repository.label}</span>
       </span>
     );
   }
   return (
-    <InlineAction
-      ariaLabel={`Open ${repoLabel} on GitHub`}
+    <button
+      aria-label={actionLabel}
       className="personal-project-repo"
-      onActivate={() =>
-        onOpenRepository(repoUrlFromRemoteDisplay(remoteDisplay))
-      }
-      title={`Open ${repoLabel} on GitHub`}
+      data-repository-provider={repository.provider}
+      onClick={() => onOpenRepository(repository.url)}
+      title={actionLabel}
+      type="button"
     >
-      <Github aria-hidden="true" />
-      <span>{repoLabel}</span>
-    </InlineAction>
+      <RepositoryIcon aria-hidden="true" />
+      <span>{repository.label}</span>
+    </button>
   );
 }
 
@@ -223,15 +188,6 @@ function ProjectOverview({
     </span>
   );
 }
-
-const projectActivity = (
-  project: Pick<DesktopProject, "threads">
-): string | null =>
-  project.threads
-    .map((thread) => thread.latestAt)
-    .filter((timestamp) => Number.isFinite(Date.parse(timestamp)))
-    .sort()
-    .at(-1) ?? null;
 
 const sourceAiClientIdentity = (
   source: PersonalDesktopProjectThread["sourceAiClient"]
@@ -340,6 +296,7 @@ function ProjectRow({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const latestAt = projectLatestAt(project);
   return (
     <button
       aria-current={selected ? "page" : undefined}
@@ -359,9 +316,7 @@ function ProjectRow({
           sessionCount={project.threads.length}
         />
       </span>
-      <time dateTime={projectActivity(project) ?? undefined}>
-        {relativeTime(projectActivity(project))}
-      </time>
+      <time dateTime={latestAt ?? undefined}>{relativeTime(latestAt)}</time>
     </button>
   );
 }
@@ -494,82 +449,98 @@ function ProjectsPane({
 }
 
 function SessionRow({
-  onOpenLocalPath,
+  localProjectId,
   onOpenRepository,
+  onRevealLocalProject,
   onSelect,
+  projectName,
   remoteDisplay,
   thread
 }: {
-  onOpenLocalPath?: (path: string) => void;
+  localProjectId?: string | null;
   onOpenRepository?: (url: string) => void;
+  onRevealLocalProject?: (localProjectId: string) => void;
   onSelect: () => void;
+  projectName: string;
   remoteDisplay?: string | null;
   thread: PersonalDesktopProjectThread;
 }) {
-  const path = thread.projectPath;
-  const repoLabel = remoteDisplay
-    ? repoLabelFromRemoteDisplay(remoteDisplay)
+  const repository = remoteDisplay
+    ? repositoryPresentationFromRemoteDisplay(remoteDisplay)
     : null;
+  const RepositoryIcon = repository?.provider === "github" ? Github : GitFork;
+  const repositoryActionLabel = repository
+    ? repository.provider === "github"
+      ? `Open ${repository.label} on GitHub`
+      : `Open repository ${repository.label}`
+    : null;
+  const revealLabel = `Reveal ${projectName} in file browser`;
   return (
-    <button
+    <div
       className="personal-session-row"
       data-session-id={sessionSelectionId(thread)}
-      onClick={onSelect}
-      type="button"
     >
-      <AiClientSourceMark
-        source={thread.sessionId ? thread.sourceAiClient : null}
-      />
-      <span className="personal-session-copy">
-        <span>
-          <strong>{thread.name || "Untitled session"}</strong>
-          {thread.invalidatedCount ? (
-            <small className="personal-invalidated-label">
-              {thread.invalidatedCount} invalidated
-            </small>
-          ) : null}
-        </span>
-        <small>{sessionPreview(thread)}</small>
-      </span>
-      <span className="personal-session-meta">
-        <span
-          aria-label={countLabel(thread.eventCount, "Memory Event")}
-          className="personal-memory-event-count"
-        >
-          {thread.eventCount}
-          <Brain aria-hidden="true" />
-        </span>
-        <time dateTime={thread.latestAt}>{relativeTime(thread.latestAt)}</time>
-        {path || remoteDisplay ? (
-          <span className="personal-session-links">
-            {path && onOpenLocalPath ? (
-              <InlineAction
-                ariaLabel={`Reveal ${path} in file browser`}
-                className="personal-session-link"
-                onActivate={() => onOpenLocalPath(path)}
-                title={`Reveal ${path} in file browser`}
-                tooltip
-              >
-                <Folder aria-hidden="true" />
-              </InlineAction>
-            ) : null}
-            {remoteDisplay && onOpenRepository ? (
-              <InlineAction
-                ariaLabel={`Open ${repoLabel} on GitHub`}
-                className="personal-session-link"
-                onActivate={() =>
-                  onOpenRepository(repoUrlFromRemoteDisplay(remoteDisplay))
-                }
-                title={`Open ${repoLabel} on GitHub`}
-                tooltip
-              >
-                <Github aria-hidden="true" />
-              </InlineAction>
+      <button
+        className="personal-session-row-select"
+        onClick={onSelect}
+        type="button"
+      >
+        <AiClientSourceMark
+          source={thread.sessionId ? thread.sourceAiClient : null}
+        />
+        <span className="personal-session-copy">
+          <span>
+            <strong>{thread.name || "Untitled session"}</strong>
+            {thread.invalidatedCount ? (
+              <small className="personal-invalidated-label">
+                {thread.invalidatedCount} invalidated
+              </small>
             ) : null}
           </span>
-        ) : null}
-      </span>
-    </button>
+          <small>{sessionPreview(thread)}</small>
+        </span>
+        <span className="personal-session-meta">
+          <span
+            aria-label={countLabel(thread.eventCount, "Memory Event")}
+            className="personal-memory-event-count"
+          >
+            {thread.eventCount}
+            <Brain aria-hidden="true" />
+          </span>
+          <time dateTime={thread.latestAt}>
+            {relativeTime(thread.latestAt)}
+          </time>
+        </span>
+      </button>
+      {(localProjectId && onRevealLocalProject) ||
+      (repository && repositoryActionLabel && onOpenRepository) ? (
+        <span className="personal-session-links">
+          {localProjectId && onRevealLocalProject ? (
+            <button
+              aria-label={revealLabel}
+              className="personal-session-link"
+              data-tooltip={revealLabel}
+              onClick={() => onRevealLocalProject(localProjectId)}
+              type="button"
+            >
+              <Folder aria-hidden="true" />
+            </button>
+          ) : null}
+          {repository && repositoryActionLabel && onOpenRepository ? (
+            <button
+              aria-label={repositoryActionLabel}
+              className="personal-session-link"
+              data-repository-provider={repository.provider}
+              data-tooltip={repositoryActionLabel}
+              onClick={() => onOpenRepository(repository.url)}
+              type="button"
+            >
+              <RepositoryIcon aria-hidden="true" />
+            </button>
+          ) : null}
+        </span>
+      ) : null}
+    </div>
   );
 }
 
@@ -711,8 +682,8 @@ function ProjectDetail({
   managedConversationRevision,
   managedConversations,
   onManagedConversationStarted,
-  onOpenLocalPath,
   onOpenRepository,
+  onRevealLocalProject,
   onRetry,
   onSelectSession,
   project
@@ -729,8 +700,8 @@ function ProjectDetail({
   onManagedConversationStarted: (
     conversation: ManagedConversationIdentity
   ) => void;
-  onOpenLocalPath?: (path: string) => void;
   onOpenRepository?: (url: string) => void;
+  onRevealLocalProject?: (localProjectId: string) => void;
   onRetry: () => void;
   onSelectSession: (sessionId: string) => void;
   project: DesktopProject | null;
@@ -927,9 +898,11 @@ function ProjectDetail({
             {threads.map((thread) => (
               <SessionRow
                 key={sessionSelectionId(thread)}
-                onOpenLocalPath={onOpenLocalPath}
+                localProjectId={project.localProjectId}
                 onOpenRepository={onOpenRepository}
+                onRevealLocalProject={onRevealLocalProject}
                 onSelect={() => onSelectSession(sessionSelectionId(thread))}
+                projectName={project.name}
                 remoteDisplay={project.remoteDisplay}
                 thread={thread}
               />
@@ -1888,7 +1861,7 @@ export function PersonalMemoryWorkspace({
   onSessionProjectAssigned,
   onShareToWorkspace,
   openExternal,
-  openLocalPath,
+  revealLocalProject,
   projectWorkspaceSuggestions = [],
   route,
   sharingRecords = [],
@@ -1898,8 +1871,9 @@ export function PersonalMemoryWorkspace({
   const onOpenRepository = openExternal
     ? (url: string) => void openExternal(url).catch(() => undefined)
     : undefined;
-  const onOpenLocalPath = openLocalPath
-    ? (path: string) => void openLocalPath(path).catch(() => undefined)
+  const onRevealLocalProject = revealLocalProject
+    ? (localProjectId: string) =>
+        void revealLocalProject(localProjectId).catch(() => undefined)
     : undefined;
   const snapshot = usePersonalMemorySnapshot(store);
   const requestedRef = useRef(false);
@@ -2149,8 +2123,8 @@ export function PersonalMemoryWorkspace({
                 sessionId: conversation.capturedSessionId
               });
             }}
-            onOpenLocalPath={onOpenLocalPath}
             onOpenRepository={onOpenRepository}
+            onRevealLocalProject={onRevealLocalProject}
             onRetry={() => void store.loadProjects()}
             onSelectSession={(sessionId) => {
               if (!selectedProject) return;

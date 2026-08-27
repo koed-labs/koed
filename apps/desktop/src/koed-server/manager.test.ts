@@ -3050,32 +3050,81 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     });
   });
 
-  it("reveals a local path with the injected openPath dependency", async () => {
-    const openPath = vi.fn(async () => "");
+  it("reveals only a trusted path resolved from local Project metadata", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-reveal-"));
+    const configPath = resolve(koedHome, "config");
+    const trustedPath = resolve(koedHome, "projects", "koed");
+    const localProjectId = `lp_${"1".repeat(32)}`;
+    mkdirSync(configPath, { recursive: true });
+    writeFileSync(
+      resolve(configPath, "projects.json"),
+      JSON.stringify({
+        schemaVersion: 3,
+        updatedAt: "2026-07-24T00:00:00.000Z",
+        deviceSaltId: "pms_test",
+        projects: [
+          {
+            schemaVersion: 1,
+            discoveredAt: "2026-07-23T00:00:00.000Z",
+            lastSeenAt: "2026-07-24T00:00:00.000Z",
+            localProjectId,
+            displayName: "koed",
+            path: {
+              cwd: trustedPath,
+              projectRoot: trustedPath,
+              basename: "koed",
+              localPathHash: "hmac_sha256:path"
+            },
+            packages: []
+          }
+        ]
+      })
+    );
+    const revealPath = vi.fn();
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
-      environment: {},
+      environment: { KOED_HOME: koedHome },
       createCliInvocation: (args) => ({
         command: "/node",
         args: ["/repo/cli.js", ...args],
-        env: {}
+        env: { KOED_HOME: koedHome }
       }),
-      existsSync: () => true,
+      existsSync: (path) => path === trustedPath,
       execFile: (_command, _args, _options, callback) =>
         callback(null, JSON.stringify({ ok: true }), ""),
       spawn: () => childProcess() as never,
       openExternal: async () => undefined,
-      openPath
+      revealPath
     });
 
     await expect(
-      manager.handlers.open_path!({ path: "/Users/jedd/agents/koed" })
+      manager.handlers.reveal_local_project!({ localProjectId })
     ).resolves.toEqual({ ok: true });
-    expect(openPath).toHaveBeenCalledWith("/Users/jedd/agents/koed");
+    expect(revealPath).toHaveBeenCalledWith(trustedPath);
+
+    revealPath.mockClear();
+    await expect(
+      manager.handlers.reveal_local_project!({
+        localProjectId: `lp_${"2".repeat(32)}`
+      })
+    ).resolves.toEqual({
+      ok: false,
+      error: "Local Project path is unavailable."
+    });
+    expect(revealPath).not.toHaveBeenCalled();
+
+    await expect(
+      manager.handlers.reveal_local_project!({
+        path: "/Applications/Calculator.app"
+      })
+    ).rejects.toThrow("Desktop command arguments are invalid");
+    expect(revealPath).not.toHaveBeenCalled();
+    rmSync(koedHome, { recursive: true, force: true });
   });
 
-  it("rejects open_path without a path", async () => {
+  it("does not fall back to opening a file URL when Project reveal is unavailable", async () => {
+    const openExternal = vi.fn(async () => undefined);
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
@@ -3089,11 +3138,17 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       execFile: (_command, _args, _options, callback) =>
         callback(null, JSON.stringify({ ok: true }), ""),
       spawn: () => childProcess() as never,
-      openExternal: async () => undefined
+      openExternal
     });
 
-    await expect(manager.handlers.open_path!({})).resolves.toMatchObject({
-      ok: false
+    await expect(
+      manager.handlers.reveal_local_project!({
+        localProjectId: `lp_${"1".repeat(32)}`
+      })
+    ).resolves.toEqual({
+      ok: false,
+      error: "Local Project reveal is unavailable."
     });
+    expect(openExternal).not.toHaveBeenCalled();
   });
 });

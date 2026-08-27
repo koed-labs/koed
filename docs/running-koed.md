@@ -140,9 +140,11 @@ API and Worker must receive the same `KOED_TEAM_COLLABORATION_ENABLED` value.
 Changing it requires restarting both processes. Disabling it removes Team
 capabilities and Team routes/jobs while retaining Personal collaboration and
 Personal Memory. See [Configuration](configuration.md) for the exact disabled
-surface and required collaboration secrets. Desktop-managed local edges default
-the shared value to `true`; standalone server deployments remain disabled until
-the Operator enables them explicitly.
+surface and required collaboration secrets. Desktop-managed local edges and
+standalone server deployments both default the shared value to `false`. An
+Operator must explicitly set
+`KOED_TEAM_COLLABORATION_ENABLED=true` and restart API and Worker before using
+Team collaboration.
 
 `upstream enroll start` requires a registered upstream backend with fresh
 validated capabilities and at least one explicitly enabled route-policy family.
@@ -362,6 +364,12 @@ it does not recursively discover child repositories, submodules, or monorepo
 packages. Worktrees retain separate local Project ids while a salted Git
 common-directory hash identifies worktrees backed by the same device-local Git
 repository. Local-only repositories have no portable remote signal.
+
+Desktop reveals a Project in the platform file browser only through its opaque,
+device-local Project id. Electron main resolves that id against the local
+Project metadata store, requires the stored absolute path to still exist, and
+uses the platform show-in-folder operation. The renderer cannot submit an
+arbitrary local path or fall back to opening a `file://` URL.
 
 Captured Sessions adopt one unambiguous detected Personal Project immediately.
 Ambiguous or signal-free captures remain `Unassigned`. Users can move a

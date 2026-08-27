@@ -8,6 +8,7 @@ import {
   projectLatestAt,
   reconcileSelectedProjectId,
   relativeTime,
+  repositoryPresentationFromRemoteDisplay,
   repoLabelFromRemoteDisplay,
   repoUrlFromRemoteDisplay,
   sessionPreview,
@@ -70,11 +71,30 @@ describe("repoUrlFromRemoteDisplay", () => {
   });
 });
 
-describe("repoLabelFromRemoteDisplay", () => {
-  it("removes the GitHub host without changing other remote displays", () => {
+describe("repositoryPresentationFromRemoteDisplay", () => {
+  it("shortens GitHub remotes with GitHub presentation", () => {
+    expect(
+      repositoryPresentationFromRemoteDisplay("github.com/koed-labs/koed")
+    ).toEqual({
+      host: "github.com",
+      label: "koed-labs/koed",
+      provider: "github",
+      url: "https://github.com/koed-labs/koed"
+    });
     expect(repoLabelFromRemoteDisplay("github.com/koed-labs/koed")).toBe(
       "koed-labs/koed"
     );
+  });
+
+  it("retains the host and generic Git presentation for other remotes", () => {
+    expect(
+      repositoryPresentationFromRemoteDisplay("gitlab.example/koed/koed")
+    ).toEqual({
+      host: "gitlab.example",
+      label: "gitlab.example/koed/koed",
+      provider: "git",
+      url: "https://gitlab.example/koed/koed"
+    });
     expect(repoLabelFromRemoteDisplay("gitlab.example/koed/koed")).toBe(
       "gitlab.example/koed/koed"
     );

@@ -66,11 +66,35 @@ export type DesktopView =
 
 export const ACTIVE_PROJECT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
+export type RepositoryPresentation = {
+  host: string;
+  label: string;
+  provider: "github" | "git";
+  url: string;
+};
+
+export const repositoryPresentationFromRemoteDisplay = (
+  remoteDisplay: string
+): RepositoryPresentation => {
+  const normalized = remoteDisplay.trim();
+  const separator = normalized.indexOf("/");
+  const host = (
+    separator === -1 ? normalized : normalized.slice(0, separator)
+  ).toLocaleLowerCase();
+  const github = host === "github.com";
+  return {
+    host,
+    label: github ? normalized.slice(separator + 1) : normalized,
+    provider: github ? "github" : "git",
+    url: `https://${normalized}`
+  };
+};
+
 export const repoUrlFromRemoteDisplay = (remoteDisplay: string): string =>
-  `https://${remoteDisplay}`;
+  repositoryPresentationFromRemoteDisplay(remoteDisplay).url;
 
 export const repoLabelFromRemoteDisplay = (remoteDisplay: string): string =>
-  remoteDisplay.replace(/^github\.com\//i, "");
+  repositoryPresentationFromRemoteDisplay(remoteDisplay).label;
 
 const normalizedPath = (value: string | null | undefined): string | null => {
   const trimmed = value?.trim().replace(/\/+$/, "");

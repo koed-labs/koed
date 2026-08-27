@@ -1097,7 +1097,7 @@ export function App({
             localAiClients={window.koedDesktop?.localAiClients}
             markdownAdapters={collaboration.markdownAdapters}
             openExternal={platform.openExternal}
-            openLocalPath={platform.openLocalPath}
+            revealLocalProject={platform.revealLocalProject}
             onInspectEvent={(event) => {
               setInspector(event);
               setInspectorOpen(true);

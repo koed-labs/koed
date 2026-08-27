@@ -151,6 +151,7 @@ export interface KoedServerManagerOptions {
   ) => ChildProcess;
   openExternal: (url: string) => Promise<unknown>;
   openPath?: (path: string) => Promise<string>;
+  revealPath?: (path: string) => void;
   selectRecoveryKitPath?: () => Promise<string | null>;
   collaborationRandom?: () => number;
   collaborationNow?: () => number;
@@ -1221,6 +1222,7 @@ export const createKoedServerManager = ({
   spawn,
   openExternal,
   openPath,
+  revealPath,
   selectRecoveryKitPath,
   personalMemoryFetch = globalThis.fetch,
   startPairingServer = startPersonalDevicePairingServer
@@ -3681,17 +3683,48 @@ export const createKoedServerManager = ({
         await openExternal(url);
         return { ok: true };
       },
-      open_path: async (args) => {
-        const path = typeof args?.path === "string" ? args.path.trim() : "";
-        if (!path) {
-          return { ok: false, error: "A local path is required." };
+      reveal_local_project: async (args) => {
+        const localProjectId = exactDesktopArgs(args, [
+          "localProjectId"
+        ]).localProjectId;
+        if (
+          typeof localProjectId !== "string" ||
+          !/^lp_[0-9a-f]{32}$/.test(localProjectId)
+        ) {
+          throw new Error("Local Project identity is invalid.");
         }
-        if (openPath) {
-          const error = await openPath(path);
-          return error ? { ok: false, error } : { ok: true };
+        const revealTrustedPath = revealPath;
+        if (!revealTrustedPath) {
+          return {
+            ok: false,
+            error: "Local Project reveal is unavailable."
+          };
         }
-        await openExternal(`file://${path}`);
-        return { ok: true };
+        try {
+          const project = (
+            listProjectMetadata(resolveKoedServerPaths(environment)).projects ??
+            []
+          ).find((candidate) => candidate.localProjectId === localProjectId);
+          const trustedPath = project?.path.projectRoot ?? project?.path.cwd;
+          if (
+            typeof trustedPath !== "string" ||
+            !trustedPath.trim() ||
+            resolve(trustedPath) !== trustedPath ||
+            !existsSync(trustedPath)
+          ) {
+            return {
+              ok: false,
+              error: "Local Project path is unavailable."
+            };
+          }
+          revealTrustedPath(trustedPath);
+          return { ok: true };
+        } catch {
+          return {
+            ok: false,
+            error: "Local Project path is unavailable."
+          };
+        }
       },
       open_logs: async () => {
         const logsDir = resolve(resolveKoedHome(environment), "logs");

@@ -114,11 +114,10 @@
 }
 
 .personal-project-row,
-.personal-session-row {
+.personal-session-row-select {
   align-items: center;
   background: transparent;
   border: 0;
-  border-radius: var(--radius);
   color: inherit;
   display: grid;
   gap: 0.75rem;
@@ -236,7 +235,12 @@
 }
 
 .personal-project-repo:not(.personal-project-repo-static) {
+  background: transparent;
+  border: 0;
   cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
 }
 
 .personal-project-repo svg {
@@ -502,10 +506,24 @@ button.personal-new-conversation-owner-picker > svg {
 }
 
 .personal-session-row {
+  align-items: center;
+  background: transparent;
   border-bottom: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+}
+
+.personal-session-row-select {
   border-radius: 0;
   grid-template-columns: 2rem minmax(0, 1fr) auto;
-  padding: 0.75rem 1rem;
+  min-width: 0;
+  padding: 0.75rem 0 0.75rem 1rem;
+}
+
+.personal-session-row-select:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }
 
 .personal-session-copy > span {
@@ -529,17 +547,20 @@ button.personal-new-conversation-owner-picker > svg {
   align-items: center;
   display: inline-flex;
   gap: 0.35rem;
-  margin-top: 0.1rem;
+  padding: 0 1rem 0 0.75rem;
 }
 
 .personal-session-link {
   align-items: center;
+  background: transparent;
+  border: 0;
   border-radius: 0.3rem;
   color: var(--muted-foreground);
   cursor: pointer;
   display: inline-flex;
   height: 1.35rem;
   justify-content: center;
+  padding: 0;
   position: relative;
   width: 1.35rem;
 }

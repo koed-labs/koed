@@ -3,7 +3,7 @@ import { safeExternalUrl } from "../../window/external-url.js";
 export type RendererPlatform = {
   copyText: (value: string) => Promise<void>;
   openExternal: (value: string) => Promise<void>;
-  openLocalPath: (path: string) => Promise<void>;
+  revealLocalProject: (localProjectId: string) => Promise<void>;
 };
 
 export const createRendererPlatform = (): RendererPlatform => ({
@@ -23,14 +23,16 @@ export const createRendererPlatform = (): RendererPlatform => ({
       throw new Error(result?.error || "External link could not be opened.");
     }
   },
-  openLocalPath: async (path) => {
-    if (!path.trim()) throw new Error("A local path is required.");
+  revealLocalProject: async (localProjectId) => {
+    if (!/^lp_[0-9a-f]{32}$/.test(localProjectId)) {
+      throw new Error("Local Project identity is invalid.");
+    }
     const result = await window.koedDesktop?.invoke<{
       ok?: boolean;
       error?: string;
-    }>("open_path", { path });
+    }>("reveal_local_project", { localProjectId });
     if (!result?.ok) {
-      throw new Error(result?.error || "Local path could not be opened.");
+      throw new Error(result?.error || "Local Project could not be revealed.");
     }
   }
 });

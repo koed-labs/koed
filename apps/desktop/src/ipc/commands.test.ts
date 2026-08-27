@@ -264,6 +264,8 @@ describe("desktop IPC command registry", () => {
     await expect(invoke(event, "missing", {})).rejects.toThrow(
       "Unsupported Desktop command"
     );
+    expect(isDesktopCommandName("reveal_local_project")).toBe(true);
+    expect(isDesktopCommandName("open_path")).toBe(false);
     expect(isDesktopCommandName("team_read")).toBe(false);
     expect(isDesktopCommandName("explorer_credential")).toBe(false);
     await expect(invoke(event, "team_read", {})).rejects.toThrow(
