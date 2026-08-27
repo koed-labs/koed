@@ -775,8 +775,10 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `MEMORY_HISTORICAL_IMPORT_API_READY_URL`: optional worker-visible API readiness override for historical admission. When omitted, Koed derives `/ready` from `MEMORY_API_URL`; if neither URL is configured, historical batches fail closed.
 - `MEMORY_HISTORICAL_IMPORT_API_READY_TIMEOUT_MS`: timeout for that API readiness probe. Default `1000`; valid range `100`–`10000`.
 - `MEMORY_HISTORICAL_IMPORT_ENABLED`: set to `false` to disable automatic
-  historical ingestion in the supervised Local AI Runtime. The automatic
-  coordinator only enables configured supported AI-client adapters.
+  historical ingestion in the supervised Local AI Runtime. Independent
+  provider-neutral coordinators run for each enabled supported AI Client
+  (Codex, Claude Code, and Pi); one client's discovery or retry state does not
+  block another.
 - `MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_ROWS`: maximum canonical raw items in
   one Local AI Runtime historical upload. Default `100`; valid range `1`–`500`.
 - `MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_BYTES`: maximum serialized canonical

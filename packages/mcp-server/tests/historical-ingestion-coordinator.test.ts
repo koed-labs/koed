@@ -15,6 +15,14 @@ import {
   type HistoricalProviderAdapter
 } from "../src/historical-ingestion-coordinator.js";
 import { MemoryApiError, type MemoryApiClient } from "../src/index.js";
+import {
+  createClaudeHistoricalProviderAdapter,
+  type ClaudeHistoricalCandidate
+} from "../src/claude-historical-import.js";
+import {
+  createPiHistoricalProviderAdapter,
+  type PiHistoricalCandidate
+} from "../src/pi-historical-import.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -61,6 +69,59 @@ const candidate = (input: {
 });
 
 describe("automatic historical ingestion selection", () => {
+  it.each([
+    [
+      "claude",
+      createClaudeHistoricalProviderAdapter({
+        client: {} as MemoryApiClient,
+        env: {}
+      }),
+      (id: string, latestActivityAt: string): ClaudeHistoricalCandidate => ({
+        sourceSessionId: id,
+        transcriptPath: `/private/claude/${id}.jsonl`,
+        cwd: "/project",
+        latestActivityAt,
+        frontierOffset: 100
+      })
+    ],
+    [
+      "pi",
+      createPiHistoricalProviderAdapter({
+        client: {} as MemoryApiClient,
+        env: {}
+      }),
+      (id: string, latestActivityAt: string): PiHistoricalCandidate => ({
+        sourceSessionId: id,
+        transcriptPath: `/private/pi/${id}.jsonl`,
+        cwd: "/project",
+        latestActivityAt,
+        frontierOffset: 100
+      })
+    ]
+  ])(
+    "applies the bounded recent-Conversation cohort to %s without persisting transcript paths",
+    (aiClient, adapter, makeCandidate) => {
+      const now = new Date("2026-08-17T12:00:00.000Z");
+      const candidates = Array.from({ length: 52 }, (_, index) =>
+        makeCandidate(
+          `conversation-${String(index).padStart(2, "0")}`,
+          new Date(now.getTime() - index * 60_000).toISOString()
+        )
+      );
+
+      const selected = adapter.selectCandidates(candidates, now);
+
+      expect(selected).toHaveLength(50);
+      expect(selected.every((entry) => entry.aiClient === aiClient)).toBe(true);
+      expect(selected.map((entry) => entry.latestActivityAt)).toEqual(
+        [...selected]
+          .map((entry) => entry.latestActivityAt)
+          .sort((left, right) => left.localeCompare(right))
+      );
+      expect(JSON.stringify(selected)).not.toContain("/private/");
+    }
+  );
+
   it("selects the newest 50 active Conversations then processes them chronologically", () => {
     const now = new Date("2026-08-17T12:00:00.000Z");
     const entries = Array.from({ length: 52 }, (_, index) =>
@@ -173,6 +234,42 @@ describe("automatic historical ingestion selection", () => {
   });
 });
 
+describe("provider-owned historical discovery", () => {
+  it("offers discovered candidates without requiring a Transcript Watcher signal", async () => {
+    const processed: string[] = [];
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "discovery-provider",
+      discoverCandidates: async () => [{ id: "discovered-conversation" }],
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry) => ({
+          aiClient: "discovery-provider",
+          candidateId: entry.id,
+          frontierOffset: 10,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        })),
+      async processNextBatch({ selection }) {
+        processed.push(selection.candidateId);
+        return { state: "completed", selection, runId: "run-discovery" };
+      },
+      completeRun: async () => undefined
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome: temporaryDirectory(),
+      retryMs: 60_000
+    });
+
+    await vi.waitFor(() =>
+      expect(coordinator.snapshot().runCompleted).toBe(true)
+    );
+
+    expect(processed).toEqual(["discovered-conversation"]);
+    await coordinator.stop();
+  });
+});
+
 describe("bounded Codex historical parsing", () => {
   const source = {
     id: "source-1",
@@ -225,6 +322,11 @@ describe("bounded Codex historical parsing", () => {
       parserState: { lastEventTime: "2026-08-17T00:00:01.000Z" }
     });
     expect(batch.items.map((item) => item.rawText)).toEqual(["remember this"]);
+    expect(
+      batch.items.every(
+        (item) => typeof item.metadata.transcriptItemDiscriminator === "string"
+      )
+    ).toBe(true);
   });
 
   it("yields on the row cap only after a complete record", () => {

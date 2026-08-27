@@ -1151,7 +1151,8 @@ const createSourceRecord = (
         and artifact.owner_user_id = run.owner_user_id
         and artifact.lifecycle = 'active'
         and (($4 = 'codex' and artifact.source_kind = 'codex')
-          or ($4 = 'claude' and artifact.source_kind = 'claude-code'))
+          or ($4 = 'claude' and artifact.source_kind = 'claude-code')
+          or ($4 = 'pi' and artifact.source_kind = 'pi'))
        where run.id = $2 and run.owner_user_id = $1
          and run.state in ('discovered', 'eligible', 'queued', 'importing', 'paused')
        on conflict (owner_user_id, artifact_id)

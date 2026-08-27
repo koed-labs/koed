@@ -118,7 +118,12 @@ describe("Claude historical import", () => {
       })
     ).resolves.toMatchObject({ runId, runIds: [runId] });
     expect(client.createHistoricalImportRun).toHaveBeenCalledTimes(1);
-    expect(client.createHistoricalImportSource).toHaveBeenCalledTimes(1);
+    expect(client.createHistoricalImportSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        aiClient: "claude",
+        detectedProject: { path: "/work/project", cwd: "/work/project" }
+      })
+    );
     expect(transitionHistoricalImportSource).toHaveBeenCalledTimes(4);
   });
 

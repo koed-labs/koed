@@ -234,12 +234,15 @@ first discovery cannot consume the interactive Memory read/write allowance used
 by Desktop and the MCP Server.
 
 The first successful bounded full discovery cycle establishes activation and
-freezes the automatic-history cohort. The coordinator selects Conversations by
-latest source activity in the inclusive previous 30 days, caps the cohort at
-the newest 50, and processes the selected pre-frontier ranges in chronological
-order. A Conversation that began earlier remains eligible when its latest
-activity is inside the window. These product bounds are fixed, not silently
-expanded by configuration.
+freezes an automatic-history cohort for each enabled supported AI Client.
+Codex, Claude Code, and Pi each discover their own source-of-truth transcripts;
+the provider-neutral coordinators select Conversations by latest source
+activity in the inclusive previous 30 days, cap each provider cohort at the
+newest 50, and process selected pre-frontier ranges in chronological order. A
+Conversation that began earlier remains eligible when its latest activity is
+inside the window. Provider-local cursor state and run completion are isolated
+under `KOED_HOME`, so one unavailable AI Client does not block another. These
+product bounds are fixed, not silently expanded by configuration.
 
 For every selected source, the watcher and the Local AI Runtime coordinator use
 the same complete-record boundary. Whichever wins registration writes one

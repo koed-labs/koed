@@ -28,6 +28,66 @@ const appendLargeValidPrefix = (target: string): number => {
 };
 
 describe("Pi historical transcript registration", () => {
+  it("converges when the live watcher wins a journal append race", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-history-"));
+    temporaryDirectories.push(root);
+    const sessions = path.join(root, "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const sourceSessionId = randomUUID();
+    const transcriptPath = path.join(sessions, `${sourceSessionId}.jsonl`);
+    const cwd = "/tmp/pi-history";
+    fs.writeFileSync(
+      transcriptPath,
+      line({ type: "session", version: 3, id: sourceSessionId, cwd })
+    );
+    const boundary = fs.statSync(transcriptPath).size;
+    const artifactId = randomUUID();
+    let lookupCount = 0;
+    const client = {
+      async lookupConversationSourceArtifact() {
+        lookupCount += 1;
+        if (lookupCount === 1) {
+          throw new MemoryApiError("not found", { status: 404 });
+        }
+        return {
+          artifact: {
+            id: artifactId,
+            sessionId: randomUUID(),
+            providerCursorOffset: boundary,
+            providerCursorLine: 1,
+            sourceFingerprint: "fingerprint"
+          }
+        };
+      },
+      async ensureConversationSourceArtifact() {
+        return {
+          artifact: {
+            id: artifactId,
+            sessionId: randomUUID(),
+            providerCursorOffset: 0,
+            providerCursorLine: 0,
+            sourceFingerprint: "fingerprint"
+          }
+        };
+      },
+      async appendConversationSourceSegment() {
+        throw new MemoryApiError("cursor conflict", { status: 409 });
+      }
+    } as unknown as MemoryApiClient;
+
+    const registered = await registerPiHistoricalTranscriptSource(
+      client,
+      { sourceSessionId, transcriptPath, cwd },
+      {
+        KOED_HOME: path.join(root, "koed"),
+        PI_CODING_AGENT_SESSION_DIR: sessions
+      }
+    );
+
+    expect(registered.providerCursorOffset).toBe(boundary);
+    expect(lookupCount).toBe(2);
+  });
+
   it("streams line counting across a large registration frontier", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-history-"));
     temporaryDirectories.push(root);

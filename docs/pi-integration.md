@@ -111,7 +111,14 @@ In-place `/tree` branching remains one append-only Conversation Source Artifact.
 
 ## Historical import
 
-Activation baseline is separate from explicit historical import. Live watcher never projects pre-activation records as fresh activity. Historical import uses `pi-session-v1` and `historical_import` transport through canonical source journal and historical import APIs.
+Activation baseline is separate from historical import. On first activation,
+the Local AI Runtime automatically considers Pi Conversations active in the
+inclusive previous 30 days, selects at most the newest 50, and imports them
+oldest-first through the provider-neutral historical-ingestion coordinator.
+Explicit User-selected import remains available through the same boundary. The
+live watcher never projects pre-activation records as fresh activity.
+Historical import uses `pi-session-v1` and `historical_import` transport through
+the canonical source journal and historical import APIs.
 
 ## Local Synthesis
 

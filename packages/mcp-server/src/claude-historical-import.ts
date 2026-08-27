@@ -1,13 +1,31 @@
 import type { RawConversationItemRequest } from "./conversation-source-types.js";
 import {
+  discoverAllClaudeHistoricalTranscriptSignals,
   discoverClaudeHistoricalTranscriptSignals,
   registerClaudeHistoricalTranscriptSources
 } from "./claude-transcript-watcher.js";
+import { completeTranscriptBoundary } from "./codex-transcript-journal.js";
 import {
   parseClaudeTranscriptJournalBytes,
   type ClaudeTranscriptParserState
 } from "./claude-transcript-parser.js";
 import { MemoryApiClient, MemoryApiError } from "./index.js";
+import {
+  automaticHistoricalAdmission,
+  automaticHistoricalPolicyAdmits,
+  completeAutomaticHistoricalRun,
+  selectRecentHistoricalCandidates
+} from "./automatic-historical-provider.js";
+import type { HistoricalProviderAdapter } from "./historical-ingestion-coordinator.js";
+
+export interface ClaudeHistoricalCandidate {
+  sourceSessionId: string;
+  transcriptPath: string;
+  cwd: string;
+  latestActivityAt: string;
+  frontierOffset: number;
+  frontierLine?: number;
+}
 
 type HistoricalSource = {
   id: string;
@@ -114,7 +132,13 @@ export const importClaudeHistoricalSource = async (input: {
   client: MemoryApiClient;
   source: HistoricalSource;
   sourceComponentId?: string;
-}): Promise<{ sourceId: string; batchCount: number; itemCount: number }> => {
+  maxBatches?: number;
+}): Promise<{
+  sourceId: string;
+  batchCount: number;
+  itemCount: number;
+  exhausted: boolean;
+}> => {
   let offset = input.source.historicalCursorOffset;
   let line = input.source.historicalCursorLine;
   // Preserve PR #342's current-turn recovery while accepting the shared,
@@ -127,7 +151,8 @@ export const importClaudeHistoricalSource = async (input: {
       : undefined;
   let batchCount = 0;
   let itemCount = 0;
-  while (offset < input.source.registrationFrontierOffset) {
+  const maxBatches = input.maxBatches ?? Number.POSITIVE_INFINITY;
+  segmentLoop: while (offset < input.source.registrationFrontierOffset) {
     const page = await input.client.listConversationSourceSegments(
       input.source.artifactId,
       { afterOffset: offset, limit: 20 }
@@ -196,10 +221,16 @@ export const importClaudeHistoricalSource = async (input: {
         parserState = parsed.parserState;
         batchCount += 1;
         itemCount += items.length;
+        if (batchCount >= maxBatches) break segmentLoop;
       }
     }
   }
-  return { sourceId: input.source.id, batchCount, itemCount };
+  return {
+    sourceId: input.source.id,
+    batchCount,
+    itemCount,
+    exhausted: offset >= input.source.registrationFrontierOffset
+  };
 };
 
 const transition = async (
@@ -253,6 +284,7 @@ export const importSelectedClaudeHistory = async (input: {
   client: MemoryApiClient;
   sourceSessionIds: readonly string[];
   env?: NodeJS.ProcessEnv;
+  maxBatches?: number;
 }): Promise<Record<string, unknown>> => {
   const env = input.env ?? process.env;
   const signals = await discoverClaudeHistoricalTranscriptSignals(
@@ -275,13 +307,15 @@ export const importSelectedClaudeHistory = async (input: {
     return newRun;
   };
   const results: Array<Record<string, unknown>> = [];
-  for (const signal of signals) {
+  let remainingBatches = input.maxBatches ?? Number.POSITIVE_INFINITY;
+  let completed = true;
+  signalLoop: for (const [signalIndex, signal] of signals.entries()) {
     const artifacts = await registerClaudeHistoricalTranscriptSources(
       input.client,
       signal,
       env
     );
-    for (const artifact of artifacts) {
+    for (const [artifactIndex, artifact] of artifacts.entries()) {
       let source = await lookupHistoricalSource(input.client, artifact.id);
       const resumed = source !== null;
       if (!source) {
@@ -293,8 +327,7 @@ export const importSelectedClaudeHistory = async (input: {
             aiClient: "claude",
             detectedProject: {
               path: signal.cwd,
-              cwd: signal.cwd,
-              sourceComponentId: artifact.sourceComponentId
+              cwd: signal.cwd
             }
           }),
           "source",
@@ -319,15 +352,22 @@ export const importSelectedClaudeHistory = async (input: {
           `claude_historical_source_requires_explicit_resume:${source.state}`
         );
       }
+      const imported = await importClaudeHistoricalSource({
+        client: input.client,
+        source,
+        sourceComponentId: artifact.sourceComponentId,
+        maxBatches: remainingBatches
+      });
+      remainingBatches -= imported.batchCount;
       results.push({
         sourceComponentId: artifact.sourceComponentId,
         resumed,
-        ...(await importClaudeHistoricalSource({
-          client: input.client,
-          source,
-          sourceComponentId: artifact.sourceComponentId
-        }))
+        ...imported
       });
+      if (!imported.exhausted) {
+        completed = false;
+        break signalLoop;
+      }
       try {
         await transition(
           input.client,
@@ -341,11 +381,76 @@ export const importSelectedClaudeHistory = async (input: {
           throw error;
         }
       }
+      if (remainingBatches <= 0) {
+        const hasMoreSources =
+          artifactIndex < artifacts.length - 1 ||
+          signalIndex < signals.length - 1;
+        if (hasMoreSources) {
+          completed = false;
+          break signalLoop;
+        }
+      }
     }
   }
   return {
     runId: newRun?.id ?? [...runIds][0] ?? null,
     runIds: [...runIds],
-    sources: results
+    sources: results,
+    completed
+  };
+};
+
+export const discoverClaudeHistoricalCandidates = async (
+  env: NodeJS.ProcessEnv = process.env
+): Promise<ClaudeHistoricalCandidate[]> =>
+  (await discoverAllClaudeHistoricalTranscriptSignals(env)).map((signal) => ({
+    sourceSessionId: signal.sourceSessionId,
+    transcriptPath: signal.transcriptPath,
+    cwd: signal.cwd,
+    latestActivityAt: signal.observedAt ?? new Date(0).toISOString(),
+    frontierOffset: completeTranscriptBoundary(signal.transcriptPath)
+  }));
+
+export const createClaudeHistoricalProviderAdapter = (input: {
+  client: MemoryApiClient;
+  env?: NodeJS.ProcessEnv;
+}): HistoricalProviderAdapter<ClaudeHistoricalCandidate> => {
+  const env = input.env ?? process.env;
+  return {
+    aiClient: "claude",
+    discoverCandidates: () => discoverClaudeHistoricalCandidates(env),
+    candidateId: (candidate) => candidate.sourceSessionId,
+    selectCandidates: (candidates, now) =>
+      selectRecentHistoricalCandidates({
+        aiClient: "claude",
+        candidates,
+        now,
+        adapterState: (candidate) => ({ projectId: candidate.cwd })
+      }),
+    async processNextBatch({ candidate, selection, runId }) {
+      if (!candidate) {
+        return { state: "waiting", selection, ...(runId ? { runId } : {}) };
+      }
+      if (
+        !(await automaticHistoricalPolicyAdmits(input.client, selection)) ||
+        !(await automaticHistoricalAdmission(input.client)).admitted
+      ) {
+        return { state: "waiting", selection, ...(runId ? { runId } : {}) };
+      }
+      const result = await importSelectedClaudeHistory({
+        client: input.client,
+        sourceSessionIds: [candidate.sourceSessionId],
+        env,
+        maxBatches: 1
+      });
+      const activeRunId =
+        typeof result.runId === "string" ? result.runId : runId;
+      return {
+        state: result.completed === true ? "completed" : "progress",
+        selection,
+        ...(activeRunId ? { runId: activeRunId } : {})
+      };
+    },
+    completeRun: (runId) => completeAutomaticHistoricalRun(input.client, runId)
   };
 };

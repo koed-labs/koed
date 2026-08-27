@@ -17,6 +17,20 @@ import {
   verifiedPiSessionPath,
   type PiTranscriptWatcherSignal
 } from "./pi-transcript-watcher.js";
+import {
+  automaticHistoricalAdmission,
+  automaticHistoricalPolicyAdmits,
+  completeAutomaticHistoricalRun,
+  completeAutomaticHistoricalSource,
+  createAutomaticHistoricalRun,
+  historicalObjectValue,
+  selectRecentHistoricalCandidates,
+  transitionAutomaticHistoricalSource
+} from "./automatic-historical-provider.js";
+import type {
+  HistoricalCandidateSelection,
+  HistoricalProviderAdapter
+} from "./historical-ingestion-coordinator.js";
 
 type Artifact = {
   id: string;
@@ -34,10 +48,20 @@ type HistoricalSource = {
   sourceFingerprint: string;
   historicalCursorOffset: number;
   historicalCursorLine: number;
+  historicalCursorParserState?: Record<string, unknown>;
   historicalCursorCurrentTurnId?: string;
   registrationFrontierOffset: number;
   state: string;
 };
+
+export interface PiHistoricalCandidate {
+  sourceSessionId: string;
+  transcriptPath: string;
+  cwd: string;
+  latestActivityAt: string;
+  frontierOffset: number;
+  frontierLine?: number;
+}
 type Segment = {
   id: string;
   segmentIndex: number;
@@ -148,19 +172,34 @@ export const registerPiHistoricalTranscriptSource = async (
       (count, byte) => count + (byte === 10 ? 1 : 0),
       0
     );
-    artifact = artifactFrom(
-      await client.appendConversationSourceSegment(artifact.id, {
-        expectedProviderOffset: artifact.providerCursorOffset,
-        expectedProviderLine: artifact.providerCursorLine,
-        sourceEndOffset: artifact.providerCursorOffset + bytes.length,
-        sourceEndLine: artifact.providerCursorLine + lines,
-        plaintextDigest: createHash("sha256").update(bytes).digest("hex"),
-        plaintextSize: bytes.length,
-        bytesBase64: bytes.toString("base64"),
-        currentSourceLength: file.size,
-        sourceModifiedAt: file.mtime.toISOString()
-      })
-    );
+    const expectedOffset = artifact.providerCursorOffset;
+    try {
+      artifact = artifactFrom(
+        await client.appendConversationSourceSegment(artifact.id, {
+          expectedProviderOffset: expectedOffset,
+          expectedProviderLine: artifact.providerCursorLine,
+          sourceEndOffset: expectedOffset + bytes.length,
+          sourceEndLine: artifact.providerCursorLine + lines,
+          plaintextDigest: createHash("sha256").update(bytes).digest("hex"),
+          plaintextSize: bytes.length,
+          bytesBase64: bytes.toString("base64"),
+          currentSourceLength: file.size,
+          sourceModifiedAt: file.mtime.toISOString()
+        })
+      );
+    } catch (error) {
+      if (!(error instanceof MemoryApiError) || error.status !== 409) {
+        throw error;
+      }
+      const converged = artifactFrom(
+        await client.lookupConversationSourceArtifact({
+          sourceKind: "pi",
+          externalSessionId: identity.id
+        })
+      );
+      if (converged.providerCursorOffset <= expectedOffset) throw error;
+      artifact = converged;
+    }
   }
   return {
     ...artifact,
@@ -260,6 +299,321 @@ export const importPiHistoricalSource = async (
     }
   }
   return { sourceId: source.id, batchCount, itemCount };
+};
+
+const lookupHistoricalSource = async (
+  client: MemoryApiClient,
+  artifactId: string
+): Promise<HistoricalSource | null> => {
+  try {
+    return historicalObjectValue<HistoricalSource>(
+      await client.lookupHistoricalImportSource(artifactId),
+      "source",
+      "pi_historical_source_missing"
+    );
+  } catch (error) {
+    if (error instanceof MemoryApiError && error.status === 404) return null;
+    throw error;
+  }
+};
+
+const importNextPiHistoricalBatch = async (
+  client: MemoryApiClient,
+  source: HistoricalSource,
+  config: { maxRows: number; maxBytes: number }
+): Promise<boolean> => {
+  if (source.historicalCursorOffset >= source.registrationFrontierOffset) {
+    return false;
+  }
+  const page = await client.listConversationSourceSegments(source.artifactId, {
+    afterOffset: source.historicalCursorOffset,
+    limit: 1
+  });
+  const segment = (page.segments as Segment[] | undefined)?.[0];
+  if (
+    !segment ||
+    segment.sourceStartOffset > source.historicalCursorOffset ||
+    segment.sourceEndOffset <= source.historicalCursorOffset
+  ) {
+    throw new Error("pi_historical_journal_segment_missing");
+  }
+  const content = await client.getConversationSourceSegmentContent(
+    source.artifactId,
+    segment.id
+  );
+  if (typeof content.bytesBase64 !== "string") {
+    throw new Error("pi_historical_segment_content_missing");
+  }
+  const sourceBytes = Buffer.from(content.bytesBase64, "base64");
+  const availableEnd = Math.min(
+    segment.sourceEndOffset,
+    source.registrationFrontierOffset
+  );
+  const available = sourceBytes.subarray(
+    source.historicalCursorOffset - segment.sourceStartOffset,
+    availableEnd - segment.sourceStartOffset
+  );
+  const sourceByteLimit = Math.max(1_024, Math.floor(config.maxBytes / 3));
+  let localEnd = Math.min(available.length, sourceByteLimit);
+  if (localEnd < available.length) {
+    const newline = available.lastIndexOf(0x0a, localEnd - 1);
+    if (newline < 0) {
+      const next = available.indexOf(0x0a, localEnd);
+      if (next < 0 || next + 1 > 3_500_000) {
+        throw new Error("pi_historical_record_exceeds_batch_limit");
+      }
+      localEnd = next + 1;
+    } else {
+      localEnd = newline + 1;
+    }
+  }
+  let rows = 0;
+  for (let index = 0; index < localEnd; index += 1) {
+    if (available[index] !== 0x0a) continue;
+    rows += 1;
+    if (rows === config.maxRows) {
+      localEnd = index + 1;
+      break;
+    }
+  }
+  const parserState = source.historicalCursorParserState as
+    | PiSessionParserState
+    | undefined;
+  let parsed: ReturnType<typeof parsePiSessionJournalBytes>;
+  let items: ReturnType<typeof historicalItem>[];
+  for (;;) {
+    parsed = parsePiSessionJournalBytes({
+      bytes: available.subarray(0, localEnd),
+      absoluteStartOffset: source.historicalCursorOffset,
+      lineIndexOffset: source.historicalCursorLine,
+      sessionId: source.sessionId,
+      externalSessionId: source.sourceSessionId,
+      sourceFingerprint: source.sourceFingerprint,
+      prior: parserState,
+      sourceTransport: "historical_import"
+    });
+    items = parsed.items.map(historicalItem);
+    if (Buffer.byteLength(JSON.stringify(items), "utf8") <= config.maxBytes) {
+      break;
+    }
+    const previous = available.lastIndexOf(0x0a, localEnd - 2);
+    if (previous < 0) {
+      throw new Error("pi_historical_record_exceeds_batch_limit");
+    }
+    localEnd = previous + 1;
+  }
+  const end = source.historicalCursorOffset + localEnd;
+  await client.ingestHistoricalImportBatch(source.id, {
+    expectedSourceOffset: source.historicalCursorOffset,
+    sourceOffset: end,
+    sourceLine: parsed.checkpoint.lineCount,
+    segmentIndex: segment.segmentIndex,
+    lastVerifiedDigest: segment.plaintextDigest,
+    parserState: parsed.parserState,
+    items
+  });
+  return true;
+};
+
+const skipUnrepresentablePiSource = async (
+  client: MemoryApiClient,
+  source: HistoricalSource
+): Promise<void> => {
+  try {
+    await client.transitionHistoricalImportSource(source.id, {
+      expectedState: "importing",
+      state: "failed",
+      failureReason: "pi_historical_record_exceeds_batch_limit"
+    });
+  } catch (error) {
+    if (!(error instanceof MemoryApiError) || error.status !== 409) throw error;
+  }
+  try {
+    await client.transitionHistoricalImportSource(source.id, {
+      expectedState: "failed",
+      state: "skipped"
+    });
+  } catch (error) {
+    if (!(error instanceof MemoryApiError) || error.status !== 409) throw error;
+  }
+};
+
+const selectionSignal = (
+  candidate: PiHistoricalCandidate
+): PiTranscriptWatcherSignal => ({
+  sourceSessionId: candidate.sourceSessionId,
+  transcriptPath: candidate.transcriptPath,
+  cwd: candidate.cwd,
+  eventName: "HistoricalImport",
+  observedAt: candidate.latestActivityAt
+});
+
+export const discoverPiHistoricalCandidates = async (
+  env: NodeJS.ProcessEnv = process.env
+): Promise<PiHistoricalCandidate[]> =>
+  Promise.all(
+    (await discoverPiTranscriptSignals(env)).map(async (signal) => {
+      const target = await verifiedPiSessionPath(signal.transcriptPath, env);
+      const details = fs.statSync(target);
+      const frontierOffset = completeTranscriptBoundary(target);
+      return {
+        sourceSessionId: signal.sourceSessionId,
+        transcriptPath: target,
+        cwd: signal.cwd,
+        latestActivityAt: signal.observedAt ?? details.mtime.toISOString(),
+        frontierOffset
+      };
+    })
+  );
+
+export const createPiHistoricalProviderAdapter = (input: {
+  client: MemoryApiClient;
+  env?: NodeJS.ProcessEnv;
+}): HistoricalProviderAdapter<PiHistoricalCandidate> => {
+  const env = input.env ?? process.env;
+  const configuredRows = Number(env.MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_ROWS);
+  const configuredBytes = Number(
+    env.MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_BYTES
+  );
+  const batchConfig = {
+    maxRows:
+      Number.isSafeInteger(configuredRows) && configuredRows >= 1
+        ? Math.min(configuredRows, 500)
+        : 100,
+    maxBytes:
+      Number.isSafeInteger(configuredBytes) && configuredBytes >= 1_024
+        ? Math.min(configuredBytes, 3_800_000)
+        : 1_000_000
+  };
+  return {
+    aiClient: "pi",
+    discoverCandidates: () => discoverPiHistoricalCandidates(env),
+    candidateId: (candidate) => candidate.sourceSessionId,
+    selectCandidates: (candidates, now) =>
+      selectRecentHistoricalCandidates({
+        aiClient: "pi",
+        candidates,
+        now,
+        adapterState: (candidate) => ({ projectId: candidate.cwd })
+      }),
+    async processNextBatch({ candidate, selection, runId }) {
+      if (!candidate) {
+        return { state: "waiting", selection, ...(runId ? { runId } : {}) };
+      }
+      let currentSelection: HistoricalCandidateSelection = selection;
+      if (currentSelection.frontierLine < 0) {
+        currentSelection = {
+          ...currentSelection,
+          frontierLine: await countTranscriptLines(
+            candidate.transcriptPath,
+            currentSelection.frontierOffset
+          )
+        };
+      }
+      if (!currentSelection.artifactId) {
+        const artifact = await registerPiHistoricalTranscriptSource(
+          input.client,
+          selectionSignal(candidate),
+          env
+        );
+        currentSelection = {
+          ...currentSelection,
+          artifactId: artifact.id
+        };
+      }
+      const artifactId = currentSelection.artifactId!;
+      const source = await lookupHistoricalSource(input.client, artifactId);
+      let activeRunId = source?.runId ?? runId;
+      if (!source) {
+        activeRunId ??= await createAutomaticHistoricalRun(input.client);
+        await input.client.createHistoricalImportSource({
+          runId: activeRunId,
+          artifactId,
+          aiClient: "pi",
+          detectedProject: {
+            path: candidate.cwd,
+            cwd: candidate.cwd
+          }
+        });
+        return {
+          state: "progress",
+          selection: currentSelection,
+          runId: activeRunId
+        };
+      }
+      activeRunId = source.runId;
+      if (source.state === "completed" || source.state === "skipped") {
+        return {
+          state: source.state,
+          selection: currentSelection,
+          runId: activeRunId
+        };
+      }
+      if (
+        ["paused", "failed"].includes(source.state) ||
+        !(await automaticHistoricalPolicyAdmits(
+          input.client,
+          currentSelection
+        )) ||
+        !(await automaticHistoricalAdmission(input.client)).admitted
+      ) {
+        return {
+          state: "waiting",
+          selection: currentSelection,
+          runId: activeRunId
+        };
+      }
+      if (["discovered", "eligible", "queued"].includes(source.state)) {
+        await transitionAutomaticHistoricalSource(input.client, source);
+        return {
+          state: "progress",
+          selection: currentSelection,
+          runId: activeRunId
+        };
+      }
+      if (source.state !== "importing") {
+        return {
+          state: "waiting",
+          selection: currentSelection,
+          runId: activeRunId
+        };
+      }
+      try {
+        if (
+          await importNextPiHistoricalBatch(input.client, source, batchConfig)
+        ) {
+          return {
+            state: "progress",
+            selection: currentSelection,
+            runId: activeRunId
+          };
+        }
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== "pi_historical_record_exceeds_batch_limit"
+        ) {
+          throw error;
+        }
+        await skipUnrepresentablePiSource(input.client, source);
+        return {
+          state: "skipped",
+          selection: currentSelection,
+          runId: activeRunId
+        };
+      }
+      const completed = await completeAutomaticHistoricalSource(
+        input.client,
+        source.id
+      );
+      return {
+        state: completed ? "completed" : "source_exhausted",
+        selection: currentSelection,
+        runId: activeRunId
+      };
+    },
+    completeRun: (runId) => completeAutomaticHistoricalRun(input.client, runId)
+  };
 };
 
 const transition = (

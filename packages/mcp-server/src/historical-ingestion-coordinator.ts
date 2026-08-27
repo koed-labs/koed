@@ -22,6 +22,7 @@ export interface HistoricalProviderBatchResult {
 
 export interface HistoricalProviderAdapter<Candidate> {
   readonly aiClient: string;
+  discoverCandidates?(): Promise<readonly Candidate[]>;
   candidateId(candidate: Candidate): string;
   selectCandidates(
     candidates: readonly Candidate[],
@@ -140,6 +141,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
   let timer: NodeJS.Timeout | undefined;
   let stopped = false;
   let requested = false;
+  let discovery: Promise<void> | null = null;
 
   const save = (): void => persistState(statePath, state);
   const schedule = (delayMs = 0): void => {
@@ -216,25 +218,41 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
     return running;
   };
 
+  const offerCandidates = (offered: readonly Candidate[]): void => {
+    if (stopped) return;
+    for (const candidate of offered) {
+      candidates.set(input.adapter.candidateId(candidate), candidate);
+    }
+    if (!state.selectionFrozen) {
+      state = {
+        version: STATE_VERSION,
+        selectionFrozen: true,
+        runCompleted: false,
+        selections: input.adapter.selectCandidates(
+          [...candidates.values()],
+          input.now?.() ?? new Date()
+        )
+      };
+      save();
+    }
+    schedule();
+  };
+
+  if (input.adapter.discoverCandidates) {
+    discovery = input.adapter
+      .discoverCandidates()
+      .then(offerCandidates)
+      .catch((error) => {
+        input.onError?.(
+          error instanceof Error && /^[a-z0-9_.:-]+$/.test(error.message)
+            ? error.message
+            : "historical_candidate_discovery_failed"
+        );
+      });
+  }
+
   return {
-    offerCandidates(offered) {
-      for (const candidate of offered) {
-        candidates.set(input.adapter.candidateId(candidate), candidate);
-      }
-      if (!state.selectionFrozen) {
-        state = {
-          version: STATE_VERSION,
-          selectionFrozen: true,
-          runCompleted: false,
-          selections: input.adapter.selectCandidates(
-            [...candidates.values()],
-            input.now?.() ?? new Date()
-          )
-        };
-        save();
-      }
-      schedule();
-    },
+    offerCandidates,
     selectionFor(candidateId) {
       const selection = state.selections.find(
         (candidate) => candidate.candidateId === candidateId
@@ -245,6 +263,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
     async stop() {
       stopped = true;
       if (timer) clearTimeout(timer);
+      await discovery;
       await running;
     }
   };
