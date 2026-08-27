@@ -1154,6 +1154,10 @@ export const setupServicesHealthy = (value: unknown): boolean => {
 export const setupStartupReady = (value: unknown): boolean =>
   setupServicesHealthy(value) && hasHealthyDesktopCredential(value);
 
+export const shouldRefreshLocalAiClientsAfterResume = (
+  value: unknown
+): boolean => setupStartupReady(value);
+
 export const desktopCodexSetupCommand = (
   status: unknown
 ): ["repair", "codex"] | ["setup", "codex"] =>

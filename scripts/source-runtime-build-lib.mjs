@@ -168,6 +168,34 @@ const ownerIsLive = (
 const wait = (milliseconds) =>
   new Promise((resolveWait) => setTimeout(resolveWait, milliseconds));
 
+export const reclaimStaleSourceRuntimeLock = (lockDir, observation) => {
+  const serializedObservation = JSON.stringify(observation);
+  const quarantineId = createHash("sha256")
+    .update(serializedObservation)
+    .digest("hex")
+    .slice(0, 24);
+  // Keep one non-empty tombstone per stale ownership generation. A delayed
+  // contender then collides with this path instead of moving a replacement lock.
+  const quarantinePath = `${lockDir}.stale.${quarantineId}`;
+  try {
+    writeFileSync(
+      resolve(lockDir, "reclaim-observation.json"),
+      `${serializedObservation}\n`,
+      { flag: "wx", mode: 0o600 }
+    );
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    if (error?.code !== "EEXIST") throw error;
+  }
+  try {
+    renameSync(lockDir, quarantinePath);
+  } catch (error) {
+    if (["EEXIST", "ENOENT", "ENOTEMPTY"].includes(error?.code)) return false;
+    throw error;
+  }
+  return true;
+};
+
 export const acquireSourceRuntimeLock = async (
   repoRoot,
   {
@@ -210,14 +238,21 @@ export const acquireSourceRuntimeLock = async (
     const owner = readJson(ownerPath);
     if (!owner) {
       try {
-        const ageMs = Date.now() - statSync(paths.lockDir).mtimeMs;
+        const metadata = statSync(paths.lockDir);
+        const ageMs = Date.now() - metadata.mtimeMs;
         if (ageMs > 5_000)
-          rmSync(paths.lockDir, { recursive: true, force: true });
+          reclaimStaleSourceRuntimeLock(paths.lockDir, {
+            owner: null,
+            device: metadata.dev,
+            inode: metadata.ino,
+            createdAt: metadata.birthtimeMs,
+            modifiedAt: metadata.mtimeMs
+          });
       } catch {
         continue;
       }
     } else if (!ownerIsLive(owner, isRunning, identify)) {
-      rmSync(paths.lockDir, { recursive: true, force: true });
+      reclaimStaleSourceRuntimeLock(paths.lockDir, { owner });
     }
     await wait(pollIntervalMs);
   }

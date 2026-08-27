@@ -20,6 +20,7 @@ import {
   detectedSetupAiClients,
   desktopCodexSetupCommand,
   personalMemoryChangeFromSseFrame,
+  shouldRefreshLocalAiClientsAfterResume,
   setupStartupReady,
   setupServicesHealthy,
   setupIntegrationHealthy
@@ -734,6 +735,28 @@ describe("Koed server desktop manager", () => {
       setupStartupReady({
         ...starting,
         workerQueues: { state: "healthy" },
+        localAiRuntime: { state: "starting" }
+      })
+    ).toBe(false);
+  });
+
+  it("refreshes local AI Client capabilities from a healthy startup status", () => {
+    const startupStatus = {
+      api: { state: "healthy" },
+      database: { state: "healthy" },
+      redis: { state: "healthy" },
+      workerQueues: { state: "healthy" },
+      embeddingService: { state: "healthy" },
+      privacyService: { state: "healthy" },
+      localAiRuntime: { state: "healthy" },
+      apiToken: { state: "healthy" }
+    };
+
+    expect(startupStatus).not.toHaveProperty("mcpServer");
+    expect(shouldRefreshLocalAiClientsAfterResume(startupStatus)).toBe(true);
+    expect(
+      shouldRefreshLocalAiClientsAfterResume({
+        ...startupStatus,
         localAiRuntime: { state: "starting" }
       })
     ).toBe(false);

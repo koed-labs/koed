@@ -15,6 +15,7 @@ import {
   calculateSourceRuntimeFingerprint,
   checkSourceRuntime,
   prepareSourceRuntime,
+  reclaimStaleSourceRuntimeLock,
   releaseSourceRuntimeLease,
   releaseSourceRuntimeLock,
   resolveSourceRuntimeBuildPaths,
@@ -279,6 +280,46 @@ test("uses an exclusive preparation lock", async () => {
   } finally {
     assert.equal(releaseSourceRuntimeLock(first), true);
   }
+});
+
+test("reclaims a stale lock without deleting its replacement", () => {
+  const { root } = createFixture();
+  const paths = resolveSourceRuntimeBuildPaths(root);
+  mkdirSync(paths.lockDir, { recursive: true });
+  const staleOwner = {
+    pid: 41,
+    processIdentity: "stale-process",
+    acquiredAt: "2026-08-27T00:00:00.000Z"
+  };
+  writeFileSync(
+    resolve(paths.lockDir, "owner.json"),
+    `${JSON.stringify(staleOwner)}\n`
+  );
+
+  const replacement = {
+    pid: 42,
+    processIdentity: "replacement-process",
+    acquiredAt: "2026-08-27T00:00:01.000Z"
+  };
+  const staleObservation = { owner: staleOwner };
+  assert.equal(
+    reclaimStaleSourceRuntimeLock(paths.lockDir, staleObservation),
+    true
+  );
+  mkdirSync(paths.lockDir);
+  writeFileSync(
+    resolve(paths.lockDir, "owner.json"),
+    `${JSON.stringify(replacement)}\n`
+  );
+
+  assert.equal(
+    reclaimStaleSourceRuntimeLock(paths.lockDir, staleObservation),
+    false
+  );
+  assert.deepEqual(
+    JSON.parse(readFileSync(resolve(paths.lockDir, "owner.json"), "utf8")),
+    replacement
+  );
 });
 
 test("configures Desktop preparation before Electron startup", () => {

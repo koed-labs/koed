@@ -25,7 +25,7 @@ import {
 import {
   createKoedEnvironment,
   createKoedServerManager,
-  setupIntegrationHealthy,
+  shouldRefreshLocalAiClientsAfterResume,
   type KoedServerManager
 } from "./koed-server/manager.js";
 import {
@@ -390,7 +390,7 @@ const bootstrap = async () => {
         koedEnvironment.PDS_RUNTIME_SECRET_REF = runtimeReference;
       }
       const result = await server.resume();
-      if (setupIntegrationHealthy(result)) {
+      if (shouldRefreshLocalAiClientsAfterResume(result)) {
         void server
           .localAiClients({ operation: "refresh" })
           .catch(() => undefined);
