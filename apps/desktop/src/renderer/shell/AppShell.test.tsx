@@ -83,7 +83,23 @@ describe("AppShell", () => {
     expect(
       container.querySelector('[aria-label="Personal"] [aria-label="3 unread"]')
     ).not.toBeNull();
+    expect(
+      container.querySelector('[aria-label="Personal"] > svg')
+    ).not.toBeNull();
+    expect(container.querySelector(".desktop-personal-mark")).toBeNull();
     expect(container.textContent).toContain("Personal · Private to you");
+    expect(
+      [
+        ...container.querySelectorAll(
+          ".desktop-rail-bottom > .desktop-rail-button"
+        )
+      ].map((item) => item.getAttribute("aria-label"))
+    ).toEqual([
+      "Search and commands",
+      "Add or join Team",
+      "Devices",
+      "Preferences"
+    ]);
   });
 
   it("marks the selected Team as the active rail scope", async () => {

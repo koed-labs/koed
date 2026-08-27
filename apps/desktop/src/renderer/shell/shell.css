@@ -88,7 +88,6 @@
   block-size: 20px;
 }
 
-.desktop-personal-mark,
 .desktop-team-disc {
   display: grid;
   inline-size: 36px;
@@ -98,11 +97,6 @@
   font-size: 12px;
   font-weight: 750;
   letter-spacing: 0;
-}
-
-.desktop-personal-mark {
-  background: var(--primary);
-  color: var(--primary-foreground);
 }
 
 .desktop-team-disc[data-swatch="0"] {

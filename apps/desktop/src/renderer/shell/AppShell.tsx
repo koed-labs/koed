@@ -5,6 +5,7 @@ import {
   CircleAlert,
   CircleCheck,
   CircleHelp,
+  Home,
   Inbox,
   LoaderCircle,
   Menu,
@@ -192,9 +193,7 @@ function Rail({
           label="Personal"
           onClick={onActivatePersonal}
         >
-          <span className="desktop-personal-mark" aria-hidden="true">
-            K
-          </span>
+          <Home aria-hidden="true" />
         </RailButton>
       </div>
 
@@ -250,14 +249,14 @@ function Rail({
       </div>
 
       <div className="desktop-rail-fixed desktop-rail-bottom">
-        <RailButton label="Devices" onClick={onOpenDevices}>
-          <MonitorSmartphone aria-hidden="true" />
+        <RailButton label="Search and commands" onClick={onOpenCommandPalette}>
+          <Search aria-hidden="true" />
         </RailButton>
         <RailButton label="Add or join Team" onClick={onAddTeam}>
           <Plus aria-hidden="true" />
         </RailButton>
-        <RailButton label="Search and commands" onClick={onOpenCommandPalette}>
-          <Search aria-hidden="true" />
+        <RailButton label="Devices" onClick={onOpenDevices}>
+          <MonitorSmartphone aria-hidden="true" />
         </RailButton>
         <RailButton label="Preferences" onClick={onOpenPreferences}>
           <Settings aria-hidden="true" />
