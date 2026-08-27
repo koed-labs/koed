@@ -7,7 +7,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  rmSync,
   statSync,
   writeFileSync
 } from "node:fs";
@@ -22,6 +21,7 @@ import {
   writeDiagnosticWindow
 } from "./smoke-diagnostics.mjs";
 import {
+  removeSmokeHome,
   smokeExecutionPlan,
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
@@ -1157,7 +1157,7 @@ const run = async () => {
       killPidBestEffort(pid);
     }
     spawnSync("pkill", ["-f", koedHome], { stdio: "ignore" });
-    rmSync(koedHome, { recursive: true, force: true });
+    removeSmokeHome(koedHome);
   }
 };
 
