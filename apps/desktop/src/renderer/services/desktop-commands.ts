@@ -27,6 +27,7 @@ export type DesktopCommand =
   | "start"
   | "start_daemon"
   | "open_external"
+  | "reveal_local_project"
   | "open_logs";
 
 const defaultTimeoutMs: Record<DesktopCommand, number> = {
@@ -56,6 +57,7 @@ const defaultTimeoutMs: Record<DesktopCommand, number> = {
   start: 180_000,
   start_daemon: 60_000,
   open_external: 15_000,
+  reveal_local_project: 15_000,
   open_logs: 15_000
 };
 
@@ -146,7 +148,11 @@ export class DesktopStatusStore {
     this.#replace({ ...this.#snapshot, busyCommand: command, error: null });
     try {
       const result = await invokeDesktop<Result>(command, args);
-      if (command !== "open_external" && command !== "open_logs") {
+      if (
+        command !== "open_external" &&
+        command !== "reveal_local_project" &&
+        command !== "open_logs"
+      ) {
         await this.refresh();
       }
       return result;

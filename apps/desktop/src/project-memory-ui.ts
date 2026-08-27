@@ -1,3 +1,5 @@
+import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+
 export type DesktopThreadGroup = {
   id: string;
   name: string;
@@ -34,8 +36,8 @@ export type DesktopProjectMetadata = {
   path: {
     cwd: string;
     projectRoot: string | null;
-    basename: string;
-    localPathHash: string;
+    basename?: string;
+    localPathHash?: string;
   };
   git?: {
     branch: string | null;
@@ -44,7 +46,8 @@ export type DesktopProjectMetadata = {
   };
 };
 
-export type DesktopProject = DesktopProjectGroup & {
+export type DesktopProject = Omit<DesktopProjectGroup, "threads"> & {
+  threads: PersonalDesktopProjectThread[];
   catalogued: boolean;
   discoveredAt: string | null;
   lastSeenAt: string | null;
@@ -62,6 +65,36 @@ export type DesktopView =
   | "settings";
 
 export const ACTIVE_PROJECT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
+export type RepositoryPresentation = {
+  host: string;
+  label: string;
+  provider: "github" | "git";
+  url: string;
+};
+
+export const repositoryPresentationFromRemoteDisplay = (
+  remoteDisplay: string
+): RepositoryPresentation => {
+  const normalized = remoteDisplay.trim();
+  const separator = normalized.indexOf("/");
+  const host = (
+    separator === -1 ? normalized : normalized.slice(0, separator)
+  ).toLocaleLowerCase();
+  const github = host === "github.com";
+  return {
+    host,
+    label: github ? normalized.slice(separator + 1) : normalized,
+    provider: github ? "github" : "git",
+    url: `https://${normalized}`
+  };
+};
+
+export const repoUrlFromRemoteDisplay = (remoteDisplay: string): string =>
+  repositoryPresentationFromRemoteDisplay(remoteDisplay).url;
+
+export const repoLabelFromRemoteDisplay = (remoteDisplay: string): string =>
+  repositoryPresentationFromRemoteDisplay(remoteDisplay).label;
 
 const normalizedPath = (value: string | null | undefined): string | null => {
   const trimmed = value?.trim().replace(/\/+$/, "");
@@ -127,6 +160,7 @@ const enrichProject = (
   metadata: DesktopProjectMetadata | null
 ): DesktopProject => ({
   ...project,
+  threads: project.threads as PersonalDesktopProjectThread[],
   name: metadata?.displayName || project.name,
   path:
     project.path ?? metadata?.path.projectRoot ?? metadata?.path.cwd ?? null,

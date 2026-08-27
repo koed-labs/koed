@@ -193,6 +193,7 @@ const createServerManager = (): KoedServerManager =>
     spawn,
     openExternal,
     openPath: (path) => shell.openPath(path),
+    revealPath: (path) => shell.showItemInFolder(path),
     selectRecoveryKitPath: async () => {
       const selected = await dialog.showSaveDialog({
         title: "Save Koed recovery kit",

@@ -181,6 +181,11 @@ describe("local Postgres runtime", () => {
     expect(result.env.DATABASE_URL).toBe(
       "postgres://koed:secret@127.0.0.1:15432/koed"
     );
+    expect(result.env).toMatchObject({ LANG: "C", LC_ALL: "C" });
+    const initArgs = commands.find(
+      (entry) => entry.command.endsWith("initdb") && entry.args.includes("-D")
+    )?.args;
+    expect(initArgs).toContain("--encoding=UTF8");
     expect(commands.map((entry) => entry.command)).toEqual([
       resolve(bin, "initdb"),
       resolve(bin, "initdb"),

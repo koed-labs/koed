@@ -38,6 +38,7 @@ describe("Personal Memory preload bridge", () => {
       "createNote",
       "listAskThreads",
       "listNotes",
+      "listProjectMetadata",
       "listProjects",
       "loadAskThread",
       "loadEventPage",
@@ -98,6 +99,22 @@ describe("Personal Memory preload bridge", () => {
       contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       operation: "personal.notes.create",
       input
+    });
+  });
+
+  it("exposes local Project metadata without allowing arbitrary IPC input", async () => {
+    const invoke = vi.fn().mockResolvedValue(
+      success("personal.projects.metadata.list", {
+        projects: []
+      })
+    );
+    const api = createPersonalMemoryPreloadApi(invoke, events());
+
+    await expect(api.listProjectMetadata?.()).resolves.toEqual([]);
+    expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.projects.metadata.list",
+      input: {}
     });
   });
 

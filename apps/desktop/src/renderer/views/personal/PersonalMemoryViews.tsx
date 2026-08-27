@@ -6,16 +6,27 @@ import type {
 } from "@koed/shared/personal-desktop";
 import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
 import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPopup,
+  DialogTitle
+} from "@koed/ui";
+import {
   BookText,
   Brain,
   Check,
   ChevronDown,
   CircleAlert,
+  Folder,
+  Github,
   GitFork,
   LoaderCircle,
   MonitorSmartphone,
   Pencil,
   Send,
+  Settings,
   X
 } from "lucide-react";
 import {
@@ -34,10 +45,13 @@ import {
 } from "../../../NativeConversationSurface.js";
 import {
   projectIsActive,
+  projectLatestAt,
   relativeTime,
+  repositoryPresentationFromRemoteDisplay,
   sessionPreview,
   sessionSelectionId
 } from "../../../project-memory-ui.js";
+import type { DesktopProject } from "../../../project-memory-ui.js";
 import { type PersonalMemoryStore } from "../../state/personal-memory.js";
 import { usePersonalMemorySnapshot } from "../../state/use-personal-memory.js";
 import {
@@ -81,6 +95,8 @@ export type PersonalMemoryWorkspaceProps = {
   markdownAdapters?: MarkdownPlatformAdapters;
   onInspectEvent?: (selection: PersonalMemoryInspectorEvent) => void;
   onNavigate: (route: PersonalMemoryRoute) => void;
+  openExternal?: (url: string) => Promise<void>;
+  revealLocalProject?: (localProjectId: string) => Promise<void>;
   onSessionProjectAssigned?: (input: {
     projectId: string | null;
     sessionId: string;
@@ -96,37 +112,82 @@ export type PersonalMemoryWorkspaceProps = {
 const countLabel = (count: number, singular: string): string =>
   `${count} ${count === 1 ? singular : `${singular}s`}`;
 
+function ProjectRepo({
+  onOpenRepository,
+  remoteDisplay
+}: {
+  onOpenRepository?: (url: string) => void;
+  remoteDisplay: string;
+}) {
+  const repository = repositoryPresentationFromRemoteDisplay(remoteDisplay);
+  const RepositoryIcon = repository.provider === "github" ? Github : GitFork;
+  const actionLabel =
+    repository.provider === "github"
+      ? `Open ${repository.label} on GitHub`
+      : `Open repository ${repository.label}`;
+  if (!onOpenRepository) {
+    return (
+      <span
+        aria-label={`Repository ${repository.label}`}
+        className="personal-project-repo personal-project-repo-static"
+        data-repository-provider={repository.provider}
+      >
+        <RepositoryIcon aria-hidden="true" />
+        <span>{repository.label}</span>
+      </span>
+    );
+  }
+  return (
+    <button
+      aria-label={actionLabel}
+      className="personal-project-repo"
+      data-repository-provider={repository.provider}
+      onClick={() => onOpenRepository(repository.url)}
+      title={actionLabel}
+      type="button"
+    >
+      <RepositoryIcon aria-hidden="true" />
+      <span>{repository.label}</span>
+    </button>
+  );
+}
+
 function ProjectOverview({
   eventCount,
+  onOpenRepository,
+  remoteDisplay,
   sessionCount
 }: {
   eventCount: number;
+  onOpenRepository?: (url: string) => void;
+  remoteDisplay?: string | null;
   sessionCount: number;
 }) {
   return (
-    <span
-      aria-label={`${countLabel(sessionCount, "Captured Session")} · ${countLabel(eventCount, "Memory Event")}`}
-      className="personal-project-overview"
-    >
-      <span>
-        {sessionCount}
-        <BookText aria-hidden="true" />
-      </span>
-      <span aria-hidden="true">·</span>
-      <span>
-        {eventCount}
-        <Brain aria-hidden="true" />
+    <span className="personal-project-overview-group">
+      {remoteDisplay ? (
+        <ProjectRepo
+          onOpenRepository={onOpenRepository}
+          remoteDisplay={remoteDisplay}
+        />
+      ) : null}
+      <span
+        aria-label={`${countLabel(sessionCount, "Captured Session")} · ${countLabel(eventCount, "Memory Event")}`}
+        className="personal-project-overview"
+      >
+        <span>
+          {sessionCount}
+          <BookText aria-hidden="true" />
+        </span>
+        <span aria-hidden="true">·</span>
+        <span>
+          {eventCount}
+          <Brain aria-hidden="true" />
+        </span>
       </span>
     </span>
   );
 }
-
-const projectActivity = (project: PersonalDesktopProject): string | null =>
-  project.threads
-    .map((thread) => thread.latestAt)
-    .filter((timestamp) => Number.isFinite(Date.parse(timestamp)))
-    .sort()
-    .at(-1) ?? null;
 
 const sourceAiClientIdentity = (
   source: PersonalDesktopProjectThread["sourceAiClient"]
@@ -231,10 +292,11 @@ function ProjectRow({
   selected,
   onSelect
 }: {
-  project: PersonalDesktopProject;
+  project: DesktopProject;
   selected: boolean;
   onSelect: () => void;
 }) {
+  const latestAt = projectLatestAt(project);
   return (
     <button
       aria-current={selected ? "page" : undefined}
@@ -250,12 +312,11 @@ function ProjectRow({
         <strong>{project.name}</strong>
         <ProjectOverview
           eventCount={project.eventCount}
+          remoteDisplay={project.remoteDisplay}
           sessionCount={project.threads.length}
         />
       </span>
-      <time dateTime={projectActivity(project) ?? undefined}>
-        {relativeTime(projectActivity(project))}
-      </time>
+      <time dateTime={latestAt ?? undefined}>{relativeTime(latestAt)}</time>
     </button>
   );
 }
@@ -272,7 +333,7 @@ function ProjectsPane({
   loading: boolean;
   onRetry: () => void;
   onSelect: (projectId: string) => void;
-  projects: readonly PersonalDesktopProject[];
+  projects: readonly DesktopProject[];
   selectedProjectId: string | null;
 }) {
   const [query, setQuery] = useState("");
@@ -280,22 +341,11 @@ function ProjectsPane({
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filtered = projects.filter((project) => {
     if (!normalizedQuery) return true;
-    return [project.name, project.path ?? ""].some((value) =>
-      value.toLocaleLowerCase().includes(normalizedQuery)
+    return [project.name, project.path ?? "", project.remoteDisplay ?? ""].some(
+      (value) => value.toLocaleLowerCase().includes(normalizedQuery)
     );
   });
-  const active = filtered.filter((project) =>
-    projectIsActive({
-      ...project,
-      branch: null,
-      catalogued: false,
-      discoveredAt: null,
-      isWorktree: false,
-      lastSeenAt: null,
-      localProjectId: null,
-      remoteDisplay: null
-    })
-  );
+  const active = filtered.filter((project) => projectIsActive(project));
   const inactive = filtered.filter(
     (project) => !active.some(({ id }) => id === project.id)
   );
@@ -391,44 +441,98 @@ function ProjectsPane({
 }
 
 function SessionRow({
+  localProjectId,
+  onOpenRepository,
+  onRevealLocalProject,
   onSelect,
+  projectName,
+  remoteDisplay,
   thread
 }: {
+  localProjectId?: string | null;
+  onOpenRepository?: (url: string) => void;
+  onRevealLocalProject?: (localProjectId: string) => void;
   onSelect: () => void;
+  projectName: string;
+  remoteDisplay?: string | null;
   thread: PersonalDesktopProjectThread;
 }) {
+  const repository = remoteDisplay
+    ? repositoryPresentationFromRemoteDisplay(remoteDisplay)
+    : null;
+  const RepositoryIcon = repository?.provider === "github" ? Github : GitFork;
+  const repositoryActionLabel = repository
+    ? repository.provider === "github"
+      ? `Open ${repository.label} on GitHub`
+      : `Open repository ${repository.label}`
+    : null;
+  const revealLabel = `Reveal ${projectName} in file browser`;
   return (
-    <button
+    <div
       className="personal-session-row"
       data-session-id={sessionSelectionId(thread)}
-      onClick={onSelect}
-      type="button"
     >
-      <AiClientSourceMark
-        source={thread.sessionId ? thread.sourceAiClient : null}
-      />
-      <span className="personal-session-copy">
-        <span>
-          <strong>{thread.name || "Untitled session"}</strong>
-          {thread.invalidatedCount ? (
-            <small className="personal-invalidated-label">
-              {thread.invalidatedCount} invalidated
-            </small>
+      <button
+        className="personal-session-row-select"
+        onClick={onSelect}
+        type="button"
+      >
+        <AiClientSourceMark
+          source={thread.sessionId ? thread.sourceAiClient : null}
+        />
+        <span className="personal-session-copy">
+          <span>
+            <strong>{thread.name || "Untitled session"}</strong>
+            {thread.invalidatedCount ? (
+              <small className="personal-invalidated-label">
+                {thread.invalidatedCount} invalidated
+              </small>
+            ) : null}
+          </span>
+          <small>{sessionPreview(thread)}</small>
+        </span>
+        <span className="personal-session-meta">
+          <span
+            aria-label={countLabel(thread.eventCount, "Memory Event")}
+            className="personal-memory-event-count"
+          >
+            {thread.eventCount}
+            <Brain aria-hidden="true" />
+          </span>
+          <time dateTime={thread.latestAt}>
+            {relativeTime(thread.latestAt)}
+          </time>
+        </span>
+      </button>
+      {(localProjectId && onRevealLocalProject) ||
+      (repository && repositoryActionLabel && onOpenRepository) ? (
+        <span className="personal-session-links">
+          {localProjectId && onRevealLocalProject ? (
+            <button
+              aria-label={revealLabel}
+              className="personal-session-link"
+              data-tooltip={revealLabel}
+              onClick={() => onRevealLocalProject(localProjectId)}
+              type="button"
+            >
+              <Folder aria-hidden="true" />
+            </button>
+          ) : null}
+          {repository && repositoryActionLabel && onOpenRepository ? (
+            <button
+              aria-label={repositoryActionLabel}
+              className="personal-session-link"
+              data-repository-provider={repository.provider}
+              data-tooltip={repositoryActionLabel}
+              onClick={() => onOpenRepository(repository.url)}
+              type="button"
+            >
+              <RepositoryIcon aria-hidden="true" />
+            </button>
           ) : null}
         </span>
-        <small>{sessionPreview(thread)}</small>
-      </span>
-      <span className="personal-session-meta">
-        <span
-          aria-label={countLabel(thread.eventCount, "Memory Event")}
-          className="personal-memory-event-count"
-        >
-          {thread.eventCount}
-          <Brain aria-hidden="true" />
-        </span>
-        <time dateTime={thread.latestAt}>{relativeTime(thread.latestAt)}</time>
-      </span>
-    </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -571,6 +675,8 @@ function ProjectDetail({
   managedConversationRevision,
   managedConversations,
   onManagedConversationStarted,
+  onOpenRepository,
+  onRevealLocalProject,
   onRetry,
   onSelectSession,
   project
@@ -588,9 +694,11 @@ function ProjectDetail({
   onManagedConversationStarted: (
     conversation: ManagedConversationIdentity
   ) => void;
+  onOpenRepository?: (url: string) => void;
+  onRevealLocalProject?: (localProjectId: string) => void;
   onRetry: () => void;
   onSelectSession: (sessionId: string) => void;
-  project: PersonalDesktopProject | null;
+  project: DesktopProject | null;
 }) {
   const [startState, setStartState] = useState<{
     status: "idle" | "starting" | "error";
@@ -712,6 +820,8 @@ function ProjectDetail({
           </h2>
           <ProjectOverview
             eventCount={project.eventCount}
+            onOpenRepository={onOpenRepository}
+            remoteDisplay={project.remoteDisplay}
             sessionCount={project.threads.length}
           />
         </div>
@@ -780,22 +890,18 @@ function ProjectDetail({
           {startState.message}
         </p>
       ) : null}
-      <details className="personal-project-details">
-        <summary>Project details</summary>
-        <dl>
-          <div>
-            <dt>Local path:</dt>
-            <dd>{project.path ?? "Unavailable"}</dd>
-          </div>
-        </dl>
-      </details>
       <section className="personal-sessions" aria-label="Captured Sessions">
         {threads.length ? (
           <div>
             {threads.map((thread) => (
               <SessionRow
                 key={sessionSelectionId(thread)}
+                localProjectId={project.localProjectId}
+                onOpenRepository={onOpenRepository}
+                onRevealLocalProject={onRevealLocalProject}
                 onSelect={() => onSelectSession(sessionSelectionId(thread))}
+                projectName={project.name}
+                remoteDisplay={project.remoteDisplay}
                 thread={thread}
               />
             ))}
@@ -1397,6 +1503,7 @@ function SessionAssignment({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [open, setOpen] = useState(false);
   const requestRef = useRef(0);
   const targets = projects.filter(
     (project) =>
@@ -1433,6 +1540,7 @@ function SessionAssignment({
           projectId: result.projectId,
           sessionId: thread.sessionId
         });
+        setOpen(false);
       } catch (cause) {
         if (request !== requestRef.current) return;
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -1445,72 +1553,87 @@ function SessionAssignment({
 
   if (!assign || !thread.sessionId) return null;
   return (
-    <details className="personal-session-assignment">
-      <summary>
-        <ChevronDown aria-hidden="true" />
-        <span className="personal-session-assignment-label">Manage</span>
-      </summary>
-      <form
-        aria-busy={busy}
-        onSubmit={(event) => {
-          event.preventDefault();
-          const targetProjectId = new FormData(event.currentTarget).get(
-            "targetProjectId"
-          );
-          if (typeof targetProjectId !== "string") return;
-          void run({
-            action: "move",
-            sessionId: thread.sessionId!,
-            targetProjectId
-          });
-        }}
+    <Dialog onOpenChange={setOpen} open={open}>
+      <button
+        aria-label="Manage Captured Session"
+        className="personal-session-manage-button"
+        onClick={() => setOpen(true)}
+        title="Manage Captured Session"
+        type="button"
       >
-        <label className="personal-session-move-control">
-          <span>Move to Project:</span>
-          <select
-            defaultValue=""
-            disabled={busy || targets.length === 0}
-            name="targetProjectId"
-            required
-          >
-            <option disabled value="">
-              {targets.length ? "Select destination…" : "No other Projects"}
-            </option>
-            {targets.map((target) => (
-              <option key={target.id} value={target.id}>
-                {target.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          className="personal-move-button"
-          disabled={busy || targets.length === 0}
-          type="submit"
+        <Settings aria-hidden="true" />
+      </button>
+      <DialogPopup className="personal-session-assignment-dialog">
+        <DialogHeader>
+          <DialogTitle>Manage Captured Session</DialogTitle>
+          <DialogDescription>
+            Move this session to another Project.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          aria-busy={busy}
+          onSubmit={(event) => {
+            event.preventDefault();
+            const targetProjectId = new FormData(event.currentTarget).get(
+              "targetProjectId"
+            );
+            if (typeof targetProjectId !== "string") return;
+            void run({
+              action: "move",
+              sessionId: thread.sessionId!,
+              targetProjectId
+            });
+          }}
         >
-          {busy ? "Saving…" : "Move"}
-        </button>
-        {thread.projectAssignmentSource === "user_override" ? (
-          <button
-            disabled={busy}
-            onClick={() =>
-              void run({
-                action: "reset",
-                sessionId: thread.sessionId!
-              })
-            }
-            type="button"
-          >
-            Reset to automatic
-          </button>
-        ) : null}
-      </form>
-      {error ? (
-        <p role="alert" className="personal-memory-error">
-          {error}
-        </p>
-      ) : null}
-    </details>
+          <label className="personal-session-move-control">
+            <span>Move to Project:</span>
+            <select
+              defaultValue=""
+              disabled={busy || targets.length === 0}
+              name="targetProjectId"
+              required
+            >
+              <option disabled value="">
+                {targets.length ? "Select destination…" : "No other Projects"}
+              </option>
+              {targets.map((target) => (
+                <option key={target.id} value={target.id}>
+                  {target.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {error ? (
+            <p role="alert" className="personal-memory-error">
+              {error}
+            </p>
+          ) : null}
+          <DialogFooter className="personal-session-assignment-actions">
+            {thread.projectAssignmentSource === "user_override" ? (
+              <button
+                disabled={busy}
+                onClick={() =>
+                  void run({
+                    action: "reset",
+                    sessionId: thread.sessionId!
+                  })
+                }
+                type="button"
+              >
+                Reset to automatic
+              </button>
+            ) : null}
+            <button
+              className="personal-move-button"
+              disabled={busy || targets.length === 0}
+              type="submit"
+            >
+              {busy ? "Saving…" : "Move"}
+            </button>
+          </DialogFooter>
+        </form>
+      </DialogPopup>
+    </Dialog>
   );
 }
 
@@ -1524,6 +1647,7 @@ function SessionDetail({
   markdownAdapters,
   onAssigned,
   onInspectEvent,
+  onOpenRepository,
   onShare,
   project,
   projects,
@@ -1543,7 +1667,8 @@ function SessionDetail({
   onAssigned?: PersonalMemoryWorkspaceProps["onSessionProjectAssigned"];
   onInspectEvent?: PersonalMemoryWorkspaceProps["onInspectEvent"];
   onShare?: PersonalMemoryWorkspaceProps["onShareToWorkspace"];
-  project: PersonalDesktopProject;
+  onOpenRepository?: (url: string) => void;
+  project: DesktopProject;
   projects: readonly PersonalDesktopProject[];
   records: readonly PersonalMemorySharingRecord[];
   store: PersonalMemoryStore;
@@ -1596,7 +1721,7 @@ function SessionDetail({
   return (
     <section className="personal-session-detail">
       <header>
-        <div>
+        <div className="personal-session-header-copy">
           <small>{project.name} · Private to you</small>
           {editingTitle ? (
             <form
@@ -1665,6 +1790,12 @@ function SessionDetail({
               ) : null}
             </div>
           )}
+          {project.remoteDisplay ? (
+            <ProjectRepo
+              onOpenRepository={onOpenRepository}
+              remoteDisplay={project.remoteDisplay}
+            />
+          ) : null}
           {titleError ? (
             <p className="personal-session-title-error" role="alert">
               {titleError}
@@ -1678,22 +1809,24 @@ function SessionDetail({
             <Brain aria-hidden="true" />
           </p>
         </div>
-        <ShareAffordance
-          candidates={candidates}
-          onShare={onShare}
-          projectId={project.id}
-          records={records}
-          suggestions={suggestions}
-          thread={thread}
-        />
+        <div className="personal-session-header-actions">
+          <ShareAffordance
+            candidates={candidates}
+            onShare={onShare}
+            projectId={project.id}
+            records={records}
+            suggestions={suggestions}
+            thread={thread}
+          />
+          <SessionAssignment
+            assign={assignSessionProject}
+            onAssigned={onAssigned}
+            projects={projects}
+            store={store}
+            thread={thread}
+          />
+        </div>
       </header>
-      <SessionAssignment
-        assign={assignSessionProject}
-        onAssigned={onAssigned}
-        projects={projects}
-        store={store}
-        thread={thread}
-      />
       <div className="personal-conversation-host">
         <StoreConversation
           authorizeManagedConversationTransfer={
@@ -1725,12 +1858,21 @@ export function PersonalMemoryWorkspace({
   onNavigate,
   onSessionProjectAssigned,
   onShareToWorkspace,
+  openExternal,
+  revealLocalProject,
   projectWorkspaceSuggestions = [],
   route,
   sharingRecords = [],
   store,
   workspaceCandidates = []
 }: PersonalMemoryWorkspaceProps) {
+  const onOpenRepository = openExternal
+    ? (url: string) => void openExternal(url).catch(() => undefined)
+    : undefined;
+  const onRevealLocalProject = revealLocalProject
+    ? (localProjectId: string) =>
+        void revealLocalProject(localProjectId).catch(() => undefined)
+    : undefined;
   const snapshot = usePersonalMemorySnapshot(store);
   const requestedRef = useRef(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -1924,6 +2066,7 @@ export function PersonalMemoryWorkspace({
             markdownAdapters={markdownAdapters}
             onAssigned={onSessionProjectAssigned}
             onInspectEvent={onInspectEvent}
+            onOpenRepository={onOpenRepository}
             onShare={onShareToWorkspace}
             project={selectedProject}
             projects={projects}
@@ -1980,6 +2123,8 @@ export function PersonalMemoryWorkspace({
                 sessionId: conversation.capturedSessionId
               });
             }}
+            onOpenRepository={onOpenRepository}
+            onRevealLocalProject={onRevealLocalProject}
             onRetry={() => void store.loadProjects()}
             onSelectSession={(sessionId) => {
               if (!selectedProject) return;

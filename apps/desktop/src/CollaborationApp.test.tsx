@@ -1421,7 +1421,7 @@ describe("CollaborationApp", () => {
     );
     await act(async () =>
       container
-        .querySelector<HTMLButtonElement>(".personal-session-row")
+        .querySelector<HTMLButtonElement>(".personal-session-row-select")
         ?.click()
     );
     await vi.waitFor(() =>

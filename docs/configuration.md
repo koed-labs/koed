@@ -69,9 +69,14 @@ Supported mode fields:
 - `KOED_RUNTIME_MODE`: `local-personal`, `external`, or `developer`.
 - `KOED_TEAM_COLLABORATION_ENABLED`: the shared API/Worker Team collaboration switch.
   It accepts only `true` or `false`. Operator-managed server deployments default
-  to `false`. A Desktop-managed local edge defaults to `true` so the packaged
-  collaboration client can mediate enrolled Team backends; an explicit `false`
-  still disables its Team surfaces. When disabled,
+  to `false`. A Desktop-managed local edge also defaults to `false`, so a
+  packaged Desktop install starts Personal-only and does not provision the
+  Privacy Filter model. To enable its Team collaboration client, the Operator
+  must explicitly launch Desktop with `KOED_TEAM_COLLABORATION_ENABLED=true`;
+  this provisions the Privacy Filter model and enables the local Team routes
+  after restart. Upgrading an existing Desktop installation preserves an
+  explicit environment value; otherwise, Team collaboration becomes disabled
+  until this opt-in is supplied. When disabled,
   capability discovery reports Team Workspaces, collaboration, Share Grants,
   Cross-Identity Sync, remote upstreams, and device enrollment unavailable.
   Team chat, Shared Memory, Team realtime, retention, high-risk, support, Team
