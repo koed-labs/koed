@@ -337,6 +337,48 @@ describe("SetupChecklist", () => {
     );
   });
 
+  it("does not display verification as complete when setup stages are pending", async () => {
+    const inconsistent = {
+      ...setupFixture(),
+      stages: setupFixture().stages.map((stage) =>
+        stage.id === "verification"
+          ? { ...stage, state: "complete" as const }
+          : stage
+      )
+    };
+    window.koedDesktop = {
+      invoke: async <T = unknown,>(): Promise<T> =>
+        statusFixture("needs_attention") as T,
+      setup: {
+        inspect: async () => inconsistent,
+        run: async () => inconsistent,
+        subscribe: () => () => undefined
+      }
+    };
+
+    await act(async () => {
+      root.render(
+        <SetupChecklist
+          onComplete={vi.fn()}
+          showTrustGuide={false}
+          statusStore={new DesktopStatusStore()}
+        />
+      );
+    });
+    await act(async () => Promise.resolve());
+
+    expect(container.querySelectorAll('[data-state="complete"]')).toHaveLength(
+      2
+    );
+    expect(container.querySelectorAll('[data-state="pending"]')).toHaveLength(
+      4
+    );
+    expect(container.textContent).toContain(
+      "Complete the preceding setup steps before final verification."
+    );
+    expect(container.textContent).toContain("Ready to set up");
+  });
+
   it("refreshes shared readiness when inspection finds setup complete", async () => {
     const complete = {
       ...setupFixture("complete"),
@@ -440,22 +482,6 @@ describe("SetupChecklist", () => {
           .click()
       );
       await vi.waitFor(() =>
-        expect(
-          document.body.querySelector(
-            '[role="dialog"] [data-slot="dialog-title"]'
-          )?.textContent
-        ).toBe(`Set up ${label}?`)
-      );
-      await act(async () =>
-        [
-          ...document.body.querySelectorAll<HTMLButtonElement>(
-            '[role="dialog"] button'
-          )
-        ]
-          .find((button) => button.textContent === "Allow and set up")!
-          .click()
-      );
-      await vi.waitFor(() =>
         expect(container.textContent).toContain(`${label}: configured`)
       );
       expect(invoke).toHaveBeenCalledWith(command, {
@@ -539,24 +565,6 @@ describe("SetupChecklist", () => {
         .click()
     );
 
-    for (const { label } of singleClientCases) {
-      await vi.waitFor(() =>
-        expect(
-          document.body.querySelector(
-            '[role="dialog"] [data-slot="dialog-title"]'
-          )?.textContent
-        ).toBe(`Set up ${label}?`)
-      );
-      await act(async () =>
-        [
-          ...document.body.querySelectorAll<HTMLButtonElement>(
-            '[role="dialog"] button'
-          )
-        ]
-          .find((button) => button.textContent === "Allow and set up")!
-          .click()
-      );
-    }
     await vi.waitFor(() => {
       for (const { label } of singleClientCases) {
         expect(container.textContent).toContain(`${label}: configured`);
@@ -572,120 +580,6 @@ describe("SetupChecklist", () => {
         { operatorConsented: true }
       ])
     );
-    await act(async () =>
-      [...container.querySelectorAll("button")]
-        .find((button) => button.textContent === "Finish")!
-        .click()
-    );
-    expect(onComplete).toHaveBeenCalledOnce();
-  });
-
-  it("preserves prior success when next client consent is cancelled", async () => {
-    const configured = new Set<ClientId>();
-    const status = () =>
-      statusWithClientProfiles({
-        codex: configured.has("codex") ? "healthy" : "not_configured",
-        claude: configured.has("claude") ? "healthy" : "not_configured",
-        pi: "not_configured"
-      });
-    const onComplete = vi.fn();
-    const invoke = vi.fn(
-      async (receivedCommand: string, args?: Record<string, unknown>) => {
-        void args;
-        if (receivedCommand === "status") return status();
-        if (receivedCommand === "setup_codex") {
-          configured.add("codex");
-          return { ok: true };
-        }
-        throw new Error(`Unexpected command: ${receivedCommand}`);
-      }
-    );
-    window.koedDesktop = {
-      invoke: async <T = unknown,>(
-        receivedCommand: string,
-        args?: Record<string, unknown>
-      ): Promise<T> => (await invoke(receivedCommand, args)) as T,
-      setup: {
-        inspect: async () => completeSetupFixture(),
-        run: async () => completeSetupFixture(),
-        subscribe: () => () => undefined
-      }
-    };
-
-    await act(async () => {
-      root.render(
-        <SetupChecklist
-          onComplete={onComplete}
-          showTrustGuide={false}
-          statusStore={new DesktopStatusStore()}
-        />
-      );
-    });
-    await vi.waitFor(() =>
-      expect(
-        [...container.querySelectorAll("button")].find(
-          (button) => button.textContent === "Continue"
-        )
-      ).toBeTruthy()
-    );
-    await act(async () =>
-      [...container.querySelectorAll("button")]
-        .find((button) => button.textContent === "Continue")!
-        .click()
-    );
-    const checkboxes = [
-      ...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')
-    ];
-    await act(async () => {
-      checkboxes[0]!.click();
-      checkboxes[1]!.click();
-    });
-    await act(async () =>
-      [...container.querySelectorAll("button")]
-        .find((button) => button.textContent === "Continue")!
-        .click()
-    );
-    await vi.waitFor(() =>
-      expect(
-        document.body.querySelector(
-          '[role="dialog"] [data-slot="dialog-title"]'
-        )?.textContent
-      ).toBe("Set up Codex?")
-    );
-    await act(async () =>
-      [
-        ...document.body.querySelectorAll<HTMLButtonElement>(
-          '[role="dialog"] button'
-        )
-      ]
-        .find((button) => button.textContent === "Allow and set up")!
-        .click()
-    );
-    await vi.waitFor(() =>
-      expect(
-        document.body.querySelector(
-          '[role="dialog"] [data-slot="dialog-title"]'
-        )?.textContent
-      ).toBe("Set up Claude Code?")
-    );
-    await act(async () =>
-      [
-        ...document.body.querySelectorAll<HTMLButtonElement>(
-          '[role="dialog"] button'
-        )
-      ]
-        .find((button) => button.textContent === "Cancel")!
-        .click()
-    );
-
-    await vi.waitFor(() => {
-      expect(container.textContent).toContain("Codex: configured");
-      expect(container.textContent).toContain("Claude Code: skipped");
-    });
-    expect(
-      invoke.mock.calls.map(([receivedCommand]) => receivedCommand)
-    ).not.toContain("setup_claude");
-    expect(onComplete).not.toHaveBeenCalled();
     await act(async () =>
       [...container.querySelectorAll("button")]
         .find((button) => button.textContent === "Finish")!
@@ -810,13 +704,11 @@ describe("SetupChecklist", () => {
         .click()
     );
     const codexCard = container.querySelectorAll(".koed-client-card")[0]!;
-    expect(codexCard.textContent).not.toContain(
-      "Managed Conversation: Unknown"
-    );
-    expect(codexCard.querySelectorAll("span")).toHaveLength(9);
+    expect(codexCard.textContent).not.toContain("Managed Conversation");
+    expect(codexCard.querySelectorAll(".koed-client-cap")).toHaveLength(3);
   });
 
-  it("requires separate consent for selected clients and keeps one failure isolated", async () => {
+  it("keeps one client's failure isolated from the rest of the queue", async () => {
     const status = {
       ...statusFixture("healthy"),
       codex: { ...component("not_configured"), configured: false },
@@ -837,7 +729,7 @@ describe("SetupChecklist", () => {
       invoke: async <T = unknown,>(command: string): Promise<T> =>
         (await invoke(command)) as T,
       setup: {
-        inspect: async () => setupFixture("complete"),
+        inspect: async () => completeSetupFixture(),
         run: async () => setupFixture("complete"),
         subscribe: () => () => undefined
       }
@@ -870,30 +762,17 @@ describe("SetupChecklist", () => {
         .find((button) => button.textContent === "Continue")!
         .click()
     );
-    expect(
-      [...container.querySelectorAll("button")].find(
-        (button) => button.textContent === "Set up later"
-      )?.disabled
-    ).toBe(true);
-    expect(
-      invoke.mock.calls.some(([command]) => command === "setup_codex")
-    ).toBe(false);
-    await act(async () =>
-      document.body
-        .querySelector('[role="dialog"] button:last-child')!
-        .dispatchEvent(new MouseEvent("click", { bubbles: true }))
-    );
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Codex:");
+      expect(container.textContent).toContain("Claude Code:");
+    });
     expect(
       invoke.mock.calls.some(([command]) => command === "setup_codex")
     ).toBe(true);
-    const cancel = document.body.querySelector('[role="dialog"] button');
-    await act(async () =>
-      cancel?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
-    );
-    expect(onComplete).not.toHaveBeenCalled();
     expect(
       invoke.mock.calls.some(([command]) => command === "setup_claude")
-    ).toBe(false);
+    ).toBe(true);
+    expect(onComplete).not.toHaveBeenCalled();
     const summary = container.querySelector<HTMLUListElement>(
       '[aria-label="AI Client setup results"]'
     );
@@ -966,17 +845,14 @@ describe("SetupChecklist", () => {
         .find((button) => button.textContent === "Continue")!
         .click()
     );
-    await act(async () =>
-      document.body
-        .querySelector<HTMLButtonElement>('[role="dialog"] button:last-child')!
-        .click()
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Codex: configured")
     );
 
     expect(invoke.mock.calls.map(([command]) => command)).not.toContain(
       "check_codex"
     );
-    expect(container.textContent).toContain("Codex: configured");
-    expect(container.textContent).toContain("Automatic capture: Unknown");
+    expect(container.textContent).toContain("Auto-capture");
   });
 
   it("keeps healthy client selection strict and records ready", async () => {
@@ -1028,17 +904,13 @@ describe("SetupChecklist", () => {
         .find((button) => button.textContent === "Continue")!
         .click()
     );
-    expect(document.body.textContent).toContain("Check integration");
-    await act(async () =>
-      document.body
-        .querySelector<HTMLButtonElement>('[role="dialog"] button:last-child')!
-        .click()
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Codex: ready")
     );
 
     expect(invoke.mock.calls.map(([command]) => command)).toContain(
       "check_codex"
     );
-    expect(container.textContent).toContain("Codex: ready");
   });
 
   it("does not infer configured state when refreshed profile is not healthy", async () => {
@@ -1090,13 +962,9 @@ describe("SetupChecklist", () => {
         .find((button) => button.textContent === "Continue")!
         .click()
     );
-    await act(async () =>
-      document.body
-        .querySelector<HTMLButtonElement>('[role="dialog"] button:last-child')!
-        .click()
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Codex: failed")
     );
-
-    expect(container.textContent).toContain("Codex: failed");
     expect(container.textContent).toContain(
       "profile was not confirmed healthy"
     );
