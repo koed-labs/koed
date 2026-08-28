@@ -305,13 +305,27 @@ jobs:
           exit 1
 
       - name: Validate cached native runtime payload
-        run: pnpm native-runtime:validate -- --runtime-root "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --platform linux --json
+        run: |
+          report="${RUNNER_TEMP}/koed-native-runtime-validation.json"
+          set +e
+          node scripts/native-runtime/validate-runtime.mjs --runtime-root "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --platform linux --json > "${report}"
+          status=$?
+          set -e
+          jq '{ok, error, errors, timings, postgresExtensions: (.postgresExtensions | {ok, error, log}), packagedProvider: (.packagedProvider | {skipped, ok, status: (.status | {status, stderr}), install: (.install | {status, stderr})})}' "${report}"
+          exit "${status}"
 
       - name: Package native runtime release artifact
         run: pnpm native-runtime:build:linux-x64 -- --source-dir "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --version "${{ needs.release.outputs.version }}" --json
 
       - name: Validate packaged native runtime artifact
-        run: pnpm native-runtime:validate -- --runtime-root dist/native-runtime/linux-x64/koed-runtime --platform linux --json
+        run: |
+          report="${RUNNER_TEMP}/koed-packaged-native-runtime-validation.json"
+          set +e
+          node scripts/native-runtime/validate-runtime.mjs --runtime-root dist/native-runtime/linux-x64/koed-runtime --platform linux --json > "${report}"
+          status=$?
+          set -e
+          jq '{ok, error, errors, timings, postgresExtensions: (.postgresExtensions | {ok, error, log}), packagedProvider: (.packagedProvider | {skipped, ok, status: (.status | {status, stderr}), install: (.install | {status, stderr})})}' "${report}"
+          exit "${status}"
 
       - name: Stage native runtime release assets
         run: |
