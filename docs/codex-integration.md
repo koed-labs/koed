@@ -98,6 +98,18 @@ memory guidance in Codex's global instructions. `koed-server status --json` and
 `doctor --json` report missing, stale, or malformed guidance through the
 existing Codex configuration check, and **Fix Codex integration** reconciles
 missing or stale content.
+
+If Koed is not available during MCP initialization, the MCP Server starts in
+degraded mode. Codex does not show an MCP startup warning. A memory tool returns
+this error until the MCP Server connects:
+
+```text
+The koed MCP cannot connect to the local server.
+```
+
+Start Koed Desktop or `koed-server`. Then call the memory tool again. The MCP
+Server reconnects without a Codex restart.
+
 If Codex Desktop cannot resolve `node`, set the command to an absolute Node path
 or run setup with `MEMORY_NODE_COMMAND=/path/to/node`. Shell-managed versions
 from NVM, pyenv, or similar tools may not be on the PATH when Codex runs hooks.

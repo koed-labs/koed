@@ -13,6 +13,7 @@ import {
   memoryIntakeProposeToolDescription,
   memoryServerInstructions,
   resolveToolExposureConfig,
+  unavailableBackendToolCapabilities,
   type BackendToolCapabilities
 } from "./index.js";
 import { LocalAiRuntimeClient } from "./local-runtime-client.js";
@@ -30,9 +31,17 @@ import {
 
 export const KOED_MCP_PROTOCOL_VERSION = "2026-07-28" as const;
 
+export const KOED_MCP_UNAVAILABLE_MESSAGE =
+  "The koed MCP cannot connect to the local server.";
+
 const jsonResponse = (payload: Record<string, unknown>) => ({
   structuredContent: payload,
   content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }]
+});
+
+const toolErrorResponse = (message: string) => ({
+  isError: true,
+  content: [{ type: "text" as const, text: message }]
 });
 
 const defaultCallerContext = (
@@ -127,12 +136,19 @@ export const createKoedMcpServer = async (
     callerContextResolver = ({ defaultContext }) => defaultContext
   }: CreateKoedMcpServerOptions = {}
 ): Promise<McpServer> => {
-  const runtimeCapabilities: BackendToolCapabilities = await runtimeClient
-    .capabilities()
-    .then((capabilities) => ({
-      curatedMemoryIntakeAvailable:
-        capabilities.curatedMemoryIntakeAvailable === true
-    }));
+  let runtimeCapabilities: BackendToolCapabilities;
+  let runtimeAvailable = true;
+  try {
+    runtimeCapabilities = await runtimeClient
+      .capabilities()
+      .then((capabilities) => ({
+        curatedMemoryIntakeAvailable:
+          capabilities.curatedMemoryIntakeAvailable === true
+      }));
+  } catch {
+    runtimeCapabilities = unavailableBackendToolCapabilities;
+    runtimeAvailable = false;
+  }
   const activeTools = exposedTools(
     resolveToolExposureConfig(environment),
     runtimeCapabilities
@@ -159,9 +175,9 @@ export const createKoedMcpServer = async (
         description: toolDescription(toolName),
         inputSchema: toolSchema(toolName) as z.ZodObject
       },
-      async (input, context) =>
-        jsonResponse(
-          await runtimeClient.callTool(
+      async (input, context) => {
+        try {
+          const response = await runtimeClient.callTool(
             toolName,
             input as Record<string, unknown>,
             callerContextResolver({
@@ -169,8 +185,16 @@ export const createKoedMcpServer = async (
               requestContext: _requestContext
             }),
             context.mcpReq.signal
-          )
-        )
+          );
+          runtimeAvailable = true;
+          return jsonResponse(response);
+        } catch (error) {
+          if (!runtimeAvailable) {
+            return toolErrorResponse(KOED_MCP_UNAVAILABLE_MESSAGE);
+          }
+          throw error;
+        }
+      }
     );
   }
 
