@@ -40,6 +40,7 @@ type Artifact = {
   providerCursorOffset: number;
   providerCursorLine: number;
   liveStartOffset?: number;
+  liveStartLine?: number;
   sourceFingerprint: string;
 };
 type HistoricalSource = {
@@ -126,7 +127,12 @@ export const registerPiHistoricalTranscriptSource = async (
     frontierLine?: number;
     maxBytesPerPass?: number;
   } = {}
-): Promise<Artifact & { registrationFrontierOffset: number }> => {
+): Promise<
+  Artifact & {
+    registrationFrontierOffset: number;
+    registrationFrontierLine: number;
+  }
+> => {
   const target = await verifiedPiSessionPath(signal.transcriptPath, env);
   const identity = piSessionIdentity(target);
   if (identity.id !== signal.sourceSessionId)
@@ -194,17 +200,32 @@ export const registerPiHistoricalTranscriptSource = async (
       })
     );
   }
+  const registrationFrontierOffset =
+    typeof artifact.liveStartOffset === "number"
+      ? artifact.liveStartOffset
+      : boundary;
   if (
-    typeof artifact.liveStartOffset === "number" &&
-    artifact.liveStartOffset !== boundary
+    !Number.isSafeInteger(registrationFrontierOffset) ||
+    registrationFrontierOffset < 0 ||
+    registrationFrontierOffset > boundary
   ) {
     throw new Error("pi_historical_frontier_conflict");
   }
-  while (artifact.providerCursorOffset < boundary) {
+  const registrationFrontierLine =
+    typeof artifact.liveStartLine === "number" &&
+    Number.isSafeInteger(artifact.liveStartLine) &&
+    artifact.liveStartLine >= 0
+      ? artifact.liveStartLine
+      : registrationFrontierOffset === boundary &&
+          options.frontierLine !== undefined &&
+          options.frontierLine >= 0
+        ? options.frontierLine
+        : await countTranscriptLines(target, registrationFrontierOffset);
+  while (artifact.providerCursorOffset < registrationFrontierOffset) {
     const bytes = nextCompleteJournalSegment(
       target,
       artifact.providerCursorOffset,
-      boundary,
+      registrationFrontierOffset,
       options.maxBytesPerPass ?? 16 * 1024 * 1024
     );
     const lines = bytes.reduce(
@@ -244,7 +265,8 @@ export const registerPiHistoricalTranscriptSource = async (
   return {
     ...artifact,
     sourceFingerprint: artifact.sourceFingerprint ?? fingerprint,
-    registrationFrontierOffset: boundary
+    registrationFrontierOffset,
+    registrationFrontierLine
   };
 };
 
@@ -678,7 +700,9 @@ export const createPiHistoricalProviderAdapter = (input: {
         );
         currentSelection = {
           ...currentSelection,
-          artifactId: artifact.id
+          artifactId: artifact.id,
+          frontierOffset: artifact.registrationFrontierOffset,
+          frontierLine: artifact.registrationFrontierLine
         };
         if (artifact.providerCursorOffset < currentSelection.frontierOffset) {
           return {

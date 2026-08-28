@@ -219,6 +219,60 @@ describe("Pi historical transcript registration", () => {
     expect(lookupCount).toBe(2);
   });
 
+  it("uses an earlier live activation frontier discovered after registration", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-history-"));
+    temporaryDirectories.push(root);
+    const sessions = path.join(root, "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const sourceSessionId = randomUUID();
+    const transcriptPath = path.join(sessions, `${sourceSessionId}.jsonl`);
+    const cwd = "/tmp/pi-history";
+    fs.writeFileSync(
+      transcriptPath,
+      line({ type: "session", version: 3, id: sourceSessionId, cwd })
+    );
+    const activationFrontier = fs.statSync(transcriptPath).size;
+    fs.appendFileSync(
+      transcriptPath,
+      line({
+        type: "message",
+        id: "advanced-before-discovery",
+        timestamp: "2026-08-17T00:01:00.000Z",
+        message: { role: "user", content: "later" }
+      })
+    );
+    const discoveryFrontier = fs.statSync(transcriptPath).size;
+    const appendConversationSourceSegment = vi.fn();
+    const client = {
+      lookupConversationSourceArtifact: vi.fn(async () => ({
+        artifact: {
+          id: randomUUID(),
+          sessionId: randomUUID(),
+          providerCursorOffset: discoveryFrontier,
+          providerCursorLine: 2,
+          liveStartOffset: activationFrontier,
+          liveStartLine: 1,
+          sourceFingerprint: "fingerprint"
+        }
+      })),
+      appendConversationSourceSegment
+    } as unknown as MemoryApiClient;
+
+    const registered = await registerPiHistoricalTranscriptSource(
+      client,
+      { sourceSessionId, transcriptPath, cwd },
+      {
+        KOED_HOME: path.join(root, "koed"),
+        PI_CODING_AGENT_SESSION_DIR: sessions
+      },
+      { frontierOffset: discoveryFrontier, frontierLine: 2 }
+    );
+
+    expect(registered.registrationFrontierOffset).toBe(activationFrontier);
+    expect(registered.registrationFrontierLine).toBe(1);
+    expect(appendConversationSourceSegment).not.toHaveBeenCalled();
+  });
+
   it("streams line counting across a large registration frontier", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-history-"));
     temporaryDirectories.push(root);
@@ -280,6 +334,106 @@ describe("Pi historical transcript registration", () => {
 });
 
 describe("Pi automatic historical policy ordering", () => {
+  it("persists an earlier live artifact frontier in the frozen selection", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-history-"));
+    temporaryDirectories.push(root);
+    const sessions = path.join(root, "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const sourceSessionId = randomUUID();
+    const transcriptPath = path.join(sessions, `${sourceSessionId}.jsonl`);
+    const cwd = "/tmp/pi-history";
+    fs.writeFileSync(
+      transcriptPath,
+      [
+        line({ type: "session", version: 3, id: sourceSessionId, cwd }),
+        ...Array.from({ length: 10 }, (_, index) =>
+          line({
+            type: "message",
+            id: `activation-${index}`,
+            timestamp: `2026-08-17T00:00:${String(index).padStart(2, "0")}.000Z`,
+            message: { role: "user", content: "x".repeat(300) }
+          })
+        )
+      ].join("")
+    );
+    const activationFrontier = fs.statSync(transcriptPath).size;
+    fs.appendFileSync(
+      transcriptPath,
+      line({
+        type: "message",
+        id: "advanced-before-discovery",
+        timestamp: "2026-08-17T00:01:00.000Z",
+        message: { role: "user", content: "later" }
+      })
+    );
+    const discoveryFrontier = fs.statSync(transcriptPath).size;
+    let artifact: Record<string, unknown> = {
+      id: randomUUID(),
+      sessionId: randomUUID(),
+      providerCursorOffset: 0,
+      providerCursorLine: 0,
+      liveStartOffset: activationFrontier,
+      liveStartLine: 11,
+      sourceFingerprint: "fingerprint"
+    };
+    const client = {
+      effectiveCapturePolicy: vi.fn(async () => ({
+        policy: {
+          visibility: "personal",
+          captureState: "enabled",
+          paused: false
+        }
+      })),
+      historicalImportAdmission: vi.fn(async () => ({ admitted: true })),
+      lookupConversationSourceArtifact: vi.fn(async () => ({ artifact })),
+      appendConversationSourceSegment: vi.fn(
+        async (artifactId: string, input: Record<string, unknown>) => {
+          artifact = {
+            ...artifact,
+            id: artifactId,
+            providerCursorOffset: input.sourceEndOffset,
+            providerCursorLine: input.sourceEndLine
+          };
+          return { artifact };
+        }
+      )
+    } as unknown as MemoryApiClient;
+    const adapter = createPiHistoricalProviderAdapter({
+      client,
+      env: {
+        KOED_HOME: path.join(root, "koed"),
+        PI_CODING_AGENT_SESSION_DIR: sessions,
+        MEMORY_HISTORICAL_IMPORT_JOURNAL_BATCH_BYTES: "1024"
+      }
+    });
+    const candidate = {
+      sourceSessionId,
+      transcriptPath,
+      cwd,
+      latestActivityAt: "2026-08-17T00:01:00.000Z",
+      frontierOffset: discoveryFrontier,
+      frontierLine: 12
+    };
+    const selection = adapter.selectCandidates(
+      [candidate],
+      new Date("2026-08-17T12:00:00.000Z")
+    )[0]!;
+
+    const result = await adapter.processNextBatch({ candidate, selection });
+
+    expect(result).toMatchObject({
+      state: "progress",
+      selection: {
+        artifactId: artifact.id,
+        frontierOffset: activationFrontier,
+        frontierLine: 11
+      }
+    });
+    expect(Number(artifact.providerCursorOffset)).toBeLessThan(
+      activationFrontier
+    );
+  });
+
   it("does not register or upload an artifact while Capture Pause is active", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-history-"));
     temporaryDirectories.push(root);

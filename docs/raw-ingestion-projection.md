@@ -243,7 +243,10 @@ Conversation that began earlier remains eligible when its latest activity is
 inside the window. Transient discovery failures retry without freezing an
 incomplete cohort. After restart, an incomplete frozen cohort rediscovers local
 source descriptors only to rehydrate its already selected Conversation IDs;
-rediscovery cannot add candidates or move persisted frontiers. Provider-local
+rediscovery cannot add candidates or expand persisted frontiers. If a live
+watcher registered the artifact before automatic discovery, its earlier
+immutable activation frontier narrows the frozen selection and remains
+authoritative. Provider-local
 cursor state and run completion are isolated under `KOED_HOME`, so one
 unavailable AI Client does not block another. Raw producer operations share one
 runtime lease across providers even though their discovery and durable retry
@@ -253,12 +256,15 @@ record may exceed the target page size up to the source-record ceiling. These
 product bounds are fixed, not silently expanded by configuration.
 
 For every selected source component, the watcher and the Local AI Runtime
-coordinator use the same complete-record boundary. Claude Code persists a
+coordinator converge on one complete-record boundary. Claude Code persists a
 path-free boundary for its main and auxiliary components; Codex and Pi persist
 their primary boundary. Whichever producer wins registration writes one
-artifact with journal start zero and that immutable `live_start_offset`; the
-other converges on the artifact identity. This closes the old gap where an
-unchanged baseline source existed only in watcher-local state. Local source
+artifact with journal start zero and an immutable `live_start_offset`. If the
+watcher registered first and the transcript advanced before discovery, the
+coordinator narrows its selection to that earlier artifact boundary. A later
+artifact boundary than the frozen selection remains a conflict because it
+would classify post-selection bytes as history. This closes the old gap where
+an unchanged baseline source existed only in watcher-local state. Local source
 paths remain transient discovery inputs and do not enter the coordinator's
 durable state or canonical identity. Unselected baseline sources retain the
 normal deferred behavior and register only if they later grow.

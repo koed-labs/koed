@@ -41,6 +41,9 @@ describe("Claude historical import", () => {
         }
       })),
       historicalImportAdmission: vi.fn(async () => ({ admitted: true })),
+      lookupConversationSourceArtifact: vi.fn(async () => {
+        throw new MemoryApiError("not found", { status: 404 });
+      }),
       lookupHistoricalImportSource: vi.fn(),
       createHistoricalImportRun: vi.fn(),
       createHistoricalImportSource: vi.fn()
@@ -119,17 +122,24 @@ describe("Claude historical import", () => {
         }
       })),
       historicalImportAdmission: vi.fn(async () => ({ admitted: true })),
-      lookupConversationSourceArtifact: vi.fn(async () => ({
-        artifact: {
-          id: randomUUID(),
-          sessionId: randomUUID(),
-          providerCursorOffset: 1_500,
-          providerCursorLine: 3,
-          journalStartOffset: 0,
-          liveStartOffset: 1_500,
-          liveStartLine: 3
+      lookupConversationSourceArtifact: vi.fn(
+        async (query: { sourceComponentId?: string }) => {
+          if (query.sourceComponentId === "main") {
+            throw new MemoryApiError("not found", { status: 404 });
+          }
+          return {
+            artifact: {
+              id: randomUUID(),
+              sessionId: randomUUID(),
+              providerCursorOffset: 1_500,
+              providerCursorLine: 3,
+              journalStartOffset: 0,
+              liveStartOffset: 1_500,
+              liveStartLine: 3
+            }
+          };
         }
-      })),
+      ),
       lookupHistoricalImportSource: vi.fn()
     } as unknown as MemoryApiClient;
     const adapter = createClaudeHistoricalProviderAdapter({ client, env: {} });
@@ -192,6 +202,96 @@ describe("Claude historical import", () => {
       expect.any(Object),
       expect.objectContaining({
         components: result.selection.adapterState?.componentFrontiers
+      })
+    );
+  });
+
+  it("narrows a frozen selection to an earlier live artifact frontier", async () => {
+    const sourceSessionId = randomUUID();
+    watcherMocks.discover.mockResolvedValueOnce([
+      { sourceSessionId, cwd: "/work/project" }
+    ]);
+    watcherMocks.register.mockResolvedValueOnce([
+      {
+        id: randomUUID(),
+        sourceComponentId: "main",
+        providerCursorOffset: 1_024,
+        registrationFrontierOffset: 1_500
+      }
+    ]);
+    const client = {
+      effectiveCapturePolicy: vi.fn(async () => ({
+        policy: {
+          visibility: "personal",
+          captureState: "enabled",
+          paused: false
+        }
+      })),
+      historicalImportAdmission: vi.fn(async () => ({ admitted: true })),
+      lookupConversationSourceArtifact: vi.fn(async () => ({
+        artifact: {
+          id: randomUUID(),
+          sessionId: randomUUID(),
+          providerCursorOffset: 2_000,
+          providerCursorLine: 2,
+          journalStartOffset: 0,
+          liveStartOffset: 1_500,
+          liveStartLine: 1
+        }
+      })),
+      lookupHistoricalImportSource: vi.fn()
+    } as unknown as MemoryApiClient;
+    const adapter = createClaudeHistoricalProviderAdapter({ client, env: {} });
+    const candidate = {
+      sourceSessionId,
+      transcriptPath: `/private/${sourceSessionId}.jsonl`,
+      cwd: "/work/project",
+      latestActivityAt: "2026-08-17T00:00:00.000Z",
+      frontierOffset: 2_000,
+      frontierLine: 2,
+      components: [
+        {
+          componentId: "main",
+          componentRole: "primary" as const,
+          parentComponentId: null,
+          transcriptPath: `/private/${sourceSessionId}.jsonl`,
+          frontierOffset: 2_000,
+          frontierLine: 2
+        }
+      ]
+    };
+    const selection = adapter.selectCandidates(
+      [candidate],
+      new Date("2026-08-17T12:00:00.000Z")
+    )[0]!;
+
+    const result = await adapter.processNextBatch({ candidate, selection });
+
+    expect(result.selection).toMatchObject({
+      frontierOffset: 1_500,
+      frontierLine: 1,
+      adapterState: {
+        componentFrontiers: [
+          expect.objectContaining({
+            componentId: "main",
+            frontierOffset: 1_500,
+            frontierLine: 1
+          })
+        ]
+      }
+    });
+    expect(watcherMocks.register).toHaveBeenCalledWith(
+      client,
+      expect.any(Object),
+      expect.any(Object),
+      expect.objectContaining({
+        components: [
+          expect.objectContaining({
+            componentId: "main",
+            frontierOffset: 1_500,
+            frontierLine: 1
+          })
+        ]
       })
     );
   });

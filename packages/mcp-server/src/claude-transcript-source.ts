@@ -166,7 +166,7 @@ export const journalClaudeTranscript = async (input: {
 }): Promise<SourceArtifact> => {
   const file = await stat(input.transcriptPath);
   const currentBoundary = completeTranscriptBoundary(input.transcriptPath);
-  const completeBoundary = input.historicalFrontierOffset ?? currentBoundary;
+  let completeBoundary = input.historicalFrontierOffset ?? currentBoundary;
   if (
     !Number.isSafeInteger(completeBoundary) ||
     completeBoundary < 0 ||
@@ -258,9 +258,17 @@ export const journalClaudeTranscript = async (input: {
   if (
     input.historicalFrontierOffset !== undefined &&
     typeof artifact.liveStartOffset === "number" &&
-    artifact.liveStartOffset !== completeBoundary
+    (!Number.isSafeInteger(artifact.liveStartOffset) ||
+      artifact.liveStartOffset < 0 ||
+      artifact.liveStartOffset > completeBoundary)
   ) {
     throw new Error("claude_historical_frontier_conflict");
+  }
+  if (
+    input.historicalFrontierOffset !== undefined &&
+    typeof artifact.liveStartOffset === "number"
+  ) {
+    completeBoundary = artifact.liveStartOffset;
   }
   while (artifact.providerCursorOffset < completeBoundary) {
     if (input.maxAppendBytes === 0) break;
@@ -378,7 +386,8 @@ export const registerClaudeHistoricalTranscriptSources = async (
     registered.push({
       ...artifact,
       sourceComponentId: component.componentId,
-      registrationFrontierOffset: component.frontierOffset
+      registrationFrontierOffset:
+        artifact.liveStartOffset ?? component.frontierOffset
     });
   }
   return registered;

@@ -495,8 +495,9 @@ const componentFrontiersFromSelection = async (
   candidate: ClaudeHistoricalCandidate
 ): Promise<ClaudeHistoricalComponentFrontier[]> => {
   const value = selection.adapterState?.componentFrontiers;
+  let components: ClaudeHistoricalComponentFrontier[] | undefined;
   if (Array.isArray(value)) {
-    const components = value.filter(
+    const storedComponents = value.filter(
       (entry): entry is ClaudeHistoricalComponentFrontier => {
         if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
           return false;
@@ -515,48 +516,108 @@ const componentFrontiersFromSelection = async (
         );
       }
     );
-    if (components.length === value.length && components.length > 0) {
-      return components;
-    }
-  }
-  const components: ClaudeHistoricalComponentFrontier[] = [
-    {
-      componentId: "main",
-      componentRole: "primary",
-      parentComponentId: null,
-      frontierOffset: selection.frontierOffset,
-      frontierLine:
-        selection.frontierLine >= 0
-          ? selection.frontierLine
-          : await countTranscriptLines(
-              candidate.transcriptPath,
-              selection.frontierOffset
-            )
-    }
-  ];
-  for (const component of candidate.components ?? []) {
-    if (component.componentId === "main") continue;
-    const artifact = await lookupClaudeArtifact(
-      client,
-      candidate.sourceSessionId,
-      component.componentId
-    );
     if (
-      !artifact ||
-      typeof artifact.liveStartOffset !== "number" ||
-      typeof artifact.liveStartLine !== "number"
+      storedComponents.length === value.length &&
+      storedComponents.length > 0
     ) {
-      continue;
+      components = storedComponents;
     }
-    components.push({
-      componentId: component.componentId,
-      componentRole: component.componentRole,
-      parentComponentId: component.parentComponentId,
-      frontierOffset: artifact.liveStartOffset,
-      frontierLine: artifact.liveStartLine
-    });
   }
-  return components;
+  const artifacts = new Map<
+    string,
+    Awaited<ReturnType<typeof lookupClaudeArtifact>>
+  >();
+  const artifactFor = async (componentId: string) => {
+    if (!artifacts.has(componentId)) {
+      artifacts.set(
+        componentId,
+        await lookupClaudeArtifact(
+          client,
+          candidate.sourceSessionId,
+          componentId
+        )
+      );
+    }
+    return artifacts.get(componentId) ?? null;
+  };
+  if (!components) {
+    components = [
+      {
+        componentId: "main",
+        componentRole: "primary",
+        parentComponentId: null,
+        frontierOffset: selection.frontierOffset,
+        frontierLine:
+          selection.frontierLine >= 0
+            ? selection.frontierLine
+            : await countTranscriptLines(
+                candidate.transcriptPath,
+                selection.frontierOffset
+              )
+      }
+    ];
+    for (const component of candidate.components ?? []) {
+      if (component.componentId === "main") continue;
+      const artifact = await artifactFor(component.componentId);
+      if (
+        !artifact ||
+        typeof artifact.liveStartOffset !== "number" ||
+        typeof artifact.liveStartLine !== "number"
+      ) {
+        continue;
+      }
+      components.push({
+        componentId: component.componentId,
+        componentRole: component.componentRole,
+        parentComponentId: component.parentComponentId,
+        frontierOffset: artifact.liveStartOffset,
+        frontierLine: artifact.liveStartLine
+      });
+    }
+  }
+  return Promise.all(
+    components.map(async (component) => {
+      const artifact = await artifactFor(component.componentId);
+      if (!artifact || typeof artifact.liveStartOffset !== "number") {
+        return component;
+      }
+      if (
+        !Number.isSafeInteger(artifact.liveStartOffset) ||
+        artifact.liveStartOffset < 0 ||
+        artifact.liveStartOffset > component.frontierOffset
+      ) {
+        throw new Error("claude_historical_frontier_conflict");
+      }
+      const transcriptPath =
+        component.componentId === "main"
+          ? candidate.transcriptPath
+          : candidate.components?.find(
+              (candidateComponent) =>
+                candidateComponent.componentId === component.componentId
+            )?.transcriptPath;
+      const frontierLine =
+        typeof artifact.liveStartLine === "number" &&
+        Number.isSafeInteger(artifact.liveStartLine) &&
+        artifact.liveStartLine >= 0
+          ? artifact.liveStartLine
+          : artifact.liveStartOffset === component.frontierOffset &&
+              component.frontierLine >= 0
+            ? component.frontierLine
+            : transcriptPath
+              ? await countTranscriptLines(
+                  transcriptPath,
+                  artifact.liveStartOffset
+                )
+              : (() => {
+                  throw new Error("claude_historical_component_unavailable");
+                })();
+      return {
+        ...component,
+        frontierOffset: artifact.liveStartOffset,
+        frontierLine
+      };
+    })
+  );
 };
 
 export const createClaudeHistoricalProviderAdapter = (input: {
@@ -613,8 +674,17 @@ export const createClaudeHistoricalProviderAdapter = (input: {
         selection,
         candidate
       );
+      const mainFrontier = componentFrontiers.find(
+        (component) => component.componentId === "main"
+      );
       const currentSelection = {
         ...selection,
+        ...(mainFrontier
+          ? {
+              frontierOffset: mainFrontier.frontierOffset,
+              frontierLine: mainFrontier.frontierLine
+            }
+          : {}),
         adapterState: {
           ...selection.adapterState,
           componentFrontiers
