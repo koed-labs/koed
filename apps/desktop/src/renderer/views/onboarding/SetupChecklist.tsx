@@ -265,9 +265,7 @@ export function SetupChecklist({
         <header className="koed-setup-header">
           <div>
             <h1 id="koed-setup-title">Set up Koed</h1>
-            <p>
-              Koed will prepare Personal Memory and local core services.
-            </p>
+            <p>Koed will prepare Personal Memory and local core services.</p>
           </div>
           {!running ? (
             <Button
