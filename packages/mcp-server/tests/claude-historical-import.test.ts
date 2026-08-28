@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryApiError, type MemoryApiClient } from "../src/index.js";
 import {
+  createClaudeHistoricalProviderAdapter,
   importClaudeHistoricalSource,
   importSelectedClaudeHistory
 } from "../src/claude-historical-import.js";
@@ -17,6 +18,284 @@ vi.mock("../src/claude-transcript-watcher.js", () => ({
 }));
 
 describe("Claude historical import", () => {
+  it("uses the frozen component frontier and yields while journaling is incomplete", async () => {
+    const sourceSessionId = randomUUID();
+    const artifactId = randomUUID();
+    watcherMocks.discover.mockResolvedValueOnce([
+      { sourceSessionId, cwd: "/work/project" }
+    ]);
+    watcherMocks.register.mockResolvedValueOnce([
+      {
+        id: artifactId,
+        sourceComponentId: "main",
+        providerCursorOffset: 1_024,
+        registrationFrontierOffset: 2_048
+      }
+    ]);
+    const client = {
+      effectiveCapturePolicy: vi.fn(async () => ({
+        policy: {
+          visibility: "personal",
+          captureState: "enabled",
+          paused: false
+        }
+      })),
+      historicalImportAdmission: vi.fn(async () => ({ admitted: true })),
+      lookupConversationSourceArtifact: vi.fn(async () => {
+        throw new MemoryApiError("not found", { status: 404 });
+      }),
+      lookupHistoricalImportSource: vi.fn(),
+      createHistoricalImportRun: vi.fn(),
+      createHistoricalImportSource: vi.fn()
+    } as unknown as MemoryApiClient;
+    const adapter = createClaudeHistoricalProviderAdapter({
+      client,
+      env: { MEMORY_HISTORICAL_IMPORT_JOURNAL_BATCH_BYTES: "1024" }
+    });
+    const candidate = {
+      sourceSessionId,
+      transcriptPath: `/private/${sourceSessionId}.jsonl`,
+      cwd: "/work/project",
+      latestActivityAt: "2026-08-17T00:00:00.000Z",
+      frontierOffset: 2_048,
+      frontierLine: 2,
+      components: [
+        {
+          componentId: "main",
+          componentRole: "primary" as const,
+          parentComponentId: null,
+          transcriptPath: `/private/${sourceSessionId}.jsonl`,
+          frontierOffset: 2_048,
+          frontierLine: 2
+        }
+      ]
+    };
+    const selection = adapter.selectCandidates(
+      [candidate],
+      new Date("2026-08-17T12:00:00.000Z")
+    )[0]!;
+
+    await expect(
+      adapter.processNextBatch({ candidate, selection })
+    ).resolves.toMatchObject({ state: "progress", selection });
+
+    expect(watcherMocks.register).toHaveBeenCalledWith(
+      client,
+      expect.objectContaining({ sourceSessionId }),
+      expect.any(Object),
+      {
+        components: [
+          {
+            componentId: "main",
+            componentRole: "primary",
+            parentComponentId: null,
+            frontierOffset: 2_048,
+            frontierLine: 2
+          }
+        ],
+        maxBytesPerPass: 1_024
+      }
+    );
+    expect(client.lookupHistoricalImportSource).not.toHaveBeenCalled();
+    expect(client.createHistoricalImportSource).not.toHaveBeenCalled();
+  });
+
+  it("rehydrates legacy auxiliary frontiers from existing artifacts", async () => {
+    const sourceSessionId = randomUUID();
+    watcherMocks.discover.mockResolvedValueOnce([
+      { sourceSessionId, cwd: "/work/project" }
+    ]);
+    watcherMocks.register.mockResolvedValueOnce([
+      {
+        id: randomUUID(),
+        sourceComponentId: "main",
+        providerCursorOffset: 0,
+        registrationFrontierOffset: 100
+      }
+    ]);
+    const client = {
+      effectiveCapturePolicy: vi.fn(async () => ({
+        policy: {
+          visibility: "personal",
+          captureState: "enabled",
+          paused: false
+        }
+      })),
+      historicalImportAdmission: vi.fn(async () => ({ admitted: true })),
+      lookupConversationSourceArtifact: vi.fn(
+        async (query: { sourceComponentId?: string }) => {
+          if (query.sourceComponentId === "main") {
+            throw new MemoryApiError("not found", { status: 404 });
+          }
+          return {
+            artifact: {
+              id: randomUUID(),
+              sessionId: randomUUID(),
+              providerCursorOffset: 1_500,
+              providerCursorLine: 3,
+              journalStartOffset: 0,
+              liveStartOffset: 1_500,
+              liveStartLine: 3
+            }
+          };
+        }
+      ),
+      lookupHistoricalImportSource: vi.fn()
+    } as unknown as MemoryApiClient;
+    const adapter = createClaudeHistoricalProviderAdapter({ client, env: {} });
+    const candidate = {
+      sourceSessionId,
+      transcriptPath: `/private/${sourceSessionId}.jsonl`,
+      cwd: "/work/project",
+      latestActivityAt: "2026-08-17T00:00:00.000Z",
+      frontierOffset: 100,
+      frontierLine: 1,
+      components: [
+        {
+          componentId: "main",
+          componentRole: "primary" as const,
+          parentComponentId: null,
+          transcriptPath: `/private/${sourceSessionId}.jsonl`,
+          frontierOffset: 200,
+          frontierLine: 2
+        },
+        {
+          componentId: "subagent.legacy",
+          componentRole: "auxiliary" as const,
+          parentComponentId: "main",
+          transcriptPath: "/private/subagent-legacy.jsonl",
+          frontierOffset: 2_000,
+          frontierLine: 4
+        }
+      ]
+    };
+    const selection = {
+      aiClient: "claude",
+      candidateId: sourceSessionId,
+      frontierOffset: 100,
+      frontierLine: 1,
+      latestActivityAt: candidate.latestActivityAt,
+      adapterState: { projectId: candidate.cwd }
+    };
+
+    const result = await adapter.processNextBatch({ candidate, selection });
+
+    expect(result.selection.adapterState?.componentFrontiers).toEqual([
+      {
+        componentId: "main",
+        componentRole: "primary",
+        parentComponentId: null,
+        frontierOffset: 100,
+        frontierLine: 1
+      },
+      {
+        componentId: "subagent.legacy",
+        componentRole: "auxiliary",
+        parentComponentId: "main",
+        frontierOffset: 1_500,
+        frontierLine: 3
+      }
+    ]);
+    expect(watcherMocks.register).toHaveBeenCalledWith(
+      client,
+      expect.any(Object),
+      expect.any(Object),
+      expect.objectContaining({
+        components: result.selection.adapterState?.componentFrontiers
+      })
+    );
+  });
+
+  it("narrows a frozen selection to an earlier live artifact frontier", async () => {
+    const sourceSessionId = randomUUID();
+    watcherMocks.discover.mockResolvedValueOnce([
+      { sourceSessionId, cwd: "/work/project" }
+    ]);
+    watcherMocks.register.mockResolvedValueOnce([
+      {
+        id: randomUUID(),
+        sourceComponentId: "main",
+        providerCursorOffset: 1_024,
+        registrationFrontierOffset: 1_500
+      }
+    ]);
+    const client = {
+      effectiveCapturePolicy: vi.fn(async () => ({
+        policy: {
+          visibility: "personal",
+          captureState: "enabled",
+          paused: false
+        }
+      })),
+      historicalImportAdmission: vi.fn(async () => ({ admitted: true })),
+      lookupConversationSourceArtifact: vi.fn(async () => ({
+        artifact: {
+          id: randomUUID(),
+          sessionId: randomUUID(),
+          providerCursorOffset: 2_000,
+          providerCursorLine: 2,
+          journalStartOffset: 0,
+          liveStartOffset: 1_500,
+          liveStartLine: 1
+        }
+      })),
+      lookupHistoricalImportSource: vi.fn()
+    } as unknown as MemoryApiClient;
+    const adapter = createClaudeHistoricalProviderAdapter({ client, env: {} });
+    const candidate = {
+      sourceSessionId,
+      transcriptPath: `/private/${sourceSessionId}.jsonl`,
+      cwd: "/work/project",
+      latestActivityAt: "2026-08-17T00:00:00.000Z",
+      frontierOffset: 2_000,
+      frontierLine: 2,
+      components: [
+        {
+          componentId: "main",
+          componentRole: "primary" as const,
+          parentComponentId: null,
+          transcriptPath: `/private/${sourceSessionId}.jsonl`,
+          frontierOffset: 2_000,
+          frontierLine: 2
+        }
+      ]
+    };
+    const selection = adapter.selectCandidates(
+      [candidate],
+      new Date("2026-08-17T12:00:00.000Z")
+    )[0]!;
+
+    const result = await adapter.processNextBatch({ candidate, selection });
+
+    expect(result.selection).toMatchObject({
+      frontierOffset: 1_500,
+      frontierLine: 1,
+      adapterState: {
+        componentFrontiers: [
+          expect.objectContaining({
+            componentId: "main",
+            frontierOffset: 1_500,
+            frontierLine: 1
+          })
+        ]
+      }
+    });
+    expect(watcherMocks.register).toHaveBeenCalledWith(
+      client,
+      expect.any(Object),
+      expect.any(Object),
+      expect.objectContaining({
+        components: [
+          expect.objectContaining({
+            componentId: "main",
+            frontierOffset: 1_500,
+            frontierLine: 1
+          })
+        ]
+      })
+    );
+  });
+
   it("resumes an existing artifact source without creating duplicate state", async () => {
     const artifactId = randomUUID();
     const sourceId = randomUUID();
@@ -118,8 +397,65 @@ describe("Claude historical import", () => {
       })
     ).resolves.toMatchObject({ runId, runIds: [runId] });
     expect(client.createHistoricalImportRun).toHaveBeenCalledTimes(1);
-    expect(client.createHistoricalImportSource).toHaveBeenCalledTimes(1);
+    expect(client.createHistoricalImportSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        aiClient: "claude",
+        detectedProject: { path: "/work/project", cwd: "/work/project" }
+      })
+    );
     expect(transitionHistoricalImportSource).toHaveBeenCalledTimes(4);
+  });
+
+  it("attaches new candidate sources to the coordinator's existing run", async () => {
+    const artifactId = randomUUID();
+    const sourceId = randomUUID();
+    const runId = randomUUID();
+    const source = {
+      id: sourceId,
+      runId,
+      artifactId,
+      sessionId: randomUUID(),
+      sourceSessionId: "claude-session-cohort",
+      sourceFingerprint: "c".repeat(64),
+      historicalCursorOffset: 0,
+      historicalCursorLine: 0,
+      registrationFrontierOffset: 0,
+      state: "discovered"
+    };
+    watcherMocks.discover.mockResolvedValueOnce([
+      { externalSessionId: "claude-session-cohort", cwd: "/work/project" }
+    ]);
+    watcherMocks.register.mockResolvedValueOnce([
+      { id: artifactId, sourceComponentId: "main" }
+    ]);
+    const client = {
+      lookupHistoricalImportSource: vi.fn(async () => {
+        throw new MemoryApiError("not found", { status: 404 });
+      }),
+      createHistoricalImportRun: vi.fn(),
+      transitionHistoricalImportRun: vi.fn(),
+      createHistoricalImportSource: vi.fn(async () => ({ source })),
+      transitionHistoricalImportSource: vi.fn(
+        async (_id: string, transition: Record<string, unknown>) => ({
+          source: { ...source, state: transition.state }
+        })
+      ),
+      listConversationSourceSegments: vi.fn()
+    } as unknown as MemoryApiClient;
+
+    await expect(
+      importSelectedClaudeHistory({
+        client,
+        sourceSessionIds: ["claude-session-cohort"],
+        runId
+      })
+    ).resolves.toMatchObject({ runId, runIds: [runId] });
+
+    expect(client.createHistoricalImportRun).not.toHaveBeenCalled();
+    expect(client.transitionHistoricalImportRun).not.toHaveBeenCalled();
+    expect(client.createHistoricalImportSource).toHaveBeenCalledWith(
+      expect.objectContaining({ runId, aiClient: "claude" })
+    );
   });
 
   it("imports the signed pre-activation range in source order", async () => {

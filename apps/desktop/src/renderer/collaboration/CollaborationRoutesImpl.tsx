@@ -310,7 +310,8 @@ const pendingShareStageLabel = (stage: PendingShare["stage"]): string => {
   if (stage === "accepted") return "accepted";
   if (stage === "syncing") return "preparing source";
   if (stage === "uploading") return "uploading source";
-  if (stage === "processing") return "privacy filtering";
+  if (stage === "processing" || stage === "privacy_filtering")
+    return "privacy filtering";
   if (stage === "activating") return "publishing";
   return "complete";
 };

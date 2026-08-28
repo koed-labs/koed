@@ -92,6 +92,206 @@ const fixture = () => {
 };
 
 describe("Claude transcript watcher", () => {
+  it("pins component frontiers and journals only one bounded component page", async () => {
+    const { claudeHome, sourceSessionId, transcriptPath } = fixture();
+    const agentId = "bounded-history";
+    const subagentDirectory = path.join(
+      path.dirname(transcriptPath),
+      sourceSessionId,
+      "subagents"
+    );
+    const subagentPath = path.join(subagentDirectory, `agent-${agentId}.jsonl`);
+    fs.mkdirSync(subagentDirectory, { recursive: true });
+    const historicalRecord = (id: string, type: string) =>
+      `${JSON.stringify({
+        uuid: id,
+        sessionId: sourceSessionId,
+        cwd: "/tmp/project",
+        timestamp: "2026-08-11T12:00:00.000Z",
+        type,
+        payload: "x".repeat(700)
+      })}\n`;
+    const mainHistory = [
+      historicalRecord(randomUUID(), "user"),
+      historicalRecord(randomUUID(), "assistant"),
+      historicalRecord(randomUUID(), "assistant")
+    ].join("");
+    const auxiliaryHistory = historicalRecord(randomUUID(), "assistant");
+    fs.writeFileSync(transcriptPath, mainHistory);
+    fs.writeFileSync(subagentPath, auxiliaryHistory);
+    const mainFrontier = Buffer.byteLength(mainHistory);
+    const auxiliaryFrontier = Buffer.byteLength(auxiliaryHistory);
+    fs.appendFileSync(
+      transcriptPath,
+      historicalRecord(randomUUID(), "assistant")
+    );
+    fs.appendFileSync(
+      subagentPath,
+      historicalRecord(randomUUID(), "assistant")
+    );
+    listSubagents.mockResolvedValue([agentId]);
+
+    const artifacts = new Map<string, Record<string, unknown>>();
+    const appended: string[] = [];
+    const client = {
+      async lookupConversationSourceArtifact(input: {
+        sourceComponentId: string;
+      }) {
+        const artifact = artifacts.get(input.sourceComponentId);
+        if (!artifact) throw new MemoryApiError("not found", { status: 404 });
+        return { artifact };
+      },
+      async ensureConversationSourceArtifact(input: Record<string, unknown>) {
+        const componentId = String(input.sourceComponentId);
+        const artifact = {
+          id: `artifact-${componentId}`,
+          sessionId: randomUUID(),
+          sourceComponentId: componentId,
+          providerCursorOffset: 0,
+          providerCursorLine: 0,
+          journalStartOffset: 0,
+          liveStartOffset: input.liveStartOffset
+        };
+        artifacts.set(componentId, artifact);
+        return { artifact };
+      },
+      async appendConversationSourceSegment(
+        artifactId: string,
+        input: Record<string, unknown>
+      ) {
+        const componentId = artifactId.replace("artifact-", "");
+        appended.push(componentId);
+        const artifact = {
+          ...artifacts.get(componentId),
+          providerCursorOffset: input.sourceEndOffset,
+          providerCursorLine: input.sourceEndLine
+        };
+        artifacts.set(componentId, artifact);
+        return { artifact };
+      }
+    } as unknown as MemoryApiClient;
+
+    const registered = await registerClaudeHistoricalTranscriptSources(
+      client,
+      {
+        sourceSessionId,
+        transcriptPath,
+        cwd: "/tmp/project",
+        hookEventName: "HistoricalImport"
+      },
+      { CLAUDE_CONFIG_DIR: claudeHome },
+      {
+        components: [
+          {
+            componentId: "main",
+            componentRole: "primary",
+            parentComponentId: null,
+            frontierOffset: mainFrontier,
+            frontierLine: 3
+          },
+          {
+            componentId: `subagent.${agentId}`,
+            componentRole: "auxiliary",
+            parentComponentId: "main",
+            frontierOffset: auxiliaryFrontier,
+            frontierLine: 1
+          }
+        ],
+        maxBytesPerPass: 1_024
+      }
+    );
+
+    expect(appended).toEqual(["main"]);
+    expect(artifacts.get("main")).toMatchObject({
+      liveStartOffset: mainFrontier
+    });
+    expect(artifacts.get(`subagent.${agentId}`)).toMatchObject({
+      liveStartOffset: auxiliaryFrontier,
+      providerCursorOffset: 0
+    });
+    expect(registered[0]?.providerCursorOffset).toBeLessThan(mainFrontier);
+    expect(
+      registered.map((artifact) => artifact.registrationFrontierOffset)
+    ).toEqual([mainFrontier, auxiliaryFrontier]);
+  });
+
+  it("uses the earlier activation frontier of an existing live artifact", async () => {
+    const { claudeHome, sourceSessionId, transcriptPath } = fixture();
+    const activationRecord = `${JSON.stringify({
+      uuid: randomUUID(),
+      sessionId: sourceSessionId,
+      cwd: "/tmp/project",
+      timestamp: "2026-08-11T12:00:00.000Z",
+      type: "user"
+    })}\n`;
+    fs.writeFileSync(transcriptPath, activationRecord);
+    const activationFrontier = Buffer.byteLength(activationRecord);
+    fs.appendFileSync(
+      transcriptPath,
+      `${JSON.stringify({
+        uuid: randomUUID(),
+        sessionId: sourceSessionId,
+        cwd: "/tmp/project",
+        timestamp: "2026-08-11T12:01:00.000Z",
+        type: "assistant"
+      })}\n`
+    );
+    const discoveryFrontier = fs.statSync(transcriptPath).size;
+    const digest = createHash("sha256").update(activationRecord).digest("hex");
+    const appendConversationSourceSegment = vi.fn();
+    const client = {
+      lookupConversationSourceArtifact: vi.fn(async () => ({
+        artifact: {
+          id: "artifact-main",
+          sessionId: randomUUID(),
+          sourceComponentId: "main",
+          providerCursorOffset: activationFrontier,
+          providerCursorLine: 1,
+          journalStartOffset: 0,
+          liveStartOffset: activationFrontier,
+          liveStartLine: 1
+        }
+      })),
+      listConversationSourceSegments: vi.fn(async () => ({
+        segments: [
+          {
+            id: "segment-main",
+            sourceStartOffset: 0,
+            sourceEndOffset: activationFrontier,
+            plaintextDigest: digest,
+            plaintextSize: activationFrontier
+          }
+        ]
+      })),
+      appendConversationSourceSegment
+    } as unknown as MemoryApiClient;
+
+    const registered = await registerClaudeHistoricalTranscriptSources(
+      client,
+      {
+        sourceSessionId,
+        transcriptPath,
+        cwd: "/tmp/project",
+        hookEventName: "HistoricalImport"
+      },
+      { CLAUDE_CONFIG_DIR: claudeHome },
+      {
+        components: [
+          {
+            componentId: "main",
+            componentRole: "primary",
+            parentComponentId: null,
+            frontierOffset: discoveryFrontier,
+            frontierLine: 2
+          }
+        ]
+      }
+    );
+
+    expect(registered[0]?.registrationFrontierOffset).toBe(activationFrontier);
+    expect(appendConversationSourceSegment).not.toHaveBeenCalled();
+  });
+
   it("retains failed signal work and converges after a transient API outage", async () => {
     const { root, claudeHome, sourceSessionId, transcriptPath } = fixture();
     const messageId = randomUUID();

@@ -1861,7 +1861,7 @@ describe("collaboration realtime protocol", () => {
           mode: "continuous" as const,
           sourceRevision: 4,
           state: "needs_attention" as const,
-          stage: "processing" as const,
+          stage: "privacy_filtering" as const,
           workspaceAccessState: "none" as const,
           sourceUpdateState: "failed" as const,
           operationVersion: 3,
@@ -1905,6 +1905,7 @@ describe("collaboration realtime protocol", () => {
         pendingShareId,
         sourceTitle: "Owner conversation",
         state: "needs_attention",
+        stage: "privacy_filtering",
         redactedFailureCode: "source_preparation_stalled"
       }
     });

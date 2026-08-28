@@ -712,8 +712,9 @@ policy, or full URLs containing customer content.
   Default `3`; valid range `1`–`5`.
 - Transient Privacy Service and Team-safe embedding failures remain durable
   pending work. PostgreSQL notifications wake immediate work, while each
-  Worker keeps one exact timer for the earliest persisted retry deadline;
-  neither path uses an idle polling interval.
+  Worker keeps one exact timer for the earliest persisted retry, claim-expiry,
+  or stale-lock deadline. Processing failures use bounded backoff and long
+  inference renews its fenced claim; neither path uses an idle polling interval.
 - `PRIVACY_MATERIALIZATION_TARGET_LIMIT`: Team targets reconciled per Worker
   pass. Default `25`; valid range `1`–`100`.
 - `PRIVACY_MATERIALIZATION_MAX_FRONTIER_BYTES`: maximum source frontier bytes
@@ -723,10 +724,26 @@ policy, or full URLs containing customer content.
   materialization. Default `20000`; valid range `1`–`100000`.
 - `PRIVACY_SERVICE_HOST` / `PRIVACY_SERVICE_PORT`: bind address and port for the
   service process. Defaults to `127.0.0.1:8092`.
-- `PRIVACY_MAX_FIELDS`, `PRIVACY_MAX_FIELD_CHARS`,
-  `PRIVACY_MAX_REQUEST_CHARS`, and `PRIVACY_MAX_BODY_BYTES`: authenticated
-  service abuse and resource bounds. Defaults are `32`, `100000`, `200000`,
-  and `1048576` respectively.
+- `PRIVACY_MAX_FIELDS`, `PRIVACY_MAX_FIELD_BYTES`,
+  `PRIVACY_MAX_REQUEST_FIELD_BYTES`, and `PRIVACY_MAX_BODY_BYTES`: the shared,
+  versioned Privacy transport contract. Values are fixed at `128`, `262144`,
+  `1048576`, and `2097152`; startup rejects deployment overrides that differ.
+  Limits measure field count, one field's UTF-8 bytes, all field UTF-8 bytes,
+  and the encoded request body respectively. The pinned byte-level tokenizer
+  has a `262144`-token outer field guard while model inference remains bounded
+  to a 256-token core plus 128 context tokens on either side.
+- A semantic preview admits at most 65,536 classification fields, 64 MiB of
+  classification text, and 80 MiB for its complete encoded canonical payload.
+  Privacy work persists deterministic 16-field cache chunks. Each limit has
+  one meaning; these whole-preview limits bound trusted Worker finalization
+  memory and do not alter the Privacy request limits.
+- Complete semantic-preview reconstruction and publication use one
+  deployment-wide PostgreSQL advisory-lock slot. The slot is non-blocking,
+  crash-released, and fixed at one. The opt-in maximum-preview capacity test
+  (`KOED_RUN_PRIVACY_CAPACITY_TESTS=1`) measures finalization at the full 64 MiB
+  classification-text ceiling; the reference Linux/Node run required hundreds
+  of MiB of transient heap, so additional concurrent finalizations are not
+  admitted without new measured capacity evidence.
 - `koed-server models status --kind privacy --json` and `koed-server models
 install --kind privacy --json`: verify or install the pinned local Privacy
   Service model, tokenizer, decoder, and calibration assets in Koed's
@@ -775,8 +792,12 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `MEMORY_HISTORICAL_IMPORT_API_READY_URL`: optional worker-visible API readiness override for historical admission. When omitted, Koed derives `/ready` from `MEMORY_API_URL`; if neither URL is configured, historical batches fail closed.
 - `MEMORY_HISTORICAL_IMPORT_API_READY_TIMEOUT_MS`: timeout for that API readiness probe. Default `1000`; valid range `100`–`10000`.
 - `MEMORY_HISTORICAL_IMPORT_ENABLED`: set to `false` to disable automatic
-  historical ingestion in the supervised Local AI Runtime. The automatic
-  coordinator only enables configured supported AI-client adapters.
+  historical ingestion in the supervised Local AI Runtime. Independent
+  provider-neutral coordinators run for each enabled supported AI Client
+  (Codex, Claude Code, and Pi); one client's discovery or retry state does not
+  block another. Candidate discovery retries transient failures before freezing
+  a cohort. Raw production is nevertheless serialized by one shared runtime
+  lease so separate providers cannot pass advisory admission concurrently.
 - `MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_ROWS`: maximum canonical raw items in
   one Local AI Runtime historical upload. Default `100`; valid range `1`–`500`.
 - `MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_BYTES`: maximum serialized canonical
@@ -785,9 +806,11 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_RUNTIME_MS`: maximum parser runtime
   before the Local AI Runtime yields at a complete record. Default `15000`;
   valid range `100`–`60000`.
-- `MEMORY_HISTORICAL_IMPORT_JOURNAL_BATCH_BYTES`: maximum complete source bytes
-  appended to the Conversation Source Journal in one coordinator pass. Default
-  `1048576`; valid range `1024`–`4194304`.
+- `MEMORY_HISTORICAL_IMPORT_JOURNAL_BATCH_BYTES`: target complete source bytes
+  appended to the Conversation Source Journal in one coordinator pass across
+  every supported AI Client. One complete source record may exceed the target
+  up to the source-record ceiling. Default `1048576`; valid range
+  `1024`–`4194304`.
 - `MEMORY_VECTOR_CANDIDATE_LIMIT`: vector retrieval candidate count.
 - `MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT`, `MEMORY_RAG_LEAF_CANDIDATE_LIMIT`, `MEMORY_RAG_FRESH_EVENT_CANDIDATE_LIMIT`, `MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT`, `MEMORY_RAG_SCOPED_LEAF_CANDIDATE_LIMIT`: optional per-stage retrieval candidate limits. Leave blank to use code defaults derived from the requested result limit.
 - `MEMORY_RAG_ROLLUP_RESULT_LIMIT`: optional cap on rollup results admitted into final recall evidence.

@@ -82,6 +82,7 @@ describe("Homebrew runtime provisioning", () => {
       {},
       {
         platform: "linux",
+        existsSync: () => false,
         spawnSync: (_command, args) => {
           calls.push(args);
           return spawnResult("", 1, "brew missing");
@@ -93,6 +94,95 @@ describe("Homebrew runtime provisioning", () => {
     expect(status.message).toContain("Homebrew is required");
     expect(status.action).toContain("Linuxbrew");
     expect(calls).toEqual([["--prefix"]]);
+  });
+
+  it("uses the documented macOS Homebrew executable without loading a shell", () => {
+    const commands: string[] = [];
+    const status = collectHomebrewRuntimeStatus(
+      paths(tempDir()),
+      { PATH: "/usr/bin:/bin", SHELL: "/untrusted/login-shell" },
+      {
+        platform: "darwin",
+        existsSync: (path) => path === "/opt/homebrew/bin/brew",
+        spawnSync: (command, args) => {
+          commands.push(command);
+          if (args.join(" ") === "--prefix") {
+            return spawnResult("/opt/homebrew\n");
+          }
+          return spawnResult("", 1, "not installed");
+        }
+      }
+    );
+
+    expect(status.homebrew).toEqual({
+      installed: true,
+      prefix: "/opt/homebrew"
+    });
+    expect(commands).not.toContain("brew");
+    expect(commands).not.toContain("/untrusted/login-shell");
+    expect(commands).toContain("/opt/homebrew/bin/brew");
+  });
+
+  it("honors an absolute Homebrew prefix before platform defaults", () => {
+    const commands: string[] = [];
+    collectHomebrewRuntimeStatus(
+      paths(tempDir()),
+      { HOMEBREW_PREFIX: "/operator/homebrew" },
+      {
+        platform: "darwin",
+        existsSync: (path) =>
+          path === "/operator/homebrew/bin/brew" ||
+          path === "/opt/homebrew/bin/brew",
+        spawnSync: (command, args) => {
+          commands.push(command);
+          if (
+            command === "/operator/homebrew/bin/brew" &&
+            args.join(" ") === "--prefix"
+          ) {
+            return spawnResult("/operator/homebrew\n");
+          }
+          return spawnResult("", 1, "not installed");
+        }
+      }
+    );
+
+    expect(commands.length).toBeGreaterThan(1);
+    expect(
+      commands.every((command) => command === "/operator/homebrew/bin/brew")
+    ).toBe(true);
+  });
+
+  it("falls back when an existing platform Homebrew executable cannot run", () => {
+    const commands: string[] = [];
+    const status = collectHomebrewRuntimeStatus(
+      paths(tempDir()),
+      {},
+      {
+        platform: "darwin",
+        existsSync: (path) =>
+          path === "/opt/homebrew/bin/brew" || path === "/usr/local/bin/brew",
+        spawnSync: (command, args) => {
+          commands.push(command);
+          if (command === "/opt/homebrew/bin/brew") {
+            return spawnResult("", 1, "cannot execute");
+          }
+          if (args.join(" ") === "--prefix") {
+            return spawnResult("/usr/local\n");
+          }
+          return spawnResult("", 1, "not installed");
+        }
+      }
+    );
+
+    expect(status.homebrew).toEqual({
+      installed: true,
+      prefix: "/usr/local"
+    });
+    expect(commands.slice(0, 2)).toEqual([
+      "/opt/homebrew/bin/brew",
+      "/usr/local/bin/brew"
+    ]);
+    expect(commands).not.toContain("brew");
   });
 
   it("detects packages, binaries, pgvector files, and KOED_HOME links without installing", () => {
@@ -154,6 +244,7 @@ describe("Homebrew runtime provisioning", () => {
   it("installs missing Homebrew packages explicitly and links runtime paths under KOED_HOME", () => {
     const root = tempDir();
     const existing = new Set<string>([
+      "/opt/homebrew/bin/brew",
       "/opt/homebrew/opt/postgresql@17/bin/initdb",
       "/opt/homebrew/opt/postgresql@17/bin/pg_ctl",
       "/opt/homebrew/opt/postgresql@17/bin/psql",
@@ -164,6 +255,7 @@ describe("Homebrew runtime provisioning", () => {
       "/opt/homebrew/share/postgresql@17/extension/vector.control"
     ]);
     const calls: string[][] = [];
+    const commands: Array<[string, ...string[]]> = [];
     const linked: Array<[string, string]> = [];
     const installed = new Set(["postgresql@17"]);
 
@@ -182,8 +274,9 @@ describe("Homebrew runtime provisioning", () => {
         writeFileSync: (path) => {
           existing.add(String(path));
         },
-        spawnSync: (_command, args) => {
+        spawnSync: (command, args) => {
           calls.push(args);
+          commands.push([command, ...args]);
           if (args.join(" ") === "--prefix") {
             return spawnResult("/opt/homebrew\n");
           }
@@ -210,6 +303,12 @@ describe("Homebrew runtime provisioning", () => {
     );
 
     expect(calls).toContainEqual(["install", "pgvector", "llama.cpp"]);
+    expect(commands).toContainEqual([
+      "/opt/homebrew/bin/brew",
+      "install",
+      "pgvector",
+      "llama.cpp"
+    ]);
     expect(result.ok).toBe(true);
     expect(result.installedPackages).toEqual(["pgvector", "llama.cpp"]);
     expect(linked).toEqual(

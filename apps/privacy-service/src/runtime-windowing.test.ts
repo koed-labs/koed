@@ -4,6 +4,7 @@ import {
   HuggingFacePrivacyRuntime,
   PRIVACY_WINDOW_MAX_TOKENS
 } from "./runtime.js";
+import { PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES } from "@koed/shared";
 
 class FakeTensor {
   constructor(
@@ -34,7 +35,10 @@ const calibration = JSON.stringify({
   }
 });
 
-const fakeTransformers = (options?: { delayMs?: number }) => {
+const fakeTransformers = (options?: {
+  compactLogits?: boolean;
+  delayMs?: number;
+}) => {
   const windowSizes: number[] = [];
   const loadOptions: Record<string, unknown>[] = [];
   let active = 0;
@@ -51,7 +55,8 @@ const fakeTransformers = (options?: { delayMs?: number }) => {
       };
     },
     {
-      decode: async (ids: number[]) => String.fromCodePoint(...ids)
+      decode: async (ids: number[]) =>
+        ids.map((tokenId) => String.fromCodePoint(tokenId)).join("")
     }
   );
   const model = async (inputs: Record<string, unknown>) => {
@@ -64,7 +69,15 @@ const fakeTransformers = (options?: { delayMs?: number }) => {
       await new Promise((resolve) => setTimeout(resolve, options.delayMs));
     }
     active -= 1;
-    return { logits: { tolist: () => [ids.map(logitsFor)] } };
+    return {
+      logits: {
+        tolist: () => [
+          ids.map((tokenId) =>
+            options?.compactLogits ? [0] : logitsFor(tokenId)
+          )
+        ]
+      }
+    };
   };
   return {
     module: {
@@ -165,6 +178,52 @@ describe("bounded Privacy Filter runtime", () => {
     ]);
 
     expect(fixture.maxActive()).toBe(1);
+    expect(
+      fixture.windowSizes.every((size) => size <= PRIVACY_WINDOW_MAX_TOKENS)
+    ).toBe(true);
+  });
+
+  it("keeps every inference window bounded for a maximum-size valid field", async () => {
+    const fixture = fakeTransformers({ compactLogits: true });
+    const runtime = new HuggingFacePrivacyRuntime(
+      "openai/privacy-filter",
+      "pinned",
+      "/verified/privacy-cache",
+      async () => fixture.module,
+      async () => calibration
+    );
+
+    const result = await runtime.classify(
+      "x".repeat(PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES)
+    );
+
+    expect(result.decodedText).toHaveLength(
+      PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES
+    );
+    expect(fixture.windowSizes.length).toBeGreaterThan(1);
+    expect(
+      fixture.windowSizes.every((size) => size <= PRIVACY_WINDOW_MAX_TOKENS)
+    ).toBe(true);
+  });
+
+  it("preserves multibyte UTF-8 text across inference-window boundaries", async () => {
+    const fixture = fakeTransformers({ compactLogits: true });
+    const runtime = new HuggingFacePrivacyRuntime(
+      "openai/privacy-filter",
+      "pinned",
+      "/verified/privacy-cache",
+      async () => fixture.module,
+      async () => calibration
+    );
+    const text = "é".repeat(1_025);
+
+    const result = await runtime.classify(text);
+
+    expect(result.decodedText).toBe(text);
+    expect(result.tokenOffsets.at(-1)).toEqual({
+      startByte: 2_048,
+      endByte: 2_050
+    });
     expect(
       fixture.windowSizes.every((size) => size <= PRIVACY_WINDOW_MAX_TOKENS)
     ).toBe(true);

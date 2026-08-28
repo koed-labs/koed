@@ -34,4 +34,16 @@ describe("Privacy Service configuration", () => {
       })
     ).toThrow("PRIVACY_GPU_IDLE_UNLOAD_SECONDS must be a non-negative integer");
   });
+
+  it("rejects deployment limits that diverge from the shared contract", () => {
+    expect(() =>
+      resolveConfig({ ...baseEnvironment, PRIVACY_MAX_FIELDS: "127" })
+    ).toThrow("PRIVACY_MAX_FIELDS must match the shared Privacy contract");
+    expect(() =>
+      resolveConfig({
+        ...baseEnvironment,
+        PRIVACY_MAX_FIELD_BYTES: "262143"
+      })
+    ).toThrow("PRIVACY_MAX_FIELD_BYTES must match the shared Privacy contract");
+  });
 });

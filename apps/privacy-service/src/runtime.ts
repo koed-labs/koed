@@ -1,6 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
+  PRIVACY_MAX_FIELD_TOKENS,
+  PRIVACY_WINDOW_CONTEXT_TOKENS,
+  PRIVACY_WINDOW_CORE_TOKENS,
+  PRIVACY_WINDOW_MAX_TOKENS
+} from "@koed/shared";
+import {
   parseViterbiCalibration,
   ZERO_VITERBI_BIASES,
   type ViterbiBiases
@@ -85,11 +91,12 @@ type TransformersModule = {
 type TransformersLoader = () => Promise<TransformersModule>;
 type CalibrationLoader = (path: string) => Promise<string>;
 
-export const PRIVACY_WINDOW_CONTEXT_TOKENS = 128;
-export const PRIVACY_WINDOW_CORE_TOKENS = 256;
-export const PRIVACY_WINDOW_MAX_TOKENS =
-  PRIVACY_WINDOW_CORE_TOKENS + 2 * PRIVACY_WINDOW_CONTEXT_TOKENS;
-export const PRIVACY_MAX_FIELD_TOKENS = 128_000;
+export {
+  PRIVACY_MAX_FIELD_TOKENS,
+  PRIVACY_WINDOW_CONTEXT_TOKENS,
+  PRIVACY_WINDOW_CORE_TOKENS,
+  PRIVACY_WINDOW_MAX_TOKENS
+};
 
 const dynamicImport = new Function("specifier", "return import(specifier)") as (
   specifier: string

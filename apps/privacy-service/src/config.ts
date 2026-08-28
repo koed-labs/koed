@@ -1,4 +1,10 @@
 import {
+  PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES,
+  PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES,
+  PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES,
+  PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT
+} from "@koed/shared";
+import {
   parsePrivacyRuntimePreference,
   type PrivacyRuntimePreference
 } from "./provider.js";
@@ -16,8 +22,8 @@ export interface PrivacyServiceConfig {
   modelRevision: string;
   transformersCache: string;
   maxFields: number;
-  maxFieldChars: number;
-  maxRequestChars: number;
+  maxFieldBytes: number;
+  maxRequestFieldBytes: number;
   maxBodyBytes: number;
   runtimeProvider: PrivacyRuntimePreference;
   gpuIdleUnloadSeconds: number;
@@ -55,6 +61,22 @@ const nonNegativeInteger = (
   return parsed;
 };
 
+const contractInteger = (
+  environment: NodeJS.ProcessEnv,
+  name: string,
+  expected: number
+): number => {
+  const configured = environment[name];
+  if (configured === undefined || configured.trim() === "") return expected;
+  const parsed = positiveInteger(environment, name, expected);
+  if (parsed !== expected) {
+    throw new Error(
+      `${name} must match the shared Privacy contract (${expected})`
+    );
+  }
+  return expected;
+};
+
 export const resolveConfig = (
   environment: NodeJS.ProcessEnv = process.env
 ): PrivacyServiceConfig => {
@@ -70,21 +92,25 @@ export const resolveConfig = (
     modelId: OFFICIAL_PRIVACY_MODEL_ID,
     modelRevision: OFFICIAL_PRIVACY_MODEL_REVISION,
     transformersCache,
-    maxFields: positiveInteger(environment, "PRIVACY_MAX_FIELDS", 2_048),
-    maxFieldChars: positiveInteger(
+    maxFields: contractInteger(
       environment,
-      "PRIVACY_MAX_FIELD_CHARS",
-      100_000
+      "PRIVACY_MAX_FIELDS",
+      PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT
     ),
-    maxRequestChars: positiveInteger(
+    maxFieldBytes: contractInteger(
       environment,
-      "PRIVACY_MAX_REQUEST_CHARS",
-      200_000
+      "PRIVACY_MAX_FIELD_BYTES",
+      PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES
     ),
-    maxBodyBytes: positiveInteger(
+    maxRequestFieldBytes: contractInteger(
+      environment,
+      "PRIVACY_MAX_REQUEST_FIELD_BYTES",
+      PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES
+    ),
+    maxBodyBytes: contractInteger(
       environment,
       "PRIVACY_MAX_BODY_BYTES",
-      1_048_576
+      PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES
     ),
     runtimeProvider: parsePrivacyRuntimePreference(
       environment.PRIVACY_RUNTIME_PROVIDER

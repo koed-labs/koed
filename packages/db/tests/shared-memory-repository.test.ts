@@ -9,6 +9,9 @@ import {
   crossIdentitySyncDigest,
   noPrivacyLabelsPolicy,
   privacyContentPolicyHash,
+  privacyClassificationExpectedManifestHash,
+  privacyClassificationOrderedInputHash,
+  privacyClassificationResultManifestHash,
   sharedMemoryCeilingAuthorizes,
   crossIdentitySyncDeterministicUuid,
   personalNoteSourceRevisionHash,
@@ -72,6 +75,7 @@ import {
   requireReadySharedMemorySemanticDerivative,
   sharedMemoryDeviceProvenanceHash,
   sharedMemorySanitizedSemanticSourceRevisionHash,
+  sharedMemorySemanticPrivacyWorkIdentity,
   SHARED_MEMORY_AUTHORITY,
   SharedMemoryAuthorizationError,
   SharedMemorySemanticDerivativePendingError,
@@ -607,8 +611,10 @@ describe("Shared Memory semantic classification contract", () => {
     const ready = {
       record: {
         status: "ready",
-        classificationResultId: randomUUID(),
-        classificationPayloadBindingHash: hash("classification-binding"),
+        expectedManifestHash: hash("expected-manifest"),
+        expectedChunkCount: 1,
+        completedChunkCount: 1,
+        resultManifestHash: hash("result-manifest"),
         sourceItemIdentityHash: hash("source-identities"),
         sourceItemCount: 1,
         sanitizedContentHash: hash("sanitized-content"),
@@ -1719,35 +1725,111 @@ describeDb("Shared Memory repository", () => {
         inputByteLength: field.inputByteLength,
         sanitizedText: sanitizeText(field.text)
       }));
-      const response: PrivacyClassificationResponse = {
-        schemaVersion: 1,
-        inputContractVersion: "koed-privacy-classification-v1",
-        classifier: {
-          classifierHash: privacyClassifier.classifierHash,
-          modelKey: privacyClassifier.modelKey,
-          modelRevision: privacyClassifier.modelRevision
-        },
-        fields: maskedFields.map((field) => ({
-          path: field.path,
-          inputSha256: field.inputSha256,
-          inputByteLength: field.inputByteLength,
-          maskedText: field.sanitizedText,
-          decodedTextMatchesInput: true,
-          spans: []
-        }))
-      };
-      const classification = fields.length
-        ? await privacyRepository.storeClassificationResult({
+      const claim = await targetRepository.claimSemanticPrivacyTarget(
+        actor(ownerUserId),
+        {
+          semanticPreviewId: target.id,
+          claimantId: "shared-memory-repository-test",
+          leaseMs: 120_000,
+          expectedWorkIdentity: sharedMemorySemanticPrivacyWorkIdentity(target)
+        }
+      );
+      if (!claim) throw new Error("Semantic privacy target was not claimable");
+      const fieldChunks = Array.from(
+        { length: Math.ceil(fields.length / 16) },
+        (_, chunkIndex) => fields.slice(chunkIndex * 16, chunkIndex * 16 + 16)
+      );
+      const chunkBindings = fieldChunks.map((chunk, chunkIndex) => ({
+        chunkIndex,
+        firstFieldIndex: chunkIndex * 16,
+        fieldCount: chunk.length,
+        inputIdentityHash: privacyRepository.classificationInputIdentity({
+          actor: actor(ownerUserId),
+          fields: chunk
+        }),
+        orderedInputHash: privacyClassificationOrderedInputHash(chunk)
+      }));
+      const expectedManifestHash = privacyClassificationExpectedManifestHash({
+        semanticPreviewId: target.id,
+        sourcePreviewHash: target.sourcePreviewHash,
+        sourceArtifactHash: target.sourceArtifactHash,
+        sourceManifestHash: target.sourceManifestHash,
+        sourceRevision: target.sourceRevision,
+        classifierGenerationId: target.classifierGenerationId,
+        classifierHash: target.classifierHash,
+        effectivePrivacyPolicyHash: target.effectivePrivacyPolicyHash,
+        fieldCount: fields.length,
+        chunks: chunkBindings
+      });
+      await targetRepository.initializeSemanticPrivacyManifest(
+        actor(ownerUserId),
+        {
+          claim,
+          expectedManifestHash,
+          fieldCount: fields.length,
+          fieldByteCount: fields.reduce(
+            (total, field) => total + Buffer.byteLength(field.text, "utf8"),
+            0
+          ),
+          chunks: chunkBindings
+        }
+      );
+      for (const [chunkIndex, chunk] of fieldChunks.entries()) {
+        const response: PrivacyClassificationResponse = {
+          schemaVersion: 1,
+          inputContractVersion: "koed-privacy-classification-v1",
+          classifier: {
+            classifierHash: privacyClassifier.classifierHash,
+            modelKey: privacyClassifier.modelKey,
+            modelRevision: privacyClassifier.modelRevision
+          },
+          fields: maskedFields
+            .slice(chunkIndex * 16, chunkIndex * 16 + chunk.length)
+            .map((field) => ({
+              path: field.path,
+              inputSha256: field.inputSha256,
+              inputByteLength: field.inputByteLength,
+              maskedText: field.sanitizedText,
+              decodedTextMatchesInput: true,
+              spans: []
+            }))
+        };
+        const classification =
+          await privacyRepository.storeClassificationResult({
             actor: actor(ownerUserId),
             provider: privacyProvider,
-            fields,
+            fields: chunk,
             response
-          })
-        : await privacyRepository.getOrCreateStructuralClassificationBinding({
-            actor: actor(ownerUserId),
-            provider: privacyProvider,
-            classifierHash: privacyClassifier.classifierHash
           });
+        await targetRepository.attachSemanticPrivacyChunkResult(
+          actor(ownerUserId),
+          {
+            claim,
+            chunkIndex,
+            inputIdentityHash: chunkBindings[chunkIndex]!.inputIdentityHash,
+            orderedInputHash: chunkBindings[chunkIndex]!.orderedInputHash,
+            classificationResultId: classification.id,
+            classificationPayloadBindingHash: classification.payloadBindingHash!
+          }
+        );
+      }
+      const manifest = await targetRepository.listSemanticPrivacyManifest(
+        actor(ownerUserId),
+        { claim }
+      );
+      const resultManifestHash = privacyClassificationResultManifestHash({
+        expectedManifestHash,
+        chunks: manifest.map((entry) => ({
+          chunkIndex: entry.chunkIndex,
+          firstFieldIndex: entry.firstFieldIndex,
+          fieldCount: entry.fieldCount,
+          inputIdentityHash: entry.inputIdentityHash,
+          orderedInputHash: entry.orderedInputHash,
+          classificationResultId: entry.classificationResultId!,
+          classificationPayloadBindingHash:
+            entry.classificationPayloadBindingHash!
+        }))
+      });
       const sanitizedItems = reconstructSharedMemorySemanticSanitizedItems(
         loaded.preview.items,
         maskedFields
@@ -1761,7 +1843,9 @@ describeDb("Shared Memory repository", () => {
         expectedSourceItemIdentityHash: loaded.sourceItemIdentityHash,
         expectedClassifierHash: target.classifierHash,
         expectedEffectivePrivacyPolicyHash: target.effectivePrivacyPolicyHash,
-        classificationResultId: classification.id,
+        claim,
+        expectedManifestHash,
+        expectedResultManifestHash: resultManifestHash,
         items: sanitizedItems,
         sanitizedContentHash: crossIdentitySyncDigest(sanitizedItems)
       });
@@ -1787,7 +1871,8 @@ describeDb("Shared Memory repository", () => {
   const processPendingSharesAfterPrivacy = async (
     pendingShareId: string,
     input: Parameters<SharedMemoryRepository["processPendingShares"]>[0] = {},
-    sanitizeText: (text: string) => string = (text) => text
+    sanitizeText: (text: string) => string = (text) => text,
+    concurrentActivation = false
   ) => {
     await expect(repository.processPendingShares(input)).resolves.toMatchObject(
       {
@@ -1832,7 +1917,25 @@ describeDb("Shared Memory repository", () => {
           and pending.stage='privacy_filtering'`,
       [pendingShareId]
     );
-    return repository.processPendingShares(input);
+    if (!concurrentActivation) return repository.processPendingShares(input);
+    const concurrentRepository = createSharedMemoryRepository(pool, {
+      resolveTeamEncryptionProvider: () => provider,
+      resolvePersonalEncryptionProvider: () => privacyProvider,
+      resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
+    });
+    const runs = await Promise.all([
+      repository.processPendingShares(input),
+      concurrentRepository.processPendingShares(input)
+    ]);
+    return runs.reduce(
+      (total, run) => ({
+        claimed: total.claimed + run.claimed,
+        activated: total.activated + run.activated,
+        waiting: total.waiting + run.waiting,
+        failed: total.failed + run.failed
+      }),
+      { claimed: 0, activated: 0, waiting: 0, failed: 0 }
+    );
   };
 
   const capturedSourceBinding = (
@@ -4948,11 +5051,14 @@ describeDb("Shared Memory repository", () => {
       resolvePersonalEncryptionProvider: () => privacyProvider,
       resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
     });
-    const activationRun = await processPendingSharesAfterPrivacy(pending.id, {
-      ensureCompanion: ensurePendingShareCompanion
-    });
+    const activationRun = await processPendingSharesAfterPrivacy(
+      pending.id,
+      { ensureCompanion: ensurePendingShareCompanion },
+      (text) => text,
+      true
+    );
     expect(activationRun.claimed).toBeGreaterThan(0);
-    expect(activationRun.activated).toBeGreaterThan(0);
+    expect(activationRun.activated).toBe(1);
     expect(activationRun.failed).toBe(0);
     const activated = await repository.getOwnerShare(
       actor(fixture.ownerUserId),
@@ -4972,6 +5078,20 @@ describeDb("Shared Memory repository", () => {
     const activatedOperationVersion = activated.pendingShare.operationVersion;
     const shareGrantId = activated.pendingShare.grantId!;
     const activatedGrantVersion = activated.pendingShare.grantVersion!;
+    const publicationCounts = await pool.query<{
+      grants: string;
+      representations: string;
+    }>(
+      `select
+         (select count(*)::text from team_memory_share_grants where id=$1) as grants,
+         (select count(*)::text from team_memory_representations
+           where share_grant_id=$1 and state='available') as representations`,
+      [shareGrantId]
+    );
+    expect(publicationCounts.rows[0]).toEqual({
+      grants: "1",
+      representations: "1"
+    });
     const workspacePage = await repository.listWorkspaceGrants(
       actor(fixture.readerUserId),
       {
@@ -5200,6 +5320,385 @@ describeDb("Shared Memory repository", () => {
         representation: "memory_events"
       })
     ).resolves.toBeNull();
+  });
+
+  it("fences concurrent privacy Workers and rejects stale completion after revocation", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "privacy-worker-fencing");
+    await putOwnerPolicy(fixture, source);
+    const browserAuthority = authority(fixture);
+    const candidate = await repository.createSharedMemoryCandidatePreview(
+      actor(fixture.ownerUserId),
+      {
+        ...capturedSourceBinding(source, "memory_events"),
+        logicalMemoryId: source.logicalMemoryId,
+        candidateHash: hash("privacy-worker-fencing"),
+        sourceRevision: source.currentRevision,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest: candidateManifest(source, "memory_events"),
+        byteCount: 128,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        ...fidelityConsent(allRepresentations),
+        mode: "continuous",
+        authority: browserAuthority
+      }
+    );
+    if (!candidate) throw new Error("candidate was not admitted");
+    const pending = await repository.createPendingShare(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: randomUUID(),
+        ...capturedSourceBinding(source, "memory_events"),
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        preview: candidate,
+        previewRevision: candidate.previewRevision,
+        mode: "continuous",
+        ...fidelityConsent(allRepresentations),
+        authority: { ...browserAuthority, referenceId: randomUUID() }
+      }
+    );
+    await expect(repository.processPendingShares()).resolves.toMatchObject({
+      waiting: 1,
+      failed: 0
+    });
+    const staleOutbox = await pool.query<{ reclaim_at: Date }>(
+      `update pending_share_outbox
+          set state='processing',locked_at=now(),updated_at=now()
+        where pending_share_id=$1
+      returning locked_at+interval '5 minutes' as reclaim_at`,
+      [pending.id]
+    );
+    await expect(repository.getNextPendingShareWorkAt()).resolves.toBe(
+      staleOutbox.rows[0]?.reclaim_at.toISOString()
+    );
+    const pendingRow = await pool.query<{ grant_id: string }>(
+      "select grant_id from pending_share_operations where id=$1",
+      [pending.id]
+    );
+    const shareGrantId = pendingRow.rows[0]?.grant_id;
+    if (!shareGrantId) throw new Error("unavailable grant was not retained");
+    const [target] = await repository.listPendingSemanticPrivacyTargets({
+      shareGrantId,
+      limit: 10
+    });
+    if (!target) throw new Error("privacy target was not created");
+    const secondRepository = createSharedMemoryRepository(pool, {
+      resolveTeamEncryptionProvider: () => provider,
+      resolvePersonalEncryptionProvider: () => privacyProvider,
+      resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
+    });
+    const finalizationLease =
+      await repository.tryAcquireSemanticPrivacyFinalizationLease();
+    expect(finalizationLease).not.toBeNull();
+    await expect(
+      secondRepository.tryAcquireSemanticPrivacyFinalizationLease()
+    ).resolves.toBeNull();
+    await finalizationLease!.release();
+    const replacementFinalizationLease =
+      await secondRepository.tryAcquireSemanticPrivacyFinalizationLease();
+    expect(replacementFinalizationLease).not.toBeNull();
+    await replacementFinalizationLease!.release();
+    const claimInput = {
+      semanticPreviewId: target.id,
+      leaseMs: 120_000,
+      expectedWorkIdentity: sharedMemorySemanticPrivacyWorkIdentity(target)
+    };
+    const claims = await Promise.all([
+      repository.claimSemanticPrivacyTarget(actor(fixture.ownerUserId), {
+        ...claimInput,
+        claimantId: "privacy-worker-a"
+      }),
+      secondRepository.claimSemanticPrivacyTarget(actor(fixture.ownerUserId), {
+        ...claimInput,
+        claimantId: "privacy-worker-b"
+      })
+    ]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    const firstClaim = claims.find(Boolean)!;
+    await expect(repository.getNextSemanticPrivacyWorkAt()).resolves.toBe(
+      firstClaim.expiresAt
+    );
+    const workerClock = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.parse("2100-01-01T00:00:00.000Z"));
+    try {
+      await expect(
+        secondRepository.claimSemanticPrivacyTarget(
+          actor(fixture.ownerUserId),
+          { ...claimInput, claimantId: "privacy-worker-clock-skewed" }
+        )
+      ).resolves.toBeNull();
+    } finally {
+      workerClock.mockRestore();
+    }
+    const backlog = await repository.getSemanticPrivacyBacklogDiagnostics();
+    expect(backlog).toMatchObject({
+      counts: { pending: 0, leased: 1, deferred: 0 },
+      bySchedulingClass: { foreground: 1, background: 0 },
+      byWorkReason: { share_activation: 1 },
+      completionEstimate: {
+        status: "unavailable",
+        reason: "insufficient_measured_throughput"
+      }
+    });
+    expect(JSON.stringify(backlog)).not.toContain(fixture.ownerUserId);
+    const loaded = await repository.readPendingSemanticPrivacyTarget(
+      actor(fixture.ownerUserId),
+      {
+        semanticPreviewId: target.id,
+        expectedSourcePreviewHash: target.sourcePreviewHash,
+        expectedSourceArtifactHash: target.sourceArtifactHash,
+        expectedSourceManifestHash: target.sourceManifestHash,
+        expectedClassifierHash: target.classifierHash,
+        expectedEffectivePrivacyPolicyHash: target.effectivePrivacyPolicyHash
+      }
+    );
+    if (!loaded) throw new Error("privacy target was not readable");
+    const fields = loaded.classificationFields.map(({ path, text }) => ({
+      path,
+      text
+    }));
+    const chunks = Array.from(
+      { length: Math.ceil(fields.length / 16) },
+      (_, chunkIndex) => {
+        const chunk = fields.slice(chunkIndex * 16, chunkIndex * 16 + 16);
+        return {
+          chunkIndex,
+          firstFieldIndex: chunkIndex * 16,
+          fieldCount: chunk.length,
+          inputIdentityHash: privacyRepository.classificationInputIdentity({
+            actor: actor(fixture.ownerUserId),
+            fields: chunk
+          }),
+          orderedInputHash: privacyClassificationOrderedInputHash(chunk)
+        };
+      }
+    );
+    const expectedManifestHash = privacyClassificationExpectedManifestHash({
+      semanticPreviewId: target.id,
+      sourcePreviewHash: target.sourcePreviewHash,
+      sourceArtifactHash: target.sourceArtifactHash,
+      sourceManifestHash: target.sourceManifestHash,
+      sourceRevision: target.sourceRevision,
+      classifierGenerationId: target.classifierGenerationId,
+      classifierHash: target.classifierHash,
+      effectivePrivacyPolicyHash: target.effectivePrivacyPolicyHash,
+      fieldCount: fields.length,
+      chunks
+    });
+    await expect(
+      repository.initializeSemanticPrivacyManifest(actor(fixture.ownerUserId), {
+        claim: firstClaim,
+        expectedManifestHash,
+        fieldCount: fields.length,
+        fieldByteCount: 1,
+        chunks: chunks.map((chunk, index) =>
+          index === 0 ? { ...chunk, firstFieldIndex: 1 } : chunk
+        )
+      })
+    ).rejects.toThrow("manifest field ranges are invalid");
+    await repository.initializeSemanticPrivacyManifest(
+      actor(fixture.ownerUserId),
+      {
+        claim: firstClaim,
+        expectedManifestHash,
+        fieldCount: fields.length,
+        fieldByteCount: fields.reduce(
+          (total, field) => total + Buffer.byteLength(field.text),
+          0
+        ),
+        chunks
+      }
+    );
+    await pool.query(
+      "update shared_source_semantic_privacy_work_claims set expires_at=now()-interval '1 second' where semantic_preview_id=$1",
+      [target.id]
+    );
+    const replacementClaim = await repository.claimSemanticPrivacyTarget(
+      actor(fixture.ownerUserId),
+      { ...claimInput, claimantId: "privacy-worker-replacement" }
+    );
+    expect(replacementClaim?.claimGeneration).toBe(
+      firstClaim.claimGeneration + 1
+    );
+    const firstChunkFields = fields.slice(0, chunks[0]!.fieldCount);
+    const classification = await privacyRepository.storeClassificationResult({
+      actor: actor(fixture.ownerUserId),
+      provider: privacyProvider,
+      fields: firstChunkFields,
+      response: {
+        schemaVersion: 1,
+        inputContractVersion: "koed-privacy-classification-v1",
+        classifier: {
+          classifierHash: privacyClassifier.classifierHash,
+          modelKey: privacyClassifier.modelKey,
+          modelRevision: privacyClassifier.modelRevision
+        },
+        fields: firstChunkFields.map((field) => ({
+          path: field.path,
+          inputSha256: hash(field.text),
+          inputByteLength: Buffer.byteLength(field.text),
+          maskedText: field.text,
+          decodedTextMatchesInput: true,
+          spans: []
+        }))
+      }
+    });
+    await expect(
+      repository.attachSemanticPrivacyChunkResult(actor(fixture.ownerUserId), {
+        claim: firstClaim,
+        chunkIndex: 0,
+        inputIdentityHash: chunks[0]!.inputIdentityHash,
+        orderedInputHash: chunks[0]!.orderedInputHash,
+        classificationResultId: classification.id,
+        classificationPayloadBindingHash: classification.payloadBindingHash!
+      })
+    ).rejects.toThrow("chunk result binding was rejected");
+    await expect(
+      repository.listSemanticPrivacyManifest(actor(fixture.ownerUserId), {
+        claim: firstClaim
+      })
+    ).resolves.toEqual([]);
+    await pool.query(
+      `update team_workspace_access_grants
+          set disabled_at=now(),disabled_reason='membership_disabled',
+              version=version+1,updated_at=now()
+        where team_id=$1 and team_workspace_id=$2 and user_id=$3`,
+      [fixture.teamId, fixture.teamWorkspaceId, fixture.ownerUserId]
+    );
+    await expect(
+      repository.readPendingSemanticPrivacyTarget(actor(fixture.ownerUserId), {
+        semanticPreviewId: target.id,
+        expectedSourcePreviewHash: target.sourcePreviewHash,
+        expectedSourceArtifactHash: target.sourceArtifactHash,
+        expectedSourceManifestHash: target.sourceManifestHash,
+        expectedClassifierHash: target.classifierHash,
+        expectedEffectivePrivacyPolicyHash: target.effectivePrivacyPolicyHash
+      })
+    ).resolves.toBeNull();
+    await pool.query(
+      `update team_workspace_access_grants
+          set disabled_at=null,disabled_reason=null,
+              version=version+1,updated_at=now()
+        where team_id=$1 and team_workspace_id=$2 and user_id=$3`,
+      [fixture.teamId, fixture.teamWorkspaceId, fixture.ownerUserId]
+    );
+    await repository.revokeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId,
+      expectedGrantVersion: target.grantVersion,
+      reasonCode: "privacy_fencing_test",
+      authority: browserAuthority
+    });
+    await expect(
+      repository.readPendingSemanticPrivacyTarget(actor(fixture.ownerUserId), {
+        semanticPreviewId: target.id,
+        expectedSourcePreviewHash: target.sourcePreviewHash,
+        expectedSourceArtifactHash: target.sourceArtifactHash,
+        expectedSourceManifestHash: target.sourceManifestHash,
+        expectedClassifierHash: target.classifierHash,
+        expectedEffectivePrivacyPolicyHash: target.effectivePrivacyPolicyHash
+      })
+    ).resolves.toBeNull();
+    const visibility = await pool.query<{ status: string }>(
+      "select status from shared_source_semantic_previews where id=$1",
+      [target.id]
+    );
+    expect(visibility.rows[0]?.status).not.toBe("ready");
+  });
+
+  it("prioritizes foreground privacy work and promotes an old background target", async () => {
+    const fixture = await createWorkspaceFixture();
+    const pendingIds: string[] = [];
+    for (let index = 1; index <= 3; index += 1) {
+      const source = await createSource(
+        fixture,
+        index,
+        `privacy-scheduling-${index}`
+      );
+      await putOwnerPolicy(fixture, source);
+      const candidate = await repository.createSharedMemoryCandidatePreview(
+        actor(fixture.ownerUserId),
+        {
+          ...capturedSourceBinding(source, "memory_events"),
+          logicalMemoryId: source.logicalMemoryId,
+          candidateHash: hash(`privacy-scheduling-${index}`),
+          sourceRevision: source.currentRevision,
+          itemCount: 1,
+          excludedItemCount: 0,
+          manifest: candidateManifest(source, "memory_events"),
+          byteCount: 128,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          ...fidelityConsent(allRepresentations),
+          mode: "continuous",
+          authority: authority(fixture)
+        }
+      );
+      if (!candidate) throw new Error("privacy scheduler candidate missing");
+      const pending = await repository.createPendingShare(
+        actor(fixture.ownerUserId),
+        {
+          mutationId: randomUUID(),
+          logicalGrantId: randomUUID(),
+          consentId: randomUUID(),
+          ...capturedSourceBinding(source, "memory_events"),
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          preview: candidate,
+          previewRevision: candidate.previewRevision,
+          mode: "continuous",
+          ...fidelityConsent(allRepresentations),
+          authority: { ...authority(fixture), referenceId: randomUUID() }
+        }
+      );
+      pendingIds.push(pending.id);
+    }
+    await expect(
+      repository.processPendingShares({ limit: 10 })
+    ).resolves.toMatchObject({ claimed: 3, waiting: 3, failed: 0 });
+    const initialTargets = await repository.listPendingSemanticPrivacyTargets({
+      limit: 10
+    });
+    expect(initialTargets).toHaveLength(3);
+    const [foreground, ordinaryBackground, promotedBackground] = initialTargets;
+    await pool.query(
+      `update shared_source_semantic_previews
+          set scheduling_class='background',work_reason='background_repair'
+        where id=any($1::uuid[])`,
+      [[ordinaryBackground!.id, promotedBackground!.id]]
+    );
+    const foregroundFirst = await repository.listPendingSemanticPrivacyTargets({
+      limit: 10
+    });
+    expect(foregroundFirst.map((target) => target.id)).toEqual([
+      foreground!.id,
+      ordinaryBackground!.id,
+      promotedBackground!.id
+    ]);
+
+    await pool.query(
+      `update shared_source_semantic_previews
+          set enqueued_at=now()-interval '121 seconds'
+        where id=$1`,
+      [promotedBackground!.id]
+    );
+    const promotedFirst = await repository.listPendingSemanticPrivacyTargets({
+      limit: 10
+    });
+    expect(promotedFirst.map((target) => target.id)).toEqual([
+      promotedBackground!.id,
+      foreground!.id,
+      ordinaryBackground!.id
+    ]);
+    expect(pendingIds).toHaveLength(3);
   });
 
   it("surfaces a stalled Pending Share and resumes it idempotently after worker restart", async () => {

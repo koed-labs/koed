@@ -128,6 +128,53 @@ describe("Local AI Runtime", () => {
     expect(curatedStop).toHaveBeenCalledTimes(1);
   });
 
+  it("starts independent automatic-history adapters for Claude Code and Pi", async () => {
+    const historicalAdapter = (aiClient: string) => ({
+      aiClient,
+      discoverCandidates: async () => [],
+      candidateId: (candidate: { id: string }) => candidate.id,
+      selectCandidates: () => [],
+      processNextBatch: vi.fn()
+    });
+    const createClaudeHistoricalProviderAdapter = vi.fn(() =>
+      historicalAdapter("claude")
+    );
+    const createPiHistoricalProviderAdapter = vi.fn(() =>
+      historicalAdapter("pi")
+    );
+    const dependencies = {
+      startLcmSummaryService: vi.fn(() => null),
+      watchKoedLocalWork: vi.fn(),
+      startCuratedMemoryReviewService: vi.fn(() => ({ stop: vi.fn() })),
+      startCodexTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      startClaudeTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      startPiTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      createClaudeHistoricalProviderAdapter,
+      createPiHistoricalProviderAdapter,
+      createExecutor: vi.fn(() => defaultExecutor())
+    } as unknown as LocalAiRuntimeServiceDependencies;
+    const apiClient = new MemoryApiClient({
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token"
+    });
+    const environment = { KOED_HOME: tempHome() };
+
+    const services = await startDefaultLocalAiRuntimeServices(
+      { apiClient, environment, koedHome: environment.KOED_HOME },
+      dependencies
+    );
+
+    expect(createClaudeHistoricalProviderAdapter).toHaveBeenCalledWith({
+      client: apiClient,
+      env: environment
+    });
+    expect(createPiHistoricalProviderAdapter).toHaveBeenCalledWith({
+      client: apiClient,
+      env: environment
+    });
+    await services.close();
+  });
+
   it("publishes capabilities during runtime startup and stops publisher on close", async () => {
     const refresh = vi.fn(async () => []);
     const stop = vi.fn();

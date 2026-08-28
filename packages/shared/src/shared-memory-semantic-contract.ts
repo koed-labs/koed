@@ -10,8 +10,12 @@ import {
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const MAX_SOURCE_ITEMS = 2_048;
-const MAX_CHUNK_BYTES = 256 * 1_024;
+export const SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ITEMS = 2_048;
+export const SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES = 256 * 1_024;
+export const SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS = 65_536;
+export const SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES = 64 * 1_024 * 1_024;
+export const SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES =
+  80 * 1_024 * 1_024;
 const MAX_JSON_DEPTH = 16;
 const MAX_JSON_KEYS = 2_000;
 
@@ -102,6 +106,22 @@ export class SharedMemorySourceItemRejectedError extends Error {
   }
 }
 
+export class SharedMemorySemanticResourceLimitError extends SharedMemorySourceItemRejectedError {
+  constructor(
+    public readonly limitKind:
+      | "field_bytes"
+      | "preview_items"
+      | "preview_fields"
+      | "preview_bytes"
+      | "preview_encoded_bytes",
+    public readonly observed: number,
+    public readonly maximum: number
+  ) {
+    super("invalid_item_schema");
+    this.name = "SharedMemorySemanticResourceLimitError";
+  }
+}
+
 const exactObjectKeys = (
   value: Record<string, unknown>,
   allowed: readonly string[]
@@ -134,8 +154,13 @@ const validateStructuredValue = (
     return value;
   }
   if (typeof value === "string") {
-    if (Buffer.byteLength(value, "utf8") > MAX_CHUNK_BYTES) {
-      throw new SharedMemorySourceItemRejectedError("invalid_item_schema");
+    const inputBytes = Buffer.byteLength(value, "utf8");
+    if (inputBytes > SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES) {
+      throw new SharedMemorySemanticResourceLimitError(
+        "field_bytes",
+        inputBytes,
+        SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES
+      );
     }
     return value;
   }
@@ -208,7 +233,7 @@ const validateExpansionItems = (
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
-    value.length > MAX_SOURCE_ITEMS
+    value.length > SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ITEMS
   ) {
     throw new SharedMemorySourceItemRejectedError("invalid_item_schema");
   }
@@ -521,14 +546,55 @@ const collectClassificationFields = (
 
 export const extractSharedMemorySemanticClassificationFields = (
   items: readonly SharedMemoryCanonicalSourceItemDto[]
-): SharedMemorySemanticClassificationField[] =>
-  collectClassificationFields(items).map((field) => ({
+): SharedMemorySemanticClassificationField[] => {
+  if (items.length === 0) {
+    throw new SharedMemorySourceItemRejectedError("invalid_item_schema");
+  }
+  if (items.length > SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ITEMS) {
+    throw new SharedMemorySemanticResourceLimitError(
+      "preview_items",
+      items.length,
+      SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ITEMS
+    );
+  }
+  const previewBytes = Buffer.byteLength(JSON.stringify(items), "utf8");
+  if (previewBytes > SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES) {
+    throw new SharedMemorySemanticResourceLimitError(
+      "preview_encoded_bytes",
+      previewBytes,
+      SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES
+    );
+  }
+  const fields = collectClassificationFields(items);
+  if (fields.length === 0) {
+    throw new SharedMemorySourceItemRejectedError("invalid_item_schema");
+  }
+  if (fields.length > SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS) {
+    throw new SharedMemorySemanticResourceLimitError(
+      "preview_fields",
+      fields.length,
+      SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS
+    );
+  }
+  const fieldBytes = fields.reduce(
+    (total, field) => total + field.inputByteLength,
+    0
+  );
+  if (fieldBytes > SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES) {
+    throw new SharedMemorySemanticResourceLimitError(
+      "preview_bytes",
+      fieldBytes,
+      SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES
+    );
+  }
+  return fields.map((field) => ({
     path: field.path,
     text: field.text,
     inputSha256: field.inputSha256,
     inputByteLength: field.inputByteLength,
     replacementMode: field.replacementMode
   }));
+};
 
 const maskClassificationFields = (
   value: unknown,
