@@ -1447,6 +1447,7 @@ export function App({
         initialSection={route.section}
         hardwareAcceleration={window.koedDesktop?.hardwareAcceleration}
         launchAtStartup={window.koedDesktop?.launchAtStartup}
+        localAiClients={window.koedDesktop?.localAiClients}
         onSectionChange={(section) =>
           dispatch({
             type: "replace",

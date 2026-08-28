@@ -6067,7 +6067,7 @@ describe("api health", () => {
     }
   });
 
-  it("keeps both Pending Share worker families idle behind the Team feature gate", async () => {
+  it("gates Pending Share workers and does not poll activation work", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-worker-gate-"));
     process.env.KOED_HOME = koedHome;
     vi.useFakeTimers();
@@ -6107,7 +6107,7 @@ describe("api health", () => {
     expect(processPendingShares).toHaveBeenCalledTimes(1);
     expect(claimPendingShareSourceWork).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(processPendingShares).toHaveBeenCalledTimes(2);
+    expect(processPendingShares).toHaveBeenCalledTimes(1);
     expect(claimPendingShareSourceWork).toHaveBeenCalledTimes(2);
     await enabled.close();
     vi.useRealTimers();

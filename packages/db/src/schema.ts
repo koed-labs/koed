@@ -6152,13 +6152,14 @@ export const sharedSourceSemanticPreviews = pgTable(
       .references(() => teams.id, { onDelete: "restrict" }),
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
     representation: sharedMemoryRepresentation("representation").notNull(),
-    classificationResultId: uuid("classification_result_id").references(
-      () => privacyClassificationResults.id,
-      { onDelete: "restrict" }
-    ),
-    classificationPayloadBindingHash: text(
-      "classification_payload_binding_hash"
-    ),
+    expectedManifestHash: text("expected_manifest_hash"),
+    expectedChunkCount: integer("expected_chunk_count"),
+    completedChunkCount: integer("completed_chunk_count").notNull().default(0),
+    resultManifestHash: text("result_manifest_hash"),
+    classificationFieldCount: integer("classification_field_count"),
+    classificationByteCount: bigint("classification_byte_count", {
+      mode: "number"
+    }),
     classifierGenerationId: uuid("classifier_generation_id").notNull(),
     classifierVersion: integer("classifier_version").notNull(),
     classifierHash: text("classifier_hash").notNull(),
@@ -6172,6 +6173,17 @@ export const sharedSourceSemanticPreviews = pgTable(
     lastErrorClass: text("last_error_class"),
     attemptCount: integer("attempt_count").notNull().default(0),
     nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    schedulingClass: text("scheduling_class").notNull().default("foreground"),
+    workReason: text("work_reason").notNull().default("share_activation"),
+    eligibleAt: timestamp("eligible_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    enqueuedAt: timestamp("enqueued_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    continuationChunkIndex: integer("continuation_chunk_index")
+      .notNull()
+      .default(0),
     createdAt: now(),
     updatedAt: updatedNow(),
     readyAt: timestamp("ready_at", { withTimezone: true }),
@@ -6211,6 +6223,8 @@ export const sharedSourceSemanticPreviews = pgTable(
     ),
     index("shared_source_semantic_previews_pending_idx").on(
       table.status,
+      table.schedulingClass,
+      table.eligibleAt,
       table.nextAttemptAt,
       table.id
     ),
@@ -6239,8 +6253,10 @@ export const sharedSourceSemanticPreviews = pgTable(
         and ${table.sourceHash} ~ '^[0-9a-f]{64}$'
         and ${table.classifierHash} ~ '^[0-9a-f]{64}$'
         and ${table.effectivePrivacyPolicyHash} ~ '^[0-9a-f]{64}$'
-        and (${table.classificationPayloadBindingHash} is null
-          or ${table.classificationPayloadBindingHash} ~ '^[0-9a-f]{64}$')
+        and (${table.expectedManifestHash} is null
+          or ${table.expectedManifestHash} ~ '^[0-9a-f]{64}$')
+        and (${table.resultManifestHash} is null
+          or ${table.resultManifestHash} ~ '^[0-9a-f]{64}$')
         and (${table.sourceItemIdentityHash} is null
           or ${table.sourceItemIdentityHash} ~ '^[0-9a-f]{64}$')
         and (${table.sanitizedContentHash} is null
@@ -6266,13 +6282,21 @@ export const sharedSourceSemanticPreviews = pgTable(
               and length(trim(${table.lastErrorClass})) > 0))`
     ),
     check(
+      "shared_source_semantic_previews_work_check",
+      sql`${table.schedulingClass} in ('foreground','background')
+        and ${table.workReason} in ('share_activation','source_revision_classification','policy_remasking','classifier_rematerialization','background_repair')
+        and ${table.continuationChunkIndex} >= 0
+        and ${table.completedChunkCount} >= 0
+        and (${table.expectedChunkCount} is null or ${table.expectedChunkCount} > 0)
+        and (${table.classificationFieldCount} is null or ${table.classificationFieldCount} > 0)
+        and (${table.classificationByteCount} is null or ${table.classificationByteCount} >= 0)
+        and (${table.expectedChunkCount} is null or ${table.completedChunkCount} <= ${table.expectedChunkCount})`
+    ),
+    check(
       "shared_source_semantic_previews_lifecycle_check",
       sql`(
           ${table.status} = 'pending'
-          and ${table.classificationResultId} is null
-          and ${table.classificationPayloadBindingHash} is null
-          and ${table.sourceItemIdentityHash} is null
-          and ${table.sourceItemCount} is null
+          and ${table.resultManifestHash} is null
           and ${table.sanitizedContentHash} is null
           and ${table.payloadBindingHash} is null
           and ${table.failureCode} is null
@@ -6283,8 +6307,12 @@ export const sharedSourceSemanticPreviews = pgTable(
           and ${table.invalidationReasonCode} is null
         ) or (
           ${table.status} = 'ready'
-          and ${table.classificationResultId} is not null
-          and ${table.classificationPayloadBindingHash} is not null
+          and ${table.expectedManifestHash} is not null
+          and ${table.expectedChunkCount} is not null
+          and ${table.completedChunkCount} = ${table.expectedChunkCount}
+          and ${table.resultManifestHash} is not null
+          and ${table.classificationFieldCount} is not null
+          and ${table.classificationByteCount} is not null
           and ${table.sourceItemIdentityHash} is not null
           and ${table.sourceItemCount} is not null
           and ${table.sanitizedContentHash} is not null
@@ -6297,8 +6325,7 @@ export const sharedSourceSemanticPreviews = pgTable(
           and ${table.invalidationReasonCode} is null
         ) or (
           ${table.status} = 'failed'
-          and ${table.classificationResultId} is null
-          and ${table.classificationPayloadBindingHash} is null
+          and ${table.resultManifestHash} is null
           and ${table.sourceItemIdentityHash} is not null
           and ${table.sourceItemCount} is not null
           and ${table.sanitizedContentHash} is null
@@ -6311,8 +6338,8 @@ export const sharedSourceSemanticPreviews = pgTable(
           and ${table.invalidationReasonCode} is null
         ) or (
           ${table.status} = 'stale'
-          and ${table.classificationResultId} is not null
-          and ${table.classificationPayloadBindingHash} is not null
+          and ${table.expectedManifestHash} is not null
+          and ${table.resultManifestHash} is not null
           and ${table.sourceItemIdentityHash} is not null
           and ${table.sourceItemCount} is not null
           and ${table.sanitizedContentHash} is not null
@@ -6328,6 +6355,117 @@ export const sharedSourceSemanticPreviews = pgTable(
           and ${table.invalidatedAt} is not null
           and length(trim(${table.invalidationReasonCode})) > 0
         )`
+    )
+  ]
+);
+
+export const sharedSourceSemanticPreviewClassificationChunks = pgTable(
+  "shared_source_semantic_preview_classification_chunks",
+  {
+    id: id(),
+    semanticPreviewId: uuid("semantic_preview_id")
+      .notNull()
+      .references(() => sharedSourceSemanticPreviews.id, {
+        onDelete: "cascade"
+      }),
+    chunkIndex: integer("chunk_index").notNull(),
+    firstFieldIndex: integer("first_field_index").notNull(),
+    fieldCount: integer("field_count").notNull(),
+    inputIdentityHash: text("input_identity_hash").notNull(),
+    orderedInputHash: text("ordered_input_hash").notNull(),
+    classificationResultId: uuid("classification_result_id").references(
+      () => privacyClassificationResults.id,
+      { onDelete: "restrict" }
+    ),
+    classificationPayloadBindingHash: text(
+      "classification_payload_binding_hash"
+    ),
+    status: text("status").notNull().default("pending"),
+    createdAt: now(),
+    readyAt: timestamp("ready_at", { withTimezone: true })
+  },
+  (table) => [
+    unique(
+      "shared_source_semantic_preview_classification_chunks_target_index_unique"
+    ).on(table.semanticPreviewId, table.chunkIndex),
+    index(
+      "shared_source_semantic_preview_classification_chunks_pending_idx"
+    ).on(table.semanticPreviewId, table.status, table.chunkIndex),
+    index("shared_source_semantic_preview_classification_chunks_result_idx").on(
+      table.classificationResultId
+    ),
+    check(
+      "shared_source_semantic_preview_classification_chunks_range_check",
+      sql`${table.chunkIndex} >= 0
+        and ${table.firstFieldIndex} >= 0
+        and ${table.fieldCount} between 1 and 16`
+    ),
+    check(
+      "shared_source_semantic_preview_classification_chunks_hash_check",
+      sql`${table.inputIdentityHash} ~ '^[0-9a-f]{64}$'
+        and ${table.orderedInputHash} ~ '^[0-9a-f]{64}$'
+        and (${table.classificationPayloadBindingHash} is null
+          or ${table.classificationPayloadBindingHash} ~ '^[0-9a-f]{64}$')`
+    ),
+    check(
+      "shared_source_semantic_preview_classification_chunks_lifecycle_check",
+      sql`(${table.status} = 'pending'
+          and ${table.classificationResultId} is null
+          and ${table.classificationPayloadBindingHash} is null
+          and ${table.readyAt} is null)
+        or (${table.status} = 'ready'
+          and ${table.classificationResultId} is not null
+          and ${table.classificationPayloadBindingHash} is not null
+          and ${table.readyAt} is not null)`
+    )
+  ]
+);
+
+export const sharedSourceSemanticPrivacyWorkClaims = pgTable(
+  "shared_source_semantic_privacy_work_claims",
+  {
+    id: id(),
+    semanticPreviewId: uuid("semantic_preview_id")
+      .notNull()
+      .references(() => sharedSourceSemanticPreviews.id, {
+        onDelete: "cascade"
+      }),
+    workIdentity: text("work_identity").notNull(),
+    claimantId: text("claimant_id").notNull(),
+    claimGeneration: integer("claim_generation").notNull(),
+    claimToken: uuid("claim_token").notNull(),
+    state: text("state").notNull().default("active"),
+    createdAt: now(),
+    heartbeatAt: timestamp("heartbeat_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    releasedAt: timestamp("released_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("shared_source_semantic_privacy_work_claims_target_unique").on(
+      table.semanticPreviewId
+    ),
+    index("shared_source_semantic_privacy_work_claims_active_idx")
+      .on(table.state, table.expiresAt)
+      .where(sql`${table.state} = 'active'`),
+    check(
+      "shared_source_semantic_privacy_work_claims_hash_check",
+      sql`${table.workIdentity} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "shared_source_semantic_privacy_work_claims_generation_check",
+      sql`${table.claimGeneration} > 0 and length(trim(${table.claimantId})) between 1 and 200`
+    ),
+    check(
+      "shared_source_semantic_privacy_work_claims_lifecycle_check",
+      sql`(${table.state} = 'active'
+          and ${table.releasedAt} is null and ${table.completedAt} is null)
+        or (${table.state} = 'released'
+          and ${table.releasedAt} is not null and ${table.completedAt} is null)
+        or (${table.state} = 'completed'
+          and ${table.completedAt} is not null)`
     )
   ]
 );

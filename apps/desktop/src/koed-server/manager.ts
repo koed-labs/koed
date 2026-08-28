@@ -3653,7 +3653,7 @@ export const createKoedServerManager = ({
               complete: integrationComplete,
               detectedAiClients: detectedAiClients.map(({ label }) => label),
               message: integrationComplete
-                ? "Koed core runtime and MCP artifacts are ready. AI Client setup is optional."
+                ? "Koed core runtime and MCP artifacts are ready."
                 : "Koed core runtime and MCP artifacts need attention."
             },
             verification: {

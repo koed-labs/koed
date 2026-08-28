@@ -91,8 +91,14 @@ revocation.
 Transient classifier and embedding-service outages do not convert Team
 material into terminal failures. Retry state and the next eligible attempt are
 persisted with the target; PostgreSQL notifications handle new work and one
-exact timer wakes the earliest deferred target. Contract, binding, schema, and
-other deterministic failures remain terminal and fail closed.
+exact timer wakes the earliest deferred target, abandoned-claim expiry, or
+stale outbox lock. In-process failures use bounded retry backoff, and long
+inference and finalization work heartbeat their PostgreSQL-clocked fenced
+claims. Stale Team representations are invalidated from current database state
+before any external Privacy Service preflight, so an outage cannot preserve
+material governed by superseded source, authorization, classifier, or policy
+bindings. Contract, binding, schema, and other deterministic failures remain
+terminal and fail closed.
 
 ## Consequences
 
@@ -102,7 +108,9 @@ other deterministic failures remain terminal and fail closed.
 - Continuous Conversation Source sharing classifies only newly committed
   immutable records. Semantic Memory Event and LCM revisions reuse unchanged
   bounded classification chunks, classify only changed or newly appended
-  chunks, and assemble one immutable result bound to the complete revision.
+  chunks, and bind their ordered immutable results into one expected manifest
+  and one complete result manifest for the revision. Each chunk survives
+  restart independently. No partial manifest is Team-visible.
 - Most shared items require one privacy-classifier pass but no second embedding
   inference.
 - The product hardware preference applies to Privacy inference as well as
@@ -115,6 +123,19 @@ other deterministic failures remain terminal and fail closed.
   add bounded storage without duplicating the Personal database.
 - A Privacy Filter outage does not block Personal capture, Projection, LCM, or
   Recall, but it does block new Team materialization.
+- Privacy work uses durable foreground/background scheduling, bounded quanta,
+  fenced leases, PostgreSQL wake notifications, and an exact deferred-retry
+  timer. Share-blocking work runs first, while the oldest background job is
+  promoted after a bounded wait. Scheduling and claims never confer access.
+- Final publication rechecks source, consent, policy, Workspace authority, and
+  every encrypted classification binding in one transaction before the single
+  complete sanitized payload becomes ready.
+- Whole-preview reconstruction is serialized across Worker processes by one
+  crash-released PostgreSQL advisory-lock slot. Peak-memory telemetry governs
+  any future capacity change; target count alone is not sufficient evidence.
+  The maximum-preview capacity fixture measures the full 64 MiB
+  classification-text ceiling and has demonstrated a transient heap delta in
+  the hundreds of MiB, so the initial deployment-wide limit remains one.
 - Migration `0034` is the internal alpha selective-PII baseline. It refuses
   populated legacy
   Team-sharing rows whose unsanitized content cannot be given truthful privacy

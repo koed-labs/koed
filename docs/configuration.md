@@ -712,8 +712,9 @@ policy, or full URLs containing customer content.
   Default `3`; valid range `1`–`5`.
 - Transient Privacy Service and Team-safe embedding failures remain durable
   pending work. PostgreSQL notifications wake immediate work, while each
-  Worker keeps one exact timer for the earliest persisted retry deadline;
-  neither path uses an idle polling interval.
+  Worker keeps one exact timer for the earliest persisted retry, claim-expiry,
+  or stale-lock deadline. Processing failures use bounded backoff and long
+  inference renews its fenced claim; neither path uses an idle polling interval.
 - `PRIVACY_MATERIALIZATION_TARGET_LIMIT`: Team targets reconciled per Worker
   pass. Default `25`; valid range `1`–`100`.
 - `PRIVACY_MATERIALIZATION_MAX_FRONTIER_BYTES`: maximum source frontier bytes
@@ -723,10 +724,26 @@ policy, or full URLs containing customer content.
   materialization. Default `20000`; valid range `1`–`100000`.
 - `PRIVACY_SERVICE_HOST` / `PRIVACY_SERVICE_PORT`: bind address and port for the
   service process. Defaults to `127.0.0.1:8092`.
-- `PRIVACY_MAX_FIELDS`, `PRIVACY_MAX_FIELD_CHARS`,
-  `PRIVACY_MAX_REQUEST_CHARS`, and `PRIVACY_MAX_BODY_BYTES`: authenticated
-  service abuse and resource bounds. Defaults are `32`, `100000`, `200000`,
-  and `1048576` respectively.
+- `PRIVACY_MAX_FIELDS`, `PRIVACY_MAX_FIELD_BYTES`,
+  `PRIVACY_MAX_REQUEST_FIELD_BYTES`, and `PRIVACY_MAX_BODY_BYTES`: the shared,
+  versioned Privacy transport contract. Values are fixed at `128`, `262144`,
+  `1048576`, and `2097152`; startup rejects deployment overrides that differ.
+  Limits measure field count, one field's UTF-8 bytes, all field UTF-8 bytes,
+  and the encoded request body respectively. The pinned byte-level tokenizer
+  has a `262144`-token outer field guard while model inference remains bounded
+  to a 256-token core plus 128 context tokens on either side.
+- A semantic preview admits at most 65,536 classification fields, 64 MiB of
+  classification text, and 80 MiB for its complete encoded canonical payload.
+  Privacy work persists deterministic 16-field cache chunks. Each limit has
+  one meaning; these whole-preview limits bound trusted Worker finalization
+  memory and do not alter the Privacy request limits.
+- Complete semantic-preview reconstruction and publication use one
+  deployment-wide PostgreSQL advisory-lock slot. The slot is non-blocking,
+  crash-released, and fixed at one. The opt-in maximum-preview capacity test
+  (`KOED_RUN_PRIVACY_CAPACITY_TESTS=1`) measures finalization at the full 64 MiB
+  classification-text ceiling; the reference Linux/Node run required hundreds
+  of MiB of transient heap, so additional concurrent finalizations are not
+  admitted without new measured capacity evidence.
 - `koed-server models status --kind privacy --json` and `koed-server models
 install --kind privacy --json`: verify or install the pinned local Privacy
   Service model, tokenizer, decoder, and calibration assets in Koed's

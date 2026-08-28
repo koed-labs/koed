@@ -9,7 +9,7 @@ export const validateClassifyRequest = (
   payload: unknown,
   config: Pick<
     PrivacyServiceConfig,
-    "maxFields" | "maxFieldChars" | "maxRequestChars"
+    "maxFields" | "maxFieldBytes" | "maxRequestFieldBytes"
   >
 ): PrivacyClassificationRequest => {
   const parsed = privacyClassificationRequestSchema.safeParse(payload);
@@ -28,21 +28,22 @@ export const validateClassifyRequest = (
     );
   }
 
-  let totalChars = 0;
+  let totalBytes = 0;
   for (const [index, field] of parsed.data.fields.entries()) {
-    if (field.text.length > config.maxFieldChars) {
+    const fieldBytes = Buffer.byteLength(field.text, "utf8");
+    if (fieldBytes > config.maxFieldBytes) {
       throw new HttpError(
         413,
-        `fields[${index}].text exceeds character limit`,
+        `fields[${index}].text exceeds UTF-8 byte limit`,
         "request_too_large"
       );
     }
-    totalChars += field.text.length;
+    totalBytes += fieldBytes;
   }
-  if (totalChars > config.maxRequestChars) {
+  if (totalBytes > config.maxRequestFieldBytes) {
     throw new HttpError(
       413,
-      "request text exceeds total character limit",
+      "request text exceeds total UTF-8 byte limit",
       "request_too_large"
     );
   }

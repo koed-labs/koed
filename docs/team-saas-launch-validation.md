@@ -54,6 +54,23 @@ snapshot and continuous boundaries, revocation, and audit events. Its focused
 API suite then covers Privacy Filter fail-closed behavior, Personal API Token
 denial, sanitized completed-turn fork export, credential-bound SSE
 reauthorization, idle consent expiry, and authorization-loss closure.
+The Shared Memory privacy gate additionally exercises a semantic preview above
+2,048 fields, bounded request packing, persisted chunk continuation, restart
+resume, and fail-closed publication with no partial Team representation.
+
+On a Linux/WSL host with verified CUDA payloads for both services, run the
+opt-in shared-accelerator proof with the service URLs, internal credentials,
+database URL, and `psql` path for the disposable deployment configured:
+
+```bash
+KOED_RUN_PRIVACY_ACCELERATOR_TEST=1 pnpm privacy:accelerator-smoke
+```
+
+The proof fails unless Privacy declares one concurrent inference request, both
+services report non-CPU acceleration, concurrent Privacy classifications
+complete, and a production Memory Event embedding is stored while Privacy work
+remains active. The harness emits only IDs, counts, acceleration classes, and
+timings.
 
 Repository tests never run against the fixture database because they truncate
 tables by design. By default, the harness creates a uniquely named disposable

@@ -2315,6 +2315,7 @@ export const pendingShareSchema = z
       "uploading",
       "processing",
       "activating",
+      "privacy_filtering",
       "complete"
     ]),
     workspaceAccessState: z.enum(["none", "active", "revoked"]),
@@ -3261,6 +3262,7 @@ export const collaborationRendererUpdateSchema = z.discriminatedUnion("type", [
         "uploading",
         "processing",
         "activating",
+        "privacy_filtering",
         "complete"
       ]),
       workspaceAccessState: z.enum(["none", "active", "revoked"]),

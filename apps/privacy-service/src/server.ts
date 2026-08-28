@@ -1,6 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
+  PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES,
+  PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES,
+  PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES,
+  PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT,
+  PRIVACY_MAX_CONCURRENT_REQUESTS,
+  PRIVACY_MAX_FIELD_TOKENS,
+  PRIVACY_WINDOW_CONTEXT_TOKENS,
+  PRIVACY_WINDOW_CORE_TOKENS,
+  PRIVACY_WINDOW_MAX_TOKENS,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS,
   privacyClassificationResponseSchema,
   type PrivacyClassificationResponse
 } from "@koed/shared";
@@ -16,6 +28,7 @@ import { ClassificationError, HttpError } from "./errors.js";
 import { PRIVACY_LABELS } from "./labels.js";
 import { maskClassification } from "./masking.js";
 import { parsePrivacyRuntimePreference } from "./provider.js";
+import { OFFICIAL_PRIVACY_TOKENIZER_SHA256 } from "./provenance.js";
 import {
   PrivacyProviderSwitchError,
   type PrivacyRuntimeManager
@@ -168,6 +181,39 @@ export const createPrivacyService = (
                 }
           },
           runtime.isReady() ? 200 : 503,
+          requestId
+        );
+      }
+      if (request.method === "GET" && url.pathname === "/v1/capabilities") {
+        requirePrivacyToken(
+          config.token,
+          request.headers.get("x-koed-privacy-token")
+        );
+        return jsonResponse(
+          {
+            schemaVersion: 1,
+            inputContractVersion: PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
+            tokenizerSha256: OFFICIAL_PRIVACY_TOKENIZER_SHA256,
+            tokenizerNormalization: "none",
+            maximumFieldsPerRequest: PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT,
+            maximumFieldBytes: PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES,
+            maximumRequestFieldBytes:
+              PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES,
+            maximumRequestBodyBytes:
+              PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES,
+            windowCoreTokens: PRIVACY_WINDOW_CORE_TOKENS,
+            windowContextTokens: PRIVACY_WINDOW_CONTEXT_TOKENS,
+            windowMaximumTokens: PRIVACY_WINDOW_MAX_TOKENS,
+            maximumFieldTokens: PRIVACY_MAX_FIELD_TOKENS,
+            maximumSemanticPreviewFields:
+              SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS,
+            maximumSemanticPreviewBytes:
+              SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES,
+            maximumSemanticPreviewEncodedBytes:
+              SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES,
+            maximumConcurrentRequests: PRIVACY_MAX_CONCURRENT_REQUESTS
+          },
+          200,
           requestId
         );
       }
