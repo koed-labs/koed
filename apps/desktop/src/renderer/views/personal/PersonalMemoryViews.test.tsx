@@ -885,9 +885,7 @@ describe("PersonalMemoryWorkspace", () => {
     expect(shell?.lastElementChild?.classList).toContain(
       "personal-managed-composer"
     );
-    expect(container.textContent).toContain(
-      "Execution owner: Codex · codex.default"
-    );
+    expect(container.textContent).not.toContain("Execution owner:");
     expect(
       shell?.querySelector(".personal-managed-composer-field")
     ).not.toBeNull();

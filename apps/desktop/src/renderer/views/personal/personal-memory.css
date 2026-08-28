@@ -546,8 +546,10 @@ button.personal-new-conversation-owner-picker > svg {
   align-items: center;
   background: transparent;
   border-bottom: 1px solid var(--border);
+  box-sizing: border-box;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
+  padding-inline-end: 1rem;
   width: 100%;
 }
 
@@ -584,7 +586,7 @@ button.personal-new-conversation-owner-picker > svg {
   align-items: center;
   display: inline-flex;
   gap: 0.35rem;
-  padding: 0 1rem 0 0.75rem;
+  padding-inline-start: 0.75rem;
 }
 
 .personal-session-link {
