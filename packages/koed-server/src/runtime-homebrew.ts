@@ -6,7 +6,7 @@ import {
   symlinkSync,
   writeFileSync
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
@@ -105,6 +105,32 @@ const trim = (value: string | undefined): string | undefined => {
   return trimmed ? trimmed : undefined;
 };
 
+const homebrewCommandCandidates = (
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+  exists: typeof existsSync
+): string[] => {
+  const configuredPrefix = trim(environment.HOMEBREW_PREFIX);
+  const configuredCommand =
+    configuredPrefix && isAbsolute(configuredPrefix)
+      ? resolve(configuredPrefix, "bin", "brew")
+      : undefined;
+  const platformCommands =
+    platform === "darwin"
+      ? ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+      : platform === "linux"
+        ? ["/home/linuxbrew/.linuxbrew/bin/brew"]
+        : [];
+  return [
+    ...new Set([
+      ...[configuredCommand, ...platformCommands].filter(
+        (command): command is string => Boolean(command && exists(command))
+      ),
+      "brew"
+    ])
+  ];
+};
+
 const run = (
   command: string,
   args: string[],
@@ -117,10 +143,11 @@ const run = (
 
 const brewPrefix = (
   formula: string | null,
+  command: string,
   spawnSync: SpawnSyncLike
 ): { ok: boolean; prefix?: string; error?: string } => {
   const args = formula ? ["--prefix", formula] : ["--prefix"];
-  const result = run("brew", args, spawnSync);
+  const result = run(command, args, spawnSync);
   if (result.error) {
     return { ok: false, error: result.error.message };
   }
@@ -133,11 +160,38 @@ const brewPrefix = (
   return { ok: true, prefix: result.stdout.trim() };
 };
 
+const resolveHomebrewCommand = (
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+  exists: typeof existsSync,
+  spawnSync: SpawnSyncLike
+):
+  | { ok: true; command: string; prefix: string }
+  | {
+      ok: false;
+      error: string;
+    } => {
+  let error = "Homebrew is not available";
+  for (const command of homebrewCommandCandidates(
+    platform,
+    environment,
+    exists
+  )) {
+    const result = brewPrefix(null, command, spawnSync);
+    if (result.ok && result.prefix) {
+      return { ok: true, command, prefix: result.prefix };
+    }
+    error = result.error ?? error;
+  }
+  return { ok: false, error };
+};
+
 const packageStatus = (
   name: RuntimePackageStatus["name"],
+  command: string,
   spawnSync: SpawnSyncLike
 ): RuntimePackageStatus => {
-  const listed = run("brew", ["list", "--versions", name], spawnSync);
+  const listed = run(command, ["list", "--versions", name], spawnSync);
   if (listed.error || listed.status !== 0 || !listed.stdout.trim()) {
     return {
       name,
@@ -147,7 +201,7 @@ const packageStatus = (
       ]
     };
   }
-  const result = brewPrefix(name, spawnSync);
+  const result = brewPrefix(name, command, spawnSync);
   return result.ok && result.prefix
     ? { name, installed: true, prefix: result.prefix }
     : { name, installed: false, missing: [result.error ?? "not installed"] };
@@ -258,11 +312,13 @@ const isSupportedHomebrewPlatform = (platform: NodeJS.Platform): boolean =>
 const statusFrom = ({
   paths,
   platform,
+  environment,
   exists,
   spawnSync
 }: {
   paths: KoedServerPaths;
   platform: NodeJS.Platform;
+  environment: NodeJS.ProcessEnv;
   exists: typeof existsSync;
   spawnSync: SpawnSyncLike;
 }): HomebrewRuntimeStatus => {
@@ -286,15 +342,20 @@ const statusFrom = ({
     };
   }
 
-  const homebrewPrefix = brewPrefix(null, spawnSync);
-  if (!homebrewPrefix.ok) {
+  const homebrew = resolveHomebrewCommand(
+    platform,
+    environment,
+    exists,
+    spawnSync
+  );
+  if (!homebrew.ok) {
     return {
       ok: false,
       state: "missing",
       provider: "homebrew",
       platform,
       koedHome: paths.koedHome,
-      homebrew: { installed: false, error: homebrewPrefix.error },
+      homebrew: { installed: false, error: homebrew.error },
       packages: REQUIRED_PACKAGES.map((name) => ({
         name,
         installed: false,
@@ -309,8 +370,9 @@ const statusFrom = ({
         "Install Homebrew or Linuxbrew on macOS, Linux, or WSL, then run koed-server runtime install --provider homebrew --dependency-mode bundled-local --json."
     };
   }
+  const command = homebrew.command;
   const packages = REQUIRED_PACKAGES.map((name) =>
-    packageStatus(name, spawnSync)
+    packageStatus(name, command, spawnSync)
   );
   const postgres = packages.find((pkg) => pkg.name === "postgresql@17");
   const pgvectorPackage = packages.find((pkg) => pkg.name === "pgvector");
@@ -371,9 +433,7 @@ const statusFrom = ({
     provider: "homebrew",
     platform,
     koedHome: paths.koedHome,
-    homebrew: homebrewPrefix.ok
-      ? { installed: true, prefix: homebrewPrefix.prefix }
-      : { installed: false, error: homebrewPrefix.error },
+    homebrew: { installed: true, prefix: homebrew.prefix },
     packages,
     binaries,
     pgvector: {
@@ -397,10 +457,10 @@ export const collectHomebrewRuntimeStatus = (
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: HomebrewRuntimeDependencies = {}
 ): HomebrewRuntimeStatus => {
-  void environment;
   return statusFrom({
     paths,
     platform: dependencies.platform ?? process.platform,
+    environment,
     exists: dependencies.existsSync ?? existsSync,
     spawnSync: dependencies.spawnSync ?? (nodeSpawnSync as SpawnSyncLike)
   });
@@ -434,7 +494,6 @@ export const installHomebrewRuntime = (
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: HomebrewRuntimeDependencies = {}
 ): HomebrewRuntimeInstallResult => {
-  void environment;
   const deps = {
     platform: dependencies.platform ?? process.platform,
     existsSync: dependencies.existsSync ?? existsSync,
@@ -466,7 +525,27 @@ export const installHomebrewRuntime = (
     .filter((pkg) => !pkg.installed)
     .map((pkg) => pkg.name);
   if (missingPackages.length > 0) {
-    const result = run("brew", ["install", ...missingPackages], deps.spawnSync);
+    const homebrew = resolveHomebrewCommand(
+      deps.platform,
+      environment,
+      deps.existsSync,
+      deps.spawnSync
+    );
+    if (!homebrew.ok) {
+      return {
+        ...before,
+        state: "needs_attention",
+        message: "Homebrew became unavailable before package installation.",
+        action: homebrew.error,
+        installedPackages: [],
+        linkedPaths: []
+      };
+    }
+    const result = run(
+      homebrew.command,
+      ["install", ...missingPackages],
+      deps.spawnSync
+    );
     if (result.error || result.status !== 0) {
       return {
         ...before,
