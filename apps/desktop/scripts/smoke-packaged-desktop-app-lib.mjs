@@ -11,6 +11,14 @@ export const smokeExecutionPlan = ({ missingAssets }) => ({
   healthyDaemon: !missingAssets
 });
 
+export const removeSmokeHome = (koedHome, remove = rmSync) =>
+  remove(koedHome, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100
+  });
+
 export const withPackagedNativeAssetsMasked = async ({ runtimeRoot, work }) => {
   const entries = PACKAGED_NATIVE_ASSET_DIRECTORIES.map((entry) => ({
     entry,

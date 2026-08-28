@@ -2,9 +2,10 @@ import type { AiClientCapabilityDescriptor } from "@koed/shared";
 import type { AiClientReadiness } from "../../types.js";
 
 export type AiClientCapabilitySummary = {
-  dotClass: "" | "is-ready" | "is-attention";
+  dotClass: "is-ready" | "is-attention" | "is-unknown" | "is-unsupported";
   id: string;
   label: string;
+  statusLabel: string;
 };
 
 export const capabilityLabel = (capabilityId: string): string =>
@@ -15,6 +16,30 @@ export const capabilityLabel = (capabilityId: string): string =>
       : capabilityId === "local_synthesis"
         ? "Local Synthesis"
         : "Managed Conversation";
+
+const capabilityStatus = (
+  capability: AiClientCapabilityDescriptor
+): Pick<AiClientCapabilitySummary, "dotClass" | "statusLabel"> => {
+  if (capability.support === "unsupported") {
+    return { dotClass: "is-unsupported", statusLabel: "Unsupported" };
+  }
+  if (capability.readiness === "ready") {
+    return { dotClass: "is-ready", statusLabel: "Ready" };
+  }
+  if (capability.readiness === "unknown") {
+    return { dotClass: "is-unknown", statusLabel: "Unknown" };
+  }
+  const labels = {
+    not_ready: "Not ready",
+    unauthenticated: "Sign-in required",
+    unavailable: "Unavailable",
+    stale: "Status stale"
+  } as const;
+  return {
+    dotClass: "is-attention",
+    statusLabel: labels[capability.readiness]
+  };
+};
 
 export const summarizeCapabilities = (
   capabilities: AiClientCapabilityDescriptor[] | undefined
@@ -36,13 +61,7 @@ export const summarizeCapabilities = (
     })
     .slice(0, 5)
     .map((capability) => ({
-      dotClass:
-        capability.readiness === "ready"
-          ? "is-ready"
-          : capability.readiness === "unknown" ||
-              capability.support === "unsupported"
-            ? ""
-            : "is-attention",
+      ...capabilityStatus(capability),
       id: capability.id,
       label: capabilityLabel(capability.id)
     }));

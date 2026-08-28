@@ -10,7 +10,7 @@ import {
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { llamaLauncher } from "./procure-runtime.mjs";
+import { llamaLauncher, pgvectorBuildArgs } from "./procure-runtime.mjs";
 
 const executable = (path, body) => {
   mkdirSync(resolve(path, ".."), { recursive: true });
@@ -25,6 +25,13 @@ const fixture = () => {
   chmodSync(launcher, 0o755);
   return { root, launcher };
 };
+
+test("pgvector builds do not target the cache runner CPU", () => {
+  assert.deepEqual(pgvectorBuildArgs("/runtime/postgres/bin/pg_config"), [
+    "PG_CONFIG=/runtime/postgres/bin/pg_config",
+    "OPTFLAGS="
+  ]);
+});
 
 test("macOS-style Metal payload also supports explicit CPU mode", () => {
   const { root, launcher } = fixture();

@@ -728,8 +728,14 @@ function AiClientIntegrationsSection({
               <span className="koed-client-meta">{metaLine}</span>
               <span className="koed-client-caps">
                 {capabilitySummaries.map((capability) => (
-                  <span className="koed-client-cap" key={capability.id}>
+                  <span
+                    aria-label={`${capability.label}: ${capability.statusLabel}`}
+                    className="koed-client-cap"
+                    key={capability.id}
+                    title={`${capability.label}: ${capability.statusLabel}`}
+                  >
                     <span
+                      aria-hidden="true"
                       className={`koed-client-cap-dot ${capability.dotClass}`}
                     />
                     {capability.label}

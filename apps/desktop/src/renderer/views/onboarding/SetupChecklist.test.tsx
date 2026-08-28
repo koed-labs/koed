@@ -185,6 +185,9 @@ describe("SetupChecklist", () => {
       "health"
     ]);
     expect(steps.every(({ action }) => action === null)).toBe(true);
+    expect(steps.find(({ id }) => id === "integration")?.description).toBe(
+      "Prepare local credential and MCP artifacts."
+    );
     expect(setupIsReady(status)).toBe(true);
     expect(compactHealthSummary(status)).toEqual({
       label: "Koed is ready",
@@ -279,8 +282,12 @@ describe("SetupChecklist", () => {
     expect(inspect).toHaveBeenCalledOnce();
     expect(container.textContent).toContain("Koed package");
     expect(container.textContent).toContain("Local models");
-    expect(container.textContent).toContain("Claude Code detected");
-    expect(container.textContent).toContain("Pi detected");
+    expect(container.querySelector(".koed-setup-clients")).toBeNull();
+    expect(
+      [...container.querySelectorAll(".koed-setup-step")].find((row) =>
+        row.textContent?.includes("Koed core integration")
+      )?.textContent
+    ).not.toContain("AI Client setup is optional");
     expect(container.textContent).toContain("Complete");
     expect(container.querySelectorAll('[data-state="pending"]')).toHaveLength(
       4
@@ -496,6 +503,86 @@ describe("SetupChecklist", () => {
     }
   );
 
+  it("shows only a spinner without resizing the primary action during AI Client setup", async () => {
+    let configured = false;
+    let resolveSetup!: () => void;
+    const setupPending = new Promise<void>((resolve) => {
+      resolveSetup = resolve;
+    });
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "status") {
+        return statusWithClientProfiles({
+          codex: configured ? "healthy" : "not_configured",
+          claude: "not_configured",
+          pi: "not_configured"
+        });
+      }
+      if (command === "setup_codex") {
+        await setupPending;
+        configured = true;
+        return { ok: true };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    window.koedDesktop = {
+      invoke: async <T = unknown,>(command: string): Promise<T> =>
+        (await invoke(command)) as T,
+      setup: {
+        inspect: async () => completeSetupFixture(),
+        run: async () => completeSetupFixture(),
+        subscribe: () => () => undefined
+      }
+    };
+
+    await act(async () => {
+      root.render(
+        <SetupChecklist
+          onComplete={vi.fn()}
+          showTrustGuide={false}
+          statusStore={new DesktopStatusStore()}
+        />
+      );
+    });
+    await vi.waitFor(() =>
+      expect(
+        [...container.querySelectorAll("button")].find(
+          (button) => button.textContent === "Continue"
+        )
+      ).toBeTruthy()
+    );
+    await act(async () => {
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue")!
+        .click();
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLInputElement>('input[type="checkbox"]')!
+        .click();
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".koed-client-primary-action")!
+        .click();
+    });
+
+    await vi.waitFor(() => {
+      const action = container.querySelector<HTMLButtonElement>(
+        '.koed-client-primary-action[aria-label="Setting up AI Client"]'
+      );
+      expect(action?.textContent?.trim()).toBe("");
+      expect(action?.querySelector("svg")).toBeTruthy();
+      expect(action?.classList.contains("koed-client-primary-action")).toBe(
+        true
+      );
+    });
+
+    resolveSetup();
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Codex: configured")
+    );
+  });
+
   it("completes successful multi-client onboarding in queue order", async () => {
     const configured = new Set<ClientId>();
     const status = () =>
@@ -559,6 +646,9 @@ describe("SetupChecklist", () => {
         checkbox.click();
       }
     });
+    expect(container.textContent).toContain(
+      "Continue allows Koed to change only its own integration block and package for Codex, Claude Code, and Pi. Existing profile settings, credentials, and other AI Clients remain untouched."
+    );
     await act(async () =>
       [...container.querySelectorAll("button")]
         .find((button) => button.textContent === "Continue")!
@@ -706,6 +796,73 @@ describe("SetupChecklist", () => {
     const codexCard = container.querySelectorAll(".koed-client-card")[0]!;
     expect(codexCard.textContent).not.toContain("Managed Conversation");
     expect(codexCard.querySelectorAll(".koed-client-cap")).toHaveLength(3);
+    expect(
+      codexCard
+        .querySelector('[aria-label="Auto-capture: Unknown"]')
+        ?.getAttribute("title")
+    ).toBe("Auto-capture: Unknown");
+    expect(
+      container.querySelector('[aria-label="Capability status legend"]')
+        ?.textContent
+    ).toBe("ReadyNeeds attentionUnknownUnsupported");
+  });
+
+  it("distinguishes unsupported capabilities from unknown capabilities", async () => {
+    const status = statusWithClientProfiles({
+      codex: "not_configured",
+      claude: "not_configured",
+      pi: "not_configured"
+    });
+    status.aiClients!.codex!.capabilities = [
+      {
+        id: "automatic_capture",
+        support: "supported",
+        readiness: "unknown",
+        diagnostics: []
+      },
+      {
+        id: "mcp_recall",
+        support: "unsupported",
+        readiness: "unknown",
+        diagnostics: []
+      }
+    ];
+    window.koedDesktop = {
+      invoke: async <T = unknown,>(command: string): Promise<T> =>
+        (command === "status" ? status : { ok: true }) as T,
+      setup: {
+        inspect: async () => completeSetupFixture(),
+        run: async () => completeSetupFixture(),
+        subscribe: () => () => undefined
+      }
+    };
+    await act(async () => {
+      root.render(
+        <SetupChecklist
+          onComplete={vi.fn()}
+          showTrustGuide={false}
+          statusStore={new DesktopStatusStore()}
+        />
+      );
+    });
+    await act(async () => Promise.resolve());
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue")!
+        .click()
+    );
+
+    const codexCard = container.querySelectorAll(".koed-client-card")[0]!;
+    expect(
+      codexCard.querySelector(
+        '[aria-label="Auto-capture: Unknown"] .is-unknown'
+      )
+    ).toBeTruthy();
+    expect(
+      codexCard.querySelector(
+        '[aria-label="MCP Recall: Unsupported"] .is-unsupported'
+      )
+    ).toBeTruthy();
   });
 
   it("keeps one client's failure isolated from the rest of the queue", async () => {
