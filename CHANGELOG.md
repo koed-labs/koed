@@ -1,5 +1,38 @@
 # Koed
 
+## 0.6.0
+
+### Minor Changes
+
+- 55b9d83: Reduce the default embedding context from 32K to 8K tokens and migrate legacy local accelerator allocation defaults to reduce Metal memory pressure while preserving the 4K embedding input contract.
+- c3f3b1c: Make Shared Memory privacy classification bounded and durable with chunked manifests, resumable work claims, deterministic scheduling, fail-closed publication, runtime diagnostics, and shared accelerator coordination.
+- eef5c0d: Automatically discover and import bounded recent history from every supported
+  AI Client. Claude Code and Pi now use independent resumable historical
+  coordinators alongside Codex, preserve live-capture admission priority, and
+  recover safely from provider-specific source conflicts and oversized records.
+- 56f8a8b: Move the Git remote inline with each Project's session/event counts instead of a collapsed "Project details" disclosure, and let each Captured Session open its Git remote and reveal its local Project path directly.
+- 5dd6baf: Add a General preference to launch packaged Koed at operating-system sign-in.
+  Closed Desktop windows remain available from the menu bar or system tray.
+
+  The MCP Server now starts when Koed is unavailable and reconnects without a
+  Codex restart. Memory tools return a clear connection error until Koed is
+  available.
+
+- 924d813: Add the Personal Ask welcome page, durable Ask conversations and Recents, and
+  the Personal Notes master-detail workspace. Project newly created Notes into
+  Personal Memory so they are embedded and available to Ask. Keep Memory Answer
+  synthesis in the Local AI Runtime and preserve the protected Desktop boundary.
+- 924d813: Add sharing of immutable Personal Note snapshots to authorized Team Workspaces,
+  including fixed review, Pending Share activation, Team recall, evidence,
+  companion discussion, and revocation flows.
+- 7bfbd11: Improve initial setup of client onboarding.
+- 56f8a8b: Show each local Project's normalized Git remote in the Desktop Project list and details. Desktop now starts Personal-only by default; set `KOED_TEAM_COLLABORATION_ENABLED=true` to explicitly enable Team collaboration and Privacy Filter provisioning.
+
+### Patch Changes
+
+- ab336d9: Build the bundled Linux pgvector extension for portable x64 CPUs and preserve native runtime validation diagnostics when release checks fail.
+- 8635cac: Improve server startup, desktop ready polling.
+
 ## 0.5.0
 
 ### Minor Changes
