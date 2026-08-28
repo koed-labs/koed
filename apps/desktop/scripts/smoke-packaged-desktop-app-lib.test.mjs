@@ -10,6 +10,7 @@ import test from "node:test";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
+  removeSmokeHome,
   smokeExecutionPlan,
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
@@ -42,6 +43,22 @@ test("missing-assets execution excludes collaboration and renderer probes", () =
     rendererFaults: true,
     missingAssets: false,
     healthyDaemon: true
+  });
+});
+
+test("smoke home cleanup retries transient non-empty directory failures", () => {
+  let call;
+  removeSmokeHome("/tmp/owned-koed-smoke-home", (path, options) => {
+    call = { path, options };
+  });
+  assert.deepEqual(call, {
+    path: "/tmp/owned-koed-smoke-home",
+    options: {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100
+    }
   });
 });
 

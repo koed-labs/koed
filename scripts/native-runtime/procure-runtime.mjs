@@ -664,6 +664,11 @@ const copyPgvectorBuildOutputs = ({ buildDir, postgresRoot, pgConfig }) => {
   return { extensionDir, libDir, library, sqlFiles };
 };
 
+export const pgvectorBuildArgs = (pgConfig) => [
+  `PG_CONFIG=${pgConfig}`,
+  "OPTFLAGS="
+];
+
 const buildPgvector = ({ source, runtimeRoot, cacheDir, workDir }) => {
   const archive = download({ ...source, cacheDir });
   const extractDir = resolve(workDir, "pgvector");
@@ -672,7 +677,7 @@ const buildPgvector = ({ source, runtimeRoot, cacheDir, workDir }) => {
   const pgConfig = resolve(runtimeRoot, "postgres", "bin", "pg_config");
   if (!existsSync(pgConfig))
     throw new Error(`Cannot build pgvector; missing ${pgConfig}`);
-  run("make", [`PG_CONFIG=${pgConfig}`], {
+  run("make", pgvectorBuildArgs(pgConfig), {
     cwd: sourceRoot,
     env: process.platform === "darwin" ? macosNativeBuildEnv() : process.env,
     stdio: "inherit"
