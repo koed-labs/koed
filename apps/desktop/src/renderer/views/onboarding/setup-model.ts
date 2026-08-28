@@ -138,8 +138,7 @@ export const setupStepsFromStatus = (status: KoedServerStatus): SetupStep[] => {
     step({
       id: "integration",
       title: "Koed core integration",
-      description:
-        "Prepare local credential and MCP artifacts. AI Client setup remains optional.",
+      description: "Prepare local credential and MCP artifacts.",
       components: [
         { label: "API Token", status: status.apiToken },
         { label: "MCP Server", status: status.mcpServer },

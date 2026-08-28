@@ -1560,6 +1560,25 @@ preview and consent, then changes the grant and materialized representation in
 one transaction. A crash after that transaction reconciles through the stable
 replacement mutation; it does not create a second grant or an access gap.
 
+Semantic privacy preparation is a durable bounded workflow. The Worker creates
+an immutable expected manifest of ordered 16-field cache chunks, claims the
+target with a fenced lease, attaches exact owner-scoped encrypted cache hits,
+and classifies missing chunks within a request-count and UTF-8-byte quantum.
+Every completed chunk is committed before the Worker yields. PostgreSQL
+notifications wake eligible work and one exact timer wakes deferred retries;
+there is no idle polling.
+
+The semantic preview stays pending until every manifest chunk is ready. Final
+publication decrypts and revalidates each Personal classification result,
+reconstructs one bounded complete sanitized payload, rechecks current consent,
+Share Grant, source revision, policy, and Workspace authority, then encrypts
+the Team payload and changes it to ready in the same transaction. Queue state,
+claims, progress, and partial chunks never satisfy Team visibility.
+Reconstruction runs only while holding the single deployment-wide PostgreSQL
+finalization advisory lock. Another Worker releases its target claim and uses
+an exact retry instead of blocking or increasing peak memory; process failure
+releases the lock with its database session.
+
 Approval Activity flows only to the owner activity timeline or separately
 authorized byte-exact Conversation Source Access. Projection, embeddings, LCM,
 Recall, semantic sync, and semantic Shared Memory each enforce the exclusion.

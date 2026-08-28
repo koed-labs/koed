@@ -46,8 +46,7 @@ const stageCopy: Record<
   },
   integration: {
     title: "Koed core integration",
-    description:
-      "Prepare local credential and MCP artifacts. AI Client setup is optional."
+    description: "Prepare local credential and MCP artifacts."
   },
   verification: {
     title: "Verification",
@@ -84,6 +83,26 @@ const overallProgress = (snapshot: DesktopSetupSnapshot): number => {
   );
 };
 
+const normalizeSetupStages = (
+  stages: DesktopSetupStage[]
+): DesktopSetupStage[] => {
+  const prerequisitesComplete = stages.every(
+    ({ id, state }) => id === "verification" || state === "complete"
+  );
+  if (prerequisitesComplete) return stages;
+
+  return stages.map((stage) =>
+    stage.id === "verification" && stage.state === "complete"
+      ? {
+          ...stage,
+          message:
+            "Complete the preceding setup steps before final verification.",
+          state: "pending"
+        }
+      : stage
+  );
+};
+
 function SetupStageRow({ stage }: { stage: DesktopSetupStage }) {
   const copy = stageCopy[stage.id];
   const progress = stageProgress(stage);
@@ -103,17 +122,12 @@ function SetupStageRow({ stage }: { stage: DesktopSetupStage }) {
       <span className="koed-setup-step-copy">
         <strong>{copy.title}</strong>
         <span>
-          {stage.state === "running" || stage.state === "failed"
+          {stage.state === "running" ||
+          stage.state === "failed" ||
+          (stage.id === "verification" && stage.state === "pending")
             ? stage.message
             : copy.description}
         </span>
-        {stage.id === "integration" && stage.detectedAiClients?.length ? (
-          <span className="koed-setup-clients" aria-label="Detected AI Clients">
-            {stage.detectedAiClients.map((client) => (
-              <span key={client}>{client} detected</span>
-            ))}
-          </span>
-        ) : null}
         {stage.state === "running" &&
         stage.completedBytes !== null &&
         stage.totalBytes !== null ? (
@@ -214,12 +228,18 @@ export function SetupChecklist({
     }
   };
 
-  const progress = useMemo(
-    () => (snapshot ? overallProgress(snapshot) : 0),
+  const stages = useMemo(
+    () => (snapshot ? normalizeSetupStages(snapshot.stages) : []),
     [snapshot]
   );
+  const progress = useMemo(
+    () => (snapshot ? overallProgress({ ...snapshot, stages }) : 0),
+    [snapshot, stages]
+  );
   const running = snapshot?.state === "running";
-  const complete = snapshot?.state === "complete";
+  const complete =
+    snapshot?.state === "complete" &&
+    stages.every(({ state }) => state === "complete");
   const failed = snapshot?.state === "failed";
 
   if (showTrust) {
@@ -245,10 +265,7 @@ export function SetupChecklist({
         <header className="koed-setup-header">
           <div>
             <h1 id="koed-setup-title">Set up Koed</h1>
-            <p>
-              Koed will prepare Personal Memory and local core services.
-              Detected AI Client setup remains optional.
-            </p>
+            <p>Koed will prepare Personal Memory and local core services.</p>
           </div>
           {!running ? (
             <Button
@@ -285,7 +302,7 @@ export function SetupChecklist({
               <span style={{ inlineSize: `${progress * 100}%` }} />
             </div>
             <ol className="koed-setup-list">
-              {snapshot.stages.map((stage) => (
+              {stages.map((stage) => (
                 <SetupStageRow key={stage.id} stage={stage} />
               ))}
             </ol>
@@ -357,6 +374,40 @@ const onboardingClients: readonly {
   { id: "pi", label: "Pi" }
 ];
 
+const formatClientList = (labels: string[]): string => {
+  if (labels.length < 2) return labels[0] ?? "";
+  if (labels.length === 2) return labels.join(" and ");
+  return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
+};
+
+const capabilityStatus = (
+  support: "supported" | "unsupported",
+  readiness:
+    | "ready"
+    | "not_ready"
+    | "unauthenticated"
+    | "unavailable"
+    | "stale"
+    | "unknown"
+): { className: string; label: string } => {
+  if (support === "unsupported") {
+    return { className: "is-unsupported", label: "Unsupported" };
+  }
+  if (readiness === "ready") {
+    return { className: "is-ready", label: "Ready" };
+  }
+  if (readiness === "unknown") {
+    return { className: "is-unknown", label: "Unknown" };
+  }
+  const labels = {
+    not_ready: "Not ready",
+    unauthenticated: "Sign-in required",
+    unavailable: "Unavailable",
+    stale: "Status stale"
+  } as const;
+  return { className: "is-attention", label: labels[readiness] };
+};
+
 const clientCommand = (
   id: OnboardingClientId,
   status: KoedServerStatus | null
@@ -414,13 +465,22 @@ function AiClientSetup({
   const [activeClient, setActiveClient] = useState<OnboardingClientId | null>(
     null
   );
-  const [consentOpen, setConsentOpen] = useState(false);
   const [results, setResults] = useState<
     Partial<Record<OnboardingClientId, AiClientSetupResult>>
   >({});
   const resultSummaryRef = useRef<HTMLUListElement>(null);
-  const programmaticClose = useRef(false);
   const confirming = useRef(false);
+
+  const consentedClientLabels = useMemo(
+    () =>
+      onboardingClients
+        .filter(
+          ({ id }) =>
+            selected.has(id) && !clientCommand(id, status).startsWith("check_")
+        )
+        .map(({ label }) => label),
+    [selected, status]
+  );
 
   const toggle = useCallback((id: OnboardingClientId) => {
     setSelected((current) => {
@@ -433,7 +493,6 @@ function AiClientSetup({
 
   const finish = useCallback(() => {
     if (busyCommand || activeClient !== null || queue.length > 0) return;
-    setConsentOpen(false);
     onComplete();
   }, [activeClient, busyCommand, onComplete, queue.length]);
 
@@ -458,7 +517,6 @@ function AiClientSetup({
     }
     setQueue(next);
     setActiveClient(next[0] ?? null);
-    setConsentOpen(true);
   }, [activeClient, busyCommand, finish, selected]);
 
   const completeCurrent = useCallback(
@@ -466,24 +524,15 @@ function AiClientSetup({
       setResults((current) => ({ ...current, [id]: result }));
       const remaining = queue.slice(1);
       setQueue(remaining);
-      const next = remaining[0];
-      if (!next) {
-        setActiveClient(null);
-        setConsentOpen(false);
-        return;
-      }
-      setActiveClient(next);
-      setConsentOpen(true);
+      setActiveClient(remaining[0] ?? null);
     },
-    [finish, queue]
+    [queue]
   );
 
   const confirm = useCallback(async () => {
     if (!activeClient || confirming.current) return;
     confirming.current = true;
     const id = activeClient;
-    programmaticClose.current = true;
-    setConsentOpen(false);
     const command = clientCommand(id, status);
     try {
       const operationResult = await statusStore.run<unknown>(
@@ -517,18 +566,13 @@ function AiClientSetup({
         error: cause instanceof Error ? cause.message : String(cause)
       });
     } finally {
-      programmaticClose.current = false;
       confirming.current = false;
     }
   }, [activeClient, completeCurrent, status, statusStore]);
 
-  const cancelCurrent = useCallback(() => {
-    if (!activeClient) return;
-    programmaticClose.current = true;
-    setConsentOpen(false);
-    completeCurrent(activeClient, { state: "skipped" });
-    programmaticClose.current = false;
-  }, [activeClient, completeCurrent]);
+  useEffect(() => {
+    if (activeClient) void confirm();
+  }, [activeClient]);
 
   return (
     <main className="koed-onboarding">
@@ -539,11 +583,7 @@ function AiClientSetup({
         <header className="koed-setup-header">
           <div>
             <h1 id="koed-client-setup-title">Connect AI Clients</h1>
-            <p>
-              Core Koed setup is complete. Choose clients independently.
-              Detection only reports availability; Koed never selects one for
-              you.
-            </p>
+            <p>Core setup is complete. Choose which AI clients to connect.</p>
           </div>
         </header>
         <fieldset
@@ -551,13 +591,22 @@ function AiClientSetup({
           className="koed-client-fieldset"
           disabled={busyCommand !== null || activeClient !== null}
         >
-          <legend id="koed-client-setup-description">
+          <legend className="koed-sr-only" id="koed-client-setup-description">
             Select AI Clients to set up or verify
           </legend>
           <div aria-label="AI Client choices" className="koed-client-grid">
             {onboardingClients.map(({ id, label }) => {
               const readiness = status?.aiClients?.[id];
               const detected = readiness?.installed.state === "healthy";
+              const capabilityLabel = (capabilityId: string) =>
+                capabilityId === "automatic_capture"
+                  ? "Auto-capture"
+                  : capabilityId === "mcp_recall"
+                    ? "MCP Recall"
+                    : capabilityId === "local_synthesis"
+                      ? "Local Synthesis"
+                      : "Managed Conversation";
+              const seenCapabilityLabels = new Set<string>();
               const capabilitySummaries =
                 readiness?.capabilities
                   .filter(
@@ -569,62 +618,163 @@ function AiClientSetup({
                         "local_synthesis"
                       ].includes(capability.id)
                   )
+                  .filter((capability) => {
+                    const capLabel = capabilityLabel(capability.id);
+                    if (seenCapabilityLabels.has(capLabel)) return false;
+                    seenCapabilityLabels.add(capLabel);
+                    return true;
+                  })
                   .slice(0, 5) ?? [];
+              const authLabel =
+                readiness?.authentication === "authenticated"
+                  ? "Authenticated"
+                  : readiness?.authentication === "unauthenticated"
+                    ? "Unauthenticated"
+                    : "Auth unknown";
+              const metaLine = detected
+                ? `${readiness?.version ? `v${readiness.version}` : "Version unknown"} · ${authLabel}`
+                : "Not installed";
+              const result = results[id];
+              const isActive = activeClient === id;
+              const isQueued = !isActive && queue.includes(id);
+              const cardState = result
+                ? result.state === "failed"
+                  ? "done-failed"
+                  : "done"
+                : isActive
+                  ? "active"
+                  : isQueued
+                    ? "queued"
+                    : undefined;
+              const pillClass = result
+                ? result.state === "failed"
+                  ? "is-failed"
+                  : "is-success"
+                : isActive
+                  ? "is-active"
+                  : isQueued
+                    ? "is-queued"
+                    : detected
+                      ? "is-on"
+                      : "is-off";
+              const pillText = result
+                ? result.state === "failed"
+                  ? "Failed"
+                  : result.state === "configured"
+                    ? "Configured"
+                    : result.state === "ready"
+                      ? "Ready"
+                      : "Skipped"
+                : isActive
+                  ? "Setting up…"
+                  : isQueued
+                    ? "Queued"
+                    : detected
+                      ? "Detected"
+                      : "Not found";
               return (
                 <label
                   className="koed-client-card"
                   data-selected={selected.has(id)}
+                  data-state={cardState}
                   key={id}
                 >
-                  <input
-                    checked={selected.has(id)}
-                    onChange={() => toggle(id)}
-                    type="checkbox"
-                  />
-                  <strong>{label}</strong>
-                  <span>{detected ? "Available" : "Not detected"}</span>
-                  <span>
-                    Installed: {detected ? "Available" : "Unavailable"}
-                  </span>
-                  <span>Version: {readiness?.version ?? "Unknown"}</span>
-                  <span>
-                    Auth:{" "}
-                    {readiness?.authentication === "authenticated"
-                      ? "Authenticated"
-                      : readiness?.authentication === "unauthenticated"
-                        ? "Unauthenticated"
-                        : "Unknown"}
-                  </span>
-                  {capabilitySummaries.map((capability) => (
-                    <span key={capability.id}>
-                      {capability.id === "automatic_capture"
-                        ? "Automatic capture"
-                        : capability.id === "mcp_recall"
-                          ? "MCP Recall"
-                          : capability.id === "local_synthesis"
-                            ? "Local Synthesis"
-                            : "Managed Conversation"}
-                      :{" "}
-                      {capability.support === "unsupported"
-                        ? "Unsupported"
-                        : capability.readiness === "ready"
-                          ? "Ready"
-                          : capability.readiness === "unknown"
-                            ? "Unknown"
-                            : "Needs setup"}
+                  <span className="koed-client-head">
+                    <input
+                      checked={selected.has(id)}
+                      onChange={() => toggle(id)}
+                      type="checkbox"
+                    />
+                    <strong>{label}</strong>
+                    <span className={`koed-client-pill ${pillClass}`}>
+                      {isActive ? (
+                        <Spinner
+                          aria-hidden="true"
+                          className="koed-client-spin"
+                        />
+                      ) : null}
+                      {pillText}
                     </span>
-                  ))}
+                  </span>
+                  <span className="koed-client-meta">{metaLine}</span>
+                  {result?.error ? (
+                    <span className="koed-client-error">{result.error}</span>
+                  ) : null}
+                  <span className="koed-client-caps">
+                    {capabilitySummaries.map((capability) => {
+                      const capLabel = capabilityLabel(capability.id);
+                      const capStatus = capabilityStatus(
+                        capability.support,
+                        capability.readiness
+                      );
+                      return (
+                        <span
+                          aria-label={`${capLabel}: ${capStatus.label}`}
+                          className="koed-client-cap"
+                          key={capability.id}
+                          title={`${capLabel}: ${capStatus.label}`}
+                        >
+                          <span
+                            aria-hidden="true"
+                            className={`koed-client-cap-dot ${capStatus.className}`}
+                          />
+                          {capLabel}
+                        </span>
+                      );
+                    })}
+                  </span>
                 </label>
               );
             })}
           </div>
+          <div
+            aria-label="Capability status legend"
+            className="koed-client-cap-legend"
+          >
+            <span>
+              <span
+                aria-hidden="true"
+                className="koed-client-cap-dot is-ready"
+              />
+              Ready
+            </span>
+            <span>
+              <span
+                aria-hidden="true"
+                className="koed-client-cap-dot is-attention"
+              />
+              Needs attention
+            </span>
+            <span>
+              <span
+                aria-hidden="true"
+                className="koed-client-cap-dot is-unknown"
+              />
+              Unknown
+            </span>
+            <span>
+              <span
+                aria-hidden="true"
+                className="koed-client-cap-dot is-unsupported"
+              />
+              Unsupported
+            </span>
+          </div>
         </fieldset>
+        {consentedClientLabels.length > 0 ? (
+          <p className="koed-client-consent">
+            Continue allows Koed to change only its own integration block and
+            package for {formatClientList(consentedClientLabels)}. Existing
+            profile settings, credentials, and other AI Clients remain
+            untouched.
+          </p>
+        ) : null}
         {Object.keys(results).length > 0 ? (
           <ul
             aria-atomic="true"
             aria-label="AI Client setup results"
             aria-live="polite"
-            className="koed-setup-results"
+            className="koed-sr-only"
             ref={resultSummaryRef}
             tabIndex={-1}
           >
@@ -637,8 +787,15 @@ function AiClientSetup({
             ))}
           </ul>
         ) : null}
-        {busyCommand ? (
-          <p role="status">Setting up or checking selected AI Client…</p>
+        {activeClient ? (
+          <p className="koed-sr-only" role="status">
+            Setting up{" "}
+            {
+              onboardingClients.find((client) => client.id === activeClient)
+                ?.label
+            }
+            …
+          </p>
         ) : null}
         <footer className="koed-setup-footer">
           <Button
@@ -656,6 +813,10 @@ function AiClientSetup({
             </Button>
           ) : (
             <Button
+              aria-label={
+                activeClient !== null ? "Setting up AI Client" : undefined
+              }
+              className="koed-client-primary-action"
               disabled={
                 busyCommand !== null ||
                 activeClient !== null ||
@@ -663,52 +824,15 @@ function AiClientSetup({
               }
               onClick={begin}
             >
-              Continue
+              {activeClient !== null ? (
+                <Spinner aria-hidden="true" />
+              ) : (
+                "Continue"
+              )}
             </Button>
           )}
         </footer>
       </section>
-      <Dialog
-        onOpenChange={(open) => {
-          if (!open && !programmaticClose.current) cancelCurrent();
-        }}
-        open={consentOpen}
-      >
-        <DialogPopup>
-          <DialogHeader>
-            <DialogTitle>
-              {status?.aiClients?.[activeClient ?? "codex"]?.profile.state ===
-              "healthy"
-                ? "Verify"
-                : "Set up"}{" "}
-              {
-                onboardingClients.find((client) => client.id === activeClient)
-                  ?.label
-              }
-              ?
-            </DialogTitle>
-            <DialogDescription>
-              Koed will change only its own integration block and package for
-              this AI Client. Existing profile settings, credentials, and other
-              clients remain untouched.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <DialogClose render={<Button variant="outline" />}>
-              Cancel
-            </DialogClose>
-            <Button
-              disabled={busyCommand !== null}
-              onClick={() => void confirm()}
-            >
-              {status?.aiClients?.[activeClient ?? "codex"]?.profile.state ===
-              "healthy"
-                ? "Check integration"
-                : "Allow and set up"}
-            </Button>
-          </DialogFooter>
-        </DialogPopup>
-      </Dialog>
     </main>
   );
 }

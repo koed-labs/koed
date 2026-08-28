@@ -6,15 +6,25 @@ import {
   type PrivacyClassificationRepository,
   type SharedMemoryDecryptedSemanticTarget,
   type SharedMemoryPendingSemanticTarget,
+  type SharedMemorySemanticPrivacyBacklogDiagnostics,
+  sharedMemorySemanticPrivacyWorkIdentity,
+  type SharedMemorySemanticPrivacyClaim,
   type SharedMemoryRepository
 } from "@koed/db";
 import {
   crossIdentitySyncDigest,
+  privacyClassificationExpectedManifestHash,
+  privacyClassificationOrderedInputHash,
+  privacyClassificationResultManifestHash,
   reconstructSharedMemorySemanticSanitizedItems,
   PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
   PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT,
+  PRIVACY_CLASSIFICATION_CACHE_FIELD_LIMIT,
+  PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES,
+  PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES,
   privacyClassificationResponseSchema,
   sanitizeTextWithPrivacySpans,
+  SharedMemorySemanticResourceLimitError,
   PrivacyServiceUnavailableError,
   type EnvelopeEncryptionProvider,
   type PrivacyClassifiedField,
@@ -30,7 +40,10 @@ const WAKE_CHANNELS = [
   "koed_team_conversation_source",
   "koed_shared_memory_privacy"
 ] as const;
-const PRIVACY_CLASSIFICATION_CACHE_FIELD_LIMIT = 16;
+const CLAIM_LEASE_MS = 120_000;
+const CLAIM_HEARTBEAT_MS = Math.floor(CLAIM_LEASE_MS / 3);
+const MAX_INFERENCE_REQUESTS_PER_PASS = 8;
+const MAX_CLASSIFIED_BYTES_PER_PASS = 4 * 1024 * 1024;
 
 interface SharedMemoryPrivacyLogger {
   info(bindings: Record<string, unknown>, message: string): void;
@@ -41,19 +54,29 @@ type SharedMemoryPrivacyRepository = Pick<
   SharedMemoryRepository,
   | "listPendingSemanticPrivacyTargets"
   | "readPendingSemanticPrivacyTarget"
+  | "claimSemanticPrivacyTarget"
+  | "renewSemanticPrivacyClaim"
+  | "releaseSemanticPrivacyClaim"
+  | "initializeSemanticPrivacyManifest"
+  | "attachSemanticPrivacyChunkResult"
+  | "listSemanticPrivacyManifest"
   | "storeSanitizedSemanticPreview"
   | "markSemanticPrivacyTargetFailed"
   | "deferSemanticPrivacyTarget"
-  | "getNextSemanticPrivacyRetryAt"
+  | "getNextSemanticPrivacyWorkAt"
+  | "tryAcquireSemanticPrivacyFinalizationLease"
   | "invalidateStaleSemanticPreviews"
   | "reconcileReadySemanticRepresentations"
->;
+> & {
+  getSemanticPrivacyBacklogDiagnostics?: () => Promise<SharedMemorySemanticPrivacyBacklogDiagnostics>;
+};
 
 type ClassificationRepository = Pick<
   PrivacyClassificationRepository,
   | "getActiveClassifierGeneration"
   | "getLocalDeploymentIdentityId"
   | "resolveEffectiveContentPolicy"
+  | "classificationInputIdentity"
   | "findCachedClassification"
   | "storeClassificationResult"
   | "readClassificationResult"
@@ -69,6 +92,18 @@ export interface SharedMemoryPrivacyMaterializationResult {
   materialized: number;
   materializationSkipped: number;
   failed: number;
+  yielded: number;
+  chunksAttached: number;
+  resumedChunks: number;
+  classifiedBytes: number;
+  totalFields: number;
+  cacheChunks: number;
+  privacyServiceDurationMs: number;
+  classificationDurationMs: number;
+  finalizationDurationMs: number;
+  maxFinalizationHeapDeltaBytes: number;
+  maxQueueAgeMs: number;
+  maxClaimDurationMs: number;
 }
 
 export interface SharedMemoryPrivacyMaterializationService {
@@ -86,12 +121,23 @@ export interface SharedMemoryPrivacyMaterializationServiceOptions {
   logger: SharedMemoryPrivacyLogger;
   targetLimit?: number;
   reconnectBaseMs?: number;
+  claimantId?: string;
 }
 
 class SharedMemoryPrivacyMaterializationError extends Error {
-  constructor(readonly code: string) {
+  constructor(
+    readonly code: string,
+    readonly failedChunkIndex: number | null = null
+  ) {
     super("Shared Memory privacy materialization failed");
     this.name = code;
+  }
+}
+
+class SharedMemoryPrivacyFinalizationBusyError extends Error {
+  constructor() {
+    super("Shared Memory privacy finalization capacity is busy");
+    this.name = "SharedMemoryPrivacyFinalizationBusyError";
   }
 }
 
@@ -151,10 +197,7 @@ const sameTargetBinding = (
 const exactClassificationFields = (
   loaded: SharedMemoryDecryptedSemanticTarget
 ): Array<{ path: string; text: string }> => {
-  if (
-    loaded.classificationFields.length === 0 ||
-    loaded.classificationFields.length > 2_048
-  ) {
+  if (loaded.classificationFields.length === 0) {
     throw new SharedMemoryPrivacyMaterializationError(
       "SharedMemoryPrivacyFieldCountError"
     );
@@ -230,11 +273,14 @@ const materializeTarget = async (
   options: SharedMemoryPrivacyMaterializationServiceOptions,
   target: SharedMemoryPendingSemanticTarget,
   loaded: SharedMemoryDecryptedSemanticTarget,
+  initialClaim: SharedMemorySemanticPrivacyClaim,
   deploymentIdentityId: string,
   counters: SharedMemoryPrivacyMaterializationResult
-): Promise<void> => {
+): Promise<boolean> => {
+  const classificationStartedAt = performance.now();
   const actor = { userId: target.ownerUserId };
   const fields = exactClassificationFields(loaded);
+  counters.totalFields += fields.length;
   const policy = await options.privacyRepository.resolveEffectiveContentPolicy({
     deploymentIdentityId,
     sourceOwnerUserId: target.ownerUserId,
@@ -248,9 +294,7 @@ const materializeTarget = async (
   }
 
   const readExactClassification = async (
-    record: Awaited<
-      ReturnType<ClassificationRepository["findCachedClassification"]>
-    >,
+    record: PrivacyClassificationResultRecord | null,
     expectedFields: Array<{ path: string; text: string }>
   ): Promise<DecryptedPrivacyClassificationResult> => {
     if (!record) {
@@ -283,233 +327,507 @@ const materializeTarget = async (
     return classification;
   };
 
-  let classificationRecord =
-    await options.privacyRepository.findCachedClassification({
+  const classifier =
+    await options.privacyRepository.getActiveClassifierGeneration();
+  if (
+    !classifier ||
+    classifier.id !== target.classifierGenerationId ||
+    classifier.version !== target.classifierVersion ||
+    classifier.classifierHash !== target.classifierHash ||
+    classifier.inputContractVersion !== PRIVACY_CLASSIFICATION_CONTRACT_VERSION
+  ) {
+    throw new SharedMemoryPrivacyMaterializationError(
+      "SharedMemoryPrivacyClassifierContractError"
+    );
+  }
+  const classifierIdentity = {
+    classifierHash: classifier.classifierHash,
+    modelKey: classifier.modelKey,
+    modelRevision: classifier.modelRevision
+  };
+  const cacheChunks = batchesOf(
+    fields,
+    PRIVACY_CLASSIFICATION_CACHE_FIELD_LIMIT
+  );
+  counters.cacheChunks += cacheChunks.length;
+  const chunkBindings = cacheChunks.map((chunk, chunkIndex) => ({
+    chunkIndex,
+    firstFieldIndex: chunkIndex * PRIVACY_CLASSIFICATION_CACHE_FIELD_LIMIT,
+    fieldCount: chunk.length,
+    inputIdentityHash: options.privacyRepository.classificationInputIdentity({
       actor,
-      classifierHash: target.classifierHash,
-      fields
-    });
-  if (classificationRecord) {
-    counters.classifierCacheHits += 1;
-    counters.remaskedTargets += 1;
-  } else {
-    const classifier =
-      await options.privacyRepository.getActiveClassifierGeneration();
-    if (
-      !classifier ||
-      classifier.id !== target.classifierGenerationId ||
-      classifier.version !== target.classifierVersion ||
-      classifier.classifierHash !== target.classifierHash ||
-      classifier.inputContractVersion !==
-        PRIVACY_CLASSIFICATION_CONTRACT_VERSION
-    ) {
+      fields: chunk
+    }),
+    orderedInputHash: privacyClassificationOrderedInputHash(chunk)
+  }));
+  const expectedManifestHash = privacyClassificationExpectedManifestHash({
+    semanticPreviewId: target.id,
+    sourcePreviewHash: target.sourcePreviewHash,
+    sourceArtifactHash: target.sourceArtifactHash,
+    sourceManifestHash: target.sourceManifestHash,
+    sourceRevision: target.sourceRevision,
+    classifierGenerationId: target.classifierGenerationId,
+    classifierHash: target.classifierHash,
+    effectivePrivacyPolicyHash: target.effectivePrivacyPolicyHash,
+    fieldCount: fields.length,
+    chunks: chunkBindings
+  });
+  let claim = initialClaim;
+  const renewClaim = async (failedChunkIndex: number | null): Promise<void> => {
+    const renewed =
+      await options.sharedMemoryRepository.renewSemanticPrivacyClaim(actor, {
+        ...claim,
+        leaseMs: CLAIM_LEASE_MS
+      });
+    if (!renewed) {
       throw new SharedMemoryPrivacyMaterializationError(
-        "SharedMemoryPrivacyClassifierContractError"
+        "SharedMemoryPrivacyClaimExpiredError",
+        failedChunkIndex
       );
     }
-    const classifierIdentity = {
-      classifierHash: classifier.classifierHash,
-      modelKey: classifier.modelKey,
-      modelRevision: classifier.modelRevision
+    claim = renewed;
+  };
+  const withClaimHeartbeat = async <Result>(
+    work: () => Promise<Result>,
+    failedChunkIndex: number | null = null
+  ): Promise<Result> => {
+    await renewClaim(failedChunkIndex);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let inFlight: Promise<void> | null = null;
+    let heartbeatFailure: unknown = null;
+    const schedule = (): void => {
+      timer = setTimeout(() => {
+        timer = null;
+        inFlight = renewClaim(failedChunkIndex)
+          .catch((error: unknown) => {
+            heartbeatFailure = error;
+          })
+          .finally(() => {
+            inFlight = null;
+            if (!stopped && !heartbeatFailure) schedule();
+          });
+      }, CLAIM_HEARTBEAT_MS);
+      timer.unref?.();
     };
-    const cacheBatches = batchesOf(
-      fields,
-      PRIVACY_CLASSIFICATION_CACHE_FIELD_LIMIT
-    );
-    const batchRecords = new Map<number, PrivacyClassificationResultRecord>();
-    const classifiedBatches = new Map<number, PrivacyClassifiedField[]>();
-    const missingBatchIndexes: number[] = [];
-    for (const [batchIndex, batch] of cacheBatches.entries()) {
-      const batchRecord =
-        await options.privacyRepository.findCachedClassification({
-          actor,
-          classifierHash: target.classifierHash,
-          fields: batch
-        });
-      if (batchRecord) {
-        counters.classifierCacheHits += 1;
-        batchRecords.set(batchIndex, batchRecord);
-        const cached = await readExactClassification(batchRecord, batch);
-        classifiedBatches.set(
-          batchIndex,
-          cached.fields.map((field, index) => ({
-            path: field.path,
-            inputSha256: field.inputSha256,
-            inputByteLength: field.inputByteLength,
-            maskedText: batch[index]!.text,
-            decodedTextMatchesInput: true as const,
-            spans: field.spans
-          }))
-        );
-      } else {
-        missingBatchIndexes.push(batchIndex);
-      }
+    schedule();
+    try {
+      const result = await work();
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      await Promise.resolve(inFlight);
+      if (heartbeatFailure) throw heartbeatFailure;
+      await renewClaim(failedChunkIndex);
+      return result;
+    } finally {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      await Promise.resolve(inFlight);
     }
-
-    const inferredFields = new Map<string, PrivacyClassifiedField>();
-    const missingFields = missingBatchIndexes.flatMap(
-      (batchIndex) => cacheBatches[batchIndex]!
+  };
+  let manifest =
+    await options.sharedMemoryRepository.initializeSemanticPrivacyManifest(
+      actor,
+      {
+        claim,
+        expectedManifestHash,
+        fieldCount: fields.length,
+        fieldByteCount: fields.reduce(
+          (total, field) => total + Buffer.byteLength(field.text, "utf8"),
+          0
+        ),
+        chunks: chunkBindings
+      }
     );
-    for (const inferenceBatch of batchesOf(
-      missingFields,
-      PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT
-    )) {
-      counters.classifierInferenceCalls += 1;
-      const response = privacyClassificationResponseSchema.safeParse(
-        await options.privacyService.classify(inferenceBatch)
+  counters.resumedChunks += manifest.filter(
+    (entry) => entry.status === "ready"
+  ).length;
+
+  const packTransport = (
+    chunk: Array<{ path: string; text: string }>
+  ): Array<Array<{ path: string; text: string }>> => {
+    const groups: Array<Array<{ path: string; text: string }>> = [];
+    let current: Array<{ path: string; text: string }> = [];
+    for (const field of chunk) {
+      const candidate = [...current, field];
+      const fieldBytes = candidate.reduce(
+        (total, value) => total + Buffer.byteLength(value.text, "utf8"),
+        0
+      );
+      const bodyBytes = Buffer.byteLength(
+        JSON.stringify({
+          schemaVersion: 1,
+          inputContractVersion: PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
+          fields: candidate
+        }),
+        "utf8"
       );
       if (
-        !response.success ||
-        response.data.classifier.classifierHash !== classifier.classifierHash ||
-        response.data.classifier.modelKey !== classifier.modelKey ||
-        response.data.classifier.modelRevision !== classifier.modelRevision ||
-        response.data.fields.length !== inferenceBatch.length ||
-        response.data.fields.some((field, index) => {
-          const expected = inferenceBatch[index];
-          return (
-            !expected ||
-            field.path !== expected.path ||
-            field.inputSha256 !== sha256(expected.text) ||
-            field.inputByteLength !== Buffer.byteLength(expected.text, "utf8")
-          );
-        })
+        current.length > 0 &&
+        (candidate.length > PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT ||
+          fieldBytes > PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES ||
+          bodyBytes > PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES)
       ) {
-        throw new SharedMemoryPrivacyMaterializationError(
-          "SharedMemoryPrivacyClassifierContractError"
-        );
-      }
-      for (const field of response.data.fields) {
-        inferredFields.set(field.path, field);
+        groups.push(current);
+        current = [field];
+      } else {
+        current = candidate;
       }
     }
+    if (current.length > 0) groups.push(current);
+    return groups;
+  };
 
-    for (const batchIndex of missingBatchIndexes) {
-      const batch = cacheBatches[batchIndex]!;
-      const responseFields = batch.map((field) =>
-        inferredFields.get(field.path)
-      );
-      if (responseFields.some((field) => field === undefined)) {
-        throw new SharedMemoryPrivacyMaterializationError(
-          "SharedMemoryPrivacyClassifierContractError"
-        );
-      }
-      const batchRecord =
-        await options.privacyRepository.storeClassificationResult({
-          actor,
-          provider: options.classificationEncryptionProvider,
-          fields: batch,
-          response: {
-            schemaVersion: 1,
-            inputContractVersion: PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
-            classifier: classifierIdentity,
-            fields: responseFields as PrivacyClassifiedField[]
-          }
-        });
-      batchRecords.set(batchIndex, batchRecord);
-      const stored = await readExactClassification(batchRecord, batch);
-      classifiedBatches.set(
-        batchIndex,
-        stored.fields.map((field, index) => ({
-          path: field.path,
-          inputSha256: field.inputSha256,
-          inputByteLength: field.inputByteLength,
-          maskedText: batch[index]!.text,
-          decodedTextMatchesInput: true as const,
-          spans: field.spans
-        }))
-      );
-    }
-
-    const classifiedFields = cacheBatches.flatMap(
-      (_batch, batchIndex) => classifiedBatches.get(batchIndex) ?? []
-    );
-    if (
-      classifiedFields.length !== fields.length ||
-      batchRecords.size !== cacheBatches.length
-    ) {
+  const attachRecord = async (
+    entry: (typeof manifest)[number],
+    record: PrivacyClassificationResultRecord
+  ): Promise<void> => {
+    const chunk = cacheChunks[entry.chunkIndex];
+    const binding = chunkBindings[entry.chunkIndex];
+    if (!chunk || !binding) {
       throw new SharedMemoryPrivacyMaterializationError(
-        "SharedMemoryPrivacyClassifierContractError"
+        "SharedMemoryPrivacyManifestBindingError",
+        entry.chunkIndex
       );
     }
-    if (cacheBatches.length === 1) {
-      classificationRecord = batchRecords.get(0) ?? null;
+    let classification: DecryptedPrivacyClassificationResult;
+    try {
+      classification = await readExactClassification(record, chunk);
+    } catch (error) {
+      if (error instanceof SharedMemoryPrivacyMaterializationError) {
+        throw new SharedMemoryPrivacyMaterializationError(
+          error.code,
+          entry.chunkIndex
+        );
+      }
+      throw error;
+    }
+    if (!classification.record.payloadBindingHash) {
+      throw new SharedMemoryPrivacyMaterializationError(
+        "SharedMemoryPrivacyClassificationBindingError",
+        entry.chunkIndex
+      );
+    }
+    await renewClaim(entry.chunkIndex);
+    await options.sharedMemoryRepository.attachSemanticPrivacyChunkResult(
+      actor,
+      {
+        claim,
+        chunkIndex: entry.chunkIndex,
+        inputIdentityHash: binding.inputIdentityHash,
+        orderedInputHash: binding.orderedInputHash,
+        classificationResultId: classification.record.id,
+        classificationPayloadBindingHash:
+          classification.record.payloadBindingHash
+      }
+    );
+    counters.chunksAttached += 1;
+    await renewClaim(entry.chunkIndex);
+  };
+
+  const missing: Array<(typeof manifest)[number]> = [];
+  for (const entry of manifest) {
+    if (entry.status === "ready") continue;
+    const chunk = cacheChunks[entry.chunkIndex]!;
+    const cached = await options.privacyRepository.findCachedClassification({
+      actor,
+      classifierHash: target.classifierHash,
+      fields: chunk
+    });
+    if (cached) {
+      counters.classifierCacheHits += 1;
+      counters.remaskedTargets += 1;
+      await attachRecord(entry, cached);
     } else {
-      classificationRecord =
-        await options.privacyRepository.storeClassificationResult({
-          actor,
-          provider: options.classificationEncryptionProvider,
-          fields,
-          response: {
-            schemaVersion: 1,
-            inputContractVersion: PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
-            classifier: classifierIdentity,
-            fields: classifiedFields
-          }
-        });
+      missing.push(entry);
     }
   }
 
-  const classification = await readExactClassification(
-    classificationRecord,
-    fields
-  );
-
-  const maskedFields = classification.fields.map((classified, index) => {
-    const expected = loaded.classificationFields[index];
+  const selected: Array<(typeof manifest)[number]> = [];
+  let selectedBytes = 0;
+  for (const entry of missing) {
+    const chunk = cacheChunks[entry.chunkIndex]!;
+    const chunkBytes = chunk.reduce(
+      (total, field) => total + Buffer.byteLength(field.text, "utf8"),
+      0
+    );
+    const candidate = [...selected, entry];
+    const groups = packTransport(
+      candidate.flatMap((value) => cacheChunks[value.chunkIndex]!)
+    );
     if (
-      !expected ||
-      classified.path !== expected.path ||
-      classified.inputSha256 !== expected.inputSha256 ||
-      classified.inputByteLength !== expected.inputByteLength
+      selected.length > 0 &&
+      (groups.length > MAX_INFERENCE_REQUESTS_PER_PASS ||
+        selectedBytes + chunkBytes > MAX_CLASSIFIED_BYTES_PER_PASS)
+    ) {
+      break;
+    }
+    selected.push(entry);
+    selectedBytes += chunkBytes;
+  }
+  const entryByPath = new Map<string, (typeof manifest)[number]>();
+  const inferredByChunk = new Map<
+    number,
+    Map<string, PrivacyClassifiedField>
+  >();
+  for (const entry of selected) {
+    inferredByChunk.set(entry.chunkIndex, new Map());
+    for (const field of cacheChunks[entry.chunkIndex]!) {
+      entryByPath.set(field.path, entry);
+    }
+  }
+  const attachedChunkIndexes = new Set<number>();
+  for (const group of packTransport(
+    selected.flatMap((entry) => cacheChunks[entry.chunkIndex]!)
+  )) {
+    counters.classifierInferenceCalls += 1;
+    const serviceStartedAt = performance.now();
+    const response = privacyClassificationResponseSchema.safeParse(
+      await withClaimHeartbeat(
+        () => options.privacyService.classify(group),
+        entryByPath.get(group[0]!.path)?.chunkIndex ?? null
+      )
+    );
+    counters.privacyServiceDurationMs += performance.now() - serviceStartedAt;
+    if (
+      !response.success ||
+      response.data.classifier.classifierHash !== classifier.classifierHash ||
+      response.data.classifier.modelKey !== classifier.modelKey ||
+      response.data.classifier.modelRevision !== classifier.modelRevision ||
+      response.data.fields.length !== group.length ||
+      response.data.fields.some((field, index) => {
+        const expected = group[index];
+        return (
+          !expected ||
+          field.path !== expected.path ||
+          field.inputSha256 !== sha256(expected.text) ||
+          field.inputByteLength !== Buffer.byteLength(expected.text, "utf8")
+        );
+      })
     ) {
       throw new SharedMemoryPrivacyMaterializationError(
-        "SharedMemoryPrivacyClassificationBindingError"
+        "SharedMemoryPrivacyClassifierContractError",
+        entryByPath.get(group[0]!.path)?.chunkIndex ?? null
       );
     }
-    return {
-      path: classified.path,
-      inputSha256: classified.inputSha256,
-      inputByteLength: classified.inputByteLength,
-      sanitizedText: sanitizeTextWithPrivacySpans({
-        text: expected.text,
-        spans: classified.spans,
-        policy: policy.labels
-      }).text
-    };
-  });
-  const items = reconstructSharedMemorySemanticSanitizedItems(
-    loaded.preview.items,
-    maskedFields
-  );
-  const stored =
-    await options.sharedMemoryRepository.storeSanitizedSemanticPreview(actor, {
-      semanticPreviewId: target.id,
-      expectedSourcePreviewHash: target.sourcePreviewHash,
-      expectedSourceArtifactHash: target.sourceArtifactHash,
-      expectedSourceManifestHash: target.sourceManifestHash,
-      expectedSourceRevision: target.sourceRevision,
-      expectedSourceItemIdentityHash: loaded.sourceItemIdentityHash,
-      expectedClassifierHash: target.classifierHash,
-      expectedEffectivePrivacyPolicyHash: target.effectivePrivacyPolicyHash,
-      classificationResultId: classification.record.id,
-      items,
-      sanitizedContentHash: crossIdentitySyncDigest(items)
-    });
-  if (
-    stored.id !== target.id ||
-    stored.status !== "ready" ||
-    stored.sourcePreviewHash !== target.sourcePreviewHash ||
-    stored.sourceArtifactHash !== target.sourceArtifactHash ||
-    stored.sourceManifestHash !== target.sourceManifestHash ||
-    stored.sourceRevision !== target.sourceRevision ||
-    stored.sourceItemIdentityHash !== loaded.sourceItemIdentityHash ||
-    stored.classifierHash !== target.classifierHash ||
-    stored.effectivePrivacyPolicyHash !== target.effectivePrivacyPolicyHash ||
-    stored.classificationResultId !== classification.record.id
-  ) {
-    throw new SharedMemoryPrivacyMaterializationError(
-      "SharedMemoryPrivacyReadyBindingError"
+    counters.classifiedBytes += group.reduce(
+      (total, field) => total + Buffer.byteLength(field.text, "utf8"),
+      0
     );
+    for (const field of response.data.fields) {
+      const entry = entryByPath.get(field.path);
+      if (!entry) {
+        throw new SharedMemoryPrivacyMaterializationError(
+          "SharedMemoryPrivacyClassifierContractError"
+        );
+      }
+      inferredByChunk.get(entry.chunkIndex)!.set(field.path, field);
+    }
+    for (const entry of selected) {
+      if (attachedChunkIndexes.has(entry.chunkIndex)) continue;
+      const chunk = cacheChunks[entry.chunkIndex]!;
+      const inferred = inferredByChunk.get(entry.chunkIndex)!;
+      if (inferred.size !== chunk.length) continue;
+      const responseFields = chunk.map((field) => inferred.get(field.path));
+      if (responseFields.some((field) => !field)) {
+        throw new SharedMemoryPrivacyMaterializationError(
+          "SharedMemoryPrivacyClassifierContractError",
+          entry.chunkIndex
+        );
+      }
+      const record = await options.privacyRepository.storeClassificationResult({
+        actor,
+        provider: options.classificationEncryptionProvider,
+        fields: chunk,
+        response: {
+          schemaVersion: 1,
+          inputContractVersion: PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
+          classifier: classifierIdentity,
+          fields: responseFields as PrivacyClassifiedField[]
+        }
+      });
+      await attachRecord(entry, record);
+      attachedChunkIndexes.add(entry.chunkIndex);
+    }
+  }
+
+  manifest = await options.sharedMemoryRepository.listSemanticPrivacyManifest(
+    actor,
+    { claim }
+  );
+  const nextPending = manifest.find((entry) => entry.status === "pending");
+  if (nextPending) {
+    const released =
+      await options.sharedMemoryRepository.releaseSemanticPrivacyClaim(actor, {
+        ...claim,
+        completed: false,
+        nextChunkIndex: nextPending.chunkIndex
+      });
+    if (!released) {
+      throw new SharedMemoryPrivacyMaterializationError(
+        "SharedMemoryPrivacyClaimExpiredError"
+      );
+    }
+    counters.classificationDurationMs +=
+      performance.now() - classificationStartedAt;
+    return false;
+  }
+
+  const finalizationLease =
+    await options.sharedMemoryRepository.tryAcquireSemanticPrivacyFinalizationLease();
+  if (!finalizationLease) {
+    await options.sharedMemoryRepository.releaseSemanticPrivacyClaim(actor, {
+      ...claim,
+      completed: false,
+      nextChunkIndex: manifest.length
+    });
+    throw new SharedMemoryPrivacyFinalizationBusyError();
+  }
+  const finalizationStartedAt = performance.now();
+  const finalizationHeapBefore = process.memoryUsage().heapUsed;
+  const sampleFinalizationHeap = (): void => {
+    counters.maxFinalizationHeapDeltaBytes = Math.max(
+      counters.maxFinalizationHeapDeltaBytes,
+      Math.max(process.memoryUsage().heapUsed - finalizationHeapBefore, 0)
+    );
+  };
+  try {
+    const { items, resultManifestHash, sanitizedContentHash } =
+      await withClaimHeartbeat(async () => {
+        const maskedFields: Array<{
+          path: string;
+          inputSha256: string;
+          inputByteLength: number;
+          sanitizedText: string;
+        }> = [];
+        for (const entry of manifest) {
+          const chunk = cacheChunks[entry.chunkIndex]!;
+          let classification: DecryptedPrivacyClassificationResult;
+          try {
+            classification = await readExactClassification(
+              entry.classificationResultId
+                ? {
+                    id: entry.classificationResultId,
+                    ownerUserId: target.ownerUserId,
+                    classifierGenerationId: target.classifierGenerationId,
+                    classifierHash: target.classifierHash,
+                    ownerContentFingerprint: entry.inputIdentityHash,
+                    inputByteLength: 0,
+                    payloadBindingHash: entry.classificationPayloadBindingHash,
+                    spanCount: null,
+                    status: "ready",
+                    failureCode: null,
+                    createdAt: entry.createdAt,
+                    readyAt: entry.readyAt,
+                    invalidatedAt: null,
+                    invalidationReasonCode: null
+                  }
+                : null,
+              chunk
+            );
+          } catch (error) {
+            if (error instanceof SharedMemoryPrivacyMaterializationError) {
+              throw new SharedMemoryPrivacyMaterializationError(
+                error.code,
+                entry.chunkIndex
+              );
+            }
+            throw error;
+          }
+          classification.fields.forEach((classified, index) => {
+            const expected =
+              loaded.classificationFields[entry.firstFieldIndex + index];
+            if (
+              !expected ||
+              classified.path !== expected.path ||
+              classified.inputSha256 !== expected.inputSha256 ||
+              classified.inputByteLength !== expected.inputByteLength
+            ) {
+              throw new SharedMemoryPrivacyMaterializationError(
+                "SharedMemoryPrivacyClassificationBindingError",
+                entry.chunkIndex
+              );
+            }
+            maskedFields.push({
+              path: classified.path,
+              inputSha256: classified.inputSha256,
+              inputByteLength: classified.inputByteLength,
+              sanitizedText: sanitizeTextWithPrivacySpans({
+                text: expected.text,
+                spans: classified.spans,
+                policy: policy.labels
+              }).text
+            });
+          });
+        }
+        sampleFinalizationHeap();
+        const resultManifestHash = privacyClassificationResultManifestHash({
+          expectedManifestHash,
+          chunks: manifest.map((entry) => ({
+            chunkIndex: entry.chunkIndex,
+            firstFieldIndex: entry.firstFieldIndex,
+            fieldCount: entry.fieldCount,
+            inputIdentityHash: entry.inputIdentityHash,
+            orderedInputHash: entry.orderedInputHash,
+            classificationResultId: entry.classificationResultId!,
+            classificationPayloadBindingHash:
+              entry.classificationPayloadBindingHash!
+          }))
+        });
+        const items = reconstructSharedMemorySemanticSanitizedItems(
+          loaded.preview.items,
+          maskedFields
+        );
+        sampleFinalizationHeap();
+        const sanitizedContentHash = crossIdentitySyncDigest(items);
+        sampleFinalizationHeap();
+        return { items, resultManifestHash, sanitizedContentHash };
+      });
+    const stored =
+      await options.sharedMemoryRepository.storeSanitizedSemanticPreview(
+        actor,
+        {
+          semanticPreviewId: target.id,
+          expectedSourcePreviewHash: target.sourcePreviewHash,
+          expectedSourceArtifactHash: target.sourceArtifactHash,
+          expectedSourceManifestHash: target.sourceManifestHash,
+          expectedSourceRevision: target.sourceRevision,
+          expectedSourceItemIdentityHash: loaded.sourceItemIdentityHash,
+          expectedClassifierHash: target.classifierHash,
+          expectedEffectivePrivacyPolicyHash: target.effectivePrivacyPolicyHash,
+          claim,
+          expectedManifestHash,
+          expectedResultManifestHash: resultManifestHash,
+          items,
+          sanitizedContentHash
+        }
+      );
+    sampleFinalizationHeap();
+    if (
+      stored.id !== target.id ||
+      stored.status !== "ready" ||
+      stored.sourcePreviewHash !== target.sourcePreviewHash ||
+      stored.sourceArtifactHash !== target.sourceArtifactHash ||
+      stored.sourceManifestHash !== target.sourceManifestHash ||
+      stored.sourceRevision !== target.sourceRevision ||
+      stored.sourceItemIdentityHash !== loaded.sourceItemIdentityHash ||
+      stored.classifierHash !== target.classifierHash ||
+      stored.effectivePrivacyPolicyHash !== target.effectivePrivacyPolicyHash ||
+      stored.expectedManifestHash !== expectedManifestHash ||
+      stored.resultManifestHash !== resultManifestHash
+    ) {
+      throw new SharedMemoryPrivacyMaterializationError(
+        "SharedMemoryPrivacyReadyBindingError"
+      );
+    }
+    counters.classificationDurationMs +=
+      performance.now() - classificationStartedAt;
+    counters.finalizationDurationMs +=
+      performance.now() - finalizationStartedAt;
+    return true;
+  } finally {
+    await finalizationLease.release();
   }
 };
 
@@ -522,17 +840,46 @@ const emptyResult = (): SharedMemoryPrivacyMaterializationResult => ({
   ready: 0,
   materialized: 0,
   materializationSkipped: 0,
-  failed: 0
+  failed: 0,
+  yielded: 0,
+  chunksAttached: 0,
+  resumedChunks: 0,
+  classifiedBytes: 0,
+  totalFields: 0,
+  cacheChunks: 0,
+  privacyServiceDurationMs: 0,
+  classificationDurationMs: 0,
+  finalizationDurationMs: 0,
+  maxFinalizationHeapDeltaBytes: 0,
+  maxQueueAgeMs: 0,
+  maxClaimDurationMs: 0
 });
 
 export const createSharedMemoryPrivacyMaterializationService = (
   options: SharedMemoryPrivacyMaterializationServiceOptions
 ): SharedMemoryPrivacyMaterializationService => {
   const targetLimit = Math.min(Math.max(options.targetLimit ?? 32, 1), 100);
+  let capabilitiesPromise: ReturnType<
+    PrivacyServiceClient["capabilities"]
+  > | null = null;
+  const validateCapabilities = async (): Promise<void> => {
+    capabilitiesPromise ??= options.privacyService.capabilities();
+    try {
+      await capabilitiesPromise;
+    } catch (error) {
+      capabilitiesPromise = null;
+      throw error;
+    }
+  };
 
   const processOnce =
     async (): Promise<SharedMemoryPrivacyMaterializationResult> => {
       const result = emptyResult();
+      const stale =
+        await options.sharedMemoryRepository.invalidateStaleSemanticPreviews({
+          limit: targetLimit
+        });
+      result.invalidatedStale = stale.invalidated;
       const deploymentIdentityId =
         await options.privacyRepository.getLocalDeploymentIdentityId();
       if (!deploymentIdentityId) {
@@ -540,16 +887,34 @@ export const createSharedMemoryPrivacyMaterializationService = (
           "SharedMemoryPrivacyDeploymentIdentityError"
         );
       }
-      const stale =
-        await options.sharedMemoryRepository.invalidateStaleSemanticPreviews({
-          limit: targetLimit
-        });
-      result.invalidatedStale = stale.invalidated;
+      await validateCapabilities();
       const targets =
         await options.sharedMemoryRepository.listPendingSemanticPrivacyTargets({
           limit: targetLimit
         });
       for (const target of targets) {
+        result.maxQueueAgeMs = Math.max(
+          result.maxQueueAgeMs,
+          Math.max(Date.now() - Date.parse(target.enqueuedAt), 0)
+        );
+        const claimStartedAt = performance.now();
+        const claim =
+          await options.sharedMemoryRepository.claimSemanticPrivacyTarget(
+            { userId: target.ownerUserId },
+            {
+              semanticPreviewId: target.id,
+              claimantId:
+                options.claimantId ?? `shared-memory-privacy:${process.pid}`,
+              leaseMs: CLAIM_LEASE_MS,
+              expectedWorkIdentity:
+                sharedMemorySemanticPrivacyWorkIdentity(target)
+            }
+          );
+        result.maxClaimDurationMs = Math.max(
+          result.maxClaimDurationMs,
+          performance.now() - claimStartedAt
+        );
+        if (!claim) continue;
         result.processed += 1;
         let loaded: SharedMemoryDecryptedSemanticTarget | null = null;
         try {
@@ -568,15 +933,38 @@ export const createSharedMemoryPrivacyMaterializationService = (
               }
             )
           );
-          await materializeTarget(
+          const ready = await materializeTarget(
             options,
             target,
             loaded,
+            claim,
             deploymentIdentityId,
             result
           );
-          result.ready += 1;
+          if (ready) result.ready += 1;
+          else result.yielded += 1;
         } catch (error) {
+          await options.sharedMemoryRepository
+            .releaseSemanticPrivacyClaim(
+              { userId: target.ownerUserId },
+              {
+                ...claim,
+                completed: false,
+                nextChunkIndex: target.continuationChunkIndex
+              }
+            )
+            .catch(() => false);
+          if (
+            error instanceof SharedMemoryPrivacyMaterializationError &&
+            error.code === "SharedMemoryPrivacyClaimExpiredError"
+          ) {
+            result.yielded += 1;
+            continue;
+          }
+          if (error instanceof SharedMemoryPrivacyFinalizationBusyError) {
+            controller.scheduleRetry(new Date(Date.now() + 250).toISOString());
+            continue;
+          }
           if (error instanceof PrivacyServiceUnavailableError && loaded) {
             const retryAt =
               await options.sharedMemoryRepository.deferSemanticPrivacyTarget(
@@ -642,7 +1030,19 @@ export const createSharedMemoryPrivacyMaterializationService = (
                 name: "worker.shared_memory_privacy_materialization.failed",
                 category: "privacy"
               },
-              errorClass: code
+              errorClass: code,
+              failedChunkIndex:
+                error instanceof SharedMemoryPrivacyMaterializationError
+                  ? error.failedChunkIndex
+                  : null,
+              resourceLimit:
+                error instanceof SharedMemorySemanticResourceLimitError
+                  ? {
+                      kind: error.limitKind,
+                      observed: error.observed,
+                      maximum: error.maximum
+                    }
+                  : null
             },
             "Shared Memory privacy materialization failed closed"
           );
@@ -654,18 +1054,23 @@ export const createSharedMemoryPrivacyMaterializationService = (
         );
       result.materialized = publication.materialized;
       result.materializationSkipped = publication.skipped;
+      const backlog = options.sharedMemoryRepository
+        .getSemanticPrivacyBacklogDiagnostics
+        ? await options.sharedMemoryRepository.getSemanticPrivacyBacklogDiagnostics()
+        : null;
       options.logger.info(
         {
           event: {
             name: "worker.shared_memory_privacy_materialization.reconciled",
             category: "privacy"
           },
-          sharedMemoryPrivacyMaterialization: result
+          sharedMemoryPrivacyMaterialization: result,
+          sharedMemoryPrivacyBacklog: backlog
         },
         "Shared Memory privacy materialization reconciliation completed"
       );
       controller.scheduleRetry(
-        await options.sharedMemoryRepository.getNextSemanticPrivacyRetryAt()
+        await options.sharedMemoryRepository.getNextSemanticPrivacyWorkAt()
       );
       return result;
     };
@@ -678,7 +1083,8 @@ export const createSharedMemoryPrivacyMaterializationService = (
     shouldContinue: (result) =>
       result.processed === targetLimit ||
       result.invalidatedStale === targetLimit ||
-      result.materialized === targetLimit,
+      result.materialized === targetLimit ||
+      result.yielded > 0,
     onProcessError(error) {
       options.logger.warn(
         {

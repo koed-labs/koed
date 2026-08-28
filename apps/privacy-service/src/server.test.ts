@@ -20,8 +20,8 @@ const config = (
   modelRevision: "pinned-test-revision",
   transformersCache: "/verified/privacy-cache",
   maxFields: 2,
-  maxFieldChars: 100,
-  maxRequestChars: 150,
+  maxFieldBytes: 100,
+  maxRequestFieldBytes: 150,
   maxBodyBytes: 1024,
   runtimeProvider: "cpu",
   gpuIdleUnloadSeconds: 300,
@@ -49,6 +49,40 @@ const contractBody = (fields: Array<{ path: string; text: string }>): string =>
   });
 
 describe("Privacy Service routes", () => {
+  it("exposes the authenticated versioned capacity contract", async () => {
+    const service = createPrivacyService(
+      config(),
+      new DeterministicPrivacyRuntime()
+    );
+    const unauthenticated = await service.handle(
+      new Request("http://127.0.0.1/v1/capabilities")
+    );
+    expect(unauthenticated.status).toBe(401);
+    const response = await service.handle(
+      new Request("http://127.0.0.1/v1/capabilities", {
+        headers: { "x-koed-privacy-token": "internal-secret" }
+      })
+    );
+    expect(response.status).toBe(200);
+    expect(await json(response)).toMatchObject({
+      schemaVersion: 1,
+      inputContractVersion: PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
+      tokenizerNormalization: "none",
+      maximumFieldsPerRequest: 128,
+      maximumFieldBytes: 262_144,
+      maximumRequestFieldBytes: 1_048_576,
+      maximumRequestBodyBytes: 2_097_152,
+      windowCoreTokens: 256,
+      windowContextTokens: 128,
+      windowMaximumTokens: 512,
+      maximumFieldTokens: 262_144,
+      maximumSemanticPreviewFields: 65_536,
+      maximumSemanticPreviewBytes: 67_108_864,
+      maximumSemanticPreviewEncodedBytes: 83_886_080,
+      maximumConcurrentRequests: 1
+    });
+  });
+
   it("exposes content-free readiness and fixed labels", async () => {
     const service = createPrivacyService(
       config(),
@@ -226,7 +260,7 @@ describe("Privacy Service routes", () => {
 
   it("classifies named fields and applies deterministic secret masking", async () => {
     const service = createPrivacyService(
-      config({ maxFields: 3, maxRequestChars: 300 }),
+      config({ maxFields: 3, maxRequestFieldBytes: 300 }),
       new DeterministicPrivacyRuntime()
     );
     const response = await service.handle(

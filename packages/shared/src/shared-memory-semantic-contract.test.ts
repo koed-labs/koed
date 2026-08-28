@@ -5,7 +5,12 @@ import { describe, expect, it } from "vitest";
 import {
   extractSharedMemorySemanticClassificationFields,
   reconstructSharedMemorySemanticSanitizedItems,
+  SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ITEMS,
   SharedMemoryConflictError,
+  SharedMemorySemanticResourceLimitError,
   SharedMemorySourceItemRejectedError,
   validateSharedMemoryCanonicalSourceItem,
   validateSharedMemorySemanticSanitizedReconstruction,
@@ -113,6 +118,133 @@ describe("Shared Memory canonical semantic contract", () => {
       expect(field.inputSha256).toBe(sha256(field.text));
       expect(field.inputByteLength).toBe(Buffer.byteLength(field.text, "utf8"));
     }
+  });
+
+  it("accepts the exact item and field-byte ceilings and reports bounded rejection diagnostics", () => {
+    const logicalMemoryId = randomUUID();
+    const items = Array.from(
+      { length: SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ITEMS },
+      () => ({
+        itemType: "user_message" as const,
+        schemaVersion: 1 as const,
+        sourceId: randomUUID(),
+        sourceLogicalMemoryId: logicalMemoryId,
+        sourceRevision: 1,
+        occurredAt: null,
+        content: { text: "bounded" }
+      })
+    );
+    expect(extractSharedMemorySemanticClassificationFields(items)).toHaveLength(
+      SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ITEMS
+    );
+
+    const exactField = {
+      ...items[0]!,
+      content: { text: "x".repeat(SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES) }
+    };
+    expect(() =>
+      validateSharedMemoryCanonicalSourceItem({
+        representation: "memory_events",
+        logicalMemoryId,
+        sourceRevision: 1,
+        item: exactField
+      })
+    ).not.toThrow();
+
+    let rejection: unknown;
+    try {
+      validateSharedMemoryCanonicalSourceItem({
+        representation: "memory_events",
+        logicalMemoryId,
+        sourceRevision: 1,
+        item: {
+          ...exactField,
+          content: {
+            text: "x".repeat(SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES + 1)
+          }
+        }
+      });
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toBeInstanceOf(SharedMemorySemanticResourceLimitError);
+    expect(rejection).toMatchObject({
+      limitKind: "field_bytes",
+      observed: SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES + 1,
+      maximum: SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES
+    });
+    expect(JSON.stringify(rejection)).not.toContain("xxx");
+  });
+
+  it("admits exactly the complete semantic-preview classification-byte ceiling", () => {
+    const logicalMemoryId = randomUUID();
+    const maximumField = "x".repeat(SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES);
+    const items: SharedMemoryCanonicalSourceItemDto[] = Array.from(
+      {
+        length:
+          SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES /
+          SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES
+      },
+      () => ({
+        itemType: "user_message",
+        schemaVersion: 1,
+        sourceId: randomUUID(),
+        sourceLogicalMemoryId: logicalMemoryId,
+        sourceRevision: 1,
+        occurredAt: null,
+        content: { text: maximumField }
+      })
+    );
+
+    const fields = extractSharedMemorySemanticClassificationFields(items);
+    expect(
+      fields.reduce((total, field) => total + field.inputByteLength, 0)
+    ).toBe(SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES);
+  });
+
+  it("admits exactly the complete semantic-preview field-count ceiling", () => {
+    const logicalMemoryId = randomUUID();
+    const payload = Object.fromEntries(
+      Array.from({ length: 31 }, (_, index) => [
+        `key_${index}`,
+        `value_${index}`
+      ])
+    );
+    const toolItems: SharedMemoryCanonicalSourceItemDto[] = Array.from(
+      { length: 1_024 },
+      () => ({
+        itemType: "tool_result",
+        schemaVersion: 1,
+        sourceId: randomUUID(),
+        sourceLogicalMemoryId: logicalMemoryId,
+        sourceRevision: 1,
+        occurredAt: null,
+        content: {
+          toolName: "bounded_fixture",
+          toolCallId: null,
+          payload
+        }
+      })
+    );
+    const messageItems: SharedMemoryCanonicalSourceItemDto[] = Array.from(
+      { length: 1_024 },
+      () => ({
+        itemType: "user_message",
+        schemaVersion: 1,
+        sourceId: randomUUID(),
+        sourceLogicalMemoryId: logicalMemoryId,
+        sourceRevision: 1,
+        occurredAt: null,
+        content: { text: "bounded" }
+      })
+    );
+
+    expect(
+      extractSharedMemorySemanticClassificationFields([
+        ...toolItems,
+        ...messageItems
+      ])
+    ).toHaveLength(SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS);
   });
 
   it("reconstructs only the exact ordered replaceable field contract", () => {

@@ -4,7 +4,8 @@ import { EventEmitter } from "node:events";
 import {
   type PrivacyClassificationResultRecord,
   type SharedMemoryDecryptedSemanticTarget,
-  type SharedMemoryPendingSemanticTarget
+  type SharedMemoryPendingSemanticTarget,
+  type SharedMemoryRepository
 } from "@koed/db";
 import {
   createLocalTestKeyEnvelopeEncryptionProvider,
@@ -14,6 +15,8 @@ import {
   privacyContentPolicyHash,
   privacyLabels,
   PrivacyServiceUnavailableError,
+  SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES,
   type SharedMemoryCanonicalSourceItemDto,
   type PrivacyClassificationResponse,
   type PrivacyLabel,
@@ -100,8 +103,12 @@ const targetFor = (
   teamId: ids.team,
   teamWorkspaceId: ids.workspace,
   representation: "memory_events",
-  classificationResultId: null,
-  classificationPayloadBindingHash: null,
+  expectedManifestHash: null,
+  expectedChunkCount: null,
+  completedChunkCount: 0,
+  resultManifestHash: null,
+  classificationFieldCount: null,
+  classificationByteCount: null,
   classifierGenerationId: ids.classifierGeneration,
   classifierVersion: 1,
   classifierHash,
@@ -115,6 +122,11 @@ const targetFor = (
   lastErrorClass: null,
   attemptCount: 0,
   nextAttemptAt: null,
+  schedulingClass: "foreground",
+  workReason: "share_activation",
+  eligibleAt: iso,
+  enqueuedAt: iso,
+  continuationChunkIndex: 0,
   createdAt: iso,
   updatedAt: iso,
   readyAt: null,
@@ -253,6 +265,8 @@ const fixture = (input?: {
   reconcileReady?: () => Promise<{ materialized: number; skipped: number }>;
   targetLimit?: number;
   loaded?: SharedMemoryDecryptedSemanticTarget;
+  finalizationAvailable?: boolean;
+  capabilities?: () => Promise<unknown>;
 }) => {
   let policyLabels = input?.policy ?? labelPolicy("private_email");
   let target =
@@ -265,8 +279,16 @@ const fixture = (input?: {
     response: PrivacyClassificationResponse;
   }> = [];
   const classify = vi.fn(input?.classify ?? (async () => response));
-  const cacheKey = (fields: Array<{ path: string; text: string }>) =>
-    JSON.stringify(fields);
+  const cacheKey = (
+    fields: Array<{ path: string; text: string }>,
+    classifierIdentity = classifierHash
+  ) => `${classifierIdentity}:${JSON.stringify(fields)}`;
+  const classificationInputIdentity = vi.fn(
+    (identityInput: { fields: Array<{ path: string; text: string }> }) =>
+      createHash("sha256")
+        .update(cacheKey(identityInput.fields, "owner-input"), "utf8")
+        .digest("hex")
+  );
   const cachedByKey = new Map<
     string,
     {
@@ -288,10 +310,19 @@ const fixture = (input?: {
       cachedById.size === 0 ? ids.classification : randomUUID()
     )
   ) => {
-    const entry = { record, response: classified };
-    cachedByKey.set(cacheKey(fields), entry);
-    cachedById.set(record.id, entry);
-    return record;
+    const boundRecord = {
+      ...record,
+      classifierGenerationId: target.classifierGenerationId,
+      classifierHash: classified.classifier.classifierHash,
+      ownerContentFingerprint: classificationInputIdentity({ fields })
+    };
+    const entry = { record: boundRecord, response: classified };
+    cachedByKey.set(
+      cacheKey(fields, classified.classifier.classifierHash),
+      entry
+    );
+    cachedById.set(boundRecord.id, entry);
+    return boundRecord;
   };
   if (input?.cached) {
     cacheClassification(
@@ -300,8 +331,12 @@ const fixture = (input?: {
     );
   }
   const findCachedClassification = vi.fn(
-    async (findInput: { fields: Array<{ path: string; text: string }> }) =>
-      cachedByKey.get(cacheKey(findInput.fields))?.record ?? null
+    async (findInput: {
+      classifierHash: string;
+      fields: Array<{ path: string; text: string }>;
+    }) =>
+      cachedByKey.get(cacheKey(findInput.fields, findInput.classifierHash))
+        ?.record ?? null
   );
   const storeClassificationResult = vi.fn(
     async (storeInput: {
@@ -309,7 +344,12 @@ const fixture = (input?: {
       response: PrivacyClassificationResponse;
     }) => {
       storedClassificationInputs.push(storeInput);
-      const existing = cachedByKey.get(cacheKey(storeInput.fields));
+      const existing = cachedByKey.get(
+        cacheKey(
+          storeInput.fields,
+          storeInput.response.classifier.classifierHash
+        )
+      );
       return (
         existing?.record ??
         cacheClassification(storeInput.fields, storeInput.response)
@@ -335,9 +375,60 @@ const fixture = (input?: {
   const listPendingSemanticPrivacyTargets = vi.fn(
     input?.listTargets ?? (async () => [target])
   );
-  const readPendingSemanticPrivacyTarget = vi.fn(
-    async () => loadedOverride ?? loadedFor(target)
-  );
+  const readPendingSemanticPrivacyTarget = vi.fn<
+    SharedMemoryRepository["readPendingSemanticPrivacyTarget"]
+  >(async () => loadedOverride ?? loadedFor(target));
+  const claim = {
+    semanticPreviewId: target.id,
+    workIdentity: "9".repeat(64),
+    claimantId: "test-worker",
+    claimGeneration: 1,
+    claimToken: "00000000-0000-4000-8000-000000000018",
+    expiresAt: "2026-08-13T00:02:00.000Z"
+  };
+  let manifest: Array<Record<string, unknown>> = [];
+  const claimSemanticPrivacyTarget = vi.fn<
+    SharedMemoryRepository["claimSemanticPrivacyTarget"]
+  >(async () => ({ ...claim }));
+  const renewSemanticPrivacyClaim = vi.fn<
+    SharedMemoryRepository["renewSemanticPrivacyClaim"]
+  >(async () => ({ ...claim }));
+  const releaseSemanticPrivacyClaim = vi.fn<
+    SharedMemoryRepository["releaseSemanticPrivacyClaim"]
+  >(async () => true);
+  const initializeSemanticPrivacyManifest = vi.fn<
+    SharedMemoryRepository["initializeSemanticPrivacyManifest"]
+  >(async (_actor, initializeInput) => {
+    if (manifest.length === 0) {
+      manifest = initializeInput.chunks.map((chunk) => ({
+        id: randomUUID(),
+        semanticPreviewId: target.id,
+        ...chunk,
+        classificationResultId: null,
+        classificationPayloadBindingHash: null,
+        status: "pending",
+        createdAt: iso,
+        readyAt: null
+      }));
+    }
+    return manifest as never;
+  });
+  const attachSemanticPrivacyChunkResult = vi.fn<
+    SharedMemoryRepository["attachSemanticPrivacyChunkResult"]
+  >(async (_actor, attachInput) => {
+    const entry = manifest[attachInput.chunkIndex]!;
+    Object.assign(entry, {
+      classificationResultId: attachInput.classificationResultId,
+      classificationPayloadBindingHash:
+        attachInput.classificationPayloadBindingHash,
+      status: "ready",
+      readyAt: iso
+    });
+    return entry as never;
+  });
+  const listSemanticPrivacyManifest = vi.fn<
+    SharedMemoryRepository["listSemanticPrivacyManifest"]
+  >(async () => manifest as never);
   const storeSanitizedSemanticPreview = vi.fn(async (_actor, storeInput) => {
     storedInputs.push(storeInput as unknown as Record<string, unknown>);
     return {
@@ -345,7 +436,10 @@ const fixture = (input?: {
       sourceItemIdentityHash: storeInput.expectedSourceItemIdentityHash,
       sourceItemCount: (storeInput.items as unknown[]).length,
       sanitizedContentHash: storeInput.sanitizedContentHash,
-      classificationResultId: storeInput.classificationResultId,
+      expectedManifestHash: storeInput.expectedManifestHash,
+      expectedChunkCount: manifest.length,
+      completedChunkCount: manifest.length,
+      resultManifestHash: storeInput.expectedResultManifestHash,
       status: "ready"
     } as never;
   });
@@ -353,8 +447,14 @@ const fixture = (input?: {
   const deferSemanticPrivacyTarget = vi.fn(
     async (): Promise<string | null> => null
   );
-  const getNextSemanticPrivacyRetryAt = vi.fn(
+  const getNextSemanticPrivacyWorkAt = vi.fn(
     async (): Promise<string | null> => null
+  );
+  const releaseFinalizationLease = vi.fn(async () => undefined);
+  const tryAcquireSemanticPrivacyFinalizationLease = vi.fn(async () =>
+    input?.finalizationAvailable === false
+      ? null
+      : { release: releaseFinalizationLease }
   );
   const invalidateStaleSemanticPreviews = vi.fn(async () => ({
     invalidated: 0
@@ -368,78 +468,122 @@ const fixture = (input?: {
   );
   const wakeClient = new WakeClient();
   const logger = { info: vi.fn(), warn: vi.fn() };
-  const service = createSharedMemoryPrivacyMaterializationService({
-    sharedMemoryRepository: {
-      listPendingSemanticPrivacyTargets,
-      readPendingSemanticPrivacyTarget,
-      storeSanitizedSemanticPreview,
-      markSemanticPrivacyTargetFailed,
-      deferSemanticPrivacyTarget,
-      getNextSemanticPrivacyRetryAt,
-      invalidateStaleSemanticPreviews,
-      reconcileReadySemanticRepresentations
-    },
-    privacyRepository: {
-      getActiveClassifierGeneration: vi.fn(async () => ({
-        id: ids.classifierGeneration,
-        version: 1,
-        classifierHash,
-        modelKey: "privacy-model",
-        modelRevision: "1",
-        artifactSha256: "1".repeat(64),
-        tokenizerSha256: "2".repeat(64),
-        decoderSha256: "3".repeat(64),
-        calibrationSha256: "4".repeat(64),
-        deterministicDetectorVersion: "structured-secrets-v1",
-        inputContractVersion: "koed-privacy-classification-v1",
-        status: "active" as const,
-        createdAt: iso,
-        activatedAt: iso,
-        retiredAt: null,
-        revokedAt: null,
-        revocationReasonCode: null
-      })),
-      getLocalDeploymentIdentityId: vi.fn(async () => ids.deployment),
-      resolveEffectiveContentPolicy: vi.fn(async () => ({
-        labels: policyLabels,
-        effectivePolicyHash: privacyContentPolicyHash({ labels: policyLabels }),
-        policies: []
-      })),
-      findCachedClassification,
-      storeClassificationResult,
-      readClassificationResult
-    },
-    privacyService: { classify: classify as never },
-    classificationEncryptionProvider:
-      createLocalTestKeyEnvelopeEncryptionProvider(
-        randomBytes(32).toString("base64")
-      ),
-    wakePool: { connect: vi.fn(async () => wakeClient) },
-    logger,
-    targetLimit: input?.targetLimit
-  });
+  const capabilities = vi.fn(input?.capabilities ?? (async () => ({})));
+  let activeClassifier = {
+    id: ids.classifierGeneration as string,
+    version: 1,
+    classifierHash,
+    modelKey: "privacy-model",
+    modelRevision: "1",
+    artifactSha256: "1".repeat(64),
+    tokenizerSha256: "2".repeat(64),
+    decoderSha256: "3".repeat(64),
+    calibrationSha256: "4".repeat(64),
+    deterministicDetectorVersion: "structured-secrets-v1",
+    inputContractVersion: "koed-privacy-classification-v1",
+    status: "active" as const,
+    createdAt: iso,
+    activatedAt: iso,
+    retiredAt: null,
+    revokedAt: null,
+    revocationReasonCode: null
+  };
+  const getActiveClassifierGeneration = vi.fn(async () => activeClassifier);
+  const classificationEncryptionProvider =
+    createLocalTestKeyEnvelopeEncryptionProvider(
+      randomBytes(32).toString("base64")
+    );
+  const createService = () =>
+    createSharedMemoryPrivacyMaterializationService({
+      sharedMemoryRepository: {
+        listPendingSemanticPrivacyTargets,
+        readPendingSemanticPrivacyTarget,
+        claimSemanticPrivacyTarget,
+        renewSemanticPrivacyClaim,
+        releaseSemanticPrivacyClaim,
+        initializeSemanticPrivacyManifest,
+        attachSemanticPrivacyChunkResult,
+        listSemanticPrivacyManifest,
+        storeSanitizedSemanticPreview,
+        markSemanticPrivacyTargetFailed,
+        deferSemanticPrivacyTarget,
+        getNextSemanticPrivacyWorkAt,
+        tryAcquireSemanticPrivacyFinalizationLease,
+        invalidateStaleSemanticPreviews,
+        reconcileReadySemanticRepresentations
+      },
+      privacyRepository: {
+        getActiveClassifierGeneration,
+        getLocalDeploymentIdentityId: vi.fn(async () => ids.deployment),
+        resolveEffectiveContentPolicy: vi.fn(async () => ({
+          labels: policyLabels,
+          effectivePolicyHash: privacyContentPolicyHash({
+            labels: policyLabels
+          }),
+          policies: []
+        })),
+        classificationInputIdentity,
+        findCachedClassification,
+        storeClassificationResult,
+        readClassificationResult
+      },
+      privacyService: {
+        capabilities: capabilities as never,
+        classify: classify as never
+      },
+      classificationEncryptionProvider,
+      wakePool: { connect: vi.fn(async () => wakeClient) },
+      logger,
+      targetLimit: input?.targetLimit
+    });
+  const service = createService();
   return {
     service,
+    restartService: createService,
+    capabilities,
     classify,
     findCachedClassification,
     storeClassificationResult,
     listPendingSemanticPrivacyTargets,
     readPendingSemanticPrivacyTarget,
+    claimSemanticPrivacyTarget,
+    renewSemanticPrivacyClaim,
+    releaseSemanticPrivacyClaim,
+    initializeSemanticPrivacyManifest,
+    attachSemanticPrivacyChunkResult,
+    listSemanticPrivacyManifest,
     storeSanitizedSemanticPreview,
     markSemanticPrivacyTargetFailed,
     deferSemanticPrivacyTarget,
-    getNextSemanticPrivacyRetryAt,
+    getNextSemanticPrivacyWorkAt,
+    tryAcquireSemanticPrivacyFinalizationLease,
+    releaseFinalizationLease,
     invalidateStaleSemanticPreviews,
     reconcileReadySemanticRepresentations,
     storedInputs,
     wakeClient,
     logger,
+    setClassifier(next: {
+      id: string;
+      classifierHash: string;
+      modelKey?: string;
+      modelRevision?: string;
+    }) {
+      activeClassifier = {
+        ...activeClassifier,
+        id: next.id,
+        classifierHash: next.classifierHash,
+        modelKey: next.modelKey ?? activeClassifier.modelKey,
+        modelRevision: next.modelRevision ?? activeClassifier.modelRevision
+      };
+    },
     setTarget(
       nextTarget: SharedMemoryPendingSemanticTarget,
       loaded?: SharedMemoryDecryptedSemanticTarget
     ) {
       target = nextTarget;
       loadedOverride = loaded;
+      manifest = [];
     },
     setPolicy(labels: PrivacyLabelPolicy) {
       policyLabels = labels;
@@ -447,15 +591,40 @@ const fixture = (input?: {
         privacyContentPolicyHash({ labels }),
         "00000000-0000-4000-8000-000000000017"
       );
+      loadedOverride = undefined;
+      manifest = [];
     }
   };
 };
 
 describe("Shared Memory privacy materialization service", () => {
+  it("invalidates stale Team previews before Privacy Service preflight", async () => {
+    const unavailable = new PrivacyServiceUnavailableError(
+      "Privacy Service unavailable"
+    );
+    const state = fixture({
+      capabilities: async () => {
+        throw unavailable;
+      }
+    });
+    state.invalidateStaleSemanticPreviews.mockResolvedValueOnce({
+      invalidated: 1
+    });
+
+    await expect(state.service.processOnce()).rejects.toBe(unavailable);
+
+    expect(state.invalidateStaleSemanticPreviews).toHaveBeenCalledOnce();
+    expect(state.capabilities).toHaveBeenCalledOnce();
+    expect(
+      state.invalidateStaleSemanticPreviews.mock.invocationCallOrder[0]
+    ).toBeLessThan(state.capabilities.mock.invocationCallOrder[0]!);
+    expect(state.listPendingSemanticPrivacyTargets).not.toHaveBeenCalled();
+  });
+
   it("uses an exact cached classification and applies policy after classification", async () => {
     const state = fixture({ cached: true });
 
-    await expect(state.service.processOnce()).resolves.toEqual({
+    await expect(state.service.processOnce()).resolves.toMatchObject({
       processed: 1,
       invalidatedStale: 0,
       classifierCacheHits: 1,
@@ -464,7 +633,11 @@ describe("Shared Memory privacy materialization service", () => {
       ready: 1,
       materialized: 1,
       materializationSkipped: 0,
-      failed: 0
+      failed: 0,
+      yielded: 0,
+      chunksAttached: 1,
+      resumedChunks: 0,
+      classifiedBytes: 0
     });
 
     expect(state.classify).not.toHaveBeenCalled();
@@ -482,6 +655,50 @@ describe("Shared Memory privacy materialization service", () => {
         }
       }
     ]);
+  });
+
+  it("defers final publication when the deployment-wide finalization slot is occupied", async () => {
+    const state = fixture({ cached: true, finalizationAvailable: false });
+
+    await expect(state.service.processOnce()).resolves.toMatchObject({
+      processed: 1,
+      ready: 0,
+      failed: 0
+    });
+    expect(state.storeSanitizedSemanticPreview).not.toHaveBeenCalled();
+    expect(state.markSemanticPrivacyTargetFailed).not.toHaveBeenCalled();
+    expect(state.releaseSemanticPrivacyClaim).toHaveBeenCalledWith(
+      { userId: ids.owner },
+      expect.objectContaining({ completed: false })
+    );
+  });
+
+  it("preserves the finalization contention wake when no durable retry exists", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = fixture({ cached: true });
+      state.tryAcquireSemanticPrivacyFinalizationLease
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue({ release: state.releaseFinalizationLease });
+
+      state.service.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        state.tryAcquireSemanticPrivacyFinalizationLease
+      ).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(249);
+      expect(
+        state.tryAcquireSemanticPrivacyFinalizationLease
+      ).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(
+        state.tryAcquireSemanticPrivacyFinalizationLease
+      ).toHaveBeenCalledTimes(2);
+
+      await state.service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("classifies every field once, caches all eight labels, then stores the sanitized preview", async () => {
@@ -508,6 +725,46 @@ describe("Shared Memory privacy materialization service", () => {
         )
       )
     ).toEqual(new Set(privacyLabels));
+  });
+
+  it("heartbeats the claim while classifier inference is in flight", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveClassification!: (value: unknown) => void;
+      const classification = new Promise<unknown>((resolve) => {
+        resolveClassification = resolve;
+      });
+      const state = fixture({ classify: async () => classification });
+      const processing = state.service.processOnce();
+      await flush();
+      expect(state.classify).toHaveBeenCalledOnce();
+      const renewalsBeforeHeartbeat =
+        state.renewSemanticPrivacyClaim.mock.calls.length;
+
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(state.renewSemanticPrivacyClaim.mock.calls.length).toBeGreaterThan(
+        renewalsBeforeHeartbeat
+      );
+
+      resolveClassification(responseFor());
+      await expect(processing).resolves.toMatchObject({ ready: 1, failed: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("yields without terminal failure when claim renewal loses its fence", async () => {
+    const state = fixture();
+    state.renewSemanticPrivacyClaim.mockResolvedValueOnce(null);
+
+    await expect(state.service.processOnce()).resolves.toMatchObject({
+      processed: 1,
+      ready: 0,
+      failed: 0,
+      yielded: 1
+    });
+    expect(state.classify).not.toHaveBeenCalled();
+    expect(state.markSemanticPrivacyTargetFailed).not.toHaveBeenCalled();
   });
 
   it("classifies a 129-field preview in contract-sized batches", async () => {
@@ -577,9 +834,379 @@ describe("Shared Memory privacy materialization service", () => {
     expect(state.classify.mock.calls.map(([batch]) => batch.length)).toEqual([
       128, 1
     ]);
-    expect(
-      state.storeClassificationResult.mock.calls.at(-1)?.[0].response.fields
-    ).toHaveLength(129);
+    const storedChunkSizes = state.storeClassificationResult.mock.calls.map(
+      ([storeInput]) => storeInput.response.fields.length
+    );
+    expect(storedChunkSizes).toEqual([16, 16, 16, 16, 16, 16, 16, 16, 1]);
+    expect(storedChunkSizes.reduce((total, size) => total + size, 0)).toBe(129);
+  });
+
+  it("assembles one cache chunk split across transport byte limits before attaching it", async () => {
+    const largeItems: SharedMemoryCanonicalSourceItemDto[] = Array.from(
+      { length: 16 },
+      (_, index) => ({
+        ...item,
+        sourceId: randomUUID(),
+        content: { text: String(index).padEnd(256 * 1_024, "x") }
+      })
+    );
+    const target = targetFor(
+      privacyContentPolicyHash({ labels: labelPolicy("private_email") })
+    );
+    const loaded: SharedMemoryDecryptedSemanticTarget = {
+      ...loadedFor(target),
+      preview: {
+        ...loadedFor(target).preview,
+        items: largeItems,
+        sourceContentHash: crossIdentitySyncDigest(largeItems)
+      },
+      sourceManifest: largeItems.map(() => ({}) as never),
+      classificationFields:
+        extractSharedMemorySemanticClassificationFields(largeItems)
+    };
+    const state = fixture({
+      target,
+      loaded,
+      classify: async (batch) => ({
+        schemaVersion: 1,
+        inputContractVersion: "koed-privacy-classification-v1",
+        classifier: {
+          classifierHash,
+          modelKey: "privacy-model",
+          modelRevision: "1"
+        },
+        fields: batch.map((field) => ({
+          path: field.path,
+          inputSha256: createHash("sha256").update(field.text).digest("hex"),
+          inputByteLength: Buffer.byteLength(field.text),
+          maskedText: field.text,
+          spans: [],
+          decodedTextMatchesInput: true as const
+        }))
+      })
+    });
+    state.findCachedClassification.mockResolvedValue(null);
+
+    await expect(state.service.processOnce()).resolves.toMatchObject({
+      classifierInferenceCalls: 4,
+      cacheChunks: 1,
+      chunksAttached: 1,
+      ready: 1,
+      failed: 0
+    });
+    expect(state.classify.mock.calls.map(([batch]) => batch.length)).toEqual([
+      4, 4, 4, 4
+    ]);
+    expect(state.storeClassificationResult).toHaveBeenCalledOnce();
+  });
+
+  it("persists and resumes a preview above the former aggregate field limit", async () => {
+    const largeItems: SharedMemoryCanonicalSourceItemDto[] = Array.from(
+      { length: 1_025 },
+      (_, index) => ({
+        ...item,
+        itemType: "tool_call" as const,
+        sourceId: randomUUID(),
+        content: {
+          toolName: `tool_${index}`,
+          toolCallId: null,
+          payload: { value: `bounded field ${index}` }
+        }
+      })
+    );
+    const target = targetFor(
+      privacyContentPolicyHash({ labels: labelPolicy("private_email") })
+    );
+    const loaded: SharedMemoryDecryptedSemanticTarget = {
+      ...loadedFor(target),
+      preview: {
+        ...loadedFor(target).preview,
+        items: largeItems,
+        sourceContentHash: crossIdentitySyncDigest(largeItems)
+      },
+      sourceManifest: largeItems.map(() => ({}) as never),
+      classificationFields:
+        extractSharedMemorySemanticClassificationFields(largeItems)
+    };
+    const state = fixture({ target, loaded });
+    state.findCachedClassification.mockResolvedValue(null);
+    state.classify.mockImplementation(
+      async (batch: Array<{ path: string; text: string }>) => ({
+        schemaVersion: 1,
+        inputContractVersion: "koed-privacy-classification-v1",
+        classifier: {
+          classifierHash,
+          modelKey: "privacy-model",
+          modelRevision: "1"
+        },
+        fields: batch.map((field) => ({
+          path: field.path,
+          inputSha256: createHash("sha256").update(field.text).digest("hex"),
+          inputByteLength: Buffer.byteLength(field.text),
+          maskedText: field.text,
+          spans: [],
+          decodedTextMatchesInput: true as const
+        }))
+      })
+    );
+
+    const passes = [];
+    let service = state.service;
+    for (let pass = 0; pass < 10; pass += 1) {
+      const result = await service.processOnce();
+      passes.push(result);
+      if (result.ready === 1) break;
+      service = state.restartService();
+    }
+
+    expect(passes.length).toBeGreaterThan(1);
+    expect(passes.at(-1)).toMatchObject({ ready: 1, yielded: 0, failed: 0 });
+    expect(passes.slice(0, -1)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ ready: 0, yielded: 1, failed: 0 })
+      ])
+    );
+    const requestSizes = state.classify.mock.calls.map(
+      ([batch]) => batch.length
+    );
+    expect(Math.max(...requestSizes)).toBe(128);
+    expect(requestSizes.reduce((total, size) => total + size, 0)).toBe(
+      loaded.classificationFields.length
+    );
+    expect(state.storeSanitizedSemanticPreview).toHaveBeenCalledOnce();
+  });
+
+  it.runIf(process.env.KOED_RUN_PRIVACY_CAPACITY_TESTS === "1")(
+    "measures bounded finalization for a maximum-size semantic preview",
+    async () => {
+      const fieldCount =
+        SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES /
+        SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES;
+      const largeItems: SharedMemoryCanonicalSourceItemDto[] = Array.from(
+        { length: fieldCount },
+        (_, index) => {
+          const suffix = index.toString().padStart(8, "0");
+          return {
+            ...item,
+            sourceId: randomUUID(),
+            content: {
+              text: `${"x".repeat(
+                SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES - suffix.length
+              )}${suffix}`
+            }
+          };
+        }
+      );
+      const target = targetFor(
+        privacyContentPolicyHash({ labels: noPrivacyLabelsPolicy() })
+      );
+      const base = loadedFor(target);
+      const loaded: SharedMemoryDecryptedSemanticTarget = {
+        ...base,
+        preview: {
+          ...base.preview,
+          items: largeItems,
+          sourceContentHash: crossIdentitySyncDigest(largeItems)
+        },
+        sourceManifest: largeItems.map(() => ({}) as never),
+        classificationFields:
+          extractSharedMemorySemanticClassificationFields(largeItems)
+      };
+      const state = fixture({
+        policy: noPrivacyLabelsPolicy(),
+        target,
+        loaded,
+        classify: async (batch) => ({
+          schemaVersion: 1,
+          inputContractVersion: "koed-privacy-classification-v1",
+          classifier: {
+            classifierHash,
+            modelKey: "privacy-model",
+            modelRevision: "1"
+          },
+          fields: batch.map((field) => ({
+            path: field.path,
+            inputSha256: createHash("sha256").update(field.text).digest("hex"),
+            inputByteLength: Buffer.byteLength(field.text),
+            maskedText: field.text,
+            decodedTextMatchesInput: true,
+            spans: []
+          }))
+        })
+      });
+
+      let result = await state.service.processOnce();
+      for (let pass = 1; result.ready === 0 && pass < 100; pass += 1) {
+        result = await state.restartService().processOnce();
+      }
+
+      expect(result).toMatchObject({ ready: 1, failed: 0 });
+      expect(result.maxFinalizationHeapDeltaBytes).toBeGreaterThan(0);
+      process.stdout.write(
+        `[privacy-capacity] finalizationHeapDeltaBytes=${result.maxFinalizationHeapDeltaBytes}\n`
+      );
+    },
+    120_000
+  );
+
+  it("lets a small target finish while an earlier large target yields", async () => {
+    const buildLoaded = (
+      target: SharedMemoryPendingSemanticTarget,
+      count: number,
+      prefix: string
+    ): SharedMemoryDecryptedSemanticTarget => {
+      const items: SharedMemoryCanonicalSourceItemDto[] = Array.from(
+        { length: count },
+        (_, index) => ({
+          ...item,
+          itemType: "tool_call" as const,
+          sourceId: randomUUID(),
+          content: {
+            toolName: `${prefix}_tool_${index}`,
+            toolCallId: null,
+            payload: { value: `${prefix} value ${index}` }
+          }
+        })
+      );
+      const base = loadedFor(target);
+      return {
+        ...base,
+        preview: {
+          ...base.preview,
+          items,
+          sourceContentHash: crossIdentitySyncDigest(items)
+        },
+        sourceManifest: items.map(() => ({}) as never),
+        classificationFields:
+          extractSharedMemorySemanticClassificationFields(items)
+      };
+    };
+    const largeTarget = targetFor(
+      privacyContentPolicyHash({ labels: labelPolicy("private_email") }),
+      randomUUID()
+    );
+    const smallTarget = {
+      ...targetFor(
+        privacyContentPolicyHash({ labels: labelPolicy("private_email") }),
+        randomUUID()
+      ),
+      id: randomUUID()
+    };
+    const loadedById = new Map([
+      [largeTarget.id, buildLoaded(largeTarget, 1_025, "large")],
+      [smallTarget.id, buildLoaded(smallTarget, 1, "small")]
+    ]);
+    const state = fixture({
+      target: largeTarget,
+      loaded: loadedById.get(largeTarget.id),
+      listTargets: async () => [largeTarget, smallTarget],
+      targetLimit: 2
+    });
+    const manifests = new Map<string, Array<Record<string, unknown>>>();
+    state.readPendingSemanticPrivacyTarget.mockImplementation(
+      async (_actor, input) => loadedById.get(input.semanticPreviewId) ?? null
+    );
+    state.claimSemanticPrivacyTarget.mockImplementation(
+      async (_actor, input) => ({
+        semanticPreviewId: input.semanticPreviewId,
+        workIdentity: input.expectedWorkIdentity,
+        claimantId: input.claimantId,
+        claimGeneration: 1,
+        claimToken: randomUUID(),
+        expiresAt: iso
+      })
+    );
+    state.renewSemanticPrivacyClaim.mockImplementation(
+      async (_actor, input) => ({ ...input, expiresAt: iso })
+    );
+    state.initializeSemanticPrivacyManifest.mockImplementation(
+      async (_actor, input) => {
+        let entries = manifests.get(input.claim.semanticPreviewId);
+        if (!entries) {
+          const initialized = input.chunks.map((chunk) => ({
+            id: randomUUID(),
+            semanticPreviewId: input.claim.semanticPreviewId,
+            ...chunk,
+            classificationResultId: null,
+            classificationPayloadBindingHash: null,
+            status: "pending",
+            createdAt: iso,
+            readyAt: null
+          }));
+          manifests.set(input.claim.semanticPreviewId, initialized);
+          entries = initialized;
+        }
+        return entries! as never;
+      }
+    );
+    state.attachSemanticPrivacyChunkResult.mockImplementation(
+      async (_actor, input) => {
+        const entry = manifests.get(input.claim.semanticPreviewId)![
+          input.chunkIndex
+        ]!;
+        Object.assign(entry, {
+          classificationResultId: input.classificationResultId,
+          classificationPayloadBindingHash:
+            input.classificationPayloadBindingHash,
+          status: "ready",
+          readyAt: iso
+        });
+        return entry as never;
+      }
+    );
+    state.listSemanticPrivacyManifest.mockImplementation(
+      async (_actor, input) =>
+        (manifests.get(input.claim.semanticPreviewId) ?? []) as never
+    );
+    state.storeSanitizedSemanticPreview.mockImplementation(
+      async (_actor, input) => {
+        const target = [largeTarget, smallTarget].find(
+          (candidate) => candidate.id === input.semanticPreviewId
+        )!;
+        const manifest = manifests.get(target.id)!;
+        return {
+          ...target,
+          sourceItemIdentityHash: input.expectedSourceItemIdentityHash,
+          sourceItemCount: input.items.length,
+          sanitizedContentHash: input.sanitizedContentHash,
+          expectedManifestHash: input.expectedManifestHash,
+          expectedChunkCount: manifest.length,
+          completedChunkCount: manifest.length,
+          resultManifestHash: input.expectedResultManifestHash,
+          status: "ready"
+        } as never;
+      }
+    );
+    state.findCachedClassification.mockResolvedValue(null);
+    state.classify.mockImplementation(async (batch) => ({
+      schemaVersion: 1,
+      inputContractVersion: "koed-privacy-classification-v1",
+      classifier: {
+        classifierHash,
+        modelKey: "privacy-model",
+        modelRevision: "1"
+      },
+      fields: batch.map((field) => ({
+        path: field.path,
+        inputSha256: createHash("sha256").update(field.text).digest("hex"),
+        inputByteLength: Buffer.byteLength(field.text),
+        maskedText: field.text,
+        spans: [],
+        decodedTextMatchesInput: true as const
+      }))
+    }));
+
+    await expect(state.service.processOnce()).resolves.toMatchObject({
+      processed: 2,
+      yielded: 1,
+      ready: 1,
+      failed: 0
+    });
+    expect(state.storeSanitizedSemanticPreview).toHaveBeenCalledOnce();
+    expect(state.storeSanitizedSemanticPreview).toHaveBeenCalledWith(
+      { userId: ids.owner },
+      expect.objectContaining({ semanticPreviewId: smallTarget.id })
+    );
   });
 
   it.each([
@@ -731,6 +1358,54 @@ describe("Shared Memory privacy materialization service", () => {
     ]);
   });
 
+  it("reclassifies unchanged source fields after the classifier contract changes", async () => {
+    const state = fixture();
+    await expect(state.service.processOnce()).resolves.toMatchObject({
+      classifierInferenceCalls: 1,
+      ready: 1
+    });
+
+    const nextClassifierHash = "e".repeat(64);
+    const nextTarget = {
+      ...targetFor(
+        privacyContentPolicyHash({ labels: labelPolicy("private_email") }),
+        randomUUID()
+      ),
+      classifierGenerationId: randomUUID(),
+      classifierHash: nextClassifierHash
+    };
+    state.setTarget(nextTarget, loadedFor(nextTarget));
+    state.setClassifier({
+      id: nextTarget.classifierGenerationId,
+      classifierHash: nextClassifierHash
+    });
+    state.classify.mockImplementation(async (batch) => ({
+      schemaVersion: 1,
+      inputContractVersion: "koed-privacy-classification-v1",
+      classifier: {
+        classifierHash: nextClassifierHash,
+        modelKey: "privacy-model",
+        modelRevision: "1"
+      },
+      fields: batch.map((field) => ({
+        path: field.path,
+        inputSha256: createHash("sha256").update(field.text).digest("hex"),
+        inputByteLength: Buffer.byteLength(field.text),
+        maskedText: field.text,
+        spans: [],
+        decodedTextMatchesInput: true as const
+      }))
+    }));
+
+    await expect(state.service.processOnce()).resolves.toMatchObject({
+      classifierCacheHits: 0,
+      classifierInferenceCalls: 1,
+      ready: 1,
+      failed: 0
+    });
+    expect(state.classify).toHaveBeenCalledTimes(2);
+  });
+
   it("marks malformed classifier output failed and emits no plaintext telemetry", async () => {
     const secretText = plaintext;
     const state = fixture({
@@ -754,6 +1429,14 @@ describe("Shared Memory privacy materialization service", () => {
     );
     expect(JSON.stringify(state.logger.warn.mock.calls)).not.toContain(
       secretText
+    );
+    expect(state.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorClass: "shared_memory_privacy_classifier_contract_error",
+        failedChunkIndex: 0,
+        resourceLimit: null
+      }),
+      "Shared Memory privacy materialization failed closed"
     );
     expect(JSON.stringify(state.logger.info.mock.calls)).not.toContain(
       secretText
@@ -814,6 +1497,75 @@ describe("Shared Memory privacy materialization service", () => {
     expect(state.markSemanticPrivacyTargetFailed).not.toHaveBeenCalled();
   });
 
+  it("persists completed cache chunks before retrying a later transient transport failure", async () => {
+    const largeItems: SharedMemoryCanonicalSourceItemDto[] = Array.from(
+      { length: 129 },
+      (_, index) => ({
+        ...item,
+        sourceId: randomUUID(),
+        content: { text: `retry-safe value ${index}` }
+      })
+    );
+    const target = targetFor(
+      privacyContentPolicyHash({ labels: labelPolicy("private_email") })
+    );
+    const loaded: SharedMemoryDecryptedSemanticTarget = {
+      ...loadedFor(target),
+      preview: {
+        ...loadedFor(target).preview,
+        items: largeItems,
+        sourceContentHash: crossIdentitySyncDigest(largeItems)
+      },
+      sourceManifest: largeItems.map(() => ({}) as never),
+      classificationFields:
+        extractSharedMemorySemanticClassificationFields(largeItems)
+    };
+    let call = 0;
+    const state = fixture({
+      target,
+      loaded,
+      classify: async (batch) => {
+        call += 1;
+        if (call === 2) throw new PrivacyServiceUnavailableError();
+        return {
+          schemaVersion: 1,
+          inputContractVersion: "koed-privacy-classification-v1",
+          classifier: {
+            classifierHash,
+            modelKey: "privacy-model",
+            modelRevision: "1"
+          },
+          fields: batch.map((field) => ({
+            path: field.path,
+            inputSha256: createHash("sha256").update(field.text).digest("hex"),
+            inputByteLength: Buffer.byteLength(field.text),
+            maskedText: field.text,
+            spans: [],
+            decodedTextMatchesInput: true as const
+          }))
+        };
+      }
+    });
+    state.findCachedClassification.mockResolvedValue(null);
+
+    await expect(state.service.processOnce()).resolves.toMatchObject({
+      failed: 0,
+      ready: 0,
+      chunksAttached: 8
+    });
+    await expect(state.service.processOnce()).resolves.toMatchObject({
+      failed: 0,
+      ready: 1,
+      resumedChunks: 8,
+      chunksAttached: 1
+    });
+    expect(state.classify.mock.calls.map(([batch]) => batch.length)).toEqual([
+      128, 1, 1
+    ]);
+    expect(state.storeClassificationResult).toHaveBeenCalledTimes(9);
+    expect(state.markSemanticPrivacyTargetFailed).not.toHaveBeenCalled();
+  });
+
   it("wakes once at the earliest durable privacy retry time", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-13T00:00:00.000Z"));
@@ -830,7 +1582,7 @@ describe("Shared Memory privacy materialization service", () => {
       .mockResolvedValueOnce([retryTarget])
       .mockResolvedValue([]);
     state.deferSemanticPrivacyTarget.mockResolvedValue(retryAt);
-    state.getNextSemanticPrivacyRetryAt
+    state.getNextSemanticPrivacyWorkAt
       .mockResolvedValueOnce(retryAt)
       .mockResolvedValue(null);
 

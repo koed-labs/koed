@@ -68,9 +68,10 @@ const expectedCurrent0020Tag = "0020_zippy_apocalypse";
 const expectedLocalRuntimeCutoverTag = "0026_amused_zeigeist";
 const expectedPreSelectivePiiTag = "0033_fixed_scarlet_witch";
 const expectedSelectivePiiTag = "0034_young_silvermane";
-const expectedLatestMigrationTag = "0035_concerned_the_twelve";
+const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
+const expectedLatestMigrationTag = "0036_gifted_leader";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 35;
+const expectedLatestMigrationIndex = 36;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -1166,7 +1167,15 @@ try {
     preMultiComponentSourceFolder,
     journal.entries.slice(0, preMultiComponentSourceIndex + 1)
   );
-  const preGenericSharedMemoryIndex = expectedLatestMigrationIndex - 1;
+  const genericSharedMemoryIndex = journal.entries.findIndex(
+    (entry) => entry.tag === expectedGenericSharedMemoryTag
+  );
+  if (genericSharedMemoryIndex < 1) {
+    throw new Error(
+      `Expected generic Shared Memory migration ${expectedGenericSharedMemoryTag}`
+    );
+  }
+  const preGenericSharedMemoryIndex = genericSharedMemoryIndex - 1;
   const preGenericSharedMemoryFolder = await createMigrationSlice(
     journal,
     preGenericSharedMemoryIndex,
@@ -1177,6 +1186,16 @@ try {
     preGenericSharedMemoryFolder,
     journal.entries.slice(0, preGenericSharedMemoryIndex + 1)
   );
+  const prePrivacyManifestFolder = await createMigrationSlice(
+    journal,
+    expectedLatestMigrationIndex - 1,
+    { folderPrefix: "koed-pre-privacy-manifest-" }
+  );
+  temporaryFolders.add(prePrivacyManifestFolder);
+  const prePrivacyManifestRecords = await migrationRecords(
+    prePrivacyManifestFolder,
+    journal.entries.slice(0, expectedLatestMigrationIndex)
+  );
 
   await runScenario("clean-full-migration", async () => {
     const target = await createDisposableDatabase("clean_full");
@@ -1184,6 +1203,54 @@ try {
       await runDbMigrations(pool);
       await assertMigrationLedger(pool, fullRecords);
       await assertCurrentSchema(pool);
+    });
+  });
+
+  await runScenario("privacy-manifest-requires-alpha-reset", async () => {
+    const target = await createDisposableDatabase("privacy_manifest_reset");
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, {
+        migrationsFolder: prePrivacyManifestFolder
+      });
+      await assertMigrationLedger(pool, prePrivacyManifestRecords);
+      const values = Array.from({ length: 8 }, () => randomUUID());
+      await pool.query("set session_replication_role = replica");
+      try {
+        await pool.query(
+          `insert into shared_source_semantic_previews (
+             source_preview_id, source_artifact_id, source_preview_revision,
+             source_preview_hash, source_artifact_hash, source_manifest_hash,
+             source_revision, source_hash, logical_memory_id, owner_user_id,
+             owner_principal_id, team_id, team_workspace_id, representation,
+             classifier_generation_id, classifier_version, classifier_hash,
+             effective_privacy_policy_hash
+           ) values (
+             $1, $2, 1, $9, $9, $9, 0, $9, $3, $4, $5, $6, $7,
+             'memory_events', $8, 1, $9, $9
+           )`,
+          [...values, "a".repeat(64)]
+        );
+      } finally {
+        await pool.query("set session_replication_role = origin");
+      }
+      const migrationError = await runDbMigrations(pool).then(
+        () => null,
+        (error) => error
+      );
+      if (!migrationError) {
+        throw new Error(
+          "Populated pre-0036 privacy database unexpectedly upgraded"
+        );
+      }
+      const messages = errorMessages(migrationError);
+      if (
+        !messages.includes(
+          "Koed pre-release privacy manifest schema requires a disposable database reset before migration 0036"
+        )
+      ) {
+        throw new Error(`Missing reset-required diagnostic: ${messages}`);
+      }
+      await assertMigrationLedger(pool, prePrivacyManifestRecords);
     });
   });
 

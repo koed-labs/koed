@@ -318,7 +318,7 @@ const run = async () => {
     );
 
     await window.webContents.executeJavaScript(
-      `document.querySelector('[data-session-id]')?.click()`
+      `document.querySelector('[data-session-id] .personal-session-row-select')?.click()`
     );
     await waitFor(
       window,

@@ -7,10 +7,10 @@ import {
 import type pg from "pg";
 import {
   PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
-  PRIVACY_CLASSIFICATION_AGGREGATE_FIELD_LIMIT,
+  PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT,
   PRIVACY_REPLACEMENT_CONTRACT_VERSION,
-  privacyClassificationAggregateResponseSchema,
   privacyClassificationFieldRequestSchema,
+  privacyClassificationResponseSchema,
   privacyMaterializationSourceAdapters,
   privacyClassifierHash,
   privacyContentPolicyHash,
@@ -616,6 +616,10 @@ export interface PrivacyClassificationRepository {
     classifierHash: string;
     fields: Array<{ path: string; text: string }>;
   }): Promise<PrivacyClassificationResultRecord | null>;
+  classificationInputIdentity(input: {
+    actor: ActorContext;
+    fields: Array<{ path: string; text: string }>;
+  }): string;
   getOrCreateStructuralClassificationBinding(input: {
     actor: ActorContext;
     provider: EnvelopeEncryptionProvider;
@@ -695,10 +699,10 @@ export const createPrivacyClassificationRepository = (
   ): Array<{ path: string; text: string }> => {
     if (
       fields.length < 1 ||
-      fields.length > PRIVACY_CLASSIFICATION_AGGREGATE_FIELD_LIMIT
+      fields.length > PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT
     ) {
       throw new TypeError(
-        `Privacy classification field count must be between 1 and ${PRIVACY_CLASSIFICATION_AGGREGATE_FIELD_LIMIT}`
+        `Privacy classification field count must be between 1 and ${PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT}`
       );
     }
     const parsed = fields.map((field) =>
@@ -983,6 +987,10 @@ export const createPrivacyClassificationRepository = (
   };
 
   return {
+    classificationInputIdentity(input) {
+      const fields = validatedFields(input.fields);
+      return ownerFieldsFingerprint(input.actor.userId, fields);
+    },
     async getActiveClassifierGeneration() {
       const result = await pool.query<Row>(
         "select * from privacy_classifier_generations where status='active' limit 1"
@@ -1594,7 +1602,7 @@ export const createPrivacyClassificationRepository = (
 
     async storeClassificationResult(input) {
       const fields = validatedFields(input.fields);
-      const response = privacyClassificationAggregateResponseSchema.parse(
+      const response = privacyClassificationResponseSchema.parse(
         input.response
       );
       if (response.fields.length !== fields.length) {

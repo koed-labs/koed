@@ -1,6 +1,12 @@
 import { createHash, createHmac } from "node:crypto";
 import { canonicalize } from "json-canonicalize";
 import { z } from "zod";
+import {
+  SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS
+} from "./shared-memory-semantic-contract.js";
 
 export const privacyLabels = [
   "account_number",
@@ -22,7 +28,19 @@ export const PRIVACY_CLASSIFICATION_CONTRACT_VERSION =
 export const PRIVACY_REPLACEMENT_CONTRACT_VERSION =
   "koed-privacy-typed-placeholders-v1";
 export const PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT = 128;
-export const PRIVACY_CLASSIFICATION_AGGREGATE_FIELD_LIMIT = 2_048;
+export const PRIVACY_CLASSIFICATION_CACHE_FIELD_LIMIT = 16;
+export const PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES =
+  SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES;
+export const PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES = 1_048_576;
+export const PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES = 2_097_152;
+export const PRIVACY_WINDOW_CONTEXT_TOKENS = 128;
+export const PRIVACY_WINDOW_CORE_TOKENS = 256;
+export const PRIVACY_WINDOW_MAX_TOKENS =
+  PRIVACY_WINDOW_CORE_TOKENS + 2 * PRIVACY_WINDOW_CONTEXT_TOKENS;
+// The pinned byte-level BPE has no normalizer. With special tokens disabled,
+// token count cannot exceed the UTF-8 byte count admitted by the semantic field contract.
+export const PRIVACY_MAX_FIELD_TOKENS = SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES;
+export const PRIVACY_MAX_CONCURRENT_REQUESTS = 1;
 
 const PRIVACY_FINGERPRINT_KEY_DOMAIN = "koed:privacy-owner-fingerprint-key:v1";
 
@@ -85,6 +103,7 @@ export const privacyClassificationRequestSchema = z
   .strict()
   .superRefine((request, context) => {
     const paths = new Set<string>();
+    let totalFieldBytes = 0;
     for (const [index, field] of request.fields.entries()) {
       if (paths.has(field.path)) {
         context.addIssue({
@@ -94,6 +113,31 @@ export const privacyClassificationRequestSchema = z
         });
       }
       paths.add(field.path);
+      const fieldBytes = Buffer.byteLength(field.text, "utf8");
+      totalFieldBytes += fieldBytes;
+      if (fieldBytes > PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES) {
+        context.addIssue({
+          code: "custom",
+          path: ["fields", index, "text"],
+          message: "Privacy field exceeds the semantic UTF-8 byte limit"
+        });
+      }
+    }
+    if (totalFieldBytes > PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES) {
+      context.addIssue({
+        code: "custom",
+        path: ["fields"],
+        message: "Privacy request fields exceed the UTF-8 byte limit"
+      });
+    }
+    if (
+      Buffer.byteLength(JSON.stringify(request), "utf8") >
+      PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Privacy request exceeds the encoded body byte limit"
+      });
     }
   });
 
@@ -151,12 +195,101 @@ export type PrivacyClassificationResponse = z.infer<
   typeof privacyClassificationResponseSchema
 >;
 
-export const privacyClassificationAggregateResponseSchema =
-  privacyClassificationResponseSchema.safeExtend({
-    fields: z
-      .array(privacyClassifiedFieldSchema)
-      .min(1)
-      .max(PRIVACY_CLASSIFICATION_AGGREGATE_FIELD_LIMIT)
+export const privacyServiceCapabilitiesSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    inputContractVersion: z.literal(PRIVACY_CLASSIFICATION_CONTRACT_VERSION),
+    tokenizerSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    tokenizerNormalization: z.literal("none"),
+    maximumFieldsPerRequest: z.literal(
+      PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT
+    ),
+    maximumFieldBytes: z.literal(PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES),
+    maximumRequestFieldBytes: z.literal(
+      PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES
+    ),
+    maximumRequestBodyBytes: z.literal(
+      PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES
+    ),
+    windowCoreTokens: z.literal(PRIVACY_WINDOW_CORE_TOKENS),
+    windowContextTokens: z.literal(PRIVACY_WINDOW_CONTEXT_TOKENS),
+    windowMaximumTokens: z.literal(PRIVACY_WINDOW_MAX_TOKENS),
+    maximumFieldTokens: z.literal(PRIVACY_MAX_FIELD_TOKENS),
+    maximumSemanticPreviewFields: z.literal(
+      SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS
+    ),
+    maximumSemanticPreviewBytes: z.literal(
+      SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES
+    ),
+    maximumSemanticPreviewEncodedBytes: z.literal(
+      SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES
+    ),
+    maximumConcurrentRequests: z.literal(PRIVACY_MAX_CONCURRENT_REQUESTS)
+  })
+  .strict();
+
+export type PrivacyServiceCapabilities = z.infer<
+  typeof privacyServiceCapabilitiesSchema
+>;
+
+export const PRIVACY_CLASSIFICATION_MANIFEST_VERSION = 1;
+
+export interface PrivacyClassificationManifestChunk {
+  chunkIndex: number;
+  firstFieldIndex: number;
+  fieldCount: number;
+  inputIdentityHash: string;
+  orderedInputHash: string;
+}
+
+export interface PrivacyClassificationResultManifestChunk extends PrivacyClassificationManifestChunk {
+  classificationResultId: string;
+  classificationPayloadBindingHash: string;
+}
+
+const digestCanonical = (value: unknown): string =>
+  createHash("sha256").update(canonicalize(value)).digest("hex");
+
+export const privacyClassificationOrderedInputHash = (
+  fields: readonly PrivacyClassificationFieldRequest[]
+): string =>
+  digestCanonical({
+    domain: "koed:privacy-classification-ordered-input:v1",
+    fields: fields.map((field) => ({
+      path: field.path,
+      inputSha256: createHash("sha256")
+        .update(field.text, "utf8")
+        .digest("hex"),
+      inputByteLength: Buffer.byteLength(field.text, "utf8")
+    }))
+  });
+
+export const privacyClassificationExpectedManifestHash = (input: {
+  semanticPreviewId: string;
+  sourcePreviewHash: string;
+  sourceArtifactHash: string;
+  sourceManifestHash: string;
+  sourceRevision: number;
+  classifierGenerationId: string;
+  classifierHash: string;
+  effectivePrivacyPolicyHash: string;
+  fieldCount: number;
+  chunks: readonly PrivacyClassificationManifestChunk[];
+}): string =>
+  digestCanonical({
+    domain: "koed:privacy-classification-expected-manifest:v1",
+    version: PRIVACY_CLASSIFICATION_MANIFEST_VERSION,
+    ...input
+  });
+
+export const privacyClassificationResultManifestHash = (input: {
+  expectedManifestHash: string;
+  chunks: readonly PrivacyClassificationResultManifestChunk[];
+}): string =>
+  digestCanonical({
+    domain: "koed:privacy-classification-result-manifest:v1",
+    version: PRIVACY_CLASSIFICATION_MANIFEST_VERSION,
+    ...input
   });
 
 export type PrivacyLabelPolicy = Record<PrivacyLabel, boolean>;

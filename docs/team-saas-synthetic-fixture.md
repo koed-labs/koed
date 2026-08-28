@@ -230,6 +230,11 @@ routes for browser-session and device-credential authorization, Personal API
 Token denial, sanitized fork export, SSE authorization loss, consent expiry,
 cursor binding, and integrity failures.
 
+The automated fixture gate also runs a synthetic semantic preview above 2,048
+privacy fields. Validation confirms bounded transport requests, durable chunk
+resume after Worker restart, no partial Team visibility, and one complete
+publication after the final chunk is attached.
+
 ## Agent Testing Playbook
 
 1. Run `pnpm team-fixture:seed`.

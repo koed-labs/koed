@@ -15,6 +15,7 @@ import {
   collaborationMessageSchema,
   collaborationNameSchema,
   collaborationOpaqueCursorSchema,
+  pendingShareSchema,
   collaborationRemoteBackendUrlSchema,
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema,
@@ -2054,6 +2055,51 @@ describe("collaboration results and realtime", () => {
         family: "thread_lifecycle"
       }).success
     ).toBe(false);
+  });
+
+  it("carries Privacy filtering and its redacted terminal state through renderer contracts", () => {
+    const terminalPendingShare = {
+      ...pendingShare(),
+      state: "needs_attention" as const,
+      stage: "privacy_filtering" as const,
+      sourceUpdateState: "failed" as const,
+      redactedFailureCode: "privacy_classification_terminal"
+    };
+    expect(pendingShareSchema.safeParse(terminalPendingShare).success).toBe(
+      true
+    );
+
+    const update = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      type: "update" as const,
+      subscriptionId: ids.subscription,
+      deliveryId: ids.delivery,
+      eventId: ids.event,
+      occurredAt: timestamp,
+      family: "pending_share_lifecycle" as const,
+      resource: {
+        scope: "personal" as const,
+        teamId: null,
+        workspaceId: null,
+        threadId: null,
+        messageId: null,
+        sharedSessionId: null,
+        shareGrantId: null
+      },
+      update: {
+        type: "owned_share_status_changed" as const,
+        pendingShareId: ids.shareGrant,
+        sourceTitle: "Private source title",
+        state: terminalPendingShare.state,
+        stage: terminalPendingShare.stage,
+        workspaceAccessState: terminalPendingShare.workspaceAccessState,
+        sourceUpdateState: terminalPendingShare.sourceUpdateState,
+        redactedFailureCode: terminalPendingShare.redactedFailureCode
+      }
+    };
+    expect(collaborationRendererEventSchema.safeParse(update).success).toBe(
+      true
+    );
   });
 
   it("keeps Personal Memory sync updates on the current contract version and owner-only resources", () => {

@@ -6,6 +6,35 @@ import {
 } from "./setup-workflow.js";
 
 describe("desktop setup workflow", () => {
+  it("does not mark final verification complete before its prerequisites", async () => {
+    const workflow = createDesktopSetupWorkflow({
+      randomId: () => "setup-run",
+      inspectStage: async (stage) => ({
+        complete:
+          stage === "package" ||
+          stage === "runtime" ||
+          stage === "verification",
+        message:
+          stage === "verification"
+            ? "Setup verification passed."
+            : stage === "package" || stage === "runtime"
+              ? "Already complete"
+              : "Needs setup"
+      }),
+      runStage: async (stage) => ({ ok: true, message: `${stage} complete` })
+    });
+
+    const snapshot = await workflow.inspect();
+
+    expect(snapshot.state).toBe("ready");
+    expect(
+      snapshot.stages.find(({ id }) => id === "verification")
+    ).toMatchObject({
+      message: "Complete the preceding setup steps before final verification.",
+      state: "pending"
+    });
+  });
+
   it("skips completed stages and runs the remainder in order", async () => {
     const completed = new Set<DesktopSetupStageId>(["package", "runtime"]);
     const runStage = vi.fn(async (stage: DesktopSetupStageId) => ({
