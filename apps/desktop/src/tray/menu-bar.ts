@@ -205,7 +205,9 @@ export const menuBarIconFilename = (
   platform: NodeJS.Platform
 ): string | null => {
   if (platform === "darwin") return "koed-trayTemplate.png";
-  if (platform === "linux") return "koed-tray-linux.png";
+  if (platform === "linux" || platform === "win32") {
+    return "koed-tray-linux.png";
+  }
   return null;
 };
 

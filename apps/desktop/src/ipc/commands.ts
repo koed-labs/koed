@@ -12,7 +12,10 @@ import type {
   LocalAiClientDesktopHandler,
   PersonalMemoryDesktopHandler
 } from "../koed-server/manager.js";
-import type { DesktopSetupSnapshot } from "../types.js";
+import type {
+  DesktopLaunchAtStartupState,
+  DesktopSetupSnapshot
+} from "../types.js";
 import {
   collaborationCommandChannel,
   collaborationEventChannel,
@@ -30,6 +33,8 @@ import {
   themePreferenceSetChannel,
   hardwareAccelerationGetChannel,
   hardwareAccelerationSetChannel,
+  launchAtStartupGetChannel,
+  launchAtStartupSetChannel,
   type DesktopCommandName
 } from "./protocol.js";
 import {
@@ -139,6 +144,10 @@ export const registerDesktopCommandHandlers = (
       enabled: boolean;
       managedByEnvironment: boolean;
     }>;
+    getLaunchAtStartup: () => Promise<DesktopLaunchAtStartupState>;
+    setLaunchAtStartup: (
+      enabled: boolean
+    ) => Promise<DesktopLaunchAtStartupState>;
   }
 ): void => {
   ipcMain.handle(
@@ -255,6 +264,23 @@ export const registerDesktopCommandHandlers = (
       return options.setHardwareAcceleration(value);
     }
   );
+
+  ipcMain.handle(launchAtStartupGetChannel, async (event) => {
+    if (!trustedSender(event, options.allowedRendererOrigins)) {
+      throw new Error("Untrusted Desktop IPC sender.");
+    }
+    return options.getLaunchAtStartup();
+  });
+
+  ipcMain.handle(launchAtStartupSetChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins)) {
+      throw new Error("Untrusted Desktop IPC sender.");
+    }
+    if (typeof value !== "boolean") {
+      throw new Error("Invalid launch-at-startup preference.");
+    }
+    return options.setLaunchAtStartup(value);
+  });
 
   ipcMain.handle(
     personalDevicePairingLinkConsumeChannel,

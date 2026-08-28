@@ -39,7 +39,7 @@ describe("Desktop menu-bar status", () => {
   it("selects platform-appropriate tray assets", () => {
     expect(menuBarIconFilename("darwin")).toBe("koed-trayTemplate.png");
     expect(menuBarIconFilename("linux")).toBe("koed-tray-linux.png");
-    expect(menuBarIconFilename("win32")).toBeNull();
+    expect(menuBarIconFilename("win32")).toBe("koed-tray-linux.png");
   });
 
   it("ships an RGBA Linux tray asset", () => {

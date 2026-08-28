@@ -19,7 +19,11 @@ describe("Desktop startup", () => {
     });
 
     await expect(
-      startDesktopWindowAndRuntime({ createWindow, resumeRuntime })
+      startDesktopWindowAndRuntime({
+        background: false,
+        createWindow,
+        resumeRuntime
+      })
     ).resolves.toBeUndefined();
     expect(order).toEqual(["window", "resume-started"]);
 
@@ -34,9 +38,29 @@ describe("Desktop startup", () => {
     });
 
     await expect(
-      startDesktopWindowAndRuntime({ createWindow, resumeRuntime })
+      startDesktopWindowAndRuntime({
+        background: false,
+        createWindow,
+        resumeRuntime
+      })
     ).resolves.toBeUndefined();
     expect(createWindow).toHaveBeenCalledOnce();
+    expect(resumeRuntime).toHaveBeenCalledOnce();
+  });
+
+  it("resumes the runtime without creating a background startup window", async () => {
+    const createWindow = vi.fn(async () => undefined);
+    const resumeRuntime = vi.fn(async () => undefined);
+
+    await expect(
+      startDesktopWindowAndRuntime({
+        background: true,
+        createWindow,
+        resumeRuntime
+      })
+    ).resolves.toBeUndefined();
+
+    expect(createWindow).not.toHaveBeenCalled();
     expect(resumeRuntime).toHaveBeenCalledOnce();
   });
 });

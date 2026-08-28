@@ -185,6 +185,92 @@ describe("PreferencesView", () => {
     expect(container.textContent).toContain("managed by the Operator");
   });
 
+  it("persists launch at startup through trusted Desktop IPC", async () => {
+    const get = vi.fn(async () => ({
+      enabled: false,
+      status: "disabled" as const,
+      supported: true
+    }));
+    const set = vi.fn(async (enabled: boolean) => ({
+      enabled,
+      status: enabled ? ("enabled" as const) : ("disabled" as const),
+      supported: true
+    }));
+    await renderPreferences({ launchAtStartup: { get, set } });
+    const toggle = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Launch Koed at startup"]'
+    );
+
+    expect(toggle).toBeTruthy();
+    expect(toggle!.checked).toBe(false);
+    await act(async () => toggle!.click());
+
+    expect(set).toHaveBeenCalledWith(true);
+    expect(toggle!.checked).toBe(true);
+    expect(container.textContent).toContain(
+      "Start Koed in the background when you sign in."
+    );
+  });
+
+  it("surfaces approval and unavailable launch-at-startup states", async () => {
+    await renderPreferences({
+      launchAtStartup: {
+        get: vi.fn(async () => ({
+          enabled: true,
+          status: "requires-approval" as const,
+          supported: true
+        })),
+        set: vi.fn()
+      }
+    });
+    expect(container.textContent).toContain(
+      "Allow Koed in System Settings to finish setup."
+    );
+
+    await renderPreferences({
+      launchAtStartup: {
+        get: vi.fn(async () => ({
+          enabled: false,
+          status: "unsupported" as const,
+          supported: false
+        })),
+        set: vi.fn()
+      }
+    });
+    const toggle = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Launch Koed at startup"]'
+    );
+    expect(toggle!.disabled).toBe(true);
+    expect(container.textContent).toContain(
+      "Available in a packaged Koed app."
+    );
+  });
+
+  it("reverts launch at startup when the OS update fails", async () => {
+    await renderPreferences({
+      launchAtStartup: {
+        get: vi.fn(async () => ({
+          enabled: false,
+          status: "disabled" as const,
+          supported: true
+        })),
+        set: vi.fn(async () => {
+          throw new Error("denied");
+        })
+      }
+    });
+    const toggle = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Launch Koed at startup"]'
+    );
+
+    await act(async () => toggle!.click());
+
+    expect(toggle!.checked).toBe(false);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "could not be changed"
+    );
+  });
+
   it("hides Capture until the Desktop integration is available", async () => {
     await renderPreferences();
     expect(

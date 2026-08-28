@@ -3785,6 +3785,18 @@ describe("CollaborationApp", () => {
     expect(document.body.textContent).not.toContain("Team · Direct message");
   });
 
+  it("opens Ask from the Personal Home rail button", async () => {
+    await render();
+    await click(container, "Inbox");
+    await click(container, "Personal");
+
+    await vi.waitFor(() =>
+      expect(
+        document.body.querySelector('[aria-label="Breadcrumb: Personal / Ask"]')
+      ).not.toBeNull()
+    );
+  });
+
   it("uses concise, page-specific breadcrumbs across Personal and Team routes", async () => {
     await render();
     expect(

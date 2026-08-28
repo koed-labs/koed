@@ -13,6 +13,8 @@ import {
   collaborationCommandChannel,
   hardwareAccelerationGetChannel,
   hardwareAccelerationSetChannel,
+  launchAtStartupGetChannel,
+  launchAtStartupSetChannel,
   isDesktopCommandName,
   managedConversationCommandChannel,
   personalDevicePairingLinkConsumeChannel,
@@ -125,6 +127,22 @@ describe("desktop IPC command registry", () => {
       hardwareAccelerationEnabled = enabled;
       return { enabled, managedByEnvironment: false };
     });
+    let launchAtStartupEnabled = false;
+    const getLaunchAtStartup = vi.fn(async () => ({
+      enabled: launchAtStartupEnabled,
+      status: launchAtStartupEnabled
+        ? ("enabled" as const)
+        : ("disabled" as const),
+      supported: true
+    }));
+    const setLaunchAtStartup = vi.fn(async (enabled: boolean) => {
+      launchAtStartupEnabled = enabled;
+      return {
+        enabled,
+        status: enabled ? ("enabled" as const) : ("disabled" as const),
+        supported: true
+      };
+    });
     const mutatingHandlers = Object.fromEntries(
       [
         "setup_codex",
@@ -188,7 +206,9 @@ describe("desktop IPC command registry", () => {
         getThemePreference,
         setThemePreference,
         getHardwareAcceleration,
-        setHardwareAcceleration
+        setHardwareAcceleration,
+        getLaunchAtStartup,
+        setLaunchAtStartup
       }
     );
     return {
@@ -204,6 +224,8 @@ describe("desktop IPC command registry", () => {
       setThemePreference,
       getHardwareAcceleration,
       setHardwareAcceleration,
+      getLaunchAtStartup,
+      setLaunchAtStartup,
       mutatingHandlers,
       checkHandlers
     };
@@ -456,6 +478,31 @@ describe("desktop IPC command registry", () => {
     expect(setHardwareAcceleration).toHaveBeenCalledWith(false);
     await expect(set(renderer(), "cuda")).rejects.toThrow(
       "Invalid hardware acceleration preference"
+    );
+    await expect(get(renderer("https://attacker.example/"))).rejects.toThrow(
+      "Untrusted Desktop IPC sender"
+    );
+  });
+
+  it("gets and sets launch at startup only for trusted renderers", async () => {
+    const { registered, getLaunchAtStartup, setLaunchAtStartup } = register();
+    const get = registered.get(launchAtStartupGetChannel)!;
+    const set = registered.get(launchAtStartupSetChannel)!;
+
+    await expect(get(renderer())).resolves.toEqual({
+      enabled: false,
+      status: "disabled",
+      supported: true
+    });
+    await expect(set(renderer(), true)).resolves.toEqual({
+      enabled: true,
+      status: "enabled",
+      supported: true
+    });
+    expect(getLaunchAtStartup).toHaveBeenCalledOnce();
+    expect(setLaunchAtStartup).toHaveBeenCalledWith(true);
+    await expect(set(renderer(), "yes")).rejects.toThrow(
+      "Invalid launch-at-startup preference"
     );
     await expect(get(renderer("https://attacker.example/"))).rejects.toThrow(
       "Untrusted Desktop IPC sender"

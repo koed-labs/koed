@@ -1,6 +1,9 @@
 export const shouldQuitAfterAllWindowsClosed = (
   platform: NodeJS.Platform
-): boolean => platform !== "darwin" && platform !== "linux";
+): boolean => {
+  void platform;
+  return false;
+};
 
 export interface DesktopWindowHandle {
   focus(): void;
@@ -11,6 +14,7 @@ export interface DesktopWindowHandle {
 }
 
 export const createDesktopWindowActivator = (input: {
+  beforeOpen?: () => void | Promise<void>;
   createWindow: () => Promise<void>;
   getWindow: () => DesktopWindowHandle | null;
   waitForBootstrap: () => Promise<void>;
@@ -19,6 +23,7 @@ export const createDesktopWindowActivator = (input: {
 
   return async (): Promise<void> => {
     await input.waitForBootstrap();
+    if (input.beforeOpen) await input.beforeOpen();
 
     const window = input.getWindow();
     if (!window || window.isDestroyed()) {

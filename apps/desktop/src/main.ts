@@ -61,6 +61,10 @@ import {
 import { createMainWindowOptions } from "./window/window-manager.js";
 import { startDesktopWindowAndRuntime } from "./window/startup.js";
 import {
+  createLaunchAtStartupController,
+  isBackgroundLaunch
+} from "./window/launch-at-startup.js";
+import {
   createDesktopWindowActivator,
   shouldQuitAfterAllWindowsClosed
 } from "./window/lifecycle.js";
@@ -106,6 +110,7 @@ let pdsSecretBridge: PdsSecretBridge | null = null;
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
 let desktopMenuBar: DesktopMenuBar | null = null;
+let backgroundLaunchPending = false;
 const pairingLinkInbox = createPersonalDevicePairingInbox();
 
 const acceptPairingDeepLink = (value: string): string | null => {
@@ -290,6 +295,10 @@ const createWindow = async () => {
 };
 
 const showDesktopWindow = createDesktopWindowActivator({
+  beforeOpen: async () => {
+    backgroundLaunchPending = false;
+    if (process.platform === "darwin") await app.dock?.show();
+  },
   createWindow,
   getWindow: () => mainWindow,
   waitForBootstrap: async () => {
@@ -308,6 +317,22 @@ async function showPairingDeepLink(value: string): Promise<void> {
 
 const bootstrap = async () => {
   await app.whenReady();
+  const launchAtStartup = createLaunchAtStartupController({
+    appDataPath: app.getPath("appData"),
+    appIsPackaged: app.isPackaged,
+    execPath: process.execPath,
+    getLoginItemSettings: (options) => app.getLoginItemSettings(options),
+    platform: process.platform,
+    setLoginItemSettings: (settings) => app.setLoginItemSettings(settings)
+  });
+  backgroundLaunchPending = isBackgroundLaunch({
+    argv: process.argv,
+    platform: process.platform,
+    wasOpenedAtLogin: launchAtStartup.wasOpenedAtLogin()
+  });
+  if (backgroundLaunchPending && process.platform === "darwin") {
+    app.dock?.hide();
+  }
   const themePreferenceFile = desktopThemePreferencePath(
     app.getPath("userData")
   );
@@ -347,9 +372,38 @@ const bootstrap = async () => {
     },
     getHardwareAcceleration: () => server.hardwareAcceleration.get(),
     setHardwareAcceleration: (enabled) =>
-      server.hardwareAcceleration.set(enabled)
+      server.hardwareAcceleration.set(enabled),
+    getLaunchAtStartup: () => launchAtStartup.get(),
+    setLaunchAtStartup: (enabled) => launchAtStartup.set(enabled)
   });
+  if (menuBarIconPath && existsSync(menuBarIconPath)) {
+    const menuBarIcon = nativeImage.createFromPath(menuBarIconPath);
+    if (process.platform === "darwin") menuBarIcon.setTemplateImage(true);
+    const tray = new Tray(menuBarIcon);
+    desktopMenuBar = createDesktopMenuBar<Menu>({
+      tray: {
+        destroy: () => tray.destroy(),
+        onClick: (listener) => {
+          tray.on("click", listener);
+        },
+        ...(process.platform === "darwin"
+          ? {
+              onRightClick: (listener: () => void) => {
+                tray.on("right-click", listener);
+              },
+              popUpContextMenu: (menu: Menu) => tray.popUpContextMenu(menu)
+            }
+          : { setContextMenu: (menu: Menu) => tray.setContextMenu(menu) }),
+        setToolTip: (tooltip) => tray.setToolTip(tooltip)
+      },
+      buildMenu: (template) => Menu.buildFromTemplate(template),
+      getStatus: () => server.handlers.status(),
+      openDesktop: showDesktopWindow,
+      quit: () => app.quit()
+    });
+  }
   await startDesktopWindowAndRuntime({
+    background: backgroundLaunchPending,
     createWindow,
     resumeRuntime: async () => {
       const persistentPdsStore = createPdsDesktopSecretStore({
@@ -399,32 +453,6 @@ const bootstrap = async () => {
       return result;
     }
   });
-  if (menuBarIconPath && existsSync(menuBarIconPath)) {
-    const menuBarIcon = nativeImage.createFromPath(menuBarIconPath);
-    if (process.platform === "darwin") menuBarIcon.setTemplateImage(true);
-    const tray = new Tray(menuBarIcon);
-    desktopMenuBar = createDesktopMenuBar<Menu>({
-      tray: {
-        destroy: () => tray.destroy(),
-        onClick: (listener) => {
-          tray.on("click", listener);
-        },
-        ...(process.platform === "darwin"
-          ? {
-              onRightClick: (listener: () => void) => {
-                tray.on("right-click", listener);
-              },
-              popUpContextMenu: (menu: Menu) => tray.popUpContextMenu(menu)
-            }
-          : { setContextMenu: (menu: Menu) => tray.setContextMenu(menu) }),
-        setToolTip: (tooltip) => tray.setToolTip(tooltip)
-      },
-      buildMenu: (template) => Menu.buildFromTemplate(template),
-      getStatus: () => server.handlers.status(),
-      openDesktop: showDesktopWindow,
-      quit: () => app.quit()
-    });
-  }
 };
 
 if (ownsDesktopInstance) {
@@ -443,6 +471,7 @@ app.on("window-all-closed", () => {
   }
 });
 app.on("activate", () => {
+  if (backgroundLaunchPending) return;
   if (BrowserWindow.getAllWindows().length === 0) {
     void showDesktopWindow();
   }

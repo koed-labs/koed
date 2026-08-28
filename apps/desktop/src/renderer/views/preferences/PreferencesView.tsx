@@ -61,12 +61,6 @@ export type CapturePreferencesCapability = {
   };
 };
 
-export type LocalLaunchCapability = {
-  enabled: boolean;
-  label: string;
-  onChange: (enabled: boolean) => void | Promise<void>;
-};
-
 export type PreferencesViewProps = {
   acknowledgements?: readonly string[];
   capture?: CapturePreferencesCapability;
@@ -74,7 +68,7 @@ export type PreferencesViewProps = {
   collaborationSnapshot?: CollaborationSnapshot | null;
   initialSection?: PreferencesSection;
   hardwareAcceleration?: DesktopApi["hardwareAcceleration"];
-  launch?: LocalLaunchCapability;
+  launchAtStartup?: DesktopApi["launchAtStartup"];
   localAiClients?: DesktopApi["localAiClients"];
   onSectionChange?: (section: PreferencesSection) => void;
   onThemeChange: (theme: DesktopThemePreference) => void;
@@ -119,12 +113,12 @@ function SettingRow({
 
 function GeneralSection({
   hardwareAcceleration,
-  launch,
+  launchAtStartup,
   onThemeChange,
   theme
 }: Pick<
   PreferencesViewProps,
-  "hardwareAcceleration" | "launch" | "onThemeChange" | "theme"
+  "hardwareAcceleration" | "launchAtStartup" | "onThemeChange" | "theme"
 >) {
   return (
     <div className="koed-preference-section">
@@ -146,23 +140,81 @@ function GeneralSection({
           ))}
         </div>
       </fieldset>
+      <LaunchAtStartupSetting api={launchAtStartup} />
       <HardwareAccelerationSetting api={hardwareAcceleration} />
-      {launch ? (
-        <SettingRow
-          description="This preference stays on this device."
-          label={launch.label}
-        >
-          <input
-            aria-label={launch.label}
-            checked={launch.enabled}
-            onChange={(event) =>
-              void launch.onChange(event.currentTarget.checked)
-            }
-            type="checkbox"
-          />
-        </SettingRow>
-      ) : null}
     </div>
+  );
+}
+
+function LaunchAtStartupSetting({
+  api
+}: {
+  api?: DesktopApi["launchAtStartup"];
+}) {
+  const [state, setState] = useState<Awaited<
+    ReturnType<NonNullable<typeof api>["get"]>
+  > | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!api) return;
+    void api
+      .get()
+      .then((value) => {
+        if (active) setState(value);
+      })
+      .catch(() => {
+        if (active) setError("Launch at startup could not be read.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [api]);
+
+  if (!api) return null;
+  const description =
+    state?.supported === false
+      ? "Available in a packaged Koed app."
+      : "Start Koed in the background when you sign in. Open it from the system tray or menu bar.";
+  return (
+    <SettingRow description={description} label="Launch Koed at startup">
+      <div className="koed-preference-toggle-state">
+        <input
+          aria-label="Launch Koed at startup"
+          checked={state?.enabled ?? false}
+          disabled={state === null || !state.supported || busy}
+          onChange={(event) => {
+            const enabled = event.currentTarget.checked;
+            const previous = state;
+            setState({
+              enabled,
+              status: enabled ? "enabled" : "disabled",
+              supported: true
+            });
+            setBusy(true);
+            setError(null);
+            void api
+              .set(enabled)
+              .then(setState)
+              .catch(() => {
+                setState(previous);
+                setError("Launch at startup could not be changed.");
+              })
+              .finally(() => setBusy(false));
+          }}
+          type="checkbox"
+        />
+        {busy ? <Spinner aria-label="Updating launch at startup" /> : null}
+        {state?.status === "requires-approval" ? (
+          <span role="status">
+            Allow Koed in System Settings to finish setup.
+          </span>
+        ) : null}
+        {error ? <span role="alert">{error}</span> : null}
+      </div>
+    </SettingRow>
   );
 }
 
@@ -888,7 +940,7 @@ export function PreferencesView({
   collaborationSnapshot,
   initialSection = "general",
   hardwareAcceleration,
-  launch,
+  launchAtStartup,
   localAiClients,
   onSectionChange,
   onThemeChange,
@@ -938,7 +990,7 @@ export function PreferencesView({
         {section === "general" ? (
           <GeneralSection
             hardwareAcceleration={hardwareAcceleration}
-            launch={launch}
+            launchAtStartup={launchAtStartup}
             onThemeChange={onThemeChange}
             theme={theme}
           />

@@ -78,21 +78,34 @@ Preparation fails instead of changing stale outputs that a live supervisor
 uses. Stop that supervisor before you prepare the stale runtime. Packaged
 Desktop and standalone `koed-server` packages do not use this fingerprint.
 
-Desktop creates and loads its main window before it resumes the managed local
-`koed-server`. Platform secret-provider initialization runs in the background
-startup path after the window exists and before the runtime resumes. A blocked
-or interactive operating-system credential provider therefore cannot leave the
-User with no application window. A fresh or incomplete setup opens the guided
-setup without silently installing runtime or model assets. After explicit User
-confirmation, Desktop checks and runs the package, native runtime, embedding
-model, local services, client-neutral core artifacts, and final verification
-stages in order. It may report detected AI Clients, but detection is diagnostic
-only: mandatory setup never selects, edits, or configures Codex, Claude Code, or
-Pi. Existing client profiles remain untouched. Completed stages are skipped.
-Only the active stage is shown as running, model download progress comes from
-transferred artifact bytes, and a failure stops the workflow with a retry that
-re-inspects local state. The automatic resume wait is bounded so broken local
-runtime state remains diagnosable from the app.
+On a normal foreground launch, Desktop creates and loads its main window before
+it resumes the managed local `koed-server`. Platform secret-provider
+initialization runs after the window exists and before the runtime resumes. A
+blocked or interactive operating-system credential provider therefore cannot
+leave the User with no application window.
+
+A packaged User can enable **Launch Koed at startup** in General settings. A
+login launch takes the background path: Desktop creates its macOS menu-bar or
+Linux/Windows system-tray indicator and resumes the managed runtime without
+creating the main window. A manual launch, deep link, or indicator action later
+creates or focuses the window. Closing that window leaves Koed running; use the
+indicator's **Quit Koed** action to stop Desktop and its managed runtime. macOS
+uses the native login-item service, Linux uses a Koed-owned XDG autostart entry,
+and Windows-compatible application code uses an exact executable registration
+with `--background`. Native Windows packaging, signing, runtime distribution,
+and packaged smoke testing are not shipped in this build.
+
+A fresh or incomplete foreground setup opens the guided setup without silently
+installing runtime or model assets. After explicit User confirmation, Desktop
+checks and runs the package, native runtime, embedding model, local services,
+client-neutral core artifacts, and final verification stages in order. It may
+report detected AI Clients, but detection is diagnostic only: mandatory setup
+never selects, edits, or configures Codex, Claude Code, or Pi. Existing client
+profiles remain untouched. Completed stages are skipped. Only the active stage
+is shown as running, model download progress comes from transferred artifact
+bytes, and a failure stops the workflow with a retry that re-inspects local
+state. The automatic resume wait is bounded so broken local runtime state
+remains diagnosable from the app.
 
 The normal Desktop surface is a product UI rather than an operations dashboard.
 It keeps successful setup details collapsed, surfaces remediation only when

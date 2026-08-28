@@ -139,6 +139,18 @@ export interface DesktopSetupApi {
   subscribe: (listener: (snapshot: DesktopSetupSnapshot) => void) => () => void;
 }
 
+export type DesktopLaunchAtStartupStatus =
+  | "disabled"
+  | "enabled"
+  | "requires-approval"
+  | "unsupported";
+
+export interface DesktopLaunchAtStartupState {
+  enabled: boolean;
+  status: DesktopLaunchAtStartupStatus;
+  supported: boolean;
+}
+
 export interface DesktopApi {
   invoke: <T = unknown>(
     command: string,
@@ -187,6 +199,10 @@ export interface DesktopApi {
       enabled: boolean;
       managedByEnvironment: boolean;
     }>;
+  };
+  launchAtStartup?: {
+    get: () => Promise<DesktopLaunchAtStartupState>;
+    set: (enabled: boolean) => Promise<DesktopLaunchAtStartupState>;
   };
   setup?: DesktopSetupApi;
   collaboration?: {

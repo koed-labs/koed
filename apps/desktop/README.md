@@ -166,6 +166,16 @@ signing/notarization is not turned on in this repo yet; `desktop:package` and
 release setup. Native Windows packaged app support is not shipped here;
 Linux/WSL use is limited to smoke and unpacked-artifact testing.
 
+Packaged builds expose **Launch Koed at startup** in General settings. When
+enabled, an operating-system login launch starts the managed runtime in the
+background and keeps Koed available through the macOS menu bar or Linux/Windows
+system tray without opening the main window. Normal launches still open the
+window first. Closing the window leaves Koed running until **Quit Koed** is
+selected from the indicator menu. Linux targets XDG-autostart desktop
+environments. The Windows-compatible registration and tray code is covered by
+platform-injected tests, but this repository still does not ship native Windows
+packaging, signing, runtime distribution, or packaged smoke support.
+
 ## Notes
 
 - `desktop:start` builds the app and launches Electron in source-checkout mode.

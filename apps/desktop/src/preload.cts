@@ -18,6 +18,8 @@ import {
   desktopCommandNames,
   hardwareAccelerationGetChannel,
   hardwareAccelerationSetChannel,
+  launchAtStartupGetChannel,
+  launchAtStartupSetChannel,
   setupCommandChannel,
   setupProgressEventChannel,
   themePreferenceGetChannel,
@@ -70,6 +72,11 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     get: () => ipcRenderer.invoke(hardwareAccelerationGetChannel),
     set: (enabled: boolean) =>
       ipcRenderer.invoke(hardwareAccelerationSetChannel, enabled)
+  }),
+  launchAtStartup: Object.freeze({
+    get: () => ipcRenderer.invoke(launchAtStartupGetChannel),
+    set: (enabled: boolean) =>
+      ipcRenderer.invoke(launchAtStartupSetChannel, enabled)
   }),
   setup: Object.freeze({
     inspect: () => ipcRenderer.invoke(setupCommandChannel, "inspect"),

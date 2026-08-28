@@ -9,15 +9,25 @@ For service and authorization details, see
 [Team Collaboration Architecture](team-collaboration.md). For runtime setup and
 operation, see [Running Koed](running-koed.md).
 
-On macOS and Linux, Koed Desktop also provides a menu-bar or system-tray
-indicator for its managed local services. Activating the Koed mark opens or
-focuses the Desktop window. The indicator's context menu shows the current
-running-service count and lists only services that are starting, stopped,
-unconfigured, unavailable, or need attention. Healthy services are omitted. It
-also provides explicit refresh, open, and quit actions. Setup and AI-client
-integration diagnostics remain in the full Desktop status surface. On Linux,
-the exact activation gesture and indicator location depend on the desktop
-environment and its StatusNotifierItem or legacy tray support.
+Koed Desktop provides a menu-bar indicator on macOS and a system-tray indicator
+on Linux and Windows for its managed local services. Activating the Koed mark
+opens or focuses the Desktop window. The indicator's context menu shows the
+current running-service count and lists only services that are starting,
+stopped, unconfigured, unavailable, or need attention. Healthy services are
+omitted. It also provides explicit refresh, open, and quit actions. Closing the
+Desktop window leaves Koed running; select **Quit Koed** from the indicator menu
+to terminate it. Setup and AI-client integration diagnostics remain in the full
+Desktop status surface. On Linux, the exact activation gesture and indicator
+location depend on the desktop environment and its StatusNotifierItem or legacy
+tray support.
+
+General settings includes **Launch Koed at startup** in packaged builds. It is
+off by default and uses the operating system's login registration rather than
+Koed configuration. When enabled, a login launch starts the managed runtime and
+indicator without opening the Desktop window. A manual launch, deep link, or
+indicator action opens the window normally. Linux support targets desktop
+environments that implement XDG autostart. The setting reports macOS approval
+requirements and changes made later through operating-system settings.
 
 ## Information Model
 
