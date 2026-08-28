@@ -190,6 +190,15 @@ const splitOversizedItem = (
   return chunked;
 };
 
+/**
+ * Represent one logical Conversation Item as bounded transport observations.
+ * Historical ingestion uses the same envelope as live capture, while keeping
+ * its own source-cursor transaction boundary.
+ */
+export const rawConversationTransportItems = (
+  item: RawConversationItemRequest
+): RawConversationItemRequest[] => splitOversizedItem(item);
+
 export const rawConversationItemBatches = (
   items: RawConversationItemRequest[]
 ): RawConversationItemRequest[][] => {

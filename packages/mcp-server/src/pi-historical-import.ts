@@ -27,6 +27,7 @@ import {
   selectRecentHistoricalCandidates,
   transitionAutomaticHistoricalSource
 } from "./automatic-historical-provider.js";
+import { rawConversationTransportItems } from "./raw-conversation-items.js";
 import type {
   HistoricalCandidateSelection,
   HistoricalProviderAdapter
@@ -209,7 +210,9 @@ export const registerPiHistoricalTranscriptSource = async (
 };
 
 const historicalItem = (item: RawConversationItemRequest) => ({
+  observationOnly: item.observationOnly,
   sessionId: item.sessionId,
+  turnId: item.turnId,
   externalThreadId: item.externalThreadId,
   externalTurnId: item.externalTurnId,
   externalItemId: item.externalItemId,
@@ -221,16 +224,71 @@ const historicalItem = (item: RawConversationItemRequest) => ({
   eventTime: item.eventTime,
   rawJson: item.rawJson,
   rawText: item.rawText,
+  logicalSourceId: item.logicalSourceId,
+  transportChunkIndex: item.transportChunkIndex,
+  transportChunkCount: item.transportChunkCount,
+  transportChunkText: item.transportChunkText,
+  transportChunkEncoding: item.transportChunkEncoding,
   sourceHash: item.sourceHash,
   idempotencyKey: item.idempotencyKey,
   canonicalItemKey: item.canonicalItemKey,
   canonicalStableItemId: item.canonicalStableItemId,
+  canonicalSourcePriority: item.canonicalSourcePriority,
   observationKind: item.observationKind,
   observationComponent: item.observationComponent,
   projectionStatus: item.projectionStatus,
   projectionVersion: "pi-session-v1" as const,
   metadata: item.metadata
 });
+
+const piHistoricalGapItem = (input: {
+  source: HistoricalSource;
+  sourceOffset: number;
+  sourceLength: number;
+  sourceLine: number;
+  sourceBytes: Buffer;
+}): ReturnType<typeof historicalItem> => {
+  const sourceDigest = createHash("sha256")
+    .update(input.sourceBytes)
+    .digest("hex");
+  const discriminator = `gap:${input.sourceLine}:${sourceDigest.slice(0, 16)}`;
+  const rawJson = {
+    type: "pi_historical_gap",
+    reason: "pi_historical_record_exceeds_product_ceiling",
+    sourceOffset: input.sourceOffset,
+    sourceLength: input.sourceLength,
+    sourceDigest
+  };
+  return historicalItem({
+    sourceKind: "pi",
+    sourceAdapterVersion: "pi-session-v1",
+    sourceTransport: "historical_import",
+    sessionId: input.source.sessionId,
+    externalSessionId: input.source.sourceSessionId,
+    externalThreadId: input.source.sourceSessionId,
+    externalItemId: discriminator,
+    sourceRecordType: "historical_gap",
+    sourceEventType: "record_skipped",
+    sourceLineNumber: input.sourceLine,
+    sourceSequence: input.sourceLine * 1_000,
+    rawJson,
+    sourceHash: hash(rawJson),
+    idempotencyKey: `pi-session:${input.source.sourceSessionId}:${discriminator}`,
+    observationKind: "reconciliation",
+    observationComponent: "historical_gap",
+    projectionStatus: "raw_only",
+    projectionVersion: "pi-session-v1",
+    metadata: {
+      transcriptItemDiscriminator: discriminator,
+      transcriptSourceLineNumber: input.sourceLine,
+      transcriptByteOffset: input.sourceOffset,
+      sourceFingerprint: input.source.sourceFingerprint,
+      gapReason: "pi_historical_record_exceeds_product_ceiling",
+      gapSourceDigest: sourceDigest,
+      gapSourceLength: input.sourceLength
+    }
+  });
+};
 
 export const importPiHistoricalSource = async (
   client: MemoryApiClient,
@@ -317,7 +375,7 @@ const lookupHistoricalSource = async (
   }
 };
 
-const importNextPiHistoricalBatch = async (
+export const importNextPiHistoricalBatch = async (
   client: MemoryApiClient,
   source: HistoricalSource,
   config: { maxRows: number; maxBytes: number }
@@ -359,9 +417,7 @@ const importNextPiHistoricalBatch = async (
     const newline = available.lastIndexOf(0x0a, localEnd - 1);
     if (newline < 0) {
       const next = available.indexOf(0x0a, localEnd);
-      if (next < 0 || next + 1 > 3_500_000) {
-        throw new Error("pi_historical_record_exceeds_batch_limit");
-      }
+      if (next < 0) throw new Error("pi_historical_record_incomplete");
       localEnd = next + 1;
     } else {
       localEnd = newline + 1;
@@ -392,17 +448,68 @@ const importNextPiHistoricalBatch = async (
       prior: parserState,
       sourceTransport: "historical_import"
     });
-    items = parsed.items.map(historicalItem);
+    let transportItems: RawConversationItemRequest[];
+    try {
+      transportItems = parsed.items.flatMap((item) =>
+        rawConversationTransportItems(item).map((transportItem) => ({
+          ...transportItem,
+          metadata: {
+            ...transportItem.metadata,
+            transcriptItemDiscriminator:
+              item.metadata.transcriptItemDiscriminator,
+            ...(item.metadata.transcriptByteOffset !== undefined
+              ? {
+                  transcriptByteOffset: item.metadata.transcriptByteOffset
+                }
+              : {}),
+            ...(item.metadata.transcriptSourceLineNumber !== undefined
+              ? {
+                  transcriptSourceLineNumber:
+                    item.metadata.transcriptSourceLineNumber
+                }
+              : {})
+          }
+        }))
+      );
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        ![
+          "Raw conversation item exceeds the logical item limit",
+          "Raw conversation item requires too many transport chunks"
+        ].includes(error.message)
+      ) {
+        throw error;
+      }
+      transportItems = [];
+    }
+    items = transportItems.map(historicalItem);
     if (Buffer.byteLength(JSON.stringify(items), "utf8") <= config.maxBytes) {
       break;
     }
     const previous = available.lastIndexOf(0x0a, localEnd - 2);
     if (previous < 0) {
-      throw new Error("pi_historical_record_exceeds_batch_limit");
+      break;
     }
     localEnd = previous + 1;
   }
   const end = source.historicalCursorOffset + localEnd;
+  let skippedRecordCount = 0;
+  if (Buffer.byteLength(JSON.stringify(items), "utf8") > 3_800_000) {
+    items = [];
+  }
+  if (items.length === 0 && parsed.items.length > 0) {
+    items = [
+      piHistoricalGapItem({
+        source,
+        sourceOffset: source.historicalCursorOffset,
+        sourceLength: localEnd,
+        sourceLine: source.historicalCursorLine,
+        sourceBytes: available.subarray(0, localEnd)
+      })
+    ];
+    skippedRecordCount = 1;
+  }
   await client.ingestHistoricalImportBatch(source.id, {
     expectedSourceOffset: source.historicalCursorOffset,
     sourceOffset: end,
@@ -410,32 +517,10 @@ const importNextPiHistoricalBatch = async (
     segmentIndex: segment.segmentIndex,
     lastVerifiedDigest: segment.plaintextDigest,
     parserState: parsed.parserState,
+    ...(skippedRecordCount > 0 ? { skippedRecordCount } : {}),
     items
   });
   return true;
-};
-
-const skipUnrepresentablePiSource = async (
-  client: MemoryApiClient,
-  source: HistoricalSource
-): Promise<void> => {
-  try {
-    await client.transitionHistoricalImportSource(source.id, {
-      expectedState: "importing",
-      state: "failed",
-      failureReason: "pi_historical_record_exceeds_batch_limit"
-    });
-  } catch (error) {
-    if (!(error instanceof MemoryApiError) || error.status !== 409) throw error;
-  }
-  try {
-    await client.transitionHistoricalImportSource(source.id, {
-      expectedState: "failed",
-      state: "skipped"
-    });
-  } catch (error) {
-    if (!(error instanceof MemoryApiError) || error.status !== 409) throw error;
-  }
 };
 
 const selectionSignal = (
@@ -510,6 +595,35 @@ export const createPiHistoricalProviderAdapter = (input: {
           )
         };
       }
+      let source = currentSelection.artifactId
+        ? await lookupHistoricalSource(
+            input.client,
+            currentSelection.artifactId
+          )
+        : null;
+      if (source?.state === "completed" || source?.state === "skipped") {
+        return {
+          state: source.state,
+          selection: currentSelection,
+          runId: source.runId
+        };
+      }
+      // The shared scheduler keeps this decision and the resulting producer
+      // work under one lease. Check before artifact registration as that step
+      // can append raw transcript segments of its own.
+      if (
+        !(await automaticHistoricalPolicyAdmits(
+          input.client,
+          currentSelection
+        )) ||
+        !(await automaticHistoricalAdmission(input.client)).admitted
+      ) {
+        return {
+          state: "waiting",
+          selection: currentSelection,
+          ...(runId ? { runId } : {})
+        };
+      }
       if (!currentSelection.artifactId) {
         const artifact = await registerPiHistoricalTranscriptSource(
           input.client,
@@ -522,7 +636,7 @@ export const createPiHistoricalProviderAdapter = (input: {
         };
       }
       const artifactId = currentSelection.artifactId!;
-      const source = await lookupHistoricalSource(input.client, artifactId);
+      source ??= await lookupHistoricalSource(input.client, artifactId);
       let activeRunId = source?.runId ?? runId;
       if (!source) {
         activeRunId ??= await createAutomaticHistoricalRun(input.client);
@@ -542,21 +656,7 @@ export const createPiHistoricalProviderAdapter = (input: {
         };
       }
       activeRunId = source.runId;
-      if (source.state === "completed" || source.state === "skipped") {
-        return {
-          state: source.state,
-          selection: currentSelection,
-          runId: activeRunId
-        };
-      }
-      if (
-        ["paused", "failed"].includes(source.state) ||
-        !(await automaticHistoricalPolicyAdmits(
-          input.client,
-          currentSelection
-        )) ||
-        !(await automaticHistoricalAdmission(input.client)).admitted
-      ) {
+      if (["paused", "failed"].includes(source.state)) {
         return {
           state: "waiting",
           selection: currentSelection,
@@ -578,26 +678,11 @@ export const createPiHistoricalProviderAdapter = (input: {
           runId: activeRunId
         };
       }
-      try {
-        if (
-          await importNextPiHistoricalBatch(input.client, source, batchConfig)
-        ) {
-          return {
-            state: "progress",
-            selection: currentSelection,
-            runId: activeRunId
-          };
-        }
-      } catch (error) {
-        if (
-          !(error instanceof Error) ||
-          error.message !== "pi_historical_record_exceeds_batch_limit"
-        ) {
-          throw error;
-        }
-        await skipUnrepresentablePiSource(input.client, source);
+      if (
+        await importNextPiHistoricalBatch(input.client, source, batchConfig)
+      ) {
         return {
-          state: "skipped",
+          state: "progress",
           selection: currentSelection,
           runId: activeRunId
         };

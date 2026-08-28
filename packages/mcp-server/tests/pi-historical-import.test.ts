@@ -2,10 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MemoryApiClient, MemoryApiError } from "../src/index.js";
-import { registerPiHistoricalTranscriptSource } from "../src/pi-historical-import.js";
+import {
+  createPiHistoricalProviderAdapter,
+  importNextPiHistoricalBatch,
+  registerPiHistoricalTranscriptSource
+} from "../src/pi-historical-import.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(() => {
@@ -145,5 +149,196 @@ describe("Pi historical transcript registration", () => {
     expect(registered.registrationFrontierOffset).toBe(
       fs.statSync(transcriptPath).size
     );
+  });
+});
+
+describe("Pi automatic historical policy ordering", () => {
+  it("does not register or upload an artifact while Capture Pause is active", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-history-"));
+    temporaryDirectories.push(root);
+    const sessions = path.join(root, "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const sourceSessionId = randomUUID();
+    const transcriptPath = path.join(sessions, `${sourceSessionId}.jsonl`);
+    const cwd = "/tmp/pi-history";
+    fs.writeFileSync(
+      transcriptPath,
+      line({ type: "session", version: 3, id: sourceSessionId, cwd })
+    );
+    const lookupConversationSourceArtifact = vi.fn();
+    const historicalImportAdmission = vi.fn();
+    const client = {
+      effectiveCapturePolicy: vi.fn(async () => ({
+        policy: {
+          visibility: "personal",
+          captureState: "enabled",
+          paused: true
+        }
+      })),
+      historicalImportAdmission,
+      lookupConversationSourceArtifact
+    } as unknown as MemoryApiClient;
+    const adapter = createPiHistoricalProviderAdapter({
+      client,
+      env: {
+        KOED_HOME: path.join(root, "koed"),
+        PI_CODING_AGENT_SESSION_DIR: sessions
+      }
+    });
+    const frontierOffset = fs.statSync(transcriptPath).size;
+
+    await expect(
+      adapter.processNextBatch({
+        candidate: {
+          sourceSessionId,
+          transcriptPath,
+          cwd,
+          latestActivityAt: "2026-08-17T00:00:00.000Z",
+          frontierOffset,
+          frontierLine: 1
+        },
+        selection: {
+          aiClient: "pi",
+          candidateId: sourceSessionId,
+          frontierOffset,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z",
+          adapterState: { projectId: cwd }
+        }
+      })
+    ).resolves.toMatchObject({ state: "waiting" });
+
+    expect(historicalImportAdmission).not.toHaveBeenCalled();
+    expect(lookupConversationSourceArtifact).not.toHaveBeenCalled();
+  });
+});
+
+describe("Pi bounded historical record representation", () => {
+  const sourceFor = (bytes: Buffer) => ({
+    id: randomUUID(),
+    runId: randomUUID(),
+    artifactId: randomUUID(),
+    sessionId: randomUUID(),
+    sourceSessionId: randomUUID(),
+    sourceFingerprint: "a".repeat(64),
+    historicalCursorOffset: 0,
+    historicalCursorLine: 0,
+    registrationFrontierOffset: bytes.length,
+    state: "importing"
+  });
+
+  const clientFor = (source: ReturnType<typeof sourceFor>, bytes: Buffer) => {
+    const batches: Array<Record<string, unknown>> = [];
+    const client = {
+      listConversationSourceSegments: vi.fn(async () => ({
+        segments: [
+          {
+            id: "segment-0",
+            segmentIndex: 0,
+            sourceStartOffset: 0,
+            sourceEndOffset: bytes.length,
+            plaintextDigest: "b".repeat(64)
+          }
+        ]
+      })),
+      getConversationSourceSegmentContent: vi.fn(async () => ({
+        bytesBase64: bytes.toString("base64")
+      })),
+      ingestHistoricalImportBatch: vi.fn(
+        async (_sourceId: string, batch: Record<string, unknown>) => {
+          batches.push(batch);
+          return { source };
+        }
+      )
+    } as unknown as MemoryApiClient;
+    return { batches, client };
+  };
+
+  const messageRecord = (id: string, text: string): string =>
+    line({
+      type: "message",
+      id,
+      timestamp: "2026-08-17T00:00:00.000Z",
+      message: { role: "user", content: text }
+    });
+
+  it("uses transport chunks for a record above the configured batch target and continues", async () => {
+    const firstRecord = messageRecord("large", "x".repeat(1_100_000));
+    const bytes = Buffer.from(
+      `${firstRecord}${messageRecord("later", "valid later record")}`
+    );
+    const source = sourceFor(bytes);
+    const { batches, client } = clientFor(source, bytes);
+
+    await expect(
+      importNextPiHistoricalBatch(client, source, {
+        maxRows: 100,
+        maxBytes: 1_000_000
+      })
+    ).resolves.toBe(true);
+    const first = batches[0]!;
+    const firstItems = first.items as Array<Record<string, unknown>>;
+    expect(firstItems.length).toBeGreaterThan(1);
+    expect(firstItems.every((item) => item.logicalSourceId)).toBe(true);
+    expect(first.skippedRecordCount).toBeUndefined();
+
+    await expect(
+      importNextPiHistoricalBatch(
+        client,
+        {
+          ...source,
+          historicalCursorOffset: first.sourceOffset as number,
+          historicalCursorLine: first.sourceLine as number,
+          historicalCursorParserState: first.parserState as Record<
+            string,
+            unknown
+          >
+        },
+        { maxRows: 100, maxBytes: 1_000_000 }
+      )
+    ).resolves.toBe(true);
+    expect(batches[1]?.items).toEqual([
+      expect.objectContaining({ rawText: "valid later record" })
+    ]);
+  });
+
+  it("persists an auditable gap above the hard payload ceiling and continues", async () => {
+    const firstRecord = messageRecord("too-large", "x".repeat(4_100_000));
+    const bytes = Buffer.from(
+      `${firstRecord}${messageRecord("later", "valid after gap")}`
+    );
+    const source = sourceFor(bytes);
+    const { batches, client } = clientFor(source, bytes);
+
+    await importNextPiHistoricalBatch(client, source, {
+      maxRows: 100,
+      maxBytes: 1_000_000
+    });
+    const gap = batches[0]!;
+    expect(gap).toMatchObject({ skippedRecordCount: 1 });
+    const gapItems = gap.items as Array<Record<string, unknown>>;
+    expect(gapItems).toHaveLength(1);
+    expect(gapItems[0]).toMatchObject({
+      sourceRecordType: "historical_gap",
+      sourceEventType: "record_skipped",
+      projectionStatus: "raw_only",
+      rawJson: {
+        reason: "pi_historical_record_exceeds_product_ceiling"
+      }
+    });
+
+    await importNextPiHistoricalBatch(
+      client,
+      {
+        ...source,
+        historicalCursorOffset: gap.sourceOffset as number,
+        historicalCursorLine: gap.sourceLine as number,
+        historicalCursorParserState: gap.parserState as Record<string, unknown>
+      },
+      { maxRows: 100, maxBytes: 1_000_000 }
+    );
+    expect(batches[1]?.items).toEqual([
+      expect.objectContaining({ rawText: "valid after gap" })
+    ]);
   });
 });

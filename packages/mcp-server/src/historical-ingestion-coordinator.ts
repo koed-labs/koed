@@ -36,6 +36,29 @@ export interface HistoricalProviderAdapter<Candidate> {
   completeRun?(runId: string): Promise<void>;
 }
 
+export interface HistoricalBatchScheduler {
+  runExclusive<Result>(operation: () => Promise<Result>): Promise<Result>;
+}
+
+export const createHistoricalBatchScheduler = (): HistoricalBatchScheduler => {
+  let tail = Promise.resolve();
+  return {
+    async runExclusive<Result>(operation: () => Promise<Result>) {
+      const predecessor = tail;
+      let release!: () => void;
+      tail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await predecessor;
+      try {
+        return await operation();
+      } finally {
+        release();
+      }
+    }
+  };
+};
+
 export interface HistoricalIngestionCoordinatorState {
   version: number;
   selectionFrozen: boolean;
@@ -127,6 +150,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
   adapter: HistoricalProviderAdapter<Candidate>;
   koedHome: string;
   retryMs: number;
+  batchScheduler?: HistoricalBatchScheduler;
   now?: () => Date;
   onError?: (code: string) => void;
 }): HistoricalIngestionCoordinatorHandle<Candidate> => {
@@ -142,6 +166,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
   let stopped = false;
   let requested = false;
   let discovery: Promise<void> | null = null;
+  let discoveryTimer: NodeJS.Timeout | undefined;
 
   const save = (): void => persistState(statePath, state);
   const schedule = (delayMs = 0): void => {
@@ -162,11 +187,15 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       if (stopped) break;
       if (current.terminalState) continue;
       const candidate = candidates.get(current.candidateId);
-      const result = await input.adapter.processNextBatch({
-        ...(candidate ? { candidate } : {}),
-        selection: current,
-        ...(state.runId ? { runId: state.runId } : {})
-      });
+      const processNextBatch = () =>
+        input.adapter.processNextBatch({
+          ...(candidate ? { candidate } : {}),
+          selection: current,
+          ...(state.runId ? { runId: state.runId } : {})
+        });
+      const result = input.batchScheduler
+        ? await input.batchScheduler.runExclusive(processNextBatch)
+        : await processNextBatch();
       const index = state.selections.findIndex(
         (selection) => selection.candidateId === current.candidateId
       );
@@ -238,7 +267,9 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
     schedule();
   };
 
-  if (input.adapter.discoverCandidates) {
+  const discover = (): void => {
+    if (stopped || !input.adapter.discoverCandidates || state.selectionFrozen)
+      return;
     discovery = input.adapter
       .discoverCandidates()
       .then(offerCandidates)
@@ -248,8 +279,16 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
             ? error.message
             : "historical_candidate_discovery_failed"
         );
+        if (!stopped && !state.selectionFrozen) {
+          discoveryTimer = setTimeout(discover, input.retryMs);
+          discoveryTimer.unref();
+        }
+      })
+      .finally(() => {
+        discovery = null;
       });
-  }
+  };
+  discover();
 
   return {
     offerCandidates,
@@ -263,6 +302,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
     async stop() {
       stopped = true;
       if (timer) clearTimeout(timer);
+      if (discoveryTimer) clearTimeout(discoveryTimer);
       await discovery;
       await running;
     }

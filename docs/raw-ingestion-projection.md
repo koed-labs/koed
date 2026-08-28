@@ -240,9 +240,12 @@ the provider-neutral coordinators select Conversations by latest source
 activity in the inclusive previous 30 days, cap each provider cohort at the
 newest 50, and process selected pre-frontier ranges in chronological order. A
 Conversation that began earlier remains eligible when its latest activity is
-inside the window. Provider-local cursor state and run completion are isolated
-under `KOED_HOME`, so one unavailable AI Client does not block another. These
-product bounds are fixed, not silently expanded by configuration.
+inside the window. Transient discovery failures retry without freezing an
+incomplete cohort. Provider-local cursor state and run completion are isolated
+under `KOED_HOME`, so one unavailable AI Client does not block another. Raw
+producer operations share one runtime lease across providers even though their
+discovery and durable retry state remain independent. These product bounds are
+fixed, not silently expanded by configuration.
 
 For every selected source, the watcher and the Local AI Runtime coordinator use
 the same complete-record boundary. Whichever wins registration writes one
@@ -449,9 +452,14 @@ authenticated, local-only `GET /v1/historical-import-admission` contract. Its
 content-free `{ admitted, reason }` response applies the same shared admission
 policy to current API/repository reachability, queue health, Embedding Service
 health, usable current-model capacity profile, and live Projection pressure.
-The runtime neither calls Operator-only `/ops/status` nor probes the Embedding
-Service or reconstructs Worker policy itself. A denied decision pauses only new
-historical production; it does not make `/ready` fail or stop live capture.
+The decision is advisory rather than a reservation, so the Local AI Runtime
+holds one provider-neutral producer lease across policy evaluation, admission,
+and the resulting batch operation. Codex, Claude Code, and Pi therefore cannot
+produce concurrent historical batches after observing the same available
+capacity. The runtime neither calls Operator-only `/ops/status` nor probes the
+Embedding Service or reconstructs Worker policy itself. A denied decision
+pauses only new historical production; it does not make `/ready` fail or stop
+live capture.
 
 Historical batches meter every physical raw row and all raw JSON, text, and
 transport-chunk bytes before admission. Completed-turn segments remain atomic.

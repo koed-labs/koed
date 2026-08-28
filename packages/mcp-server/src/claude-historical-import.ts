@@ -283,6 +283,7 @@ const moveNewSourceToImporting = async (
 export const importSelectedClaudeHistory = async (input: {
   client: MemoryApiClient;
   sourceSessionIds: readonly string[];
+  runId?: string;
   env?: NodeJS.ProcessEnv;
   maxBatches?: number;
 }): Promise<Record<string, unknown>> => {
@@ -291,7 +292,9 @@ export const importSelectedClaudeHistory = async (input: {
     input.sourceSessionIds,
     env
   );
-  let newRun: { id: string } | undefined;
+  let newRun: { id: string } | undefined = input.runId
+    ? { id: input.runId }
+    : undefined;
   const runIds = new Set<string>();
   const ensureNewRun = async (): Promise<{ id: string }> => {
     if (newRun) return newRun;
@@ -440,6 +443,7 @@ export const createClaudeHistoricalProviderAdapter = (input: {
       const result = await importSelectedClaudeHistory({
         client: input.client,
         sourceSessionIds: [candidate.sourceSessionId],
+        ...(runId ? { runId } : {}),
         env,
         maxBatches: 1
       });

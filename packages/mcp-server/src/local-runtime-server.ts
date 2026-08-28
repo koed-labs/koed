@@ -19,7 +19,10 @@ import {
   createCodexHistoricalProviderAdapter,
   resolveCodexHistoricalIngestionConfig
 } from "./codex-historical-ingestion.js";
-import { startHistoricalIngestionCoordinator } from "./historical-ingestion-coordinator.js";
+import {
+  createHistoricalBatchScheduler,
+  startHistoricalIngestionCoordinator
+} from "./historical-ingestion-coordinator.js";
 import { createClaudeHistoricalProviderAdapter } from "./claude-historical-import.js";
 import { startClaudeTranscriptWatcher } from "./claude-transcript-watcher.js";
 import { createPiHistoricalProviderAdapter } from "./pi-historical-import.js";
@@ -388,6 +391,11 @@ export const startDefaultLocalAiRuntimeServices = async (
     const piWatcherEnabled =
       environment.MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() !==
         "false" && Boolean(dependencies.startPiTranscriptWatcher);
+    // Admission is advisory rather than a reservation. Keep the complete
+    // policy/admission/production operation under one provider-neutral lease
+    // so independently resumed AI Clients cannot produce historical batches
+    // concurrently.
+    const historicalBatchScheduler = createHistoricalBatchScheduler();
     codexHistoricalIngestion =
       historicalEnabled && codexWatcherEnabled
         ? startHistoricalIngestionCoordinator({
@@ -397,6 +405,7 @@ export const startDefaultLocalAiRuntimeServices = async (
             }),
             koedHome,
             retryMs: 1_000,
+            batchScheduler: historicalBatchScheduler,
             onError: (code) =>
               logger.warn(
                 { code },
@@ -420,6 +429,7 @@ export const startDefaultLocalAiRuntimeServices = async (
           }),
           koedHome,
           retryMs: 1_000,
+          batchScheduler: historicalBatchScheduler,
           onError: (code) =>
             logger.warn(
               { aiClient: "claude", code },
@@ -441,6 +451,7 @@ export const startDefaultLocalAiRuntimeServices = async (
           }),
           koedHome,
           retryMs: 1_000,
+          batchScheduler: historicalBatchScheduler,
           onError: (code) =>
             logger.warn(
               { aiClient: "pi", code },

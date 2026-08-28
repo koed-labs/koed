@@ -778,7 +778,9 @@ install --kind privacy --json`: verify or install the pinned local Privacy
   historical ingestion in the supervised Local AI Runtime. Independent
   provider-neutral coordinators run for each enabled supported AI Client
   (Codex, Claude Code, and Pi); one client's discovery or retry state does not
-  block another.
+  block another. Candidate discovery retries transient failures before freezing
+  a cohort. Raw production is nevertheless serialized by one shared runtime
+  lease so separate providers cannot pass advisory admission concurrently.
 - `MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_ROWS`: maximum canonical raw items in
   one Local AI Runtime historical upload. Default `100`; valid range `1`–`500`.
 - `MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_BYTES`: maximum serialized canonical

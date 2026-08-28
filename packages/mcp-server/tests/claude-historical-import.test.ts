@@ -127,6 +127,58 @@ describe("Claude historical import", () => {
     expect(transitionHistoricalImportSource).toHaveBeenCalledTimes(4);
   });
 
+  it("attaches new candidate sources to the coordinator's existing run", async () => {
+    const artifactId = randomUUID();
+    const sourceId = randomUUID();
+    const runId = randomUUID();
+    const source = {
+      id: sourceId,
+      runId,
+      artifactId,
+      sessionId: randomUUID(),
+      sourceSessionId: "claude-session-cohort",
+      sourceFingerprint: "c".repeat(64),
+      historicalCursorOffset: 0,
+      historicalCursorLine: 0,
+      registrationFrontierOffset: 0,
+      state: "discovered"
+    };
+    watcherMocks.discover.mockResolvedValueOnce([
+      { externalSessionId: "claude-session-cohort", cwd: "/work/project" }
+    ]);
+    watcherMocks.register.mockResolvedValueOnce([
+      { id: artifactId, sourceComponentId: "main" }
+    ]);
+    const client = {
+      lookupHistoricalImportSource: vi.fn(async () => {
+        throw new MemoryApiError("not found", { status: 404 });
+      }),
+      createHistoricalImportRun: vi.fn(),
+      transitionHistoricalImportRun: vi.fn(),
+      createHistoricalImportSource: vi.fn(async () => ({ source })),
+      transitionHistoricalImportSource: vi.fn(
+        async (_id: string, transition: Record<string, unknown>) => ({
+          source: { ...source, state: transition.state }
+        })
+      ),
+      listConversationSourceSegments: vi.fn()
+    } as unknown as MemoryApiClient;
+
+    await expect(
+      importSelectedClaudeHistory({
+        client,
+        sourceSessionIds: ["claude-session-cohort"],
+        runId
+      })
+    ).resolves.toMatchObject({ runId, runIds: [runId] });
+
+    expect(client.createHistoricalImportRun).not.toHaveBeenCalled();
+    expect(client.transitionHistoricalImportRun).not.toHaveBeenCalled();
+    expect(client.createHistoricalImportSource).toHaveBeenCalledWith(
+      expect.objectContaining({ runId, aiClient: "claude" })
+    );
+  });
+
   it("imports the signed pre-activation range in source order", async () => {
     const externalSessionId = randomUUID();
     const capturedSessionId = randomUUID();

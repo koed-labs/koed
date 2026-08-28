@@ -11,6 +11,7 @@ import {
   type CodexHistoricalCandidate
 } from "../src/codex-historical-ingestion.js";
 import {
+  createHistoricalBatchScheduler,
   startHistoricalIngestionCoordinator,
   type HistoricalProviderAdapter
 } from "../src/historical-ingestion-coordinator.js";
@@ -267,6 +268,88 @@ describe("provider-owned historical discovery", () => {
 
     expect(processed).toEqual(["discovered-conversation"]);
     await coordinator.stop();
+  });
+
+  it("retries transient discovery failures before freezing the cohort", async () => {
+    let discoveryAttempts = 0;
+    const errors: string[] = [];
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "retrying-discovery-provider",
+      async discoverCandidates() {
+        discoveryAttempts += 1;
+        if (discoveryAttempts === 1) {
+          throw new Error("historical_discovery_temporarily_unavailable");
+        }
+        return [{ id: "recovered-conversation" }];
+      },
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry) => ({
+          aiClient: "retrying-discovery-provider",
+          candidateId: entry.id,
+          frontierOffset: 10,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        })),
+      async processNextBatch({ selection }) {
+        return { state: "completed", selection, runId: "run-recovered" };
+      },
+      completeRun: async () => undefined
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome: temporaryDirectory(),
+      retryMs: 5,
+      onError: (code) => errors.push(code)
+    });
+
+    await vi.waitFor(() =>
+      expect(coordinator.snapshot().runCompleted).toBe(true)
+    );
+
+    expect(discoveryAttempts).toBe(2);
+    expect(errors).toEqual(["historical_discovery_temporarily_unavailable"]);
+    expect(coordinator.snapshot().selections).toHaveLength(1);
+    await coordinator.stop();
+  });
+});
+
+describe("provider-neutral historical batch scheduling", () => {
+  it("serializes complete provider operations under one shared lease", async () => {
+    const scheduler = createHistoricalBatchScheduler();
+    let active = 0;
+    let maximumActive = 0;
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const operation = (id: string, blocked = false) =>
+      scheduler.runExclusive(async () => {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        order.push(`${id}:start`);
+        if (blocked) await firstBlocked;
+        order.push(`${id}:end`);
+        active -= 1;
+      });
+
+    const first = operation("codex", true);
+    const second = operation("claude");
+    const third = operation("pi");
+    await vi.waitFor(() => expect(order).toEqual(["codex:start"]));
+    releaseFirst();
+    await Promise.all([first, second, third]);
+
+    expect(maximumActive).toBe(1);
+    expect(order).toEqual([
+      "codex:start",
+      "codex:end",
+      "claude:start",
+      "claude:end",
+      "pi:start",
+      "pi:end"
+    ]);
   });
 });
 
