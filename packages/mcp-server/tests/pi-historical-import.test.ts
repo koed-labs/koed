@@ -32,6 +32,133 @@ const appendLargeValidPrefix = (target: string): number => {
 };
 
 describe("Pi historical transcript registration", () => {
+  it("pins the frozen frontier and appends one configured journal page", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-history-"));
+    temporaryDirectories.push(root);
+    const sessions = path.join(root, "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const sourceSessionId = randomUUID();
+    const transcriptPath = path.join(sessions, `${sourceSessionId}.jsonl`);
+    const cwd = "/tmp/pi-history";
+    const historical = [
+      line({ type: "session", version: 3, id: sourceSessionId, cwd }),
+      ...Array.from({ length: 4 }, (_, index) =>
+        line({
+          type: "message",
+          id: `historical-${index}`,
+          timestamp: `2026-08-17T00:00:0${index}.000Z`,
+          message: { role: "user", content: "x".repeat(600) }
+        })
+      )
+    ].join("");
+    fs.writeFileSync(transcriptPath, historical);
+    const frozenFrontier = Buffer.byteLength(historical);
+    fs.appendFileSync(
+      transcriptPath,
+      line({
+        type: "message",
+        id: "live-after-selection",
+        timestamp: "2026-08-17T00:01:00.000Z",
+        message: { role: "user", content: "live" }
+      })
+    );
+    let artifact: Record<string, unknown> | null = null;
+    const appendedEnds: number[] = [];
+    const createHistoricalImportRun = vi.fn();
+    const createHistoricalImportSource = vi.fn();
+    const client = {
+      effectiveCapturePolicy: vi.fn(async () => ({
+        policy: {
+          visibility: "personal",
+          captureState: "enabled",
+          paused: false
+        }
+      })),
+      historicalImportAdmission: vi.fn(async () => ({ admitted: true })),
+      lookupHistoricalImportSource: vi.fn(async () => {
+        throw new MemoryApiError("not found", { status: 404 });
+      }),
+      createHistoricalImportRun,
+      createHistoricalImportSource,
+      async lookupConversationSourceArtifact() {
+        if (!artifact) throw new MemoryApiError("not found", { status: 404 });
+        return { artifact };
+      },
+      async ensureConversationSourceArtifact(input: Record<string, unknown>) {
+        artifact = {
+          id: randomUUID(),
+          sessionId: randomUUID(),
+          providerCursorOffset: 0,
+          providerCursorLine: 0,
+          liveStartOffset: input.liveStartOffset,
+          sourceFingerprint: input.sourceFingerprint
+        };
+        return { artifact };
+      },
+      async appendConversationSourceSegment(
+        artifactId: string,
+        input: Record<string, unknown>
+      ) {
+        appendedEnds.push(Number(input.sourceEndOffset));
+        artifact = {
+          ...artifact,
+          id: artifactId,
+          providerCursorOffset: input.sourceEndOffset,
+          providerCursorLine: input.sourceEndLine
+        };
+        return { artifact };
+      }
+    } as unknown as MemoryApiClient;
+
+    const registered = await registerPiHistoricalTranscriptSource(
+      client,
+      { sourceSessionId, transcriptPath, cwd },
+      {
+        KOED_HOME: path.join(root, "koed"),
+        PI_CODING_AGENT_SESSION_DIR: sessions
+      },
+      {
+        frontierOffset: frozenFrontier,
+        frontierLine: 5,
+        maxBytesPerPass: 1_024
+      }
+    );
+
+    expect(artifact).toMatchObject({ liveStartOffset: frozenFrontier });
+    expect(appendedEnds).toHaveLength(1);
+    expect(appendedEnds[0]).toBeLessThan(frozenFrontier);
+    expect(registered.registrationFrontierOffset).toBe(frozenFrontier);
+    expect(registered.providerCursorOffset).toBe(appendedEnds[0]);
+
+    const adapter = createPiHistoricalProviderAdapter({
+      client,
+      env: {
+        KOED_HOME: path.join(root, "koed"),
+        PI_CODING_AGENT_SESSION_DIR: sessions,
+        MEMORY_HISTORICAL_IMPORT_JOURNAL_BATCH_BYTES: "1024"
+      }
+    });
+    const candidate = {
+      sourceSessionId,
+      transcriptPath,
+      cwd,
+      latestActivityAt: "2026-08-17T00:00:00.000Z",
+      frontierOffset: frozenFrontier,
+      frontierLine: 5
+    };
+    const selection = adapter.selectCandidates(
+      [candidate],
+      new Date("2026-08-17T12:00:00.000Z")
+    )[0]!;
+    await expect(
+      adapter.processNextBatch({ candidate, selection })
+    ).resolves.toMatchObject({ state: "progress" });
+    expect(appendedEnds).toHaveLength(2);
+    expect(appendedEnds[1]).toBeLessThan(frozenFrontier);
+    expect(createHistoricalImportRun).not.toHaveBeenCalled();
+    expect(createHistoricalImportSource).not.toHaveBeenCalled();
+  });
+
   it("converges when the live watcher wins a journal append race", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-history-"));
     temporaryDirectories.push(root);

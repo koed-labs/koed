@@ -4,7 +4,16 @@ import {
   discoverClaudeHistoricalTranscriptSignals,
   registerClaudeHistoricalTranscriptSources
 } from "./claude-transcript-watcher.js";
-import { completeTranscriptBoundary } from "./codex-transcript-journal.js";
+import {
+  completeTranscriptBoundary,
+  countTranscriptLines
+} from "./codex-transcript-journal.js";
+import {
+  discoverClaudeHistoricalComponentCandidates,
+  lookupClaudeArtifact,
+  type ClaudeHistoricalComponentCandidate,
+  type ClaudeHistoricalComponentFrontier
+} from "./claude-transcript-source.js";
 import {
   parseClaudeTranscriptJournalBytes,
   type ClaudeTranscriptParserState
@@ -14,9 +23,13 @@ import {
   automaticHistoricalAdmission,
   automaticHistoricalPolicyAdmits,
   completeAutomaticHistoricalRun,
+  resolveAutomaticHistoricalJournalBatchBytes,
   selectRecentHistoricalCandidates
 } from "./automatic-historical-provider.js";
-import type { HistoricalProviderAdapter } from "./historical-ingestion-coordinator.js";
+import type {
+  HistoricalCandidateSelection,
+  HistoricalProviderAdapter
+} from "./historical-ingestion-coordinator.js";
 
 export interface ClaudeHistoricalCandidate {
   sourceSessionId: string;
@@ -25,6 +38,7 @@ export interface ClaudeHistoricalCandidate {
   latestActivityAt: string;
   frontierOffset: number;
   frontierLine?: number;
+  components?: ClaudeHistoricalComponentCandidate[];
 }
 
 type HistoricalSource = {
@@ -286,6 +300,10 @@ export const importSelectedClaudeHistory = async (input: {
   runId?: string;
   env?: NodeJS.ProcessEnv;
   maxBatches?: number;
+  componentFrontiersBySession?: Readonly<
+    Record<string, readonly ClaudeHistoricalComponentFrontier[]>
+  >;
+  maxJournalBytesPerPass?: number;
 }): Promise<Record<string, unknown>> => {
   const env = input.env ?? process.env;
   const signals = await discoverClaudeHistoricalTranscriptSignals(
@@ -316,8 +334,30 @@ export const importSelectedClaudeHistory = async (input: {
     const artifacts = await registerClaudeHistoricalTranscriptSources(
       input.client,
       signal,
-      env
+      env,
+      {
+        ...(input.componentFrontiersBySession?.[signal.sourceSessionId]
+          ? {
+              components:
+                input.componentFrontiersBySession[signal.sourceSessionId]
+            }
+          : {}),
+        ...(input.maxJournalBytesPerPass !== undefined
+          ? { maxBytesPerPass: input.maxJournalBytesPerPass }
+          : {})
+      }
     );
+    if (
+      artifacts.some(
+        (artifact) =>
+          typeof artifact.providerCursorOffset === "number" &&
+          typeof artifact.registrationFrontierOffset === "number" &&
+          artifact.providerCursorOffset < artifact.registrationFrontierOffset
+      )
+    ) {
+      completed = false;
+      break signalLoop;
+    }
     for (const [artifactIndex, artifact] of artifacts.entries()) {
       let source = await lookupHistoricalSource(input.client, artifact.id);
       const resumed = source !== null;
@@ -404,31 +444,159 @@ export const importSelectedClaudeHistory = async (input: {
 };
 
 export const discoverClaudeHistoricalCandidates = async (
-  env: NodeJS.ProcessEnv = process.env
-): Promise<ClaudeHistoricalCandidate[]> =>
-  (await discoverAllClaudeHistoricalTranscriptSignals(env)).map((signal) => ({
+  env: NodeJS.ProcessEnv = process.env,
+  candidateIds?: readonly string[]
+): Promise<ClaudeHistoricalCandidate[]> => {
+  const signals = candidateIds
+    ? await discoverClaudeHistoricalTranscriptSignals(candidateIds, env)
+    : await discoverAllClaudeHistoricalTranscriptSignals(env);
+  const preliminary = signals.map((signal) => ({
     sourceSessionId: signal.sourceSessionId,
     transcriptPath: signal.transcriptPath,
     cwd: signal.cwd,
     latestActivityAt: signal.observedAt ?? new Date(0).toISOString(),
     frontierOffset: completeTranscriptBoundary(signal.transcriptPath)
   }));
+  const selectedIds = candidateIds
+    ? new Set(candidateIds)
+    : new Set(
+        selectRecentHistoricalCandidates({
+          aiClient: "claude",
+          candidates: preliminary,
+          now: new Date(),
+          adapterState: () => ({})
+        }).map((selection) => selection.candidateId)
+      );
+  return Promise.all(
+    preliminary
+      .filter((candidate) => selectedIds.has(candidate.sourceSessionId))
+      .map(async (candidate) => {
+        const components = await discoverClaudeHistoricalComponentCandidates(
+          candidate,
+          env
+        );
+        const main = components.find(
+          (component) => component.componentId === "main"
+        );
+        if (!main) throw new Error("claude_source_main_component_missing");
+        return {
+          ...candidate,
+          frontierOffset: main.frontierOffset,
+          frontierLine: main.frontierLine,
+          components
+        };
+      })
+  );
+};
+
+const componentFrontiersFromSelection = async (
+  client: MemoryApiClient,
+  selection: HistoricalCandidateSelection,
+  candidate: ClaudeHistoricalCandidate
+): Promise<ClaudeHistoricalComponentFrontier[]> => {
+  const value = selection.adapterState?.componentFrontiers;
+  if (Array.isArray(value)) {
+    const components = value.filter(
+      (entry): entry is ClaudeHistoricalComponentFrontier => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          return false;
+        }
+        const component = entry as Record<string, unknown>;
+        return (
+          typeof component.componentId === "string" &&
+          (component.componentRole === "primary" ||
+            component.componentRole === "auxiliary") &&
+          (component.parentComponentId === null ||
+            typeof component.parentComponentId === "string") &&
+          Number.isSafeInteger(component.frontierOffset) &&
+          Number(component.frontierOffset) >= 0 &&
+          Number.isSafeInteger(component.frontierLine) &&
+          Number(component.frontierLine) >= -1
+        );
+      }
+    );
+    if (components.length === value.length && components.length > 0) {
+      return components;
+    }
+  }
+  const components: ClaudeHistoricalComponentFrontier[] = [
+    {
+      componentId: "main",
+      componentRole: "primary",
+      parentComponentId: null,
+      frontierOffset: selection.frontierOffset,
+      frontierLine:
+        selection.frontierLine >= 0
+          ? selection.frontierLine
+          : await countTranscriptLines(
+              candidate.transcriptPath,
+              selection.frontierOffset
+            )
+    }
+  ];
+  for (const component of candidate.components ?? []) {
+    if (component.componentId === "main") continue;
+    const artifact = await lookupClaudeArtifact(
+      client,
+      candidate.sourceSessionId,
+      component.componentId
+    );
+    if (
+      !artifact ||
+      typeof artifact.liveStartOffset !== "number" ||
+      typeof artifact.liveStartLine !== "number"
+    ) {
+      continue;
+    }
+    components.push({
+      componentId: component.componentId,
+      componentRole: component.componentRole,
+      parentComponentId: component.parentComponentId,
+      frontierOffset: artifact.liveStartOffset,
+      frontierLine: artifact.liveStartLine
+    });
+  }
+  return components;
+};
 
 export const createClaudeHistoricalProviderAdapter = (input: {
   client: MemoryApiClient;
   env?: NodeJS.ProcessEnv;
 }): HistoricalProviderAdapter<ClaudeHistoricalCandidate> => {
   const env = input.env ?? process.env;
+  const maxJournalBytesPerPass =
+    resolveAutomaticHistoricalJournalBatchBytes(env);
   return {
     aiClient: "claude",
-    discoverCandidates: () => discoverClaudeHistoricalCandidates(env),
+    discoverCandidates: (candidateIds) =>
+      discoverClaudeHistoricalCandidates(env, candidateIds),
     candidateId: (candidate) => candidate.sourceSessionId,
     selectCandidates: (candidates, now) =>
       selectRecentHistoricalCandidates({
         aiClient: "claude",
         candidates,
         now,
-        adapterState: (candidate) => ({ projectId: candidate.cwd })
+        adapterState: (candidate) => ({
+          projectId: candidate.cwd,
+          componentFrontiers: (
+            candidate.components ?? [
+              {
+                componentId: "main",
+                componentRole: "primary" as const,
+                parentComponentId: null,
+                transcriptPath: candidate.transcriptPath,
+                frontierOffset: candidate.frontierOffset,
+                frontierLine: candidate.frontierLine ?? -1
+              }
+            ]
+          ).map((component) => ({
+            componentId: component.componentId,
+            componentRole: component.componentRole,
+            parentComponentId: component.parentComponentId,
+            frontierOffset: component.frontierOffset,
+            frontierLine: component.frontierLine
+          }))
+        })
       }),
     async processNextBatch({ candidate, selection, runId }) {
       if (!candidate) {
@@ -440,18 +608,34 @@ export const createClaudeHistoricalProviderAdapter = (input: {
       ) {
         return { state: "waiting", selection, ...(runId ? { runId } : {}) };
       }
+      const componentFrontiers = await componentFrontiersFromSelection(
+        input.client,
+        selection,
+        candidate
+      );
+      const currentSelection = {
+        ...selection,
+        adapterState: {
+          ...selection.adapterState,
+          componentFrontiers
+        }
+      };
       const result = await importSelectedClaudeHistory({
         client: input.client,
         sourceSessionIds: [candidate.sourceSessionId],
         ...(runId ? { runId } : {}),
         env,
-        maxBatches: 1
+        maxBatches: 1,
+        componentFrontiersBySession: {
+          [candidate.sourceSessionId]: componentFrontiers
+        },
+        maxJournalBytesPerPass
       });
       const activeRunId =
         typeof result.runId === "string" ? result.runId : runId;
       return {
         state: result.completed === true ? "completed" : "progress",
-        selection,
+        selection: currentSelection,
         ...(activeRunId ? { runId: activeRunId } : {})
       };
     },

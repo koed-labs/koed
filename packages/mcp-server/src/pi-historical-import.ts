@@ -24,6 +24,7 @@ import {
   completeAutomaticHistoricalSource,
   createAutomaticHistoricalRun,
   historicalObjectValue,
+  resolveAutomaticHistoricalJournalBatchBytes,
   selectRecentHistoricalCandidates,
   transitionAutomaticHistoricalSource
 } from "./automatic-historical-provider.js";
@@ -38,6 +39,7 @@ type Artifact = {
   sessionId: string;
   providerCursorOffset: number;
   providerCursorLine: number;
+  liveStartOffset?: number;
   sourceFingerprint: string;
 };
 type HistoricalSource = {
@@ -97,17 +99,48 @@ const readRange = (target: string, start: number, end: number): Buffer => {
   }
 };
 
+const nextCompleteJournalSegment = (
+  target: string,
+  start: number,
+  boundary: number,
+  targetBytes: number
+): Buffer => {
+  const requestedEnd = Math.min(boundary, start + targetBytes);
+  const candidate = readRange(target, start, requestedEnd);
+  if (requestedEnd === boundary) return candidate;
+  const lastNewline = candidate.lastIndexOf(0x0a);
+  if (lastNewline >= 0) return candidate.subarray(0, lastNewline + 1);
+  const expandedEnd = Math.min(boundary, start + 16 * 1024 * 1024);
+  const expanded = readRange(target, start, expandedEnd);
+  const expandedNewline = expanded.indexOf(0x0a);
+  if (expandedNewline < 0) throw new Error("pi_historical_record_too_large");
+  return expanded.subarray(0, expandedNewline + 1);
+};
+
 export const registerPiHistoricalTranscriptSource = async (
   client: MemoryApiClient,
   signal: PiTranscriptWatcherSignal,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  options: {
+    frontierOffset?: number;
+    frontierLine?: number;
+    maxBytesPerPass?: number;
+  } = {}
 ): Promise<Artifact & { registrationFrontierOffset: number }> => {
   const target = await verifiedPiSessionPath(signal.transcriptPath, env);
   const identity = piSessionIdentity(target);
   if (identity.id !== signal.sourceSessionId)
     throw new Error("pi_historical_session_identity_mismatch");
   const file = fs.statSync(target);
-  const boundary = completeTranscriptBoundary(target);
+  const currentBoundary = completeTranscriptBoundary(target);
+  const boundary = options.frontierOffset ?? currentBoundary;
+  if (
+    !Number.isSafeInteger(boundary) ||
+    boundary < 0 ||
+    boundary > currentBoundary
+  ) {
+    throw new Error("pi_historical_frontier_unavailable");
+  }
   const fingerprint = hash({
     adapter: "pi-session-v1",
     sessionId: identity.id,
@@ -150,7 +183,10 @@ export const registerPiHistoricalTranscriptSource = async (
         journalStartOffset: 0,
         journalStartLine: 0,
         liveStartOffset: boundary,
-        liveStartLine: await countTranscriptLines(target, boundary),
+        liveStartLine:
+          options.frontierLine !== undefined && options.frontierLine >= 0
+            ? options.frontierLine
+            : await countTranscriptLines(target, boundary),
         currentSourceLength: file.size,
         sourceCreatedAt: file.birthtime.toISOString(),
         sourceModifiedAt: file.mtime.toISOString(),
@@ -158,17 +194,19 @@ export const registerPiHistoricalTranscriptSource = async (
       })
     );
   }
+  if (
+    typeof artifact.liveStartOffset === "number" &&
+    artifact.liveStartOffset !== boundary
+  ) {
+    throw new Error("pi_historical_frontier_conflict");
+  }
   while (artifact.providerCursorOffset < boundary) {
-    const maximum = Math.min(
+    const bytes = nextCompleteJournalSegment(
+      target,
+      artifact.providerCursorOffset,
       boundary,
-      artifact.providerCursorOffset + 16 * 1024 * 1024
+      options.maxBytesPerPass ?? 16 * 1024 * 1024
     );
-    let bytes = readRange(target, artifact.providerCursorOffset, maximum);
-    if (maximum < boundary) {
-      const newline = bytes.lastIndexOf(0x0a);
-      if (newline < 0) throw new Error("pi_historical_record_too_large");
-      bytes = bytes.subarray(0, newline + 1);
-    }
     const lines = bytes.reduce(
       (count, byte) => count + (byte === 10 ? 1 : 0),
       0
@@ -201,6 +239,7 @@ export const registerPiHistoricalTranscriptSource = async (
       if (converged.providerCursorOffset <= expectedOffset) throw error;
       artifact = converged;
     }
+    if (options.maxBytesPerPass !== undefined) break;
   }
   return {
     ...artifact,
@@ -570,6 +609,8 @@ export const createPiHistoricalProviderAdapter = (input: {
         ? Math.min(configuredBytes, 3_800_000)
         : 1_000_000
   };
+  const maxJournalBytesPerPass =
+    resolveAutomaticHistoricalJournalBatchBytes(env);
   return {
     aiClient: "pi",
     discoverCandidates: () => discoverPiHistoricalCandidates(env),
@@ -624,16 +665,28 @@ export const createPiHistoricalProviderAdapter = (input: {
           ...(runId ? { runId } : {})
         };
       }
-      if (!currentSelection.artifactId) {
+      if (!source) {
         const artifact = await registerPiHistoricalTranscriptSource(
           input.client,
           selectionSignal(candidate),
-          env
+          env,
+          {
+            frontierOffset: currentSelection.frontierOffset,
+            frontierLine: currentSelection.frontierLine,
+            maxBytesPerPass: maxJournalBytesPerPass
+          }
         );
         currentSelection = {
           ...currentSelection,
           artifactId: artifact.id
         };
+        if (artifact.providerCursorOffset < currentSelection.frontierOffset) {
+          return {
+            state: "progress",
+            selection: currentSelection,
+            ...(runId ? { runId } : {})
+          };
+        }
       }
       const artifactId = currentSelection.artifactId!;
       source ??= await lookupHistoricalSource(input.client, artifactId);

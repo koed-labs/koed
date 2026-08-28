@@ -6,6 +6,20 @@ import { MemoryApiClient, MemoryApiError } from "./index.js";
 export const AUTOMATIC_HISTORICAL_WINDOW_DAYS = 30;
 export const AUTOMATIC_HISTORICAL_CONVERSATION_CAP = 50;
 
+export const resolveAutomaticHistoricalJournalBatchBytes = (
+  env: NodeJS.ProcessEnv = process.env
+): number => {
+  const raw = env.MEMORY_HISTORICAL_IMPORT_JOURNAL_BATCH_BYTES?.trim();
+  if (!raw) return 1_048_576;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1_024 || value > 4_194_304) {
+    throw new Error(
+      "MEMORY_HISTORICAL_IMPORT_JOURNAL_BATCH_BYTES must be an integer from 1024 to 4194304"
+    );
+  }
+  return value;
+};
+
 export interface AutomaticHistoricalCandidate {
   sourceSessionId: string;
   latestActivityAt: string;

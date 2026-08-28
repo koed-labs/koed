@@ -22,7 +22,9 @@ export interface HistoricalProviderBatchResult {
 
 export interface HistoricalProviderAdapter<Candidate> {
   readonly aiClient: string;
-  discoverCandidates?(): Promise<readonly Candidate[]>;
+  discoverCandidates?(
+    candidateIds?: readonly string[]
+  ): Promise<readonly Candidate[]>;
   candidateId(candidate: Candidate): string;
   selectCandidates(
     candidates: readonly Candidate[],
@@ -267,11 +269,39 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
     schedule();
   };
 
+  const needsCandidateDiscovery = (): boolean =>
+    !state.runCompleted &&
+    (!state.selectionFrozen ||
+      state.selections.some(
+        (selection) =>
+          !selection.terminalState && !candidates.has(selection.candidateId)
+      ));
+  const scheduleDiscovery = (delayMs: number): void => {
+    if (stopped || discoveryTimer || !needsCandidateDiscovery()) return;
+    discoveryTimer = setTimeout(() => {
+      discoveryTimer = undefined;
+      discover();
+    }, delayMs);
+    discoveryTimer.unref();
+  };
   const discover = (): void => {
-    if (stopped || !input.adapter.discoverCandidates || state.selectionFrozen)
+    if (
+      stopped ||
+      discovery ||
+      !input.adapter.discoverCandidates ||
+      !needsCandidateDiscovery()
+    )
       return;
+    const candidateIds = state.selectionFrozen
+      ? state.selections
+          .filter(
+            (selection) =>
+              !selection.terminalState && !candidates.has(selection.candidateId)
+          )
+          .map((selection) => selection.candidateId)
+      : undefined;
     discovery = input.adapter
-      .discoverCandidates()
+      .discoverCandidates(candidateIds)
       .then(offerCandidates)
       .catch((error) => {
         input.onError?.(
@@ -279,16 +309,16 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
             ? error.message
             : "historical_candidate_discovery_failed"
         );
-        if (!stopped && !state.selectionFrozen) {
-          discoveryTimer = setTimeout(discover, input.retryMs);
-          discoveryTimer.unref();
-        }
       })
       .finally(() => {
         discovery = null;
+        scheduleDiscovery(input.retryMs);
       });
   };
   discover();
+  if (state.selectionFrozen && !state.runCompleted && state.selections.length) {
+    schedule();
+  }
 
   return {
     offerCandidates,

@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -761,6 +767,72 @@ describe("bounded Codex historical batch failures", () => {
 });
 
 describe("provider-neutral historical ingestion coordination", () => {
+  it("rediscovers transient candidates for a frozen incomplete cohort after restart", async () => {
+    const koedHome = temporaryDirectory();
+    const stateDirectory = path.join(koedHome, "state");
+    mkdirSync(stateDirectory, { recursive: true });
+    writeFileSync(
+      path.join(stateDirectory, "restart-provider-historical-ingestion.json"),
+      `${JSON.stringify({
+        version: 1,
+        selectionFrozen: true,
+        runCompleted: false,
+        runId: "run-restart",
+        selections: [
+          {
+            aiClient: "restart-provider",
+            candidateId: "conversation-restart",
+            frontierOffset: 40,
+            frontierLine: 2,
+            latestActivityAt: "2026-08-17T00:00:00.000Z"
+          }
+        ]
+      })}\n`
+    );
+    const discoverCandidates = vi.fn(async () => [
+      {
+        id: "conversation-restart",
+        localPath: "/private/rehydrated.jsonl"
+      }
+    ]);
+    const processed: string[] = [];
+    const adapter: HistoricalProviderAdapter<{
+      id: string;
+      localPath: string;
+    }> = {
+      aiClient: "restart-provider",
+      discoverCandidates,
+      candidateId: (entry) => entry.id,
+      selectCandidates: () => [],
+      async processNextBatch({ candidate, selection, runId }) {
+        if (!candidate) return { state: "waiting", selection, runId };
+        processed.push(candidate.localPath);
+        return { state: "completed", selection, runId };
+      },
+      completeRun: async () => undefined
+    };
+
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome,
+      retryMs: 5
+    });
+
+    await vi.waitFor(() =>
+      expect(coordinator.snapshot().runCompleted).toBe(true)
+    );
+    expect(discoverCandidates).toHaveBeenCalledTimes(1);
+    expect(discoverCandidates).toHaveBeenCalledWith(["conversation-restart"]);
+    expect(processed).toEqual(["/private/rehydrated.jsonl"]);
+    expect(
+      readFileSync(
+        path.join(stateDirectory, "restart-provider-historical-ingestion.json"),
+        "utf8"
+      )
+    ).not.toContain("/private/");
+    await coordinator.stop();
+  });
+
   it("does not let a skipped oldest selection block a newer selection in the same pass", async () => {
     const koedHome = temporaryDirectory();
     const calls: string[] = [];
