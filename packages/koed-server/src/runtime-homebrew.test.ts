@@ -82,6 +82,7 @@ describe("Homebrew runtime provisioning", () => {
       {},
       {
         platform: "linux",
+        existsSync: () => false,
         spawnSync: (_command, args) => {
           calls.push(args);
           return spawnResult("", 1, "brew missing");
