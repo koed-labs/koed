@@ -46,8 +46,7 @@ const stageCopy: Record<
   },
   integration: {
     title: "Koed core integration",
-    description:
-      "Prepare local credential and MCP artifacts. AI Client setup is optional."
+    description: "Prepare local credential and MCP artifacts."
   },
   verification: {
     title: "Verification",
@@ -129,13 +128,6 @@ function SetupStageRow({ stage }: { stage: DesktopSetupStage }) {
             ? stage.message
             : copy.description}
         </span>
-        {stage.id === "integration" && stage.detectedAiClients?.length ? (
-          <span className="koed-setup-clients" aria-label="Detected AI Clients">
-            {stage.detectedAiClients.map((client) => (
-              <span key={client}>{client} detected</span>
-            ))}
-          </span>
-        ) : null}
         {stage.state === "running" &&
         stage.completedBytes !== null &&
         stage.totalBytes !== null ? (
@@ -275,7 +267,6 @@ export function SetupChecklist({
             <h1 id="koed-setup-title">Set up Koed</h1>
             <p>
               Koed will prepare Personal Memory and local core services.
-              Detected AI Client setup remains optional.
             </p>
           </div>
           {!running ? (
@@ -824,6 +815,10 @@ function AiClientSetup({
             </Button>
           ) : (
             <Button
+              aria-label={
+                activeClient !== null ? "Setting up AI Client" : undefined
+              }
+              className="koed-client-primary-action"
               disabled={
                 busyCommand !== null ||
                 activeClient !== null ||
@@ -832,9 +827,7 @@ function AiClientSetup({
               onClick={begin}
             >
               {activeClient !== null ? (
-                <>
-                  <Spinner aria-hidden="true" /> Setting up…
-                </>
+                <Spinner aria-hidden="true" />
               ) : (
                 "Continue"
               )}

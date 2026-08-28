@@ -1446,6 +1446,7 @@ export function App({
         collaborationSnapshot={snapshot}
         initialSection={route.section}
         hardwareAcceleration={window.koedDesktop?.hardwareAcceleration}
+        localAiClients={window.koedDesktop?.localAiClients}
         onSectionChange={(section) =>
           dispatch({
             type: "replace",
