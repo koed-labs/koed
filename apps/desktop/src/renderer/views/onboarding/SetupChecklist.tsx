@@ -385,6 +385,40 @@ const onboardingClients: readonly {
   { id: "pi", label: "Pi" }
 ];
 
+const formatClientList = (labels: string[]): string => {
+  if (labels.length < 2) return labels[0] ?? "";
+  if (labels.length === 2) return labels.join(" and ");
+  return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
+};
+
+const capabilityStatus = (
+  support: "supported" | "unsupported",
+  readiness:
+    | "ready"
+    | "not_ready"
+    | "unauthenticated"
+    | "unavailable"
+    | "stale"
+    | "unknown"
+): { className: string; label: string } => {
+  if (support === "unsupported") {
+    return { className: "is-unsupported", label: "Unsupported" };
+  }
+  if (readiness === "ready") {
+    return { className: "is-ready", label: "Ready" };
+  }
+  if (readiness === "unknown") {
+    return { className: "is-unknown", label: "Unknown" };
+  }
+  const labels = {
+    not_ready: "Not ready",
+    unauthenticated: "Sign-in required",
+    unavailable: "Unavailable",
+    stale: "Status stale"
+  } as const;
+  return { className: "is-attention", label: labels[readiness] };
+};
+
 const clientCommand = (
   id: OnboardingClientId,
   status: KoedServerStatus | null
@@ -447,6 +481,17 @@ function AiClientSetup({
   >({});
   const resultSummaryRef = useRef<HTMLUListElement>(null);
   const confirming = useRef(false);
+
+  const consentedClientLabels = useMemo(
+    () =>
+      onboardingClients
+        .filter(
+          ({ id }) =>
+            selected.has(id) && !clientCommand(id, status).startsWith("check_")
+        )
+        .map(({ label }) => label),
+    [selected, status]
+  );
 
   const toggle = useCallback((id: OnboardingClientId) => {
     setSelected((current) => {
@@ -667,27 +712,74 @@ function AiClientSetup({
                     <span className="koed-client-error">{result.error}</span>
                   ) : null}
                   <span className="koed-client-caps">
-                    {capabilitySummaries.map((capability) => (
-                      <span className="koed-client-cap" key={capability.id}>
+                    {capabilitySummaries.map((capability) => {
+                      const capLabel = capabilityLabel(capability.id);
+                      const capStatus = capabilityStatus(
+                        capability.support,
+                        capability.readiness
+                      );
+                      return (
                         <span
-                          className={`koed-client-cap-dot ${
-                            capability.readiness === "ready"
-                              ? "is-ready"
-                              : capability.readiness === "unknown" ||
-                                  capability.support === "unsupported"
-                                ? ""
-                                : "is-attention"
-                          }`}
-                        />
-                        {capabilityLabel(capability.id)}
-                      </span>
-                    ))}
+                          aria-label={`${capLabel}: ${capStatus.label}`}
+                          className="koed-client-cap"
+                          key={capability.id}
+                          title={`${capLabel}: ${capStatus.label}`}
+                        >
+                          <span
+                            aria-hidden="true"
+                            className={`koed-client-cap-dot ${capStatus.className}`}
+                          />
+                          {capLabel}
+                        </span>
+                      );
+                    })}
                   </span>
                 </label>
               );
             })}
           </div>
+          <div
+            aria-label="Capability status legend"
+            className="koed-client-cap-legend"
+          >
+            <span>
+              <span
+                aria-hidden="true"
+                className="koed-client-cap-dot is-ready"
+              />
+              Ready
+            </span>
+            <span>
+              <span
+                aria-hidden="true"
+                className="koed-client-cap-dot is-attention"
+              />
+              Needs attention
+            </span>
+            <span>
+              <span
+                aria-hidden="true"
+                className="koed-client-cap-dot is-unknown"
+              />
+              Unknown
+            </span>
+            <span>
+              <span
+                aria-hidden="true"
+                className="koed-client-cap-dot is-unsupported"
+              />
+              Unsupported
+            </span>
+          </div>
         </fieldset>
+        {consentedClientLabels.length > 0 ? (
+          <p className="koed-client-consent">
+            Continue allows Koed to change only its own integration block and
+            package for {formatClientList(consentedClientLabels)}. Existing
+            profile settings, credentials, and other AI Clients remain
+            untouched.
+          </p>
+        ) : null}
         {Object.keys(results).length > 0 ? (
           <ul
             aria-atomic="true"

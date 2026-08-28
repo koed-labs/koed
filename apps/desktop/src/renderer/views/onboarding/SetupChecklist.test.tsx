@@ -559,6 +559,9 @@ describe("SetupChecklist", () => {
         checkbox.click();
       }
     });
+    expect(container.textContent).toContain(
+      "Continue allows Koed to change only its own integration block and package for Codex, Claude Code, and Pi. Existing profile settings, credentials, and other AI Clients remain untouched."
+    );
     await act(async () =>
       [...container.querySelectorAll("button")]
         .find((button) => button.textContent === "Continue")!
@@ -706,6 +709,73 @@ describe("SetupChecklist", () => {
     const codexCard = container.querySelectorAll(".koed-client-card")[0]!;
     expect(codexCard.textContent).not.toContain("Managed Conversation");
     expect(codexCard.querySelectorAll(".koed-client-cap")).toHaveLength(3);
+    expect(
+      codexCard
+        .querySelector('[aria-label="Auto-capture: Unknown"]')
+        ?.getAttribute("title")
+    ).toBe("Auto-capture: Unknown");
+    expect(
+      container.querySelector('[aria-label="Capability status legend"]')
+        ?.textContent
+    ).toBe("ReadyNeeds attentionUnknownUnsupported");
+  });
+
+  it("distinguishes unsupported capabilities from unknown capabilities", async () => {
+    const status = statusWithClientProfiles({
+      codex: "not_configured",
+      claude: "not_configured",
+      pi: "not_configured"
+    });
+    status.aiClients!.codex!.capabilities = [
+      {
+        id: "automatic_capture",
+        support: "supported",
+        readiness: "unknown",
+        diagnostics: []
+      },
+      {
+        id: "mcp_recall",
+        support: "unsupported",
+        readiness: "unknown",
+        diagnostics: []
+      }
+    ];
+    window.koedDesktop = {
+      invoke: async <T = unknown,>(command: string): Promise<T> =>
+        (command === "status" ? status : { ok: true }) as T,
+      setup: {
+        inspect: async () => completeSetupFixture(),
+        run: async () => completeSetupFixture(),
+        subscribe: () => () => undefined
+      }
+    };
+    await act(async () => {
+      root.render(
+        <SetupChecklist
+          onComplete={vi.fn()}
+          showTrustGuide={false}
+          statusStore={new DesktopStatusStore()}
+        />
+      );
+    });
+    await act(async () => Promise.resolve());
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue")!
+        .click()
+    );
+
+    const codexCard = container.querySelectorAll(".koed-client-card")[0]!;
+    expect(
+      codexCard.querySelector(
+        '[aria-label="Auto-capture: Unknown"] .is-unknown'
+      )
+    ).toBeTruthy();
+    expect(
+      codexCard.querySelector(
+        '[aria-label="MCP Recall: Unsupported"] .is-unsupported'
+      )
+    ).toBeTruthy();
   });
 
   it("keeps one client's failure isolated from the rest of the queue", async () => {

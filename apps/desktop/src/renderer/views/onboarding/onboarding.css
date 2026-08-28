@@ -341,21 +341,53 @@
 }
 
 .koed-client-cap-dot {
+  flex: 0 0 auto;
   inline-size: 6px;
   block-size: 6px;
   border-radius: 50%;
   background: var(--muted-foreground);
-  opacity: 0.5;
 }
 
 .koed-client-cap-dot.is-ready {
   background: var(--success);
-  opacity: 1;
 }
 
 .koed-client-cap-dot.is-attention {
+  border-radius: 1px;
   background: var(--warning);
-  opacity: 1;
+  transform: rotate(45deg);
+}
+
+.koed-client-cap-dot.is-unknown {
+  opacity: 0.5;
+}
+
+.koed-client-cap-dot.is-unsupported {
+  border: 1px solid var(--muted-foreground);
+  background: transparent;
+}
+
+.koed-client-cap-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 0 24px 16px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.koed-client-cap-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.koed-client-consent {
+  margin: 0;
+  padding: 0 24px 4px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .koed-sr-only {
