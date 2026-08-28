@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -11,10 +17,19 @@ import {
   type CodexHistoricalCandidate
 } from "../src/codex-historical-ingestion.js";
 import {
+  createHistoricalBatchScheduler,
   startHistoricalIngestionCoordinator,
   type HistoricalProviderAdapter
 } from "../src/historical-ingestion-coordinator.js";
 import { MemoryApiError, type MemoryApiClient } from "../src/index.js";
+import {
+  createClaudeHistoricalProviderAdapter,
+  type ClaudeHistoricalCandidate
+} from "../src/claude-historical-import.js";
+import {
+  createPiHistoricalProviderAdapter,
+  type PiHistoricalCandidate
+} from "../src/pi-historical-import.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -61,6 +76,59 @@ const candidate = (input: {
 });
 
 describe("automatic historical ingestion selection", () => {
+  it.each([
+    [
+      "claude",
+      createClaudeHistoricalProviderAdapter({
+        client: {} as MemoryApiClient,
+        env: {}
+      }),
+      (id: string, latestActivityAt: string): ClaudeHistoricalCandidate => ({
+        sourceSessionId: id,
+        transcriptPath: `/private/claude/${id}.jsonl`,
+        cwd: "/project",
+        latestActivityAt,
+        frontierOffset: 100
+      })
+    ],
+    [
+      "pi",
+      createPiHistoricalProviderAdapter({
+        client: {} as MemoryApiClient,
+        env: {}
+      }),
+      (id: string, latestActivityAt: string): PiHistoricalCandidate => ({
+        sourceSessionId: id,
+        transcriptPath: `/private/pi/${id}.jsonl`,
+        cwd: "/project",
+        latestActivityAt,
+        frontierOffset: 100
+      })
+    ]
+  ])(
+    "applies the bounded recent-Conversation cohort to %s without persisting transcript paths",
+    (aiClient, adapter, makeCandidate) => {
+      const now = new Date("2026-08-17T12:00:00.000Z");
+      const candidates = Array.from({ length: 52 }, (_, index) =>
+        makeCandidate(
+          `conversation-${String(index).padStart(2, "0")}`,
+          new Date(now.getTime() - index * 60_000).toISOString()
+        )
+      );
+
+      const selected = adapter.selectCandidates(candidates, now);
+
+      expect(selected).toHaveLength(50);
+      expect(selected.every((entry) => entry.aiClient === aiClient)).toBe(true);
+      expect(selected.map((entry) => entry.latestActivityAt)).toEqual(
+        [...selected]
+          .map((entry) => entry.latestActivityAt)
+          .sort((left, right) => left.localeCompare(right))
+      );
+      expect(JSON.stringify(selected)).not.toContain("/private/");
+    }
+  );
+
   it("selects the newest 50 active Conversations then processes them chronologically", () => {
     const now = new Date("2026-08-17T12:00:00.000Z");
     const entries = Array.from({ length: 52 }, (_, index) =>
@@ -173,6 +241,124 @@ describe("automatic historical ingestion selection", () => {
   });
 });
 
+describe("provider-owned historical discovery", () => {
+  it("offers discovered candidates without requiring a Transcript Watcher signal", async () => {
+    const processed: string[] = [];
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "discovery-provider",
+      discoverCandidates: async () => [{ id: "discovered-conversation" }],
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry) => ({
+          aiClient: "discovery-provider",
+          candidateId: entry.id,
+          frontierOffset: 10,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        })),
+      async processNextBatch({ selection }) {
+        processed.push(selection.candidateId);
+        return { state: "completed", selection, runId: "run-discovery" };
+      },
+      completeRun: async () => undefined
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome: temporaryDirectory(),
+      retryMs: 60_000
+    });
+
+    await vi.waitFor(() =>
+      expect(coordinator.snapshot().runCompleted).toBe(true)
+    );
+
+    expect(processed).toEqual(["discovered-conversation"]);
+    await coordinator.stop();
+  });
+
+  it("retries transient discovery failures before freezing the cohort", async () => {
+    let discoveryAttempts = 0;
+    const errors: string[] = [];
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "retrying-discovery-provider",
+      async discoverCandidates() {
+        discoveryAttempts += 1;
+        if (discoveryAttempts === 1) {
+          throw new Error("historical_discovery_temporarily_unavailable");
+        }
+        return [{ id: "recovered-conversation" }];
+      },
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry) => ({
+          aiClient: "retrying-discovery-provider",
+          candidateId: entry.id,
+          frontierOffset: 10,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        })),
+      async processNextBatch({ selection }) {
+        return { state: "completed", selection, runId: "run-recovered" };
+      },
+      completeRun: async () => undefined
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome: temporaryDirectory(),
+      retryMs: 5,
+      onError: (code) => errors.push(code)
+    });
+
+    await vi.waitFor(() =>
+      expect(coordinator.snapshot().runCompleted).toBe(true)
+    );
+
+    expect(discoveryAttempts).toBe(2);
+    expect(errors).toEqual(["historical_discovery_temporarily_unavailable"]);
+    expect(coordinator.snapshot().selections).toHaveLength(1);
+    await coordinator.stop();
+  });
+});
+
+describe("provider-neutral historical batch scheduling", () => {
+  it("serializes complete provider operations under one shared lease", async () => {
+    const scheduler = createHistoricalBatchScheduler();
+    let active = 0;
+    let maximumActive = 0;
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const operation = (id: string, blocked = false) =>
+      scheduler.runExclusive(async () => {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        order.push(`${id}:start`);
+        if (blocked) await firstBlocked;
+        order.push(`${id}:end`);
+        active -= 1;
+      });
+
+    const first = operation("codex", true);
+    const second = operation("claude");
+    const third = operation("pi");
+    await vi.waitFor(() => expect(order).toEqual(["codex:start"]));
+    releaseFirst();
+    await Promise.all([first, second, third]);
+
+    expect(maximumActive).toBe(1);
+    expect(order).toEqual([
+      "codex:start",
+      "codex:end",
+      "claude:start",
+      "claude:end",
+      "pi:start",
+      "pi:end"
+    ]);
+  });
+});
+
 describe("bounded Codex historical parsing", () => {
   const source = {
     id: "source-1",
@@ -225,6 +411,11 @@ describe("bounded Codex historical parsing", () => {
       parserState: { lastEventTime: "2026-08-17T00:00:01.000Z" }
     });
     expect(batch.items.map((item) => item.rawText)).toEqual(["remember this"]);
+    expect(
+      batch.items.every(
+        (item) => typeof item.metadata.transcriptItemDiscriminator === "string"
+      )
+    ).toBe(true);
   });
 
   it("yields on the row cap only after a complete record", () => {
@@ -576,6 +767,72 @@ describe("bounded Codex historical batch failures", () => {
 });
 
 describe("provider-neutral historical ingestion coordination", () => {
+  it("rediscovers transient candidates for a frozen incomplete cohort after restart", async () => {
+    const koedHome = temporaryDirectory();
+    const stateDirectory = path.join(koedHome, "state");
+    mkdirSync(stateDirectory, { recursive: true });
+    writeFileSync(
+      path.join(stateDirectory, "restart-provider-historical-ingestion.json"),
+      `${JSON.stringify({
+        version: 1,
+        selectionFrozen: true,
+        runCompleted: false,
+        runId: "run-restart",
+        selections: [
+          {
+            aiClient: "restart-provider",
+            candidateId: "conversation-restart",
+            frontierOffset: 40,
+            frontierLine: 2,
+            latestActivityAt: "2026-08-17T00:00:00.000Z"
+          }
+        ]
+      })}\n`
+    );
+    const discoverCandidates = vi.fn(async () => [
+      {
+        id: "conversation-restart",
+        localPath: "/private/rehydrated.jsonl"
+      }
+    ]);
+    const processed: string[] = [];
+    const adapter: HistoricalProviderAdapter<{
+      id: string;
+      localPath: string;
+    }> = {
+      aiClient: "restart-provider",
+      discoverCandidates,
+      candidateId: (entry) => entry.id,
+      selectCandidates: () => [],
+      async processNextBatch({ candidate, selection, runId }) {
+        if (!candidate) return { state: "waiting", selection, runId };
+        processed.push(candidate.localPath);
+        return { state: "completed", selection, runId };
+      },
+      completeRun: async () => undefined
+    };
+
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome,
+      retryMs: 5
+    });
+
+    await vi.waitFor(() =>
+      expect(coordinator.snapshot().runCompleted).toBe(true)
+    );
+    expect(discoverCandidates).toHaveBeenCalledTimes(1);
+    expect(discoverCandidates).toHaveBeenCalledWith(["conversation-restart"]);
+    expect(processed).toEqual(["/private/rehydrated.jsonl"]);
+    expect(
+      readFileSync(
+        path.join(stateDirectory, "restart-provider-historical-ingestion.json"),
+        "utf8"
+      )
+    ).not.toContain("/private/");
+    await coordinator.stop();
+  });
+
   it("does not let a skipped oldest selection block a newer selection in the same pass", async () => {
     const koedHome = temporaryDirectory();
     const calls: string[] = [];

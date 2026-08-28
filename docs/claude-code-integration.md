@@ -128,8 +128,12 @@ On first activation the watcher records an activation time and does not import
 older messages as live capture. Historical import is a separate concern.
 Capture creates Personal Memory only and grants no Team or Workspace authority.
 
-Historical Claude sessions are imported only after explicit User selection
-through the historical-import orchestration boundary. Import registers the
+On first activation, the Local AI Runtime automatically considers Claude
+Conversations active in the inclusive previous 30 days, selects at most the
+newest 50, and imports them oldest-first through the provider-neutral
+historical-ingestion coordinator. The import includes the main transcript and
+its discovered source components. Explicit User-selected import continues to
+use the same historical-import orchestration boundary. Import registers the
 complete signed source journal, then processes only the range before the live
 activation frontier. It never treats pre-activation history as live capture and
 cannot write Team Memory.

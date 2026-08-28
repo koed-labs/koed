@@ -29,6 +29,7 @@ import type { ClaudeWatcherState } from "./claude-transcript-types.js";
 
 export type { ClaudeWatcherState } from "./claude-transcript-types.js";
 export {
+  discoverAllClaudeHistoricalTranscriptSignals,
   discoverClaudeHistoricalTranscriptSignals,
   discoverClaudeTranscriptSignals
 } from "./claude-transcript-discovery.js";

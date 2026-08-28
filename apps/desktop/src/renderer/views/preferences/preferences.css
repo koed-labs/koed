@@ -86,8 +86,7 @@
 .koed-theme-options > p,
 .koed-connection-state p,
 .koed-connection-form > p,
-.koed-preference-unavailable p,
-.koed-advanced-intro {
+.koed-preference-unavailable p {
   margin: 4px 0 0;
   color: var(--muted-foreground);
   font-size: 12px;
@@ -251,9 +250,33 @@
   font-size: 13px;
 }
 
-.koed-advanced-intro {
-  max-inline-size: 62ch;
-  margin-block: 18px;
+.koed-pref-client-section {
+  display: grid;
+  gap: 14px;
+  padding-block-end: 22px;
+  border-block-end: 1px solid var(--border);
+}
+
+.koed-pref-client-heading h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.koed-pref-client-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.koed-pref-client-card {
+  cursor: default;
+}
+
+.koed-pref-client-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-block-start: 10px;
+  border-block-start: 1px solid var(--border);
 }
 
 .koed-local-ai-settings {
@@ -275,7 +298,7 @@
   font-size: 15px;
 }
 
-.koed-local-ai-toolbar p,
+.koed-local-ai-flow-description,
 .koed-local-ai-flow-status,
 .koed-local-ai-diagnostic {
   margin: 4px 0 0;
@@ -345,6 +368,18 @@
   font-size: 12px;
 }
 
+.koed-visually-hidden {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .koed-diagnostics {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -361,8 +396,23 @@
   font-weight: 650;
 }
 
-.koed-diagnostics summary svg {
+.koed-diagnostics-summary-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.koed-diagnostics-summary-status[data-state="healthy"] svg {
+  color: var(--primary);
+}
+
+.koed-diagnostics-summary-status[data-state="needs_attention"] svg {
+  color: var(--destructive);
+}
+
+.koed-diagnostics summary .koed-diagnostics-chevron {
   inline-size: 16px;
+  margin-inline-start: auto;
   transition: rotate 140ms ease;
 }
 
@@ -370,7 +420,7 @@
   border-block-end: 1px solid var(--border);
 }
 
-.koed-diagnostics[open] summary svg {
+.koed-diagnostics[open] summary .koed-diagnostics-chevron {
   rotate: 180deg;
 }
 
@@ -400,12 +450,15 @@
 
 .koed-diagnostics dt {
   color: var(--muted-foreground);
+  font-size: 13px;
 }
 
 .koed-diagnostics dd {
   display: grid;
   gap: 2px;
+  justify-items: end;
   margin: 0;
+  text-align: end;
 }
 
 .koed-diagnostics dd strong {

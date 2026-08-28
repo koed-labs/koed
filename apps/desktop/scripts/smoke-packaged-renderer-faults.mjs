@@ -467,11 +467,11 @@ export const smokePackagedRendererFaults = async ({
     );
     await waitFor(
       evaluate,
-      `[...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Team Connection")`,
-      "Team Connection preference"
+      `[...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Teams")`,
+      "Teams preference"
     );
     await evaluate(
-      `[...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Team Connection")?.click()`
+      `[...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Teams")?.click()`
     );
     await waitFor(
       evaluate,

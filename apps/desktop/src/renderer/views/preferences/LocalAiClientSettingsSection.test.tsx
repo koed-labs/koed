@@ -143,7 +143,12 @@ const response = (): LocalAiClientResponse => ({
   }
 });
 
-describe("Local AI Client settings selectors", () => {
+const flowFieldset = (container: HTMLElement, label: string) =>
+  [...container.querySelectorAll("fieldset")].find(
+    (fieldset) => fieldset.querySelector("legend")?.textContent === label
+  );
+
+describe("Agent Configuration selectors", () => {
   let root: Root | null = null;
   let container: HTMLDivElement;
 
@@ -173,14 +178,53 @@ describe("Local AI Client settings selectors", () => {
       expect(container.querySelectorAll("fieldset")).toHaveLength(4)
     );
 
+    expect(container.textContent).toContain("Agent Configuration");
+    expect(container.textContent).not.toContain(
+      "Choose which local AI Client handles each flow"
+    );
+    expect(container.textContent).toContain(
+      "Sets the agent, model, and reasoning effort for answers from recalled evidence."
+    );
+    expect(container.textContent).toContain(
+      "Sets the agent, model, and reasoning effort for summaries of stored memory."
+    );
+    expect(container.textContent).toContain(
+      "Sets the agent, model, and reasoning effort for titles of captured sessions."
+    );
+    expect(container.textContent).toContain(
+      "Sets the agent, model, and reasoning effort for reviews of Curated Memory proposals."
+    );
+    expect(container.textContent).not.toContain("Documented default (code)");
     expect(container.textContent).toContain("Memory Answer");
     expect(container.textContent).toContain("Claude Work");
     expect(container.textContent).toContain("openai/gpt-5");
     expect(container.textContent).toContain("GPT 5 (openai/gpt-5)");
     expect(container.textContent).toContain("stale capability snapshot");
     expect(
-      container.querySelector("#lcm_summary-status")?.textContent
-    ).toContain("ready");
+      container
+        .querySelector("#lcm_summary-status")
+        ?.classList.contains("koed-visually-hidden")
+    ).toBe(true);
+    expect(container.querySelector("#lcm_summary-status")?.textContent).toBe(
+      "Ready"
+    );
+    const agentSelect = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="LCM Summary Agent"]'
+    )!;
+    expect(
+      [...agentSelect.options].map((option) => option.textContent)
+    ).toEqual(["Codex", "Claude Work", "Pi — Stale capability snapshot"]);
+    expect(agentSelect.textContent).not.toContain("codex.default");
+    const reasoningSelect = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="LCM Summary reasoning effort"]'
+    )!;
+    expect(
+      [...reasoningSelect.options].map((option) => option.textContent)
+    ).toEqual(["Low", "High"]);
+    expect([...reasoningSelect.options].map((option) => option.value)).toEqual([
+      "low",
+      "high"
+    ]);
     expect(
       container.querySelector<HTMLSelectElement>(
         'select[aria-label="LCM Summary model"]'
@@ -193,9 +237,20 @@ describe("Local AI Client settings selectors", () => {
         'select[aria-label="Memory Answer reasoning effort"]'
       )
     ).toBeTruthy();
+    const lcmFieldset = flowFieldset(container, "LCM Summary")!;
+    expect(
+      [...lcmFieldset.querySelectorAll("button")].map(
+        (button) => button.textContent
+      )
+    ).toEqual(["Save", "Reset"]);
+    const refresh = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh capabilities"]'
+    )!;
+    expect(refresh.textContent).toBe("");
+    expect(refresh.querySelector(".lucide-refresh-cw")).toBeTruthy();
   });
 
-  it("filters by provider and keeps native selectors keyboard-accessible", async () => {
+  it("hides search while keeping native selectors keyboard-accessible", async () => {
     container = document.createElement("div");
     document.body.append(container);
     const api = {
@@ -214,21 +269,16 @@ describe("Local AI Client settings selectors", () => {
       root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
     );
     await vi.waitFor(() =>
-      expect(container.querySelector('input[type="search"]')).toBeTruthy()
+      expect(container.querySelectorAll("fieldset")).toHaveLength(4)
     );
-    const search = container.querySelector<HTMLInputElement>(
-      'input[type="search"]'
-    )!;
-    await act(async () => {
-      search.value = "anthropic";
-      search.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await vi.waitFor(() => {
-      const instanceSelect = container.querySelector<HTMLSelectElement>(
-        'select[aria-label="LCM Summary AI Client instance"]'
-      );
-      expect(instanceSelect?.textContent).toContain("Claude Work");
-    });
+    expect(container.querySelector('input[type="search"]')).toBeNull();
+    expect(container.textContent).not.toContain(
+      "Search client, provider, display name, model, or full model ID"
+    );
+    const instanceSelect = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="LCM Summary Agent"]'
+    );
+    expect(instanceSelect?.textContent).toContain("Claude Work");
     const modelSelect = container.querySelector<HTMLSelectElement>(
       'select[aria-label="LCM Summary model"]'
     );
@@ -265,8 +315,10 @@ describe("Local AI Client settings selectors", () => {
     );
     await vi.waitFor(() =>
       expect(
-        container.querySelector("#lcm_summary-status")?.textContent
-      ).toContain("ready")
+        container.querySelector<HTMLSelectElement>(
+          'select[aria-label="LCM Summary model"]'
+        )?.value
+      ).toBe("codex.default\u0000gpt-5.6-luna")
     );
     expect(
       container.querySelector<HTMLSelectElement>(
@@ -307,16 +359,17 @@ describe("Local AI Client settings selectors", () => {
       reasoning.value = "high";
       reasoning.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    const save = [...container.querySelectorAll("button")].find((button) =>
-      button.textContent?.includes("Save LCM Summary")
+    const lcmFieldset = flowFieldset(container, "LCM Summary")!;
+    const save = [...lcmFieldset.querySelectorAll("button")].find(
+      (button) => button.textContent === "Save"
     )!;
     await act(async () => {
       save.click();
       save.click();
     });
     expect(api.set).toHaveBeenCalledTimes(1);
-    const refresh = [...container.querySelectorAll("button")].find((button) =>
-      button.textContent?.includes("Refresh capabilities")
+    const refresh = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh capabilities"]'
     )!;
     await act(async () => {
       refresh.click();
@@ -348,8 +401,9 @@ describe("Local AI Client settings selectors", () => {
     await vi.waitFor(() =>
       expect(container.textContent).toContain("Capability refresh timed out")
     );
-    const reset = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Reset assignment"
+    const memoryAnswerFieldset = flowFieldset(container, "Memory Answer")!;
+    const reset = [...memoryAnswerFieldset.querySelectorAll("button")].find(
+      (button) => button.textContent === "Reset"
     );
     expect(reset).toBeTruthy();
     await act(async () => reset!.click());

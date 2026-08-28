@@ -19,8 +19,13 @@ import {
   createCodexHistoricalProviderAdapter,
   resolveCodexHistoricalIngestionConfig
 } from "./codex-historical-ingestion.js";
-import { startHistoricalIngestionCoordinator } from "./historical-ingestion-coordinator.js";
+import {
+  createHistoricalBatchScheduler,
+  startHistoricalIngestionCoordinator
+} from "./historical-ingestion-coordinator.js";
+import { createClaudeHistoricalProviderAdapter } from "./claude-historical-import.js";
 import { startClaudeTranscriptWatcher } from "./claude-transcript-watcher.js";
+import { createPiHistoricalProviderAdapter } from "./pi-historical-import.js";
 import { startPiTranscriptWatcher } from "./pi-transcript-watcher.js";
 import {
   startAiClientCapabilityPublisher,
@@ -294,6 +299,8 @@ export interface LocalAiRuntimeServiceDependencies {
   startCodexTranscriptWatcher: typeof startCodexTranscriptWatcher;
   startClaudeTranscriptWatcher: typeof startClaudeTranscriptWatcher;
   startPiTranscriptWatcher?: typeof startPiTranscriptWatcher;
+  createClaudeHistoricalProviderAdapter?: typeof createClaudeHistoricalProviderAdapter;
+  createPiHistoricalProviderAdapter?: typeof createPiHistoricalProviderAdapter;
   startAiClientCapabilityPublisher?: typeof startAiClientCapabilityPublisher;
   recoverPendingDesktopAsks?: (
     apiClient: MemoryApiClient
@@ -317,6 +324,8 @@ const defaultServiceDependencies: LocalAiRuntimeServiceDependencies = {
   startCodexTranscriptWatcher,
   startClaudeTranscriptWatcher,
   startPiTranscriptWatcher,
+  createClaudeHistoricalProviderAdapter,
+  createPiHistoricalProviderAdapter,
   startAiClientCapabilityPublisher,
   recoverPendingDesktopAsks: (apiClient) =>
     apiClient.recoverPendingDesktopAsks(),
@@ -345,9 +354,10 @@ export const startDefaultLocalAiRuntimeServices = async (
   let codexTranscriptWatcher: ReturnType<
     typeof startCodexTranscriptWatcher
   > | null = null;
-  let historicalIngestion: ReturnType<
+  let codexHistoricalIngestion: ReturnType<
     typeof startHistoricalIngestionCoordinator
-  > | null = null;
+  > | null;
+  const historicalIngestions: Array<{ stop(): Promise<void> }> = [];
   let claudeTranscriptWatcher: ReturnType<
     typeof startClaudeTranscriptWatcher
   > | null = null;
@@ -375,10 +385,18 @@ export const startDefaultLocalAiRuntimeServices = async (
     const codexWatcherEnabled =
       environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() !==
       "false";
-    // The coordinator is provider-neutral. This runtime only offers the Codex
-    // adapter because it is the configured automatic-onboarding provider; the
-    // Claude adapter retains PR #342's explicit multi-component import flow.
-    historicalIngestion =
+    const claudeWatcherEnabled =
+      environment.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() !==
+      "false";
+    const piWatcherEnabled =
+      environment.MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() !==
+        "false" && Boolean(dependencies.startPiTranscriptWatcher);
+    // Admission is advisory rather than a reservation. Keep the complete
+    // policy/admission/production operation under one provider-neutral lease
+    // so independently resumed AI Clients cannot produce historical batches
+    // concurrently.
+    const historicalBatchScheduler = createHistoricalBatchScheduler();
+    codexHistoricalIngestion =
       historicalEnabled && codexWatcherEnabled
         ? startHistoricalIngestionCoordinator({
             adapter: createCodexHistoricalProviderAdapter({
@@ -387,6 +405,7 @@ export const startDefaultLocalAiRuntimeServices = async (
             }),
             koedHome,
             retryMs: 1_000,
+            batchScheduler: historicalBatchScheduler,
             onError: (code) =>
               logger.warn(
                 { code },
@@ -394,21 +413,65 @@ export const startDefaultLocalAiRuntimeServices = async (
               )
           })
         : null;
+    if (codexHistoricalIngestion) {
+      historicalIngestions.push(codexHistoricalIngestion);
+    }
+    if (
+      historicalEnabled &&
+      claudeWatcherEnabled &&
+      dependencies.createClaudeHistoricalProviderAdapter
+    ) {
+      historicalIngestions.push(
+        startHistoricalIngestionCoordinator({
+          adapter: dependencies.createClaudeHistoricalProviderAdapter({
+            client: apiClient,
+            env: environment
+          }),
+          koedHome,
+          retryMs: 1_000,
+          batchScheduler: historicalBatchScheduler,
+          onError: (code) =>
+            logger.warn(
+              { aiClient: "claude", code },
+              "automatic historical ingestion pass failed"
+            )
+        })
+      );
+    }
+    if (
+      historicalEnabled &&
+      piWatcherEnabled &&
+      dependencies.createPiHistoricalProviderAdapter
+    ) {
+      historicalIngestions.push(
+        startHistoricalIngestionCoordinator({
+          adapter: dependencies.createPiHistoricalProviderAdapter({
+            client: apiClient,
+            env: environment
+          }),
+          koedHome,
+          retryMs: 1_000,
+          batchScheduler: historicalBatchScheduler,
+          onError: (code) =>
+            logger.warn(
+              { aiClient: "pi", code },
+              "automatic historical ingestion pass failed"
+            )
+        })
+      );
+    }
     codexTranscriptWatcher = !codexWatcherEnabled
       ? null
       : dependencies.startCodexTranscriptWatcher(
           apiClient,
           resolveCodexTranscriptWatcherConfig(environment),
-          historicalIngestion ?? undefined
+          codexHistoricalIngestion ?? undefined
         );
-    claudeTranscriptWatcher =
-      environment.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() ===
-      "false"
-        ? null
-        : dependencies.startClaudeTranscriptWatcher(apiClient, environment);
+    claudeTranscriptWatcher = !claudeWatcherEnabled
+      ? null
+      : dependencies.startClaudeTranscriptWatcher(apiClient, environment);
     piTranscriptWatcher =
-      environment.MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() ===
-        "false" || !dependencies.startPiTranscriptWatcher
+      !piWatcherEnabled || !dependencies.startPiTranscriptWatcher
         ? null
         : dependencies.startPiTranscriptWatcher(apiClient, environment);
     if (dependencies.startAiClientCapabilityPublisher) {
@@ -439,7 +502,7 @@ export const startDefaultLocalAiRuntimeServices = async (
           codexTranscriptWatcher?.stop(),
           claudeTranscriptWatcher?.stop(),
           piTranscriptWatcher?.stop(),
-          historicalIngestion?.stop()
+          ...historicalIngestions.map((coordinator) => coordinator.stop())
         ]);
       }
     };
@@ -452,7 +515,7 @@ export const startDefaultLocalAiRuntimeServices = async (
       codexTranscriptWatcher?.stop(),
       claudeTranscriptWatcher?.stop(),
       piTranscriptWatcher?.stop(),
-      historicalIngestion?.stop()
+      ...historicalIngestions.map((coordinator) => coordinator.stop())
     ]);
     throw error;
   }

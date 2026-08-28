@@ -258,7 +258,16 @@ const historicalItem = (item: RawConversationItemRequest) => ({
   observationComponent: item.observationComponent,
   projectionStatus: item.projectionStatus,
   projectionVersion: "codex-transcript-v1" as const,
-  metadata: item.metadata ?? {}
+  metadata: {
+    ...(item.metadata ?? {}),
+    transcriptItemDiscriminator:
+      typeof item.metadata?.transcriptItemDiscriminator === "string" &&
+      item.metadata.transcriptItemDiscriminator.trim()
+        ? item.metadata.transcriptItemDiscriminator
+        : (item.canonicalStableItemId ??
+          item.externalItemId ??
+          `source:${item.sourceLineNumber ?? item.sourceSequence ?? 0}`)
+  }
 });
 
 const parserState = (

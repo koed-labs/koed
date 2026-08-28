@@ -234,18 +234,37 @@ first discovery cannot consume the interactive Memory read/write allowance used
 by Desktop and the MCP Server.
 
 The first successful bounded full discovery cycle establishes activation and
-freezes the automatic-history cohort. The coordinator selects Conversations by
-latest source activity in the inclusive previous 30 days, caps the cohort at
-the newest 50, and processes the selected pre-frontier ranges in chronological
-order. A Conversation that began earlier remains eligible when its latest
-activity is inside the window. These product bounds are fixed, not silently
-expanded by configuration.
+freezes an automatic-history cohort for each enabled supported AI Client.
+Codex, Claude Code, and Pi each discover their own source-of-truth transcripts;
+the provider-neutral coordinators select Conversations by latest source
+activity in the inclusive previous 30 days, cap each provider cohort at the
+newest 50, and process selected pre-frontier ranges in chronological order. A
+Conversation that began earlier remains eligible when its latest activity is
+inside the window. Transient discovery failures retry without freezing an
+incomplete cohort. After restart, an incomplete frozen cohort rediscovers local
+source descriptors only to rehydrate its already selected Conversation IDs;
+rediscovery cannot add candidates or expand persisted frontiers. If a live
+watcher registered the artifact before automatic discovery, its earlier
+immutable activation frontier narrows the frozen selection and remains
+authoritative. Provider-local
+cursor state and run completion are isolated under `KOED_HOME`, so one
+unavailable AI Client does not block another. Raw producer operations share one
+runtime lease across providers even though their discovery and durable retry
+state remain independent. Each lease may append only one configured complete
+Conversation Source Journal page before yielding; a single complete source
+record may exceed the target page size up to the source-record ceiling. These
+product bounds are fixed, not silently expanded by configuration.
 
-For every selected source, the watcher and the Local AI Runtime coordinator use
-the same complete-record boundary. Whichever wins registration writes one
-artifact with journal start zero and that immutable `live_start_offset`; the
-other converges on the artifact identity. This closes the old gap where an
-unchanged baseline source existed only in watcher-local state. Local source
+For every selected source component, the watcher and the Local AI Runtime
+coordinator converge on one complete-record boundary. Claude Code persists a
+path-free boundary for its main and auxiliary components; Codex and Pi persist
+their primary boundary. Whichever producer wins registration writes one
+artifact with journal start zero and an immutable `live_start_offset`. If the
+watcher registered first and the transcript advanced before discovery, the
+coordinator narrows its selection to that earlier artifact boundary. A later
+artifact boundary than the frozen selection remains a conflict because it
+would classify post-selection bytes as history. This closes the old gap where
+an unchanged baseline source existed only in watcher-local state. Local source
 paths remain transient discovery inputs and do not enter the coordinator's
 durable state or canonical identity. Unselected baseline sources retain the
 normal deferred behavior and register only if they later grow.
@@ -446,9 +465,14 @@ authenticated, local-only `GET /v1/historical-import-admission` contract. Its
 content-free `{ admitted, reason }` response applies the same shared admission
 policy to current API/repository reachability, queue health, Embedding Service
 health, usable current-model capacity profile, and live Projection pressure.
-The runtime neither calls Operator-only `/ops/status` nor probes the Embedding
-Service or reconstructs Worker policy itself. A denied decision pauses only new
-historical production; it does not make `/ready` fail or stop live capture.
+The decision is advisory rather than a reservation, so the Local AI Runtime
+holds one provider-neutral producer lease across policy evaluation, admission,
+and the resulting batch operation. Codex, Claude Code, and Pi therefore cannot
+produce concurrent historical batches after observing the same available
+capacity. The runtime neither calls Operator-only `/ops/status` nor probes the
+Embedding Service or reconstructs Worker policy itself. A denied decision
+pauses only new historical production; it does not make `/ready` fail or stop
+live capture.
 
 Historical batches meter every physical raw row and all raw JSON, text, and
 transport-chunk bytes before admission. Completed-turn segments remain atomic.

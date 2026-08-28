@@ -1244,8 +1244,6 @@ function ManagedConversationComposer({
       candidate.aiClientDriverId === executionOwner?.driverId &&
       candidate.aiClientInstanceId === executionOwner?.instanceId
   );
-  const ownerDisplayName =
-    owner?.displayName ?? executionOwner?.driverId ?? "AI Client";
   const ownerSendReady = managedConversationOwners
     ? owner !== undefined && capabilityReady(owner.send)
     : true;
@@ -1265,12 +1263,6 @@ function ManagedConversationComposer({
         void submit();
       }}
     >
-      <div className="personal-managed-owner-label">
-        Execution owner:{" "}
-        {executionOwner
-          ? `${ownerDisplayName} · ${executionOwner.instanceId}`
-          : ownerDisplayName}
-      </div>
       <div className="personal-managed-composer-field">
         <label>
           <span className="sr-only">Prompt selected AI Client</span>

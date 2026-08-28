@@ -161,6 +161,7 @@ const createJournalFixture = async (
     externalSessionId?: string;
     frontier?: number;
     sourceLength?: number;
+    aiClient?: "codex" | "pi";
   }
 ): Promise<JournalFixture> => {
   const externalSessionId =
@@ -168,14 +169,15 @@ const createJournalFixture = async (
   const frontier = input.frontier ?? 128;
   const sourceLength = input.sourceLength ?? frontier;
   const keys = generateConversationSourceReplicationOriginKeyPair();
+  const pi = input.aiClient === "pi";
   const session = await repo.createCapturedSession(
     { userId: input.ownerId },
     {
       externalSessionId,
-      sourceRuntime: "codex-cli",
+      sourceRuntime: pi ? "pi" : "codex-cli",
       captureMethod: "api",
-      sourceKind: "codex",
-      sourceAdapterVersion: "codex-transcript-v1",
+      sourceKind: pi ? "pi" : "codex",
+      sourceAdapterVersion: pi ? "pi-session-v1" : "codex-transcript-v1",
       sourceFingerprint: digest(`source:${externalSessionId}`),
       idempotencyKey: `session:${externalSessionId}`,
       projectId: `/projects/${externalSessionId}`,
@@ -187,10 +189,12 @@ const createJournalFixture = async (
     {
       sessionId: session.id,
       ...sourceIdentity(keys),
-      sourceKind: "codex",
+      sourceRuntime: pi ? "pi" : "codex-cli",
+      sourceAdapterVersion: pi ? "pi-session-v1" : "codex-transcript-v1",
+      sourceKind: pi ? "pi" : "codex",
       externalSessionId,
       sourceFingerprint: digest(`artifact:${externalSessionId}`),
-      artifactFormat: "codex_rollout_jsonl",
+      artifactFormat: pi ? "pi_session_jsonl" : "codex_rollout_jsonl",
       artifactFormatVersion: 1,
       journalStartOffset: 0,
       journalStartLine: 0,
@@ -199,7 +203,7 @@ const createJournalFixture = async (
       currentSourceLength: sourceLength,
       storageProvider: "test",
       storagePrefix: `artifact-${externalSessionId}`,
-      redactedSourceLabel: "rollout.jsonl"
+      redactedSourceLabel: pi ? `${externalSessionId}.jsonl` : "rollout.jsonl"
     }
   );
   const segmentDigest = digest(`segment:${externalSessionId}`);
@@ -730,6 +734,35 @@ describeDb("journal-backed historical import repository", () => {
         }
       )
     ).toBeNull();
+  });
+
+  it("registers Pi journal artifacts for Pi historical sources", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const owner = await repo.createUser({
+      email: `pi-historical-owner-${randomUUID()}@example.com`
+    });
+    const fixture = await createJournalFixture(repo, {
+      ownerId: owner.id,
+      aiClient: "pi"
+    });
+    const run = await repo.createHistoricalImportRun({ userId: owner.id });
+
+    const source = await repo.createHistoricalImportSource(
+      { userId: owner.id },
+      {
+        runId: run.id,
+        artifactId: fixture.artifactId,
+        aiClient: "pi",
+        detectedProject: { path: "/projects/pi", cwd: "/projects/pi" }
+      }
+    );
+
+    expect(source).toMatchObject({
+      artifactId: fixture.artifactId,
+      sourceSessionId: fixture.externalSessionId,
+      registrationFrontierOffset: fixture.frontier,
+      historicalCursorOffset: 0
+    });
   });
 
   it("allows repeated content-addressed bytes at different source ranges", async () => {

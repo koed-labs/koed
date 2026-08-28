@@ -16,9 +16,13 @@ import {
   AlertTriangle,
   Check,
   ChevronDown,
+  CircleAlert,
+  CircleCheck,
   ExternalLink,
   Network,
+  Play,
   RefreshCw,
+  Trash2,
   Wrench
 } from "lucide-react";
 import {
@@ -29,11 +33,13 @@ import {
   type ReactNode
 } from "react";
 import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
-import type { ComponentStatus } from "../../../types.js";
+import type { ComponentStatus, KoedServerStatus } from "../../../types.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import type { DesktopApi } from "../../../types.js";
+import { clientMetaLine, summarizeCapabilities } from "../ai-client-card.js";
 import { LocalAiClientSettingsSection } from "./LocalAiClientSettingsSection.js";
 import { useDesktopStatus } from "../../state/use-status.js";
+import "../ai-client-card.css";
 import "./preferences.css";
 
 export type PreferencesSection =
@@ -82,10 +88,10 @@ const sections: readonly {
   label: string;
 }[] = [
   { id: "general", label: "General" },
-  { id: "ai-clients", label: "AI Clients" },
-  { id: "team-connection", label: "Team Connection" },
-  { id: "about", label: "About" },
-  { id: "advanced", label: "Advanced Diagnostics" }
+  { id: "ai-clients", label: "Agents" },
+  { id: "team-connection", label: "Teams" },
+  { id: "advanced", label: "Services" },
+  { id: "about", label: "About" }
 ];
 
 const sectionTitle = (section: PreferencesSection): string =>
@@ -648,12 +654,232 @@ const integrationConsentCopy: Record<
 };
 
 function AiClientsSection({
-  localAiClients
-}: Pick<PreferencesViewProps, "localAiClients">) {
+  localAiClients,
+  statusStore
+}: Pick<PreferencesViewProps, "localAiClients" | "statusStore">) {
   return (
     <div className="koed-preference-section">
+      <AiClientIntegrationsSection statusStore={statusStore} />
       <LocalAiClientSettingsSection localAiClients={localAiClients} />
     </div>
+  );
+}
+
+const preferenceClients: readonly {
+  id: "codex" | "claude" | "pi";
+  label: string;
+}[] = [
+  { id: "codex", label: "Codex" },
+  { id: "claude", label: "Claude Code" },
+  { id: "pi", label: "Pi" }
+];
+
+const flatClientStatus = (
+  id: "codex" | "claude" | "pi",
+  status: KoedServerStatus | null
+): (ComponentStatus & { configured: boolean }) | undefined =>
+  id === "codex"
+    ? status?.codex
+    : id === "claude"
+      ? status?.claudeCode
+      : status?.pi;
+
+function AiClientIntegrationsSection({
+  statusStore
+}: Pick<PreferencesViewProps, "statusStore">) {
+  const snapshot = useDesktopStatus(statusStore);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingCommand, setPendingCommand] =
+    useState<IntegrationMutationCommand | null>(null);
+  const status = snapshot.status;
+
+  useEffect(() => {
+    void statusStore.refresh();
+  }, [statusStore]);
+
+  const run = async (
+    action:
+      | "check_codex"
+      | "check_claude"
+      | "check_pi"
+      | IntegrationMutationCommand
+  ) => {
+    setActionError(null);
+    try {
+      const mutatesProfile = !action.startsWith("check_");
+      await statusStore.run(
+        action,
+        mutatesProfile ? { operatorConsented: true } : undefined
+      );
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  return (
+    <section
+      aria-labelledby="koed-pref-ai-clients-title"
+      className="koed-pref-client-section"
+    >
+      <div className="koed-pref-client-heading">
+        <h2 id="koed-pref-ai-clients-title">Connections</h2>
+      </div>
+      {actionError ? (
+        <p className="koed-diagnostic-error" role="alert">
+          {actionError}
+        </p>
+      ) : null}
+      <div className="koed-pref-client-grid">
+        {preferenceClients.map(({ id, label }) => {
+          const readiness = status?.aiClients?.[id];
+          const detected = readiness?.installed.state === "healthy";
+          const flat = flatClientStatus(id, status);
+          const profileState = flat?.state ?? "not_configured";
+          const capabilitySummaries = summarizeCapabilities(
+            readiness?.capabilities
+          );
+          const metaLine =
+            profileState === "healthy"
+              ? clientMetaLine(readiness, detected)
+              : profileState === "starting"
+                ? null
+                : detected
+                  ? "Could not be started"
+                  : "Not installed";
+          const pillClass =
+            profileState === "healthy"
+              ? "is-success"
+              : profileState === "needs_attention"
+                ? "is-warning"
+                : profileState === "starting"
+                  ? "is-active"
+                  : "is-off";
+          const pillText =
+            profileState === "healthy"
+              ? "Healthy"
+              : profileState === "needs_attention"
+                ? "Needs attention"
+                : profileState === "starting"
+                  ? "Starting…"
+                  : "Not set up";
+          const notConfigured = profileState === "not_configured";
+          const primaryCommand =
+            `${notConfigured ? "setup" : "repair"}_${id}` as IntegrationMutationCommand;
+          const removeCommand = `remove_${id}` as IntegrationMutationCommand;
+          return (
+            <div
+              className="koed-client-card koed-pref-client-card"
+              data-state={profileState === "starting" ? "active" : undefined}
+              key={id}
+            >
+              <span className="koed-client-head">
+                <strong>{label}</strong>
+                <span className={`koed-client-pill ${pillClass}`}>
+                  {profileState === "starting" ? (
+                    <Spinner aria-hidden="true" className="koed-client-spin" />
+                  ) : null}
+                  {pillText}
+                </span>
+              </span>
+              {metaLine ? (
+                <span className="koed-client-meta">{metaLine}</span>
+              ) : null}
+              <span className="koed-client-caps">
+                {capabilitySummaries.map((capability) => (
+                  <span
+                    aria-label={`${capability.label}: ${capability.statusLabel}`}
+                    className="koed-client-cap"
+                    key={capability.id}
+                    title={`${capability.label}: ${capability.statusLabel}`}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={`koed-client-cap-dot ${capability.dotClass}`}
+                    />
+                    {capability.label}
+                  </span>
+                ))}
+              </span>
+              <span className="koed-pref-client-actions">
+                <Button
+                  aria-label={`${notConfigured ? "Set up" : "Repair"} ${label}`}
+                  disabled={snapshot.busyCommand !== null}
+                  onClick={() => setPendingCommand(primaryCommand)}
+                  size="icon"
+                  title={`${notConfigured ? "Set up" : "Repair"} ${label}`}
+                  variant="outline"
+                >
+                  {notConfigured ? (
+                    <Play aria-hidden="true" />
+                  ) : (
+                    <Wrench aria-hidden="true" />
+                  )}
+                </Button>
+                <Button
+                  aria-label={`Check ${label}`}
+                  disabled={snapshot.busyCommand !== null}
+                  onClick={() => void run(`check_${id}`)}
+                  size="icon"
+                  title={`Check ${label}`}
+                  variant="outline"
+                >
+                  <RefreshCw aria-hidden="true" />
+                </Button>
+                {!notConfigured ? (
+                  <Button
+                    aria-label={`Remove ${label}`}
+                    disabled={snapshot.busyCommand !== null}
+                    onClick={() => setPendingCommand(removeCommand)}
+                    size="icon"
+                    title={`Remove ${label}`}
+                    variant="destructive-outline"
+                  >
+                    <Trash2 aria-hidden="true" />
+                  </Button>
+                ) : null}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) setPendingCommand(null);
+        }}
+        open={pendingCommand !== null}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>
+              {pendingCommand
+                ? integrationConsentCopy[pendingCommand].title
+                : "AI Client integration"}
+            </DialogTitle>
+            <DialogDescription>
+              {pendingCommand
+                ? integrationConsentCopy[pendingCommand].description
+                : "Koed changes only its own AI Client integration state."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>
+              Cancel
+            </DialogClose>
+            <Button
+              onClick={() => {
+                const command = pendingCommand;
+                setPendingCommand(null);
+                if (command) void run(command);
+              }}
+            >
+              {pendingCommand
+                ? integrationConsentCopy[pendingCommand].confirmLabel
+                : "Continue"}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+    </section>
   );
 }
 
@@ -662,17 +888,8 @@ function AdvancedSection({
 }: Pick<PreferencesViewProps, "statusStore">) {
   const snapshot = useDesktopStatus(statusStore);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [pendingIntegrationCommand, setPendingIntegrationCommand] = useState<
-    | "setup_codex"
-    | "repair_codex"
-    | "remove_codex"
-    | "setup_pi"
-    | "repair_pi"
-    | "remove_pi"
-    | "setup_claude"
-    | "repair_claude"
-    | "remove_claude"
-    | null
+  const [runningAction, setRunningAction] = useState<
+    "doctor" | "status" | null
   >(null);
   const status = snapshot.status;
 
@@ -695,39 +912,16 @@ function AdvancedSection({
     return () => clearTimeout(timeout);
   }, [servicesAreStarting, snapshot.revision, statusStore]);
 
-  const run = async (
-    action:
-      | "doctor"
-      | "setup_codex"
-      | "check_codex"
-      | "repair_codex"
-      | "remove_codex"
-      | "setup_pi"
-      | "check_pi"
-      | "repair_pi"
-      | "remove_pi"
-      | "setup_claude"
-      | "check_claude"
-      | "repair_claude"
-      | "remove_claude"
-      | "open_logs"
-      | "status"
-  ) => {
+  const run = async (action: "doctor" | "open_logs" | "status") => {
     setActionError(null);
+    if (action !== "open_logs") setRunningAction(action);
     try {
       if (action === "status") await statusStore.refresh();
-      else {
-        const mutatesProfile =
-          action.startsWith("setup_") ||
-          action.startsWith("repair_") ||
-          action.startsWith("remove_");
-        await statusStore.run(
-          action,
-          mutatesProfile ? { operatorConsented: true } : undefined
-        );
-      }
+      else await statusStore.run(action);
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (action !== "open_logs") setRunningAction(null);
     }
   };
 
@@ -741,24 +935,40 @@ function AdvancedSection({
           ["Embedding Service", status.embeddingService],
           ["MCP Server", status.mcpServer],
           ["Capture Hook", status.captureHook],
-          ["Codex", status.codex],
-          ["Claude Code", status.claudeCode],
-          ["Pi", status.pi],
           ["LCM Summary Service", status.lcmSummaryService],
           ["Personal Device Sync", status.personalDeviceSync]
         ] as const
       ).flatMap(([label, component]) => (component ? [[label, component]] : []))
     : [];
+  const servicesNeedingAttention = components.filter(
+    ([, component]) => component.state !== "healthy"
+  ).length;
+  const allServicesAreHealthy =
+    components.length > 0 && servicesNeedingAttention === 0;
 
   return (
     <div className="koed-preference-section">
-      <p className="koed-advanced-intro">
-        Operator diagnostics describe local implementation detail. They do not
-        expose API Token values or remote credentials.
-      </p>
       <details className="koed-diagnostics">
         <summary>
-          Local service status <ChevronDown aria-hidden="true" />
+          <span
+            className="koed-diagnostics-summary-status"
+            data-state={allServicesAreHealthy ? "healthy" : "needs_attention"}
+          >
+            {allServicesAreHealthy ? (
+              <CircleCheck aria-hidden="true" />
+            ) : (
+              <CircleAlert aria-hidden="true" />
+            )}
+            {status
+              ? allServicesAreHealthy
+                ? "All services are healthy"
+                : `${servicesNeedingAttention}/${components.length} services need attention`
+              : "Service status unavailable"}
+          </span>
+          <ChevronDown
+            aria-hidden="true"
+            className="koed-diagnostics-chevron"
+          />
         </summary>
         {!status ? (
           <p role="status">Status has not loaded.</p>
@@ -768,8 +978,14 @@ function AdvancedSection({
               <div key={label}>
                 <dt>{label}</dt>
                 <dd>
-                  <strong>{component.state.replaceAll("_", " ")}</strong>
-                  {component.message ? <span>{component.message}</span> : null}
+                  <strong>
+                    {component.state === "healthy"
+                      ? "Healthy"
+                      : component.state.replaceAll("_", " ")}
+                  </strong>
+                  {component.state !== "healthy" && component.message ? (
+                    <span>{component.message}</span>
+                  ) : null}
                 </dd>
               </div>
             ))}
@@ -783,152 +999,58 @@ function AdvancedSection({
       ) : null}
       <div className="koed-diagnostic-actions">
         <Button
-          disabled={snapshot.busyCommand !== null}
+          aria-busy={runningAction === "status"}
+          aria-label={
+            runningAction === "status" ? "Refreshing status" : "Refresh status"
+          }
+          disabled={snapshot.busyCommand !== null || runningAction !== null}
           onClick={() => void run("status")}
-          variant="outline"
-        >
-          <RefreshCw aria-hidden="true" /> Refresh status
-        </Button>
-        <Button
-          disabled={snapshot.busyCommand !== null}
-          onClick={() =>
-            setPendingIntegrationCommand(
-              status?.claudeCode?.state === "not_configured" ||
-                !status?.claudeCode
-                ? "setup_claude"
-                : "repair_claude"
-            )
+          size="icon"
+          title={
+            runningAction === "status" ? "Refreshing status" : "Refresh status"
           }
           variant="outline"
         >
-          {status?.claudeCode?.state === "not_configured" || !status?.claudeCode
-            ? "Set up Claude Code integration"
-            : "Repair Claude Code integration"}
+          {runningAction === "status" ? (
+            <Spinner aria-hidden="true" />
+          ) : (
+            <RefreshCw aria-hidden="true" />
+          )}
         </Button>
         <Button
-          disabled={snapshot.busyCommand !== null}
-          onClick={() => void run("check_claude")}
-          variant="outline"
-        >
-          Check Claude Code integration
-        </Button>
-        <Button
-          disabled={snapshot.busyCommand !== null}
-          onClick={() => setPendingIntegrationCommand("remove_claude")}
-          variant="outline"
-        >
-          Remove Claude Code integration
-        </Button>
-        <Button
-          disabled={snapshot.busyCommand !== null}
+          aria-busy={runningAction === "doctor"}
+          aria-label={
+            runningAction === "doctor"
+              ? "Running diagnostics"
+              : "Run diagnostics"
+          }
+          disabled={snapshot.busyCommand !== null || runningAction !== null}
           onClick={() => void run("doctor")}
-          variant="outline"
-        >
-          <Wrench aria-hidden="true" /> Run diagnostics
-        </Button>
-        <Button
-          disabled={snapshot.busyCommand !== null}
-          onClick={() =>
-            setPendingIntegrationCommand(
-              status?.codex?.state === "not_configured"
-                ? "setup_codex"
-                : "repair_codex"
-            )
+          size="icon"
+          title={
+            runningAction === "doctor"
+              ? "Running diagnostics"
+              : "Run diagnostics"
           }
           variant="outline"
         >
-          {status?.codex?.state === "not_configured"
-            ? "Set up Codex integration"
-            : "Repair Codex integration"}
+          {runningAction === "doctor" ? (
+            <Spinner aria-hidden="true" />
+          ) : (
+            <Wrench aria-hidden="true" />
+          )}
         </Button>
         <Button
-          disabled={snapshot.busyCommand !== null}
-          onClick={() => void run("check_codex")}
-          variant="outline"
-        >
-          Check Codex integration
-        </Button>
-        <Button
-          disabled={snapshot.busyCommand !== null}
-          onClick={() => setPendingIntegrationCommand("remove_codex")}
-          variant="outline"
-        >
-          Remove Codex integration
-        </Button>
-        <Button
-          disabled={snapshot.busyCommand !== null}
-          onClick={() =>
-            setPendingIntegrationCommand(
-              status?.pi?.state === "not_configured" || !status?.pi
-                ? "setup_pi"
-                : "repair_pi"
-            )
-          }
-          variant="outline"
-        >
-          {status?.pi?.state === "not_configured" || !status?.pi
-            ? "Set up Pi integration"
-            : "Repair Pi integration"}
-        </Button>
-        <Button
-          disabled={snapshot.busyCommand !== null}
-          onClick={() => void run("check_pi")}
-          variant="outline"
-        >
-          Check Pi integration
-        </Button>
-        <Button
-          disabled={snapshot.busyCommand !== null}
-          onClick={() => setPendingIntegrationCommand("remove_pi")}
-          variant="outline"
-        >
-          Remove Pi integration
-        </Button>
-        <Button
-          disabled={snapshot.busyCommand !== null}
+          aria-label="Open logs"
+          disabled={snapshot.busyCommand !== null || runningAction !== null}
           onClick={() => void run("open_logs")}
+          size="icon"
+          title="Open logs"
           variant="outline"
         >
-          <ExternalLink aria-hidden="true" /> Open logs
+          <ExternalLink aria-hidden="true" />
         </Button>
       </div>
-      <Dialog
-        onOpenChange={(open) => {
-          if (!open) setPendingIntegrationCommand(null);
-        }}
-        open={pendingIntegrationCommand !== null}
-      >
-        <DialogPopup>
-          <DialogHeader>
-            <DialogTitle>
-              {pendingIntegrationCommand
-                ? integrationConsentCopy[pendingIntegrationCommand].title
-                : "AI Client integration"}
-            </DialogTitle>
-            <DialogDescription>
-              {pendingIntegrationCommand
-                ? integrationConsentCopy[pendingIntegrationCommand].description
-                : "Koed changes only its own AI Client integration state."}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <DialogClose render={<Button variant="outline" />}>
-              Cancel
-            </DialogClose>
-            <Button
-              onClick={() => {
-                const command = pendingIntegrationCommand;
-                setPendingIntegrationCommand(null);
-                if (command) void run(command);
-              }}
-            >
-              {pendingIntegrationCommand
-                ? integrationConsentCopy[pendingIntegrationCommand].confirmLabel
-                : "Continue"}
-            </Button>
-          </DialogFooter>
-        </DialogPopup>
-      </Dialog>
     </div>
   );
 }
@@ -997,7 +1119,10 @@ export function PreferencesView({
         ) : null}
         {section === "capture" ? <CaptureSection capture={capture} /> : null}
         {section === "ai-clients" ? (
-          <AiClientsSection localAiClients={localAiClients} />
+          <AiClientsSection
+            localAiClients={localAiClients}
+            statusStore={statusStore}
+          />
         ) : null}
         {section === "team-connection" ? (
           <TeamConnectionSection

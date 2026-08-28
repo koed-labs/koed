@@ -22,6 +22,9 @@ export interface HistoricalProviderBatchResult {
 
 export interface HistoricalProviderAdapter<Candidate> {
   readonly aiClient: string;
+  discoverCandidates?(
+    candidateIds?: readonly string[]
+  ): Promise<readonly Candidate[]>;
   candidateId(candidate: Candidate): string;
   selectCandidates(
     candidates: readonly Candidate[],
@@ -34,6 +37,29 @@ export interface HistoricalProviderAdapter<Candidate> {
   }): Promise<HistoricalProviderBatchResult>;
   completeRun?(runId: string): Promise<void>;
 }
+
+export interface HistoricalBatchScheduler {
+  runExclusive<Result>(operation: () => Promise<Result>): Promise<Result>;
+}
+
+export const createHistoricalBatchScheduler = (): HistoricalBatchScheduler => {
+  let tail = Promise.resolve();
+  return {
+    async runExclusive<Result>(operation: () => Promise<Result>) {
+      const predecessor = tail;
+      let release!: () => void;
+      tail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await predecessor;
+      try {
+        return await operation();
+      } finally {
+        release();
+      }
+    }
+  };
+};
 
 export interface HistoricalIngestionCoordinatorState {
   version: number;
@@ -126,6 +152,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
   adapter: HistoricalProviderAdapter<Candidate>;
   koedHome: string;
   retryMs: number;
+  batchScheduler?: HistoricalBatchScheduler;
   now?: () => Date;
   onError?: (code: string) => void;
 }): HistoricalIngestionCoordinatorHandle<Candidate> => {
@@ -140,6 +167,8 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
   let timer: NodeJS.Timeout | undefined;
   let stopped = false;
   let requested = false;
+  let discovery: Promise<void> | null = null;
+  let discoveryTimer: NodeJS.Timeout | undefined;
 
   const save = (): void => persistState(statePath, state);
   const schedule = (delayMs = 0): void => {
@@ -160,11 +189,15 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       if (stopped) break;
       if (current.terminalState) continue;
       const candidate = candidates.get(current.candidateId);
-      const result = await input.adapter.processNextBatch({
-        ...(candidate ? { candidate } : {}),
-        selection: current,
-        ...(state.runId ? { runId: state.runId } : {})
-      });
+      const processNextBatch = () =>
+        input.adapter.processNextBatch({
+          ...(candidate ? { candidate } : {}),
+          selection: current,
+          ...(state.runId ? { runId: state.runId } : {})
+        });
+      const result = input.batchScheduler
+        ? await input.batchScheduler.runExclusive(processNextBatch)
+        : await processNextBatch();
       const index = state.selections.findIndex(
         (selection) => selection.candidateId === current.candidateId
       );
@@ -216,25 +249,79 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
     return running;
   };
 
-  return {
-    offerCandidates(offered) {
-      for (const candidate of offered) {
-        candidates.set(input.adapter.candidateId(candidate), candidate);
-      }
-      if (!state.selectionFrozen) {
-        state = {
-          version: STATE_VERSION,
-          selectionFrozen: true,
-          runCompleted: false,
-          selections: input.adapter.selectCandidates(
-            [...candidates.values()],
-            input.now?.() ?? new Date()
+  const offerCandidates = (offered: readonly Candidate[]): void => {
+    if (stopped) return;
+    for (const candidate of offered) {
+      candidates.set(input.adapter.candidateId(candidate), candidate);
+    }
+    if (!state.selectionFrozen) {
+      state = {
+        version: STATE_VERSION,
+        selectionFrozen: true,
+        runCompleted: false,
+        selections: input.adapter.selectCandidates(
+          [...candidates.values()],
+          input.now?.() ?? new Date()
+        )
+      };
+      save();
+    }
+    schedule();
+  };
+
+  const needsCandidateDiscovery = (): boolean =>
+    !state.runCompleted &&
+    (!state.selectionFrozen ||
+      state.selections.some(
+        (selection) =>
+          !selection.terminalState && !candidates.has(selection.candidateId)
+      ));
+  const scheduleDiscovery = (delayMs: number): void => {
+    if (stopped || discoveryTimer || !needsCandidateDiscovery()) return;
+    discoveryTimer = setTimeout(() => {
+      discoveryTimer = undefined;
+      discover();
+    }, delayMs);
+    discoveryTimer.unref();
+  };
+  const discover = (): void => {
+    if (
+      stopped ||
+      discovery ||
+      !input.adapter.discoverCandidates ||
+      !needsCandidateDiscovery()
+    )
+      return;
+    const candidateIds = state.selectionFrozen
+      ? state.selections
+          .filter(
+            (selection) =>
+              !selection.terminalState && !candidates.has(selection.candidateId)
           )
-        };
-        save();
-      }
-      schedule();
-    },
+          .map((selection) => selection.candidateId)
+      : undefined;
+    discovery = input.adapter
+      .discoverCandidates(candidateIds)
+      .then(offerCandidates)
+      .catch((error) => {
+        input.onError?.(
+          error instanceof Error && /^[a-z0-9_.:-]+$/.test(error.message)
+            ? error.message
+            : "historical_candidate_discovery_failed"
+        );
+      })
+      .finally(() => {
+        discovery = null;
+        scheduleDiscovery(input.retryMs);
+      });
+  };
+  discover();
+  if (state.selectionFrozen && !state.runCompleted && state.selections.length) {
+    schedule();
+  }
+
+  return {
+    offerCandidates,
     selectionFor(candidateId) {
       const selection = state.selections.find(
         (candidate) => candidate.candidateId === candidateId
@@ -245,6 +332,8 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
     async stop() {
       stopped = true;
       if (timer) clearTimeout(timer);
+      if (discoveryTimer) clearTimeout(discoveryTimer);
+      await discovery;
       await running;
     }
   };

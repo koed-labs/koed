@@ -13,13 +13,37 @@ export type FlowState = {
   saved: boolean;
   dirty: boolean;
 };
-export type Flow = { key: LocalAiClientFlowKey; label: string };
+export type Flow = {
+  key: LocalAiClientFlowKey;
+  label: string;
+  description: string;
+};
 
 export const flows: readonly Flow[] = [
-  { key: "mcp_memory_answer", label: "Memory Answer" },
-  { key: "lcm_summary", label: "LCM Summary" },
-  { key: "session_title", label: "Session Title" },
-  { key: "curated_memory_review", label: "Curated Memory Review" }
+  {
+    key: "mcp_memory_answer",
+    label: "Memory Answer",
+    description:
+      "Sets the agent, model, and reasoning effort for answers from recalled evidence."
+  },
+  {
+    key: "lcm_summary",
+    label: "LCM Summary",
+    description:
+      "Sets the agent, model, and reasoning effort for summaries of stored memory."
+  },
+  {
+    key: "session_title",
+    label: "Session Title",
+    description:
+      "Sets the agent, model, and reasoning effort for titles of captured sessions."
+  },
+  {
+    key: "curated_memory_review",
+    label: "Curated Memory Review",
+    description:
+      "Sets the agent, model, and reasoning effort for reviews of Curated Memory proposals."
+  }
 ];
 
 export const emptyFlowStates = (): Record<LocalAiClientFlowKey, FlowState> =>

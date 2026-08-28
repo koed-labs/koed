@@ -243,3 +243,39 @@ export const discoverClaudeHistoricalTranscriptSignals = async (
   }
   return signals;
 };
+
+export const discoverAllClaudeHistoricalTranscriptSignals = async (
+  env: NodeJS.ProcessEnv = process.env
+): Promise<ClaudeTranscriptWatcherSignal[]> => {
+  const projectsHome = claudeProjectsHome(env);
+  mkdirSync(projectsHome, { recursive: true, mode: 0o700 });
+  const signals: ClaudeTranscriptWatcherSignal[] = [];
+  const projects = (await readdir(projectsHome, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+    .slice(0, 1_000);
+  for (const project of projects) {
+    const projectPath = path.join(projectsHome, project.name);
+    const files = (await readdir(projectPath, { withFileTypes: true }))
+      .filter(
+        (entry) =>
+          entry.isFile() &&
+          !entry.isSymbolicLink() &&
+          entry.name.endsWith(".jsonl")
+      )
+      .slice(0, 10_000);
+    for (const file of files) {
+      const transcriptPath = path.join(projectPath, file.name);
+      const identity = await transcriptIdentity(transcriptPath);
+      if (!identity) continue;
+      const details = await stat(transcriptPath);
+      signals.push({
+        sourceSessionId: identity.sessionId,
+        transcriptPath,
+        cwd: identity.cwd,
+        hookEventName: "HistoricalImport",
+        observedAt: details.mtime.toISOString()
+      });
+    }
+  }
+  return signals;
+};

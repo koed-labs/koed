@@ -1,0 +1,156 @@
+.koed-client-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.koed-client-card[data-selected="true"] {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+.koed-client-card:focus-within {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.koed-client-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.koed-client-head input {
+  margin: 0;
+  accent-color: var(--primary);
+}
+
+.koed-client-head strong {
+  min-inline-size: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.koed-client-pill {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.koed-client-pill.is-on {
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--primary);
+}
+
+.koed-client-pill.is-off {
+  border: 1px solid var(--border);
+  color: var(--muted-foreground);
+}
+
+.koed-client-pill.is-queued {
+  border: 1px solid var(--border);
+  color: var(--muted-foreground);
+}
+
+.koed-client-pill.is-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--primary);
+}
+
+.koed-client-pill.is-success {
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  color: var(--success);
+}
+
+.koed-client-pill.is-failed {
+  background: color-mix(in srgb, var(--destructive) 14%, transparent);
+  color: var(--destructive);
+}
+
+.koed-client-pill.is-warning {
+  background: color-mix(in oklab, var(--warning) 18%, transparent);
+  color: var(--warning-foreground);
+}
+
+.koed-client-spin {
+  inline-size: 10px;
+  block-size: 10px;
+}
+
+.koed-client-card[data-state="queued"] {
+  opacity: 0.6;
+}
+
+.koed-client-card[data-state="done-failed"] {
+  border-color: color-mix(in srgb, var(--destructive) 40%, var(--border));
+  background: color-mix(in srgb, var(--destructive) 6%, var(--card));
+}
+
+.koed-client-error {
+  color: var(--destructive);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.koed-client-meta {
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.koed-client-caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding-block-start: 10px;
+  border-block-start: 1px solid var(--border);
+}
+
+.koed-client-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.koed-client-cap-dot {
+  flex: 0 0 auto;
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: var(--muted-foreground);
+}
+
+.koed-client-cap-dot.is-ready {
+  background: var(--success);
+}
+
+.koed-client-cap-dot.is-attention {
+  border-radius: 1px;
+  background: var(--warning);
+  transform: rotate(45deg);
+}
+
+.koed-client-cap-dot.is-unknown {
+  opacity: 0.5;
+}
+
+.koed-client-cap-dot.is-unsupported {
+  border: 1px solid var(--muted-foreground);
+  background: transparent;
+}

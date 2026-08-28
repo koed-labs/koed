@@ -20,8 +20,10 @@ import type {
 } from "../../../types.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { useDesktopStatus } from "../../state/use-status.js";
+import { clientMetaLine, summarizeCapabilities } from "../ai-client-card.js";
 import { compactHealthSummary } from "./setup-model.js";
 import { TrustBoundaryGuide } from "./TrustBoundaryGuide.js";
+import "../ai-client-card.css";
 import "./onboarding.css";
 
 const stageCopy: Record<
@@ -380,34 +382,6 @@ const formatClientList = (labels: string[]): string => {
   return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
 };
 
-const capabilityStatus = (
-  support: "supported" | "unsupported",
-  readiness:
-    | "ready"
-    | "not_ready"
-    | "unauthenticated"
-    | "unavailable"
-    | "stale"
-    | "unknown"
-): { className: string; label: string } => {
-  if (support === "unsupported") {
-    return { className: "is-unsupported", label: "Unsupported" };
-  }
-  if (readiness === "ready") {
-    return { className: "is-ready", label: "Ready" };
-  }
-  if (readiness === "unknown") {
-    return { className: "is-unknown", label: "Unknown" };
-  }
-  const labels = {
-    not_ready: "Not ready",
-    unauthenticated: "Sign-in required",
-    unavailable: "Unavailable",
-    stale: "Status stale"
-  } as const;
-  return { className: "is-attention", label: labels[readiness] };
-};
-
 const clientCommand = (
   id: OnboardingClientId,
   status: KoedServerStatus | null
@@ -598,42 +572,10 @@ function AiClientSetup({
             {onboardingClients.map(({ id, label }) => {
               const readiness = status?.aiClients?.[id];
               const detected = readiness?.installed.state === "healthy";
-              const capabilityLabel = (capabilityId: string) =>
-                capabilityId === "automatic_capture"
-                  ? "Auto-capture"
-                  : capabilityId === "mcp_recall"
-                    ? "MCP Recall"
-                    : capabilityId === "local_synthesis"
-                      ? "Local Synthesis"
-                      : "Managed Conversation";
-              const seenCapabilityLabels = new Set<string>();
-              const capabilitySummaries =
+              const capabilitySummaries = summarizeCapabilities(
                 readiness?.capabilities
-                  .filter(
-                    (capability) =>
-                      capability.readiness !== "unknown" ||
-                      [
-                        "automatic_capture",
-                        "mcp_recall",
-                        "local_synthesis"
-                      ].includes(capability.id)
-                  )
-                  .filter((capability) => {
-                    const capLabel = capabilityLabel(capability.id);
-                    if (seenCapabilityLabels.has(capLabel)) return false;
-                    seenCapabilityLabels.add(capLabel);
-                    return true;
-                  })
-                  .slice(0, 5) ?? [];
-              const authLabel =
-                readiness?.authentication === "authenticated"
-                  ? "Authenticated"
-                  : readiness?.authentication === "unauthenticated"
-                    ? "Unauthenticated"
-                    : "Auth unknown";
-              const metaLine = detected
-                ? `${readiness?.version ? `v${readiness.version}` : "Version unknown"} · ${authLabel}`
-                : "Not installed";
+              );
+              const metaLine = clientMetaLine(readiness, detected);
               const result = results[id];
               const isActive = activeClient === id;
               const isQueued = !isActive && queue.includes(id);
@@ -701,27 +643,20 @@ function AiClientSetup({
                     <span className="koed-client-error">{result.error}</span>
                   ) : null}
                   <span className="koed-client-caps">
-                    {capabilitySummaries.map((capability) => {
-                      const capLabel = capabilityLabel(capability.id);
-                      const capStatus = capabilityStatus(
-                        capability.support,
-                        capability.readiness
-                      );
-                      return (
+                    {capabilitySummaries.map((capability) => (
+                      <span
+                        aria-label={`${capability.label}: ${capability.statusLabel}`}
+                        className="koed-client-cap"
+                        key={capability.id}
+                        title={`${capability.label}: ${capability.statusLabel}`}
+                      >
                         <span
-                          aria-label={`${capLabel}: ${capStatus.label}`}
-                          className="koed-client-cap"
-                          key={capability.id}
-                          title={`${capLabel}: ${capStatus.label}`}
-                        >
-                          <span
-                            aria-hidden="true"
-                            className={`koed-client-cap-dot ${capStatus.className}`}
-                          />
-                          {capLabel}
-                        </span>
-                      );
-                    })}
+                          aria-hidden="true"
+                          className={`koed-client-cap-dot ${capability.dotClass}`}
+                        />
+                        {capability.label}
+                      </span>
+                    ))}
                   </span>
                 </label>
               );

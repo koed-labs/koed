@@ -792,8 +792,12 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `MEMORY_HISTORICAL_IMPORT_API_READY_URL`: optional worker-visible API readiness override for historical admission. When omitted, Koed derives `/ready` from `MEMORY_API_URL`; if neither URL is configured, historical batches fail closed.
 - `MEMORY_HISTORICAL_IMPORT_API_READY_TIMEOUT_MS`: timeout for that API readiness probe. Default `1000`; valid range `100`–`10000`.
 - `MEMORY_HISTORICAL_IMPORT_ENABLED`: set to `false` to disable automatic
-  historical ingestion in the supervised Local AI Runtime. The automatic
-  coordinator only enables configured supported AI-client adapters.
+  historical ingestion in the supervised Local AI Runtime. Independent
+  provider-neutral coordinators run for each enabled supported AI Client
+  (Codex, Claude Code, and Pi); one client's discovery or retry state does not
+  block another. Candidate discovery retries transient failures before freezing
+  a cohort. Raw production is nevertheless serialized by one shared runtime
+  lease so separate providers cannot pass advisory admission concurrently.
 - `MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_ROWS`: maximum canonical raw items in
   one Local AI Runtime historical upload. Default `100`; valid range `1`–`500`.
 - `MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_BYTES`: maximum serialized canonical
@@ -802,9 +806,11 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `MEMORY_HISTORICAL_IMPORT_SOURCE_BATCH_RUNTIME_MS`: maximum parser runtime
   before the Local AI Runtime yields at a complete record. Default `15000`;
   valid range `100`–`60000`.
-- `MEMORY_HISTORICAL_IMPORT_JOURNAL_BATCH_BYTES`: maximum complete source bytes
-  appended to the Conversation Source Journal in one coordinator pass. Default
-  `1048576`; valid range `1024`–`4194304`.
+- `MEMORY_HISTORICAL_IMPORT_JOURNAL_BATCH_BYTES`: target complete source bytes
+  appended to the Conversation Source Journal in one coordinator pass across
+  every supported AI Client. One complete source record may exceed the target
+  up to the source-record ceiling. Default `1048576`; valid range
+  `1024`–`4194304`.
 - `MEMORY_VECTOR_CANDIDATE_LIMIT`: vector retrieval candidate count.
 - `MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT`, `MEMORY_RAG_LEAF_CANDIDATE_LIMIT`, `MEMORY_RAG_FRESH_EVENT_CANDIDATE_LIMIT`, `MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT`, `MEMORY_RAG_SCOPED_LEAF_CANDIDATE_LIMIT`: optional per-stage retrieval candidate limits. Leave blank to use code defaults derived from the requested result limit.
 - `MEMORY_RAG_ROLLUP_RESULT_LIMIT`: optional cap on rollup results admitted into final recall evidence.

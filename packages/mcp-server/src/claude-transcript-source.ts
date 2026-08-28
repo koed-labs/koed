@@ -11,9 +11,11 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 
 import { MemoryApiClient, MemoryApiError } from "./index.js";
-import { completeTranscriptBoundary } from "./codex-transcript-journal.js";
 import {
-  transcriptIndex,
+  completeTranscriptBoundary,
+  countTranscriptLines
+} from "./codex-transcript-journal.js";
+import {
   verifiedTranscriptPath,
   type ClaudeTranscriptIndex
 } from "./claude-transcript-discovery.js";
@@ -53,7 +55,21 @@ export type SourceArtifact = {
   providerCursorOffset: number;
   providerCursorLine: number;
   journalStartOffset: number;
+  liveStartOffset?: number;
+  liveStartLine?: number;
 };
+
+export interface ClaudeHistoricalComponentFrontier {
+  componentId: string;
+  componentRole: "primary" | "auxiliary";
+  parentComponentId: string | null;
+  frontierOffset: number;
+  frontierLine: number;
+}
+
+export interface ClaudeHistoricalComponentCandidate extends ClaudeHistoricalComponentFrontier {
+  transcriptPath: string;
+}
 
 type SourceSegment = {
   id: string;
@@ -119,14 +135,21 @@ const readRange = (sourcePath: string, start: number, end: number): Buffer => {
 const completeSegment = (
   sourcePath: string,
   start: number,
-  end: number
+  end: number,
+  targetBytes = 16 * 1024 * 1024
 ): Buffer => {
-  const maximum = Math.min(end, start + 16 * 1024 * 1024);
+  const maximum = Math.min(end, start + targetBytes);
   const bytes = readRange(sourcePath, start, maximum);
   if (maximum === end) return bytes;
   const newline = bytes.lastIndexOf(0x0a);
-  if (newline < 0) throw new Error("claude_transcript_record_too_large");
-  return bytes.subarray(0, newline + 1);
+  if (newline >= 0) return bytes.subarray(0, newline + 1);
+  const expandedEnd = Math.min(end, start + 16 * 1024 * 1024);
+  const expanded = readRange(sourcePath, start, expandedEnd);
+  const expandedNewline = expanded.indexOf(0x0a);
+  if (expandedNewline < 0) {
+    throw new Error("claude_transcript_record_too_large");
+  }
+  return expanded.subarray(0, expandedNewline + 1);
 };
 
 export const journalClaudeTranscript = async (input: {
@@ -138,9 +161,19 @@ export const journalClaudeTranscript = async (input: {
   componentRole: "primary" | "auxiliary";
   parentComponentId: string | null;
   artifact?: SourceArtifact | null;
+  historicalFrontierOffset?: number;
+  maxAppendBytes?: number;
 }): Promise<SourceArtifact> => {
   const file = await stat(input.transcriptPath);
-  const completeBoundary = completeTranscriptBoundary(input.transcriptPath);
+  const currentBoundary = completeTranscriptBoundary(input.transcriptPath);
+  let completeBoundary = input.historicalFrontierOffset ?? currentBoundary;
+  if (
+    !Number.isSafeInteger(completeBoundary) ||
+    completeBoundary < 0 ||
+    completeBoundary > currentBoundary
+  ) {
+    throw new Error("claude_historical_frontier_unavailable");
+  }
   let artifact =
     input.artifact === undefined
       ? await lookupClaudeArtifact(
@@ -222,11 +255,28 @@ export const journalClaudeTranscript = async (input: {
       throw new Error("claude_transcript_append_only_identity_violation");
     }
   }
+  if (
+    input.historicalFrontierOffset !== undefined &&
+    typeof artifact.liveStartOffset === "number" &&
+    (!Number.isSafeInteger(artifact.liveStartOffset) ||
+      artifact.liveStartOffset < 0 ||
+      artifact.liveStartOffset > completeBoundary)
+  ) {
+    throw new Error("claude_historical_frontier_conflict");
+  }
+  if (
+    input.historicalFrontierOffset !== undefined &&
+    typeof artifact.liveStartOffset === "number"
+  ) {
+    completeBoundary = artifact.liveStartOffset;
+  }
   while (artifact.providerCursorOffset < completeBoundary) {
+    if (input.maxAppendBytes === 0) break;
     const bytes = completeSegment(
       input.transcriptPath,
       artifact.providerCursorOffset,
-      completeBoundary
+      completeBoundary,
+      input.maxAppendBytes
     );
     if (bytes.length === 0 || bytes.at(-1) !== 0x0a) {
       throw new Error("claude_journal_segment_incomplete");
@@ -248,6 +298,7 @@ export const journalClaudeTranscript = async (input: {
         sourceModifiedAt: file.mtime.toISOString()
       })
     );
+    if (input.maxAppendBytes !== undefined) break;
   }
   return artifact;
 };
@@ -255,7 +306,11 @@ export const journalClaudeTranscript = async (input: {
 export const registerClaudeHistoricalTranscriptSources = async (
   client: MemoryApiClient,
   signal: ClaudeTranscriptWatcherSignal,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  options: {
+    components?: readonly ClaudeHistoricalComponentFrontier[];
+    maxBytesPerPass?: number;
+  } = {}
 ): Promise<
   Array<
     SourceArtifact & {
@@ -264,50 +319,78 @@ export const registerClaudeHistoricalTranscriptSources = async (
     }
   >
 > => {
-  const transcriptPath = await verifiedTranscriptPath(
-    signal.transcriptPath,
-    signal.sourceSessionId,
-    env
-  );
-  const components = await claudeSourceComponents({
+  const discovered = await discoverClaudeHistoricalComponentCandidates(
     signal,
-    mainTranscriptPath: transcriptPath
-  });
-  const register = async (component: ClaudeSourceComponent) => {
-    const boundary = completeTranscriptBoundary(component.transcriptPath);
-    const index = await transcriptIndex(
-      component.transcriptPath,
-      "9999-12-31T23:59:59.999Z"
+    env,
+    options.components
+  );
+  const components = options.components
+    ? options.components.map((frontier) => {
+        const component = discovered.find(
+          (candidate) => candidate.componentId === frontier.componentId
+        );
+        if (!component) {
+          throw new Error("claude_historical_component_unavailable");
+        }
+        return { ...component, ...frontier };
+      })
+    : discovered;
+  let appendConsumed = false;
+  const registered: Array<
+    SourceArtifact & {
+      sourceComponentId: string;
+      registrationFrontierOffset: number;
+    }
+  > = [];
+  for (const component of components) {
+    const frontierLine =
+      component.frontierLine >= 0
+        ? component.frontierLine
+        : await countTranscriptLines(
+            component.transcriptPath,
+            component.frontierOffset
+          );
+    const artifactBefore = await lookupClaudeArtifact(
+      client,
+      signal.sourceSessionId,
+      component.componentId
     );
     const artifact = await journalClaudeTranscript({
       client,
       signal,
       transcriptPath: component.transcriptPath,
       index: {
-        ...index,
-        activationOffset: boundary,
-        activationLine: index.lineCount,
-        activationTimestamp: null
+        timestamps: new Map(),
+        activationOffset: component.frontierOffset,
+        activationLine: frontierLine,
+        activationTimestamp: null,
+        lineCount: frontierLine
       },
       componentId: component.componentId,
-      componentRole: component.role,
-      parentComponentId: component.parentComponentId
+      componentRole: component.componentRole,
+      parentComponentId: component.parentComponentId,
+      artifact: artifactBefore,
+      historicalFrontierOffset: component.frontierOffset,
+      ...(options.maxBytesPerPass !== undefined
+        ? {
+            maxAppendBytes: appendConsumed ? 0 : options.maxBytesPerPass
+          }
+        : {})
     });
-    return {
+    if (
+      artifact.providerCursorOffset >
+      (artifactBefore?.providerCursorOffset ?? 0)
+    ) {
+      appendConsumed = true;
+    }
+    registered.push({
       ...artifact,
       sourceComponentId: component.componentId,
-      registrationFrontierOffset: boundary
-    };
-  };
-  const main = components.find((component) => component.componentId === "main");
-  if (!main) throw new Error("claude_source_main_component_missing");
-  const registeredMain = await register(main);
-  const registeredAuxiliaries = await Promise.all(
-    components
-      .filter((component) => component.componentId !== "main")
-      .map(register)
-  );
-  return [registeredMain, ...registeredAuxiliaries];
+      registrationFrontierOffset:
+        artifact.liveStartOffset ?? component.frontierOffset
+    });
+  }
+  return registered;
 };
 
 export interface ClaudeSourceComponent {
@@ -318,22 +401,26 @@ export interface ClaudeSourceComponent {
   messages: SessionMessage[];
 }
 
+interface ClaudeSourceDescriptor {
+  componentId: string;
+  role: "primary" | "auxiliary";
+  parentComponentId: string | null;
+  transcriptPath: string;
+  agentId?: string;
+}
+
 const subagentIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
-const claudeSourceComponents = async (input: {
+const claudeSourceDescriptors = async (input: {
   signal: ClaudeTranscriptWatcherSignal;
   mainTranscriptPath: string;
-}): Promise<ClaudeSourceComponent[]> => {
-  const components: ClaudeSourceComponent[] = [
+}): Promise<ClaudeSourceDescriptor[]> => {
+  const components: ClaudeSourceDescriptor[] = [
     {
       componentId: "main",
       role: "primary",
       parentComponentId: null,
-      transcriptPath: input.mainTranscriptPath,
-      messages: await getSessionMessages(input.signal.sourceSessionId, {
-        dir: input.signal.cwd,
-        includeSystemMessages: true
-      })
+      transcriptPath: input.mainTranscriptPath
     }
   ];
   const parentDirectory = path.dirname(input.mainTranscriptPath);
@@ -364,14 +451,78 @@ const claudeSourceComponents = async (input: {
       role: "auxiliary",
       parentComponentId: "main",
       transcriptPath: canonical,
-      messages: await getSubagentMessages(
-        input.signal.sourceSessionId,
-        agentId,
-        { dir: input.signal.cwd }
-      )
+      agentId
     });
   }
   return components;
+};
+
+const claudeSourceComponents = async (input: {
+  signal: ClaudeTranscriptWatcherSignal;
+  mainTranscriptPath: string;
+}): Promise<ClaudeSourceComponent[]> =>
+  Promise.all(
+    (await claudeSourceDescriptors(input)).map(async (component) => ({
+      ...component,
+      messages:
+        component.componentId === "main"
+          ? await getSessionMessages(input.signal.sourceSessionId, {
+              dir: input.signal.cwd,
+              includeSystemMessages: true
+            })
+          : await getSubagentMessages(
+              input.signal.sourceSessionId,
+              component.agentId!,
+              { dir: input.signal.cwd }
+            )
+    }))
+  );
+
+export const discoverClaudeHistoricalComponentCandidates = async (
+  signal: ClaudeTranscriptWatcherSignal,
+  env: NodeJS.ProcessEnv = process.env,
+  frontiers?: readonly ClaudeHistoricalComponentFrontier[]
+): Promise<ClaudeHistoricalComponentCandidate[]> => {
+  const mainTranscriptPath = await verifiedTranscriptPath(
+    signal.transcriptPath,
+    signal.sourceSessionId,
+    env
+  );
+  const descriptors = await claudeSourceDescriptors({
+    signal,
+    mainTranscriptPath
+  });
+  const selected = frontiers
+    ? descriptors.filter((component) =>
+        frontiers.some(
+          (frontier) => frontier.componentId === component.componentId
+        )
+      )
+    : descriptors;
+  return Promise.all(
+    selected.map(async (component) => {
+      const frozen = frontiers?.find(
+        (frontier) => frontier.componentId === component.componentId
+      );
+      const frontierOffset =
+        frozen?.frontierOffset ??
+        completeTranscriptBoundary(component.transcriptPath);
+      return {
+        componentId: component.componentId,
+        componentRole: component.role,
+        parentComponentId: component.parentComponentId,
+        transcriptPath: component.transcriptPath,
+        frontierOffset,
+        frontierLine:
+          frozen && frozen.frontierLine >= 0
+            ? frozen.frontierLine
+            : await countTranscriptLines(
+                component.transcriptPath,
+                frontierOffset
+              )
+      };
+    })
+  );
 };
 
 const sourceSetFingerprint = async (
