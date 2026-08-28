@@ -17,6 +17,22 @@ const clickButton = async (container: HTMLElement, label: string) => {
   await act(async () => button!.click());
 };
 
+const clickClientCardButton = async (
+  container: HTMLElement,
+  clientLabel: string,
+  buttonLabel: string
+) => {
+  const card = [...container.querySelectorAll(".koed-client-card")].find(
+    (item) => item.querySelector("strong")?.textContent === clientLabel
+  );
+  expect(card).toBeTruthy();
+  const button = [...card!.querySelectorAll("button")].find(
+    (item) => item.textContent?.trim() === buttonLabel
+  );
+  expect(button).toBeTruthy();
+  await act(async () => button!.click());
+};
+
 const snapshot = {
   connection: {
     state: "live",
@@ -31,7 +47,8 @@ const snapshot = {
 const integrationConsentCases = [
   {
     action: "setup_codex",
-    button: "Set up Codex integration",
+    clientLabel: "Codex",
+    button: "Set up",
     title: "Set up the Codex integration?",
     description:
       "Koed will add its marked Codex integration block and Supported Capture Hook. Unrelated settings, credentials, and other clients remain untouched.",
@@ -39,7 +56,8 @@ const integrationConsentCases = [
   },
   {
     action: "repair_codex",
-    button: "Repair Codex integration",
+    clientLabel: "Codex",
+    button: "Repair",
     title: "Repair the Codex integration?",
     description:
       "Koed will replace only its marked Codex integration block and Supported Capture Hook. Unrelated settings and credentials remain untouched.",
@@ -47,7 +65,8 @@ const integrationConsentCases = [
   },
   {
     action: "remove_codex",
-    button: "Remove Codex integration",
+    clientLabel: "Codex",
+    button: "Remove",
     title: "Remove the Codex integration?",
     description:
       "Koed will remove only its marked Codex integration block. Unrelated settings and credentials remain untouched.",
@@ -55,7 +74,8 @@ const integrationConsentCases = [
   },
   {
     action: "setup_claude",
-    button: "Set up Claude Code integration",
+    clientLabel: "Claude Code",
+    button: "Set up",
     title: "Set up the Claude Code integration?",
     description:
       "Koed will add its MCP Server and Supported Capture Hook to Claude Code settings, or remove only those Koed-owned entries. It preserves unrelated settings, hooks, and provider credentials.",
@@ -63,7 +83,8 @@ const integrationConsentCases = [
   },
   {
     action: "repair_claude",
-    button: "Repair Claude Code integration",
+    clientLabel: "Claude Code",
+    button: "Repair",
     title: "Repair the Claude Code integration?",
     description:
       "Koed will replace only its MCP Server and Supported Capture Hook entries in Claude Code. Unrelated settings, hooks, and provider credentials remain untouched.",
@@ -71,7 +92,8 @@ const integrationConsentCases = [
   },
   {
     action: "remove_claude",
-    button: "Remove Claude Code integration",
+    clientLabel: "Claude Code",
+    button: "Remove",
     title: "Remove the Claude Code integration?",
     description:
       "Koed will remove only its owned MCP Server and Supported Capture Hook entries. Unrelated settings, hooks, and provider credentials remain untouched.",
@@ -79,7 +101,8 @@ const integrationConsentCases = [
   },
   {
     action: "setup_pi",
-    button: "Set up Pi integration",
+    clientLabel: "Pi",
+    button: "Set up",
     title: "Set up the Pi integration?",
     description:
       "Koed will register its local package in your active global Pi profile, or remove only that Koed-owned package. It preserves unrelated Pi settings, packages, and provider credentials.",
@@ -87,7 +110,8 @@ const integrationConsentCases = [
   },
   {
     action: "repair_pi",
-    button: "Repair Pi integration",
+    clientLabel: "Pi",
+    button: "Repair",
     title: "Repair the Pi integration?",
     description:
       "Koed will replace only its package in the active Pi profile. Unrelated packages, settings, and provider credentials remain untouched.",
@@ -95,7 +119,8 @@ const integrationConsentCases = [
   },
   {
     action: "remove_pi",
-    button: "Remove Pi integration",
+    clientLabel: "Pi",
+    button: "Remove",
     title: "Remove the Pi integration?",
     description:
       "Koed will remove only its package from the active Pi profile and preserve unrelated packages, settings, and provider credentials.",
@@ -350,7 +375,14 @@ describe("PreferencesView", () => {
 
   it.each(integrationConsentCases)(
     "renders exact consent and passes operator consent for $action",
-    async ({ action, button, title, description, confirmLabel }) => {
+    async ({
+      action,
+      clientLabel,
+      button,
+      title,
+      description,
+      confirmLabel
+    }) => {
       const component = { state: "healthy" as const };
       const targetState = action.startsWith("setup_")
         ? ("not_configured" as const)
@@ -386,15 +418,15 @@ describe("PreferencesView", () => {
         });
       window.koedDesktop = { invoke } as DesktopApi;
 
-      await renderPreferences({ initialSection: "advanced" });
+      await renderPreferences({ initialSection: "ai-clients" });
       await vi.waitFor(() =>
         expect(
-          [...container.querySelectorAll("button")].find(
-            (item) => item.textContent?.trim() === button
+          [...container.querySelectorAll(".koed-client-card")].find(
+            (item) => item.querySelector("strong")?.textContent === clientLabel
           )
         ).toBeTruthy()
       );
-      await clickButton(container, button);
+      await clickClientCardButton(container, clientLabel, button);
 
       const dialog =
         document.body.querySelector<HTMLElement>('[role="dialog"]');
@@ -451,9 +483,9 @@ describe("PreferencesView", () => {
     window.koedDesktop = { invoke } as DesktopApi;
     const statusStore = new DesktopStatusStore();
     await statusStore.refresh();
-    await renderPreferences({ initialSection: "advanced", statusStore });
+    await renderPreferences({ initialSection: "ai-clients", statusStore });
 
-    await clickButton(container, "Set up Claude Code integration");
+    await clickClientCardButton(container, "Claude Code", "Set up");
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
     expect(dialog?.textContent).toContain(
       "add its MCP Server and Supported Capture Hook"
@@ -499,9 +531,9 @@ describe("PreferencesView", () => {
     window.koedDesktop = { invoke } as DesktopApi;
     const statusStore = new DesktopStatusStore();
     await statusStore.refresh();
-    await renderPreferences({ initialSection: "advanced", statusStore });
+    await renderPreferences({ initialSection: "ai-clients", statusStore });
 
-    await clickButton(container, "Set up Pi integration");
+    await clickClientCardButton(container, "Pi", "Set up");
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
     expect(dialog?.textContent).toContain(
       "register its local package in your active global Pi profile"

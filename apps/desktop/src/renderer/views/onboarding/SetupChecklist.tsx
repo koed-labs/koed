@@ -20,8 +20,10 @@ import type {
 } from "../../../types.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { useDesktopStatus } from "../../state/use-status.js";
+import { clientMetaLine, summarizeCapabilities } from "../ai-client-card.js";
 import { compactHealthSummary } from "./setup-model.js";
 import { TrustBoundaryGuide } from "./TrustBoundaryGuide.js";
+import "../ai-client-card.css";
 import "./onboarding.css";
 
 const stageCopy: Record<
@@ -564,42 +566,10 @@ function AiClientSetup({
             {onboardingClients.map(({ id, label }) => {
               const readiness = status?.aiClients?.[id];
               const detected = readiness?.installed.state === "healthy";
-              const capabilityLabel = (capabilityId: string) =>
-                capabilityId === "automatic_capture"
-                  ? "Auto-capture"
-                  : capabilityId === "mcp_recall"
-                    ? "MCP Recall"
-                    : capabilityId === "local_synthesis"
-                      ? "Local Synthesis"
-                      : "Managed Conversation";
-              const seenCapabilityLabels = new Set<string>();
-              const capabilitySummaries =
+              const capabilitySummaries = summarizeCapabilities(
                 readiness?.capabilities
-                  .filter(
-                    (capability) =>
-                      capability.readiness !== "unknown" ||
-                      [
-                        "automatic_capture",
-                        "mcp_recall",
-                        "local_synthesis"
-                      ].includes(capability.id)
-                  )
-                  .filter((capability) => {
-                    const capLabel = capabilityLabel(capability.id);
-                    if (seenCapabilityLabels.has(capLabel)) return false;
-                    seenCapabilityLabels.add(capLabel);
-                    return true;
-                  })
-                  .slice(0, 5) ?? [];
-              const authLabel =
-                readiness?.authentication === "authenticated"
-                  ? "Authenticated"
-                  : readiness?.authentication === "unauthenticated"
-                    ? "Unauthenticated"
-                    : "Auth unknown";
-              const metaLine = detected
-                ? `${readiness?.version ? `v${readiness.version}` : "Version unknown"} · ${authLabel}`
-                : "Not installed";
+              );
+              const metaLine = clientMetaLine(readiness, detected);
               const result = results[id];
               const isActive = activeClient === id;
               const isQueued = !isActive && queue.includes(id);
@@ -670,16 +640,9 @@ function AiClientSetup({
                     {capabilitySummaries.map((capability) => (
                       <span className="koed-client-cap" key={capability.id}>
                         <span
-                          className={`koed-client-cap-dot ${
-                            capability.readiness === "ready"
-                              ? "is-ready"
-                              : capability.readiness === "unknown" ||
-                                  capability.support === "unsupported"
-                                ? ""
-                                : "is-attention"
-                          }`}
+                          className={`koed-client-cap-dot ${capability.dotClass}`}
                         />
-                        {capabilityLabel(capability.id)}
+                        {capability.label}
                       </span>
                     ))}
                   </span>

@@ -256,6 +256,49 @@
   margin-block: 18px;
 }
 
+.koed-pref-client-section {
+  display: grid;
+  gap: 14px;
+  padding-block-end: 22px;
+  border-block-end: 1px solid var(--border);
+}
+
+.koed-pref-client-heading h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.koed-pref-client-heading p {
+  margin: 4px 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.koed-pref-client-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.koed-pref-client-card {
+  cursor: default;
+}
+
+.koed-pref-client-message {
+  margin-block-start: -2px;
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.koed-pref-client-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-block-start: 10px;
+  border-block-start: 1px solid var(--border);
+}
+
 .koed-local-ai-settings {
   display: grid;
   gap: 14px;
