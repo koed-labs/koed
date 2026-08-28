@@ -201,7 +201,8 @@ export const createLaunchAtStartupController = (
           supported: true
         };
       }
-      return settings.openAtLogin && settings.status === "enabled"
+      return settings.openAtLogin &&
+        (settings.status === undefined || settings.status === "enabled")
         ? enabledState()
         : disabledState();
     }

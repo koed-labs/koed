@@ -65,6 +65,7 @@ import {
   isBackgroundLaunch
 } from "./window/launch-at-startup.js";
 import {
+  consumeDesktopActivation,
   createDesktopWindowActivator,
   shouldQuitAfterAllWindowsClosed
 } from "./window/lifecycle.js";
@@ -471,7 +472,9 @@ app.on("window-all-closed", () => {
   }
 });
 app.on("activate", () => {
-  if (backgroundLaunchPending) return;
+  const activation = consumeDesktopActivation(backgroundLaunchPending);
+  backgroundLaunchPending = activation.backgroundLaunchPending;
+  if (!activation.openWindow) return;
   if (BrowserWindow.getAllWindows().length === 0) {
     void showDesktopWindow();
   }

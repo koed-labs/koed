@@ -5,6 +5,18 @@ export const shouldQuitAfterAllWindowsClosed = (
   return false;
 };
 
+export interface DesktopActivationOutcome {
+  backgroundLaunchPending: false;
+  openWindow: boolean;
+}
+
+export const consumeDesktopActivation = (
+  backgroundLaunchPending: boolean
+): DesktopActivationOutcome => ({
+  backgroundLaunchPending: false,
+  openWindow: !backgroundLaunchPending
+});
+
 export interface DesktopWindowHandle {
   focus(): void;
   isDestroyed(): boolean;

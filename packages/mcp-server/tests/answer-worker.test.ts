@@ -313,6 +313,16 @@ lineReader.on("line", (line) => {
   return scriptPath;
 };
 
+const resolveMemoryAnswerWorkerTestConfig = (
+  directory: string,
+  env: NodeJS.ProcessEnv
+) =>
+  resolveMemoryAnswerWorkerConfig({
+    ...env,
+    KOED_HOME: path.join(directory, "koed-home"),
+    CODEX_HOME: path.join(directory, "codex-home")
+  });
+
 describe("memory answer worker", () => {
   it("reports the configured Claude instance and Agent SDK transport", async () => {
     const config = {
@@ -668,13 +678,12 @@ describe("memory answer worker", () => {
             question: "What did we choose?"
           }
         ],
-        config: resolveMemoryAnswerWorkerConfig({
+        config: resolveMemoryAnswerWorkerTestConfig(directory, {
           MEMORY_ANSWER_PROVIDER: "codex",
-          MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
+          MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
           KOED_PROMPT_DIR: directory
         })
       });
-
       expect(response.localMemoryWorker.errorMessage).toBeUndefined();
       expect(response.localMemoryWorker.usedFallback).toBe(false);
       expect(response.localMemoryWorker.promptVersion).toBe(
@@ -754,12 +763,12 @@ describe("memory answer worker", () => {
           },
           captureProcessMetrics: true,
           responseDetail: "internal",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_ANSWER_MODEL: "gpt-5.4-mini",
             MEMORY_ANSWER_REASONING_EFFORT: "medium",
             MEMORY_ANSWER_MAX_EVIDENCE_TOKENS: "128",
-            MEMORY_ANSWER_CODEX_BINARY: appServerBinary
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary
           })
         }
       );
@@ -900,9 +909,9 @@ describe("memory answer worker", () => {
           searchDomain: "project",
           projectId: "workspace-1",
           responseDetail: "internal",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
             MEMORY_ANSWER_MAX_SEARCHES: "3",
             MEMORY_ANSWER_MAX_EXPANSIONS: "1"
           })
@@ -1040,11 +1049,10 @@ describe("memory answer worker", () => {
             exact: ["BROAD_DEPLOYMENT", "DEPLOYMENT_MODE", "LEGACY_MODE"]
           },
           responseDetail: "internal",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
             MEMORY_ANSWER_MAX_SEARCHES: "3",
-            KOED_HOME: directory,
             MEMORY_ANSWER_MAX_CANDIDATES: "2"
           })
         }
@@ -1127,12 +1135,11 @@ describe("memory answer worker", () => {
           client,
           retrievalScope: "personal",
           searchDomain: "global",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
             MEMORY_ANSWER_MAX_ATTEMPTS: "2",
-            MEMORY_ANSWER_MAX_SEARCHES: "3",
-            KOED_HOME: directory
+            MEMORY_ANSWER_MAX_SEARCHES: "3"
           })
         }
       );
@@ -1213,9 +1220,9 @@ describe("memory answer worker", () => {
           projectId: "workspace-1",
           captureProcessMetrics: true,
           responseDetail: "internal",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
             MEMORY_ANSWER_TIMEOUT_MS: "25",
             MEMORY_ANSWER_MAX_ATTEMPTS: "2"
           })
@@ -1317,9 +1324,9 @@ describe("memory answer worker", () => {
           searchDomain: "project",
           projectId: "workspace-1",
           responseDetail: "internal",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
             MEMORY_ANSWER_MAX_ATTEMPTS: "2"
           })
         }
@@ -1387,14 +1394,12 @@ describe("memory answer worker", () => {
             }
           },
           responseDetail: "internal",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: writeFakeDynamicMemoryAnswerAppServer(
-              directory,
-              {
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
                 useTools: false
-              }
-            ),
+              }),
             MEMORY_ANSWER_MAX_ATTEMPTS: "1",
             MEMORY_ANSWER_MAX_PROMPT_TOKENS: "512"
           })
@@ -1453,14 +1458,12 @@ describe("memory answer worker", () => {
             }
           },
           responseDetail: "internal",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: writeFakeDynamicMemoryAnswerAppServer(
-              directory,
-              {
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
                 useTools: false
-              }
-            ),
+              }),
             MEMORY_ANSWER_MAX_ATTEMPTS: "1",
             MEMORY_ANSWER_MAX_CANDIDATES: "1"
           })
@@ -1535,12 +1538,12 @@ describe("memory answer worker", () => {
               }
             },
             responseDetail: "internal",
-            config: resolveMemoryAnswerWorkerConfig({
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
               MEMORY_ANSWER_PROVIDER: "codex",
-              MEMORY_ANSWER_CODEX_BINARY: writeFakeDynamicMemoryAnswerAppServer(
-                directory,
-                { useTools: false }
-              ),
+              MEMORY_CODEX_APP_SERVER_BINARY:
+                writeFakeDynamicMemoryAnswerAppServer(directory, {
+                  useTools: false
+                }),
               MEMORY_ANSWER_MAX_ATTEMPTS: "1",
               MEMORY_ANSWER_MAX_CANDIDATES: "10",
               ...testCase.env
@@ -1597,18 +1600,16 @@ describe("memory answer worker", () => {
             }
           },
           responseDetail: "internal",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: writeFakeDynamicMemoryAnswerAppServer(
-              directory,
-              {
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
                 useTools: false,
                 answer: answerObject(
                   "No matching relevant memory evidence was found.",
                   "not_found"
                 )
-              }
-            ),
+              }),
             MEMORY_ANSWER_MAX_ATTEMPTS: "1",
             MEMORY_ANSWER_MAX_EVIDENCE_ITEMS: "1"
           })
@@ -1645,18 +1646,16 @@ describe("memory answer worker", () => {
             }
           },
           responseDetail: "internal",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: writeFakeDynamicMemoryAnswerAppServer(
-              directory,
-              {
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
                 useTools: false,
                 answer: answerObject(
                   "There is not enough evidence to answer.",
                   "insufficient"
                 )
-              }
-            ),
+              }),
             MEMORY_ANSWER_MAX_ATTEMPTS: "1"
           })
         }
@@ -1692,12 +1691,12 @@ describe("memory answer worker", () => {
             }
           },
           responseDetail: "internal",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: writeFakeDynamicMemoryAnswerAppServer(
-              directory,
-              { mode: "expandBudget" }
-            ),
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                mode: "expandBudget"
+              }),
             MEMORY_ANSWER_MAX_ATTEMPTS: "1",
             MEMORY_ANSWER_MAX_EXPANSIONS: "0"
           })
@@ -1762,12 +1761,12 @@ describe("memory answer worker", () => {
             fusion: false,
             retrievalVariant: "qwen_dense_single_shot"
           },
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: writeFakeDynamicMemoryAnswerAppServer(
-              directory,
-              { useTools: false }
-            ),
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                useTools: false
+              }),
             MEMORY_ANSWER_MAX_ATTEMPTS: "1"
           })
         }
@@ -1884,9 +1883,9 @@ describe("memory answer worker", () => {
           retrievalScope: "personal",
           searchDomain: "project",
           projectId: "workspace-1",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
             MEMORY_ANSWER_MAX_ATTEMPTS: "1",
             MEMORY_ANSWER_MAX_SEARCHES: "3"
           })
@@ -1956,9 +1955,9 @@ describe("memory answer worker", () => {
           retrievalScope: "personal",
           searchDomain: "project",
           projectId: "workspace-1",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
             MEMORY_ANSWER_MAX_ATTEMPTS: "1",
             MEMORY_ANSWER_MAX_SEARCHES: "3"
           })
@@ -2024,9 +2023,9 @@ describe("memory answer worker", () => {
           retrievalScope: "personal",
           searchDomain: "project",
           projectId: "workspace-1",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
             MEMORY_ANSWER_MAX_ATTEMPTS: "1",
             MEMORY_ANSWER_MAX_SEARCHES: "1"
           })
@@ -2087,9 +2086,9 @@ describe("memory answer worker", () => {
           searchDomain: "project",
           projectId: "workspace-1",
           responseDetail: "internal",
-          config: resolveMemoryAnswerWorkerConfig({
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
-            MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
+            MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
             MEMORY_ANSWER_MAX_ATTEMPTS: "1"
           })
         }

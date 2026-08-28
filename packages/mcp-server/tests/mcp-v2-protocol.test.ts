@@ -116,11 +116,16 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     const callTool = vi
       .fn()
       .mockRejectedValueOnce(new Error("runtime is starting"))
-      .mockResolvedValueOnce({ ok: true });
+      .mockResolvedValue({ ok: true });
+    const capabilities = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("runtime is starting"))
+      .mockResolvedValue({
+        protocolVersion: 1 as const,
+        curatedMemoryIntakeAvailable: true
+      });
     const runtimeClient = {
-      capabilities: async () => {
-        throw new Error("runtime is starting");
-      },
+      capabilities,
       callTool
     } as unknown as LocalAiRuntimeClient;
     const [clientTransport, serverTransport] =
@@ -155,7 +160,19 @@ describe("Koed MCP 2026-07-28 protocol", () => {
         arguments: { query: "Can Koed recall this now?" }
       })
     ).resolves.toMatchObject({ structuredContent: { ok: true } });
-    expect(callTool).toHaveBeenCalledTimes(2);
+    await expect(client.listTools()).resolves.toMatchObject({
+      tools: [{ name: "memory_answer" }, { name: "memory_intake_propose" }]
+    });
+    await expect(
+      client.callTool({
+        name: "memory_intake_propose",
+        arguments: {
+          proposed_claim: "Remember this after Koed reconnects."
+        }
+      })
+    ).resolves.toMatchObject({ structuredContent: { ok: true } });
+    expect(capabilities).toHaveBeenCalledTimes(2);
+    expect(callTool).toHaveBeenCalledTimes(3);
     await client.close();
     await server.close();
   });

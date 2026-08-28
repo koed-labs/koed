@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  consumeDesktopActivation,
   createDesktopWindowActivator,
   shouldQuitAfterAllWindowsClosed,
   type DesktopWindowHandle
@@ -17,6 +18,19 @@ describe("Desktop window lifecycle", () => {
 
   it("keeps the app running on Windows so the tray can reopen the window", () => {
     expect(shouldQuitAfterAllWindowsClosed("win32")).toBe(false);
+  });
+
+  it("suppresses only the initial macOS background activation", () => {
+    const initial = consumeDesktopActivation(true);
+    expect(initial).toEqual({
+      backgroundLaunchPending: false,
+      openWindow: false
+    });
+
+    expect(consumeDesktopActivation(initial.backgroundLaunchPending)).toEqual({
+      backgroundLaunchPending: false,
+      openWindow: true
+    });
   });
 
   it("waits for bootstrap before creating a window", async () => {

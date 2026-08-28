@@ -111,6 +111,25 @@ describe("launch at startup", () => {
     expect(setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: false });
   });
 
+  it("uses the legacy macOS login-item state when status is unavailable", async () => {
+    const legacySettings = loginSettings({ openAtLogin: true });
+    delete (legacySettings as Partial<LoginItemSettings>).status;
+    const controller = createLaunchAtStartupController({
+      appDataPath: "/config",
+      appIsPackaged: true,
+      execPath: "/Applications/Koed.app/Contents/MacOS/Koed",
+      getLoginItemSettings: () => legacySettings,
+      platform: "darwin",
+      setLoginItemSettings: vi.fn()
+    });
+
+    await expect(controller.get()).resolves.toEqual({
+      enabled: true,
+      status: "enabled",
+      supported: true
+    });
+  });
+
   it("uses an exact executable and background argument on Windows", async () => {
     const getLoginItemSettings = vi.fn(() =>
       loginSettings({
