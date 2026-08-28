@@ -27,7 +27,9 @@ const clickClientCardButton = async (
   );
   expect(card).toBeTruthy();
   const button = [...card!.querySelectorAll("button")].find(
-    (item) => item.textContent?.trim() === buttonLabel
+    (item) =>
+      item.textContent?.trim() === buttonLabel ||
+      item.getAttribute("aria-label") === `${buttonLabel} ${clientLabel}`
   );
   expect(button).toBeTruthy();
   await act(async () => button!.click());
@@ -43,6 +45,46 @@ const snapshot = {
     protocolVersion: 1
   }
 } as unknown as CollaborationSnapshot;
+
+const advancedStatus = (
+  overrides: Partial<KoedServerStatus> = {}
+): KoedServerStatus => {
+  const healthy = { state: "healthy" as const };
+  return {
+    ok: true,
+    state: "healthy",
+    serverPackage: healthy,
+    api: { ...healthy, url: "http://127.0.0.1:43300" },
+    database: healthy,
+    redis: healthy,
+    workerQueues: healthy,
+    embeddingService: healthy,
+    privacyService: healthy,
+    localAiRuntime: healthy,
+    apiToken: { ...healthy, configured: true },
+    mcpServer: healthy,
+    captureHook: healthy,
+    codex: { ...healthy, configured: true },
+    claudeCode: { ...healthy, configured: true },
+    pi: { ...healthy, configured: true },
+    lcmSummaryService: healthy,
+    personalDeviceSync: healthy,
+    upstreamBackends: {
+      ...healthy,
+      registered: 0,
+      validated: 0,
+      stale: 0,
+      failed: 0,
+      notChecked: 0
+    },
+    lastVerification: { ...healthy, checkedAt: null },
+    koedHome: "/tmp/koed",
+    generatedAt: "2026-08-28T00:00:00.000Z",
+    runtimeMode: "local-personal",
+    dependencyMode: "bundled-local",
+    ...overrides
+  };
+};
 
 const integrationConsentCases = [
   {
@@ -300,13 +342,7 @@ describe("PreferencesView", () => {
       [...container.querySelectorAll("nav button")].map((button) =>
         button.textContent?.trim()
       )
-    ).toEqual([
-      "General",
-      "AI Clients",
-      "Team Connection",
-      "About",
-      "Advanced Diagnostics"
-    ]);
+    ).toEqual(["General", "Agents", "Teams", "Services", "About"]);
     expect(container.querySelector(".koed-local-ai-settings")).toBeTruthy();
 
     await renderPreferences({ initialSection: "advanced", localAiClients });
@@ -316,17 +352,297 @@ describe("PreferencesView", () => {
     );
   });
 
-  it("keeps Operator diagnostics collapsed and excludes credential values", async () => {
+  it("renders concise connection states and icon-only actions", async () => {
+    const component = { state: "healthy" as const };
+    const status = advancedStatus({
+      codex: {
+        ...component,
+        configured: true,
+        message: "The integration is configured."
+      },
+      claudeCode: {
+        state: "not_configured",
+        configured: false,
+        message: "A lengthy setup diagnostic should not be shown."
+      },
+      pi: {
+        state: "needs_attention",
+        configured: true,
+        message: "A lengthy startup diagnostic should not be shown."
+      },
+      aiClients: {
+        codex: {
+          driverId: "codex",
+          instanceId: "codex.default",
+          displayName: "Codex",
+          installed: component,
+          version: "1.2.3",
+          authentication: "authenticated",
+          profile: component,
+          capabilities: [],
+          observedAt: "2026-08-28T00:00:00.000Z",
+          snapshotState: "current"
+        },
+        claude: {
+          driverId: "claude",
+          instanceId: "claude.default",
+          displayName: "Claude Code",
+          installed: { state: "not_configured" },
+          version: null,
+          authentication: "unknown",
+          profile: { state: "not_configured" },
+          capabilities: [],
+          observedAt: "2026-08-28T00:00:00.000Z",
+          snapshotState: "unknown"
+        },
+        pi: {
+          driverId: "pi",
+          instanceId: "pi.default",
+          displayName: "Pi",
+          installed: component,
+          version: null,
+          authentication: "unknown",
+          profile: { state: "needs_attention" },
+          capabilities: [],
+          observedAt: "2026-08-28T00:00:00.000Z",
+          snapshotState: "current"
+        }
+      }
+    });
+    window.koedDesktop = {
+      invoke: vi.fn(async (command) =>
+        command === "status" ? status : { ok: true }
+      )
+    } as DesktopApi;
+
+    await renderPreferences({ initialSection: "ai-clients" });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Connections")
+    );
+    expect(container.textContent).not.toContain(
+      "Manage each client's Koed integration independently"
+    );
+    expect(container.textContent).not.toContain(
+      "The integration is configured."
+    );
+    expect(container.textContent).not.toContain(
+      "A lengthy setup diagnostic should not be shown."
+    );
+    expect(container.textContent).not.toContain(
+      "A lengthy startup diagnostic should not be shown."
+    );
+    expect(container.textContent).toContain("Not installed");
+    expect(container.textContent).toContain("Could not be started");
+    expect(container.textContent).not.toContain(
+      "Version unknown · Auth unknown"
+    );
+
+    const codexCard = [...container.querySelectorAll(".koed-client-card")].find(
+      (card) => card.querySelector("strong")?.textContent === "Codex"
+    )!;
+    expect(codexCard.querySelectorAll("button")).toHaveLength(3);
+    expect(
+      [...codexCard.querySelectorAll("button")].every(
+        (button) => button.textContent?.trim() === ""
+      )
+    ).toBe(true);
+    expect(
+      codexCard.querySelector(
+        'button[aria-label="Repair Codex"] .lucide-wrench'
+      )
+    ).toBeTruthy();
+    expect(
+      codexCard.querySelector(
+        'button[aria-label="Check Codex"] .lucide-refresh-cw'
+      )
+    ).toBeTruthy();
+    expect(
+      codexCard.querySelector(
+        'button[aria-label="Remove Codex"] .lucide-trash-2'
+      )
+    ).toBeTruthy();
+    expect(
+      container.querySelector(
+        'button[aria-label="Set up Claude Code"] .lucide-play'
+      )
+    ).toBeTruthy();
+  });
+
+  it("summarizes healthy diagnostics and keeps icon actions accessible", async () => {
+    const status = advancedStatus();
+    window.koedDesktop = {
+      invoke: vi.fn(async (command) =>
+        command === "status" ? status : { ok: true }
+      )
+    } as DesktopApi;
+
     await renderPreferences({ initialSection: "advanced" });
     const details = container.querySelector("details");
     expect(details?.open).toBe(false);
-    expect(container.textContent).toContain(
-      "do not expose API Token values or remote credentials"
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("All services are healthy")
+    );
+    expect(container.textContent).not.toContain(
+      "Operator diagnostics describe local implementation detail"
+    );
+    expect(
+      container.querySelector(
+        '.koed-diagnostics-summary-status[data-state="healthy"] .lucide-circle-check'
+      )
+    ).toBeTruthy();
+    const actions = [
+      ...container.querySelectorAll<HTMLButtonElement>(
+        ".koed-diagnostic-actions button"
+      )
+    ];
+    expect(actions.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Refresh status",
+      "Run diagnostics",
+      "Open logs"
+    ]);
+    expect(actions.every((button) => button.textContent?.trim() === "")).toBe(
+      true
     );
     expect(container.textContent).not.toContain("sk-");
   });
 
-  it("refreshes a stale startup snapshot when Advanced Diagnostics opens", async () => {
+  it("keeps the Refresh action fixed while showing operational progress", async () => {
+    const status = advancedStatus();
+    let statusCalls = 0;
+    let resolveRefresh!: (value: KoedServerStatus) => void;
+    const refreshPending = new Promise<KoedServerStatus>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    window.koedDesktop = {
+      invoke: vi.fn(async (command) => {
+        if (command !== "status") return { ok: true };
+        statusCalls += 1;
+        return statusCalls === 1 ? status : refreshPending;
+      })
+    } as DesktopApi;
+
+    await renderPreferences({ initialSection: "advanced" });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("All services are healthy")
+    );
+    const refresh = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh status"]'
+    )!;
+    const fixedWidthClasses = refresh.className;
+
+    await act(async () => refresh.click());
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLButtonElement>(
+          'button[aria-label="Refreshing status"]'
+        )
+      ).toBeTruthy()
+    );
+    const refreshing = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refreshing status"]'
+    )!;
+    expect(refreshing.className).toBe(fixedWidthClasses);
+    expect(refreshing.disabled).toBe(true);
+    expect(refreshing.getAttribute("aria-busy")).toBe("true");
+    expect(refreshing.querySelector("svg.animate-spin")).toBeTruthy();
+
+    await act(async () => resolveRefresh(status));
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector('button[aria-label="Refresh status"]')
+      ).toBeTruthy()
+    );
+  });
+
+  it("keeps the Run Diagnostics action fixed while showing operational progress", async () => {
+    const status = advancedStatus();
+    let resolveDoctor!: (value: { ok: true }) => void;
+    const doctorPending = new Promise<{ ok: true }>((resolve) => {
+      resolveDoctor = resolve;
+    });
+    window.koedDesktop = {
+      invoke: vi.fn(async (command) => {
+        if (command === "status") return status;
+        if (command === "doctor") return doctorPending;
+        return { ok: true };
+      })
+    } as DesktopApi;
+
+    await renderPreferences({ initialSection: "advanced" });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("All services are healthy")
+    );
+    const doctor = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Run diagnostics"]'
+    )!;
+    const fixedWidthClasses = doctor.className;
+
+    await act(async () => doctor.click());
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLButtonElement>(
+          'button[aria-label="Running diagnostics"]'
+        )
+      ).toBeTruthy()
+    );
+    const running = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Running diagnostics"]'
+    )!;
+    expect(running.className).toBe(fixedWidthClasses);
+    expect(running.disabled).toBe(true);
+    expect(running.getAttribute("aria-busy")).toBe("true");
+    expect(running.querySelector("svg.animate-spin")).toBeTruthy();
+
+    await act(async () => resolveDoctor({ ok: true }));
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector('button[aria-label="Run diagnostics"]')
+      ).toBeTruthy()
+    );
+  });
+
+  it("counts unhealthy services and only shows detail for their rows", async () => {
+    const status = advancedStatus({
+      serverPackage: {
+        state: "healthy",
+        message: "This healthy detail should stay hidden."
+      },
+      api: {
+        state: "needs_attention",
+        message: "The API did not respond.",
+        url: "http://127.0.0.1:43300"
+      }
+    });
+    window.koedDesktop = {
+      invoke: vi.fn(async (command) =>
+        command === "status" ? status : { ok: true }
+      )
+    } as DesktopApi;
+
+    await renderPreferences({ initialSection: "advanced" });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("1/9 services need attention")
+    );
+    expect(
+      container.querySelector(
+        '.koed-diagnostics-summary-status[data-state="needs_attention"] .lucide-circle-alert'
+      )
+    ).toBeTruthy();
+
+    const rows = [...container.querySelectorAll(".koed-diagnostics dl > div")];
+    const row = (label: string) =>
+      rows.find((item) => item.querySelector("dt")?.textContent === label)!;
+    const healthyDetail = row("Server package").querySelector("dd")!;
+    expect(healthyDetail.textContent).toBe("Healthy");
+    expect(container.textContent).not.toContain(
+      "This healthy detail should stay hidden."
+    );
+    expect(row("API").querySelector("dd")?.textContent).toBe(
+      "needs attentionThe API did not respond."
+    );
+  });
+
+  it("refreshes a stale startup snapshot when Services opens", async () => {
     vi.useFakeTimers();
     const healthy = { state: "healthy" as const };
     const starting = { state: "starting" as const };

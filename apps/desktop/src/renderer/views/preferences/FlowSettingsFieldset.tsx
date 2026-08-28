@@ -238,11 +238,11 @@ const InstanceSelect = ({
   onChange: (instanceId: string) => void;
 }) => (
   <label>
-    AI Client instance
+    Agent
     <select
       aria-describedby={`${flow.key}-status`}
       aria-invalid={!status.available}
-      aria-label={`${flow.label} AI Client instance`}
+      aria-label={`${flow.label} Agent`}
       disabled={state.pending}
       onChange={(event) => onChange(event.currentTarget.value)}
       value={
@@ -255,15 +255,12 @@ const InstanceSelect = ({
         (candidate) => candidate.instanceId === draft.ai_client_instance_id
       ) ? (
         <option value={draft.ai_client_instance_id}>
-          {draft.provider} · {draft.ai_client_instance_id} · unavailable
-          assignment
+          {draft.ai_client_instance_id} — Unavailable
         </option>
       ) : null}
       {options.map((candidate) => (
         <option key={candidate.instanceId} value={candidate.instanceId}>
-          {candidate.driverId} · {candidate.displayName} ·{" "}
-          {candidate.instanceId} ·{" "}
-          {statusFor(readModel, candidate.instanceId).text}
+          {instanceOptionLabel(readModel, candidate)}
         </option>
       ))}
     </select>
@@ -331,7 +328,7 @@ const ReasoningSelect = ({
       ) : null}
       {efforts.map((effort) => (
         <option key={effort} value={effort}>
-          {effort}
+          {capitalizeOptionLabel(effort)}
         </option>
       ))}
     </select>
@@ -357,7 +354,7 @@ const FlowActions = ({
       onClick={() => void save(flow.key, draft, status.available, flow.label)}
       type="button"
     >
-      {state.pending ? "Working…" : `Save ${flow.label}`}
+      {state.pending ? "Working…" : "Save"}
     </Button>
     <Button
       disabled={state.pending || !hasSetting}
@@ -365,7 +362,7 @@ const FlowActions = ({
       type="button"
       variant="outline"
     >
-      Reset assignment
+      Reset
     </Button>
     {state.saved && !state.dirty ? <span role="status">Saved</span> : null}
   </div>
@@ -385,17 +382,21 @@ const FlowDiagnostics = ({
   status: ReturnType<typeof assignmentStatusFor>;
 }) => (
   <>
-    <p
-      className="koed-local-ai-flow-status"
-      data-ready={status.available}
-      id={`${flow.key}-status`}
-      role="status"
-    >
-      {hasSetting
-        ? "Saved assignment"
-        : `Documented default (${defaultInfo.source})`}{" "}
-      · {status.text}
-    </p>
+    <p className="koed-local-ai-flow-description">{flow.description}</p>
+    {!hasSetting && status.available ? (
+      <span className="koed-visually-hidden" id={`${flow.key}-status`}>
+        Ready
+      </span>
+    ) : (
+      <p
+        className="koed-local-ai-flow-status"
+        data-ready={status.available}
+        id={`${flow.key}-status`}
+        role="status"
+      >
+        {hasSetting ? "Saved assignment" : "Default assignment"} · {status.text}
+      </p>
+    )}
     {!hasSetting && defaultInfo.persistable === false ? (
       <p className="koed-local-ai-diagnostic" role="status">
         Runtime default cannot be persisted: {defaultInfo.reason}
@@ -441,6 +442,19 @@ const filteredInstances = (
     options.unshift(current);
   return options;
 };
+
+const instanceOptionLabel = (
+  readModel: ReadModel,
+  instance: ReadModel["instances"][number]
+): string => {
+  const status = statusFor(readModel, instance.instanceId);
+  return status.available
+    ? instance.displayName
+    : `${instance.displayName} — ${capitalizeOptionLabel(status.text)}`;
+};
+
+const capitalizeOptionLabel = (value: string): string =>
+  value.length === 0 ? value : `${value[0]!.toUpperCase()}${value.slice(1)}`;
 
 const filteredModels = (
   models: ReadModel["capabilitySnapshots"][number]["models"],

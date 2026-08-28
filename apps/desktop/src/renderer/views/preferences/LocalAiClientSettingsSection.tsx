@@ -6,6 +6,9 @@ import { FlowSettingsFieldset } from "./FlowSettingsFieldset.js";
 import { assignmentFrom, flows } from "./local-ai-client-settings-helpers.js";
 import { useLocalAiClientSettings } from "./useLocalAiClientSettings.js";
 
+// Keep the search implementation available while its matching behavior is repaired.
+const AGENT_SEARCH_ENABLED = false;
+
 export function LocalAiClientSettingsSection({
   localAiClients
 }: {
@@ -76,32 +79,33 @@ const SettingsToolbar = ({
 }) => (
   <>
     <div className="koed-local-ai-toolbar">
-      <div>
-        <h2>Local AI Client flows</h2>
-        <p>
-          Each flow persists independently. Unavailable assignments stay visible
-          and block only their flow.
-        </p>
-      </div>
+      <h2>Agent Configuration</h2>
       <Button
+        aria-busy={refreshing}
+        aria-label={
+          refreshing ? "Refreshing capabilities" : "Refresh capabilities"
+        }
         disabled={refreshing}
         onClick={() => void refresh()}
+        size="icon"
+        title={refreshing ? "Refreshing capabilities" : "Refresh capabilities"}
         variant="outline"
       >
-        <RefreshCw aria-hidden="true" />{" "}
-        {refreshing ? "Refreshing…" : "Refresh capabilities"}
+        <RefreshCw aria-hidden="true" />
       </Button>
     </div>
-    <label className="koed-local-ai-search">
-      Search client, provider, display name, model, or full model ID
-      <Input
-        aria-label="Search local AI Clients and models"
-        onChange={(event) => setSearch(event.currentTarget.value)}
-        placeholder="Search AI Clients and models"
-        type="search"
-        value={search}
-      />
-    </label>
+    {AGENT_SEARCH_ENABLED ? (
+      <label className="koed-local-ai-search">
+        Search client, provider, display name, model, or full model ID
+        <Input
+          aria-label="Search local AI Clients and models"
+          onChange={(event) => setSearch(event.currentTarget.value)}
+          placeholder="Search AI Clients and models"
+          type="search"
+          value={search}
+        />
+      </label>
+    ) : null}
   </>
 );
 

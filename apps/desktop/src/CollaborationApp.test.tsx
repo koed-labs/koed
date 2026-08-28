@@ -2718,7 +2718,7 @@ describe("CollaborationApp", () => {
     }
   );
 
-  it("opens Team Connection from the Connect action", async () => {
+  it("opens Teams from the Connect action", async () => {
     const current = baseSnapshot();
     const client = createClient(
       collaborationSnapshotSchema.parse({
@@ -2735,7 +2735,7 @@ describe("CollaborationApp", () => {
     await click(container, "Shares");
     await click(container, "Connect");
 
-    expect(document.body.textContent).toContain("Team Connection");
+    expect(document.body.textContent).toContain("Teams");
     expect(client.reconnect).not.toHaveBeenCalled();
   });
 

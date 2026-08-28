@@ -16,9 +16,13 @@ import {
   AlertTriangle,
   Check,
   ChevronDown,
+  CircleAlert,
+  CircleCheck,
   ExternalLink,
   Network,
+  Play,
   RefreshCw,
+  Trash2,
   Wrench
 } from "lucide-react";
 import {
@@ -90,10 +94,10 @@ const sections: readonly {
   label: string;
 }[] = [
   { id: "general", label: "General" },
-  { id: "ai-clients", label: "AI Clients" },
-  { id: "team-connection", label: "Team Connection" },
-  { id: "about", label: "About" },
-  { id: "advanced", label: "Advanced Diagnostics" }
+  { id: "ai-clients", label: "Agents" },
+  { id: "team-connection", label: "Teams" },
+  { id: "advanced", label: "Services" },
+  { id: "about", label: "About" }
 ];
 
 const sectionTitle = (section: PreferencesSection): string =>
@@ -666,11 +670,7 @@ function AiClientIntegrationsSection({
       className="koed-pref-client-section"
     >
       <div className="koed-pref-client-heading">
-        <h2 id="koed-pref-ai-clients-title">AI Client integrations</h2>
-        <p>
-          Manage each client's Koed integration independently. Setup and removal
-          only touch Koed-owned entries.
-        </p>
+        <h2 id="koed-pref-ai-clients-title">Connections</h2>
       </div>
       {actionError ? (
         <p className="koed-diagnostic-error" role="alert">
@@ -686,7 +686,14 @@ function AiClientIntegrationsSection({
           const capabilitySummaries = summarizeCapabilities(
             readiness?.capabilities
           );
-          const metaLine = clientMetaLine(readiness, detected);
+          const metaLine =
+            profileState === "healthy"
+              ? clientMetaLine(readiness, detected)
+              : profileState === "starting"
+                ? null
+                : detected
+                  ? "Could not be started"
+                  : "Not installed";
           const pillClass =
             profileState === "healthy"
               ? "is-success"
@@ -722,10 +729,9 @@ function AiClientIntegrationsSection({
                   {pillText}
                 </span>
               </span>
-              {flat?.message ? (
-                <span className="koed-pref-client-message">{flat.message}</span>
+              {metaLine ? (
+                <span className="koed-client-meta">{metaLine}</span>
               ) : null}
-              <span className="koed-client-meta">{metaLine}</span>
               <span className="koed-client-caps">
                 {capabilitySummaries.map((capability) => (
                   <span
@@ -744,29 +750,39 @@ function AiClientIntegrationsSection({
               </span>
               <span className="koed-pref-client-actions">
                 <Button
+                  aria-label={`${notConfigured ? "Set up" : "Repair"} ${label}`}
                   disabled={snapshot.busyCommand !== null}
                   onClick={() => setPendingCommand(primaryCommand)}
-                  size="sm"
+                  size="icon"
+                  title={`${notConfigured ? "Set up" : "Repair"} ${label}`}
                   variant="outline"
                 >
-                  {notConfigured ? "Set up" : "Repair"}
+                  {notConfigured ? (
+                    <Play aria-hidden="true" />
+                  ) : (
+                    <Wrench aria-hidden="true" />
+                  )}
                 </Button>
                 <Button
+                  aria-label={`Check ${label}`}
                   disabled={snapshot.busyCommand !== null}
                   onClick={() => void run(`check_${id}`)}
-                  size="sm"
+                  size="icon"
+                  title={`Check ${label}`}
                   variant="outline"
                 >
-                  Check
+                  <RefreshCw aria-hidden="true" />
                 </Button>
                 {!notConfigured ? (
                   <Button
+                    aria-label={`Remove ${label}`}
                     disabled={snapshot.busyCommand !== null}
                     onClick={() => setPendingCommand(removeCommand)}
-                    size="sm"
+                    size="icon"
+                    title={`Remove ${label}`}
                     variant="destructive-outline"
                   >
-                    Remove
+                    <Trash2 aria-hidden="true" />
                   </Button>
                 ) : null}
               </span>
@@ -820,6 +836,9 @@ function AdvancedSection({
 }: Pick<PreferencesViewProps, "statusStore">) {
   const snapshot = useDesktopStatus(statusStore);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [runningAction, setRunningAction] = useState<
+    "doctor" | "status" | null
+  >(null);
   const status = snapshot.status;
 
   useEffect(() => {
@@ -843,11 +862,14 @@ function AdvancedSection({
 
   const run = async (action: "doctor" | "open_logs" | "status") => {
     setActionError(null);
+    if (action !== "open_logs") setRunningAction(action);
     try {
       if (action === "status") await statusStore.refresh();
       else await statusStore.run(action);
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (action !== "open_logs") setRunningAction(null);
     }
   };
 
@@ -866,17 +888,35 @@ function AdvancedSection({
         ] as const
       ).flatMap(([label, component]) => (component ? [[label, component]] : []))
     : [];
+  const servicesNeedingAttention = components.filter(
+    ([, component]) => component.state !== "healthy"
+  ).length;
+  const allServicesAreHealthy =
+    components.length > 0 && servicesNeedingAttention === 0;
 
   return (
     <div className="koed-preference-section">
-      <p className="koed-advanced-intro">
-        Operator diagnostics describe local implementation detail. They do not
-        expose API Token values or remote credentials. AI Client integration
-        actions live under the AI Clients section.
-      </p>
       <details className="koed-diagnostics">
         <summary>
-          Local service status <ChevronDown aria-hidden="true" />
+          <span
+            className="koed-diagnostics-summary-status"
+            data-state={allServicesAreHealthy ? "healthy" : "needs_attention"}
+          >
+            {allServicesAreHealthy ? (
+              <CircleCheck aria-hidden="true" />
+            ) : (
+              <CircleAlert aria-hidden="true" />
+            )}
+            {status
+              ? allServicesAreHealthy
+                ? "All services are healthy"
+                : `${servicesNeedingAttention}/${components.length} services need attention`
+              : "Service status unavailable"}
+          </span>
+          <ChevronDown
+            aria-hidden="true"
+            className="koed-diagnostics-chevron"
+          />
         </summary>
         {!status ? (
           <p role="status">Status has not loaded.</p>
@@ -886,8 +926,14 @@ function AdvancedSection({
               <div key={label}>
                 <dt>{label}</dt>
                 <dd>
-                  <strong>{component.state.replaceAll("_", " ")}</strong>
-                  {component.message ? <span>{component.message}</span> : null}
+                  <strong>
+                    {component.state === "healthy"
+                      ? "Healthy"
+                      : component.state.replaceAll("_", " ")}
+                  </strong>
+                  {component.state !== "healthy" && component.message ? (
+                    <span>{component.message}</span>
+                  ) : null}
                 </dd>
               </div>
             ))}
@@ -901,25 +947,56 @@ function AdvancedSection({
       ) : null}
       <div className="koed-diagnostic-actions">
         <Button
-          disabled={snapshot.busyCommand !== null}
+          aria-busy={runningAction === "status"}
+          aria-label={
+            runningAction === "status" ? "Refreshing status" : "Refresh status"
+          }
+          disabled={snapshot.busyCommand !== null || runningAction !== null}
           onClick={() => void run("status")}
+          size="icon"
+          title={
+            runningAction === "status" ? "Refreshing status" : "Refresh status"
+          }
           variant="outline"
         >
-          <RefreshCw aria-hidden="true" /> Refresh status
+          {runningAction === "status" ? (
+            <Spinner aria-hidden="true" />
+          ) : (
+            <RefreshCw aria-hidden="true" />
+          )}
         </Button>
         <Button
-          disabled={snapshot.busyCommand !== null}
+          aria-busy={runningAction === "doctor"}
+          aria-label={
+            runningAction === "doctor"
+              ? "Running diagnostics"
+              : "Run diagnostics"
+          }
+          disabled={snapshot.busyCommand !== null || runningAction !== null}
           onClick={() => void run("doctor")}
+          size="icon"
+          title={
+            runningAction === "doctor"
+              ? "Running diagnostics"
+              : "Run diagnostics"
+          }
           variant="outline"
         >
-          <Wrench aria-hidden="true" /> Run diagnostics
+          {runningAction === "doctor" ? (
+            <Spinner aria-hidden="true" />
+          ) : (
+            <Wrench aria-hidden="true" />
+          )}
         </Button>
         <Button
-          disabled={snapshot.busyCommand !== null}
+          aria-label="Open logs"
+          disabled={snapshot.busyCommand !== null || runningAction !== null}
           onClick={() => void run("open_logs")}
+          size="icon"
+          title="Open logs"
           variant="outline"
         >
-          <ExternalLink aria-hidden="true" /> Open logs
+          <ExternalLink aria-hidden="true" />
         </Button>
       </div>
     </div>
