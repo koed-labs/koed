@@ -6,8 +6,54 @@ import { performance } from "node:perf_hooks";
 import test from "node:test";
 import {
   terminateChild,
+  trustedClick,
   waitForRendererTarget
 } from "./smoke-packaged-renderer-faults.mjs";
+
+test("trusted renderer clicks foreground the page and dispatch real mouse input", async () => {
+  const calls = [];
+  const cdp = {
+    call: async (method, params) => calls.push({ method, params })
+  };
+  const expressions = [];
+  await trustedClick({
+    cdp,
+    evaluate: async (expression) => {
+      expressions.push(expression);
+      return { x: 120, y: 80 };
+    },
+    locator: "document.querySelector('button')"
+  });
+
+  assert.match(expressions[0], /document\.querySelector\('button'\)/u);
+  assert.deepEqual(calls, [
+    { method: "Page.bringToFront", params: undefined },
+    {
+      method: "Input.dispatchMouseEvent",
+      params: { type: "mouseMoved", x: 120, y: 80 }
+    },
+    {
+      method: "Input.dispatchMouseEvent",
+      params: {
+        type: "mousePressed",
+        x: 120,
+        y: 80,
+        button: "left",
+        clickCount: 1
+      }
+    },
+    {
+      method: "Input.dispatchMouseEvent",
+      params: {
+        type: "mouseReleased",
+        x: 120,
+        y: 80,
+        button: "left",
+        clickCount: 1
+      }
+    }
+  ]);
+});
 
 test("renderer target discovery bounds a stalled CDP request", async () => {
   const startedAt = performance.now();

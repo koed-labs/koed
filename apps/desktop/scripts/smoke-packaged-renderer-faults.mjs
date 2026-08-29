@@ -129,7 +129,12 @@ const connect = (url) =>
     });
   });
 
-const waitFor = async (evaluate, expression, label) => {
+const waitFor = async (
+  evaluate,
+  expression,
+  label,
+  diagnosticExpression = undefined
+) => {
   let last;
   let lastError;
   for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -145,11 +150,60 @@ const waitFor = async (evaluate, expression, label) => {
     }
     await delay(25);
   }
+  let diagnostic = "";
+  if (diagnosticExpression) {
+    try {
+      diagnostic = ` Diagnostic: ${JSON.stringify(
+        await evaluate(diagnosticExpression)
+      )}`;
+    } catch (error) {
+      diagnostic = ` Diagnostic collection failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+  }
   throw new Error(
     `Timed out waiting for packaged renderer ${label}.${
       lastError instanceof Error ? ` Last error: ${lastError.message}` : ""
-    }`
+    }${diagnostic}`
   );
+};
+
+export const trustedClick = async ({ cdp, evaluate, locator }) => {
+  await cdp.call("Page.bringToFront");
+  const center = await evaluate(`(() => {
+    const element = (${locator});
+    if (!(element instanceof HTMLElement)) return null;
+    element.scrollIntoView({ block: "center", inline: "center" });
+    const bounds = element.getBoundingClientRect();
+    return bounds.width > 0 && bounds.height > 0
+      ? { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 }
+      : null;
+  })()`);
+  if (!center) {
+    throw new Error(
+      `Packaged renderer element was not interactable: ${locator}`
+    );
+  }
+  await cdp.call("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: center.x,
+    y: center.y
+  });
+  await cdp.call("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: center.x,
+    y: center.y,
+    button: "left",
+    clickCount: 1
+  });
+  await cdp.call("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: center.x,
+    y: center.y,
+    button: "left",
+    clickCount: 1
+  });
 };
 
 export const smokePackagedRendererFaults = async ({
@@ -211,6 +265,7 @@ export const smokePackagedRendererFaults = async ({
     }
     cdp = await connect(target.webSocketDebuggerUrl);
     await cdp.call("Runtime.enable");
+    await cdp.call("Page.enable");
     const evaluate = async (expression) => {
       const response = await cdp.call("Runtime.evaluate", {
         expression,
@@ -325,13 +380,32 @@ export const smokePackagedRendererFaults = async ({
       `[...document.querySelectorAll('button')].some((item) => item.textContent?.trim() === 'Pause updates')`,
       "Shares Modify controls"
     );
-    await evaluate(
-      `(() => { const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Pause updates'); button?.focus(); button?.click(); })()`
+    await trustedClick({
+      cdp,
+      evaluate,
+      locator: `[...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Pause updates')`
+    });
+    await waitFor(
+      evaluate,
+      `[...document.querySelectorAll('button')].some((item) => item.textContent?.trim() === 'Resume updates') && document.querySelector('.collab-share-detail-workspace')?.textContent?.includes('Packaged asynchronous sharing')`,
+      "Shares pause state",
+      `(() => ({
+        activeElement: document.activeElement?.outerHTML ?? null,
+        pauseButton: [...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Pause updates')?.outerHTML ?? null,
+        resumeButton: [...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Resume updates')?.outerHTML ?? null,
+        detailText: document.querySelector('.collab-share-detail-workspace')?.textContent ?? null
+      }))()`
     );
     await waitFor(
       evaluate,
-      `document.activeElement?.textContent?.trim() === 'Resume updates' && document.querySelector('.collab-share-detail-workspace')?.textContent?.includes('Packaged asynchronous sharing')`,
-      "stable Shares focus"
+      `document.activeElement?.textContent?.trim() === 'Resume updates'`,
+      "stable Shares focus",
+      `(() => ({
+        hasFocus: document.hasFocus(),
+        visibilityState: document.visibilityState,
+        activeElement: document.activeElement?.outerHTML ?? null,
+        resumeButton: [...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Resume updates')?.outerHTML ?? null
+      }))()`
     );
     await evaluate(
       `[...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === 'Done')?.click()`
