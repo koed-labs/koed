@@ -1,6 +1,6 @@
 {
   "name": "@koed/koed",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "license": "Apache-2.0",
   "description": "Release manifest for the Koed distribution"

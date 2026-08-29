@@ -1,5 +1,11 @@
 # @koed/koed
 
+## 0.6.1
+
+### Patch Changes
+
+- c158536: Update CI to fix binary release.
+
 ## 0.6.0
 
 ### Minor Changes
