@@ -1,5 +1,11 @@
 # Koed
 
+## 0.6.2
+
+### Patch Changes
+
+- d574c76: Trigger a patch release after fixing draft release publication.
+
 ## 0.6.1
 
 ### Patch Changes
