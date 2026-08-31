@@ -53,6 +53,21 @@ test("unknown paths fail closed into packaged validation", () => {
   assert.equal(fileAffectsPackaging("new-runtime-area/config.json"), true);
 });
 
+test("draft release workflows resolve releases through API IDs", () => {
+  for (const workflowPath of [
+    ".github/workflows/release.yml",
+    ".github/workflows/release-desktop-assets.yml"
+  ]) {
+    const workflow = readFileSync(resolve(workflowPath), "utf8");
+    assert.match(workflow, /gh api --paginate --slurp/);
+    assert.match(
+      workflow,
+      /repos\/\$\{GITHUB_REPOSITORY\}\/releases\/\$\{RELEASE_ID\}/
+    );
+    assert.doesNotMatch(workflow, /gh release (?:view|edit)/);
+  }
+});
+
 test("the workflow model cache key and filename track the pinned runtime model", () => {
   const runtimeSource = readFileSync(
     resolve("packages/koed-server/src/local-models-runtime.ts"),

@@ -27,14 +27,22 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          release="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft,targetCommitish)"
-          if [ "$(jq -r '.isDraft' <<< "${release}")" != "true" ]; then
+          release="$(
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              | jq --arg tag "${TAG}" '[.[][] | select(.tag_name == $tag)] | first'
+          )"
+          if [ "${release}" = "null" ]; then
+            echo "Release not found: ${TAG}" >&2
+            exit 1
+          fi
+          if [ "$(jq -r '.draft' <<< "${release}")" != "true" ]; then
             echo "Desktop asset recovery is restricted to draft releases; ${TAG} is not a draft." >&2
             exit 1
           fi
-          target_commitish="$(jq -r '.targetCommitish' <<< "${release}")"
+          target_commitish="$(jq -r '.target_commitish' <<< "${release}")"
           commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${target_commitish}" --jq '.sha')"
           echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
+          echo "release_id=$(jq -r '.id' <<< "${release}")" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout immutable release source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -181,14 +189,20 @@ jobs:
             apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256 \
             --clobber
 
-      - name: Verify required assets and publish draft
+      - name: Verify required assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          assets="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')"
+          release="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          if [ "$(jq -r '.tag_name' <<< "${release}")" != "${TAG}" ]; then
+            echo "Release ID ${RELEASE_ID} does not match expected tag ${TAG}." >&2
+            exit 1
+          fi
+          assets="$(jq -r '.assets[].name' <<< "${release}")"
           asset_present() {
             local pattern="$1"
             local asset
@@ -215,6 +229,9 @@ jobs:
               exit 1
             fi
           done
-          if [ "$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')" = "true" ]; then
-            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
-          fi
+
+      - name: Publish recovered draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
+        run: gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false --silent

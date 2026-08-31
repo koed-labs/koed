@@ -18,6 +18,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       desktop_assets_enabled: ${{ steps.release_assets.outputs.enabled }}
+      release_id: ${{ steps.create_release.outputs.release_id || steps.release.outputs.release_id }}
       tag: ${{ steps.product.outputs.tag }}
       version: ${{ steps.product.outputs.version }}
     services:
@@ -79,11 +80,18 @@ jobs:
         if: steps.changesets.outputs.hasChangesets == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.product.outputs.tag }}
         run: |
-          if gh release view "${{ steps.product.outputs.tag }}" >/dev/null 2>&1; then
-            echo "exists=true" >> "${GITHUB_OUTPUT}"
-          else
+          set -euo pipefail
+          release="$(
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              | jq --arg tag "${TAG}" '[.[][] | select(.tag_name == $tag)] | first'
+          )"
+          if [ "${release}" = "null" ]; then
             echo "exists=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+            echo "release_id=$(jq -r '.id' <<< "${release}")" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Verify release commit
@@ -123,15 +131,23 @@ jobs:
           fi
 
       - name: Create GitHub release
+        id: create_release
         if: steps.changesets.outputs.hasChangesets == 'false' && steps.release.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.product.outputs.tag }}
         run: |
-          gh release create "${{ steps.product.outputs.tag }}" \
-            --title "Koed ${{ steps.product.outputs.tag }}" \
-            --target "${GITHUB_SHA}" \
-            --draft \
-            --notes-file release-notes.md
+          set -euo pipefail
+          release_id="$(
+            jq -n \
+              --arg tag "${TAG}" \
+              --arg target "${GITHUB_SHA}" \
+              --arg name "Koed ${TAG}" \
+              --rawfile body release-notes.md \
+              '{tag_name: $tag, target_commitish: $target, name: $name, body: $body, draft: true}' \
+              | gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" --input - --jq '.id'
+          )"
+          echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
 
   standalone-koed-server-release-assets:
     name: Standalone koed-server release assets (${{ matrix.platform }} ${{ matrix.arch }})
@@ -462,11 +478,21 @@ jobs:
       - name: Verify required release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.release.outputs.release_id }}
           TAG: ${{ needs.release.outputs.tag }}
           VERSION: ${{ needs.release.outputs.version }}
         run: |
           set -euo pipefail
-          assets="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')"
+          release="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          if [ "$(jq -r '.tag_name' <<< "${release}")" != "${TAG}" ]; then
+            echo "Release ID ${RELEASE_ID} does not match expected tag ${TAG}." >&2
+            exit 1
+          fi
+          if [ "$(jq -r '.draft' <<< "${release}")" != "true" ]; then
+            echo "Release ${TAG} is not a draft." >&2
+            exit 1
+          fi
+          assets="$(jq -r '.assets[].name' <<< "${release}")"
           asset_present() {
             local pattern="$1"
             local asset
@@ -500,4 +526,5 @@ jobs:
       - name: Publish verified release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${{ needs.release.outputs.tag }}" --repo "${GITHUB_REPOSITORY}" --draft=false
+          RELEASE_ID: ${{ needs.release.outputs.release_id }}
+        run: gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false --silent
