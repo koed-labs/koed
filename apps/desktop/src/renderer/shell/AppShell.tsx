@@ -61,6 +61,7 @@ export type AppShellProps = {
   onToggleInspector: () => void;
   personalUnreadCount: number;
   scopeLine: ReactNode;
+  teamBackendEnabled: boolean;
   teams: readonly TeamRailItem[];
   routeFocusKey: string;
 };
@@ -135,6 +136,7 @@ function Rail({
   onOpenDevices,
   onOpenPreferences,
   personalUnreadCount,
+  teamBackendEnabled,
   teams
 }: Pick<
   AppShellProps,
@@ -147,6 +149,7 @@ function Rail({
   | "onOpenDevices"
   | "onOpenPreferences"
   | "personalUnreadCount"
+  | "teamBackendEnabled"
   | "teams"
 >) {
   const activeTeamId =
@@ -252,9 +255,11 @@ function Rail({
         <RailButton label="Search and commands" onClick={onOpenCommandPalette}>
           <Search aria-hidden="true" />
         </RailButton>
-        <RailButton label="Add or join Team" onClick={onAddTeam}>
-          <Plus aria-hidden="true" />
-        </RailButton>
+        {teamBackendEnabled ? (
+          <RailButton label="Add or join Team" onClick={onAddTeam}>
+            <Plus aria-hidden="true" />
+          </RailButton>
+        ) : null}
         <RailButton label="Devices" onClick={onOpenDevices}>
           <MonitorSmartphone aria-hidden="true" />
         </RailButton>
@@ -300,6 +305,7 @@ export function AppShell({
   onToggleInspector,
   personalUnreadCount,
   scopeLine,
+  teamBackendEnabled,
   teams,
   routeFocusKey
 }: AppShellProps) {
@@ -411,6 +417,7 @@ export function AppShell({
         onOpenDevices={onOpenDevices}
         onOpenPreferences={onOpenPreferences}
         personalUnreadCount={personalUnreadCount}
+        teamBackendEnabled={teamBackendEnabled}
         teams={teams}
       />
       <aside

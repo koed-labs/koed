@@ -102,7 +102,9 @@ Supported mode fields:
   Team backend capability foundation. It accepts only `true` or `false`,
   defaults to `false`, requires `KOED_TEAM_COLLABORATION_ENABLED=true`, and is
   ignored by every non-developer deployment profile. Do not enable it for a
-  production deployment. When enabled, the isolated developer backend reports
+  production deployment. Koed Desktop hides the Teams preferences section and
+  its add-or-join-Team navigation action when this switch is not enabled. When
+  enabled, the isolated developer backend reports
   Cross-Identity Sync available only while application-layer encryption and
   the Cross-Identity Sync Worker are ready. It does not relax the verified
   WorkOS/AuthKit identity requirement for Team Self-Hosted or Koed-managed

@@ -47,6 +47,7 @@ describe("AppShell", () => {
       onToggleInspector: vi.fn(),
       personalUnreadCount: 3,
       scopeLine: <span>Personal · Private to you</span>,
+      teamBackendEnabled: true,
       routeFocusKey: "/personal",
       teams: [
         {
@@ -100,6 +101,13 @@ describe("AppShell", () => {
       "Devices",
       "Preferences"
     ]);
+  });
+
+  it("hides the add or join Team action when the Team backend is disabled", async () => {
+    await renderShell({ teamBackendEnabled: false });
+    expect(
+      container.querySelector('[aria-label="Add or join Team"]')
+    ).toBeNull();
   });
 
   it("marks the selected Team as the active rail scope", async () => {

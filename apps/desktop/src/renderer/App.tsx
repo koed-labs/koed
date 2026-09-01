@@ -416,6 +416,7 @@ export type AppProps = {
   personalMemoryApi?: PersonalDesktopApi | null;
   statusReadyOverride?: boolean;
   statusStoreOverride?: DesktopStatusStore;
+  teamBackendEnabled?: boolean;
 };
 
 export function App({
@@ -426,7 +427,8 @@ export function App({
   managedConversations = window.koedDesktop?.managedConversations ?? null,
   personalMemoryApi = window.koedDesktop?.personalMemory ?? null,
   statusReadyOverride,
-  statusStoreOverride
+  statusStoreOverride,
+  teamBackendEnabled = true
 }: AppProps = {}) {
   const askAvailable = Boolean(
     personalMemoryApi?.submitAsk &&
@@ -1459,6 +1461,7 @@ export function App({
         }
         onThemeChange={(preference) => void themeStore.set(preference)}
         statusStore={activeStatusStore}
+        teamBackendEnabled={teamBackendEnabled}
         theme={theme.preference}
         version="0.4.4"
       />
@@ -1607,6 +1610,7 @@ export function App({
             : 0
         }
         scopeLine={<ScopeLine>{scopeLine}</ScopeLine>}
+        teamBackendEnabled={teamBackendEnabled}
         teams={teamRail}
         routeFocusKey={JSON.stringify(route)}
       >
