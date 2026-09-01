@@ -140,6 +140,16 @@ const healthyStatus = (root: string): KoedServerStatus => ({
   core: { state: "healthy", components: {} }
 });
 
+const externalHealthyWithoutTokenStatus = (root: string): KoedServerStatus => ({
+  ...healthyStatus(root),
+  runtimeMode: "external",
+  apiToken: {
+    state: "not_configured",
+    message: "No local API Token is configured for Koed core services.",
+    configured: false
+  }
+});
+
 const createPackagedAppRuntime = (root: string) => {
   for (const entry of [
     "koed-runtime/api/dist/index.js",
@@ -365,6 +375,53 @@ describe("start supervisor", () => {
     expect(events.every((event) => typeof event.elapsedMs === "number")).toBe(
       true
     );
+  });
+
+  it("reports only required blocking checks when external startup times out", async () => {
+    const root = tempDir();
+    const status = externalHealthyWithoutTokenStatus(root);
+    status.ok = false;
+    status.state = "needs_attention";
+    status.workerQueues = {
+      state: "starting",
+      message: "Worker process has not reported as running yet."
+    };
+    status.embeddingService = {
+      state: "needs_attention",
+      message: "Embedding model is unavailable."
+    };
+
+    let thrown: Error | undefined;
+    try {
+      await startKoedServer({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_RUNTIME_MODE: "external",
+          KOED_DEPENDENCY_MODE: "external",
+          DATABASE_URL: "postgres://operator/database",
+          REDIS_URL: "redis://operator:6379",
+          EMBEDDING_SERVICE_URL: "http://embedding:8000",
+          API_TOKEN_PEPPER: "must-not-appear"
+        },
+        timeoutMs: 1,
+        pollIntervalMs: 1,
+        spawnSync: () => spawnResult(),
+        spawn: () => child(1),
+        collectStatus: async () => status
+      });
+    } catch (error) {
+      thrown = error as Error;
+    }
+
+    expect(thrown?.message).toContain(
+      "Blocking checks: Worker/queue (starting), Embedding Service (needs_attention)."
+    );
+    expect(thrown?.message).toContain(
+      "Inspect /ready and koed-server status --json for details."
+    );
+    expect(thrown?.message).not.toContain("Personal API Token");
+    expect(thrown?.message).not.toContain("must-not-appear");
   });
 
   it("creates one Desktop Local Credential for the Personal owner", () => {
@@ -1780,6 +1837,44 @@ describe("start supervisor", () => {
     }
   });
 
+  it.each(["developer", "local-personal"] as const)(
+    "refuses to run the %s Local AI Runtime without a Personal API Token",
+    async (runtimeMode) => {
+      const root = tempDir();
+      const spawned: Array<{ command: string; args: string[] }> = [];
+
+      await expect(
+        startKoedServer({
+          environment: {
+            KOED_HOME: root,
+            KOED_REPO_ROOT: root,
+            KOED_RUNTIME_MODE: runtimeMode,
+            KOED_DEPENDENCY_MODE: "external",
+            DATABASE_URL: "postgres://operator/db",
+            REDIS_URL: "redis://operator:6379",
+            EMBEDDING_SERVICE_URL: "http://operator:8000"
+          },
+          timeoutMs: 1,
+          pollIntervalMs: 1,
+          spawnSync: () => spawnResult(),
+          spawn: (command, args) => {
+            spawned.push({ command, args });
+            return child(spawned.length);
+          },
+          collectStatus: async () => healthyStatus(root)
+        })
+      ).rejects.toThrow(
+        "A Personal API Token is required to start the local AI runtime."
+      );
+
+      expect(
+        spawned.some((entry) =>
+          entry.args.some((arg) => arg.endsWith("local-runtime-cli.js"))
+        )
+      ).toBe(false);
+    }
+  );
+
   it("starts app services without managing external dependencies", async () => {
     const root = tempDir();
     const commands: Array<{ command: string; args: string[] }> = [];
@@ -1845,7 +1940,7 @@ describe("start supervisor", () => {
         spawned.push({ command, args });
         return child(spawned.length);
       },
-      collectStatus: async () => healthyStatus(root)
+      collectStatus: async () => externalHealthyWithoutTokenStatus(root)
     });
     while (spawned.length < 2) {
       await new Promise((resolveWait) => setTimeout(resolveWait, 1));
@@ -1862,6 +1957,7 @@ describe("start supervisor", () => {
       ) as { services: string[]; processes: Record<string, number> };
       expect(runtime.services).not.toContain("local-ai-runtime");
       expect(runtime.processes).not.toHaveProperty("localAiRuntime");
+      expect(existsSync(resolve(root, "run/koed-server.json"))).toBe(true);
     } finally {
       controller.abort();
       await running;

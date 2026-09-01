@@ -2016,6 +2016,30 @@ export const aggregateState = (
   return "healthy";
 };
 
+export type KoedServerStartupBlockingComponentId =
+  | "api"
+  | "database"
+  | "redis"
+  | "workerQueues"
+  | "embeddingService"
+  | "privacyService"
+  | "localAiRuntime"
+  | "apiToken";
+
+export const koedServerStartupBlockingComponentIds = (
+  runtimeMode: KoedServerStartupStatus["runtimeMode"]
+): readonly KoedServerStartupBlockingComponentId[] => [
+  "api",
+  "database",
+  "redis",
+  "workerQueues",
+  "embeddingService",
+  "privacyService",
+  ...(runtimeMode === "external"
+    ? []
+    : (["localAiRuntime", "apiToken"] as const))
+];
+
 const inspectSafely = <T>(label: string, inspect: () => T, fallback: T): T => {
   try {
     return inspect();
@@ -2189,7 +2213,11 @@ export const collectKoedServerStartupStatus = async (
     localAiRuntime,
     apiToken
   };
-  const state = aggregateState(Object.values(components));
+  const state = aggregateState(
+    koedServerStartupBlockingComponentIds(serverConfig.runtimeMode).map(
+      (componentId) => components[componentId]
+    )
+  );
   return {
     ok: state === "healthy",
     state,
@@ -2453,7 +2481,12 @@ export const collectKoedServerStatus = async (
     apiToken,
     mcpServer
   };
-  const coreState = aggregateState(Object.values(coreComponents));
+  const coreState = aggregateState([
+    ...koedServerStartupBlockingComponentIds(serverConfig.runtimeMode).map(
+      (componentId) => coreComponents[componentId]
+    ),
+    coreComponents.mcpServer
+  ]);
   const lastVerification = inspectLastVerification(paths, deps);
   const readinessInput = {
     codex,

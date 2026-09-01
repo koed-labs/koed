@@ -119,6 +119,10 @@ require a current verified WorkOS/AuthKit identity in the configured provider
 environment whose email matches the local User and, for invite acceptance, the
 email-bound, backend-bound, one-time invite token. A deployment without that
 verified identity path remains fail-closed for those Team-authority operations.
+The verified identity establishes who the User is; Koed Team Membership and
+roles determine what that User may do. A Personal API Token is a User-owned AI
+Client integration credential. It is neither a Team backend identity nor an
+Operator or Team administrative credential.
 
 - `KOED_DEPENDENCY_MODE`: `external` or `bundled-local`.
 - `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: enables the supervised Codex Transcript Watcher. When unset, developer and local-personal runtime modes enable it. External runtime mode cannot enable it because that mode does not own a Local AI Runtime; attempting to do so fails configuration. `KOED_HOME/config/server.json` may set the equivalent `codexTranscriptWatcherEnabled` field, with the environment taking precedence.
@@ -164,8 +168,12 @@ The Desktop supervisor may provision the same local credential automatically;
 manual token bootstrap remains supported.
 
 `koed-server status --json` and `doctor --json` report core components separately
-from AI Client profile diagnostics. Core includes API, storage, queues, Embedding
-Service, Local AI Runtime process, MCP artifacts, and local credential. Zero
+from AI Client profile diagnostics. In `developer` and `local-personal` runtime
+modes, core includes API, storage, queues, Embedding Service, Local AI Runtime
+process, MCP artifacts, and its local Personal API Token. In `external` runtime
+mode, core does not own a Local AI Runtime and does not require
+`MEMORY_API_TOKEN`; a missing, invalid, or revoked Personal API Token remains
+visible as Diagnostic Status without making the server unhealthy. Zero
 configured AI Clients is healthy core state. Codex, Claude Code, and Pi
 configuration, authentication, Capture Hook, Transcript Watcher, and synthesis
 readiness remain client diagnostics. LCM Summary Service process health is
@@ -537,7 +545,9 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
   `TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN`: isolated Team Memory KMS settings for
   `managed_kms`, `byok`, or `cmek`. They are never inherited from the Personal
   or owner-private KMS families.
-- `API_TOKEN_PEPPER`: server-side pepper used when hashing API Tokens.
+- `API_TOKEN_PEPPER`: Operator-controlled server-side pepper used when hashing
+  API Tokens. It is a required server secret, not a User identity, Personal API
+  Token, or administrative account.
 - `API_CORS_ORIGINS`: comma-separated exact browser origins, including scheme,
   host, and port. Cookie-authenticated Shared Memory,
   retention, high-risk activation, Team, Workspace, and invite writes require
@@ -939,7 +949,14 @@ These values are copied into the AI Client configuration and are not consumed au
   live isolated database/schema and document set before advertising the
   isolated-index capability. Leave both unset for normal production retrieval. The older
   `KOED_EVAL_RETRIEVAL_COMPOSITION` string is not trusted as a capability.
-- `MEMORY_API_TOKEN`: Personal API Token provisioned for the Local AI Runtime. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`; it is not written into MCP configuration.
+- `MEMORY_API_TOKEN`: User-owned Personal API Token provisioned for a supervised
+  Local AI Runtime. `developer` and `local-personal` runtime modes require it
+  before starting that runtime. `external` mode does not supervise a Local AI
+  Runtime and does not require or receive this setting. The token does not grant
+  Team administration; Team authority comes from verified identity, Team
+  Membership, and roles. Operators can inspect and revoke local token records
+  with `pnpm api-token:list` and `pnpm api-token:revoke`; it is not written into
+  MCP configuration.
   When Hosted Personal Source Replication is explicitly enabled, the Worker
   uses this local API bridge to request an owner-bound encrypted embedding
   artifact from the enrolled upstream before local inference. Missing local
