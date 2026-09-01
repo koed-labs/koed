@@ -5,9 +5,13 @@ import {
   type StdioServerHandle
 } from "@modelcontextprotocol/server/stdio";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import releaseManifest from "@koed/koed/package.json" with { type: "json" };
 import {
   createKoedMcpServer,
+  KOED_MCP_PROTOCOL_VERSION,
+  KOED_MCP_SERVER_VERSION,
   KOED_MCP_UNAVAILABLE_MESSAGE,
+  resolveKoedMcpServerVersion,
   type McpCallerContextResolver
 } from "../src/mcp-server-factory.js";
 import type { LocalAiRuntimeClient } from "../src/local-runtime-client.js";
@@ -75,9 +79,24 @@ const connect = async ({
 };
 
 describe("Koed MCP 2026-07-28 protocol", () => {
+  it("advertises the Koed release independently from its protocol version", () => {
+    expect(KOED_MCP_SERVER_VERSION).toBe(releaseManifest.version);
+    expect(KOED_MCP_PROTOCOL_VERSION).toBe("2026-07-28");
+    expect(resolveKoedMcpServerVersion({ version: "1.2.3-beta.1" })).toBe(
+      "1.2.3-beta.1"
+    );
+    expect(() => resolveKoedMcpServerVersion({ version: "unknown" })).toThrow(
+      /valid SemVer/
+    );
+  });
+
   it("negotiates through server/discover and returns deterministic cacheable tools", async () => {
     const { client } = await connect();
 
+    expect(client.getServerVersion()).toMatchObject({
+      name: "koed-mcp",
+      version: releaseManifest.version
+    });
     expect(client.getProtocolEra()).toBe("modern");
     expect(client.getDiscoverResult()).toMatchObject({
       supportedVersions: ["2026-07-28"]

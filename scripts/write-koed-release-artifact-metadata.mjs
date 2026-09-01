@@ -201,6 +201,28 @@ const collectNativeRuntimeTargets = ({ artifactRoot, repository, tag }) => {
 export const buildReleaseArtifactMetadata = (options) => {
   const targets = collectServerPackageTargets(options);
   const nativeRuntimeTargets = collectNativeRuntimeTargets(options);
+  if (options.tag !== `v${options.version}`) {
+    throw new Error(
+      `Release tag ${options.tag} does not match product version ${options.version}.`
+    );
+  }
+  const mismatchedTargets = [
+    ...targets.map((target) => ({ kind: "koed-server", ...target })),
+    ...nativeRuntimeTargets.map((target) => ({
+      kind: "native-runtime",
+      ...target
+    }))
+  ].filter((target) => target.version !== options.version);
+  if (mismatchedTargets.length > 0) {
+    throw new Error(
+      `Release artifacts do not match product version ${options.version}: ${mismatchedTargets
+        .map(
+          (target) =>
+            `${target.kind} ${target.platform}-${target.architecture} is ${target.version}`
+        )
+        .join(", ")}`
+    );
+  }
   return {
     schemaVersion: 1,
     release: {
@@ -211,6 +233,7 @@ export const buildReleaseArtifactMetadata = (options) => {
       desktop: {
         kind: "desktop",
         packageName: "koed",
+        version: options.version,
         description: "Koed Desktop control-plane package assets."
       },
       koedServerAppRuntime: {

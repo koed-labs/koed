@@ -8,3 +8,6 @@ deployment as a whole.
 
 Do not select internal workspace packages unless they become separately
 versioned release artifacts.
+
+See `docs/release-versioning.md` for the distinction between product, artifact,
+internal package, and compatibility versions.

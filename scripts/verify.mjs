@@ -20,6 +20,7 @@ if (!process.env.DATABASE_URL?.trim()) {
 }
 
 const steps = [
+  ["product release version", "pnpm", ["release:check"]],
   ["lint", "pnpm", ["lint"]],
   ["db migration check", "pnpm", ["db:migrate:check"]],
   ["db migration smoke", "pnpm", ["db:migrate:smoke"]],

@@ -322,6 +322,9 @@ importers:
       '@koed/core':
         specifier: workspace:*
         version: link:../core
+      '@koed/koed':
+        specifier: workspace:*
+        version: link:../koed
       '@koed/shared':
         specifier: workspace:*
         version: link:../shared

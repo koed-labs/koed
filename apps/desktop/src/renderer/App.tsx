@@ -1460,7 +1460,7 @@ export function App({
         onThemeChange={(preference) => void themeStore.set(preference)}
         statusStore={activeStatusStore}
         theme={theme.preference}
-        version="0.4.4"
+        version={__KOED_DESKTOP_VERSION__}
       />
     );
   } else if (snapshot) {

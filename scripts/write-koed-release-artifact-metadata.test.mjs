@@ -95,6 +95,7 @@ test("builds release metadata for standalone koed-server package targets", () =>
     "a".repeat(64)
   );
   assert.equal(metadata.artifacts.desktop.kind, "desktop");
+  assert.equal(metadata.artifacts.desktop.version, "0.4.0");
   assert.equal(
     metadata.artifacts.koedServerAppRuntime.targets[0].provenance.name,
     "koed-server-app-runtime-0.4.0-linux-x64.provenance.json"
@@ -164,5 +165,41 @@ test("requires valid provenance for native runtime archives", () => {
         artifactRoot: root
       }),
     /Invalid native-runtime provenance/
+  );
+});
+
+test("rejects release artifacts whose versions do not match the product", () => {
+  const root = tempDir();
+  const native = resolve(root, "native-runtime-linux-x64");
+  mkdirSync(native, { recursive: true });
+  writeFileSync(
+    resolve(native, "koed-native-runtime-linux-x64-0.3.9.tar.gz"),
+    "archive\n"
+  );
+  writeFileSync(
+    resolve(native, "koed-native-runtime-linux-x64-0.3.9.tar.gz.sha256"),
+    `${"d".repeat(64)}  koed-native-runtime-linux-x64-0.3.9.tar.gz\n`
+  );
+  writeFileSync(
+    resolve(native, "koed-native-runtime-linux-x64-0.3.9.provenance.json"),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      artifact: {
+        version: "0.3.9",
+        platform: "linux",
+        architecture: "x64"
+      }
+    })}\n`
+  );
+
+  assert.throws(
+    () =>
+      buildReleaseArtifactMetadata({
+        version: "0.4.0",
+        tag: "v0.4.0",
+        repository: "koed/koed",
+        artifactRoot: root
+      }),
+    /native-runtime linux-x64 is 0\.3\.9/
   );
 });

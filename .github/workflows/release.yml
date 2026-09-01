@@ -400,7 +400,7 @@ jobs:
 
       - name: Build native runtime artifact
         env:
-          KOED_NATIVE_RUNTIME_VERSION: ${{ needs.release.outputs.tag }}
+          KOED_NATIVE_RUNTIME_VERSION: ${{ needs.release.outputs.version }}
         run: pnpm native-runtime:build:macos-arm64 -- --json
 
       - name: Extract native runtime artifact for relocation validation

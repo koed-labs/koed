@@ -1,10 +1,38 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 
+const desktopPackage = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8")
+) as { version?: unknown };
+if (
+  typeof desktopPackage.version !== "string" ||
+  !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(
+    desktopPackage.version
+  )
+) {
+  throw new Error("Desktop package.json must contain a valid SemVer version.");
+}
+const desktopVersion = desktopPackage.version;
+const releaseVersionAsset = (): Plugin => ({
+  name: "koed-release-version",
+  generateBundle() {
+    this.emitFile({
+      type: "asset" as const,
+      fileName: "koed-release-version.json",
+      source: `${JSON.stringify({ version: desktopVersion }, null, 2)}\n`
+    });
+  }
+});
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [releaseVersionAsset(), react(), tailwindcss()],
+  define: {
+    __KOED_DESKTOP_VERSION__: JSON.stringify(desktopVersion)
+  },
   base: "./",
   root: ".",
   build: {

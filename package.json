@@ -46,6 +46,7 @@
     "eval:lcm-summary": "pnpm --filter @koed/evals eval:lcm-summary:live",
     "changeset": "changeset",
     "release:version": "changeset version && node scripts/sync-product-release.mjs --consume-changesets",
+    "release:check": "node scripts/check-product-release.mjs",
     "release:notes": "node scripts/product-release-notes.mjs",
     "codex:configure": "node scripts/configure-codex.mjs",
     "claude:configure": "node scripts/configure-claude.mjs",

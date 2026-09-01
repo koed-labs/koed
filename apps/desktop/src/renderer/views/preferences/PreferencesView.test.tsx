@@ -195,12 +195,22 @@ describe("PreferencesView", () => {
       onThemeChange: vi.fn(),
       statusStore: new DesktopStatusStore(),
       theme: "system",
-      version: "0.4.4",
+      version: "test-desktop-version",
       ...overrides
     };
     await act(async () => root.render(<PreferencesView {...props} />));
     return props;
   };
+
+  it("renders the supplied Desktop application version in About", async () => {
+    await renderPreferences({
+      initialSection: "about",
+      version: "9.8.7-test"
+    });
+
+    expect(container.textContent).toContain("Version");
+    expect(container.textContent).toContain("9.8.7-test");
+  });
 
   it("delegates theme persistence to the trusted parent", async () => {
     const onThemeChange = vi.fn();

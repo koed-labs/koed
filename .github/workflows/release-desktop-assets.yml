@@ -140,8 +140,8 @@ jobs:
 
       - name: Build native runtime artifact
         env:
-          KOED_NATIVE_RUNTIME_VERSION: ${{ inputs.tag }}
-        run: pnpm native-runtime:build:macos-arm64 -- --json
+          TAG: ${{ inputs.tag }}
+        run: KOED_NATIVE_RUNTIME_VERSION="${TAG#v}" pnpm native-runtime:build:macos-arm64 -- --json
 
       - name: Extract and validate native runtime artifact
         run: |
