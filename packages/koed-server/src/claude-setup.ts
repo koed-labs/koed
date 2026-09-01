@@ -14,11 +14,24 @@ import { resolveKoedServerPaths } from "./paths.js";
 import {
   assertAiClientRegistryWritable,
   captureAiClientRegistry,
+  type ExecutablePathDependencies,
   registerExplicitAiClient,
   removeExplicitAiClient,
   restoreAiClientRegistry,
-  resolveExecutablePath
+  resolveExecutablePathWithPlatformFallbacks
 } from "./ai-client-registry.js";
+
+export const resolveClaudeExecutablePath = (
+  environment: NodeJS.ProcessEnv,
+  dependencies: ExecutablePathDependencies = {},
+  platform: NodeJS.Platform = process.platform
+): string =>
+  resolveExecutablePathWithPlatformFallbacks(
+    environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude",
+    environment,
+    dependencies,
+    platform
+  );
 
 export const MINIMUM_CLAUDE_CODE_VERSION = "2.1.227";
 export const CLAUDE_HOOK_EVENTS = [
@@ -224,8 +237,7 @@ export const removeClaude = (
 ): KoedServerSetupClaudeResult => {
   const paths = resolveKoedServerPaths(environment);
   const settingsPath = resolveClaudeSettingsPath(environment);
-  const executable =
-    environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
+  let executable = environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
   const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
   const checkedAt = new Date().toISOString();
   const base = {
@@ -239,6 +251,7 @@ export const removeClaude = (
   let removedMcp = false;
   try {
     assertAiClientRegistryWritable(environment);
+    executable = resolveClaudeExecutablePath(environment);
     registrySnapshot = captureAiClientRegistry(environment);
     originalSettings = existsSync(settingsPath)
       ? readFileSync(settingsPath, "utf8")
@@ -389,8 +402,7 @@ export const setupClaude = (
 ): KoedServerSetupClaudeResult => {
   const paths = resolveKoedServerPaths(environment);
   const runtime = resolveKoedAppRuntime(paths, environment);
-  const executable =
-    environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
+  let executable = environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
   const settingsPath = resolveClaudeSettingsPath(environment);
   const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
   const nodeCommand = environment.MEMORY_NODE_COMMAND?.trim() || "node";
@@ -420,6 +432,7 @@ export const setupClaude = (
 
   try {
     assertAiClientRegistryWritable(environment);
+    executable = resolveClaudeExecutablePath(environment);
     if (!existsSync(runtime.mcpCli) || !existsSync(runtime.captureHook)) {
       return failure(
         "Koed's Claude Code integration artifacts are missing.",
@@ -564,7 +577,7 @@ export const setupClaude = (
     const registered = registerExplicitAiClient({
       environment,
       driverId: "claude",
-      executablePath: resolveExecutablePath(executable, environment),
+      executablePath: executable,
       displayName: "Claude Code",
       configHome: environment.CLAUDE_CONFIG_DIR
     });

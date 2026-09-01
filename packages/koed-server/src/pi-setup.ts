@@ -17,6 +17,7 @@ import { resolveKoedServerPaths } from "./paths.js";
 import {
   assertAiClientRegistryWritable,
   captureAiClientRegistry,
+  platformExecutableSearchDirectories,
   registerExplicitAiClient,
   removeExplicitAiClient,
   restoreAiClientRegistry
@@ -140,7 +141,11 @@ export const resolvePiSetupExecutable = (
   let candidate = configured;
   if (!candidate) {
     const pathDelimiter = platform === "win32" ? ";" : delimiter;
-    for (const directory of (environment.PATH ?? "").split(pathDelimiter)) {
+    const directories = [
+      ...(environment.PATH ?? "").split(pathDelimiter),
+      ...platformExecutableSearchDirectories(environment, platform)
+    ];
+    for (const directory of directories) {
       if (!isAbsolute(directory)) continue;
       candidate = executableNames(platform)
         .map((name) => join(directory, name))

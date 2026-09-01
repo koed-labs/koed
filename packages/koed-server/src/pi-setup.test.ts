@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { removePi, resolvePiSetupExecutable, setupPi } from "./pi-setup.js";
 
 const temporaryDirectories: string[] = [];
@@ -19,12 +19,62 @@ const spawnResult = (stdout = "", status = 0) =>
   ({ stdout, stderr: "", status, signal: null, pid: 1, output: [] }) as never;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
 describe("Pi setup", () => {
+  it("finds and stores Pi from a macOS fallback directory", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-macos-discovery-"));
+    temporaryDirectories.push(root);
+    const source = resolve(root, "packages/mcp-server/integrations/pi");
+    const executable = resolve(root, ".local/bin/pi");
+    mkdirSync(resolve(source, "extensions"), { recursive: true });
+    mkdirSync(resolve(executable, ".."), { recursive: true });
+    writeFileSync(resolve(source, "package.json"), "{}\n");
+    writeFileSync(resolve(source, "extensions/koed.mjs"), "export {};\n");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o700);
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+
+    const result = setupPi(
+      {
+        HOME: root,
+        PATH: "/usr/bin:/bin",
+        KOED_HOME: resolve(root, "koed"),
+        KOED_REPO_ROOT: root
+      },
+      ((_command: string, args: string[]) =>
+        args[0] === "--version"
+          ? spawnResult("0.84.2\n")
+          : args[0] === "--list-models"
+            ? spawnResult("provider model\nopenai gpt-5.4\n")
+            : spawnResult("installed\n")) as never
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      executablePath: realpathSync(executable)
+    });
+    expect(
+      JSON.parse(
+        readFileSync(
+          resolve(root, "koed/config/ai-client-instances.json"),
+          "utf8"
+        )
+      )
+    ).toMatchObject({
+      instances: [
+        {
+          instanceId: "pi.default",
+          executablePath: realpathSync(executable)
+        }
+      ]
+    });
+  });
+
   it("canonicalizes Pi and invokes it with an authenticated, secret-free environment", () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-setup-"));
     temporaryDirectories.push(root);
