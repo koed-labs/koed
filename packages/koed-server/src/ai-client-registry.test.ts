@@ -150,7 +150,7 @@ describe("AI Client instance registry", () => {
         (entry: { instanceId: string }) => entry.instanceId === "codex.default"
       )
     ).toMatchObject({
-      executablePath: "/bin/sh"
+      executablePath: realpathSync("/bin/sh")
     });
   });
 
@@ -275,7 +275,7 @@ describe("AI Client instance registry", () => {
           instanceId: "codex.default",
           driverId: "codex",
           displayName: "Codex",
-          executablePath: "/bin/sh",
+          executablePath: realpathSync("/bin/sh"),
           configHome: codexHome
         }
       ]
