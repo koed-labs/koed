@@ -42,11 +42,12 @@ searches the inherited `PATH`. On macOS it also searches `~/.local/bin`,
 `/opt/homebrew/bin`, and `/usr/local/bin`, in that order. This supports packaged
 Koed apps started from Finder without running an interactive shell or loading
 shell startup files. Set `MEMORY_CODEX_APP_SERVER_BINARY` to the executable's
-absolute path for installations in other locations. Koed stores the canonical
-executable path in `KOED_HOME/config/ai-client-instances.json`. When that path
-is a Node-based Codex CLI entry, Koed invokes it through its trusted Node
-runtime rather than depending on `/usr/bin/env node` and an interactive-shell
-`PATH`.
+absolute path for installations in other locations. Koed stores the stable
+absolute launcher path in `KOED_HOME/config/ai-client-instances.json` and
+resolves its current target at execution time, so package upgrades can retarget
+the launcher. When that target is a Node-based Codex CLI entry, Koed invokes it
+through its trusted Node runtime rather than depending on `/usr/bin/env node`
+and an interactive-shell `PATH`.
 
 Koed changes only the section between its `koed-memory-guidance` HTML comment
 markers. Existing global instructions and all Project-level `AGENTS.md` files

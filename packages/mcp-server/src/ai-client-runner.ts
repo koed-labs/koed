@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn as nodeSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import {
@@ -18,6 +18,7 @@ import {
 import {
   query,
   type ModelInfo,
+  type Options,
   type SDKMessage
 } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -619,6 +620,31 @@ export const claudeAgentSdkProcessEnvironment = (
   );
 };
 
+export const claudeAgentSdkExecutableOptions = (
+  executablePath: string,
+  spawnProcess: typeof nodeSpawn = nodeSpawn
+): {
+  pathToClaudeCodeExecutable: string;
+  spawnClaudeCodeProcess?: NonNullable<Options["spawnClaudeCodeProcess"]>;
+} => {
+  const invocation = nodeCliInvocation(executablePath, []);
+  if (invocation.command !== process.execPath || invocation.args.length !== 1) {
+    return { pathToClaudeCodeExecutable: invocation.command };
+  }
+  const [nodeEntry] = invocation.args;
+  return {
+    pathToClaudeCodeExecutable: nodeEntry!,
+    spawnClaudeCodeProcess: ({ args, cwd, env, signal }) =>
+      spawnProcess(invocation.command, args, {
+        cwd,
+        env,
+        signal,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true
+      })
+  };
+};
+
 const claudeResultText = (message: Extract<SDKMessage, { type: "result" }>) => {
   if (message.subtype !== "success" || message.is_error) {
     const detail =
@@ -712,7 +738,7 @@ export const runClaudeAgentSdkTask = async (
           config.env,
           config.clientName
         ),
-        pathToClaudeCodeExecutable: config.executablePath,
+        ...claudeAgentSdkExecutableOptions(config.executablePath),
         model: config.model,
         ...(effort ? { effort } : {}),
         thinking: { type: "disabled" },
@@ -790,7 +816,7 @@ export const listClaudeAgentSdkModels = async (
         env,
         "model-discovery"
       ),
-      pathToClaudeCodeExecutable: executablePath,
+      ...claudeAgentSdkExecutableOptions(executablePath),
       tools: [],
       allowedTools: [],
       permissionMode: "dontAsk",

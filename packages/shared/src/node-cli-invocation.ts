@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { extname } from "node:path";
 
 export interface NodeCliInvocation {
@@ -11,10 +12,22 @@ export const nodeCliInvocation = (
   executablePath: string,
   args: string[],
   nodeExecutable: string = process.execPath
-): NodeCliInvocation =>
-  NODE_ENTRY_EXTENSIONS.has(extname(executablePath).toLowerCase())
-    ? { command: nodeExecutable, args: [executablePath, ...args] }
-    : { command: executablePath, args };
+): NodeCliInvocation => {
+  let resolvedExecutablePath = executablePath;
+  try {
+    resolvedExecutablePath = realpathSync(executablePath);
+  } catch {
+    // Bare PATH commands and missing paths retain their original diagnostics.
+  }
+  return NODE_ENTRY_EXTENSIONS.has(
+    extname(resolvedExecutablePath).toLowerCase()
+  )
+    ? {
+        command: nodeExecutable,
+        args: [resolvedExecutablePath, ...args]
+      }
+    : { command: resolvedExecutablePath, args };
+};
 
 export const nodeCliProcessEnvironment = (
   invocation: NodeCliInvocation,

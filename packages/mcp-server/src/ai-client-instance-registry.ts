@@ -88,12 +88,13 @@ const readableConfiguration = (
     if (!path.isAbsolute(configuredExecutable)) {
       throw new Error("AI Client executable path must be absolute");
     }
-    const executablePath = fs.realpathSync(configuredExecutable);
-    if (!fs.statSync(executablePath).isFile()) {
+    const executablePath = path.resolve(configuredExecutable);
+    const executableTarget = fs.realpathSync(executablePath);
+    if (!fs.statSync(executableTarget).isFile()) {
       throw new Error("AI Client executable path is not a file");
     }
     if (process.platform !== "win32") {
-      fs.accessSync(executablePath, fs.constants.X_OK);
+      fs.accessSync(executableTarget, fs.constants.X_OK);
     }
     const configHome = hasConfigHome
       ? fs.realpathSync(nonEmpty(entry.configHome, "AI Client config home"))

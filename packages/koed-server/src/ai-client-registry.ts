@@ -6,7 +6,6 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
-  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -31,7 +30,6 @@ export interface ExecutablePathDependencies {
   existsSync?: typeof existsSync;
   statSync?: typeof statSync;
   accessSync?: typeof accessSync;
-  realpathSync?: typeof realpathSync;
 }
 
 export const platformExecutableSearchDirectories = (
@@ -76,7 +74,6 @@ export const resolveExecutablePath = (
     existsSync,
     statSync,
     accessSync,
-    realpathSync,
     ...dependencies
   };
   const directories = [
@@ -91,7 +88,7 @@ export const resolveExecutablePath = (
   let invalid: "not-file" | "not-executable" | undefined;
   for (const candidate of candidates) {
     const result = validateExecutableCandidate(candidate, fs);
-    if (result === "valid") return fs.realpathSync(resolve(candidate));
+    if (result === "valid") return resolve(candidate);
     if (result === "not-file" || result === "not-executable") invalid = result;
   }
   if (invalid === "not-file") {

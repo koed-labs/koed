@@ -25,6 +25,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 
 import {
+  claudeAgentSdkExecutableOptions,
   claudeAgentSdkProcessEnvironment,
   resolveClaudeCodeExecutable
 } from "./ai-client-runner.js";
@@ -996,7 +997,7 @@ export class ClaudeManagedConversationSession {
           abortController,
           cwd: this.cwd,
           env: this.sdkEnvironment,
-          pathToClaudeCodeExecutable: this.executablePath,
+          ...claudeAgentSdkExecutableOptions(this.executablePath),
           model: this.model,
           permissionMode: this.config.permissionMode,
           tools: this.config.tools ?? [],

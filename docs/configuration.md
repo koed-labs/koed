@@ -184,11 +184,12 @@ registry. Koed first uses the client's non-empty explicit override, then
 searches the inherited `PATH`. On macOS, Codex, Claude Code, and Pi discovery
 additionally searches `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin`,
 in that order. Koed does not start an interactive shell for discovery. The
-registry stores the resulting canonical path so the Local AI Runtime does not
-need to search `PATH` again. Node-based CLI entries are invoked through Koed's
-trusted Node runtime, so npm launchers do not depend on `/usr/bin/env node`
-finding Node in Finder's minimal `PATH`. Pi retains its additional
-canonical-path and npm shim validation.
+registry stores the resulting stable absolute launcher path so the Local AI
+Runtime does not need to search `PATH` again. Koed resolves the launcher's
+current target at execution time, allowing package upgrades to retarget it.
+Node-based CLI entries are invoked through Koed's trusted Node runtime, so npm
+launchers do not depend on `/usr/bin/env node` finding Node in Finder's minimal
+`PATH`. Pi retains its additional canonical-target and npm shim validation.
 
 ## Clone-Safe Local Device Identity
 

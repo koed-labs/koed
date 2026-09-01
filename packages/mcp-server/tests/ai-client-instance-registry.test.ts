@@ -32,7 +32,7 @@ afterEach(() => {
 });
 
 describe("local AI Client instance registry", () => {
-  it("resolves a canonical executable and isolated Claude configuration home", () => {
+  it("preserves a stable executable launcher and canonicalizes configuration home", () => {
     const value = fixture();
     fs.writeFileSync(
       value.registryPath,
@@ -59,7 +59,7 @@ describe("local AI Client instance registry", () => {
     expect(instance).toMatchObject({
       instanceId: "claude.pro",
       driverId: "claude",
-      executablePath: fs.realpathSync(value.executablePath),
+      executablePath: value.executablePath,
       configHome: fs.realpathSync(value.configHome)
     });
     expect(
@@ -69,9 +69,54 @@ describe("local AI Client instance registry", () => {
         env: { HOME: value.root }
       })
     ).toMatchObject({
-      KOED_CLAUDE_CODE_EXECUTABLE: fs.realpathSync(value.executablePath),
+      KOED_CLAUDE_CODE_EXECUTABLE: value.executablePath,
       CLAUDE_CONFIG_DIR: fs.realpathSync(value.configHome)
     });
+  });
+
+  it("follows a stable launcher after its executable target is upgraded", () => {
+    const value = fixture();
+    const firstTarget = path.join(value.root, "claude-v1.js");
+    const secondTarget = path.join(value.root, "claude-v2.js");
+    const launcher = path.join(value.root, "claude-current");
+    fs.writeFileSync(firstTarget, "process.exit(0);\n", { mode: 0o700 });
+    fs.writeFileSync(secondTarget, "process.exit(0);\n", { mode: 0o700 });
+    fs.symlinkSync(firstTarget, launcher);
+    fs.writeFileSync(
+      value.registryPath,
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code",
+            executablePath: launcher
+          }
+        ]
+      })
+    );
+    const env = { KOED_AI_CLIENT_INSTANCE_REGISTRY: value.registryPath };
+
+    expect(
+      resolveConfiguredLocalAiClientInstance({
+        instanceId: "claude.default",
+        driverId: "claude",
+        env
+      }).executablePath
+    ).toBe(launcher);
+
+    fs.unlinkSync(launcher);
+    fs.unlinkSync(firstTarget);
+    fs.symlinkSync(secondTarget, launcher);
+
+    expect(
+      resolveConfiguredLocalAiClientInstance({
+        instanceId: "claude.default",
+        driverId: "claude",
+        env
+      }).executablePath
+    ).toBe(launcher);
   });
 
   it("requires exact registry entries for Worker resolution, including defaults", () => {
@@ -216,7 +261,7 @@ describe("local AI Client instance registry", () => {
         env
       })
     ).toMatchObject({
-      KOED_CLAUDE_CODE_EXECUTABLE: fs.realpathSync(value.executablePath),
+      KOED_CLAUDE_CODE_EXECUTABLE: value.executablePath,
       CLAUDE_CONFIG_DIR: fs.realpathSync(value.configHome)
     });
     expect(
@@ -226,7 +271,7 @@ describe("local AI Client instance registry", () => {
         env
       })
     ).toMatchObject({
-      KOED_CLAUDE_CODE_EXECUTABLE: fs.realpathSync(secondExecutable),
+      KOED_CLAUDE_CODE_EXECUTABLE: secondExecutable,
       CLAUDE_CONFIG_DIR: fs.realpathSync(secondHome)
     });
   });

@@ -175,7 +175,7 @@ describe("Claude Code setup", () => {
       instances: [
         {
           instanceId: "claude.default",
-          executablePath: canonicalClaudeNodeEntry
+          executablePath: claudeExecutable
         }
       ]
     });

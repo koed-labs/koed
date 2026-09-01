@@ -1,3 +1,12 @@
+import {
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   nodeCliInvocation,
@@ -24,6 +33,33 @@ describe("Node CLI invocation", () => {
       command: "/opt/client/bin",
       args: ["--version"]
     });
+  });
+
+  it("resolves a stable launcher before selecting the runtime", () => {
+    const directory = mkdtempSync(join(tmpdir(), "koed-node-cli-"));
+    try {
+      const entry = join(directory, "cli-v1.js");
+      const upgradedEntry = join(directory, "cli-v2.js");
+      const launcher = join(directory, "cli");
+      writeFileSync(entry, "process.exit(0);\n");
+      writeFileSync(upgradedEntry, "process.exit(0);\n");
+      symlinkSync(entry, launcher);
+
+      expect(nodeCliInvocation(launcher, ["--version"], "/node")).toEqual({
+        command: "/node",
+        args: [realpathSync(entry), "--version"]
+      });
+
+      rmSync(launcher);
+      rmSync(entry);
+      symlinkSync(upgradedEntry, launcher);
+      expect(nodeCliInvocation(launcher, ["--version"], "/node")).toEqual({
+        command: "/node",
+        args: [realpathSync(upgradedEntry), "--version"]
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("preserves Electron Node mode only for trusted runtime invocations", () => {

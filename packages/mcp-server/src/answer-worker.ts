@@ -31,6 +31,7 @@ import {
 import {
   aiClientExecutionIdentity,
   claudeAgentSdkEffort,
+  claudeAgentSdkExecutableOptions,
   claudeAgentSdkProcessEnvironment,
   claudeAgentSdkTokenUsage,
   resolveClaudeCodeExecutable,
@@ -2907,7 +2908,7 @@ const runClaudeMemoryAnswer = async (
           config.env,
           "koed-memory-answer-worker"
         ),
-        pathToClaudeCodeExecutable: config.executablePath,
+        ...claudeAgentSdkExecutableOptions(config.executablePath),
         model: config.model,
         ...(effort ? { effort } : {}),
         thinking: { type: "disabled" },

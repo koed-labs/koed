@@ -14,6 +14,7 @@ import {
   checkClaudeCodeAvailability,
   claudeAgentSdkEffort,
   claudeAgentSdkEnvironment,
+  claudeAgentSdkExecutableOptions,
   claudeSupportedReasoningEfforts,
   claudeExecutableInstallationIdentity,
   claudeAgentSdkTokenUsage,
@@ -325,6 +326,47 @@ describe("Claude AI Client runner boundary", () => {
         description: "Fast model"
       }
     ]);
+  });
+
+  it("spawns JavaScript Claude SDK entries through the trusted runtime", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-claude-sdk-"));
+    temporaryDirectories.push(root);
+    const entry = path.join(root, "cli.js");
+    const launcher = path.join(root, "claude");
+    fs.writeFileSync(entry, "process.exit(0);\n", { mode: 0o700 });
+    fs.symlinkSync(entry, launcher);
+    const canonicalEntry = fs.realpathSync(entry);
+    let spawned:
+      | { command: string; args: string[]; env?: NodeJS.ProcessEnv }
+      | undefined;
+    const options = claudeAgentSdkExecutableOptions(launcher, ((
+      command: string,
+      args: string[],
+      spawnOptions: { env?: NodeJS.ProcessEnv }
+    ) => {
+      spawned = { command, args, env: spawnOptions.env };
+      return {} as never;
+    }) as never);
+
+    expect(options.pathToClaudeCodeExecutable).toBe(canonicalEntry);
+    expect(options.spawnClaudeCodeProcess).toBeTypeOf("function");
+    options.spawnClaudeCodeProcess?.({
+      command: "node",
+      args: [canonicalEntry, "--version"],
+      cwd: root,
+      env: { PATH: "/usr/bin:/bin", ELECTRON_RUN_AS_NODE: "1" },
+      signal: new AbortController().signal
+    });
+    expect(spawned).toEqual({
+      command: process.execPath,
+      args: [canonicalEntry, "--version"],
+      env: { PATH: "/usr/bin:/bin", ELECTRON_RUN_AS_NODE: "1" }
+    });
+
+    const nativeExecutable = executable(path.join(root, "native"));
+    expect(claudeAgentSdkExecutableOptions(nativeExecutable)).toEqual({
+      pathToClaudeCodeExecutable: fs.realpathSync(nativeExecutable)
+    });
   });
 
   it("honors Windows PATHEXT order and resolves shims to an SDK-safe package entry", () => {

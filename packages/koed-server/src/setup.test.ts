@@ -3,7 +3,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -289,7 +288,7 @@ describe("Codex setup wrapper", () => {
       instances: [
         {
           instanceId: "codex.default",
-          executablePath: realpathSync(codex)
+          executablePath: codex
         }
       ]
     });

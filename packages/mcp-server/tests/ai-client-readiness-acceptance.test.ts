@@ -443,7 +443,7 @@ describe("AI Client independent readiness acceptance matrix", () => {
         instanceId: "codex.default",
         driverId: "codex",
         displayName: "Codex",
-        executablePath: fs.realpathSync("/bin/sh"),
+        executablePath: "/bin/sh",
         configHome: codexHome
       }
     ]);
