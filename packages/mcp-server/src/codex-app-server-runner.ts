@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { nodeCliInvocation } from "@koed/shared";
 import { loadPrompt } from "./prompt-loader.js";
 
 export interface CodexTokenUsageBreakdown {
@@ -963,7 +964,12 @@ export class CodexAppServerClient {
       options.maxLineBytes,
       DEFAULT_MAX_LINE_BYTES
     );
-    this.child = spawn(binary, ["app-server", "--listen", "stdio://"], {
+    const invocation = nodeCliInvocation(binary, [
+      "app-server",
+      "--listen",
+      "stdio://"
+    ]);
+    this.child = spawn(invocation.command, invocation.args, {
       cwd,
       env,
       stdio: ["pipe", "pipe", "pipe"],

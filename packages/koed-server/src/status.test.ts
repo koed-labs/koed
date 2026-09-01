@@ -1082,8 +1082,10 @@ describe("Claude Code integration status", () => {
       HOME: root,
       KOED_HOME: resolve(root, "koed"),
       KOED_REPO_ROOT: root,
-      CLAUDE_SETTINGS_PATH: settingsPath
+      CLAUDE_SETTINGS_PATH: settingsPath,
+      KOED_CLAUDE_CODE_EXECUTABLE: resolve(root, "claude/cli.js")
     };
+    const commands: Array<{ command: string; rawArgs: string[] }> = [];
 
     const status = inspectClaudeCode(
       environment,
@@ -1091,14 +1093,18 @@ describe("Claude Code integration status", () => {
       {
         existsSync,
         readFileSync: () => settingsContent,
-        spawnSync: (_command: string, args: string[]) =>
-          args[0] === "--version"
+        spawnSync: (command: string, rawArgs: string[]) => {
+          commands.push({ command, rawArgs });
+          const args =
+            command === process.execPath ? rawArgs.slice(1) : rawArgs;
+          return args[0] === "--version"
             ? spawnResult("2.1.227 (Claude Code)\n")
             : args[0] === "mcp" && args[1] === "get"
               ? spawnResult(
                   `koed:\n  Type: stdio\n  Command: node\n  Args: ${resolve(root, "packages/mcp-server/dist/cli.js")}\n  Environment:\n    KOED_HOME=${resolve(root, "koed")}\n`
                 )
-              : spawnResult("")
+              : spawnResult("");
+        }
       } as never
     );
 
@@ -1111,6 +1117,15 @@ describe("Claude Code integration status", () => {
       version: "2.1.227 (Claude Code)",
       settingsPath
     });
+    expect(commands).toHaveLength(3);
+    expect(commands.every(({ command }) => command === process.execPath)).toBe(
+      true
+    );
+    expect(
+      commands.every(
+        ({ rawArgs }) => rawArgs[0] === environment.KOED_CLAUDE_CODE_EXECUTABLE
+      )
+    ).toBe(true);
   });
 
   it("keeps missing Claude Code optional but actionable", () => {

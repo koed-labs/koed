@@ -1,4 +1,8 @@
-import { spawnSync as nodeSpawnSync } from "node:child_process";
+import {
+  spawnSync as nodeSpawnSync,
+  type SpawnSyncOptionsWithStringEncoding,
+  type SpawnSyncReturns
+} from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -9,6 +13,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { nodeCliInvocation } from "@koed/shared";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
@@ -60,6 +65,16 @@ export interface KoedServerSetupClaudeResult {
 }
 
 type SpawnSyncLike = typeof nodeSpawnSync;
+
+const spawnClaude = (
+  spawnSync: SpawnSyncLike,
+  executablePath: string,
+  args: string[],
+  options: SpawnSyncOptionsWithStringEncoding
+): SpawnSyncReturns<string> => {
+  const invocation = nodeCliInvocation(executablePath, args);
+  return spawnSync(invocation.command, invocation.args, options);
+};
 type ClaudeSettings = {
   hooks?: Record<string, unknown[]>;
   [key: string]: unknown;
@@ -261,11 +276,16 @@ export const removeClaude = (
       : {};
     const childEnvironment = claudeProcessEnvironment(environment);
     const runtime = resolveKoedAppRuntime(paths, environment);
-    const existingMcp = spawnSync(executable, ["mcp", "get", mcpName], {
-      encoding: "utf8",
-      env: childEnvironment,
-      timeout: 10_000
-    });
+    const existingMcp = spawnClaude(
+      spawnSync,
+      executable,
+      ["mcp", "get", mcpName],
+      {
+        encoding: "utf8",
+        env: childEnvironment,
+        timeout: 10_000
+      }
+    );
     if (existingMcp.error) {
       throw new Error(`Claude MCP lookup failed: ${existingMcp.error.message}`);
     }
@@ -291,7 +311,8 @@ export const removeClaude = (
       );
     }
     if (existingMcp.status === 0) {
-      const removed = spawnSync(
+      const removed = spawnClaude(
+        spawnSync,
         executable,
         ["mcp", "remove", "--scope", "user", mcpName],
         { encoding: "utf8", env: childEnvironment, timeout: 10_000 }
@@ -345,7 +366,8 @@ export const removeClaude = (
     if (removedMcp) {
       try {
         const runtime = resolveKoedAppRuntime(paths, environment);
-        const restored = spawnSync(
+        const restored = spawnClaude(
+          spawnSync,
           executable,
           [
             "mcp",
@@ -440,7 +462,7 @@ export const setupClaude = (
       );
     }
     const childEnvironment = claudeProcessEnvironment(environment);
-    const version = spawnSync(executable, ["--version"], {
+    const version = spawnClaude(spawnSync, executable, ["--version"], {
       encoding: "utf8",
       env: childEnvironment,
       timeout: 5_000
@@ -456,11 +478,16 @@ export const setupClaude = (
         version
       );
     }
-    const auth = spawnSync(executable, ["auth", "status", "--json"], {
-      encoding: "utf8",
-      env: childEnvironment,
-      timeout: 10_000
-    });
+    const auth = spawnClaude(
+      spawnSync,
+      executable,
+      ["auth", "status", "--json"],
+      {
+        encoding: "utf8",
+        env: childEnvironment,
+        timeout: 10_000
+      }
+    );
     if (auth.error || auth.status !== 0) {
       return failure(
         "Claude Code is not signed in.",
@@ -488,11 +515,16 @@ export const setupClaude = (
       .map((value) => JSON.stringify(value))
       .join(" ");
 
-    const existingMcp = spawnSync(executable, ["mcp", "get", mcpName], {
-      encoding: "utf8",
-      env: childEnvironment,
-      timeout: 10_000
-    });
+    const existingMcp = spawnClaude(
+      spawnSync,
+      executable,
+      ["mcp", "get", mcpName],
+      {
+        encoding: "utf8",
+        env: childEnvironment,
+        timeout: 10_000
+      }
+    );
     if (
       existingMcp.status === 0 &&
       !claudeMcpEntryIsKoedOwned(
@@ -514,7 +546,8 @@ export const setupClaude = (
           "Inspect the Koed-owned Claude MCP entry, then retry setup."
         );
       }
-      const remove = spawnSync(
+      const remove = spawnClaude(
+        spawnSync,
         executable,
         ["mcp", "remove", "--scope", "user", mcpName],
         {
@@ -534,7 +567,8 @@ export const setupClaude = (
       }
       removedExistingMcp = true;
     }
-    const add = spawnSync(
+    const add = spawnClaude(
+      spawnSync,
       executable,
       [
         "mcp",
@@ -597,7 +631,8 @@ export const setupClaude = (
     const failures = [error instanceof Error ? error.message : String(error)];
     if (addedMcp) {
       try {
-        const removed = spawnSync(
+        const removed = spawnClaude(
+          spawnSync,
           executable,
           ["mcp", "remove", "--scope", "user", mcpName],
           {
@@ -620,7 +655,8 @@ export const setupClaude = (
     }
     if (removedExistingMcp && previousMcp) {
       try {
-        const restored = spawnSync(
+        const restored = spawnClaude(
+          spawnSync,
           executable,
           claudeMcpAddArgs(mcpName, previousMcp),
           {

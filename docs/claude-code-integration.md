@@ -77,9 +77,12 @@ pnpm claude:configure
 ```
 
 `KOED_CLAUDE_CODE_EXECUTABLE` takes priority over discovered paths. The
-resolved absolute path is stored in the AI Client registry before Claude
-synthesis work. A missing or invalid executable fails closed. There is no
-direct CLI synthesis fallback and no bundled Claude runtime.
+canonical executable path is stored in the AI Client registry before Claude
+synthesis work. When that path is a Node-based Claude Code CLI entry, Koed
+invokes it through its trusted Node runtime rather than depending on
+`/usr/bin/env node` and an interactive-shell `PATH`. A missing or invalid
+executable fails closed. There is no direct CLI synthesis fallback and no
+bundled Claude runtime.
 
 The setup script writes only `KOED_HOME` to the local MCP configuration. The
 stateless MCP adapter discovers the authenticated Local AI Runtime through its

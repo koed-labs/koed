@@ -12,6 +12,7 @@ import {
   statSync
 } from "node:fs";
 import { dirname, delimiter, isAbsolute, join, resolve } from "node:path";
+import { nodeCliInvocation } from "@koed/shared";
 import { installPiPackageTransaction } from "./pi-package-transaction.mjs";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
@@ -126,9 +127,7 @@ export const piSetupInvocation = (
   executablePath: string,
   args: string[]
 ): { command: string; args: string[] } =>
-  executablePath.toLowerCase().endsWith(".js")
-    ? { command: process.execPath, args: [executablePath, ...args] }
-    : { command: executablePath, args };
+  nodeCliInvocation(executablePath, args);
 
 export const resolvePiSetupExecutable = (
   environment: NodeJS.ProcessEnv = process.env,

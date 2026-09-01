@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { nodeCliInvocation } from "@koed/shared";
 
 import type {
   AiClientRunConfig,
@@ -81,9 +82,7 @@ export const piExecutableInvocation = (
   executablePath: string,
   args: string[]
 ): { command: string; args: string[] } =>
-  path.extname(executablePath).toLowerCase() === ".js"
-    ? { command: process.execPath, args: [executablePath, ...args] }
-    : { command: executablePath, args };
+  nodeCliInvocation(executablePath, args);
 
 const executableOnPath = (
   env: NodeJS.ProcessEnv,

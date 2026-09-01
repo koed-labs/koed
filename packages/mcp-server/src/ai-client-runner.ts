@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import {
   aiClientCapabilityIds,
   defaultAiClientInstanceId,
+  nodeCliInvocation,
   sanitizeAiClientDiagnostics,
   type AiClientCapabilityDescriptor,
   type AiClientDiagnostic,
@@ -229,7 +230,8 @@ export const probeCodexVersion = async (
     CODEX_VERSION_PROBE_TIMEOUT_MS,
     Math.max(1, requestedTimeoutMs)
   );
-  const result = await execFileAsync(executablePath, ["--version"], {
+  const invocation = nodeCliInvocation(executablePath, ["--version"]);
+  const result = await execFileAsync(invocation.command, invocation.args, {
     env: environment,
     timeout: boundedTimeoutMs,
     maxBuffer: CODEX_VERSION_PROBE_MAX_BUFFER,
@@ -419,9 +421,7 @@ const claudeProbeInvocation = (
   executablePath: string,
   args: string[]
 ): { command: string; args: string[] } =>
-  path.extname(executablePath).toLowerCase() === ".js"
-    ? { command: process.execPath, args: [executablePath, ...args] }
-    : { command: executablePath, args };
+  nodeCliInvocation(executablePath, args);
 
 export const resolveClaudeCodeExecutable = (
   env: NodeJS.ProcessEnv = process.env,

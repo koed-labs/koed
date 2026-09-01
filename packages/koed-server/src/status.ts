@@ -48,6 +48,7 @@ import {
   documentDefault,
   environmentDefaultFor,
   localAiClientFlowKeys,
+  nodeCliInvocation,
   resolveTeamCollaborationEnabled,
   type AiClientCapabilityDescriptor,
   type LocalAiClientDefault,
@@ -320,11 +321,15 @@ export const inspectClaudeCode = (
   const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
   const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
   const childEnvironment = claudeProcessEnvironment(environment);
-  const version = deps.spawnSync(executable, ["--version"], {
-    encoding: "utf8",
-    env: childEnvironment,
-    timeout: 5_000
-  });
+  const runClaude = (args: string[], timeout: number) => {
+    const invocation = nodeCliInvocation(executable, args);
+    return deps.spawnSync(invocation.command, invocation.args, {
+      encoding: "utf8",
+      env: childEnvironment,
+      timeout
+    });
+  };
+  const version = runClaude(["--version"], 5_000);
   const versionText = version.stdout?.trim() ?? "";
   if (version.error || version.status !== 0) {
     return {
@@ -392,11 +397,7 @@ export const inspectClaudeCode = (
     (eventName) =>
       !hasClaudeKoedHook(settings.hooks?.[eventName], runtime.captureHook)
   );
-  const mcp = deps.spawnSync(executable, ["mcp", "get", mcpName], {
-    encoding: "utf8",
-    env: childEnvironment,
-    timeout: 10_000
-  });
+  const mcp = runClaude(["mcp", "get", mcpName], 10_000);
   if (
     !mcp.error &&
     mcp.status === 0 &&
@@ -428,11 +429,7 @@ export const inspectClaudeCode = (
       detected: true
     };
   }
-  const auth = deps.spawnSync(executable, ["auth", "status", "--json"], {
-    encoding: "utf8",
-    env: childEnvironment,
-    timeout: 10_000
-  });
+  const auth = runClaude(["auth", "status", "--json"], 10_000);
   if (auth.error || auth.status !== 0) {
     return {
       ...needsAttention(

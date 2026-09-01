@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
   rmSync
 } from "node:fs";
@@ -43,7 +44,8 @@ describe("AI Client instance registry", () => {
         if (candidates[candidate] === "not-executable") {
           throw new Error("permission denied");
         }
-      }
+      },
+      realpathSync: (candidate: string) => candidate
     }) as never;
 
   it("finds Codex in the Homebrew directory with a Finder-style PATH", () => {
@@ -162,9 +164,14 @@ describe("AI Client instance registry", () => {
     writeFileSync(nonExecutable, "not executable\n");
     chmodSync(executable, 0o755);
     chmodSync(nonExecutable, 0o644);
+    const canonicalExecutable = realpathSync(executable);
 
-    expect(resolveExecutablePath(executable, { PATH: "" })).toBe(executable);
-    expect(resolveExecutablePath("client", { PATH: bin })).toBe(executable);
+    expect(resolveExecutablePath(executable, { PATH: "" })).toBe(
+      canonicalExecutable
+    );
+    expect(resolveExecutablePath("client", { PATH: bin })).toBe(
+      canonicalExecutable
+    );
     expect(() => resolveExecutablePath(nonExecutable, { PATH: "" })).toThrow(
       /not executable/
     );

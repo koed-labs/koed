@@ -15,6 +15,8 @@ Koed first uses `KOED_PI_EXECUTABLE`, then searches the inherited `PATH`. On
 macOS it also searches `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin`
 without loading interactive shell startup files. It stores the canonical
 absolute executable or verified npm package entry in the AI Client registry.
+Node-based Pi entries are invoked through Koed's trusted Node runtime rather
+than depending on `/usr/bin/env node` and an interactive-shell `PATH`.
 
 ## Setup
 

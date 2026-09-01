@@ -3,7 +3,9 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -58,13 +60,20 @@ describe("Claude Code setup", () => {
       "packages/mcp-server/dist/capture-hook.js"
     );
     const claudeExecutable = resolve(root, ".local/bin/claude");
+    const claudeNodeEntry = resolve(
+      root,
+      ".local/lib/node_modules/@anthropic-ai/claude-code/cli.js"
+    );
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
     mkdirSync(resolve(root, ".claude"), { recursive: true });
     mkdirSync(resolve(root, ".local/bin"), { recursive: true });
+    mkdirSync(resolve(claudeNodeEntry, ".."), { recursive: true });
     writeFileSync(mcpCli, "");
     writeFileSync(captureHook, "");
-    writeFileSync(claudeExecutable, "#!/bin/sh\n");
-    chmodSync(claudeExecutable, 0o755);
+    writeFileSync(claudeNodeEntry, "process.exit(0);\n");
+    chmodSync(claudeNodeEntry, 0o755);
+    symlinkSync(claudeNodeEntry, claudeExecutable);
+    const canonicalClaudeNodeEntry = realpathSync(claudeNodeEntry);
     writeFileSync(
       settingsPath,
       JSON.stringify({
@@ -87,6 +96,7 @@ describe("Claude Code setup", () => {
     const calls: Array<{
       command: string;
       args: string[];
+      rawArgs: string[];
       env?: NodeJS.ProcessEnv;
     }> = [];
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
@@ -105,10 +115,11 @@ describe("Claude Code setup", () => {
       },
       ((
         command: string,
-        args: string[],
+        rawArgs: string[],
         options?: { env?: NodeJS.ProcessEnv }
       ) => {
-        calls.push({ command, args, env: options?.env });
+        const args = command === process.execPath ? rawArgs.slice(1) : rawArgs;
+        calls.push({ command, args, rawArgs, env: options?.env });
         return args[0] === "--version"
           ? spawnResult("2.1.227 (Claude Code)\n")
           : args[0] === "mcp" && args[1] === "get"
@@ -118,9 +129,12 @@ describe("Claude Code setup", () => {
     );
 
     expect(result).toMatchObject({ ok: true, state: "healthy" });
-    expect(calls.every(({ command }) => command === claudeExecutable)).toBe(
+    expect(calls.every(({ command }) => command === process.execPath)).toBe(
       true
     );
+    expect(
+      calls.every(({ rawArgs }) => rawArgs[0] === canonicalClaudeNodeEntry)
+    ).toBe(true);
     const add = calls.find(
       ({ args }) => args[0] === "mcp" && args[1] === "add"
     );
@@ -156,7 +170,7 @@ describe("Claude Code setup", () => {
       instances: [
         {
           instanceId: "claude.default",
-          executablePath: claudeExecutable
+          executablePath: canonicalClaudeNodeEntry
         }
       ]
     });
