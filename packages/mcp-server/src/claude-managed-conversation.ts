@@ -25,7 +25,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 
 import {
-  claudeAgentSdkEnvironment,
+  claudeAgentSdkProcessEnvironment,
   resolveClaudeCodeExecutable
 } from "./ai-client-runner.js";
 
@@ -885,7 +885,8 @@ export class ClaudeManagedConversationSession {
 
     const sourceEnvironment = config.env ?? process.env;
     this.executablePath = resolveClaudeCodeExecutable(sourceEnvironment);
-    this.sdkEnvironment = claudeAgentSdkEnvironment(
+    this.sdkEnvironment = claudeAgentSdkProcessEnvironment(
+      this.executablePath,
       sourceEnvironment,
       config.clientName ?? "claude-managed-conversation"
     );

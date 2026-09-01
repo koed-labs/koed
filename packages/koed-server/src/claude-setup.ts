@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { nodeCliInvocation } from "@koed/shared";
+import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
@@ -73,7 +73,10 @@ const spawnClaude = (
   options: SpawnSyncOptionsWithStringEncoding
 ): SpawnSyncReturns<string> => {
   const invocation = nodeCliInvocation(executablePath, args);
-  return spawnSync(invocation.command, invocation.args, options);
+  return spawnSync(invocation.command, invocation.args, {
+    ...options,
+    env: nodeCliProcessEnvironment(invocation, options.env ?? {}, process.env)
+  });
 };
 type ClaudeSettings = {
   hooks?: Record<string, unknown[]>;

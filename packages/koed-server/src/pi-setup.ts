@@ -12,7 +12,7 @@ import {
   statSync
 } from "node:fs";
 import { dirname, delimiter, isAbsolute, join, resolve } from "node:path";
-import { nodeCliInvocation } from "@koed/shared";
+import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 import { installPiPackageTransaction } from "./pi-package-transaction.mjs";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
@@ -209,7 +209,11 @@ export const removePi = (
     const runPi = (args: string[], timeout: number) => {
       const invocation = piSetupInvocation(executable, args);
       return spawnSync(invocation.command, invocation.args, {
-        env: childEnvironment,
+        env: nodeCliProcessEnvironment(
+          invocation,
+          childEnvironment,
+          environment
+        ),
         encoding: "utf8",
         timeout,
         ...(args[0] === "list" ? { maxBuffer: 4 * 1024 * 1024 } : {})
@@ -375,7 +379,11 @@ export const setupPi = (
     const runPi = (args: string[], timeout: number) => {
       const invocation = piSetupInvocation(executable, args);
       return spawnSync(invocation.command, invocation.args, {
-        env: childEnvironment,
+        env: nodeCliProcessEnvironment(
+          invocation,
+          childEnvironment,
+          environment
+        ),
         encoding: "utf8",
         timeout,
         ...(args[0] === "--list-models" ? { maxBuffer: 4 * 1024 * 1024 } : {})

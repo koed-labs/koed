@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { nodeCliInvocation } from "@koed/shared";
+import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 
 import type {
   AiClientRunConfig,
@@ -216,7 +216,7 @@ const queryPiModelCapabilities = async (
   const invocation = piExecutableInvocation(executablePath, args);
   const child = spawn(invocation.command, invocation.args, {
     cwd: workerRoot,
-    env: piRpcEnvironment(env),
+    env: nodeCliProcessEnvironment(invocation, piRpcEnvironment(env), env),
     detached: process.platform !== "win32",
     stdio: ["pipe", "pipe", "pipe"]
   });
@@ -381,7 +381,7 @@ export const checkPiAvailability = async (
       invocation.command,
       invocation.args,
       {
-        env: piRpcEnvironment(env),
+        env: nodeCliProcessEnvironment(invocation, piRpcEnvironment(env), env),
         timeout: 10_000
       }
     );
@@ -479,7 +479,11 @@ export const runPiRpcTask = async (
   const invocation = piExecutableInvocation(config.executablePath, args);
   const child = spawn(invocation.command, invocation.args, {
     cwd: workerRoot,
-    env: { ...piRpcEnvironment(config.env), KOED_PI_RESULT_SCHEMA: schemaPath },
+    env: nodeCliProcessEnvironment(
+      invocation,
+      { ...piRpcEnvironment(config.env), KOED_PI_RESULT_SCHEMA: schemaPath },
+      config.env
+    ),
     detached: process.platform !== "win32",
     stdio: ["pipe", "pipe", "pipe"]
   });

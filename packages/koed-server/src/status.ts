@@ -40,6 +40,7 @@ import {
   hasClaudeKoedHook,
   isSupportedClaudeCodeVersion,
   MINIMUM_CLAUDE_CODE_VERSION,
+  resolveClaudeExecutablePath,
   resolveClaudeSettingsPath
 } from "./claude-setup.js";
 import { aiClientReadinessUnknown } from "./types.js";
@@ -49,6 +50,7 @@ import {
   environmentDefaultFor,
   localAiClientFlowKeys,
   nodeCliInvocation,
+  nodeCliProcessEnvironment,
   resolveTeamCollaborationEnabled,
   type AiClientCapabilityDescriptor,
   type LocalAiClientDefault,
@@ -102,6 +104,7 @@ export interface KoedServerStatusDependencies {
   existsSync?: typeof existsSync;
   readFileSync?: typeof readFileSync;
   resolvePiExecutable?: typeof resolvePiSetupExecutable;
+  resolveClaudeExecutable?: typeof resolveClaudeExecutablePath;
   checkPid?: (pid: number) => boolean;
   now?: () => Date;
 }
@@ -112,6 +115,7 @@ const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
   existsSync,
   readFileSync,
   resolvePiExecutable: resolvePiSetupExecutable,
+  resolveClaudeExecutable: resolveClaudeExecutablePath,
   checkPid: isProcessRunning,
   now: () => new Date()
 });
@@ -210,7 +214,7 @@ export const inspectPi = (
     const invocation = piSetupInvocation(executable, args);
     return deps.spawnSync(invocation.command, invocation.args, {
       encoding: "utf8",
-      env: childEnvironment,
+      env: nodeCliProcessEnvironment(invocation, childEnvironment, environment),
       timeout,
       ...(maxBuffer ? { maxBuffer } : {})
     });
@@ -314,10 +318,21 @@ export const inspectClaudeCode = (
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
 ): KoedServerStatus["claudeCode"] => {
-  const executable =
-    environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
   const settingsPath = resolveClaudeSettingsPath(environment);
   const detectedFromConfig = deps.existsSync(settingsPath);
+  let executable: string;
+  try {
+    executable = deps.resolveClaudeExecutable(environment);
+  } catch {
+    return {
+      ...notConfigured(
+        "Claude Code is not installed or could not be started.",
+        `Install Claude Code ${MINIMUM_CLAUDE_CODE_VERSION} or newer, then set up its integration.`
+      ),
+      configured: false,
+      detected: detectedFromConfig
+    };
+  }
   const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
   const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
   const childEnvironment = claudeProcessEnvironment(environment);
@@ -325,7 +340,7 @@ export const inspectClaudeCode = (
     const invocation = nodeCliInvocation(executable, args);
     return deps.spawnSync(invocation.command, invocation.args, {
       encoding: "utf8",
-      env: childEnvironment,
+      env: nodeCliProcessEnvironment(invocation, childEnvironment, environment),
       timeout
     });
   };

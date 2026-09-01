@@ -8,6 +8,7 @@ import {
   aiClientCapabilityIds,
   defaultAiClientInstanceId,
   nodeCliInvocation,
+  nodeCliProcessEnvironment,
   sanitizeAiClientDiagnostics,
   type AiClientCapabilityDescriptor,
   type AiClientDiagnostic,
@@ -232,7 +233,7 @@ export const probeCodexVersion = async (
   );
   const invocation = nodeCliInvocation(executablePath, ["--version"]);
   const result = await execFileAsync(invocation.command, invocation.args, {
-    env: environment,
+    env: nodeCliProcessEnvironment(invocation, environment, environment),
     timeout: boundedTimeoutMs,
     maxBuffer: CODEX_VERSION_PROBE_MAX_BUFFER,
     windowsHide: true,
@@ -526,11 +527,19 @@ export const checkClaudeCodeAvailability = async (
     const [{ stdout: versionOutput }, { stdout: authOutput }] =
       await Promise.all([
         execFileAsync(versionProbe.command, versionProbe.args, {
-          env: claudeAgentSdkEnvironment(env, "availability-check"),
+          env: claudeAgentSdkProcessEnvironment(
+            executablePath,
+            env,
+            "availability-check"
+          ),
           timeout: 10_000
         }),
         execFileAsync(authProbe.command, authProbe.args, {
-          env: claudeAgentSdkEnvironment(env, "availability-check"),
+          env: claudeAgentSdkProcessEnvironment(
+            executablePath,
+            env,
+            "availability-check"
+          ),
           timeout: 10_000
         })
       ]);
@@ -595,6 +604,19 @@ export const claudeAgentSdkEnvironment = (
       .filter((entry): entry is readonly [string, string] => Boolean(entry[1])),
     ["CLAUDE_AGENT_SDK_CLIENT_APP", `koed/${clientName}`]
   ]);
+};
+
+export const claudeAgentSdkProcessEnvironment = (
+  executablePath: string,
+  env: NodeJS.ProcessEnv,
+  clientName: string
+): NodeJS.ProcessEnv => {
+  const invocation = nodeCliInvocation(executablePath, []);
+  return nodeCliProcessEnvironment(
+    invocation,
+    claudeAgentSdkEnvironment(env, clientName),
+    env
+  );
 };
 
 const claudeResultText = (message: Extract<SDKMessage, { type: "result" }>) => {
@@ -685,7 +707,11 @@ export const runClaudeAgentSdkTask = async (
       options: {
         abortController,
         cwd: config.cwd,
-        env: claudeAgentSdkEnvironment(config.env, config.clientName),
+        env: claudeAgentSdkProcessEnvironment(
+          config.executablePath,
+          config.env,
+          config.clientName
+        ),
         pathToClaudeCodeExecutable: config.executablePath,
         model: config.model,
         ...(effort ? { effort } : {}),
@@ -759,7 +785,11 @@ export const listClaudeAgentSdkModels = async (
     prompt: idlePrompt(),
     options: {
       abortController,
-      env: claudeAgentSdkEnvironment(env, "model-discovery"),
+      env: claudeAgentSdkProcessEnvironment(
+        executablePath,
+        env,
+        "model-discovery"
+      ),
       pathToClaudeCodeExecutable: executablePath,
       tools: [],
       allowedTools: [],

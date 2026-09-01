@@ -24,6 +24,7 @@ const spawnResult = (stdout = "", status = 0, stderr = "") =>
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -100,6 +101,7 @@ describe("Claude Code setup", () => {
       env?: NodeJS.ProcessEnv;
     }> = [];
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.stubEnv("ELECTRON_RUN_AS_NODE", "1");
 
     const result = setupClaude(
       {
@@ -135,6 +137,9 @@ describe("Claude Code setup", () => {
     expect(
       calls.every(({ rawArgs }) => rawArgs[0] === canonicalClaudeNodeEntry)
     ).toBe(true);
+    expect(calls.every(({ env }) => env?.ELECTRON_RUN_AS_NODE === "1")).toBe(
+      true
+    );
     const add = calls.find(
       ({ args }) => args[0] === "mcp" && args[1] === "add"
     );
