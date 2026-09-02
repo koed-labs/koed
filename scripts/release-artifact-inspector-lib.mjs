@@ -1,10 +1,20 @@
 import { createHash } from "node:crypto";
-import { createReadStream, lstatSync, readdirSync, statSync } from "node:fs";
+import {
+  closeSync,
+  createReadStream,
+  lstatSync,
+  openSync,
+  readSync,
+  readdirSync,
+  statSync
+} from "node:fs";
 import { basename, relative, resolve, sep } from "node:path";
 import { createGunzip } from "node:zlib";
 
 const nativePattern = /\.(?:node|so(?:\.\d+)*|dylib|dll)$/i;
 const textPattern = /\.(?:c?js|mjs|json|ya?ml|txt|md|sh|css|html|xml|toml)$/i;
+const binaryHeaderBytes = 4096;
+const checkoutLeakOverlapBytes = 512;
 const targetTokens = {
   linux: ["linux"],
   macos: ["darwin", "macos", "osx"],
@@ -58,9 +68,154 @@ const nativeRuntimeComponent = (path) => {
   return null;
 };
 
-const foreignNative = (path, platform, architecture) => {
-  if (!nativePattern.test(path)) return false;
-  const lower = path.toLowerCase();
+const architectureForElfMachine = (machine) =>
+  new Map([
+    [3, "x86"],
+    [40, "arm"],
+    [62, "x64"],
+    [183, "arm64"]
+  ]).get(machine) ?? "unknown";
+
+const architectureForMachCpu = (cpu) =>
+  new Map([
+    [7, "x86"],
+    [12, "arm"],
+    [0x01000007, "x64"],
+    [0x0100000c, "arm64"]
+  ]).get(cpu) ?? "unknown";
+
+const architectureForPeMachine = (machine) =>
+  new Map([
+    [0x014c, "x86"],
+    [0x01c4, "arm"],
+    [0x8664, "x64"],
+    [0xaa64, "arm64"]
+  ]).get(machine) ?? "unknown";
+
+const detectElfTarget = (buffer) => {
+  if (
+    buffer.length < 20 ||
+    buffer[0] !== 0x7f ||
+    buffer.subarray(1, 4).toString("ascii") !== "ELF"
+  ) {
+    return null;
+  }
+  const littleEndian = buffer[5] === 1;
+  if (!littleEndian && buffer[5] !== 2) {
+    return { platform: "linux", architectures: ["unknown"] };
+  }
+  const machine = littleEndian
+    ? buffer.readUInt16LE(18)
+    : buffer.readUInt16BE(18);
+  return {
+    platform: "linux",
+    architectures: [architectureForElfMachine(machine)]
+  };
+};
+
+const detectMachTarget = (buffer) => {
+  if (buffer.length < 8) return null;
+  const magic = buffer.subarray(0, 4).toString("hex");
+  const thinFormats = new Map([
+    ["cefaedfe", "little"],
+    ["cffaedfe", "little"],
+    ["feedface", "big"],
+    ["feedfacf", "big"]
+  ]);
+  const thinEndian = thinFormats.get(magic);
+  if (thinEndian) {
+    const cpu =
+      thinEndian === "little" ? buffer.readUInt32LE(4) : buffer.readUInt32BE(4);
+    return {
+      platform: "macos",
+      architectures: [architectureForMachCpu(cpu)]
+    };
+  }
+  const fatFormats = new Map([
+    ["cafebabe", { endian: "big", entryBytes: 20 }],
+    ["bebafeca", { endian: "little", entryBytes: 20 }],
+    ["cafebabf", { endian: "big", entryBytes: 32 }],
+    ["bfbafeca", { endian: "little", entryBytes: 32 }]
+  ]);
+  const fat = fatFormats.get(magic);
+  if (!fat) return null;
+  const readUInt32 = (offset) =>
+    fat.endian === "little"
+      ? buffer.readUInt32LE(offset)
+      : buffer.readUInt32BE(offset);
+  const count = readUInt32(4);
+  const architectures = [];
+  for (let index = 0; index < count; index += 1) {
+    const offset = 8 + index * fat.entryBytes;
+    if (offset + 4 > buffer.length) {
+      architectures.push("unknown");
+      break;
+    }
+    architectures.push(architectureForMachCpu(readUInt32(offset)));
+  }
+  return {
+    platform: "macos",
+    architectures: [
+      ...new Set(architectures.length > 0 ? architectures : ["unknown"])
+    ]
+  };
+};
+
+const detectPeTarget = (buffer) => {
+  if (buffer.length < 64 || buffer.subarray(0, 2).toString("ascii") !== "MZ") {
+    return null;
+  }
+  const peOffset = buffer.readUInt32LE(0x3c);
+  if (
+    peOffset + 6 > buffer.length ||
+    buffer.subarray(peOffset, peOffset + 4).toString("hex") !== "50450000"
+  ) {
+    return { platform: "windows", architectures: ["unknown"] };
+  }
+  return {
+    platform: "windows",
+    architectures: [architectureForPeMachine(buffer.readUInt16LE(peOffset + 4))]
+  };
+};
+
+const detectNativeTarget = (buffer) =>
+  detectElfTarget(buffer) ?? detectMachTarget(buffer) ?? detectPeTarget(buffer);
+
+const readFilePrefix = (path, size) => {
+  const buffer = Buffer.alloc(Math.min(size, binaryHeaderBytes));
+  if (buffer.length === 0) return buffer;
+  const descriptor = openSync(path, "r");
+  let offset = 0;
+  try {
+    while (offset < buffer.length) {
+      const bytesRead = readSync(
+        descriptor,
+        buffer,
+        offset,
+        buffer.length - offset,
+        offset
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+  return buffer.subarray(0, offset);
+};
+
+const foreignNative = (entry, platform, architecture) => {
+  if (!nativePattern.test(entry.path)) return false;
+  if (
+    entry.nativeTarget &&
+    (entry.nativeTarget.platform !== platform ||
+      entry.nativeTarget.architectures.some(
+        (candidate) => candidate !== architecture
+      ))
+  ) {
+    return true;
+  }
+  const lower = entry.path.toLowerCase();
   const foreignPlatforms = Object.entries(targetTokens)
     .filter(([name]) => ["linux", "macos", "windows"].includes(name))
     .filter(([name]) => name !== platform)
@@ -166,9 +321,7 @@ const createCollector = ({ platform, architecture }) => {
             .filter((entry) => entry.type === "special")
             .map((entry) => entry.path),
           foreignPlatformNativeFiles: regular
-            .filter((entry) =>
-              foreignNative(entry.path, platform, architecture)
-            )
+            .filter((entry) => foreignNative(entry, platform, architecture))
             .map((entry) => entry.path),
           absolutePaths: entries
             .filter((entry) => entry.path.startsWith("/"))
@@ -186,6 +339,19 @@ const detectsCheckoutLeak = (buffer) =>
   /(?:\/Users\/[^/]+\/|\/home\/runner\/work\/|\/builds\/|[A-Za-z]:\\Users\\)/.test(
     buffer.toString("utf8")
   );
+
+const scanCheckoutLeakChunk = (tail, chunk) => {
+  const combined =
+    tail.length === 0
+      ? Buffer.from(chunk)
+      : Buffer.concat([tail, Buffer.from(chunk)]);
+  return {
+    detected: detectsCheckoutLeak(combined),
+    tail: combined.subarray(
+      Math.max(0, combined.length - checkoutLeakOverlapBytes)
+    )
+  };
+};
 
 const tarString = (buffer, start, length) =>
   buffer
@@ -243,8 +409,11 @@ export const inspectTree = async ({ path, platform, architecture }) => {
       } else if (stat.isFile()) {
         let sourceCheckoutLeak = false;
         if (stat.size <= 16 * 1024 * 1024 && textPattern.test(name)) {
+          let scanTail = Buffer.alloc(0);
           for await (const chunk of createReadStream(absolute)) {
-            if (detectsCheckoutLeak(chunk)) sourceCheckoutLeak = true;
+            const scan = scanCheckoutLeakChunk(scanTail, chunk);
+            scanTail = scan.tail;
+            if (scan.detected) sourceCheckoutLeak = true;
           }
         }
         collector.add({
@@ -252,6 +421,9 @@ export const inspectTree = async ({ path, platform, architecture }) => {
           type: "file",
           size: stat.size,
           sha256: await sha256File(absolute),
+          nativeTarget: nativePattern.test(name)
+            ? detectNativeTarget(readFilePrefix(absolute, stat.size))
+            : null,
           sourceCheckoutLeak
         });
       } else if (stat.isSymbolicLink()) {
@@ -290,7 +462,20 @@ export const inspectArchive = async ({ path, platform, architecture }) => {
           current.remaining -= length;
           current.hash?.update(part);
           if (current.capture) current.chunks.push(Buffer.from(part));
-          if (current.scan && detectsCheckoutLeak(part)) current.leak = true;
+          if (
+            current.nativeHeader &&
+            current.nativeHeader.length < binaryHeaderBytes
+          ) {
+            current.nativeHeader = Buffer.concat([
+              current.nativeHeader,
+              part.subarray(0, binaryHeaderBytes - current.nativeHeader.length)
+            ]);
+          }
+          if (current.scan && !current.leak) {
+            const scan = scanCheckoutLeakChunk(current.scanTail, part);
+            current.scanTail = scan.tail;
+            current.leak = scan.detected;
+          }
         }
         if (current.remaining > 0 || buffer.length < current.padding) break;
         buffer = buffer.subarray(current.padding);
@@ -302,6 +487,9 @@ export const inspectArchive = async ({ path, platform, architecture }) => {
             type: current.type,
             size: current.size,
             ...(current.hash ? { sha256: current.hash.digest("hex") } : {}),
+            ...(current.nativeHeader
+              ? { nativeTarget: detectNativeTarget(current.nativeHeader) }
+              : {}),
             ...(current.leak ? { sourceCheckoutLeak: true } : {})
           });
         }
@@ -354,7 +542,9 @@ export const inspectArchive = async ({ path, platform, architecture }) => {
           type === "file" &&
           size <= 16 * 1024 * 1024 &&
           textPattern.test(entryPath),
+        scanTail: Buffer.alloc(0),
         leak: false,
+        nativeHeader: nativePattern.test(entryPath) ? Buffer.alloc(0) : null,
         chunks: []
       };
     }

@@ -102,6 +102,10 @@ checksummed artifacts, verifies the required asset set, and only then publishes.
 Each standalone release target is built twice from clean output paths. The
 workflow compares its complete package tree, manifest, provenance, and archive
 bytes before upload, then runs the deterministic artifact inspector.
+The inspector combines target tokens with ELF, Mach-O, and PE header inspection
+so architecture-neutral native filenames cannot hide foreign binaries. It scans
+eligible text files with bounded overlap between streamed chunks so split source
+checkout paths still fail the release policy.
 Before upload, it installs the pinned Privacy model into an empty temporary
 `KOED_HOME` and runs authenticated classification from the exact standalone
 runtime: CPU on Linux x64 and Core ML with CPU parity on macOS arm64. CUDA proof

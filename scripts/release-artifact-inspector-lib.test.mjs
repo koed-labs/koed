@@ -17,6 +17,10 @@ import {
 } from "./release-artifact-inspector-lib.mjs";
 
 const roots = [];
+const permissivePolicy = {
+  maxDuplicateRatio: 1,
+  maxManifestBytes: Number.MAX_SAFE_INTEGER
+};
 test.afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
@@ -68,6 +72,29 @@ const pad = (content) =>
   content.length % 512 === 0
     ? content
     : Buffer.concat([content, Buffer.alloc(512 - (content.length % 512))]);
+
+const elf = (machine) => {
+  const header = Buffer.alloc(64);
+  header.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]);
+  header.writeUInt16LE(machine, 18);
+  return header;
+};
+
+const machO = (cpu) => {
+  const header = Buffer.alloc(64);
+  header.set([0xcf, 0xfa, 0xed, 0xfe]);
+  header.writeUInt32LE(cpu, 4);
+  return header;
+};
+
+const pe = (machine) => {
+  const header = Buffer.alloc(256);
+  header.write("MZ", 0, "ascii");
+  header.writeUInt32LE(0x80, 0x3c);
+  header.set([0x50, 0x45, 0, 0], 0x80);
+  header.writeUInt16LE(machine, 0x84);
+  return header;
+};
 
 test("detects triplicated pnpm-style native payloads deterministically", async () => {
   const root = fixture();
@@ -139,6 +166,89 @@ test("reports compressed and expanded archive composition", async () => {
   assert.equal(report.bytes.manifest, manifest.length);
   assert.equal(report.entryCounts.file, 4);
   assert.equal(report.bytes.duplicateContent, payload.length * 2);
+});
+
+test("detects foreign native targets from binary headers without path tokens", async () => {
+  for (const [name, content, platform, architecture] of [
+    ["binding.node", elf(183), "linux", "x64"],
+    ["libfoo.dylib", machO(0x01000007), "macos", "arm64"],
+    ["plugin.dll", pe(0xaa64), "windows", "x64"]
+  ]) {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-native-target-"));
+    roots.push(root);
+    writeFileSync(resolve(root, name), content);
+
+    const report = await inspectTree({ path: root, platform, architecture });
+
+    assert.deepEqual(report.findings.foreignPlatformNativeFiles, [name]);
+    assert.match(
+      evaluateArtifactPolicy(report, permissivePolicy).errors.join("\n"),
+      /foreignPlatformNativeFiles/
+    );
+  }
+});
+
+test("detects a neutral-path foreign native target in a streamed archive", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-native-archive-target-"));
+  roots.push(root);
+  const content = elf(183);
+  const path = "fixture/node_modules/provider/binding.node";
+  const archive = resolve(root, "fixture.tar.gz");
+  writeFileSync(
+    archive,
+    gzipSync(
+      Buffer.concat([
+        tarHeader(path, content.length),
+        pad(content),
+        Buffer.alloc(1024)
+      ])
+    )
+  );
+
+  const report = await inspectArchive({
+    path: archive,
+    platform: "linux",
+    architecture: "x64"
+  });
+
+  assert.deepEqual(report.findings.foreignPlatformNativeFiles, [path]);
+  assert.match(
+    evaluateArtifactPolicy(report, permissivePolicy).errors.join("\n"),
+    /foreignPlatformNativeFiles/
+  );
+});
+
+test("detects checkout paths split across streamed archive chunks", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-checkout-leak-"));
+  roots.push(root);
+  const content = Buffer.concat([
+    Buffer.alloc(15_348, 0x61),
+    Buffer.from("/Users/alice/checkout")
+  ]);
+  const path = "fixture/config.json";
+  const archive = resolve(root, "fixture.tar.gz");
+  writeFileSync(
+    archive,
+    gzipSync(
+      Buffer.concat([
+        tarHeader(path, content.length),
+        pad(content),
+        Buffer.alloc(1024)
+      ])
+    )
+  );
+
+  const report = await inspectArchive({
+    path: archive,
+    platform: "linux",
+    architecture: "x64"
+  });
+
+  assert.deepEqual(report.findings.sourceCheckoutLeaks, [path]);
+  assert.match(
+    evaluateArtifactPolicy(report, permissivePolicy).errors.join("\n"),
+    /sourceCheckoutLeaks/
+  );
 });
 
 test("attributes native-runtime components and enforces immutable growth", async () => {
