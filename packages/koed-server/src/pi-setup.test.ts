@@ -12,7 +12,12 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { removePi, resolvePiSetupExecutable, setupPi } from "./pi-setup.js";
+import {
+  removePi,
+  resolvePiSetupExecutable,
+  resolvePiSetupLauncher,
+  setupPi
+} from "./pi-setup.js";
 
 const temporaryDirectories: string[] = [];
 const spawnResult = (stdout = "", status = 0) =>
@@ -69,7 +74,7 @@ describe("Pi setup", () => {
       instances: [
         {
           instanceId: "pi.default",
-          executablePath: realpathSync(executable)
+          executablePath: executable
         }
       ]
     });
@@ -127,6 +132,21 @@ describe("Pi setup", () => {
     expect(
       calls.every(({ command }) => command === realpathSync(executable))
     ).toBe(true);
+    expect(
+      JSON.parse(
+        readFileSync(
+          resolve(root, "koed/config/ai-client-instances.json"),
+          "utf8"
+        )
+      )
+    ).toMatchObject({
+      instances: [
+        {
+          instanceId: "pi.default",
+          executablePath: link
+        }
+      ]
+    });
     for (const { env } of calls) {
       expect(env).not.toHaveProperty("MEMORY_API_TOKEN");
       expect(env).not.toHaveProperty("ANTHROPIC_API_KEY");
@@ -164,6 +184,25 @@ describe("Pi setup", () => {
 
     expect(result).toMatchObject({ ok: false, state: "needs_attention" });
     expect(result.error).toContain("no authenticated models");
+  });
+
+  it("preserves fnm launcher while resolving its canonical invocation target", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-fnm-launcher-"));
+    temporaryDirectories.push(root);
+    const launcher = resolve(root, ".local/share/fnm/aliases/default/bin/pi");
+    const target = resolve(root, ".local/share/fnm/node-versions/v1/bin/pi");
+    mkdirSync(resolve(launcher, ".."), { recursive: true });
+    mkdirSync(resolve(target, ".."), { recursive: true });
+    writeFileSync(target, "#!/bin/sh\nexit 0\n");
+    chmodSync(target, 0o700);
+    symlinkSync(target, launcher);
+
+    expect(
+      resolvePiSetupLauncher({ HOME: root, PATH: "/usr/bin:/bin" }, "darwin")
+    ).toBe(launcher);
+    expect(
+      resolvePiSetupExecutable({ HOME: root, PATH: "/usr/bin:/bin" }, "darwin")
+    ).toBe(realpathSync(target));
   });
 
   it("resolves Windows npm launchers to the package Node entry", () => {

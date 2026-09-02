@@ -129,7 +129,7 @@ export const piSetupInvocation = (
 ): { command: string; args: string[] } =>
   nodeCliInvocation(executablePath, args);
 
-export const resolvePiSetupExecutable = (
+export const resolvePiSetupLauncher = (
   environment: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform
 ): string => {
@@ -163,7 +163,15 @@ export const resolvePiSetupExecutable = (
       "Pi was not found. Install Pi, or set KOED_PI_EXECUTABLE to its absolute path."
     );
   }
-  const canonical = realpathSync(resolvePiSetupNodeEntry(candidate, platform));
+  return resolve(candidate);
+};
+
+export const resolvePiSetupExecutable = (
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
+): string => {
+  const launcher = resolvePiSetupLauncher(environment, platform);
+  const canonical = realpathSync(resolvePiSetupNodeEntry(launcher, platform));
   if (!statSync(canonical).isFile()) {
     throw new Error(`Pi executable is not a file: ${canonical}`);
   }
@@ -374,6 +382,7 @@ export const setupPi = (
     };
   }
   try {
+    const launcher = resolvePiSetupLauncher(environment);
     const executable = resolvePiSetupExecutable(environment);
     const childEnvironment = piSetupEnvironment(environment, paths.koedHome);
     const runPi = (args: string[], timeout: number) => {
@@ -439,7 +448,7 @@ export const setupPi = (
         const registered = registerExplicitAiClient({
           environment: registryEnvironment,
           driverId: "pi",
-          executablePath: executable,
+          executablePath: launcher,
           displayName: "Pi",
           configHome: environment.PI_CODING_AGENT_DIR
         });

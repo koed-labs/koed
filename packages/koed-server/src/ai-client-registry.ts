@@ -39,6 +39,15 @@ export const platformExecutableSearchDirectories = (
   platform === "darwin"
     ? [
         join(environment.HOME ?? homedir(), ".local", "bin"),
+        join(
+          environment.HOME ?? homedir(),
+          ".local",
+          "share",
+          "fnm",
+          "aliases",
+          "default",
+          "bin"
+        ),
         "/opt/homebrew/bin",
         "/usr/local/bin"
       ]

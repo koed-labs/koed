@@ -58,6 +58,19 @@ describe("AI Client instance registry", () => {
     ).toBe("/opt/homebrew/bin/codex");
   });
 
+  it("finds Codex through the fnm default alias with a Finder-style PATH", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    expect(
+      resolveCodexExecutablePath(
+        { PATH: "/usr/bin:/bin", HOME: "/Users/operator" },
+        executableDependencies({
+          "/Users/operator/.local/share/fnm/aliases/default/bin/codex":
+            "executable"
+        })
+      )
+    ).toBe("/Users/operator/.local/share/fnm/aliases/default/bin/codex");
+  });
+
   it("prioritizes the explicit Codex binary override", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const explicit = "/Applications/Codex/bin/codex";

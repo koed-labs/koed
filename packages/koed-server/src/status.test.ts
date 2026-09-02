@@ -16,6 +16,7 @@ import {
   collectKoedServerStartupStatus,
   collectKoedServerStatus,
   healthy,
+  inspectCodex,
   inspectAiClientFlowReadiness,
   inspectAiClientInstanceReadiness,
   inspectAiClientReadiness,
@@ -97,6 +98,38 @@ afterEach(() => {
   for (const path of temps.splice(0)) {
     rmSync(path, { recursive: true, force: true });
   }
+});
+
+describe("Codex installation status", () => {
+  it("detects fallback-discovered Codex before first-time configuration", () => {
+    const root = tempDir();
+    const environment = { HOME: root, PATH: "/usr/bin:/bin", KOED_HOME: root };
+    const status = inspectCodex(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        fetch: globalThis.fetch.bind(globalThis),
+        spawnSync: (() => spawnResult("")) as never,
+        existsSync,
+        readFileSync,
+        resolvePiExecutable: () => "/bin/sh",
+        resolveClaudeExecutable: () => "/bin/sh",
+        resolveCodexExecutable: () => "/opt/homebrew/bin/codex",
+        checkPid: () => true,
+        now: () => new Date()
+      },
+      true
+    );
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: true,
+      details: {
+        executable: "/opt/homebrew/bin/codex"
+      }
+    });
+  });
 });
 
 describe("startup status", () => {

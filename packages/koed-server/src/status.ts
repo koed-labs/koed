@@ -68,6 +68,7 @@ import type {
   KoedAiClientFlowReadiness,
   KoedAiClientReadiness
 } from "./types.js";
+import { resolveCodexExecutablePath } from "./ai-client-registry.js";
 import {
   inspectManagedCodexGuidance,
   resolveCodexGlobalInstructionsPath,
@@ -105,6 +106,7 @@ export interface KoedServerStatusDependencies {
   readFileSync?: typeof readFileSync;
   resolvePiExecutable?: typeof resolvePiSetupExecutable;
   resolveClaudeExecutable?: typeof resolveClaudeExecutablePath;
+  resolveCodexExecutable?: typeof resolveCodexExecutablePath;
   checkPid?: (pid: number) => boolean;
   now?: () => Date;
 }
@@ -116,6 +118,7 @@ const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
   readFileSync,
   resolvePiExecutable: resolvePiSetupExecutable,
   resolveClaudeExecutable: resolveClaudeExecutablePath,
+  resolveCodexExecutable: resolveCodexExecutablePath,
   checkPid: isProcessRunning,
   now: () => new Date()
 });
@@ -848,12 +851,24 @@ const tomlSection = (content: string, sectionName: string): string => {
   return sectionLines.join("\n");
 };
 
-const inspectCodex = (
+export const inspectCodex = (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>,
   memoryGuidanceEnabled: boolean
 ): KoedServerStatus["codex"] => {
+  let executable: string;
+  try {
+    executable = deps.resolveCodexExecutable(environment);
+  } catch {
+    return {
+      ...notConfigured(
+        "Codex is not installed or could not be started.",
+        "Install Codex, then select it in Desktop AI Client setup."
+      ),
+      configured: false
+    };
+  }
   const codexConfigPath = resolve(
     environment.CODEX_CONFIG_PATH ??
       `${environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`}/config.toml`
@@ -861,10 +876,12 @@ const inspectCodex = (
   if (!deps.existsSync(codexConfigPath)) {
     return {
       ...notConfigured(
-        "Codex configuration was not found.",
-        "Select Codex in Desktop AI Client setup, or run koed-server setup codex --json."
+        "Codex is installed but Koed is not configured in Codex.",
+        "Select Codex in Desktop AI Client setup, or run koed-server setup codex --json.",
+        { executable, codexConfigPath }
       ),
-      configured: false
+      configured: false,
+      detected: true
     };
   }
   const content = deps.readFileSync(codexConfigPath, "utf8") as string;
