@@ -76,10 +76,22 @@ export const authenticationLabel = (
       ? "Unauthenticated"
       : "Auth unknown";
 
+export const clientVersionLabel = (
+  version: string | null | undefined
+): string => {
+  const trimmed = version?.trim();
+  if (!trimmed) return "Version unknown";
+
+  const semanticVersion = trimmed.match(
+    /\b(?:v)?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/
+  )?.[1];
+  return semanticVersion ? `v${semanticVersion}` : trimmed;
+};
+
 export const clientMetaLine = (
   readiness: AiClientReadiness | undefined,
   detected: boolean
 ): string =>
   detected
-    ? `${readiness?.version ? `v${readiness.version}` : "Version unknown"} · ${authenticationLabel(readiness?.authentication)}`
+    ? `${clientVersionLabel(readiness?.version)} · ${authenticationLabel(readiness?.authentication)}`
     : "Not installed";
