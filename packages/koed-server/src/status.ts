@@ -2470,7 +2470,7 @@ export const collectKoedServerStatus = async (
           "LCM Summary Service process is not healthy.",
           "Fix Local AI Runtime health first."
         );
-  const coreComponents = {
+  const componentStatuses = {
     api: apiReady.api,
     database: databaseStatus,
     redis: redisStatus,
@@ -2481,12 +2481,17 @@ export const collectKoedServerStatus = async (
     apiToken,
     mcpServer
   };
-  const coreState = aggregateState([
-    ...koedServerStartupBlockingComponentIds(serverConfig.runtimeMode).map(
-      (componentId) => coreComponents[componentId]
-    ),
-    coreComponents.mcpServer
-  ]);
+  const coreComponentIds = [
+    ...koedServerStartupBlockingComponentIds(serverConfig.runtimeMode),
+    "mcpServer" as const
+  ];
+  const coreComponents = Object.fromEntries(
+    coreComponentIds.map((componentId) => [
+      componentId,
+      componentStatuses[componentId]
+    ])
+  );
+  const coreState = aggregateState(Object.values(coreComponents));
   const lastVerification = inspectLastVerification(paths, deps);
   const readinessInput = {
     codex,
@@ -2595,10 +2600,7 @@ export const collectKoedServerDoctor = async (
     label: label as string,
     ...(component as KoedServerComponentStatus)
   }));
-  const coreCheckIds = new Set([
-    ...koedServerStartupBlockingComponentIds(status.runtimeMode),
-    "mcpServer"
-  ]);
+  const coreCheckIds = new Set(Object.keys(status.core.components));
   const blockingChecks = checks.filter((check) => coreCheckIds.has(check.id));
   const failed = blockingChecks.filter(
     (check) => check.state === "needs_attention"

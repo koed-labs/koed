@@ -270,6 +270,17 @@ describe("startup status", () => {
       localAiRuntime: { state: "healthy" },
       core: { state: "healthy" }
     });
+    expect(Object.keys(status.core.components)).toEqual([
+      "api",
+      "database",
+      "redis",
+      "workerQueues",
+      "embeddingService",
+      "privacyService",
+      "mcpServer"
+    ]);
+    expect(status.core.components).not.toHaveProperty("apiToken");
+    expect(status.core.components).not.toHaveProperty("localAiRuntime");
     expect(doctor).toMatchObject({
       ok: true,
       state: "healthy",
