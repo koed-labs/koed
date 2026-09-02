@@ -31,6 +31,7 @@
     "source-runtime:check": "node scripts/source-runtime-build.mjs check",
     "native-runtime:stage:homebrew": "node scripts/stage-native-runtime-homebrew.mjs",
     "koed-server:package": "node scripts/build-koed-server-package.mjs",
+    "release-artifact:inspect": "node scripts/inspect-release-artifact.mjs",
     "codex:bootstrap": "node scripts/codex-bootstrap.mjs",
     "codex:doctor": "node packages/mcp-server/dist/cli.js doctor",
     "codex:setup": "node scripts/clients-bootstrap.mjs",

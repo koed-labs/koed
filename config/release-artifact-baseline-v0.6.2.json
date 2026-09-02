@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "release": "v0.6.2",
+  "immutable": true,
+  "artifacts": {
+    "koed-native-runtime-linux-x64-0.6.2.tar.gz": 1424918118,
+    "koed-server-0.6.2-linux-x64.tar.gz": 1140435354,
+    "koed-server-0.6.2-macos-arm64.tar.gz": 548405248,
+    "Koed-0.6.2-arm64.dmg": 389231411,
+    "Koed-0.6.2-arm64.zip": 409783501,
+    "koed-server-app-runtime-manifest": 39636173
+  },
+  "notes": "Byte values are fixed conversions of the reviewed published v0.6.2 artifact measurements and are never regenerated from the artifact under test."
+}

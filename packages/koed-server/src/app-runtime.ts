@@ -59,7 +59,7 @@ const packagedRuntime = (
     "local-runtime-cli.js"
   );
   const captureHook = resolve(root, "mcp-server", "dist", "capture-hook.js");
-  const dbPackageRoot = resolve(root, "api", "node_modules", "@koed", "db");
+  const dbPackageRoot = resolve(root, "node_modules", "@koed", "db");
   const required = [
     apiEntry,
     workerEntry,

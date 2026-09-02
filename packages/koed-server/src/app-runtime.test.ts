@@ -61,10 +61,10 @@ const createPackagedRuntime = (root: string) => {
     "koed-runtime/mcp-server/dist/cli.js",
     "koed-runtime/mcp-server/dist/local-runtime-cli.js",
     "koed-runtime/mcp-server/dist/capture-hook.js",
-    "koed-runtime/api/node_modules/@koed/db/dist/index.js",
-    "koed-runtime/api/node_modules/@koed/db/dist/connection.js",
-    "koed-runtime/api/node_modules/@koed/db/dist/user-api-token-repository.js",
-    "koed-runtime/api/node_modules/@koed/db/drizzle/meta/_journal.json"
+    "koed-runtime/node_modules/@koed/db/dist/index.js",
+    "koed-runtime/node_modules/@koed/db/dist/connection.js",
+    "koed-runtime/node_modules/@koed/db/dist/user-api-token-repository.js",
+    "koed-runtime/node_modules/@koed/db/drizzle/meta/_journal.json"
   ]) {
     touch(resolve(root, entry));
   }
@@ -79,10 +79,10 @@ const createKoedHomeRuntime = (root: string) => {
     "runtime/koed-runtime/mcp-server/dist/cli.js",
     "runtime/koed-runtime/mcp-server/dist/local-runtime-cli.js",
     "runtime/koed-runtime/mcp-server/dist/capture-hook.js",
-    "runtime/koed-runtime/api/node_modules/@koed/db/dist/index.js",
-    "runtime/koed-runtime/api/node_modules/@koed/db/dist/connection.js",
-    "runtime/koed-runtime/api/node_modules/@koed/db/dist/user-api-token-repository.js",
-    "runtime/koed-runtime/api/node_modules/@koed/db/drizzle/meta/_journal.json"
+    "runtime/koed-runtime/node_modules/@koed/db/dist/index.js",
+    "runtime/koed-runtime/node_modules/@koed/db/dist/connection.js",
+    "runtime/koed-runtime/node_modules/@koed/db/dist/user-api-token-repository.js",
+    "runtime/koed-runtime/node_modules/@koed/db/drizzle/meta/_journal.json"
   ]) {
     touch(resolve(root, entry));
   }
@@ -97,10 +97,10 @@ const createKoedHomeServerPackageRuntime = (root: string) => {
     "runtime/koed-server/current/koed-runtime/mcp-server/dist/cli.js",
     "runtime/koed-server/current/koed-runtime/mcp-server/dist/local-runtime-cli.js",
     "runtime/koed-server/current/koed-runtime/mcp-server/dist/capture-hook.js",
-    "runtime/koed-server/current/koed-runtime/api/node_modules/@koed/db/dist/index.js",
-    "runtime/koed-server/current/koed-runtime/api/node_modules/@koed/db/dist/connection.js",
-    "runtime/koed-server/current/koed-runtime/api/node_modules/@koed/db/dist/user-api-token-repository.js",
-    "runtime/koed-server/current/koed-runtime/api/node_modules/@koed/db/drizzle/meta/_journal.json"
+    "runtime/koed-server/current/koed-runtime/node_modules/@koed/db/dist/index.js",
+    "runtime/koed-server/current/koed-runtime/node_modules/@koed/db/dist/connection.js",
+    "runtime/koed-server/current/koed-runtime/node_modules/@koed/db/dist/user-api-token-repository.js",
+    "runtime/koed-server/current/koed-runtime/node_modules/@koed/db/drizzle/meta/_journal.json"
   ]) {
     touch(resolve(root, entry));
   }

@@ -1,0 +1,200 @@
+name: Trusted Linux CUDA package validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trusted-linux-cuda-package-validation
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 24.13.1
+  PNPM_VERSION: 11.1.2
+  EMBEDDING_MODEL_SHA256: 06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439
+  PRIVACY_MODEL_REVISION: 7ffa9a043d54d1be65afb281eddf0ffbe629385b
+
+jobs:
+  validate-exact-packaged-cuda:
+    name: Validate exact packaged CUDA payload
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: [self-hosted, linux, x64, koed-cuda]
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Require compatible NVIDIA hardware and driver
+        run: |
+          set -euo pipefail
+          nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+          driver="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1 | tr -d ' ')"
+          minimum="550.54.14"
+          if [ "$(printf '%s\n%s\n' "${minimum}" "${driver}" | sort -V | head -n 1)" != "${minimum}" ]; then
+            echo "NVIDIA driver ${driver} is below required ${minimum}." >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build runtime services and CLI
+        run: pnpm build
+
+      - name: Restore exact verified Linux native runtime payload
+        id: native-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-native-runtime-cache/linux-x64/koed-runtime
+          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/content-policy.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
+
+      - name: Require the independently verified native payload
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "The verified Linux native runtime cache is missing for this exact recipe." >&2
+          echo "Run the trusted default-branch Linux native cache workflow first." >&2
+          exit 1
+
+      - name: Package and extract the exact native archive
+        env:
+          SOURCE_DATE_EPOCH: 0
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/koed-cuda-native"
+          extracted="${RUNNER_TEMP}/koed-cuda-native-extracted"
+          pnpm native-runtime:build:linux-x64 -- \
+            --source-dir "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" \
+            --out-dir "${out}" \
+            --version "${GITHUB_SHA}" \
+            --json
+          node scripts/inspect-release-artifact.mjs \
+            --path "${out}/koed-native-runtime-linux-x64-${GITHUB_SHA}.tar.gz" \
+            --platform linux \
+            --arch x64 \
+            --policy config/release-artifact-size-policy.json \
+            --baseline config/release-artifact-baseline-v0.6.2.json \
+            --out "${RUNNER_TEMP}/koed-cuda-native-artifact-report.json" \
+            --json
+          mkdir -p "${extracted}"
+          tar -xzf "${out}/koed-native-runtime-linux-x64-${GITHUB_SHA}.tar.gz" -C "${extracted}"
+          node scripts/native-runtime/validate-runtime.mjs \
+            --runtime-root "${extracted}/koed-runtime" \
+            --platform linux \
+            --json \
+            > "${RUNNER_TEMP}/koed-cuda-native-validation.json"
+
+      - name: Restore pinned embedding model
+        id: embedding-model-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-cuda-models/models/Qwen3-Embedding-0.6B-Q8_0.gguf
+          key: embedding-model-${{ env.EMBEDDING_MODEL_SHA256 }}
+
+      - name: Install pinned embedding model on cache miss
+        if: steps.embedding-model-cache.outputs.cache-hit != 'true'
+        env:
+          KOED_HOME: ${{ runner.temp }}/koed-cuda-models
+          KOED_DEPENDENCY_MODE: bundled-local
+        run: node packages/koed-server/dist/cli.js models install --kind embedding --json
+
+      - name: Prove packaged CUDA llama.cpp initialization and inference
+        run: |
+          set -euo pipefail
+          runtime="${RUNNER_TEMP}/koed-cuda-native-extracted/koed-runtime"
+          model="${RUNNER_TEMP}/koed-cuda-models/models/Qwen3-Embedding-0.6B-Q8_0.gguf"
+          test "$(sha256sum "${model}" | awk '{print $1}')" = "${EMBEDDING_MODEL_SHA256}"
+          "${runtime}/llama.cpp/cuda/llama-server" --list-devices 2>&1 | tee "${RUNNER_TEMP}/koed-cuda-devices.txt"
+          grep -Eq '^[[:space:]]*CUDA[[:alnum:]_.-]*:' "${RUNNER_TEMP}/koed-cuda-devices.txt"
+          pnpm embedding:benchmark -- \
+            --model-path "${model}" \
+            --llama-server "${runtime}/llama.cpp/cuda/llama-server" \
+            --gpu-backend cuda \
+            --warm-iterations 1 \
+            --idle-seconds 1 \
+            --output "${RUNNER_TEMP}/koed-cuda-embedding-report.json" \
+            --json
+          jq -e '
+            .gpu.backend == "cuda" and
+            .runtime.gpu.backendClass == "cuda" and
+            .gpu.peakVramMiB > 0 and
+            ([.vectorAgreement[].cosineSimilarity >= 0.999] | all)
+          ' "${RUNNER_TEMP}/koed-cuda-embedding-report.json"
+
+      - name: Build the exact Linux standalone Privacy runtime
+        env:
+          SOURCE_DATE_EPOCH: 0
+        run: pnpm koed-server:package -- --version "${GITHUB_SHA}" --platform linux --arch x64 --out-dir "${RUNNER_TEMP}/koed-cuda-standalone" --json
+
+      - name: Inspect the exact Linux standalone Privacy runtime
+        run: |
+          node scripts/inspect-release-artifact.mjs \
+            --path "${RUNNER_TEMP}/koed-cuda-standalone/koed-server-${GITHUB_SHA}-linux-x64.tar.gz" \
+            --platform linux \
+            --arch x64 \
+            --policy config/release-artifact-size-policy.json \
+            --baseline config/release-artifact-baseline-v0.6.2.json \
+            --out "${RUNNER_TEMP}/koed-cuda-standalone-artifact-report.json" \
+            --json
+
+      - name: Restore pinned Privacy Filter model
+        id: privacy-model-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-cuda-models/models/privacy
+          key: privacy-model-${{ env.PRIVACY_MODEL_REVISION }}
+
+      - name: Install pinned Privacy Filter model on cache miss
+        if: steps.privacy-model-cache.outputs.cache-hit != 'true'
+        env:
+          KOED_HOME: ${{ runner.temp }}/koed-cuda-models
+        run: node packages/koed-server/dist/cli.js models install --kind privacy --json
+
+      - name: Prove exact packaged Privacy CUDA initialization and inference
+        run: |
+          set -euo pipefail
+          runtime="${RUNNER_TEMP}/koed-cuda-standalone/koed-server-${GITHUB_SHA}-linux-x64/koed-runtime"
+          node scripts/validate-packaged-privacy-runtime.mjs \
+            --runtime-root "${runtime}" \
+            --transformers-cache "${RUNNER_TEMP}/koed-cuda-models/models/privacy/transformers-cache" \
+            --provider cuda \
+            > "${RUNNER_TEMP}/koed-cuda-privacy-report.json"
+          jq -e '
+            .ok == true and
+            .provider == "cuda" and
+            (.verifiedProviders | index("cpu")) != null and
+            (.verifiedProviders | index("cuda")) != null and
+            .behavior.switchedToCpu == true and
+            .behavior.switchedBack == true and
+            .behavior.idleUnloadReload == true and
+            .behavior.unavailableProviderRejected == true
+          ' "${RUNNER_TEMP}/koed-cuda-privacy-report.json"
+
+      - name: Upload trusted CUDA evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trusted-linux-cuda-evidence-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/koed-cuda-devices.txt
+            ${{ runner.temp }}/koed-cuda-native-artifact-report.json
+            ${{ runner.temp }}/koed-cuda-native-validation.json
+            ${{ runner.temp }}/koed-cuda-embedding-report.json
+            ${{ runner.temp }}/koed-cuda-privacy-report.json
+            ${{ runner.temp }}/koed-cuda-standalone-artifact-report.json
+          if-no-files-found: warn
+          retention-days: 30

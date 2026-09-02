@@ -1,31 +1,24 @@
 #!/usr/bin/env node
-import { gzipSync } from "node:zlib";
-import {
-  chmodSync,
-  copyFileSync,
-  cpSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  readlinkSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync
-} from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { basename, resolve } from "node:path";
 import { prunePythonEmbeddingRuntimeFiles } from "./native-runtime/manifest-lib.mjs";
+import {
+  pruneSharedAppRuntimeMetadata,
+  stageSharedAppRuntime
+} from "./app-runtime-staging.mjs";
+import { prunePrivacyRuntimeForTarget } from "./privacy-runtime-package-policy.mjs";
 import { removeClaudeAgentSdkPlatformRuntimes } from "./provider-runtime-package-policy.mjs";
+import {
+  deterministicArchiveEntries,
+  sourceDate,
+  writeDeterministicTarGz
+} from "./deterministic-tar-gzip.mjs";
 import {
   buildPackageManifest,
   buildPackageProvenance,
-  isPnpmWorkspaceSelfSymlink,
-  normalizeDeployedWorkspaceDependencies,
   platformKey,
   pruneStandalonePackageMetadata,
-  prunePnpmWorkspaceVirtualStorePaths,
   readPackageVersion,
   sha256File,
   validatePackageRoot,
@@ -45,12 +38,11 @@ Options:
   --version <version>        Package version. Defaults to @koed/koed-server.
   --out-dir <dir>            Output directory. Defaults to dist/koed-server-package/<platform>-<arch>.
   --json                     Print JSON result.
-  --skip-restore-install     Do not restore workspace dependencies after pnpm deploy.
   -h, --help                 Show help.
 `;
 
 const parseArgs = (argv) => {
-  const options = { json: false, restoreInstall: true };
+  const options = { json: false };
   for (let i = 0; i < argv.length; i += 1) {
     const value = argv[i];
     if (value === "--") continue;
@@ -59,7 +51,6 @@ const parseArgs = (argv) => {
     else if (value === "--version") options.version = argv[++i];
     else if (value === "--out-dir") options.outDir = argv[++i];
     else if (value === "--json") options.json = true;
-    else if (value === "--skip-restore-install") options.restoreInstall = false;
     else if (value === "--help" || value === "-h") options.help = true;
     else throw new Error(`Unknown option: ${value}\n\n${usage()}`);
   }
@@ -96,18 +87,6 @@ const run = (label, command, args, options = {}) => {
   return result;
 };
 
-const deploy = (filter, runtimeRoot, to) =>
-  run(`Deploy ${filter}`, "pnpm", [
-    ...(filter === "@koed/koed-server" ? ["--config.node-linker=hoisted"] : []),
-    "--config.inject-workspace-packages=true",
-    "--filter",
-    filter,
-    "deploy",
-    "--frozen-lockfile",
-    "--prod",
-    resolve(runtimeRoot, to)
-  ]);
-
 const writeLauncher = (packageRoot) => {
   const launcher = resolve(packageRoot, "bin", "koed-server");
   mkdirSync(resolve(packageRoot, "bin"), { recursive: true });
@@ -119,7 +98,7 @@ const writeLauncher = (packageRoot) => {
       'ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"',
       'export KOED_SERVER_PACKAGE_ROOT="${KOED_SERVER_PACKAGE_ROOT:-$ROOT}"',
       'export KOED_JS_RUNTIME_ROOT="${KOED_JS_RUNTIME_ROOT:-$ROOT/koed-runtime}"',
-      'exec node "$ROOT/koed-server/dist/cli.js" "$@"',
+      'exec node "$ROOT/koed-runtime/koed-server/dist/cli.js" "$@"',
       ""
     ].join("\n")
   );
@@ -130,7 +109,10 @@ const validatePackagedCli = (packageRoot) =>
   run(
     "Validate packaged koed-server CLI",
     process.execPath,
-    [resolve(packageRoot, "koed-server", "dist", "cli.js"), "--help"],
+    [
+      resolve(packageRoot, "koed-runtime", "koed-server", "dist", "cli.js"),
+      "--help"
+    ],
     { cwd: packageRoot, stdio: "pipe" }
   );
 
@@ -157,36 +139,8 @@ const writeReadme = (packageRoot) => {
   );
 };
 
-const dereferencePackageSymlinks = (root, dir = root) => {
-  for (const name of readdirSync(dir)) {
-    const path = resolve(dir, name);
-    const relativePath = path.slice(root.length + 1).replaceAll("\\", "/");
-    if (isPnpmWorkspaceSelfSymlink(relativePath)) continue;
-    const stat = lstatSync(path);
-    if (stat.isDirectory()) {
-      dereferencePackageSymlinks(root, path);
-      continue;
-    }
-    if (!stat.isSymbolicLink()) continue;
-
-    const targetStat = statSync(path);
-    const tempPath = `${path}.dereferenced-${process.pid}`;
-    rmSync(tempPath, { recursive: true, force: true });
-    if (targetStat.isDirectory()) {
-      cpSync(path, tempPath, { recursive: true, dereference: true });
-    } else {
-      copyFileSync(path, tempPath);
-    }
-    rmSync(path, { recursive: true, force: true });
-    renameSync(tempPath, path);
-    if (targetStat.isDirectory()) {
-      dereferencePackageSymlinks(root, path);
-    }
-  }
-};
-
 const assertArchiveHasNoSymlinks = (sourceDir) => {
-  const symlinks = archiveEntries(sourceDir).filter(
+  const symlinks = deterministicArchiveEntries(sourceDir).filter(
     (entry) => entry.type === "symlink"
   );
   if (symlinks.length > 0) {
@@ -199,185 +153,12 @@ const assertArchiveHasNoSymlinks = (sourceDir) => {
   }
 };
 
-const tarString = (buffer, offset, length, value) => {
-  if (Buffer.byteLength(value) > length) {
-    throw new Error(`Tar header value is too long: ${value}`);
-  }
-  buffer.write(value, offset, length, "utf8");
-};
-
-const tarOctal = (buffer, offset, length, value) => {
-  const text = value.toString(8).padStart(length - 1, "0");
-  tarString(buffer, offset, length, `${text.slice(-(length - 1))}\0`);
-};
-
-const splitTarPath = (path) => {
-  if (Buffer.byteLength(path) <= 100) return { name: path, prefix: "" };
-  const parts = path.split("/");
-  for (let index = 1; index < parts.length; index += 1) {
-    const prefix = parts.slice(0, index).join("/");
-    const name = parts.slice(index).join("/");
-    if (Buffer.byteLength(prefix) <= 155 && Buffer.byteLength(name) <= 100) {
-      return { name, prefix };
-    }
-  }
-  throw new Error(`Path is too long for deterministic ustar archive: ${path}`);
-};
-
-const tarHeader = ({ path, mode, size, type, linkname = "" }) => {
-  const header = Buffer.alloc(512, 0);
-  const { name, prefix } = splitTarPath(path);
-  tarString(header, 0, 100, name);
-  tarOctal(header, 100, 8, mode);
-  tarOctal(header, 108, 8, 0);
-  tarOctal(header, 116, 8, 0);
-  tarOctal(header, 124, 12, size);
-  tarOctal(header, 136, 12, 0);
-  header.fill(0x20, 148, 156);
-  tarString(header, 156, 1, type);
-  tarString(header, 157, 100, linkname);
-  tarString(header, 257, 6, "ustar");
-  tarString(header, 263, 2, "00");
-  tarString(header, 265, 32, "root");
-  tarString(header, 297, 32, "root");
-  tarString(header, 345, 155, prefix);
-  let checksum = 0;
-  for (const byte of header) checksum += byte;
-  tarOctal(header, 148, 8, checksum);
-  return header;
-};
-
-const paxRecord = (key, value) => {
-  const body = ` ${key}=${value}\n`;
-  let length = Buffer.byteLength(body) + 1;
-  for (;;) {
-    const candidate = `${length}${body}`;
-    const actual = Buffer.byteLength(candidate);
-    if (actual === length) return candidate;
-    length = actual;
-  }
-};
-
-const paxContent = (records) =>
-  Buffer.from(
-    Object.entries(records)
-      .map(([key, value]) => paxRecord(key, value))
-      .join(""),
-    "utf8"
-  );
-
-const padded = (buffer) => {
-  const remainder = buffer.length % 512;
-  return remainder === 0
-    ? buffer
-    : Buffer.concat([buffer, Buffer.alloc(512 - remainder, 0)]);
-};
-
-const archiveEntries = (root, relativeRoot = "") =>
-  readdirSync(root)
-    .sort()
-    .flatMap((name) => {
-      const path = resolve(root, name);
-      const relativePath = relativeRoot ? `${relativeRoot}/${name}` : name;
-      if (isPnpmWorkspaceSelfSymlink(relativePath)) return [];
-      const stat = lstatSync(path);
-      if (stat.isDirectory()) {
-        return [
-          { path, relativePath: `${relativePath}/`, stat, type: "directory" },
-          ...archiveEntries(path, relativePath)
-        ];
-      }
-      if (stat.isSymbolicLink()) {
-        return [{ path, relativePath, stat, type: "symlink" }];
-      }
-      if (stat.isFile()) {
-        return [{ path, relativePath, stat, type: "file" }];
-      }
-      throw new Error(`Unsupported package archive entry: ${relativePath}`);
-    });
-
-const writeDeterministicTarGz = ({ sourceDir, packageDirName, tarPath }) => {
-  const blocks = [
-    tarHeader({
-      path: `${packageDirName}/`,
-      mode: 0o755,
-      size: 0,
-      type: "5"
-    })
-  ];
-  let paxIndex = 0;
-  for (const entry of archiveEntries(sourceDir)) {
-    const archivePath = `${packageDirName}/${entry.relativePath}`;
-    const linkname =
-      entry.type === "symlink" ? readlinkSync(entry.path) : undefined;
-    const pax = {};
-    try {
-      splitTarPath(archivePath);
-    } catch {
-      pax.path = archivePath;
-    }
-    if (linkname && Buffer.byteLength(linkname) > 100) {
-      pax.linkpath = linkname;
-    }
-    let paxEntryIndex;
-    if (Object.keys(pax).length > 0) {
-      const content = paxContent(pax);
-      paxEntryIndex = String(paxIndex).padStart(6, "0");
-      const headerPath = `PaxHeaders/${paxEntryIndex}`;
-      paxIndex += 1;
-      blocks.push(
-        tarHeader({
-          path: headerPath,
-          mode: 0o644,
-          size: content.length,
-          type: "x"
-        }),
-        padded(content)
-      );
-    }
-    const headerPath = pax.path ? `PaxEntries/${paxEntryIndex}` : archivePath;
-    if (entry.type === "directory") {
-      blocks.push(
-        tarHeader({
-          path: headerPath,
-          mode: 0o755,
-          size: 0,
-          type: "5"
-        })
-      );
-    } else if (entry.type === "symlink") {
-      blocks.push(
-        tarHeader({
-          path: headerPath,
-          mode: 0o777,
-          size: 0,
-          type: "2",
-          linkname: pax.linkpath ? "" : linkname
-        })
-      );
-    } else {
-      const content = readFileSync(entry.path);
-      blocks.push(
-        tarHeader({
-          path: headerPath,
-          mode: entry.stat.mode & 0o777,
-          size: content.length,
-          type: "0"
-        }),
-        padded(content)
-      );
-    }
-  }
-  blocks.push(Buffer.alloc(1024, 0));
-  writeFileSync(tarPath, gzipSync(Buffer.concat(blocks), { mtime: 0 }));
-};
-
 const createArchive = ({ outDir, packageDirName }) => {
   const tarName = `${packageDirName}.tar.gz`;
   const tarPath = resolve(outDir, tarName);
   writeDeterministicTarGz({
     sourceDir: resolve(outDir, packageDirName),
-    packageDirName,
+    rootName: packageDirName,
     tarPath
   });
   const sha256 = sha256File(tarPath);
@@ -399,32 +180,21 @@ const main = () => {
   const runtimeRoot = resolve(packageRoot, "koed-runtime");
   let result;
 
-  try {
+  {
     rmSync(outDir, { recursive: true, force: true });
     mkdirSync(runtimeRoot, { recursive: true });
 
-    deploy("@koed/koed-server", packageRoot, "koed-server");
-    deploy("@koed/api", runtimeRoot, "api");
-    deploy("@koed/worker", runtimeRoot, "worker");
-    deploy("@koed/embedding-service", runtimeRoot, "embedding-service");
-    deploy("@koed/privacy-service", runtimeRoot, "privacy-service");
-    deploy("@koed/mcp-server", runtimeRoot, "mcp-server");
-
-    for (const manifestPath of [
-      resolve(packageRoot, "koed-server", "package.json"),
-      resolve(runtimeRoot, "api", "package.json"),
-      resolve(runtimeRoot, "worker", "package.json"),
-      resolve(runtimeRoot, "embedding-service", "package.json"),
-      resolve(runtimeRoot, "mcp-server", "package.json")
-    ]) {
-      normalizeDeployedWorkspaceDependencies(manifestPath);
-    }
-
+    stageSharedAppRuntime({ repoRoot, runtimeRoot });
     prunePythonEmbeddingRuntimeFiles(runtimeRoot);
     removeClaudeAgentSdkPlatformRuntimes(packageRoot);
+    prunePrivacyRuntimeForTarget({
+      repoRoot,
+      runtimeRoot,
+      platform: options.platform,
+      architecture: options.architecture
+    });
+    pruneSharedAppRuntimeMetadata(runtimeRoot);
     pruneStandalonePackageMetadata(packageRoot);
-    dereferencePackageSymlinks(packageRoot);
-    prunePnpmWorkspaceVirtualStorePaths(packageRoot);
     validatePackagedCli(packageRoot);
     writeLauncher(packageRoot);
     writeReadme(packageRoot);
@@ -434,10 +204,7 @@ const main = () => {
       platform: options.platform,
       architecture: options.architecture,
       version: options.version,
-      createdAt:
-        process.env.SOURCE_DATE_EPOCH !== undefined
-          ? new Date(Number(process.env.SOURCE_DATE_EPOCH) * 1000).toISOString()
-          : "1970-01-01T00:00:00.000Z"
+      createdAt: sourceDate()
     });
     writePackageManifest(packageRoot, manifest);
     const validation = validatePackageRoot(packageRoot);
@@ -477,13 +244,6 @@ const main = () => {
         signatureStatus: provenance.signature.status
       }
     };
-  } finally {
-    if (options.restoreInstall) {
-      run("Restore workspace dependencies", "pnpm", [
-        "install",
-        "--config.confirmModulesPurge=false"
-      ]);
-    }
   }
 
   if (options.json) console.log(JSON.stringify(result, null, 2));

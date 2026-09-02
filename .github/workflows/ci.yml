@@ -360,6 +360,36 @@ jobs:
           tar -xzf "${tarball}" -C "${validation_root}"
           test -d "${validation_root}/koed-runtime"
 
+      - name: Verify native runtime packaging reproducibility
+        env:
+          SOURCE_DATE_EPOCH: 0
+        run: |
+          set -euo pipefail
+          source="${RUNNER_TEMP}/koed-native-runtime-validation/koed-runtime"
+          first="${RUNNER_TEMP}/koed-native-runtime-repeat-one"
+          second="${RUNNER_TEMP}/koed-native-runtime-repeat-two"
+          pnpm native-runtime:build:macos-arm64 -- \
+            --source-dir "${source}" \
+            --out-dir "${first}" \
+            --version "${GITHUB_SHA}" \
+            --json
+          pnpm native-runtime:build:macos-arm64 -- \
+            --source-dir "${source}" \
+            --out-dir "${second}" \
+            --version "${GITHUB_SHA}" \
+            --json
+          cmp \
+            "${first}/koed-native-runtime-macos-arm64-${GITHUB_SHA}.tar.gz" \
+            "${second}/koed-native-runtime-macos-arm64-${GITHUB_SHA}.tar.gz"
+          cmp "${first}/provenance.json" "${second}/provenance.json"
+          cmp \
+            "${first}/koed-runtime/runtime-asset-manifest.json" \
+            "${second}/koed-runtime/runtime-asset-manifest.json"
+          node scripts/compare-package-trees.mjs \
+            --first "${first}/koed-runtime" \
+            --second "${second}/koed-runtime" \
+            --json
+
       - name: Validate native runtime artifact
         run: pnpm native-runtime:validate -- --runtime-root "${RUNNER_TEMP}/koed-native-runtime-validation/koed-runtime" --platform darwin --json
 
@@ -367,6 +397,29 @@ jobs:
         env:
           KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ runner.temp }}/koed-native-runtime-validation/koed-runtime
         run: pnpm desktop:package:internal:mac
+
+      - name: Verify clean Desktop runtime and app reproducibility
+        env:
+          KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ runner.temp }}/koed-native-runtime-validation/koed-runtime
+        run: |
+          set -euo pipefail
+          first_app="apps/desktop/release/mac/Koed.app"
+          pnpm --filter @koed/desktop package:runtime
+          node scripts/compare-package-trees.mjs \
+            --first "${first_app}/Contents/Resources/koed-runtime" \
+            --second "apps/desktop/.koed-runtime" \
+            --json
+          cd apps/desktop
+          KOED_ADHOC_SIGN_MACOS_APP=true \
+            CSC_IDENTITY_AUTO_DISCOVERY=false \
+            pnpm exec electron-builder \
+              --mac dir \
+              --config.directories.output="${RUNNER_TEMP}/koed-desktop-repeat"
+          cd ../..
+          node scripts/compare-package-trees.mjs \
+            --first "${first_app}" \
+            --second "${RUNNER_TEMP}/koed-desktop-repeat/mac-arm64/Koed.app" \
+            --json
 
       - name: Verify distribution outputs exist
         run: |
@@ -482,7 +535,7 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ runner.temp }}/koed-native-runtime-cache/linux-x64/koed-runtime
-          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
+          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/content-policy.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
 
       - name: Install native runtime build dependencies
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -526,7 +579,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ runner.temp }}/koed-native-runtime-cache/linux-x64/koed-runtime
-          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
+          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/content-policy.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
 
       - name: Package native runtime artifact
         run: pnpm native-runtime:build:linux-x64 -- --source-dir "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --version "${GITHUB_SHA}" --json

@@ -3,6 +3,7 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import type { KoedServerComponentStatus } from "./types.js";
 import type { KoedServerPaths } from "./paths.js";
+import { resolveKoedAppRuntime } from "./app-runtime.js";
 import {
   canUseSourceCheckoutFallback,
   resolvePackagedKoedRuntimeRoot,
@@ -104,12 +105,17 @@ export const resolveLocalEmbeddingRuntimePaths = (
     "embedding-service"
   );
   const repoAppDir = resolve(paths.repoRoot, "apps", "embedding-service");
+  const appRuntime = resolveKoedAppRuntime(paths, environment, exists);
   const packagedRuntimeRoot = resolvePackagedKoedRuntimeRoot(environment);
   const packagedAppDir = packagedRuntimeRoot
     ? resolve(packagedRuntimeRoot, "embedding-service")
     : undefined;
   const service = chooseRuntimePath(
     [
+      {
+        path: appRuntime.embeddingServiceEntry,
+        artifactSource: appRuntime.artifactSource
+      },
       {
         path: resolve(koedRuntimeAppDir, "dist", "index.js"),
         artifactSource: "koed-home-runtime" as const
