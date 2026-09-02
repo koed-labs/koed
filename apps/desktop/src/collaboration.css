@@ -1410,35 +1410,35 @@
   padding: 16px 18px;
 }
 
+/*
+ * A small filled dot, not an icon. The Status column carries the words, so
+ * the dot only needs to read as a state at a glance.
+ */
 .collab-presence-icon {
-  align-items: center;
-  color: var(--collab-muted);
-  display: inline-flex;
-  flex: 0 0 18px;
-  height: 18px;
-  justify-content: center;
-  width: 18px;
+  background: var(--collab-border-strong);
+  border-radius: 50%;
+  display: block;
+  flex: 0 0 auto;
+  height: 9px;
+  width: 9px;
 }
 
-.collab-presence-icon svg {
-  height: 16px;
-  width: 16px;
+.collab-presence-icon[data-presence="active"],
+.collab-presence-icon[data-presence="available"] {
+  background: var(--presence-available);
 }
 
-.collab-presence-icon svg[data-activity="active"] {
-  color: #238636;
+.collab-presence-icon[data-presence="recently_active"] {
+  background: color-mix(in srgb, var(--presence-available) 62%, var(--muted));
 }
 
-.collab-presence-icon svg[data-activity="recently_active"] {
-  color: #bf8700;
+.collab-presence-icon[data-presence="idle"],
+.collab-presence-icon[data-presence="out_of_office"] {
+  background: var(--presence-away);
 }
 
-.collab-presence-icon svg[data-activity="idle"] {
-  color: #cf222e;
-}
-
-.collab-presence-icon svg[data-activity="inactive"] {
-  color: #24292f;
+.collab-presence-icon[data-presence="do_not_disturb"] {
+  background: var(--collab-danger);
 }
 
 .collab-presence-controls {
@@ -1774,13 +1774,41 @@
   gap: 7px;
 }
 
-.collab-person-identity span:not(.collab-avatar):not(.collab-presence-icon),
+/*
+ * Scoped to the secondary line only. A broader `.collab-person-identity span`
+ * outranks the badge rules below and repaints them muted.
+ */
+.collab-person-identity > div > span,
 .collab-member-state {
   color: var(--collab-muted);
   font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.collab-person-avatar {
+  position: relative;
+}
+
+.collab-person-avatar .collab-presence-icon {
+  border: 2px solid var(--collab-bg);
+  bottom: -1px;
+  height: 13px;
+  inset-inline-end: -1px;
+  position: absolute;
+  width: 13px;
+}
+
+.collab-me-badge {
+  background: var(--collab-accent-soft);
+  border-radius: 999px;
+  color: var(--collab-accent);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  text-transform: uppercase;
 }
 
 .collab-avatar-pending {
@@ -1965,6 +1993,21 @@
 :is(.collab-route-root, .collab-modal) .collab-menu button:disabled {
   color: var(--collab-muted);
   opacity: 0.6;
+}
+
+:is(.collab-route-root, .collab-modal)
+  .collab-menu
+  .collab-menu-item-with-reason {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.collab-menu-item-with-reason small {
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.3;
+  white-space: normal;
 }
 
 .collab-menu button svg {

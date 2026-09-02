@@ -17,7 +17,6 @@ import {
   Archive,
   BellOff,
   Check,
-  CircleAlert,
   CircleCheck,
   Clipboard,
   Ellipsis,
@@ -63,6 +62,12 @@ const ROLE_LABELS: Record<TeamRole, string> = {
   owner: "Owner",
   admin: "Admin",
   member: "Member"
+};
+
+const ROLE_RANK: Record<TeamRole, number> = {
+  owner: 2,
+  admin: 1,
+  member: 0
 };
 
 const ACCESS_LABELS: Record<WorkspaceAccess, string> = {
@@ -113,7 +118,7 @@ const changeSummary = (change: PendingChange): string =>
  * by that scroll container. Fixed positioning escapes the clip; the surface
  * flips above the trigger when it would otherwise run past the viewport.
  */
-function useAnchoredSurface(open: boolean) {
+function useAnchoredSurface(open: boolean, anchor: unknown = open) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<CSSProperties | undefined>();
@@ -133,7 +138,7 @@ function useAnchoredSurface(open: boolean) {
       top: flip ? Math.max(8, trigger.top - height - 4) : below,
       insetInlineEnd: Math.max(8, window.innerWidth - trigger.right)
     });
-  }, [open]);
+  }, [anchor, open]);
 
   return { style, surfaceRef, triggerRef };
 }
@@ -282,24 +287,11 @@ export function PeopleView({
           : "Inactive";
   };
 
-  const presenceIcon = (person: CollaborationTeamPerson) => {
-    const label = presenceLabel(person);
-    const manual = person.teamPresence.mode === "manual";
-    if (manual && person.teamPresence.manualStatus === "unknown") {
-      return <CircleAlert aria-label={label} />;
+  const presenceTone = (person: CollaborationTeamPerson): string => {
+    if (person.teamPresence.mode === "manual") {
+      return person.teamPresence.manualStatus;
     }
-    if (manual && person.teamPresence.manualStatus === "do_not_disturb") {
-      return <BellOff aria-label={label} />;
-    }
-    if (manual && person.teamPresence.manualStatus === "out_of_office") {
-      return <Umbrella aria-label={label} />;
-    }
-    return (
-      <CircleCheck
-        aria-label={label}
-        data-activity={presenceAt(person).activityLevel ?? "manual"}
-      />
-    );
+    return presenceAt(person).activityLevel ?? "unknown";
   };
 
   const loadInvitations = useCallback(
@@ -383,11 +375,16 @@ export function PeopleView({
 
   // Owner protection is evaluated against staged roles so a draft can never
   // commit the Team into having no owner.
-  const enabledOwners = team.people.filter(
+  const committedEnabledOwners = team.people.filter(
+    (person) =>
+      person.management?.status === "enabled" &&
+      person.management.role === "owner"
+  ).length;
+  const stagedEnabledOwners = team.people.filter(
     (person) =>
       person.management?.status === "enabled" && roleOf(person) === "owner"
   ).length;
-  const lastOwner = team.role === "owner" && enabledOwners <= 1;
+  const lastOwner = team.role === "owner" && committedEnabledOwners <= 1;
 
   const stageChange = (key: string, change: PendingChange, revert: boolean) =>
     setPending((current) => {
@@ -444,7 +441,18 @@ export function PeopleView({
   };
 
   const applyPending = async () => {
-    const entries = Object.entries(pending);
+    const entries = Object.entries(pending).sort(([, left], [, right]) => {
+      const priority = (change: PendingChange) => {
+        if (change.kind === "access") return 1;
+        const authorityChange =
+          ROLE_RANK[change.after] - ROLE_RANK[change.before];
+        if (authorityChange > 0) return 0;
+        if (authorityChange < 0 && change.userId === principalId) return 3;
+        if (authorityChange < 0) return 2;
+        return 1;
+      };
+      return priority(left) - priority(right);
+    });
     if (entries.length === 0) return;
     await runOperation(
       "apply-pending",
@@ -834,14 +842,19 @@ export function PeopleView({
                       busy={Boolean(busyKey)}
                       canManage={canManage}
                       isCurrent={row.person.id === principalId}
-                      lastOwnerHere={
-                        roleOf(row.person) === "owner" && enabledOwners <= 1
+                      lastCommittedOwnerHere={
+                        row.person.management?.role === "owner" &&
+                        committedEnabledOwners <= 1
+                      }
+                      lastStagedOwnerHere={
+                        roleOf(row.person) === "owner" &&
+                        stagedEnabledOwners <= 1
                       }
                       managerIsOwner={team.role === "owner"}
                       pending={pending}
                       person={row.person}
-                      presenceIcon={presenceIcon(row.person)}
                       presenceLabel={presenceLabel(row.person)}
+                      presenceTone={presenceTone(row.person)}
                       role={roleOf(row.person)}
                       workspaces={activeWorkspaces}
                       onDisable={() =>
@@ -1197,7 +1210,7 @@ function WorkspaceStrip({
 }) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const closeMenu = useCallback(() => setOpenMenu(null), []);
-  const menuAnchor = useAnchoredSurface(openMenu !== null);
+  const menuAnchor = useAnchoredSurface(openMenu !== null, openMenu);
   useDismiss(openMenu !== null, closeMenu);
 
   if (workspaces.length === 0 && !canManage) {
@@ -1325,12 +1338,13 @@ function MemberRow({
   busy,
   canManage,
   isCurrent,
-  lastOwnerHere,
+  lastCommittedOwnerHere,
+  lastStagedOwnerHere,
   managerIsOwner,
   pending,
   person,
-  presenceIcon,
   presenceLabel,
+  presenceTone,
   role,
   workspaces,
   onDisable,
@@ -1341,12 +1355,13 @@ function MemberRow({
   busy: boolean;
   canManage: boolean;
   isCurrent: boolean;
-  lastOwnerHere: boolean;
+  lastCommittedOwnerHere: boolean;
+  lastStagedOwnerHere: boolean;
   managerIsOwner: boolean;
   pending: Record<string, PendingChange>;
   person: CollaborationTeamPerson;
-  presenceIcon: ReactNode;
   presenceLabel: string;
+  presenceTone: string;
   role: TeamRole | null;
   workspaces: TeamWorkspace[];
   onDisable: () => void;
@@ -1369,7 +1384,14 @@ function MemberRow({
     canManage &&
     management?.status === "enabled" &&
     (management.role !== "owner" || managerIsOwner);
-  const protectedOwner = role === "owner" && (!managerIsOwner || lastOwnerHere);
+  const protectedOwner =
+    role === "owner" && (!managerIsOwner || lastStagedOwnerHere);
+  const disableReason =
+    management?.role === "owner" && !managerIsOwner
+      ? "Only a Team owner can disable another owner."
+      : lastCommittedOwnerHere
+        ? "The last owner cannot be disabled."
+        : null;
   const roleDirty = Boolean(pending[roleChangeKey(person.id)]);
   const accessDirty = workspaces.some((workspace) =>
     Boolean(pending[accessChangeKey(person.id, workspace.id)])
@@ -1397,9 +1419,12 @@ function MemberRow({
         <div className="collab-person-identity">
           <span className="collab-avatar collab-person-avatar">
             {initials(person.displayName)}
-            <span className="collab-presence-icon" title={presenceLabel}>
-              {presenceIcon}
-            </span>
+            <span
+              aria-hidden="true"
+              className="collab-presence-icon"
+              data-presence={presenceTone}
+              title={presenceLabel}
+            />
           </span>
           <div>
             <strong>
@@ -1432,11 +1457,16 @@ function MemberRow({
                 onStageRole(event.currentTarget.value as TeamRole)
               }
             >
-              {(Object.keys(ROLE_LABELS) as TeamRole[]).map((value) => (
-                <option key={value} value={value}>
-                  {ROLE_LABELS[value]}
-                </option>
-              ))}
+              {(Object.keys(ROLE_LABELS) as TeamRole[])
+                .filter(
+                  (value) =>
+                    value !== "owner" || managerIsOwner || role === "owner"
+                )
+                .map((value) => (
+                  <option key={value} value={value}>
+                    {ROLE_LABELS[value]}
+                  </option>
+                ))}
             </select>
           ) : (
             <span className="collab-roster-quiet">
@@ -1519,7 +1549,7 @@ function MemberRow({
 
       {canManage ? (
         <td className="collab-roster-actions">
-          {canChangeTarget && !isCurrent ? (
+          {management?.status === "enabled" && !isCurrent ? (
             <div className="collab-menu-host">
               <button
                 type="button"
@@ -1544,19 +1574,17 @@ function MemberRow({
                   <button
                     type="button"
                     role="menuitem"
-                    className="danger"
-                    disabled={busy || lastOwnerHere}
-                    title={
-                      lastOwnerHere
-                        ? "The last owner cannot be disabled."
-                        : undefined
+                    className={`danger${disableReason ? " collab-menu-item-with-reason" : ""}`}
+                    disabled={
+                      busy || !canChangeTarget || lastCommittedOwnerHere
                     }
                     onClick={() => {
                       closeMenu();
                       onDisable();
                     }}
                   >
-                    Disable
+                    <span>Disable</span>
+                    {disableReason ? <small>{disableReason}</small> : null}
                   </button>
                 </div>
               ) : null}

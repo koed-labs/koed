@@ -1365,6 +1365,45 @@ describe("CollaborationApp", () => {
     await vi.waitFor(() => expect(listProjects).toHaveBeenCalledOnce());
   });
 
+  it("returns to People content when navigating back from a Workspace", async () => {
+    const client = await render();
+
+    await click(container, "Atlas Research");
+    await click(container, "People");
+    await vi.waitFor(() =>
+      expect(container.querySelector(".collab-people h1")?.textContent).toBe(
+        "People"
+      )
+    );
+
+    await click(container, "Open Launch Plans");
+    await vi.waitFor(() =>
+      expect(container.querySelector(".collab-people")).toBeNull()
+    );
+
+    await click(container, "Go back");
+    await vi.waitFor(() =>
+      expect(container.querySelector(".collab-people h1")?.textContent).toBe(
+        "People"
+      )
+    );
+    expect(client.select).toHaveBeenLastCalledWith({
+      kind: "team_people",
+      teamId: ids.team
+    });
+
+    await click(container, "Go forward");
+    await vi.waitFor(() =>
+      expect(container.querySelector(".collab-people")).toBeNull()
+    );
+    expect(client.select).toHaveBeenLastCalledWith({
+      kind: "workspace_channel",
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      threadId: ids.channel
+    });
+  });
+
   it("refreshes an unready top-level health status until it becomes healthy", async () => {
     vi.useFakeTimers();
     const healthy = {
@@ -3114,6 +3153,19 @@ describe("CollaborationApp", () => {
         document.body.querySelector<HTMLSelectElement>(
           'select[aria-label="Team role for Alex Chen"]'
         )!,
+        "owner"
+      )
+    );
+    expect(leave.disabled).toBe(true);
+    expect(document.body.textContent).toContain(
+      "The last owner must assign another owner before leaving."
+    );
+
+    await act(async () =>
+      setValue(
+        document.body.querySelector<HTMLSelectElement>(
+          'select[aria-label="Team role for Alex Chen"]'
+        )!,
         "admin"
       )
     );
@@ -3297,6 +3349,192 @@ describe("CollaborationApp", () => {
       name: "Operations",
       description: "Runbooks"
     });
+  });
+
+  it("keeps owner-only role and member lifecycle actions unavailable to admins", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "team_people",
+      teamId: ids.team
+    });
+    const asAdmin = (
+      people: CollaborationSnapshot["navigation"]["teams"][number]["people"]
+    ) =>
+      people.map((person) =>
+        person.management
+          ? {
+              ...person,
+              management: {
+                ...person.management,
+                role:
+                  person.id === ids.alex
+                    ? ("owner" as const)
+                    : person.id === remoteMark.id
+                      ? ("admin" as const)
+                      : person.management.role
+              }
+            }
+          : person
+      );
+    const snapshot = collaborationSnapshotSchema.parse({
+      ...selected,
+      navigation: {
+        ...selected.navigation,
+        teams: selected.navigation.teams.map((team) =>
+          team.id === ids.team
+            ? { ...team, role: "admin", people: asAdmin(team.people) }
+            : team
+        )
+      },
+      view:
+        selected.view.kind === "team_people"
+          ? { ...selected.view, people: asAdmin(selected.view.people) }
+          : selected.view
+    });
+    await render(createClient(snapshot));
+
+    const rileyRole = document.body.querySelector<HTMLSelectElement>(
+      'select[aria-label="Team role for Riley Jones"]'
+    )!;
+    expect([...rileyRole.options].map(({ value }) => value)).toEqual([
+      "admin",
+      "member"
+    ]);
+
+    const alexRole = document.body.querySelector<HTMLSelectElement>(
+      'select[aria-label="Team role for Alex Chen"]'
+    )!;
+    expect(alexRole.disabled).toBe(true);
+    await click(container, "Actions for Alex Chen");
+    expect(document.body.textContent).toContain(
+      "Only a Team owner can disable another owner."
+    );
+    expect(
+      document.body.querySelector<HTMLButtonElement>(
+        '.collab-menu[role="menu"] button'
+      )?.disabled
+    ).toBe(true);
+  });
+
+  it("applies access changes before demoting the current manager", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "team_people",
+      teamId: ids.team
+    });
+    const withSecondOwner = (
+      people: CollaborationSnapshot["navigation"]["teams"][number]["people"]
+    ) =>
+      people.map((person) =>
+        person.id === ids.alex && person.management
+          ? {
+              ...person,
+              management: { ...person.management, role: "owner" as const }
+            }
+          : person
+      );
+    const snapshot = collaborationSnapshotSchema.parse({
+      ...selected,
+      navigation: {
+        ...selected.navigation,
+        teams: selected.navigation.teams.map((team) =>
+          team.id === ids.team
+            ? { ...team, people: withSecondOwner(team.people) }
+            : team
+        )
+      },
+      view:
+        selected.view.kind === "team_people"
+          ? { ...selected.view, people: withSecondOwner(selected.view.people) }
+          : selected.view
+    });
+    const client = await render(createClient(snapshot));
+
+    await act(async () =>
+      setValue(
+        document.body.querySelector<HTMLSelectElement>(
+          'select[aria-label="Team role for Mark Fixture"]'
+        )!,
+        "member"
+      )
+    );
+    await openAccess(container, "Riley Jones");
+    await act(async () =>
+      setValue(
+        document.body.querySelector<HTMLSelectElement>(
+          'select[aria-label="Launch Plans access for Riley Jones"]'
+        )!,
+        "write"
+      )
+    );
+    await click(container, "Apply changes");
+
+    expect(client.setWorkspaceAccess).toHaveBeenCalledOnce();
+    expect(client.updateMemberRole).toHaveBeenCalledOnce();
+    expect(
+      vi.mocked(client.setWorkspaceAccess).mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      vi.mocked(client.updateMemberRole).mock.invocationCallOrder[0]!
+    );
+  });
+
+  it("reanchors the Workspace menu when switching directly between cards", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "team_people",
+      teamId: ids.team
+    });
+    const addWorkspace = (
+      workspaces: CollaborationSnapshot["navigation"]["teams"][number]["workspaces"]
+    ) => [
+      ...workspaces,
+      {
+        ...workspaces[0]!,
+        id: uuid(520),
+        name: "Operations",
+        channels: [],
+        sharedMemory: []
+      }
+    ];
+    const snapshot = collaborationSnapshotSchema.parse({
+      ...selected,
+      navigation: {
+        ...selected.navigation,
+        teams: selected.navigation.teams.map((team) =>
+          team.id === ids.team
+            ? { ...team, workspaces: addWorkspace(team.workspaces) }
+            : team
+        )
+      }
+    });
+    await render(createClient(snapshot));
+
+    const launch = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="Actions for Launch Plans"]'
+    )!;
+    const operations = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="Actions for Operations"]'
+    )!;
+    vi.spyOn(launch, "getBoundingClientRect").mockReturnValue({
+      bottom: 100,
+      right: 500,
+      top: 50
+    } as DOMRect);
+    vi.spyOn(operations, "getBoundingClientRect").mockReturnValue({
+      bottom: 300,
+      right: 400,
+      top: 250
+    } as DOMRect);
+
+    await act(async () => launch.click());
+    expect(
+      document.body.querySelector<HTMLElement>('.collab-menu[role="menu"]')
+        ?.style.top
+    ).toBe("104px");
+
+    await act(async () => operations.click());
+    const menu = document.body.querySelector<HTMLElement>(
+      '.collab-menu[role="menu"]'
+    );
+    expect(menu?.style.top).toBe("304px");
+    expect(menu?.style.insetInlineEnd).toBe("880px");
   });
 
   it("discards Workspace Access drafts when switching directly between Teams", async () => {
