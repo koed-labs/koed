@@ -857,32 +857,31 @@ export const inspectCodex = (
   deps: Required<KoedServerStatusDependencies>,
   memoryGuidanceEnabled: boolean
 ): KoedServerStatus["codex"] => {
-  let executable: string;
-  try {
-    executable = deps.resolveCodexExecutable(environment);
-  } catch {
-    return {
-      ...notConfigured(
-        "Codex is not installed or could not be started.",
-        "Install Codex, then select it in Desktop AI Client setup."
-      ),
-      configured: false
-    };
-  }
   const codexConfigPath = resolve(
     environment.CODEX_CONFIG_PATH ??
       `${environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`}/config.toml`
   );
   if (!deps.existsSync(codexConfigPath)) {
-    return {
-      ...notConfigured(
-        "Codex is installed but Koed is not configured in Codex.",
-        "Select Codex in Desktop AI Client setup, or run koed-server setup codex --json.",
-        { executable, codexConfigPath }
-      ),
-      configured: false,
-      detected: true
-    };
+    try {
+      const executable = deps.resolveCodexExecutable(environment);
+      return {
+        ...notConfigured(
+          "Codex is installed but Koed is not configured in Codex.",
+          "Select Codex in Desktop AI Client setup, or run koed-server setup codex --json.",
+          { executable, codexConfigPath }
+        ),
+        configured: false,
+        detected: true
+      };
+    } catch {
+      return {
+        ...notConfigured(
+          "Codex is not installed or could not be started.",
+          "Install Codex, then select it in Desktop AI Client setup."
+        ),
+        configured: false
+      };
+    }
   }
   const content = deps.readFileSync(codexConfigPath, "utf8") as string;
   const mcpName = environment.MEMORY_MCP_NAME ?? "koed";
