@@ -110,7 +110,8 @@ Supported mode fields:
 
 Authentication providers are part of the deployment capability contract.
 Private VPS and Team Self-Hosted profiles expose local session authentication;
-Team Self-Hosted may additionally expose WorkOS/AuthKit when configured.
+when WorkOS/AuthKit is configured, Team Self-Hosted advertises it instead of
+local session authentication.
 Koed-managed cloud never advertises local session authentication and exposes
 WorkOS/AuthKit only when it is configured. Local session authentication alone
 does not establish verified Team identity. Outside the isolated `developer`
@@ -618,7 +619,7 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `KOED_LAUNCH_TEAM_NODE_ID`: optional Memory node id consumed by staged launch validation; defaults to a synthetic fixture node.
 - `KOED_LAUNCH_LOCAL_EDGE_BASE_URL`: optional local-edge API target consumed by staged launch validation for proxy probes.
 - `KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID`: optional registered upstream backend id consumed by staged launch validation for proxy probes.
-- `WORKOS_AUTHKIT_ENABLED`: set `true` on Team Self-Hosted backends that use WorkOS/AuthKit for browser-session identity; it is required for verified Team invite acceptance on Koed-managed cloud. The backend still uses Koed Team Membership, Workspace Access, Share Grants, lifecycle state, and entitlement records for Memory authorization.
+- `WORKOS_AUTHKIT_ENABLED`: set `true` on Team Self-Hosted backends that use WorkOS/AuthKit as their browser-session identity provider. A configured Team Self-Hosted backend advertises only WorkOS/AuthKit on browser sign-in pages, not local email/password authentication. WorkOS/AuthKit is required for verified Team invite acceptance on Koed-managed cloud. The backend still uses Koed Team Membership, Workspace Access, Share Grants, lifecycle state, and entitlement records for Memory authorization.
 - `WORKOS_CLIENT_ID`: WorkOS/AuthKit client id used to build `/auth/workos/login` authorization redirects.
 - `WORKOS_API_KEY`: WorkOS server API key used only by `koed-server`/API when exchanging an AuthKit callback code. It must not be exposed to browser clients, MCP Server, Capture Hook, upstream registries, logs, or diagnostics.
 - `WORKOS_REDIRECT_URI`: absolute callback URL registered with WorkOS, normally ending in `/auth/workos/callback`.

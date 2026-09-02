@@ -6173,7 +6173,7 @@ describe("api health", () => {
     );
   });
 
-  it("advertises WorkOS only when AuthKit is configured", async () => {
+  it("advertises WorkOS as the sole provider when AuthKit is configured", async () => {
     process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
     process.env.WORKOS_AUTHKIT_ENABLED = "true";
     process.env.WORKOS_CLIENT_ID = "client_test_123";
@@ -6199,6 +6199,24 @@ describe("api health", () => {
     );
     expect(response.body).not.toContain("sk_test_hidden");
     expect(response.body).not.toContain("client_test_123");
+
+    process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
+    const teamApp = await buildServer();
+    const teamResponse = await teamApp.inject({
+      method: "GET",
+      url: "/v1/capabilities"
+    });
+    await teamApp.close();
+
+    const teamCapabilities = jsonBody<CapabilitiesResponse>(teamResponse);
+    expect(teamCapabilities.auth.providers).toEqual(["workos"]);
+    expect(teamCapabilities.auth.session).toBe("available");
+    expect(teamCapabilities.capabilities["auth.local"]!.availability).toBe(
+      "unavailable"
+    );
+    expect(teamCapabilities.capabilities["auth.workos"]!.availability).toBe(
+      "partial"
+    );
   });
 
   it("does not expose WorkOS auth routes when the deployment profile does not support WorkOS", async () => {
