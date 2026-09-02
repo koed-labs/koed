@@ -798,15 +798,20 @@ MEMORY_API_TOKEN=<token> pnpm smoke:lcm
 
 ## Core readiness and AI Client diagnostics
 
-`setup core --json` is client-neutral. It validates or creates the local API Token
-without changing Codex, Claude Code, or Pi profiles. `doctor --json` persists final
-verification state; `setup core` does not record final verification. `setup codex`,
-`setup claude`, and `setup pi` are explicit profile operations. Status and doctor
-always print client diagnostics, but only API, storage, queues, Embedding Service,
-Local AI Runtime process, MCP
-artifacts, and local credential affect core health. Zero configured AI Clients is
-valid core state. LCM Summary Service process health is reported separately from
-client/model assignment readiness.
+`setup core --json` is client-neutral. For a local runtime, it validates or
+creates the User-owned Personal API Token used by the Local AI Runtime without
+changing Codex, Claude Code, or Pi profiles. `doctor --json` persists final
+verification state; `setup core` does not record final verification. `setup
+codex`, `setup claude`, and `setup pi` are explicit profile operations.
+
+Status and doctor always print AI Client diagnostics. In `developer` and
+`local-personal` modes, API, storage, queues, Embedding Service, Local AI
+Runtime, MCP artifacts, and the Personal API Token affect core health. In
+`external` mode, the server does not supervise a Local AI Runtime, so a missing,
+invalid, or revoked `MEMORY_API_TOKEN` is Diagnostic Status only. It does not
+prevent healthy startup. Zero configured AI Clients is valid core state. LCM
+Summary Service process health is reported separately from client/model
+assignment readiness.
 
 ## Production Notes
 
@@ -816,6 +821,11 @@ browser/API-facing `koed-server` surface through your reverse proxy. Set strong
 `API_DATA_ENCRYPTION_KEY`, `API_TOKEN_PEPPER`, `EMBEDDING_SERVICE_TOKEN`,
 database password, and Redis password. Use TLS at the reverse proxy if the
 server is reachable beyond localhost.
+`API_TOKEN_PEPPER` remains a required Operator-controlled hashing secret in
+external deployments; `MEMORY_API_TOKEN` is not a Team backend setting. Browser
+sessions establish User identity, and Team Membership plus roles authorize Team
+operations. A Personal API Token authenticates a User's AI Client integration
+and is not an administrative account.
 For hosted/private database role hardening and the RLS decision, see
 [hosted-database-roles.md](hosted-database-roles.md).
 
@@ -827,4 +837,4 @@ sensitive trusted-boundary data. Protect the database and backups with private
 networking, least-privilege credentials, encrypted storage, and restricted
 administrator access.
 
-Only `/health` and `/ready` are intended for unauthenticated infrastructure probes. They return coarse status and should not be used as operator diagnostics. `/v1/capabilities` is also unauthenticated, but it is a client discovery contract rather than a health check: clients can use it to detect the positive capabilities registered by the current backend, and should treat missing capabilities as unavailable. `status --json` and `doctor --json` use readiness gates for Postgres reachability/version, migrations, pgvector, work queue backend, Embedding Service model/dimensions, and registered upstream capability-cache state before reporting healthy; doctor output gives repair actions such as running migrations, enabling pgvector, fixing dependency URLs, refreshing upstream capabilities, or correcting model/runtime mismatch. Registered upstream backends are local edge metadata only: capability caches and route-policy state live under `KOED_HOME/config/upstream-backends.json`, while reusable upstream/device credentials must stay out of ordinary config. Detailed status endpoints such as `/health/details`, `/self-host/diagnostics`, and the authenticated view of `/self-host/status` should remain behind normal API authentication. Koed Desktop packaging/signing remains tracked separately from this local runtime path.
+Only `/health` and `/ready` are intended for unauthenticated infrastructure probes. They return coarse status and should not be used as operator diagnostics. `/v1/capabilities` is also unauthenticated, but it is a client discovery contract rather than a health check: clients can use it to detect the positive capabilities registered by the current backend, and should treat missing capabilities as unavailable. `status --json` and `doctor --json` use readiness gates for Postgres reachability/version, migrations, pgvector, work queue backend, Embedding Service model/dimensions, and registered upstream capability-cache state before reporting healthy; doctor output gives repair actions such as running migrations, enabling pgvector, fixing dependency URLs, refreshing upstream capabilities, or correcting model/runtime mismatch. If startup times out, the supervisor lists the required blocking checks by component and state. Use those names with `/ready` for coarse dependency readiness and `koed-server status --json` for detailed remediation; non-blocking AI Client diagnostics are omitted from the timeout reason. Registered upstream backends are local edge metadata only: capability caches and route-policy state live under `KOED_HOME/config/upstream-backends.json`, while reusable upstream/device credentials must stay out of ordinary config. Detailed status endpoints such as `/health/details`, `/self-host/diagnostics`, and the authenticated view of `/self-host/status` should remain behind normal API authentication. Koed Desktop packaging/signing remains tracked separately from this local runtime path.

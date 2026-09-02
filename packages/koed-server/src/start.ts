@@ -43,7 +43,11 @@ import {
 } from "./paths.js";
 import { allocateAndPersistLocalPorts } from "./ports.js";
 import { ensureDeviceIdentity } from "./device-identity.js";
-import { collectKoedServerStartupStatus } from "./status.js";
+import {
+  collectKoedServerStartupStatus,
+  koedServerStartupBlockingComponentIds,
+  type KoedServerStartupBlockingComponentId
+} from "./status.js";
 import {
   acquireKoedServerSupervisorLock,
   releaseKoedServerSupervisorLock
@@ -51,7 +55,10 @@ import {
 
 import { maintainSupervisorLog } from "./supervisor-log.js";
 import { monitorSupervisorExitRequest } from "./supervisor-exit-request.js";
-import type { KoedServerRuntimeState } from "./types.js";
+import type {
+  KoedServerRuntimeState,
+  KoedServerStartupStatus
+} from "./types.js";
 import { provisionDesktopApiToken } from "./local-api-token.js";
 import { migrateKoedOwnedCodexRegistrationBestEffort } from "./ai-client-registry.js";
 import { resolveTeamCollaborationEnabled } from "@koed/shared";
@@ -75,6 +82,35 @@ const localRuntimeFailureDetails = (details: unknown): string => {
     stderr || null
   ].filter((part): part is string => Boolean(part));
   return parts.length ? ` (${parts.join(": ")})` : "";
+};
+
+const startupComponentLabels: Record<
+  KoedServerStartupBlockingComponentId,
+  string
+> = {
+  api: "API",
+  database: "database",
+  redis: "Redis",
+  workerQueues: "Worker/queue",
+  embeddingService: "Embedding Service",
+  privacyService: "Privacy Filter Service",
+  localAiRuntime: "Local AI Runtime",
+  apiToken: "Personal API Token"
+};
+
+const startupBlockingSummary = (
+  status: KoedServerStartupStatus,
+  componentIds: readonly KoedServerStartupBlockingComponentId[] = koedServerStartupBlockingComponentIds(
+    status.runtimeMode
+  )
+): string => {
+  const blockers = componentIds.flatMap((componentId) => {
+    const component = status[componentId];
+    return component.state === "healthy"
+      ? []
+      : [`${startupComponentLabels[componentId]} (${component.state})`];
+  });
+  return blockers.length > 0 ? blockers.join(", ") : "unknown";
 };
 
 type SpawnSyncLike = (
@@ -1258,7 +1294,7 @@ export const startKoedServer = async ({
     });
     if (status.api.state !== "healthy" || status.database.state !== "healthy") {
       throw new Error(
-        "API and database did not become ready before local credential provisioning."
+        `API and database did not become ready before local credential provisioning. Blocking checks: ${startupBlockingSummary(status, ["api", "database"])}. Inspect /ready and koed-server status --json for details.`
       );
     }
     emitStartupMilestone("api_and_database_ready");
@@ -1365,7 +1401,9 @@ export const startKoedServer = async ({
       collectStatus
     });
     if (!status.ok) {
-      throw new Error("Core services did not become ready before timeout.");
+      throw new Error(
+        `Core services did not become ready before timeout. Blocking checks: ${startupBlockingSummary(status)}. Inspect /ready and koed-server status --json for details.`
+      );
     }
     emitStartupMilestone("core_services_ready");
     startupReady = true;

@@ -35,3 +35,18 @@ test("server Compose maps root API Team Memory config to the API service", async
     );
   }
 });
+
+test("server Compose requires the token pepper but no Personal API Token", async () => {
+  const compose = await readFile(
+    "examples/server-compose/docker-compose.yml",
+    "utf8"
+  );
+
+  assert.match(
+    compose,
+    /KOED_DEPLOYMENT_PROFILE: \$\{KOED_DEPLOYMENT_PROFILE:-team_self_hosted\}/
+  );
+  assert.match(compose, /KOED_RUNTIME_MODE: external/);
+  assert.match(compose, /API_TOKEN_PEPPER: \$\{API_TOKEN_PEPPER\}/);
+  assert.doesNotMatch(compose, /^\s+MEMORY_API_TOKEN:/m);
+});

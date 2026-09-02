@@ -30,6 +30,8 @@ services:
       API_HOST_PORT: 3300
       # Used only by koed-server's managed children inside this container.
       # Never inherit a host- or proxy-facing URL here.
+      # External mode does not supervise a Local AI Runtime and therefore does
+      # not require or receive a User-owned MEMORY_API_TOKEN.
       MEMORY_API_URL: http://127.0.0.1:3300
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
