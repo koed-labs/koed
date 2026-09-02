@@ -432,6 +432,9 @@ function AiClientSetup({
   statusStore: DesktopStatusStore;
 }) {
   const { status, busyCommand } = useDesktopStatus(statusStore);
+  const showCapabilityLegend = onboardingClients.some(
+    ({ id }) => status?.aiClients?.[id]?.profile.state === "healthy"
+  );
   const [selected, setSelected] = useState<Set<OnboardingClientId>>(
     () => new Set()
   );
@@ -575,6 +578,8 @@ function AiClientSetup({
               const capabilitySummaries = summarizeCapabilities(
                 readiness?.capabilities
               );
+              const showCapabilityReadiness =
+                readiness?.profile.state === "healthy";
               const metaLine = clientMetaLine(readiness, detected);
               const result = results[id];
               const isActive = activeClient === id;
@@ -645,15 +650,25 @@ function AiClientSetup({
                   <span className="koed-client-caps">
                     {capabilitySummaries.map((capability) => (
                       <span
-                        aria-label={`${capability.label}: ${capability.statusLabel}`}
+                        aria-label={
+                          showCapabilityReadiness
+                            ? `${capability.label}: ${capability.statusLabel}`
+                            : capability.label
+                        }
                         className="koed-client-cap"
                         key={capability.id}
-                        title={`${capability.label}: ${capability.statusLabel}`}
+                        title={
+                          showCapabilityReadiness
+                            ? `${capability.label}: ${capability.statusLabel}`
+                            : capability.label
+                        }
                       >
-                        <span
-                          aria-hidden="true"
-                          className={`koed-client-cap-dot ${capability.dotClass}`}
-                        />
+                        {showCapabilityReadiness ? (
+                          <span
+                            aria-hidden="true"
+                            className={`koed-client-cap-dot ${capability.dotClass}`}
+                          />
+                        ) : null}
                         {capability.label}
                       </span>
                     ))}
@@ -662,39 +677,41 @@ function AiClientSetup({
               );
             })}
           </div>
-          <div
-            aria-label="Capability status legend"
-            className="koed-client-cap-legend"
-          >
-            <span>
-              <span
-                aria-hidden="true"
-                className="koed-client-cap-dot is-ready"
-              />
-              Ready
-            </span>
-            <span>
-              <span
-                aria-hidden="true"
-                className="koed-client-cap-dot is-attention"
-              />
-              Needs attention
-            </span>
-            <span>
-              <span
-                aria-hidden="true"
-                className="koed-client-cap-dot is-unknown"
-              />
-              Unknown
-            </span>
-            <span>
-              <span
-                aria-hidden="true"
-                className="koed-client-cap-dot is-unsupported"
-              />
-              Unsupported
-            </span>
-          </div>
+          {showCapabilityLegend ? (
+            <div
+              aria-label="Capability status legend"
+              className="koed-client-cap-legend"
+            >
+              <span>
+                <span
+                  aria-hidden="true"
+                  className="koed-client-cap-dot is-ready"
+                />
+                Ready
+              </span>
+              <span>
+                <span
+                  aria-hidden="true"
+                  className="koed-client-cap-dot is-attention"
+                />
+                Needs attention
+              </span>
+              <span>
+                <span
+                  aria-hidden="true"
+                  className="koed-client-cap-dot is-unknown"
+                />
+                Unknown
+              </span>
+              <span>
+                <span
+                  aria-hidden="true"
+                  className="koed-client-cap-dot is-unsupported"
+                />
+                Unsupported
+              </span>
+            </div>
+          ) : null}
         </fieldset>
         {consentedClientLabels.length > 0 ? (
           <p className="koed-client-consent">
