@@ -198,7 +198,7 @@ describe("Codex installation status", () => {
     const root = tempDir();
     const codexHome = resolve(root, ".codex");
     mkdirSync(codexHome, { recursive: true });
-    writeFileSync(resolve(codexHome, "config.toml"), "profile = \"default\"\n");
+    writeFileSync(resolve(codexHome, "config.toml"), 'profile = "default"\n');
     const environment = { HOME: root, PATH: "/usr/bin:/bin", KOED_HOME: root };
     const status = inspectCodex(
       environment,
