@@ -171,40 +171,7 @@ describe("Codex installation status", () => {
       resolveKoedServerPaths(environment),
       {
         fetch: globalThis.fetch.bind(globalThis),
-        spawnSync: (() => spawnResult("")) as never,
-        existsSync,
-        readFileSync,
-        resolvePiExecutable: () => "/bin/sh",
-        resolveClaudeExecutable: () => "/bin/sh",
-        resolveCodexExecutable: () => "/opt/homebrew/bin/codex",
-        checkPid: () => true,
-        now: () => new Date()
-      },
-      true
-    );
-
-    expect(status).toMatchObject({
-      state: "not_configured",
-      configured: false,
-      detected: true,
-      details: {
-        executable: "/opt/homebrew/bin/codex"
-      }
-    });
-  });
-
-  it("detects fallback-discovered Codex with an existing unconfigured profile", () => {
-    const root = tempDir();
-    const codexHome = resolve(root, ".codex");
-    mkdirSync(codexHome, { recursive: true });
-    writeFileSync(resolve(codexHome, "config.toml"), "profile = \"default\"\n");
-    const environment = { HOME: root, PATH: "/usr/bin:/bin", KOED_HOME: root };
-    const status = inspectCodex(
-      environment,
-      resolveKoedServerPaths(environment),
-      {
-        fetch: globalThis.fetch.bind(globalThis),
-        spawnSync: (() => spawnResult("")) as never,
+        spawnSync: (() => spawnResult("codex-cli 0.152.1\n")) as never,
         existsSync,
         readFileSync,
         resolvePiExecutable: () => "/bin/sh",
@@ -222,6 +189,41 @@ describe("Codex installation status", () => {
       detected: true,
       details: {
         executable: "/opt/homebrew/bin/codex",
+        version: "codex-cli 0.152.1"
+      }
+    });
+  });
+
+  it("detects fallback-discovered Codex with an existing unconfigured profile", () => {
+    const root = tempDir();
+    const codexHome = resolve(root, ".codex");
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(resolve(codexHome, "config.toml"), "profile = \"default\"\n");
+    const environment = { HOME: root, PATH: "/usr/bin:/bin", KOED_HOME: root };
+    const status = inspectCodex(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        fetch: globalThis.fetch.bind(globalThis),
+        spawnSync: (() => spawnResult("codex-cli 0.152.1\n")) as never,
+        existsSync,
+        readFileSync,
+        resolvePiExecutable: () => "/bin/sh",
+        resolveClaudeExecutable: () => "/bin/sh",
+        resolveCodexExecutable: () => "/opt/homebrew/bin/codex",
+        checkPid: () => true,
+        now: () => new Date()
+      },
+      true
+    );
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: true,
+      details: {
+        executable: "/opt/homebrew/bin/codex",
+        version: "codex-cli 0.152.1",
         codexConfigPath: resolve(codexHome, "config.toml")
       }
     });

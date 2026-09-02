@@ -851,6 +851,24 @@ const tomlSection = (content: string, sectionName: string): string => {
   return sectionLines.join("\n");
 };
 
+const inspectCodexInstallation = (
+  environment: NodeJS.ProcessEnv,
+  deps: Required<KoedServerStatusDependencies>
+): { executable: string; version: string | null } => {
+  const executable = deps.resolveCodexExecutable(environment);
+  const invocation = nodeCliInvocation(executable, ["--version"]);
+  const result = deps.spawnSync(invocation.command, invocation.args, {
+    encoding: "utf8",
+    env: nodeCliProcessEnvironment(invocation, environment, environment),
+    timeout: 5_000
+  });
+  const version =
+    !result.error && result.status === 0 && result.stdout?.trim()
+      ? result.stdout.trim()
+      : null;
+  return { executable, version };
+};
+
 export const inspectCodex = (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
@@ -863,12 +881,12 @@ export const inspectCodex = (
   );
   if (!deps.existsSync(codexConfigPath)) {
     try {
-      const executable = deps.resolveCodexExecutable(environment);
+      const installation = inspectCodexInstallation(environment, deps);
       return {
         ...notConfigured(
           "Codex is installed but Koed is not configured in Codex.",
           "Select Codex in Desktop AI Client setup, or run koed-server setup codex --json.",
-          { executable, codexConfigPath }
+          { ...installation, codexConfigPath }
         ),
         configured: false,
         detected: true
@@ -892,12 +910,12 @@ export const inspectCodex = (
   const configured = ownership.kind === "valid" && Boolean(mcpBlock);
   if (!configured) {
     try {
-      const executable = deps.resolveCodexExecutable(environment);
+      const installation = inspectCodexInstallation(environment, deps);
       return {
         ...notConfigured(
           "Codex is installed but Koed is not configured in Codex.",
           "Run the Codex-specific setup action.",
-          { executable, codexConfigPath }
+          { ...installation, codexConfigPath }
         ),
         configured: false,
         detected: true
