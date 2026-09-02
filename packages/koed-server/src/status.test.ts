@@ -243,24 +243,24 @@ describe("startup status", () => {
     writeStartupRuntime(root, "external");
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
     writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    const environment = {
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      KOED_RUNTIME_MODE: "external",
+      KOED_DEPENDENCY_MODE: "external",
+      DATABASE_URL: "postgres://operator/database",
+      REDIS_URL: "redis://operator:6379",
+      EMBEDDING_SERVICE_URL: "http://embedding:8000"
+    };
+    const dependencies = {
+      fetch: healthyStartupFetcher(),
+      spawnSync: () => spawnResult("", 0),
+      checkPid: (pid: number) => [42, 43, 44].includes(pid),
+      now: () => new Date("2026-01-01T00:00:00.000Z")
+    };
 
-    const status = await collectKoedServerStatus(
-      {
-        KOED_HOME: root,
-        KOED_REPO_ROOT: root,
-        KOED_RUNTIME_MODE: "external",
-        KOED_DEPENDENCY_MODE: "external",
-        DATABASE_URL: "postgres://operator/database",
-        REDIS_URL: "redis://operator:6379",
-        EMBEDDING_SERVICE_URL: "http://embedding:8000"
-      },
-      {
-        fetch: healthyStartupFetcher(),
-        spawnSync: () => spawnResult("", 0),
-        checkPid: (pid) => [42, 43, 44].includes(pid),
-        now: () => new Date("2026-01-01T00:00:00.000Z")
-      }
-    );
+    const status = await collectKoedServerStatus(environment, dependencies);
+    const doctor = await collectKoedServerDoctor(environment, dependencies);
 
     expect(status).toMatchObject({
       ok: true,
@@ -270,6 +270,15 @@ describe("startup status", () => {
       localAiRuntime: { state: "healthy" },
       core: { state: "healthy" }
     });
+    expect(doctor).toMatchObject({
+      ok: true,
+      state: "healthy",
+      summary: "Koed local control plane is healthy.",
+      runtimeMode: "external"
+    });
+    expect(
+      doctor.checks.find((check) => check.id === "apiToken")
+    ).toMatchObject({ state: "not_configured", configured: false });
   });
 
   it.each(["developer", "local-personal"] as const)(

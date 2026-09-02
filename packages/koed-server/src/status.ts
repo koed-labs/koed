@@ -2595,7 +2595,10 @@ export const collectKoedServerDoctor = async (
     label: label as string,
     ...(component as KoedServerComponentStatus)
   }));
-  const coreCheckIds = new Set(Object.keys(status.core.components));
+  const coreCheckIds = new Set([
+    ...koedServerStartupBlockingComponentIds(status.runtimeMode),
+    "mcpServer"
+  ]);
   const blockingChecks = checks.filter((check) => coreCheckIds.has(check.id));
   const failed = blockingChecks.filter(
     (check) => check.state === "needs_attention"
