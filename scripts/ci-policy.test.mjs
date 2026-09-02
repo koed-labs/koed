@@ -87,6 +87,23 @@ test("release validation compares clean package trees and deterministic archives
   );
 });
 
+test("release artifact size reports have unique target-specific asset names", () => {
+  const release = readFileSync(
+    resolve(".github/workflows/release.yml"),
+    "utf8"
+  );
+
+  assert.match(
+    release,
+    /koed-server-app-runtime-\$\{target\}-artifact-size-report\.json/
+  );
+  assert.match(
+    release,
+    /koed-native-runtime-linux-x64-artifact-size-report\.json/
+  );
+  assert.doesNotMatch(release, /\$\{release_dir\}\/artifact-size-report\.json/);
+});
+
 test("trusted CUDA validation runs exact packages only on the protected GPU runner", () => {
   const workflow = readFileSync(
     resolve(".github/workflows/native-runtime-linux-cuda-validation.yml"),

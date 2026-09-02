@@ -148,6 +148,7 @@ describe("local Embedding Service runtime", () => {
       "mcp-server/dist/cli.js",
       "mcp-server/dist/local-runtime-cli.js",
       "mcp-server/dist/capture-hook.js",
+      "mcp-server/dist/prompts/codex-global-agent-guidance.md",
       "node_modules/@koed/db/dist/index.js",
       "node_modules/@koed/db/dist/connection.js",
       "node_modules/@koed/db/dist/user-api-token-repository.js",

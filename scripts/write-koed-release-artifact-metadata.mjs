@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -58,6 +59,9 @@ const readSha256Sidecar = (path) => {
   }
   return sha256;
 };
+
+const sha256File = (path) =>
+  createHash("sha256").update(readFileSync(path)).digest("hex");
 
 const findUniqueNamedFile = (files, expected, description) => {
   const matches = files.filter((file) => basename(file) === expected);
@@ -149,11 +153,19 @@ const collectServerPackageTargets = ({
       provenance.statement.subject?.id !== manifest.id ||
       provenance.statement.subject?.packageKind !== manifest.packageKind ||
       provenance.statement.subject?.archiveName !== basename(archive) ||
-      provenance.statement.subject?.archiveSha256 !== sha256 ||
-      provenance.statement.subject?.manifestName !== basename(manifestFile)
+      provenance.statement.subject?.archiveSha256 !== sha256
     ) {
       throw new Error(
         `App-runtime provenance subject mismatch: ${provenanceFile}`
+      );
+    }
+    if (
+      provenance.statement.subject?.manifestName !==
+        "koed-server-package-manifest.json" ||
+      provenance.statement.subject?.manifestSha256 !== sha256File(manifestFile)
+    ) {
+      throw new Error(
+        `App-runtime provenance manifest mismatch: ${provenanceFile}`
       );
     }
     const signatureName = `${basename(provenanceFile)}.sig`;

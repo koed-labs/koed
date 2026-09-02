@@ -159,6 +159,7 @@ const createPackagedAppRuntime = (root: string) => {
     "koed-runtime/mcp-server/dist/cli.js",
     "koed-runtime/mcp-server/dist/local-runtime-cli.js",
     "koed-runtime/mcp-server/dist/capture-hook.js",
+    "koed-runtime/mcp-server/dist/prompts/codex-global-agent-guidance.md",
     "koed-runtime/node_modules/@koed/db/dist/index.js",
     "koed-runtime/node_modules/@koed/db/dist/connection.js",
     "koed-runtime/node_modules/@koed/db/dist/user-api-token-repository.js",

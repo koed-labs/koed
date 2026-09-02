@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -13,6 +14,8 @@ const tempDir = () => {
   return dir;
 };
 
+const sha256 = (content) => createHash("sha256").update(content).digest("hex");
+
 test.afterEach(() => {
   for (const path of temps.splice(0)) {
     rmSync(path, { recursive: true, force: true });
@@ -22,6 +25,14 @@ test.afterEach(() => {
 test("builds release metadata for standalone koed-server package targets", () => {
   const root = tempDir();
   const linux = resolve(root, "linux-x64");
+  const manifestContent = `${JSON.stringify({
+    schemaVersion: 1,
+    id: "koed-server",
+    version: "0.4.0",
+    platform: "linux",
+    architecture: "x64",
+    packageKind: "app-runtime"
+  })}\n`;
   mkdirSync(linux, { recursive: true });
   writeFileSync(
     resolve(linux, "koed-server-0.4.0-linux-x64.tar.gz"),
@@ -33,14 +44,7 @@ test("builds release metadata for standalone koed-server package targets", () =>
   );
   writeFileSync(
     resolve(linux, "koed-server-app-runtime-0.4.0-linux-x64.manifest.json"),
-    `${JSON.stringify({
-      schemaVersion: 1,
-      id: "koed-server",
-      version: "0.4.0",
-      platform: "linux",
-      architecture: "x64",
-      packageKind: "app-runtime"
-    })}\n`
+    manifestContent
   );
   writeFileSync(
     resolve(linux, "koed-server-app-runtime-0.4.0-linux-x64.provenance.json"),
@@ -55,7 +59,8 @@ test("builds release metadata for standalone koed-server package targets", () =>
           architecture: "x64",
           archiveName: "koed-server-0.4.0-linux-x64.tar.gz",
           archiveSha256: "a".repeat(64),
-          manifestName: "koed-server-app-runtime-0.4.0-linux-x64.manifest.json"
+          manifestName: "koed-server-package-manifest.json",
+          manifestSha256: sha256(manifestContent)
         }
       },
       signature: { status: "signed", algorithm: "ed25519", value: "sig" }
@@ -188,22 +193,20 @@ test("binds flattened app-runtime sidecars to their exact targets", () => {
     const archiveName = `koed-server-0.4.0-${platform}-${architecture}.tar.gz`;
     const manifestName = `koed-server-app-runtime-0.4.0-${platform}-${architecture}.manifest.json`;
     const provenanceName = `koed-server-app-runtime-0.4.0-${platform}-${architecture}.provenance.json`;
+    const manifestContent = `${JSON.stringify({
+      schemaVersion: 1,
+      id: "koed-server",
+      version: "0.4.0",
+      platform,
+      architecture,
+      packageKind: "app-runtime"
+    })}\n`;
     writeFileSync(resolve(root, archiveName), "archive\n");
     writeFileSync(
       resolve(root, `${archiveName}.sha256`),
       `${hash.repeat(64)}  ${archiveName}\n`
     );
-    writeFileSync(
-      resolve(root, manifestName),
-      `${JSON.stringify({
-        schemaVersion: 1,
-        id: "koed-server",
-        version: "0.4.0",
-        platform,
-        architecture,
-        packageKind: "app-runtime"
-      })}\n`
-    );
+    writeFileSync(resolve(root, manifestName), manifestContent);
     writeFileSync(
       resolve(root, provenanceName),
       `${JSON.stringify({
@@ -217,7 +220,8 @@ test("binds flattened app-runtime sidecars to their exact targets", () => {
             architecture,
             archiveName,
             archiveSha256: hash.repeat(64),
-            manifestName
+            manifestName: "koed-server-package-manifest.json",
+            manifestSha256: sha256(manifestContent)
           }
         },
         signature: {

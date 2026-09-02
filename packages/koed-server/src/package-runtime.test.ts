@@ -677,7 +677,7 @@ describe("standalone koed-server package runtime", () => {
       ]
     ];
     const malformed = tarHeader("pkg-0.2.0/file", 0, "0");
-    malformed[0] ^= 1;
+    malformed.writeUInt8(malformed.readUInt8(0) ^ 1, 0);
     cases.push([
       "malformed.tar.gz",
       [malformed, Buffer.alloc(1024)],
@@ -717,8 +717,11 @@ describe("standalone koed-server package runtime", () => {
       ],
       "decompression-bomb.tar.gz"
     );
-    const previousLimit = packageExtractionLimits.expandedBytes;
-    packageExtractionLimits.expandedBytes = 1024;
+    const mutableExtractionLimits = packageExtractionLimits as {
+      expandedBytes: number;
+    };
+    const previousLimit = mutableExtractionLimits.expandedBytes;
+    mutableExtractionLimits.expandedBytes = 1024;
     try {
       await expect(
         installServerPackage(paths, {
@@ -727,7 +730,7 @@ describe("standalone koed-server package runtime", () => {
         })
       ).rejects.toThrow("expanded byte limit");
     } finally {
-      packageExtractionLimits.expandedBytes = previousLimit;
+      mutableExtractionLimits.expandedBytes = previousLimit;
     }
     expect(
       readdirSync(resolve(home, "runtime", "koed-server"))

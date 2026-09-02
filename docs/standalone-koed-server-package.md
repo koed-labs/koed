@@ -43,6 +43,7 @@ koed-runtime/
   mcp-server/
     dist/cli.js
     dist/capture-hook.js
+    dist/prompts/codex-global-agent-guidance.md
   node_modules/                     # one shared production dependency graph
     @koed/db/
       dist/index.js
@@ -138,6 +139,7 @@ Required `koed-runtime` files:
 - `embedding-service/dist/index.js`
 - `mcp-server/dist/cli.js`
 - `mcp-server/dist/capture-hook.js`
+- `mcp-server/dist/prompts/codex-global-agent-guidance.md`
 
 The initial CI artifact build is produced by:
 
@@ -166,6 +168,7 @@ koed-server-<version>-<platform>-<arch>.tar.gz.sha256
 koed-server-app-runtime-<version>-<platform>-<arch>.manifest.json
 koed-server-app-runtime-<version>-<platform>-<arch>.provenance.json
 koed-server-app-runtime-<version>-<platform>-<arch>.provenance.json.sig
+koed-server-app-runtime-<platform>-<arch>-artifact-size-report.json
 koed-release-artifacts-<version>.json
 ```
 

@@ -64,6 +64,19 @@ test("finalizes one symlink-free shared app-runtime graph with stable wrappers",
   );
   assert.match(wrapper, /node_modules\/@koed\/api\/dist\/index\.js/);
   assert.match(wrapper, /process\.argv\[1\]/);
+  const guidancePath = resolve(
+    root,
+    "mcp-server/dist/prompts/codex-global-agent-guidance.md"
+  );
+  assert.equal(readFileSync(guidancePath, "utf8"), "fixture\n");
+  assert.equal(
+    result.required.includes(
+      "mcp-server/dist/prompts/codex-global-agent-guidance.md"
+    ),
+    true
+  );
+  pruneSharedAppRuntimeMetadata(root);
+  assert.equal(readFileSync(guidancePath, "utf8"), "fixture\n");
 });
 
 test("prunes package documentation but preserves runtime MCP prompt Markdown", () => {

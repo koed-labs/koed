@@ -7,7 +7,6 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
 import { copyNativeRuntimeSource } from "../native-runtime-copy.mjs";
@@ -53,22 +52,6 @@ const parseArgs = (argv) => {
     resolve(repoRoot, "dist", "native-runtime", "macos-arm64");
   options.version ||= process.env.KOED_NATIVE_RUNTIME_VERSION ?? "dev";
   return options;
-};
-
-const run = (command, args, opts = {}) => {
-  const result = spawnSync(command, args, {
-    cwd: repoRoot,
-    encoding: "utf8",
-    stdio: opts.stdio ?? "pipe",
-    ...opts
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(
-      `${command} ${args.join(" ")} failed with ${result.status ?? 1}: ${result.stderr || result.stdout}`
-    );
-  }
-  return result;
 };
 
 const assertHost = (allowMismatch) => {

@@ -492,6 +492,10 @@ const assertPackagedJsSurface = (layout) => {
       "Packaged Supported Capture Hook artifact",
       "mcp-server/dist/capture-hook.js"
     ],
+    [
+      "Packaged Codex memory guidance",
+      "mcp-server/dist/prompts/codex-global-agent-guidance.md"
+    ],
     ["Packaged DB package artifact", "node_modules/@koed/db/dist/index.js"],
     [
       "Packaged DB migration journal",

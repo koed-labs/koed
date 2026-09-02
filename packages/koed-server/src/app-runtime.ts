@@ -68,6 +68,13 @@ const packagedRuntime = (
     mcpCli,
     localAiRuntime,
     captureHook,
+    resolve(
+      root,
+      "mcp-server",
+      "dist",
+      "prompts",
+      "codex-global-agent-guidance.md"
+    ),
     resolve(dbPackageRoot, "dist", "index.js"),
     resolve(dbPackageRoot, "dist", "connection.js"),
     resolve(dbPackageRoot, "dist", "user-api-token-repository.js"),

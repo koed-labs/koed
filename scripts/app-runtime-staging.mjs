@@ -40,6 +40,11 @@ export const appRuntimePackages = [
   }
 ];
 
+const codexGuidanceSource =
+  "node_modules/@koed/mcp-server/dist/prompts/codex-global-agent-guidance.md";
+const codexGuidanceTarget =
+  "mcp-server/dist/prompts/codex-global-agent-guidance.md";
+
 const removeBinDirectories = (dir) => {
   if (!existsSync(dir)) return;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -77,7 +82,7 @@ const containsLicense = (dir) =>
 
 const pruneNonRuntimeFiles = (dir) => {
   const normalizedDir = dir.replaceAll("\\", "/");
-  if (normalizedDir.includes("/node_modules/@koed/mcp-server/dist/prompts")) {
+  if (normalizedDir.includes("/mcp-server/dist/prompts")) {
     return;
   }
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -207,7 +212,7 @@ export const finalizeStagedAppRuntime = (runtimeRoot) => {
     "node_modules/@koed/db/dist/user-api-token-repository.js",
     "node_modules/@koed/db/drizzle/meta/_journal.json",
     "node_modules/@koed/mcp-server/dist/prompts/mcp-server-instructions.md",
-    "node_modules/@koed/mcp-server/dist/prompts/codex-global-agent-guidance.md"
+    codexGuidanceSource
   ];
   const missing = requiredSharedFiles.filter(
     (entry) => !existsSync(resolve(runtimeRoot, entry))
@@ -217,6 +222,12 @@ export const finalizeStagedAppRuntime = (runtimeRoot) => {
       `Shared app-runtime staging is missing: ${missing.join(", ")}`
     );
   }
+  const guidanceTarget = resolve(runtimeRoot, codexGuidanceTarget);
+  mkdirSync(resolve(guidanceTarget, ".."), { recursive: true });
+  writeFileSync(
+    guidanceTarget,
+    readFileSync(resolve(runtimeRoot, codexGuidanceSource))
+  );
 
   const invalid = [];
   const visit = (dir) => {
@@ -240,7 +251,8 @@ export const finalizeStagedAppRuntime = (runtimeRoot) => {
       ...appRuntimePackages.flatMap((service) =>
         service.entries.map((entry) => `${service.directory}/${entry}`)
       ),
-      ...requiredSharedFiles
+      ...requiredSharedFiles,
+      codexGuidanceTarget
     ]
   };
 };

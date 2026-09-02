@@ -58,6 +58,7 @@ const required = [
   "privacy-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
+  "mcp-server/dist/prompts/codex-global-agent-guidance.md",
   "node_modules/@koed/mcp-server/dist/prompts/mcp-server-instructions.md",
   "node_modules/@koed/mcp-server/dist/prompts/codex-global-agent-guidance.md"
 ];

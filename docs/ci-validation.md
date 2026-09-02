@@ -108,14 +108,18 @@ runtime: CPU on Linux x64 and Core ML with CPU parity on macOS arm64. CUDA proof
 remains a separate trusted-hardware requirement; a hosted CPU runner does not
 claim it.
 The readable composition summary is appended to the job summary, while the
-stable JSON report is uploaded beside the target sidecars. Approved thresholds
-live in `config/release-artifact-size-policy.json`; the immutable v0.6.2
+stable, target-specific
+`koed-server-app-runtime-<platform>-<arch>-artifact-size-report.json` is
+uploaded beside the target sidecars. Approved thresholds live in
+`config/release-artifact-size-policy.json`; the immutable v0.6.2
 comparison values live separately in
 `config/release-artifact-baseline-v0.6.2.json`. Validation must never derive or
 rewrite either limit from the artifact currently under test.
 
 The Linux native-runtime release job runs the same inspector against the solid
-gzip archive. Its report separates PostgreSQL, pgvector, CPU llama.cpp, CUDA
+gzip archive. It publishes
+`koed-native-runtime-linux-x64-artifact-size-report.json`. The report separates
+PostgreSQL, pgvector, CPU llama.cpp, CUDA
 llama.cpp, CUDA redistributable libraries, and manifest/provenance bytes.
 Expanded component bytes are exact. Per-component compressed bytes are labelled
 as proportional estimates because gzip does not expose independently compressed

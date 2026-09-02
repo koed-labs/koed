@@ -269,7 +269,7 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --policy config/release-artifact-size-policy.json \
             --baseline config/release-artifact-baseline-v0.6.2.json \
-            --out "${release_dir}/artifact-size-report.json" \
+            --out "${release_dir}/koed-server-app-runtime-${target}-artifact-size-report.json" \
             >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload standalone koed-server assets to workflow
@@ -453,7 +453,7 @@ jobs:
             --arch x64 \
             --policy config/release-artifact-size-policy.json \
             --baseline config/release-artifact-baseline-v0.6.2.json \
-            --out "${release_dir}/artifact-size-report.json" \
+            --out "${release_dir}/koed-native-runtime-linux-x64-artifact-size-report.json" \
             >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload native runtime assets to workflow
