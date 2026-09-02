@@ -176,9 +176,7 @@ describe("Agent Configuration selectors", () => {
       root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
     );
 
-    const loading = container.querySelector(
-      ".koed-local-ai-settings-loading"
-    );
+    const loading = container.querySelector(".koed-local-ai-settings-loading");
     expect(loading?.getAttribute("role")).toBe("status");
     expect(loading?.getAttribute("aria-busy")).toBe("true");
     expect(loading?.textContent).toContain("Loading AI Client settings");
