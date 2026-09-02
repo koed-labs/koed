@@ -891,13 +891,26 @@ export const inspectCodex = (
   const mcpEnvBlock = tomlSection(ownedBlock, `mcp_servers.${mcpName}.env`);
   const configured = ownership.kind === "valid" && Boolean(mcpBlock);
   if (!configured) {
-    return {
-      ...notConfigured(
-        "Codex is installed but Koed is not configured in Codex.",
-        "Run the Codex-specific setup action."
-      ),
-      configured: false
-    };
+    try {
+      const executable = deps.resolveCodexExecutable(environment);
+      return {
+        ...notConfigured(
+          "Codex is installed but Koed is not configured in Codex.",
+          "Run the Codex-specific setup action.",
+          { executable, codexConfigPath }
+        ),
+        configured: false,
+        detected: true
+      };
+    } catch {
+      return {
+        ...notConfigured(
+          "Codex is not installed or could not be started.",
+          "Install Codex, then select it in Desktop AI Client setup."
+        ),
+        configured: false
+      };
+    }
   }
 
   const configuredKoedHome = tomlStringValue(mcpEnvBlock, "KOED_HOME");
