@@ -71,7 +71,7 @@ const licensePattern = /^(?:licen[cs]e|notice|copying)(?:\.|$)/i;
 const prunableDirectoryPattern =
   /^(?:\.changeset|\.circleci|\.claude|\.github|__tests__|test|tests|example|examples|docs?|benchmark|benchmarks)$/i;
 const prunableFilePattern =
-  /^(?:\.pnpm-.*|dockerfile(?:\..*)?|binding\.gyp|makefile|package-lock\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|tsconfig(?:\..*)?\.json)$/i;
+  /^(?:\.gitkeep|\.pnpm-.*|dockerfile(?:\..*)?|binding\.gyp|makefile|package-lock\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|tsconfig(?:\..*)?\.json)$/i;
 
 const containsLicense = (dir) =>
   readdirSync(dir, { withFileTypes: true }).some((entry) =>
@@ -93,6 +93,9 @@ const pruneNonRuntimeFiles = (dir) => {
         else rmSync(path, { recursive: true, force: true });
       } else {
         pruneNonRuntimeFiles(path);
+      }
+      if (existsSync(path) && readdirSync(path).length === 0) {
+        rmSync(path, { recursive: true, force: true });
       }
     } else if (
       entry.isFile() &&

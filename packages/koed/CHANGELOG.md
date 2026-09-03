@@ -1,5 +1,24 @@
 # @koed/koed
 
+## 0.7.0
+
+### Minor Changes
+
+- eb84cba: Use WorkOS/AuthKit as the sole browser sign-in provider when it is enabled on a Team Self-Hosted deployment, and reject local setup, registration, and password login on WorkOS-only deployments.
+- 6d43f3c: Redesign the Team People page as a single roster. Members, disabled members, and pending invites now share one aligned table instead of three stacked sections, with search and role filters. Workspace Access moves from a grid of selects on every row into a per-member popover, so the page no longer renders one control per member per Workspace. Team role edits stage alongside Access edits and commit together from a pending-change bar, and Archive, Restore, Disable, and Revoke move into overflow menus. Your own Team presence is now a page-level control rather than a row in the roster.
+- 219cf56: Reduce standalone and Desktop package sizes. Use shared runtime staging, target-specific Privacy Filter assets, deterministic manifests, bounded extraction, and stricter release validation.
+
+  Package manifests now require schema 2. Rebuild packages that use the earlier manifest schema before installation.
+
+- fa0d441: Allow externally managed Team and private-VPS servers to become healthy without a Personal API Token. Personal API Token problems remain visible as non-blocking diagnostics, while startup timeout errors now identify the required components that are preventing readiness.
+
+### Patch Changes
+
+- 8ab7332: Keep Desktop About, MCP Server initialization, and packaged release metadata synchronized with the Koed product release version.
+- 6d43f3c: Fix Back and Forward navigation so the displayed Team content follows the selected history entry.
+- 6d43f3c: Fix Codex, Claude Code, and Pi discovery for packaged macOS apps by searching common installation directories, storing stable absolute launcher paths, and safely invoking their current Node-based CLI targets without relying on an interactive-shell `PATH`. Codex is now shown as detected before setup, with its version when available, even when it already has an unconfigured `config.toml`. AI client cards now consistently display the semantic version rather than raw client-specific version output, and onboarding shows static supported capabilities until each AI Client is configured.
+- 99acf89: Hide every Team collaboration surface in Desktop when the shared Team switch is disabled.
+
 ## 0.6.2
 
 ### Patch Changes
