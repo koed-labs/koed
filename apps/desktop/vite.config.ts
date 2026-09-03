@@ -4,19 +4,15 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
+import { assertKoedReleaseVersion } from "../../packages/koed/release-version.mjs";
 
 const desktopPackage = JSON.parse(
   readFileSync(new URL("./package.json", import.meta.url), "utf8")
 ) as { version?: unknown };
-if (
-  typeof desktopPackage.version !== "string" ||
-  !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(
-    desktopPackage.version
-  )
-) {
-  throw new Error("Desktop package.json must contain a valid SemVer version.");
-}
-const desktopVersion = desktopPackage.version;
+const desktopVersion = assertKoedReleaseVersion(
+  desktopPackage.version,
+  "Desktop package.json"
+);
 const releaseVersionAsset = (): Plugin => ({
   name: "koed-release-version",
   generateBundle() {

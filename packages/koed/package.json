@@ -3,5 +3,19 @@
   "version": "0.6.2",
   "private": true,
   "license": "Apache-2.0",
-  "description": "Release manifest for the Koed distribution"
+  "description": "Release manifest for the Koed distribution",
+  "type": "module",
+  "exports": {
+    "./package.json": "./package.json",
+    "./release-version": {
+      "types": "./release-version.d.mts",
+      "import": "./release-version.mjs"
+    }
+  },
+  "files": [
+    "CHANGELOG.md",
+    "release-version.d.mts",
+    "release-version.mjs",
+    "package.json"
+  ]
 }

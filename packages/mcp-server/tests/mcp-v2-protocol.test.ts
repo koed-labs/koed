@@ -85,6 +85,12 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     expect(resolveKoedMcpServerVersion({ version: "1.2.3-beta.1" })).toBe(
       "1.2.3-beta.1"
     );
+    expect(() => resolveKoedMcpServerVersion({ version: "01.2.3" })).toThrow(
+      /valid SemVer/
+    );
+    expect(() =>
+      resolveKoedMcpServerVersion({ version: "1.2.3-foo..bar" })
+    ).toThrow(/valid SemVer/);
     expect(() => resolveKoedMcpServerVersion({ version: "unknown" })).toThrow(
       /valid SemVer/
     );

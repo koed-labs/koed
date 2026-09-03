@@ -6,6 +6,7 @@ import {
   type McpRequestContext
 } from "@modelcontextprotocol/server";
 import releaseManifest from "@koed/koed/package.json" with { type: "json" };
+import { assertKoedReleaseVersion } from "@koed/koed/release-version";
 import { z } from "zod";
 import {
   allTools,
@@ -37,15 +38,7 @@ export const resolveKoedMcpServerVersion = (manifest: unknown): string => {
     manifest && typeof manifest === "object"
       ? (manifest as { version?: unknown }).version
       : undefined;
-  if (
-    typeof version !== "string" ||
-    !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)
-  ) {
-    throw new Error(
-      "Koed release metadata must contain a valid SemVer version."
-    );
-  }
-  return version;
+  return assertKoedReleaseVersion(version, "Koed release metadata");
 };
 
 export const KOED_MCP_SERVER_VERSION =
