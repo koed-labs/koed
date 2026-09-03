@@ -1,5 +1,5 @@
 import argon2 from "argon2";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   createOpaqueSecret,
@@ -9,7 +9,10 @@ import {
 } from "./session.js";
 import { loginSchema, registerSchema } from "./schemas.js";
 import { workosDisplayName } from "./workos.js";
-import { supportsWorkos } from "../server/capabilities.js";
+import {
+  authProvidersForDeployment,
+  supportsWorkos
+} from "../server/capabilities.js";
 
 const workosStateCookieName = "koed_workos_state";
 const workosReturnToCookieName = "koed_workos_return_to";
@@ -60,8 +63,23 @@ export const registerAuthRoutes = (
   } = context;
   const workosAuthKitAvailable = () =>
     config.workos.authkitEnabled && supportsWorkos(config.deploymentProfile);
+  const localAuthAvailable = () =>
+    authProvidersForDeployment({
+      deploymentProfile: config.deploymentProfile,
+      workosAuthKitEnabled: config.workos.authkitEnabled
+    }).includes("local");
+  const requireLocalAuth = async (
+    _request: FastifyRequest,
+    reply: FastifyReply
+  ) => {
+    if (!localAuthAvailable()) {
+      return reply
+        .status(404)
+        .send({ error: "Local authentication is unavailable" });
+    }
+  };
 
-  app.get("/auth/setup-status", async () => {
+  app.get("/auth/setup-status", { preHandler: requireLocalAuth }, async () => {
     const repo = requireRepository();
     const userCount = await repo.countUsers();
     return {
@@ -72,7 +90,7 @@ export const registerAuthRoutes = (
 
   app.post(
     "/auth/setup",
-    { preHandler: authRateLimit },
+    { preHandler: [requireLocalAuth, authRateLimit] },
     async (request, reply) => {
       const repo = requireRepository();
       if (!config.publicRegistrationEnabled && !config.test) {
@@ -111,7 +129,7 @@ export const registerAuthRoutes = (
 
   app.post(
     "/auth/register",
-    { preHandler: authRateLimit },
+    { preHandler: [requireLocalAuth, authRateLimit] },
     async (request, reply) => {
       const repo = requireRepository();
       if (!config.publicRegistrationEnabled && !config.test) {
@@ -146,7 +164,7 @@ export const registerAuthRoutes = (
 
   app.post(
     "/auth/login",
-    { preHandler: authRateLimit },
+    { preHandler: [requireLocalAuth, authRateLimit] },
     async (request, reply) => {
       const repo = requireRepository();
       const input = loginSchema.parse(request.body);

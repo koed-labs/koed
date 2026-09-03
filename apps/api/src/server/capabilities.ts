@@ -273,10 +273,8 @@ export const authProvidersForDeployment = (config: {
   const workos =
     supportsWorkos(config.deploymentProfile) &&
     config.workosAuthKitEnabled === true;
-  if (config.deploymentProfile === "koed_managed_cloud") {
-    return workos ? ["workos"] : [];
-  }
-  return workos ? ["local", "workos"] : ["local"];
+  if (workos) return ["workos"];
+  return config.deploymentProfile === "koed_managed_cloud" ? [] : ["local"];
 };
 
 const supportsRemoteUpstreams = (profile: DeploymentProfile): boolean =>
