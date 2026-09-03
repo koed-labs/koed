@@ -1,9 +1,13 @@
 import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
+import desktopPackage from "./apps/desktop/package.json" with { type: "json" };
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
+  define: {
+    __KOED_DESKTOP_VERSION__: JSON.stringify(desktopPackage.version)
+  },
   resolve: {
     alias: [
       {
