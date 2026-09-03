@@ -108,6 +108,17 @@ test("release artifact size reports have unique target-specific asset names", ()
   assert.doesNotMatch(release, /\$\{release_dir\}\/artifact-size-report\.json/);
 });
 
+test("release publication checks out validation scripts", () => {
+  const release = readFileSync(
+    resolve(".github/workflows/release.yml"),
+    "utf8"
+  );
+  assert.match(
+    release,
+    /publish-release:[\s\S]*?- name: Checkout\n\s+uses: actions\/checkout@[\da-f]+[\s\S]*?Validate published metadata URLs against draft assets/
+  );
+});
+
 test("trusted CUDA validation runs exact packages only on the protected GPU runner", () => {
   const workflow = readFileSync(
     resolve(".github/workflows/native-runtime-linux-cuda-validation.yml"),
