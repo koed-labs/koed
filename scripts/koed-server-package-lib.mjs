@@ -11,23 +11,24 @@ import {
 import { dirname, relative, resolve } from "node:path";
 import { assertNoClaudeAgentSdkPlatformRuntimes } from "./provider-runtime-package-policy.mjs";
 
-export const standalonePackageSchemaVersion = 1;
+export const standalonePackageSchemaVersion = 2;
 export const standalonePackageId = "koed-server";
 export const standalonePackageKind = "app-runtime";
 export const packageProvenanceSchemaVersion = 1;
 
 export const requiredRuntimeFiles = [
   "api/dist/index.js",
-  "api/dist/browser-approval/index.html",
+  "node_modules/@koed/api/dist/browser-approval/index.html",
   "worker/dist/index.js",
   "embedding-service/dist/index.js",
   "privacy-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
-  "api/node_modules/@koed/db/dist/index.js",
-  "api/node_modules/@koed/db/dist/connection.js",
-  "api/node_modules/@koed/db/dist/user-api-token-repository.js",
-  "api/node_modules/@koed/db/drizzle/meta/_journal.json"
+  "mcp-server/dist/prompts/codex-global-agent-guidance.md",
+  "node_modules/@koed/db/dist/index.js",
+  "node_modules/@koed/db/dist/connection.js",
+  "node_modules/@koed/db/dist/user-api-token-repository.js",
+  "node_modules/@koed/db/drizzle/meta/_journal.json"
 ];
 
 export const excludedPackagePatterns = [
@@ -241,7 +242,7 @@ export const readPackageVersion = (repoRoot, packagePath) =>
   readJson(resolve(repoRoot, packagePath)).version;
 
 export const readMigrationSet = (runtimeRoot) => {
-  const journalPath = resolve(
+  const legacyJournalPath = resolve(
     runtimeRoot,
     "api",
     "node_modules",
@@ -251,6 +252,18 @@ export const readMigrationSet = (runtimeRoot) => {
     "meta",
     "_journal.json"
   );
+  const sharedJournalPath = resolve(
+    runtimeRoot,
+    "node_modules",
+    "@koed",
+    "db",
+    "drizzle",
+    "meta",
+    "_journal.json"
+  );
+  const journalPath = existsSync(legacyJournalPath)
+    ? legacyJournalPath
+    : sharedJournalPath;
   const text = readFileSync(journalPath, "utf8");
   const hash = createHash("sha256").update(text).digest("hex");
   const journal = JSON.parse(text);
@@ -276,7 +289,6 @@ export const buildPackageManifest = ({
   const packageFiles = listFiles(packageRoot).filter(
     (file) => file !== "koed-server-package-manifest.json"
   );
-  const runtimeFiles = listFiles(runtimeRoot);
   const requiredFiles = [...requiredRuntimeFiles];
   const migrationSet = readMigrationSet(runtimeRoot);
   const packageVersion =
@@ -340,11 +352,7 @@ export const buildPackageManifest = ({
         null
     },
     sha256: sha256Files(packageRoot, packageFiles),
-    files: fileEntries(packageRoot, packageFiles),
-    koedRuntimeFiles: fileEntries(
-      runtimeRoot,
-      runtimeFiles.filter((file) => existsSync(resolve(runtimeRoot, file)))
-    )
+    files: fileEntries(packageRoot, packageFiles)
   };
 };
 
@@ -423,7 +431,7 @@ export const writePackageProvenance = (path, provenance) => {
 export const writePackageManifest = (packageRoot, manifest) => {
   writeFileSync(
     resolve(packageRoot, "koed-server-package-manifest.json"),
-    `${JSON.stringify(manifest, null, 2)}\n`
+    `${JSON.stringify(manifest)}\n`
   );
 };
 
@@ -433,7 +441,7 @@ export const validatePackageManifestShape = (manifest) => {
     return ["Package manifest must be an object."];
   }
   if (manifest.schemaVersion !== standalonePackageSchemaVersion) {
-    errors.push("Package manifest schemaVersion must be 1.");
+    errors.push("Package manifest schemaVersion must be 2 for shared staging.");
   }
   if (manifest.id !== standalonePackageId) {
     errors.push("Package manifest id must be koed-server.");
@@ -481,8 +489,8 @@ export const validatePackageRoot = (packageRoot) => {
     !existsSync(manifestPath) ? "koed-server-package-manifest.json" : null,
     !existsSync(resolve(root, "README.txt")) ? "README.txt" : null,
     !existsSync(resolve(root, "bin", "koed-server")) ? "bin/koed-server" : null,
-    !existsSync(resolve(root, "koed-server", "dist", "cli.js"))
-      ? "koed-server/dist/cli.js"
+    !existsSync(resolve(runtimeRoot, "koed-server", "dist", "cli.js"))
+      ? "koed-runtime/koed-server/dist/cli.js"
       : null,
     ...requiredFiles.map((file) =>
       existsSync(resolve(runtimeRoot, file)) ? null : `${runtimePath}/${file}`
@@ -490,6 +498,8 @@ export const validatePackageRoot = (packageRoot) => {
   ].filter(Boolean);
   const browserAssetRoot = resolve(
     runtimeRoot,
+    "node_modules",
+    "@koed",
     "api",
     "dist",
     "browser-approval",
@@ -501,10 +511,10 @@ export const validatePackageRoot = (packageRoot) => {
   const browserApprovalErrors = [
     browserAssets.some((file) => /-[A-Za-z0-9_-]{6,}\.js$/.test(file))
       ? null
-      : "koed-runtime/api/dist/browser-approval/assets/<fingerprinted>.js",
+      : "koed-runtime/node_modules/@koed/api/dist/browser-approval/assets/<fingerprinted>.js",
     browserAssets.some((file) => /-[A-Za-z0-9_-]{6,}\.css$/.test(file))
       ? null
-      : "koed-runtime/api/dist/browser-approval/assets/<fingerprinted>.css"
+      : "koed-runtime/node_modules/@koed/api/dist/browser-approval/assets/<fingerprinted>.css"
   ].filter(Boolean);
   const files = existsSync(root) ? listFiles(root) : [];
   const excluded = files.filter((file) =>

@@ -41,6 +41,7 @@ const parseArgs = (argv) => {
     missingAssets: false,
     maskNativeAssets: false,
     embeddingModelSource: undefined,
+    privacyModelSource: undefined,
     exportEmbeddingModel: undefined,
     diagnosticsDir: undefined,
     timeoutMs: 180_000,
@@ -71,6 +72,15 @@ const parseArgs = (argv) => {
         throw new Error("--embedding-model-source requires a path.");
       }
       options.embeddingModelSource = resolve(source);
+      index += 1;
+      continue;
+    }
+    if (value === "--privacy-model-source") {
+      const source = argv[index + 1]?.trim();
+      if (!source) {
+        throw new Error("--privacy-model-source requires a path.");
+      }
+      options.privacyModelSource = resolve(source);
       index += 1;
       continue;
     }
@@ -128,6 +138,7 @@ Options:
   --missing-assets          Expect packaged native runtime assets to be missing
   --mask-native-assets      Temporarily hide packaged native assets for the missing-assets check
   --embedding-model-source  Pre-seed the pinned embedding model from this file
+  --privacy-model-source    Pre-seed the pinned Privacy Filter model directory
   --export-embedding-model  Copy the verified installed model to this path
   --diagnostics-dir <path>  Create a curated diagnostics child under this path
   --timeout-ms <number>     Max wait for healthy status (default 180000)
@@ -160,6 +171,14 @@ const seedEmbeddingModel = (koedHome, source) => {
   const target = resolve(koedHome, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf");
   mkdirSync(resolve(target, ".."), { recursive: true, mode: 0o700 });
   cpSync(source, target, { preserveTimestamps: true });
+  return target;
+};
+
+const seedPrivacyModel = (koedHome, source) => {
+  assertExists("Cached Privacy Filter model", source);
+  const target = resolve(koedHome, "models", "privacy");
+  mkdirSync(resolve(target, ".."), { recursive: true, mode: 0o700 });
+  cpSync(source, target, { recursive: true, preserveTimestamps: true });
   return target;
 };
 
@@ -296,12 +315,16 @@ const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
     ...extraEnv,
     ELECTRON_RUN_AS_NODE: "1",
     KOED_HOME: koedHome,
+    CODEX_HOME: resolve(koedHome, "codex"),
+    CODEX_CONFIG_PATH: resolve(koedHome, "codex", "config.toml"),
+    MEMORY_CODEX_APP_SERVER_BINARY: process.execPath,
     KOED_PACKAGED_DESKTOP: "1",
     KOED_PACKAGED_RESOURCES_PATH: layout.resourcesPath,
     KOED_AUTO_PORTS: "1",
     API_HOST_PORT: isolatedSmokeApiPort(koedHome),
     KOED_RUNTIME_MODE: "local-personal",
     KOED_DEPENDENCY_MODE: "bundled-local",
+    KOED_TEAM_COLLABORATION_ENABLED: "true",
     WORK_QUEUE_BACKEND: "local"
   };
   delete env.KOED_REPO_ROOT;
@@ -469,10 +492,14 @@ const assertPackagedJsSurface = (layout) => {
       "Packaged Supported Capture Hook artifact",
       "mcp-server/dist/capture-hook.js"
     ],
-    ["Packaged DB package artifact", "api/node_modules/@koed/db/dist/index.js"],
+    [
+      "Packaged Codex memory guidance",
+      "mcp-server/dist/prompts/codex-global-agent-guidance.md"
+    ],
+    ["Packaged DB package artifact", "node_modules/@koed/db/dist/index.js"],
     [
       "Packaged DB migration journal",
-      "api/node_modules/@koed/db/drizzle/meta/_journal.json"
+      "node_modules/@koed/db/drizzle/meta/_journal.json"
     ]
   ]) {
     assertExists(label, resolve(layout.runtimeRoot, relativePath));
@@ -509,8 +536,22 @@ const assertPackagedJsSurface = (layout) => {
   }
 };
 
-const assertPackagedDaemonReady = (payload, label) => {
-  const requiredComponents = ["database", "redis"];
+const assertPackagedDaemonReady = (
+  payload,
+  label,
+  { requireClientIntegration = true } = {}
+) => {
+  const requiredComponents = [
+    "api",
+    "database",
+    "redis",
+    "workerQueues",
+    "embeddingService",
+    "privacyService",
+    "localAiRuntime",
+    "apiToken",
+    ...(requireClientIntegration ? ["mcpServer", "captureHook"] : [])
+  ];
   const unhealthy = requiredComponents.filter(
     (component) => payload?.[component]?.state !== "healthy"
   );
@@ -762,12 +803,14 @@ const waitForHealthyStatus = async ({
       continue;
     }
     lastStatus = parseJsonOutput("status --json", status.stdout);
-    const readyComponents = ["database", "redis"].every(
-      (component) => lastStatus?.[component]?.state === "healthy"
-    );
-    if (readyComponents) {
+    try {
+      assertPackagedDaemonReady(lastStatus, "status --json", {
+        requireClientIntegration: false
+      });
       assertNoSourceCheckoutResolution("status --json", lastStatus);
       return lastStatus;
+    } catch {
+      // A daemon may need time to load its native models and start every service.
     }
     await sleep(pollIntervalMs);
   }
@@ -901,6 +944,47 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   }
   finishPhase(timings, "required model verification or install", phaseStarted);
 
+  phaseStarted = beginPhase("packaged privacy runtime verification");
+  const privacyProvider = process.platform === "darwin" ? "coreml" : "cpu";
+  const privacyRuntime = spawnSync(
+    process.execPath,
+    [
+      resolve(
+        sourceCheckoutRoot,
+        "scripts/validate-packaged-privacy-runtime.mjs"
+      ),
+      "--runtime-root",
+      layout.runtimeRoot,
+      "--transformers-cache",
+      resolve(koedHome, "models/privacy/transformers-cache"),
+      "--provider",
+      privacyProvider
+    ],
+    {
+      cwd: sourceCheckoutRoot,
+      encoding: "utf8",
+      maxBuffer: 4 * 1024 * 1024
+    }
+  );
+  if (privacyRuntime.status !== 0) {
+    throw new Error(
+      `packaged privacy runtime verification failed with ${privacyRuntime.status}: ${privacyRuntime.stderr || privacyRuntime.stdout}`
+    );
+  }
+  const privacyRuntimeJson = parseJsonOutput(
+    "packaged privacy runtime verification",
+    privacyRuntime.stdout
+  );
+  if (
+    privacyRuntimeJson.ok !== true ||
+    privacyRuntimeJson.provider !== privacyProvider
+  ) {
+    throw new Error(
+      `packaged privacy runtime verification returned an invalid result: ${privacyRuntime.stdout}`
+    );
+  }
+  finishPhase(timings, "packaged privacy runtime verification", phaseStarted);
+
   phaseStarted = beginPhase("first daemon start and health");
   const start = runPackagedCommand(layout, koedHome, [
     "start",
@@ -930,7 +1014,48 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     pollIntervalMs: options.pollIntervalMs,
     supervisorPid: startJson.startedPid
   });
+  finishPhase(timings, "first daemon start and health", phaseStarted);
 
+  phaseStarted = beginPhase("packaged core and Codex setup");
+  const coreSetup = runPackagedCommand(layout, koedHome, [
+    "setup",
+    "core",
+    "--json"
+  ]);
+  const coreSetupJson = parseJsonOutput("setup core --json", coreSetup.stdout);
+  assertNoSourceCheckoutResolution("setup core --json", coreSetupJson);
+  if (coreSetup.status !== 0 || coreSetupJson.ok !== true) {
+    throw new Error(
+      `setup core --json failed with ${coreSetup.status}: ${coreSetup.stderr || coreSetup.stdout}`
+    );
+  }
+  const codexSetup = runPackagedCommand(layout, koedHome, [
+    "setup",
+    "codex",
+    "--without-memory-guidance",
+    "--json"
+  ]);
+  const codexSetupJson = parseJsonOutput(
+    "setup codex --without-memory-guidance --json",
+    codexSetup.stdout
+  );
+  assertNoSourceCheckoutResolution(
+    "setup codex --without-memory-guidance --json",
+    codexSetupJson
+  );
+  if (codexSetup.status !== 0 || codexSetupJson.ok !== true) {
+    throw new Error(
+      `setup codex --without-memory-guidance --json failed with ${codexSetup.status}: ${codexSetup.stderr || codexSetup.stdout}`
+    );
+  }
+  const doctor = runPackagedCommand(layout, koedHome, ["doctor", "--json"]);
+  const doctorJson = parseJsonOutput("doctor --json", doctor.stdout);
+  assertNoSourceCheckoutResolution("doctor --json", doctorJson);
+  if (doctor.status !== 0 || doctorJson.ok !== true) {
+    throw new Error(
+      `doctor --json failed with ${doctor.status}: ${doctor.stderr || doctor.stdout}`
+    );
+  }
   const reconnectStatus = runPackagedCommand(layout, koedHome, [
     "status",
     "--json"
@@ -941,7 +1066,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   );
   assertNoSourceCheckoutResolution("status --json", reconnectJson);
   assertPackagedDaemonReady(reconnectJson, "status --json after reconnect");
-  finishPhase(timings, "first daemon start and health", phaseStarted);
+  finishPhase(timings, "packaged core and Codex setup", phaseStarted);
 
   phaseStarted = beginPhase("daemon stop, restart, and health");
   const stop = runPackagedCommand(layout, koedHome, ["stop", "--json"]);
@@ -983,6 +1108,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     pollIntervalMs: options.pollIntervalMs,
     supervisorPid: restartJson.startedPid
   });
+  assertPackagedDaemonReady(reopenedStatus, "status --json after restart");
 
   const finalStop = runPackagedCommand(layout, koedHome, ["stop", "--json"]);
   if (finalStop.status !== 0) {
@@ -1004,6 +1130,10 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     installedRuntimeStatus: installedRuntimeStatusJson,
     modelStatus: requiredModelStatuses.embedding,
     requiredModelStatuses,
+    privacyRuntime: privacyRuntimeJson,
+    coreSetup: coreSetupJson,
+    codexSetup: codexSetupJson,
+    doctor: doctorJson,
     firstStatus,
     reconnectStatus: reconnectJson,
     stop: stopJson,
@@ -1079,6 +1209,11 @@ const run = async () => {
         seedEmbeddingModel(koedHome, options.embeddingModelSource)
       );
     }
+    if (options.privacyModelSource) {
+      await measurePhase(timings, "privacy model pre-seed", async () =>
+        seedPrivacyModel(koedHome, options.privacyModelSource)
+      );
+    }
     const collaborationBroker = await measurePhase(
       timings,
       "collaboration broker",
@@ -1118,6 +1253,7 @@ const run = async () => {
             collaborationBroker,
             rendererFaults,
             runtime: { ok: result.install.ok, state: result.install.state },
+            privacyRuntime: result.privacyRuntime,
             status: {
               ok: result.firstStatus.ok,
               state: result.firstStatus.state

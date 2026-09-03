@@ -131,6 +131,50 @@ describe("local Embedding Service runtime", () => {
     );
   });
 
+  it("uses the active standalone app runtime with KOED_HOME native assets", () => {
+    const root = tempDir();
+    const appRuntimeRoot = resolve(
+      root,
+      "runtime",
+      "koed-server",
+      "current",
+      "koed-runtime"
+    );
+    for (const entry of [
+      "api/dist/index.js",
+      "worker/dist/index.js",
+      "embedding-service/dist/index.js",
+      "privacy-service/dist/index.js",
+      "mcp-server/dist/cli.js",
+      "mcp-server/dist/local-runtime-cli.js",
+      "mcp-server/dist/capture-hook.js",
+      "mcp-server/dist/prompts/codex-global-agent-guidance.md",
+      "node_modules/@koed/db/dist/index.js",
+      "node_modules/@koed/db/dist/connection.js",
+      "node_modules/@koed/db/dist/user-api-token-repository.js",
+      "node_modules/@koed/db/drizzle/meta/_journal.json"
+    ]) {
+      const file = resolve(appRuntimeRoot, entry);
+      mkdirSync(resolve(file, ".."), { recursive: true });
+      writeFileSync(file, "");
+    }
+    const llama = resolve(root, "runtime", "llama.cpp", "llama-server");
+    mkdirSync(resolve(llama, ".."), { recursive: true });
+    writeFileSync(llama, "");
+    chmodSync(llama, 0o755);
+
+    const runtime = resolveLocalEmbeddingRuntimePaths(paths(root), {});
+
+    expect(runtime.serviceEntry).toBe(
+      resolve(appRuntimeRoot, "embedding-service", "dist", "index.js")
+    );
+    expect(runtime.llamaServerBin).toBe(llama);
+    expect(runtime.artifactSources).toEqual({
+      service: "koed-home-runtime",
+      llamaServer: "koed-home-runtime"
+    });
+  });
+
   it("rejects source checkout Embedding Service fallback in packaged mode", () => {
     const root = tempDir();
     mkdirSync(resolve(root, "apps", "embedding-service"), { recursive: true });
@@ -269,6 +313,14 @@ describe("local Embedding Service runtime", () => {
 
   it("spawns the Embedding Service entry with native environment", () => {
     const root = tempDir();
+    const serviceEntry = resolve(
+      root,
+      "runtime",
+      "embedding-service",
+      "dist",
+      "index.js"
+    );
+    const llamaServer = resolve(root, "runtime", "llama.cpp", "llama-server");
     const spawned: Array<{
       command: string;
       args: string[];
@@ -279,7 +331,7 @@ describe("local Embedding Service runtime", () => {
       paths(root),
       { EMBEDDING_SERVICE_HOST_PORT: "3900" },
       {
-        existsSync: () => true,
+        existsSync: (path) => path === serviceEntry || path === llamaServer,
         spawn: (command, args, options) => {
           spawned.push({ command, args, env: options?.env, cwd: options?.cwd });
           return { pid: 12, on: () => undefined } as never;
@@ -289,17 +341,13 @@ describe("local Embedding Service runtime", () => {
 
     expect(result.ok).toBe(true);
     expect(spawned[0]?.command).toBe(process.execPath);
-    expect(spawned[0]?.args).toEqual([
-      resolve(root, "runtime", "embedding-service", "dist", "index.js")
-    ]);
+    expect(spawned[0]?.args).toEqual([serviceEntry]);
     expect(spawned[0]?.cwd).toBe(resolve(root, "runtime", "embedding-service"));
     expect(spawned[0]?.env?.EMBEDDING_SERVICE_URL).toBe(
       "http://127.0.0.1:3900"
     );
     expect(spawned[0]?.env?.EMBEDDING_SERVICE_HOST).toBe("127.0.0.1");
     expect(spawned[0]?.env?.EMBEDDING_SERVICE_PORT).toBe("3900");
-    expect(spawned[0]?.env?.LLAMA_SERVER_BINARY).toBe(
-      resolve(root, "runtime", "llama.cpp", "llama-server")
-    );
+    expect(spawned[0]?.env?.LLAMA_SERVER_BINARY).toBe(llamaServer);
   });
 });

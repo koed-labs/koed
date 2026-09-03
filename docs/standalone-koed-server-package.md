@@ -35,10 +35,6 @@ it under Electron resources. The packaged `koed-runtime` contains:
 koed-runtime/
   api/
     dist/index.js
-    node_modules/@koed/db/dist/index.js
-    node_modules/@koed/db/dist/connection.js
-    node_modules/@koed/db/dist/user-api-token-repository.js
-    node_modules/@koed/db/drizzle/meta/_journal.json
   worker/
     dist/index.js
   embedding-service/
@@ -47,6 +43,13 @@ koed-runtime/
   mcp-server/
     dist/cli.js
     dist/capture-hook.js
+    dist/prompts/codex-global-agent-guidance.md
+  node_modules/                     # one shared production dependency graph
+    @koed/db/
+      dist/index.js
+      dist/connection.js
+      dist/user-api-token-repository.js
+      drizzle/meta/_journal.json
   runtime-asset-manifest.json        # only when native assets are staged
   postgres/                          # optional packaged native runtime asset
   llama.cpp/                         # optional packaged native runtime asset
@@ -62,6 +65,31 @@ This is validated today by:
 This shape works, but it makes `Koed.app` carry both the Electron control plane
 and the local server runtime. The internal unsigned app has already been large
 enough to motivate splitting the server runtime into its own package.
+
+Standalone and Desktop packaging now assemble that app runtime through the same
+private aggregate staging package. Stable service-path wrappers import the
+single hoisted dependency graph. Packaging removes pnpm links and metadata,
+tests, source maps, TypeScript inputs, and ordinary package documentation while
+preserving licence files and MCP prompt Markdown that is loaded at runtime.
+
+Target pruning retains only the reviewed ONNX Runtime, Sharp, and Argon2 native
+payload for the selected operating system and architecture. The exact ONNX
+filenames are version-pinned in `config/privacy-runtime-package-policy.json`,
+so a dependency layout change fails packaging until reviewed. The separate
+`onnxruntime-web` package is omitted: the Transformers Node distribution uses
+`onnxruntime-node`, while its web implementation is already part of the
+published Transformers bundles.
+
+The pinned q4 Privacy model stores weights in ONNX external data. Core ML does
+not resolve that sidecar relative to a file-backed model session, so the
+Privacy Filter runtime mounts `onnx/model_q4.onnx_data` explicitly for Core ML.
+Apple Silicon package proof must cold-load the exact pruned runtime, verify CPU
+and Core ML classifier parity, and perform an authenticated classification.
+
+The Desktop release report keeps Electron-specific size accounting separate:
+framework and shell, main, preload, renderer, app runtime, native runtime, and
+signature bytes are reported independently. This makes renderer duplication or
+an unexpectedly broad `app.asar` dependency graph visible before publication.
 
 ## Package responsibilities
 
@@ -111,6 +139,7 @@ Required `koed-runtime` files:
 - `embedding-service/dist/index.js`
 - `mcp-server/dist/cli.js`
 - `mcp-server/dist/capture-hook.js`
+- `mcp-server/dist/prompts/codex-global-agent-guidance.md`
 
 The initial CI artifact build is produced by:
 
@@ -119,7 +148,12 @@ pnpm build
 pnpm koed-server:package -- --platform linux --arch x64 --json
 ```
 
-The script stages production JS/service runtime files with `pnpm deploy`,
+The script stages one private aggregate production deployment with a hoisted
+dependency graph. Deterministic service wrappers preserve the established
+entry paths while dependencies are materialized once under the shared
+`koed-runtime/node_modules` root. Disposable `.bin` links and pnpm metadata are
+removed before validation, so the final tree has no symlinks or package-store
+dependency. The script then
 writes `koed-server-package-manifest.json` and `README.txt`, validates the
 required runtime files, rejects retired Explorer artifacts, native runtime assets, model files, and Python
 embedding leftovers, then emits a deterministic tarball and `.sha256` under
@@ -134,6 +168,7 @@ koed-server-<version>-<platform>-<arch>.tar.gz.sha256
 koed-server-app-runtime-<version>-<platform>-<arch>.manifest.json
 koed-server-app-runtime-<version>-<platform>-<arch>.provenance.json
 koed-server-app-runtime-<version>-<platform>-<arch>.provenance.json.sig
+koed-server-app-runtime-<platform>-<arch>-artifact-size-report.json
 koed-release-artifacts-<version>.json
 ```
 
@@ -233,7 +268,7 @@ Each standalone package should include a manifest:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "koed-server",
   "version": "0.4.0",
   "platform": "macos",
@@ -254,10 +289,10 @@ Each standalone package should include a manifest:
       "embedding-service/dist/index.js",
       "mcp-server/dist/cli.js",
       "mcp-server/dist/capture-hook.js",
-      "api/node_modules/@koed/db/dist/index.js",
-      "api/node_modules/@koed/db/dist/connection.js",
-      "api/node_modules/@koed/db/dist/user-api-token-repository.js",
-      "api/node_modules/@koed/db/drizzle/meta/_journal.json"
+      "node_modules/@koed/db/dist/index.js",
+      "node_modules/@koed/db/dist/connection.js",
+      "node_modules/@koed/db/dist/user-api-token-repository.js",
+      "node_modules/@koed/db/drizzle/meta/_journal.json"
     ]
   },
   "database": {
@@ -284,8 +319,13 @@ Each standalone package should include a manifest:
 }
 ```
 
-The exact field names may change during implementation, but the manifest must
-answer:
+Schema 2 is the shared-staging contract. It intentionally replaces schema 1.
+The installer rejects older manifests during validation, before activation,
+with an actionable schema error. There is no backward-compatibility window.
+Schema 2 keeps one canonical `files` table and does not publish the redundant
+`koedRuntimeFiles` inventory.
+
+The manifest records:
 
 - which Desktop versions may install this package;
 - which platform/architecture it targets;
@@ -310,6 +350,16 @@ Desktop and headless install flows should verify before activation:
 8. atomically update `current` pointer or marker;
 9. run `koed-server status --json` or a package validation command before
    startup continues.
+
+Archive download, gzip decompression, and tar parsing are streaming operations.
+The installer enforces fixed reviewed limits of 2 GiB compressed, 8 GiB
+expanded, 200,000 files, 2 GiB per file, 4,096 bytes per path, 8 MiB for the
+package manifest, and 1 MiB for a pax header. It rejects traversal, duplicate
+normalized paths, links, devices, FIFOs, sockets, malformed headers, and every
+unsupported tar entry type. Files are created exclusively with no-follow
+semantics where the host supports them, and only executable versus
+non-executable permission bits survive extraction. Any failure removes the
+temporary extraction tree and leaves the active package unchanged.
 
 Signature/provenance rules:
 
@@ -436,8 +486,16 @@ koed-server package install \
   --json
 koed-server runtime install --provider packaged --dependency-mode bundled-local --json
 koed-server models install --kind embedding --json
+# Required only when Team collaboration is enabled:
+koed-server models install --kind privacy --json
 koed-server start --daemon --json
 ```
+
+On the first packaged, bundled-local, Personal Memory start, `koed-server`
+creates the local Personal API Token after database migrations complete and
+stores the credential under `KOED_HOME`. A headless Operator does not need to
+pre-create a token. External mode still requires an explicitly configured API
+Token and never provisions one implicitly.
 
 Offline install should use a local artifact path:
 
@@ -485,18 +543,6 @@ koed-server package cleanup --keep 1 --json
 Desktop should expose cleanup only as an advanced repair/storage action.
 Automatic cleanup should not delete the currently active or last-known-good
 package.
-
-## Implementation follow-ups
-
-KOE-292 is design-first. Recommended follow-up implementation issues:
-
-1. KOE-300: Build standalone `koed-server` package artifact in CI.
-2. KOE-298: Add package manifest, status, install, activate, and cleanup CLI commands.
-3. KOE-302: Teach app-runtime resolution to use `KOED_HOME/runtime/koed-server/current`.
-4. KOE-303: Add Desktop first-run package installer/update UI.
-5. KOE-301: Add release workflow publishing for `koed-server` package artifacts.
-6. KOE-299: Add package signature/provenance hardening.
-7. Add headless install documentation and smoke coverage as part of the package CLI and CI follow-ups.
 
 ## Non-goals
 

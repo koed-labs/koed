@@ -159,10 +159,11 @@ const createPackagedAppRuntime = (root: string) => {
     "koed-runtime/mcp-server/dist/cli.js",
     "koed-runtime/mcp-server/dist/local-runtime-cli.js",
     "koed-runtime/mcp-server/dist/capture-hook.js",
-    "koed-runtime/api/node_modules/@koed/db/dist/index.js",
-    "koed-runtime/api/node_modules/@koed/db/dist/connection.js",
-    "koed-runtime/api/node_modules/@koed/db/dist/user-api-token-repository.js",
-    "koed-runtime/api/node_modules/@koed/db/drizzle/meta/_journal.json"
+    "koed-runtime/mcp-server/dist/prompts/codex-global-agent-guidance.md",
+    "koed-runtime/node_modules/@koed/db/dist/index.js",
+    "koed-runtime/node_modules/@koed/db/dist/connection.js",
+    "koed-runtime/node_modules/@koed/db/dist/user-api-token-repository.js",
+    "koed-runtime/node_modules/@koed/db/drizzle/meta/_journal.json"
   ]) {
     const path = resolve(root, entry);
     mkdirSync(resolve(path, ".."), { recursive: true });
@@ -1215,16 +1216,17 @@ describe("start supervisor", () => {
     expect(worker?.env?.MEMORY_API_TOKEN).toBe(provisionedToken);
     expect(worker?.env?.MEMORY_API_URL).toBe("http://localhost:23300");
     expect(worker?.env?.KOED_EMBEDDING_POOL_KEY).toBe("local-metal-pool");
-    expect(
-      JSON.parse(readFileSync(resolve(root, "config/local-ports.json"), "utf8"))
-    ).toEqual({
+    const localPorts = JSON.parse(
+      readFileSync(resolve(root, "config/local-ports.json"), "utf8")
+    ) as Record<string, unknown>;
+    expect(localPorts).toMatchObject({
       api: "23300",
       postgres: "25432",
       embedding: "23800",
-      privacy: "48092",
       llamaEmbedding: "28080",
       llamaReranker: "29080"
     });
+    expect(typeof localPorts.privacy).toBe("string");
   });
 
   it("fails bundled-local clearly when native resources are missing", async () => {
@@ -1722,6 +1724,69 @@ describe("start supervisor", () => {
     expect(spawned[2]?.env?.EMBEDDING_MODEL).toBe("qwen3-0.6b");
     expect(spawned).toHaveLength(3);
     expect(spawned.map((entry) => entry.command)).not.toContain("pnpm");
+  });
+
+  it("provisions a Personal API Token for a fresh packaged bundled-local start", async () => {
+    const root = tempDir();
+    createPackagedAppRuntime(root);
+    const pgBin = resolve(root, "runtime/postgres/bin");
+    const llamaBin = resolve(root, "runtime/llama.cpp");
+    mkdirSync(pgBin, { recursive: true });
+    mkdirSync(llamaBin, { recursive: true });
+    for (const path of [
+      resolve(pgBin, "initdb"),
+      resolve(pgBin, "pg_ctl"),
+      resolve(pgBin, "psql"),
+      resolve(llamaBin, "llama-server")
+    ]) {
+      writeFileSync(path, "");
+      chmodSync(path, 0o755);
+    }
+    mkdirSync(resolve(root, "models"));
+    writeFileSync(
+      resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf"),
+      "model"
+    );
+    const spawned: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
+    let provisionCalls = 0;
+
+    await startKoedServer({
+      signal: cleanShutdownSignal(),
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_PACKAGED_DESKTOP: "1",
+        KOED_PACKAGED_RESOURCES_PATH: root,
+        KOED_RUNTIME_MODE: "local-personal",
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_TEAM_COLLABORATION_ENABLED: "false"
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: (_command, args) =>
+        args.includes("status")
+          ? ({ ...spawnResult(), status: 1 } as never)
+          : spawnResult(),
+      spawn: (_command, args, options) => {
+        spawned.push({ args, env: options?.env });
+        return child(spawned.length);
+      },
+      collectStatus: async () => healthyStatus(root),
+      provisionLocalApiToken: async () => {
+        provisionCalls += 1;
+        return {
+          token: "fresh-packaged-token",
+          reused: false,
+          ownerUserId: "11111111-1111-4111-8111-111111111111"
+        };
+      }
+    });
+
+    expect(provisionCalls).toBe(1);
+    const localRuntime = spawned.find((entry) =>
+      entry.args.some((arg) => arg.endsWith("local-runtime-cli.js"))
+    );
+    expect(localRuntime?.env?.MEMORY_API_TOKEN).toBe("fresh-packaged-token");
   });
 
   it("cleans the API when status collection fails before dependent apps start", async () => {

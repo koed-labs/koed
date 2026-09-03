@@ -92,3 +92,28 @@ export const utf8Offsets = (
     endByte: Buffer.byteLength(text.slice(0, jsEnd), "utf8")
   };
 };
+
+export const createUtf8OffsetLookup = (
+  text: string
+): ((jsStart: number, jsEnd: number) => TokenOffset) => {
+  const byteOffsets: Array<number | undefined> = new Array(text.length + 1);
+  byteOffsets[0] = 0;
+  let jsCursor = 0;
+  let byteCursor = 0;
+  for (const character of text) {
+    jsCursor += character.length;
+    byteCursor += Buffer.byteLength(character, "utf8");
+    byteOffsets[jsCursor] = byteCursor;
+  }
+  return (jsStart, jsEnd) => {
+    assertValidJsRange(text, jsStart, jsEnd);
+    const startByte = byteOffsets[jsStart];
+    const endByte = byteOffsets[jsEnd];
+    if (startByte === undefined || endByte === undefined) {
+      throw new ClassificationError(
+        "privacy runtime emitted an invalid token offset"
+      );
+    }
+    return { startByte, endByte };
+  };
+};

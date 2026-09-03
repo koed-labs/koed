@@ -68,7 +68,33 @@ Use `KOED_NATIVE_RUNTIME_SOURCE_DIR=/path/to/linux-x64/koed-runtime` only when v
 - PostgreSQL 17 official source tarballs while relocatable binary candidates are still being evaluated, including the `pgcrypto` contrib extension required by Koed migrations;
 - pgvector source built against the selected `pg_config`.
 
-The builder verifies each archive by SHA-256, assembles the deterministic `koed-runtime/` layout, writes the packaged runtime manifest, and archives the runtime tarball. Validation recursively inspects every Mach-O or ELF file in the runtime instead of relying on a short executable list. macOS validation rejects undeclared absolute loader paths, missing `@loader_path`/`@rpath` dependencies, and package-manager paths. Validation also starts temporary Postgres and verifies both `CREATE EXTENSION pgcrypto` and `CREATE EXTENSION vector`. It validates `llama-server`; it does not validate Python because Python is no longer packaged as a native runtime asset.
+The builder verifies each source archive by SHA-256, assembles the deterministic
+`koed-runtime/` layout, writes the packaged runtime manifest, and emits a
+sorted, metadata-normalized ustar/PAX gzip stream. Native archives are written
+with bounded file streaming instead of buffering the combined Linux CUDA
+payload. Provenance records the pinned source manifest or a path-independent
+verified-runtime-source marker and uses `SOURCE_DATE_EPOCH`, defaulting to the
+Unix epoch. Clean source and output paths therefore produce the same runtime
+tree, manifest, provenance, archive, and SHA-256 value. Validation recursively
+inspects every Mach-O or ELF file in the runtime instead of relying on a short
+executable list. macOS validation rejects undeclared absolute loader paths,
+missing `@loader_path`/`@rpath` dependencies, and package-manager paths.
+Validation also starts temporary Postgres and verifies both
+`CREATE EXTENSION pgcrypto` and `CREATE EXTENSION vector`. It validates
+`llama-server`; it does not validate Python because Python is no longer
+packaged as a native runtime asset.
+
+Before the manifest is written, native-runtime staging removes compiler outputs,
+headers, static libraries, source/test trees, and build caches. Licence or
+notice files found inside a removed tree are retained under
+`third-party-licenses/`. Exact-runtime validation fails if a forbidden build
+artifact remains or if CUDA redistributable libraries are duplicated as regular
+files with identical content. The builder applies `strip -x` to Mach-O files and
+then restores a valid ad-hoc signature on each modified Mach-O. It applies
+`strip --strip-unneeded` to ELF files. Both operations finish before manifest
+hashes are generated. The subsequent
+loader, executable, PostgreSQL extension, and packaged-provider validation runs
+against those stripped bytes, so an incompatible strip fails the build.
 
 Linux CUDA validation requires every redistributable CUDA runtime dependency to
 resolve from the packaged payload. The sole external exception is
@@ -86,7 +112,21 @@ and validate the immutable cache entry, cold-build it on a miss, and save it
 only after validation. Source archives and compiler work directories are not
 shared; the cached unit is the completed `koed-runtime/` tree.
 
-The `changeset-release/main` pull request, weekly schedule, and manual `full` or `clean-install` dispatch use an independent cold native build. CI extracts the completed tarball into a separate temporary directory before validation, which exercises the same relocation boundary as a consumer. That full path builds and verifies the app, DMG, ZIP, and block maps, but does not publish its validation outputs. The Linux x64 native runtime job remains manual because a cold CUDA build is expensive and should run on dependency bumps or explicit review. It restores a content-addressed completed payload when available, builds only on a cache miss, validates before saving, then packages and uploads the current commit artifact. Its assets target glibc 2.35+ and build on a GitHub-hosted Ubuntu 22.04 runner.
+The `changeset-release/main` pull request, weekly schedule, and manual `full` or
+`clean-install` dispatch use an independent cold native build. CI extracts the
+completed tarball into a separate temporary directory before validation, which
+exercises the same relocation boundary as a consumer. It then packages that
+same verified input twice into separate locations and compares the complete
+native trees, manifests, provenance, and archive bytes. The full path also
+regenerates Desktop runtime staging, builds a second isolated app, and compares
+the complete symlink-aware runtime and app trees before it verifies the app,
+DMG, ZIP, and block maps. It does not publish these validation outputs. The
+Linux x64 native runtime job remains manual because a cold CUDA build is
+expensive and should run on dependency bumps or explicit review. It restores a
+content-addressed completed payload when available, builds only on a cache
+miss, validates before saving, then packages and uploads the current commit
+artifact. Its assets target glibc 2.35+ and build on a GitHub-hosted Ubuntu
+22.04 runner.
 
 `.github/workflows/native-runtime-linux-cache.yml` is the trusted Linux cache
 writer. It runs on the default branch when the pinned source recipe or relevant
@@ -95,7 +135,41 @@ may be dispatched manually. The cache key covers payload-producing inputs;
 validation-only changes revalidate the existing payload without recompiling it.
 Ordinary CI and local setup never compile CUDA automatically.
 
-The release workflow independently rebuilds the macOS native runtime and Desktop package from the exact merged release commit. For Linux x64 it requires the matching validated native payload cache, regenerates versioned provenance and checksums without recompilation, and publishes the native archive as a separate GitHub Release asset. The draft release is published only after the complete required asset set is present. See `docs/ci-validation.md` for the complete tier policy and `docs/desktop-internal-artifacts.md` for release artifact install/open, Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
+`.github/workflows/native-runtime-linux-cuda-validation.yml` is the manual
+hardware-proof path. It is restricted to the trusted default branch and a
+self-hosted runner carrying the `linux`, `x64`, and `koed-cuda` labels. The
+runner must expose an NVIDIA GPU through `nvidia-smi`, use driver 550.54.14 or
+newer, and provide the system libraries required by the pinned ONNX Runtime
+CUDA provider. The workflow refuses to rebuild an unreviewed native payload: it
+requires the independently populated recipe-keyed cache, packages and extracts
+that exact payload, and runs full loader/PostgreSQL/provider validation. It then
+proves CUDA discovery and real embedding inference from the extracted CUDA
+`llama-server`, including CPU/GPU vector agreement and observed VRAM use. A
+separately built exact Linux standalone app runtime must initialize the Privacy
+Filter CUDA provider, match CPU classification, switch providers, unload and
+reload after idle, and reject Core ML. The workflow retains the bounded JSON
+evidence for 30 days. Policy-only hosted CI never sets these hardware boxes.
+
+The release workflow independently rebuilds the macOS native runtime and
+Desktop package from the exact merged release commit. Each supported standalone
+target is built twice and must match at the package-tree, manifest, provenance,
+and archive-byte levels before upload. For Linux x64 the workflow requires the
+matching validated native payload cache, packages it twice with identical
+results, regenerates versioned provenance and checksums without recompilation,
+and publishes the native archive as a separate GitHub Release asset. The draft
+release is published only after the complete required asset set is present. See
+`docs/ci-validation.md` for the complete tier policy and
+`docs/desktop-internal-artifacts.md` for release artifact install/open,
+Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
+
+Before upload, the Linux release job writes `artifact-size-report.json` beside
+the archive. The report attributes exact expanded bytes to PostgreSQL,
+pgvector, CPU and CUDA llama.cpp, CUDA redistributable libraries, and
+manifest/provenance files. Its component compressed values are proportional
+estimates for the solid gzip stream; the total compressed archive size is
+exact. The job rejects symlinks, special files, duplicates above policy,
+foreign target binaries, checkout-path leaks, and total archive growth greater
+than 5% over the immutable v0.6.2 baseline.
 
 ## Desktop consumption
 

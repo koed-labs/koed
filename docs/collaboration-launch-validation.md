@@ -75,6 +75,12 @@ pnpm desktop:package:smoke -- --build --json --timeout-ms 420000 \
   --diagnostics-dir "${TMPDIR:-/tmp}/koed-desktop-smoke-diagnostics"
 ```
 
+On a release runner with verified pinned models already cached, add
+`--embedding-model-source <gguf>` and
+`--privacy-model-source <privacy-model-directory>` to make this proof
+independent of model-host availability. The packaged CLI verifies every pinned
+model hash after pre-seeding.
+
 CI must pass the `Check DB migration files`, `Run DB migration acceptance
 matrix`, `Required acceptance suites`, build, and packaged Desktop smoke jobs
 for the same commit. Do not substitute a local pass for a missing CI job.

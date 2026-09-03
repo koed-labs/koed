@@ -156,7 +156,8 @@ const configureCodexIntegration = ({
   writeFileSync,
   mkdirSync,
   existsSync,
-  memoryGuidanceEnabled
+  memoryGuidanceEnabled,
+  resolveRuntime
 }: {
   paths: ReturnType<typeof resolveKoedServerPaths>;
   environment: NodeJS.ProcessEnv;
@@ -166,8 +167,9 @@ const configureCodexIntegration = ({
   mkdirSync: typeof nodeMkdirSync;
   existsSync: typeof nodeExistsSync;
   memoryGuidanceEnabled: boolean;
+  resolveRuntime: typeof resolveKoedAppRuntime;
 }): { command: string; stdout: string } => {
-  const runtime = resolveKoedAppRuntime(paths, environment, existsSync);
+  const runtime = resolveRuntime(paths, environment, existsSync);
   const missing = [runtime.mcpCli, runtime.captureHook].filter(
     (path) => !existsSync(path)
   );
@@ -449,6 +451,7 @@ export const repairCodexIntegration = ({
   mkdirSync = nodeMkdirSync,
   existsSync = nodeExistsSync,
   checkPid = isProcessRunning,
+  resolveRuntime = resolveKoedAppRuntime,
   registerAiClient = registerExplicitAiClient,
   now = () => new Date()
 }: Omit<
@@ -528,7 +531,8 @@ export const repairCodexIntegration = ({
         paths,
         { ...repoEnv, ...environment },
         { existsSync, readFileSync }
-      ).codexGlobalMemoryGuidanceEnabled
+      ).codexGlobalMemoryGuidanceEnabled,
+      resolveRuntime
     });
     const registered = registerAiClient({
       environment: integrationEnvironment,
@@ -982,6 +986,43 @@ export const setupCodex = async (
     return core;
   }
   const environment = options.environment ?? process.env;
+  const paths = resolveKoedServerPaths(environment);
+  if (
+    environment.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED === "true" ||
+    environment.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED === "false"
+  ) {
+    const config = resolveKoedServerConfig(paths, environment, {
+      existsSync: options.existsSync,
+      readFileSync: options.readFileSync
+    });
+    writeCodexGlobalMemoryGuidancePreference(
+      paths,
+      config.codexGlobalMemoryGuidanceEnabled,
+      {
+        existsSync: options.existsSync,
+        readFileSync: options.readFileSync,
+        writeFileSync
+      }
+    );
+  }
+  const runtime = (options.resolveRuntime ?? resolveKoedAppRuntime)(
+    paths,
+    environment,
+    options.existsSync ?? nodeExistsSync
+  );
+  if (runtime.kind === "packaged") {
+    return repairCodexIntegration({
+      environment,
+      readFileSync: options.readFileSync,
+      writeFileSync: options.writeFileSync,
+      mkdirSync: options.mkdirSync,
+      existsSync: options.existsSync,
+      checkPid: options.checkPid,
+      now: options.now,
+      resolveRuntime: options.resolveRuntime,
+      registerAiClient: options.registerAiClient
+    });
+  }
   const prepared = prepareSetupCodex(environment, options);
   if (!prepared.ok) {
     writeSetupVerification(prepared.paths, prepared.result, writeFileSync);
@@ -1008,20 +1049,6 @@ export const setupCodex = async (
       "Codex setup completed."
     );
     return failed;
-  }
-  if (
-    environment.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED === "true" ||
-    environment.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED === "false"
-  ) {
-    writeCodexGlobalMemoryGuidancePreference(
-      context.paths,
-      context.config.codexGlobalMemoryGuidanceEnabled,
-      {
-        existsSync: options.existsSync,
-        readFileSync: options.readFileSync,
-        writeFileSync
-      }
-    );
   }
   persistSetupApiToken(context);
   const result = runSetupBootstrap(
