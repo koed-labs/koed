@@ -20,13 +20,7 @@ RUN apt-get update \
 COPY . .
 
 RUN pnpm install --frozen-lockfile \
-  && pnpm --filter @koed/shared build \
-  && pnpm --filter @koed/core build \
-  && pnpm --filter @koed/db build \
-  && pnpm --filter @koed/api build \
-  && pnpm --filter @koed/mcp-server build \
-  && pnpm --filter @koed/worker build \
-  && pnpm --filter @koed/privacy-service build \
+  && pnpm source-runtime:prepare \
   && pnpm --filter @koed/koed-server build
 
 ENV KOED_HOME=/data/koed

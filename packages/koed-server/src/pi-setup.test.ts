@@ -11,20 +11,75 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { removePi, resolvePiSetupExecutable, setupPi } from "./pi-setup.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  removePi,
+  resolvePiSetupExecutable,
+  resolvePiSetupLauncher,
+  setupPi
+} from "./pi-setup.js";
 
 const temporaryDirectories: string[] = [];
 const spawnResult = (stdout = "", status = 0) =>
   ({ stdout, stderr: "", status, signal: null, pid: 1, output: [] }) as never;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
 describe("Pi setup", () => {
+  it("finds and stores Pi from a macOS fallback directory", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-macos-discovery-"));
+    temporaryDirectories.push(root);
+    const source = resolve(root, "packages/mcp-server/integrations/pi");
+    const executable = resolve(root, ".local/bin/pi");
+    mkdirSync(resolve(source, "extensions"), { recursive: true });
+    mkdirSync(resolve(executable, ".."), { recursive: true });
+    writeFileSync(resolve(source, "package.json"), "{}\n");
+    writeFileSync(resolve(source, "extensions/koed.mjs"), "export {};\n");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o700);
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+
+    const result = setupPi(
+      {
+        HOME: root,
+        PATH: "/usr/bin:/bin",
+        KOED_HOME: resolve(root, "koed"),
+        KOED_REPO_ROOT: root
+      },
+      ((_command: string, args: string[]) =>
+        args[0] === "--version"
+          ? spawnResult("0.84.2\n")
+          : args[0] === "--list-models"
+            ? spawnResult("provider model\nopenai gpt-5.4\n")
+            : spawnResult("installed\n")) as never
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      executablePath: realpathSync(executable)
+    });
+    expect(
+      JSON.parse(
+        readFileSync(
+          resolve(root, "koed/config/ai-client-instances.json"),
+          "utf8"
+        )
+      )
+    ).toMatchObject({
+      instances: [
+        {
+          instanceId: "pi.default",
+          executablePath: executable
+        }
+      ]
+    });
+  });
+
   it("canonicalizes Pi and invokes it with an authenticated, secret-free environment", () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-setup-"));
     temporaryDirectories.push(root);
@@ -77,6 +132,21 @@ describe("Pi setup", () => {
     expect(
       calls.every(({ command }) => command === realpathSync(executable))
     ).toBe(true);
+    expect(
+      JSON.parse(
+        readFileSync(
+          resolve(root, "koed/config/ai-client-instances.json"),
+          "utf8"
+        )
+      )
+    ).toMatchObject({
+      instances: [
+        {
+          instanceId: "pi.default",
+          executablePath: link
+        }
+      ]
+    });
     for (const { env } of calls) {
       expect(env).not.toHaveProperty("MEMORY_API_TOKEN");
       expect(env).not.toHaveProperty("ANTHROPIC_API_KEY");
@@ -114,6 +184,25 @@ describe("Pi setup", () => {
 
     expect(result).toMatchObject({ ok: false, state: "needs_attention" });
     expect(result.error).toContain("no authenticated models");
+  });
+
+  it("preserves fnm launcher while resolving its canonical invocation target", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-fnm-launcher-"));
+    temporaryDirectories.push(root);
+    const launcher = resolve(root, ".local/share/fnm/aliases/default/bin/pi");
+    const target = resolve(root, ".local/share/fnm/node-versions/v1/bin/pi");
+    mkdirSync(resolve(launcher, ".."), { recursive: true });
+    mkdirSync(resolve(target, ".."), { recursive: true });
+    writeFileSync(target, "#!/bin/sh\nexit 0\n");
+    chmodSync(target, 0o700);
+    symlinkSync(target, launcher);
+
+    expect(
+      resolvePiSetupLauncher({ HOME: root, PATH: "/usr/bin:/bin" }, "darwin")
+    ).toBe(launcher);
+    expect(
+      resolvePiSetupExecutable({ HOME: root, PATH: "/usr/bin:/bin" }, "darwin")
+    ).toBe(realpathSync(target));
   });
 
   it("resolves Windows npm launchers to the package Node entry", () => {

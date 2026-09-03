@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn as nodeSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import {
   aiClientCapabilityIds,
   defaultAiClientInstanceId,
+  nodeCliInvocation,
+  nodeCliProcessEnvironment,
   sanitizeAiClientDiagnostics,
   type AiClientCapabilityDescriptor,
   type AiClientDiagnostic,
@@ -16,6 +18,7 @@ import {
 import {
   query,
   type ModelInfo,
+  type Options,
   type SDKMessage
 } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -229,8 +232,9 @@ export const probeCodexVersion = async (
     CODEX_VERSION_PROBE_TIMEOUT_MS,
     Math.max(1, requestedTimeoutMs)
   );
-  const result = await execFileAsync(executablePath, ["--version"], {
-    env: environment,
+  const invocation = nodeCliInvocation(executablePath, ["--version"]);
+  const result = await execFileAsync(invocation.command, invocation.args, {
+    env: nodeCliProcessEnvironment(invocation, environment, environment),
     timeout: boundedTimeoutMs,
     maxBuffer: CODEX_VERSION_PROBE_MAX_BUFFER,
     windowsHide: true,
@@ -419,9 +423,7 @@ const claudeProbeInvocation = (
   executablePath: string,
   args: string[]
 ): { command: string; args: string[] } =>
-  path.extname(executablePath).toLowerCase() === ".js"
-    ? { command: process.execPath, args: [executablePath, ...args] }
-    : { command: executablePath, args };
+  nodeCliInvocation(executablePath, args);
 
 export const resolveClaudeCodeExecutable = (
   env: NodeJS.ProcessEnv = process.env,
@@ -526,11 +528,19 @@ export const checkClaudeCodeAvailability = async (
     const [{ stdout: versionOutput }, { stdout: authOutput }] =
       await Promise.all([
         execFileAsync(versionProbe.command, versionProbe.args, {
-          env: claudeAgentSdkEnvironment(env, "availability-check"),
+          env: claudeAgentSdkProcessEnvironment(
+            executablePath,
+            env,
+            "availability-check"
+          ),
           timeout: 10_000
         }),
         execFileAsync(authProbe.command, authProbe.args, {
-          env: claudeAgentSdkEnvironment(env, "availability-check"),
+          env: claudeAgentSdkProcessEnvironment(
+            executablePath,
+            env,
+            "availability-check"
+          ),
           timeout: 10_000
         })
       ]);
@@ -595,6 +605,44 @@ export const claudeAgentSdkEnvironment = (
       .filter((entry): entry is readonly [string, string] => Boolean(entry[1])),
     ["CLAUDE_AGENT_SDK_CLIENT_APP", `koed/${clientName}`]
   ]);
+};
+
+export const claudeAgentSdkProcessEnvironment = (
+  executablePath: string,
+  env: NodeJS.ProcessEnv,
+  clientName: string
+): NodeJS.ProcessEnv => {
+  const invocation = nodeCliInvocation(executablePath, []);
+  return nodeCliProcessEnvironment(
+    invocation,
+    claudeAgentSdkEnvironment(env, clientName),
+    env
+  );
+};
+
+export const claudeAgentSdkExecutableOptions = (
+  executablePath: string,
+  spawnProcess: typeof nodeSpawn = nodeSpawn
+): {
+  pathToClaudeCodeExecutable: string;
+  spawnClaudeCodeProcess?: NonNullable<Options["spawnClaudeCodeProcess"]>;
+} => {
+  const invocation = nodeCliInvocation(executablePath, []);
+  if (invocation.command !== process.execPath || invocation.args.length !== 1) {
+    return { pathToClaudeCodeExecutable: invocation.command };
+  }
+  const [nodeEntry] = invocation.args;
+  return {
+    pathToClaudeCodeExecutable: nodeEntry!,
+    spawnClaudeCodeProcess: ({ args, cwd, env, signal }) =>
+      spawnProcess(invocation.command, args, {
+        cwd,
+        env,
+        signal,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true
+      })
+  };
 };
 
 const claudeResultText = (message: Extract<SDKMessage, { type: "result" }>) => {
@@ -685,8 +733,12 @@ export const runClaudeAgentSdkTask = async (
       options: {
         abortController,
         cwd: config.cwd,
-        env: claudeAgentSdkEnvironment(config.env, config.clientName),
-        pathToClaudeCodeExecutable: config.executablePath,
+        env: claudeAgentSdkProcessEnvironment(
+          config.executablePath,
+          config.env,
+          config.clientName
+        ),
+        ...claudeAgentSdkExecutableOptions(config.executablePath),
         model: config.model,
         ...(effort ? { effort } : {}),
         thinking: { type: "disabled" },
@@ -759,8 +811,12 @@ export const listClaudeAgentSdkModels = async (
     prompt: idlePrompt(),
     options: {
       abortController,
-      env: claudeAgentSdkEnvironment(env, "model-discovery"),
-      pathToClaudeCodeExecutable: executablePath,
+      env: claudeAgentSdkProcessEnvironment(
+        executablePath,
+        env,
+        "model-discovery"
+      ),
+      ...claudeAgentSdkExecutableOptions(executablePath),
       tools: [],
       allowedTools: [],
       permissionMode: "dontAsk",

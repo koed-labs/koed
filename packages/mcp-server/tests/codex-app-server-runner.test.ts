@@ -25,6 +25,7 @@ const writeFakeAppServer = (
     versionOutput?: string;
     versionExitCode?: number;
     versionDelayMs?: number;
+    nodeEntry?: boolean;
     modelPages?: Array<{
       expectedCursor?: string | null;
       response: Record<string, unknown>;
@@ -177,9 +178,9 @@ lineReader.on("line", (line) => {
   }
 });
 `,
-    { mode: 0o600 }
+    { mode: 0o700 }
   );
-  return scriptPath;
+  return options.nodeEntry ? modulePath : scriptPath;
 };
 
 describe("Codex app-server runner", () => {
@@ -216,10 +217,15 @@ describe("Codex app-server runner", () => {
     );
     try {
       const executable = writeFakeAppServer(tempDirectory, {
+        nodeEntry: true,
         versionOutput: "codex 0.144.0\\n"
       });
       await expect(
-        probeCodexVersion(executable, process.env, 5_000)
+        probeCodexVersion(
+          executable,
+          { ...process.env, PATH: "/usr/bin:/bin" },
+          5_000
+        )
       ).resolves.toBe("0.144.0");
 
       const malformed = writeFakeAppServer(tempDirectory, {
@@ -344,6 +350,7 @@ describe("Codex app-server runner", () => {
     fs.mkdirSync(realCodexHome, { mode: 0o700 });
     const env = {
       ...process.env,
+      PATH: "/usr/bin:/bin",
       CODEX_HOME: realCodexHome,
       FAKE_REAL_CODEX_HOME: realCodexHome
     };
@@ -352,6 +359,7 @@ describe("Codex app-server runner", () => {
       const available = await checkCodexAppServerAvailability(
         {
           appServerBinary: writeFakeAppServer(tempDirectory, {
+            nodeEntry: true,
             modelPages: [
               {
                 expectedCursor: null,

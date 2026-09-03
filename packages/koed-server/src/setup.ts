@@ -44,7 +44,7 @@ import {
   registerExplicitAiClient,
   removeExplicitAiClient,
   restoreAiClientRegistry,
-  resolveExecutablePath
+  resolveCodexExecutablePath
 } from "./ai-client-registry.js";
 import { provisionLocalApiToken } from "./local-api-token.js";
 import {
@@ -97,6 +97,7 @@ export interface KoedServerSetupOptions {
   provisionLocalApiToken?: typeof provisionLocalApiToken;
   migrateCodex?: typeof migrateKoedOwnedCodexRegistrationBestEffort;
   registerAiClient?: typeof registerExplicitAiClient;
+  resolveCodexExecutable?: typeof resolveCodexExecutablePath;
   reportDiagnostic?: (message: string) => void;
 }
 
@@ -453,6 +454,7 @@ export const repairCodexIntegration = ({
   checkPid = isProcessRunning,
   resolveRuntime = resolveKoedAppRuntime,
   registerAiClient = registerExplicitAiClient,
+  resolveCodexExecutable = resolveCodexExecutablePath,
   now = () => new Date()
 }: Omit<
   KoedServerSetupOptions,
@@ -515,10 +517,7 @@ export const repairCodexIntegration = ({
       existsSync,
       readFileSync
     );
-    const codexExecutablePath = resolveExecutablePath(
-      integrationEnvironment.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex",
-      integrationEnvironment
-    );
+    const codexExecutablePath = resolveCodexExecutable(integrationEnvironment);
     const result = configureCodexIntegration({
       paths,
       environment: integrationEnvironment,
@@ -1020,7 +1019,8 @@ export const setupCodex = async (
       checkPid: options.checkPid,
       now: options.now,
       resolveRuntime: options.resolveRuntime,
-      registerAiClient: options.registerAiClient
+      registerAiClient: options.registerAiClient,
+      resolveCodexExecutable: options.resolveCodexExecutable
     });
   }
   const prepared = prepareSetupCodex(environment, options);
@@ -1050,6 +1050,31 @@ export const setupCodex = async (
     );
     return failed;
   }
+  let codexExecutablePath: string;
+  try {
+    codexExecutablePath = (
+      options.resolveCodexExecutable ?? resolveCodexExecutablePath
+    )(context.childEnv);
+  } catch (error) {
+    const failed = {
+      ok: false,
+      state: "needs_attention" as const,
+      koedHome: context.paths.koedHome,
+      apiUrl: context.apiUrl,
+      checkedAt: context.checkedAt,
+      command: "resolve Codex executable",
+      error: error instanceof Error ? error.message : String(error),
+      action:
+        "Install Codex or set MEMORY_CODEX_APP_SERVER_BINARY, then rerun Codex setup."
+    };
+    writeSetupVerification(
+      context.paths,
+      failed,
+      writeFileSync,
+      "Codex setup completed."
+    );
+    return failed;
+  }
   persistSetupApiToken(context);
   const result = runSetupBootstrap(
     context,
@@ -1062,8 +1087,7 @@ export const setupCodex = async (
         {
           environment: context.childEnv,
           driverId: "codex",
-          executablePath:
-            context.childEnv.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex",
+          executablePath: codexExecutablePath,
           displayName: "Codex",
           configHome: context.childEnv.CODEX_HOME
         }

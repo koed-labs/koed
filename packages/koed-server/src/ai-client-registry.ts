@@ -32,6 +32,27 @@ export interface ExecutablePathDependencies {
   accessSync?: typeof accessSync;
 }
 
+export const platformExecutableSearchDirectories = (
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform
+): readonly string[] =>
+  platform === "darwin"
+    ? [
+        join(environment.HOME ?? homedir(), ".local", "bin"),
+        join(
+          environment.HOME ?? homedir(),
+          ".local",
+          "share",
+          "fnm",
+          "aliases",
+          "default",
+          "bin"
+        ),
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
+      ]
+    : [];
+
 const validateExecutableCandidate = (
   candidate: string,
   dependencies: Required<ExecutablePathDependencies>
@@ -53,7 +74,8 @@ const validateExecutableCandidate = (
 export const resolveExecutablePath = (
   requestedPath: string,
   environment: NodeJS.ProcessEnv,
-  dependencies: ExecutablePathDependencies = {}
+  dependencies: ExecutablePathDependencies = {},
+  additionalDirectories: readonly string[] = []
 ): string => {
   const requested = requestedPath.trim();
   if (!requested) throw new Error("AI Client executable path is empty.");
@@ -63,12 +85,15 @@ export const resolveExecutablePath = (
     accessSync,
     ...dependencies
   };
+  const directories = [
+    ...(environment.PATH ?? process.env.PATH ?? "")
+      .split(delimiter)
+      .filter(Boolean),
+    ...additionalDirectories
+  ];
   const candidates = isAbsolute(requested)
     ? [requested]
-    : (environment.PATH ?? process.env.PATH ?? "")
-        .split(delimiter)
-        .filter(Boolean)
-        .map((directory) => join(directory, requested));
+    : directories.map((directory) => join(directory, requested));
   let invalid: "not-file" | "not-executable" | undefined;
   for (const candidate of candidates) {
     const result = validateExecutableCandidate(candidate, fs);
@@ -82,6 +107,32 @@ export const resolveExecutablePath = (
     throw new Error(`AI Client executable is not executable: ${requested}`);
   }
   throw new Error(`AI Client executable was not found: ${requested}`);
+};
+
+export const resolveExecutablePathWithPlatformFallbacks = (
+  requestedPath: string,
+  environment: NodeJS.ProcessEnv,
+  dependencies: ExecutablePathDependencies = {},
+  platform: NodeJS.Platform = process.platform
+): string =>
+  resolveExecutablePath(
+    requestedPath,
+    environment,
+    dependencies,
+    platformExecutableSearchDirectories(environment, platform)
+  );
+
+export const resolveCodexExecutablePath = (
+  environment: NodeJS.ProcessEnv,
+  dependencies: ExecutablePathDependencies = {}
+): string => {
+  const requested =
+    environment.MEMORY_CODEX_APP_SERVER_BINARY?.trim() || "codex";
+  return resolveExecutablePathWithPlatformFallbacks(
+    requested,
+    environment,
+    dependencies
+  );
 };
 
 export const aiClientRegistryPath = (environment: NodeJS.ProcessEnv): string =>
@@ -327,10 +378,11 @@ export const migrateKoedOwnedCodexRegistration = (input: {
     "utf8"
   ) as string;
   if (parseCodexOwnershipBlock(content).kind !== "valid") return false;
+  const executablePath = resolveCodexExecutablePath(environment);
   registerExplicitAiClient({
     environment,
     driverId: "codex",
-    executablePath: environment.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex",
+    executablePath,
     displayName: "Codex",
     configHome: environment.CODEX_HOME
   });

@@ -66,16 +66,23 @@ headless CLI also expose read-only `check claude --json` plus protected
 `remove claude --json`; removal requires consent and touches only Koed-owned
 entries.
 
-When Claude Code is not on `PATH`, pass an absolute executable path:
+Koed first searches the inherited `PATH`. On macOS it also searches
+`~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin`, which lets a packaged
+Koed app find Claude Code without loading interactive shell startup files. For
+an installation elsewhere, pass an absolute executable path:
 
 ```bash
 KOED_CLAUDE_CODE_EXECUTABLE=/absolute/path/to/claude \
 pnpm claude:configure
 ```
 
-`KOED_CLAUDE_CODE_EXECUTABLE` is resolved to its canonical real path before
-Claude synthesis work. A missing or invalid executable fails closed. There is
-no direct CLI synthesis fallback and no bundled Claude runtime.
+`KOED_CLAUDE_CODE_EXECUTABLE` takes priority over discovered paths. The stable
+absolute launcher path is stored in the AI Client registry before Claude
+synthesis work and its current target is resolved at execution time. When that
+target is a Node-based Claude Code CLI entry, Koed invokes it through its
+trusted Node runtime rather than depending on `/usr/bin/env node` and an
+interactive-shell `PATH`. A missing or invalid executable fails closed. There
+is no direct CLI synthesis fallback and no bundled Claude runtime.
 
 The setup script writes only `KOED_HOME` to the local MCP configuration. The
 stateless MCP adapter discovers the authenticated Local AI Runtime through its

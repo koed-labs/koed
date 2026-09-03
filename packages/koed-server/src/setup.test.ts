@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -89,6 +90,7 @@ const runSetupCodex = (
       reused: true,
       ownerUserId: "personal-owner"
     }),
+    resolveCodexExecutable: () => "/bin/sh",
     registerAiClient: () => true,
     ...options
   });
@@ -243,6 +245,7 @@ describe("Codex setup wrapper", () => {
         return { token: "core", reused: false, ownerUserId: "owner" };
       },
       migrateCodex: () => ({ migrated: false }),
+      resolveCodexExecutable: () => "/bin/sh",
       spawnSync: () => {
         order.push("bootstrap");
         return spawnResult();
@@ -260,6 +263,62 @@ describe("Codex setup wrapper", () => {
     );
   });
 
+  it("stores the resolved absolute Codex path after setup", async () => {
+    const root = tempDir();
+    const bin = resolve(root, "bin");
+    const codex = resolve(bin, "codex");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(codex, "#!/bin/sh\n");
+    chmodSync(codex, 0o755);
+
+    const result = await setupCodex({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "external",
+        DATABASE_URL: "postgres://operator/db",
+        API_TOKEN_PEPPER: "pepper",
+        PATH: bin
+      },
+      resolveRuntime: (paths) =>
+        ({
+          kind: "source",
+          artifactSource: "source-checkout",
+          root: paths.repoRoot,
+          apiEntry: "api",
+          workerEntry: "worker",
+          embeddingServiceEntry: "embedding",
+          privacyServiceEntry: "privacy",
+          mcpCli: "mcp",
+          localAiRuntime: "local-ai",
+          captureHook: "capture",
+          dbPackageRoot: "db",
+          missing: []
+        }) as never,
+      provisionLocalApiToken: async () => ({
+        token: "core",
+        reused: false,
+        ownerUserId: "owner"
+      }),
+      migrateCodex: () => ({ migrated: false }),
+      spawnSync: () => spawnResult()
+    });
+
+    expect(result.ok).toBe(true);
+    expect(
+      JSON.parse(
+        readFileSync(resolve(root, "config/ai-client-instances.json"), "utf8")
+      )
+    ).toMatchObject({
+      instances: [
+        {
+          instanceId: "codex.default",
+          executablePath: codex
+        }
+      ]
+    });
+  });
+
   it("keeps core healthy when legacy Codex migration lacks optional executable", async () => {
     const root = tempDir();
     const codexConfig = resolve(root, "codex/config.toml");
@@ -273,6 +332,7 @@ describe("Codex setup wrapper", () => {
         DATABASE_URL: "postgres://operator/db",
         API_TOKEN_PEPPER: "pepper",
         CODEX_CONFIG_PATH: codexConfig,
+        MEMORY_CODEX_APP_SERVER_BINARY: resolve(root, "missing-codex"),
         PATH: resolve(root, "missing-bin")
       },
       resolveRuntime: (paths) => ({

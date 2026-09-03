@@ -164,7 +164,7 @@ describe("AI Client capability publisher", () => {
       );
       expect(seen).toContainEqual({
         instanceId: "codex.default",
-        executablePath: fs.realpathSync(configuredExecutable)
+        executablePath: configuredExecutable
       });
     } finally {
       for (const [id, original] of originals) {

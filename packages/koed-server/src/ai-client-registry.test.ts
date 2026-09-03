@@ -8,11 +8,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   migrateKoedOwnedCodexRegistration,
   migrateKoedOwnedCodexRegistrationBestEffort,
   registerExplicitAiClient,
+  resolveCodexExecutablePath,
   resolveExecutablePath
 } from "./ai-client-registry.js";
 
@@ -24,11 +25,106 @@ const home = () => {
 };
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const value of homes.splice(0))
     rmSync(value, { recursive: true, force: true });
 });
 
 describe("AI Client instance registry", () => {
+  const executableDependencies = (
+    candidates: Record<string, "executable" | "not-executable">
+  ) =>
+    ({
+      existsSync: (candidate: string) => candidate in candidates,
+      statSync: (candidate: string) => ({
+        isFile: () => candidate in candidates
+      }),
+      accessSync: (candidate: string) => {
+        if (candidates[candidate] === "not-executable") {
+          throw new Error("permission denied");
+        }
+      }
+    }) as never;
+
+  it("finds Codex in the Homebrew directory with a Finder-style PATH", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    expect(
+      resolveCodexExecutablePath(
+        { PATH: "/usr/bin:/bin", HOME: "/Users/operator" },
+        executableDependencies({
+          "/opt/homebrew/bin/codex": "executable"
+        })
+      )
+    ).toBe("/opt/homebrew/bin/codex");
+  });
+
+  it("finds Codex through the fnm default alias with a Finder-style PATH", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    expect(
+      resolveCodexExecutablePath(
+        { PATH: "/usr/bin:/bin", HOME: "/Users/operator" },
+        executableDependencies({
+          "/Users/operator/.local/share/fnm/aliases/default/bin/codex":
+            "executable"
+        })
+      )
+    ).toBe("/Users/operator/.local/share/fnm/aliases/default/bin/codex");
+  });
+
+  it("prioritizes the explicit Codex binary override", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const explicit = "/Applications/Codex/bin/codex";
+    expect(
+      resolveCodexExecutablePath(
+        {
+          PATH: "/custom/bin",
+          MEMORY_CODEX_APP_SERVER_BINARY: `  ${explicit}  `
+        },
+        executableDependencies({
+          [explicit]: "executable",
+          "/custom/bin/codex": "executable",
+          "/opt/homebrew/bin/codex": "executable"
+        })
+      )
+    ).toBe(explicit);
+  });
+
+  it("prioritizes Codex on PATH over macOS fallback directories", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    expect(
+      resolveCodexExecutablePath(
+        { PATH: "/custom/bin", HOME: "/Users/operator" },
+        executableDependencies({
+          "/custom/bin/codex": "executable",
+          "/Users/operator/.local/bin/codex": "executable",
+          "/opt/homebrew/bin/codex": "executable"
+        })
+      )
+    ).toBe("/custom/bin/codex");
+  });
+
+  it("reports the existing not-found error when Codex is missing", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    expect(() =>
+      resolveCodexExecutablePath(
+        { PATH: "/usr/bin:/bin", HOME: "/Users/operator" },
+        executableDependencies({})
+      )
+    ).toThrow("AI Client executable was not found: codex");
+  });
+
+  it("reports the existing permission error for non-executable Codex", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    expect(() =>
+      resolveCodexExecutablePath(
+        { PATH: "/custom/bin", HOME: "/Users/operator" },
+        executableDependencies({
+          "/custom/bin/codex": "not-executable"
+        })
+      )
+    ).toThrow("AI Client executable is not executable: codex");
+  });
+
   it("registers resolved PATH executable and preserves existing entries", () => {
     const koedHome = home();
     const registry = resolve(koedHome, "config/ai-client-instances.json");
@@ -79,7 +175,6 @@ describe("AI Client instance registry", () => {
     writeFileSync(nonExecutable, "not executable\n");
     chmodSync(executable, 0o755);
     chmodSync(nonExecutable, 0o644);
-
     expect(resolveExecutablePath(executable, { PATH: "" })).toBe(executable);
     expect(resolveExecutablePath("client", { PATH: bin })).toBe(executable);
     expect(() => resolveExecutablePath(nonExecutable, { PATH: "" })).toThrow(

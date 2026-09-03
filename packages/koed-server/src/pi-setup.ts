@@ -12,11 +12,13 @@ import {
   statSync
 } from "node:fs";
 import { dirname, delimiter, isAbsolute, join, resolve } from "node:path";
+import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 import { installPiPackageTransaction } from "./pi-package-transaction.mjs";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   assertAiClientRegistryWritable,
   captureAiClientRegistry,
+  platformExecutableSearchDirectories,
   registerExplicitAiClient,
   removeExplicitAiClient,
   restoreAiClientRegistry
@@ -125,11 +127,9 @@ export const piSetupInvocation = (
   executablePath: string,
   args: string[]
 ): { command: string; args: string[] } =>
-  executablePath.toLowerCase().endsWith(".js")
-    ? { command: process.execPath, args: [executablePath, ...args] }
-    : { command: executablePath, args };
+  nodeCliInvocation(executablePath, args);
 
-export const resolvePiSetupExecutable = (
+export const resolvePiSetupLauncher = (
   environment: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform
 ): string => {
@@ -140,7 +140,11 @@ export const resolvePiSetupExecutable = (
   let candidate = configured;
   if (!candidate) {
     const pathDelimiter = platform === "win32" ? ";" : delimiter;
-    for (const directory of (environment.PATH ?? "").split(pathDelimiter)) {
+    const directories = [
+      ...(environment.PATH ?? "").split(pathDelimiter),
+      ...platformExecutableSearchDirectories(environment, platform)
+    ];
+    for (const directory of directories) {
       if (!isAbsolute(directory)) continue;
       candidate = executableNames(platform)
         .map((name) => join(directory, name))
@@ -159,7 +163,15 @@ export const resolvePiSetupExecutable = (
       "Pi was not found. Install Pi, or set KOED_PI_EXECUTABLE to its absolute path."
     );
   }
-  const canonical = realpathSync(resolvePiSetupNodeEntry(candidate, platform));
+  return resolve(candidate);
+};
+
+export const resolvePiSetupExecutable = (
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
+): string => {
+  const launcher = resolvePiSetupLauncher(environment, platform);
+  const canonical = realpathSync(resolvePiSetupNodeEntry(launcher, platform));
   if (!statSync(canonical).isFile()) {
     throw new Error(`Pi executable is not a file: ${canonical}`);
   }
@@ -205,7 +217,11 @@ export const removePi = (
     const runPi = (args: string[], timeout: number) => {
       const invocation = piSetupInvocation(executable, args);
       return spawnSync(invocation.command, invocation.args, {
-        env: childEnvironment,
+        env: nodeCliProcessEnvironment(
+          invocation,
+          childEnvironment,
+          environment
+        ),
         encoding: "utf8",
         timeout,
         ...(args[0] === "list" ? { maxBuffer: 4 * 1024 * 1024 } : {})
@@ -366,12 +382,17 @@ export const setupPi = (
     };
   }
   try {
+    const launcher = resolvePiSetupLauncher(environment);
     const executable = resolvePiSetupExecutable(environment);
     const childEnvironment = piSetupEnvironment(environment, paths.koedHome);
     const runPi = (args: string[], timeout: number) => {
       const invocation = piSetupInvocation(executable, args);
       return spawnSync(invocation.command, invocation.args, {
-        env: childEnvironment,
+        env: nodeCliProcessEnvironment(
+          invocation,
+          childEnvironment,
+          environment
+        ),
         encoding: "utf8",
         timeout,
         ...(args[0] === "--list-models" ? { maxBuffer: 4 * 1024 * 1024 } : {})
@@ -427,7 +448,7 @@ export const setupPi = (
         const registered = registerExplicitAiClient({
           environment: registryEnvironment,
           driverId: "pi",
-          executablePath: executable,
+          executablePath: launcher,
           displayName: "Pi",
           configHome: environment.PI_CODING_AGENT_DIR
         });

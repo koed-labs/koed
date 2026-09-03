@@ -37,6 +37,18 @@ unrelated Codex settings. Koed Desktop mandatory setup runs core setup only.
 `pnpm clients:bootstrap` remains an explicit Codex-focused Local Operator
 Script for manual recovery.
 
+Koed first uses a non-empty `MEMORY_CODEX_APP_SERVER_BINARY` override, then
+searches the inherited `PATH`. On macOS it also searches `~/.local/bin`,
+`/opt/homebrew/bin`, and `/usr/local/bin`, in that order. This supports packaged
+Koed apps started from Finder without running an interactive shell or loading
+shell startup files. Set `MEMORY_CODEX_APP_SERVER_BINARY` to the executable's
+absolute path for installations in other locations. Koed stores the stable
+absolute launcher path in `KOED_HOME/config/ai-client-instances.json` and
+resolves its current target at execution time, so package upgrades can retarget
+the launcher. When that target is a Node-based Codex CLI entry, Koed invokes it
+through its trusted Node runtime rather than depending on `/usr/bin/env node`
+and an interactive-shell `PATH`.
+
 Koed changes only the section between its `koed-memory-guidance` HTML comment
 markers. Existing global instructions and all Project-level `AGENTS.md` files
 remain untouched. Repeated setup updates that section in place. If the markers
@@ -128,8 +140,8 @@ Client and the Local AI Runtime. There is no browser answer bridge.
 The Local AI Runtime starts the provider selected for each synthesis flow.
 Codex-backed work uses app-server mode; Claude-backed work uses the pinned
 Claude Agent SDK with the confirmed local Claude Code executable. Users do not
-run a separate worker command. `MEMORY_CODEX_APP_SERVER_BINARY` can override
-the Codex binary path when needed.
+run a separate worker command. `MEMORY_CODEX_APP_SERVER_BINARY` is the explicit
+override for a Codex binary in a nonstandard installation location.
 
 ## Transcript Watcher and Capture Hook
 

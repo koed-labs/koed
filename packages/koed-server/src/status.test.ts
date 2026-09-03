@@ -16,6 +16,7 @@ import {
   collectKoedServerStartupStatus,
   collectKoedServerStatus,
   healthy,
+  inspectCodex,
   inspectAiClientFlowReadiness,
   inspectAiClientInstanceReadiness,
   inspectAiClientReadiness,
@@ -159,6 +160,74 @@ afterEach(() => {
   for (const path of temps.splice(0)) {
     rmSync(path, { recursive: true, force: true });
   }
+});
+
+describe("Codex installation status", () => {
+  it("detects fallback-discovered Codex before first-time configuration", () => {
+    const root = tempDir();
+    const environment = { HOME: root, PATH: "/usr/bin:/bin", KOED_HOME: root };
+    const status = inspectCodex(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        fetch: globalThis.fetch.bind(globalThis),
+        spawnSync: (() => spawnResult("codex-cli 0.152.1\n")) as never,
+        existsSync,
+        readFileSync,
+        resolvePiExecutable: () => "/bin/sh",
+        resolveClaudeExecutable: () => "/bin/sh",
+        resolveCodexExecutable: () => "/opt/homebrew/bin/codex",
+        checkPid: () => true,
+        now: () => new Date()
+      },
+      true
+    );
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: true,
+      details: {
+        executable: "/opt/homebrew/bin/codex",
+        version: "codex-cli 0.152.1"
+      }
+    });
+  });
+
+  it("detects fallback-discovered Codex with an existing unconfigured profile", () => {
+    const root = tempDir();
+    const codexHome = resolve(root, ".codex");
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(resolve(codexHome, "config.toml"), 'profile = "default"\n');
+    const environment = { HOME: root, PATH: "/usr/bin:/bin", KOED_HOME: root };
+    const status = inspectCodex(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        fetch: globalThis.fetch.bind(globalThis),
+        spawnSync: (() => spawnResult("codex-cli 0.152.1\n")) as never,
+        existsSync,
+        readFileSync,
+        resolvePiExecutable: () => "/bin/sh",
+        resolveClaudeExecutable: () => "/bin/sh",
+        resolveCodexExecutable: () => "/opt/homebrew/bin/codex",
+        checkPid: () => true,
+        now: () => new Date()
+      },
+      true
+    );
+
+    expect(status).toMatchObject({
+      state: "not_configured",
+      configured: false,
+      detected: true,
+      details: {
+        executable: "/opt/homebrew/bin/codex",
+        version: "codex-cli 0.152.1",
+        codexConfigPath: resolve(codexHome, "config.toml")
+      }
+    });
+  });
 });
 
 describe("startup status", () => {
@@ -1302,12 +1371,20 @@ describe("Claude Code integration status", () => {
       })
     );
     const settingsContent = readFileSync(settingsPath, "utf8");
+    const claudeExecutable = resolve(root, "claude/cli.js");
     const environment = {
       HOME: root,
       KOED_HOME: resolve(root, "koed"),
       KOED_REPO_ROOT: root,
-      CLAUDE_SETTINGS_PATH: settingsPath
+      CLAUDE_SETTINGS_PATH: settingsPath,
+      PATH: "/usr/bin:/bin",
+      ELECTRON_RUN_AS_NODE: "1"
     };
+    const commands: Array<{
+      command: string;
+      rawArgs: string[];
+      env?: NodeJS.ProcessEnv;
+    }> = [];
 
     const status = inspectClaudeCode(
       environment,
@@ -1315,14 +1392,23 @@ describe("Claude Code integration status", () => {
       {
         existsSync,
         readFileSync: () => settingsContent,
-        spawnSync: (_command: string, args: string[]) =>
-          args[0] === "--version"
+        resolveClaudeExecutable: () => claudeExecutable,
+        spawnSync: (
+          command: string,
+          rawArgs: string[],
+          options?: { env?: NodeJS.ProcessEnv }
+        ) => {
+          commands.push({ command, rawArgs, env: options?.env });
+          const args =
+            command === process.execPath ? rawArgs.slice(1) : rawArgs;
+          return args[0] === "--version"
             ? spawnResult("2.1.227 (Claude Code)\n")
             : args[0] === "mcp" && args[1] === "get"
               ? spawnResult(
                   `koed:\n  Type: stdio\n  Command: node\n  Args: ${resolve(root, "packages/mcp-server/dist/cli.js")}\n  Environment:\n    KOED_HOME=${resolve(root, "koed")}\n`
                 )
-              : spawnResult("")
+              : spawnResult("");
+        }
       } as never
     );
 
@@ -1335,6 +1421,16 @@ describe("Claude Code integration status", () => {
       version: "2.1.227 (Claude Code)",
       settingsPath
     });
+    expect(commands).toHaveLength(3);
+    expect(commands.every(({ command }) => command === process.execPath)).toBe(
+      true
+    );
+    expect(
+      commands.every(({ rawArgs }) => rawArgs[0] === claudeExecutable)
+    ).toBe(true);
+    expect(commands.every(({ env }) => env?.ELECTRON_RUN_AS_NODE === "1")).toBe(
+      true
+    );
   });
 
   it("keeps missing Claude Code optional but actionable", () => {
@@ -1344,7 +1440,13 @@ describe("Claude Code integration status", () => {
     const status = inspectClaudeCode(
       environment,
       resolveKoedServerPaths(environment),
-      { existsSync: () => false, spawnSync: () => spawnResult("", 1) } as never
+      {
+        existsSync: () => false,
+        resolveClaudeExecutable: () => {
+          throw new Error("missing");
+        },
+        spawnSync: () => spawnResult("", 1)
+      } as never
     );
 
     expect(status).toMatchObject({
@@ -1365,7 +1467,13 @@ describe("Claude Code integration status", () => {
     const status = inspectClaudeCode(
       environment,
       resolveKoedServerPaths(environment),
-      { existsSync, spawnSync: () => spawnResult("", 1) } as never
+      {
+        existsSync,
+        resolveClaudeExecutable: () => {
+          throw new Error("missing");
+        },
+        spawnSync: () => spawnResult("", 1)
+      } as never
     );
 
     expect(status).toMatchObject({

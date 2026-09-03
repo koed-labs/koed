@@ -193,6 +193,18 @@ Codex; it preserves existing registry entries and config bytes. Unrelated
 detection never selects a client or edits its profile. Existing Codex configuration, API Token, and Personal Memory remain
 in place.
 
+AI Client registration resolves the executable before writing it to the
+registry. Koed first uses the client's non-empty explicit override, then
+searches the inherited `PATH`. On macOS, Codex, Claude Code, and Pi discovery
+additionally searches `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin`,
+in that order. Koed does not start an interactive shell for discovery. The
+registry stores the resulting stable absolute launcher path so the Local AI
+Runtime does not need to search `PATH` again. Koed resolves the launcher's
+current target at execution time, allowing package upgrades to retarget it.
+Node-based CLI entries are invoked through Koed's trusted Node runtime, so npm
+launchers do not depend on `/usr/bin/env node` finding Node in Finder's minimal
+`PATH`. Pi retains its additional canonical-target and npm shim validation.
+
 ## Clone-Safe Local Device Identity
 
 On first local control-plane use, `koed-server` creates opaque stable
@@ -976,9 +988,9 @@ These values are copied into the AI Client configuration and are not consumed au
 - `KOED_AI_CLIENT_INSTANCE_REGISTRY`: explicit JSON registry of local AI Client instances probed by the Local AI Runtime. Default `KOED_HOME/config/ai-client-instances.json`; missing or empty registry publishes no instances. Setup commands register provider defaults.
 - `MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS`: when `true`, exposes diagnostic MCP tools such as `memory_access_check`. Default `false`; use the MCP `doctor` CLI command for normal setup checks.
 - `MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS`: when `true`, exposes low-level diagnostic MCP retrieval tools such as `memory_search` and `memory_expand`. Default `false`; normal recall should use `memory_answer`.
-- `MEMORY_CODEX_APP_SERVER_BINARY`: Codex app-server binary used by local Synthesis flows. Default `codex`.
-- `KOED_CLAUDE_CODE_EXECUTABLE`: optional absolute path to a separately installed Claude Code executable. Koed otherwise discovers and validates the local installation; it never accepts an Anthropic API key or bundles Claude Code.
-- `KOED_PI_EXECUTABLE`: optional absolute path to separately installed Pi `0.84.2+`. Koed canonicalizes and validates the installation, resolves Windows npm shims to a verified Node entry point, and reuses Pi-managed authentication; it never accepts Pi provider credentials or bundles Pi.
+- `MEMORY_CODEX_APP_SERVER_BINARY`: explicit Codex executable override for nonstandard installations. When unset or blank, Koed searches `PATH` and, on macOS, `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin`.
+- `KOED_CLAUDE_CODE_EXECUTABLE`: optional absolute path to a separately installed Claude Code executable. When unset or blank, Koed searches `PATH` and, on macOS, `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin`. Koed validates the local installation; it never accepts an Anthropic API key or bundles Claude Code.
+- `KOED_PI_EXECUTABLE`: optional absolute path to separately installed Pi `0.84.2+`. When unset or blank, Koed searches `PATH` and, on macOS, `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin`. Koed canonicalizes and validates the installation, resolves Windows npm shims to a verified Node entry point, and reuses Pi-managed authentication; it never accepts Pi provider credentials or bundles Pi.
 - `KOED_CLAUDE_CODE_DISCOVERY_CACHE`: optional absolute local path for the owner-only confirmed installation record. Default `KOED_HOME/state/claude-code-installation.json`.
 - `KOED_MANAGED_CONVERSATION_CLAUDE_MODEL`: model used for Koed-managed Claude Conversations. Default `claude-haiku-4-5-20251001`.
 - `MEMORY_ANSWER_PROVIDER`: AI Client provider for MCP Memory Answer synthesis. Supported values are `codex`, `claude`, and `pi`; default `codex`. Pi requires full provider/model ID.

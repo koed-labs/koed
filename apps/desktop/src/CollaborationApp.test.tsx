@@ -1094,6 +1094,20 @@ const click = async (container: HTMLElement, label: string) => {
   await act(async () => button.click());
 };
 
+/** Overflow menus gate destructive actions; open one, then hit the item. */
+const clickMenuItem = async (
+  container: HTMLElement,
+  owner: string,
+  item: string
+) => {
+  await click(container, `Actions for ${owner}`);
+  await click(container, item);
+};
+
+/** Workspace Access edits live in a per-member popover. */
+const openAccess = async (container: HTMLElement, person: string) =>
+  click(container, `Workspace access for ${person}`);
+
 const clickNoteBody = async () => {
   const body = document.body.querySelector<HTMLElement>(
     '[aria-label="Edit Note content"]'
@@ -1349,6 +1363,45 @@ describe("CollaborationApp", () => {
       await localStatusStore.refresh();
     });
     await vi.waitFor(() => expect(listProjects).toHaveBeenCalledOnce());
+  });
+
+  it("returns to People content when navigating back from a Workspace", async () => {
+    const client = await render();
+
+    await click(container, "Atlas Research");
+    await click(container, "People");
+    await vi.waitFor(() =>
+      expect(container.querySelector(".collab-people h1")?.textContent).toBe(
+        "People"
+      )
+    );
+
+    await click(container, "Open Launch Plans");
+    await vi.waitFor(() =>
+      expect(container.querySelector(".collab-people")).toBeNull()
+    );
+
+    await click(container, "Go back");
+    await vi.waitFor(() =>
+      expect(container.querySelector(".collab-people h1")?.textContent).toBe(
+        "People"
+      )
+    );
+    expect(client.select).toHaveBeenLastCalledWith({
+      kind: "team_people",
+      teamId: ids.team
+    });
+
+    await click(container, "Go forward");
+    await vi.waitFor(() =>
+      expect(container.querySelector(".collab-people")).toBeNull()
+    );
+    expect(client.select).toHaveBeenLastCalledWith({
+      kind: "workspace_channel",
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      threadId: ids.channel
+    });
   });
 
   it("refreshes an unready top-level health status until it becomes healthy", async () => {
@@ -3072,7 +3125,7 @@ describe("CollaborationApp", () => {
 
     await click(container, "Close Invite member");
     expect(document.body.textContent).toContain("new.member@example.test");
-    await click(container, "Revoke");
+    await clickMenuItem(container, "new.member@example.test", "Revoke");
     expect(client.revokeInvitation).toHaveBeenCalledWith({
       teamId: ids.team,
       invitationId: ids.invitation,
@@ -3098,11 +3151,29 @@ describe("CollaborationApp", () => {
     await act(async () =>
       setValue(
         document.body.querySelector<HTMLSelectElement>(
-          'select[aria-label="Role for Alex Chen"]'
+          'select[aria-label="Team role for Alex Chen"]'
+        )!,
+        "owner"
+      )
+    );
+    expect(leave.disabled).toBe(true);
+    expect(document.body.textContent).toContain(
+      "The last owner must assign another owner before leaving."
+    );
+
+    await act(async () =>
+      setValue(
+        document.body.querySelector<HTMLSelectElement>(
+          'select[aria-label="Team role for Alex Chen"]'
         )!,
         "admin"
       )
     );
+    expect(client.updateMemberRole).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(
+      "Alex Chen · Team role: member → admin"
+    );
+    await click(container, "Apply changes");
     expect(client.updateMemberRole).toHaveBeenCalledWith({
       teamId: ids.team,
       userId: ids.alex,
@@ -3110,6 +3181,7 @@ describe("CollaborationApp", () => {
       expectedVersion: 1
     });
 
+    await openAccess(container, "Riley Jones");
     await act(async () =>
       setValue(
         document.body.querySelector<HTMLSelectElement>(
@@ -3122,7 +3194,7 @@ describe("CollaborationApp", () => {
     expect(document.body.textContent).toContain(
       "Riley Jones · Launch Plans: disabled → write"
     );
-    await click(container, "Review and apply");
+    await click(container, "Apply changes");
     expect(client.setWorkspaceAccess).toHaveBeenCalledWith({
       teamId: ids.team,
       workspaceId: ids.workspace,
@@ -3185,7 +3257,7 @@ describe("CollaborationApp", () => {
       )
     );
     expect(client.setWorkspaceAccess).toHaveBeenCalledTimes(1);
-    await click(container, "Review and apply");
+    await click(container, "Apply changes");
     expect(client.setWorkspaceAccess).toHaveBeenLastCalledWith({
       teamId: ids.team,
       workspaceId: ids.workspace,
@@ -3203,7 +3275,7 @@ describe("CollaborationApp", () => {
       )
     );
     expect(client.setWorkspaceAccess).toHaveBeenCalledTimes(2);
-    await click(container, "Review and apply");
+    await click(container, "Apply changes");
     expect(client.setWorkspaceAccess).toHaveBeenLastCalledWith({
       teamId: ids.team,
       workspaceId: ids.workspace,
@@ -3221,7 +3293,7 @@ describe("CollaborationApp", () => {
     });
     await click(container, "People");
 
-    await click(container, "Archive");
+    await clickMenuItem(container, "Launch Plans", "Archive");
     expect(client.archiveWorkspace).toHaveBeenCalledWith({
       teamId: ids.team,
       workspaceId: ids.workspace,
@@ -3253,7 +3325,7 @@ describe("CollaborationApp", () => {
         }
       })
     );
-    await click(container, "Restore");
+    await clickMenuItem(container, "Launch Plans", "Restore");
     expect(client.restoreWorkspace).toHaveBeenCalledWith({
       teamId: ids.team,
       workspaceId: ids.workspace,
@@ -3277,6 +3349,192 @@ describe("CollaborationApp", () => {
       name: "Operations",
       description: "Runbooks"
     });
+  });
+
+  it("keeps owner-only role and member lifecycle actions unavailable to admins", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "team_people",
+      teamId: ids.team
+    });
+    const asAdmin = (
+      people: CollaborationSnapshot["navigation"]["teams"][number]["people"]
+    ) =>
+      people.map((person) =>
+        person.management
+          ? {
+              ...person,
+              management: {
+                ...person.management,
+                role:
+                  person.id === ids.alex
+                    ? ("owner" as const)
+                    : person.id === remoteMark.id
+                      ? ("admin" as const)
+                      : person.management.role
+              }
+            }
+          : person
+      );
+    const snapshot = collaborationSnapshotSchema.parse({
+      ...selected,
+      navigation: {
+        ...selected.navigation,
+        teams: selected.navigation.teams.map((team) =>
+          team.id === ids.team
+            ? { ...team, role: "admin", people: asAdmin(team.people) }
+            : team
+        )
+      },
+      view:
+        selected.view.kind === "team_people"
+          ? { ...selected.view, people: asAdmin(selected.view.people) }
+          : selected.view
+    });
+    await render(createClient(snapshot));
+
+    const rileyRole = document.body.querySelector<HTMLSelectElement>(
+      'select[aria-label="Team role for Riley Jones"]'
+    )!;
+    expect([...rileyRole.options].map(({ value }) => value)).toEqual([
+      "admin",
+      "member"
+    ]);
+
+    const alexRole = document.body.querySelector<HTMLSelectElement>(
+      'select[aria-label="Team role for Alex Chen"]'
+    )!;
+    expect(alexRole.disabled).toBe(true);
+    await click(container, "Actions for Alex Chen");
+    expect(document.body.textContent).toContain(
+      "Only a Team owner can disable another owner."
+    );
+    expect(
+      document.body.querySelector<HTMLButtonElement>(
+        '.collab-menu[role="menu"] button'
+      )?.disabled
+    ).toBe(true);
+  });
+
+  it("applies access changes before demoting the current manager", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "team_people",
+      teamId: ids.team
+    });
+    const withSecondOwner = (
+      people: CollaborationSnapshot["navigation"]["teams"][number]["people"]
+    ) =>
+      people.map((person) =>
+        person.id === ids.alex && person.management
+          ? {
+              ...person,
+              management: { ...person.management, role: "owner" as const }
+            }
+          : person
+      );
+    const snapshot = collaborationSnapshotSchema.parse({
+      ...selected,
+      navigation: {
+        ...selected.navigation,
+        teams: selected.navigation.teams.map((team) =>
+          team.id === ids.team
+            ? { ...team, people: withSecondOwner(team.people) }
+            : team
+        )
+      },
+      view:
+        selected.view.kind === "team_people"
+          ? { ...selected.view, people: withSecondOwner(selected.view.people) }
+          : selected.view
+    });
+    const client = await render(createClient(snapshot));
+
+    await act(async () =>
+      setValue(
+        document.body.querySelector<HTMLSelectElement>(
+          'select[aria-label="Team role for Mark Fixture"]'
+        )!,
+        "member"
+      )
+    );
+    await openAccess(container, "Riley Jones");
+    await act(async () =>
+      setValue(
+        document.body.querySelector<HTMLSelectElement>(
+          'select[aria-label="Launch Plans access for Riley Jones"]'
+        )!,
+        "write"
+      )
+    );
+    await click(container, "Apply changes");
+
+    expect(client.setWorkspaceAccess).toHaveBeenCalledOnce();
+    expect(client.updateMemberRole).toHaveBeenCalledOnce();
+    expect(
+      vi.mocked(client.setWorkspaceAccess).mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      vi.mocked(client.updateMemberRole).mock.invocationCallOrder[0]!
+    );
+  });
+
+  it("reanchors the Workspace menu when switching directly between cards", async () => {
+    const selected = viewFor(baseSnapshot(), {
+      kind: "team_people",
+      teamId: ids.team
+    });
+    const addWorkspace = (
+      workspaces: CollaborationSnapshot["navigation"]["teams"][number]["workspaces"]
+    ) => [
+      ...workspaces,
+      {
+        ...workspaces[0]!,
+        id: uuid(520),
+        name: "Operations",
+        channels: [],
+        sharedMemory: []
+      }
+    ];
+    const snapshot = collaborationSnapshotSchema.parse({
+      ...selected,
+      navigation: {
+        ...selected.navigation,
+        teams: selected.navigation.teams.map((team) =>
+          team.id === ids.team
+            ? { ...team, workspaces: addWorkspace(team.workspaces) }
+            : team
+        )
+      }
+    });
+    await render(createClient(snapshot));
+
+    const launch = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="Actions for Launch Plans"]'
+    )!;
+    const operations = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="Actions for Operations"]'
+    )!;
+    vi.spyOn(launch, "getBoundingClientRect").mockReturnValue({
+      bottom: 100,
+      right: 500,
+      top: 50
+    } as DOMRect);
+    vi.spyOn(operations, "getBoundingClientRect").mockReturnValue({
+      bottom: 300,
+      right: 400,
+      top: 250
+    } as DOMRect);
+
+    await act(async () => launch.click());
+    expect(
+      document.body.querySelector<HTMLElement>('.collab-menu[role="menu"]')
+        ?.style.top
+    ).toBe("104px");
+
+    await act(async () => operations.click());
+    const menu = document.body.querySelector<HTMLElement>(
+      '.collab-menu[role="menu"]'
+    );
+    expect(menu?.style.top).toBe("304px");
+    expect(menu?.style.insetInlineEnd).toBe("880px");
   });
 
   it("discards Workspace Access drafts when switching directly between Teams", async () => {
@@ -3305,6 +3563,7 @@ describe("CollaborationApp", () => {
       )
     );
 
+    await openAccess(container, "Riley Jones");
     await act(async () =>
       setValue(
         document.body.querySelector<HTMLSelectElement>(
@@ -3313,15 +3572,15 @@ describe("CollaborationApp", () => {
         "write"
       )
     );
-    expect(document.body.textContent).toContain("1 pending access change");
+    expect(document.body.textContent).toContain("1 pending change");
 
     await act(async () => {
       await client.select({ kind: "team_people", teamId: ids.teamTwo });
     });
 
     expect(document.body.textContent).toContain("Beta Team");
-    expect(document.body.textContent).not.toContain("pending access change");
-    expect(document.body.textContent).not.toContain("Review and apply");
+    expect(document.body.textContent).not.toContain("pending change");
+    expect(document.body.textContent).not.toContain("Apply changes");
   });
 
   it("keeps only unapplied Workspace Access changes after a partial failure", async () => {
@@ -3338,6 +3597,7 @@ describe("CollaborationApp", () => {
     await click(container, "Atlas Research");
     await click(container, "People");
 
+    await openAccess(container, "Alex Chen");
     await act(async () =>
       setValue(
         document.body.querySelector<HTMLSelectElement>(
@@ -3346,6 +3606,7 @@ describe("CollaborationApp", () => {
         "disabled"
       )
     );
+    await openAccess(container, "Riley Jones");
     await act(async () =>
       setValue(
         document.body.querySelector<HTMLSelectElement>(
@@ -3355,11 +3616,11 @@ describe("CollaborationApp", () => {
       )
     );
 
-    expect(document.body.textContent).toContain("2 pending access changes");
-    await click(container, "Review and apply");
+    expect(document.body.textContent).toContain("2 pending changes");
+    await click(container, "Apply changes");
     await vi.waitFor(() =>
       expect(document.body.textContent).toContain(
-        "The remaining Workspace Access draft could not be applied"
+        "The remaining changes could not be applied"
       )
     );
 
@@ -3370,7 +3631,76 @@ describe("CollaborationApp", () => {
     expect(document.body.textContent).toContain(
       "Riley Jones · Launch Plans: disabled → write"
     );
-    expect(document.body.textContent).toContain("1 pending access change");
+    expect(document.body.textContent).toContain("1 pending change");
+  });
+
+  it("narrows the roster by search and role, and lists invites as people", async () => {
+    const client = createClient();
+    vi.mocked(client.listInvitations).mockImplementation(
+      async ({ teamId }) => ({
+        teamId,
+        items: [
+          {
+            id: ids.invitation,
+            teamId,
+            defaultWorkspaceId: ids.workspace,
+            defaultWorkspaceAccess: "write" as const,
+            email: "pending.invite@example.test",
+            role: "member" as const,
+            lifecycle: "pending" as const,
+            version: 1,
+            createdAt: at,
+            expiresAt: "2026-07-20T08:30:00.000Z",
+            acceptedAt: null,
+            revokedAt: null
+          }
+        ],
+        nextCursor: null
+      })
+    );
+    await render(client);
+    await click(container, "Atlas Research");
+    await click(container, "People");
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("pending.invite@example.test")
+    );
+
+    const names = () =>
+      [
+        ...document.body.querySelectorAll(
+          ".collab-person-row .collab-person-identity strong"
+        )
+      ].map((cell) => cell.textContent?.replace("Me", "").trim());
+
+    // The pending invite is a roster row, not a separate section.
+    expect(names()).toContain("pending.invite@example.testPending");
+
+    await act(async () =>
+      setValue(
+        document.body.querySelector<HTMLInputElement>(
+          'input[aria-label="Search people"]'
+        )!,
+        "riley"
+      )
+    );
+    expect(names()).toEqual(["Riley Jones"]);
+
+    await act(async () =>
+      setValue(
+        document.body.querySelector<HTMLInputElement>(
+          'input[aria-label="Search people"]'
+        )!,
+        ""
+      )
+    );
+    await click(container, "Owners 1");
+    expect(names()).toEqual(["Mark Fixture"]);
+
+    await click(container, "Pending 1");
+    expect(names()).toEqual(["pending.invite@example.testPending"]);
+
+    await click(container, "All 4");
+    expect(names()).toHaveLength(4);
   });
 
   it("keeps a normal User's Team roster usable without management controls", async () => {
@@ -3439,18 +3769,24 @@ describe("CollaborationApp", () => {
     expect(document.body.textContent).not.toContain("Create Workspace");
     expect(document.body.textContent).not.toContain("Pending invitations");
     expect(
-      document.body.querySelector('select[aria-label^="Role for"]')
+      document.body.querySelector('select[aria-label^="Team role for"]')
     ).toBeNull();
     expect(
-      document.body.querySelector('select[aria-label*="access for"]')
+      document.body.querySelector('button[aria-label^="Workspace access for"]')
     ).toBeNull();
     expect(client.listInvitations).not.toHaveBeenCalled();
 
+    // Your own presence is a page-level preference, not a roster control.
     expect(
       document.body.querySelector(
-        '.collab-person-admin-row[data-current-user="true"] .collab-presence-controls'
+        ".collab-content-header .collab-presence-controls"
       )
     ).not.toBeNull();
+    expect(
+      document.body.querySelector(
+        ".collab-person-row .collab-presence-controls"
+      )
+    ).toBeNull();
 
     await click(container, "Leave Team");
     expect(client.leaveTeam).toHaveBeenCalledWith({
@@ -3511,7 +3847,7 @@ describe("CollaborationApp", () => {
     });
     const client = await render(createClient(presenceSnapshot));
 
-    const firstMember = document.body.querySelector(".collab-person-admin-row");
+    const firstMember = document.body.querySelector(".collab-person-row");
     expect(firstMember?.textContent).toContain("Mark Fixture");
     expect(firstMember?.textContent).toContain("Me");
 
@@ -3565,7 +3901,7 @@ describe("CollaborationApp", () => {
     });
     expect(document.body.querySelector('[title="Inactive"]')).not.toBeNull();
     expect(
-      document.body.querySelector(".collab-person-identity > span")?.textContent
+      document.body.querySelector(".collab-roster-status span")?.textContent
     ).toContain("Inactive");
   });
 
@@ -3732,11 +4068,12 @@ describe("CollaborationApp", () => {
     await act(async () =>
       setValue(
         document.body.querySelector<HTMLSelectElement>(
-          'select[aria-label="Role for Alex Chen"]'
+          'select[aria-label="Team role for Alex Chen"]'
         )!,
         "admin"
       )
     );
+    await click(container, "Apply changes");
     await vi.waitFor(() =>
       expect(document.body.textContent).toContain(
         collaborationSafeErrorMessages.conflict
@@ -3746,7 +4083,7 @@ describe("CollaborationApp", () => {
     vi.mocked(client.archiveWorkspace).mockRejectedValueOnce(
       new Error("postgresql://internal-secret@database")
     );
-    await click(container, "Archive");
+    await clickMenuItem(container, "Launch Plans", "Archive");
     await vi.waitFor(() =>
       expect(document.body.textContent).toContain(
         "The Workspace could not be archived."
@@ -3769,7 +4106,7 @@ describe("CollaborationApp", () => {
       await render(client);
       await click(container, "Atlas Research");
       await click(container, "People");
-      await click(container, "Archive");
+      await clickMenuItem(container, "Launch Plans", "Archive");
       await vi.waitFor(() =>
         expect(document.body.textContent).toContain(
           "The Workspace could not be archived."

@@ -1,4 +1,8 @@
-import { spawnSync as nodeSpawnSync } from "node:child_process";
+import {
+  spawnSync as nodeSpawnSync,
+  type SpawnSyncOptionsWithStringEncoding,
+  type SpawnSyncReturns
+} from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -9,16 +13,30 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   assertAiClientRegistryWritable,
   captureAiClientRegistry,
+  type ExecutablePathDependencies,
   registerExplicitAiClient,
   removeExplicitAiClient,
   restoreAiClientRegistry,
-  resolveExecutablePath
+  resolveExecutablePathWithPlatformFallbacks
 } from "./ai-client-registry.js";
+
+export const resolveClaudeExecutablePath = (
+  environment: NodeJS.ProcessEnv,
+  dependencies: ExecutablePathDependencies = {},
+  platform: NodeJS.Platform = process.platform
+): string =>
+  resolveExecutablePathWithPlatformFallbacks(
+    environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude",
+    environment,
+    dependencies,
+    platform
+  );
 
 export const MINIMUM_CLAUDE_CODE_VERSION = "2.1.227";
 export const CLAUDE_HOOK_EVENTS = [
@@ -47,6 +65,19 @@ export interface KoedServerSetupClaudeResult {
 }
 
 type SpawnSyncLike = typeof nodeSpawnSync;
+
+const spawnClaude = (
+  spawnSync: SpawnSyncLike,
+  executablePath: string,
+  args: string[],
+  options: SpawnSyncOptionsWithStringEncoding
+): SpawnSyncReturns<string> => {
+  const invocation = nodeCliInvocation(executablePath, args);
+  return spawnSync(invocation.command, invocation.args, {
+    ...options,
+    env: nodeCliProcessEnvironment(invocation, options.env ?? {}, process.env)
+  });
+};
 type ClaudeSettings = {
   hooks?: Record<string, unknown[]>;
   [key: string]: unknown;
@@ -224,8 +255,7 @@ export const removeClaude = (
 ): KoedServerSetupClaudeResult => {
   const paths = resolveKoedServerPaths(environment);
   const settingsPath = resolveClaudeSettingsPath(environment);
-  const executable =
-    environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
+  let executable = environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
   const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
   const checkedAt = new Date().toISOString();
   const base = {
@@ -239,6 +269,7 @@ export const removeClaude = (
   let removedMcp = false;
   try {
     assertAiClientRegistryWritable(environment);
+    executable = resolveClaudeExecutablePath(environment);
     registrySnapshot = captureAiClientRegistry(environment);
     originalSettings = existsSync(settingsPath)
       ? readFileSync(settingsPath, "utf8")
@@ -248,11 +279,16 @@ export const removeClaude = (
       : {};
     const childEnvironment = claudeProcessEnvironment(environment);
     const runtime = resolveKoedAppRuntime(paths, environment);
-    const existingMcp = spawnSync(executable, ["mcp", "get", mcpName], {
-      encoding: "utf8",
-      env: childEnvironment,
-      timeout: 10_000
-    });
+    const existingMcp = spawnClaude(
+      spawnSync,
+      executable,
+      ["mcp", "get", mcpName],
+      {
+        encoding: "utf8",
+        env: childEnvironment,
+        timeout: 10_000
+      }
+    );
     if (existingMcp.error) {
       throw new Error(`Claude MCP lookup failed: ${existingMcp.error.message}`);
     }
@@ -278,7 +314,8 @@ export const removeClaude = (
       );
     }
     if (existingMcp.status === 0) {
-      const removed = spawnSync(
+      const removed = spawnClaude(
+        spawnSync,
         executable,
         ["mcp", "remove", "--scope", "user", mcpName],
         { encoding: "utf8", env: childEnvironment, timeout: 10_000 }
@@ -332,7 +369,8 @@ export const removeClaude = (
     if (removedMcp) {
       try {
         const runtime = resolveKoedAppRuntime(paths, environment);
-        const restored = spawnSync(
+        const restored = spawnClaude(
+          spawnSync,
           executable,
           [
             "mcp",
@@ -389,8 +427,7 @@ export const setupClaude = (
 ): KoedServerSetupClaudeResult => {
   const paths = resolveKoedServerPaths(environment);
   const runtime = resolveKoedAppRuntime(paths, environment);
-  const executable =
-    environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
+  let executable = environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
   const settingsPath = resolveClaudeSettingsPath(environment);
   const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
   const nodeCommand = environment.MEMORY_NODE_COMMAND?.trim() || "node";
@@ -420,6 +457,7 @@ export const setupClaude = (
 
   try {
     assertAiClientRegistryWritable(environment);
+    executable = resolveClaudeExecutablePath(environment);
     if (!existsSync(runtime.mcpCli) || !existsSync(runtime.captureHook)) {
       return failure(
         "Koed's Claude Code integration artifacts are missing.",
@@ -427,7 +465,7 @@ export const setupClaude = (
       );
     }
     const childEnvironment = claudeProcessEnvironment(environment);
-    const version = spawnSync(executable, ["--version"], {
+    const version = spawnClaude(spawnSync, executable, ["--version"], {
       encoding: "utf8",
       env: childEnvironment,
       timeout: 5_000
@@ -443,11 +481,16 @@ export const setupClaude = (
         version
       );
     }
-    const auth = spawnSync(executable, ["auth", "status", "--json"], {
-      encoding: "utf8",
-      env: childEnvironment,
-      timeout: 10_000
-    });
+    const auth = spawnClaude(
+      spawnSync,
+      executable,
+      ["auth", "status", "--json"],
+      {
+        encoding: "utf8",
+        env: childEnvironment,
+        timeout: 10_000
+      }
+    );
     if (auth.error || auth.status !== 0) {
       return failure(
         "Claude Code is not signed in.",
@@ -475,11 +518,16 @@ export const setupClaude = (
       .map((value) => JSON.stringify(value))
       .join(" ");
 
-    const existingMcp = spawnSync(executable, ["mcp", "get", mcpName], {
-      encoding: "utf8",
-      env: childEnvironment,
-      timeout: 10_000
-    });
+    const existingMcp = spawnClaude(
+      spawnSync,
+      executable,
+      ["mcp", "get", mcpName],
+      {
+        encoding: "utf8",
+        env: childEnvironment,
+        timeout: 10_000
+      }
+    );
     if (
       existingMcp.status === 0 &&
       !claudeMcpEntryIsKoedOwned(
@@ -501,7 +549,8 @@ export const setupClaude = (
           "Inspect the Koed-owned Claude MCP entry, then retry setup."
         );
       }
-      const remove = spawnSync(
+      const remove = spawnClaude(
+        spawnSync,
         executable,
         ["mcp", "remove", "--scope", "user", mcpName],
         {
@@ -521,7 +570,8 @@ export const setupClaude = (
       }
       removedExistingMcp = true;
     }
-    const add = spawnSync(
+    const add = spawnClaude(
+      spawnSync,
       executable,
       [
         "mcp",
@@ -564,7 +614,7 @@ export const setupClaude = (
     const registered = registerExplicitAiClient({
       environment,
       driverId: "claude",
-      executablePath: resolveExecutablePath(executable, environment),
+      executablePath: executable,
       displayName: "Claude Code",
       configHome: environment.CLAUDE_CONFIG_DIR
     });
@@ -584,7 +634,8 @@ export const setupClaude = (
     const failures = [error instanceof Error ? error.message : String(error)];
     if (addedMcp) {
       try {
-        const removed = spawnSync(
+        const removed = spawnClaude(
+          spawnSync,
           executable,
           ["mcp", "remove", "--scope", "user", mcpName],
           {
@@ -607,7 +658,8 @@ export const setupClaude = (
     }
     if (removedExistingMcp && previousMcp) {
       try {
-        const restored = spawnSync(
+        const restored = spawnClaude(
+          spawnSync,
           executable,
           claudeMcpAddArgs(mcpName, previousMcp),
           {

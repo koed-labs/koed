@@ -40,6 +40,7 @@ import {
   hasClaudeKoedHook,
   isSupportedClaudeCodeVersion,
   MINIMUM_CLAUDE_CODE_VERSION,
+  resolveClaudeExecutablePath,
   resolveClaudeSettingsPath
 } from "./claude-setup.js";
 import { aiClientReadinessUnknown } from "./types.js";
@@ -48,6 +49,8 @@ import {
   documentDefault,
   environmentDefaultFor,
   localAiClientFlowKeys,
+  nodeCliInvocation,
+  nodeCliProcessEnvironment,
   resolveTeamCollaborationEnabled,
   type AiClientCapabilityDescriptor,
   type LocalAiClientDefault,
@@ -65,6 +68,7 @@ import type {
   KoedAiClientFlowReadiness,
   KoedAiClientReadiness
 } from "./types.js";
+import { resolveCodexExecutablePath } from "./ai-client-registry.js";
 import {
   inspectManagedCodexGuidance,
   resolveCodexGlobalInstructionsPath,
@@ -101,6 +105,8 @@ export interface KoedServerStatusDependencies {
   existsSync?: typeof existsSync;
   readFileSync?: typeof readFileSync;
   resolvePiExecutable?: typeof resolvePiSetupExecutable;
+  resolveClaudeExecutable?: typeof resolveClaudeExecutablePath;
+  resolveCodexExecutable?: typeof resolveCodexExecutablePath;
   checkPid?: (pid: number) => boolean;
   now?: () => Date;
 }
@@ -111,6 +117,8 @@ const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
   existsSync,
   readFileSync,
   resolvePiExecutable: resolvePiSetupExecutable,
+  resolveClaudeExecutable: resolveClaudeExecutablePath,
+  resolveCodexExecutable: resolveCodexExecutablePath,
   checkPid: isProcessRunning,
   now: () => new Date()
 });
@@ -209,7 +217,7 @@ export const inspectPi = (
     const invocation = piSetupInvocation(executable, args);
     return deps.spawnSync(invocation.command, invocation.args, {
       encoding: "utf8",
-      env: childEnvironment,
+      env: nodeCliProcessEnvironment(invocation, childEnvironment, environment),
       timeout,
       ...(maxBuffer ? { maxBuffer } : {})
     });
@@ -313,18 +321,33 @@ export const inspectClaudeCode = (
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
 ): KoedServerStatus["claudeCode"] => {
-  const executable =
-    environment.KOED_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
   const settingsPath = resolveClaudeSettingsPath(environment);
   const detectedFromConfig = deps.existsSync(settingsPath);
+  let executable: string;
+  try {
+    executable = deps.resolveClaudeExecutable(environment);
+  } catch {
+    return {
+      ...notConfigured(
+        "Claude Code is not installed or could not be started.",
+        `Install Claude Code ${MINIMUM_CLAUDE_CODE_VERSION} or newer, then set up its integration.`
+      ),
+      configured: false,
+      detected: detectedFromConfig
+    };
+  }
   const mcpName = environment.MEMORY_MCP_NAME?.trim() || "koed";
   const runtime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
   const childEnvironment = claudeProcessEnvironment(environment);
-  const version = deps.spawnSync(executable, ["--version"], {
-    encoding: "utf8",
-    env: childEnvironment,
-    timeout: 5_000
-  });
+  const runClaude = (args: string[], timeout: number) => {
+    const invocation = nodeCliInvocation(executable, args);
+    return deps.spawnSync(invocation.command, invocation.args, {
+      encoding: "utf8",
+      env: nodeCliProcessEnvironment(invocation, childEnvironment, environment),
+      timeout
+    });
+  };
+  const version = runClaude(["--version"], 5_000);
   const versionText = version.stdout?.trim() ?? "";
   if (version.error || version.status !== 0) {
     return {
@@ -392,11 +415,7 @@ export const inspectClaudeCode = (
     (eventName) =>
       !hasClaudeKoedHook(settings.hooks?.[eventName], runtime.captureHook)
   );
-  const mcp = deps.spawnSync(executable, ["mcp", "get", mcpName], {
-    encoding: "utf8",
-    env: childEnvironment,
-    timeout: 10_000
-  });
+  const mcp = runClaude(["mcp", "get", mcpName], 10_000);
   if (
     !mcp.error &&
     mcp.status === 0 &&
@@ -428,11 +447,7 @@ export const inspectClaudeCode = (
       detected: true
     };
   }
-  const auth = deps.spawnSync(executable, ["auth", "status", "--json"], {
-    encoding: "utf8",
-    env: childEnvironment,
-    timeout: 10_000
-  });
+  const auth = runClaude(["auth", "status", "--json"], 10_000);
   if (auth.error || auth.status !== 0) {
     return {
       ...needsAttention(
@@ -836,7 +851,25 @@ const tomlSection = (content: string, sectionName: string): string => {
   return sectionLines.join("\n");
 };
 
-const inspectCodex = (
+const inspectCodexInstallation = (
+  environment: NodeJS.ProcessEnv,
+  deps: Required<KoedServerStatusDependencies>
+): { executable: string; version: string | null } => {
+  const executable = deps.resolveCodexExecutable(environment);
+  const invocation = nodeCliInvocation(executable, ["--version"]);
+  const result = deps.spawnSync(invocation.command, invocation.args, {
+    encoding: "utf8",
+    env: nodeCliProcessEnvironment(invocation, environment, environment),
+    timeout: 5_000
+  });
+  const version =
+    !result.error && result.status === 0 && result.stdout?.trim()
+      ? result.stdout.trim()
+      : null;
+  return { executable, version };
+};
+
+export const inspectCodex = (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>,
@@ -847,13 +880,26 @@ const inspectCodex = (
       `${environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`}/config.toml`
   );
   if (!deps.existsSync(codexConfigPath)) {
-    return {
-      ...notConfigured(
-        "Codex configuration was not found.",
-        "Select Codex in Desktop AI Client setup, or run koed-server setup codex --json."
-      ),
-      configured: false
-    };
+    try {
+      const installation = inspectCodexInstallation(environment, deps);
+      return {
+        ...notConfigured(
+          "Codex is installed but Koed is not configured in Codex.",
+          "Select Codex in Desktop AI Client setup, or run koed-server setup codex --json.",
+          { ...installation, codexConfigPath }
+        ),
+        configured: false,
+        detected: true
+      };
+    } catch {
+      return {
+        ...notConfigured(
+          "Codex is not installed or could not be started.",
+          "Install Codex, then select it in Desktop AI Client setup."
+        ),
+        configured: false
+      };
+    }
   }
   const content = deps.readFileSync(codexConfigPath, "utf8") as string;
   const mcpName = environment.MEMORY_MCP_NAME ?? "koed";
@@ -863,13 +909,26 @@ const inspectCodex = (
   const mcpEnvBlock = tomlSection(ownedBlock, `mcp_servers.${mcpName}.env`);
   const configured = ownership.kind === "valid" && Boolean(mcpBlock);
   if (!configured) {
-    return {
-      ...notConfigured(
-        "Codex is installed but Koed is not configured in Codex.",
-        "Run the Codex-specific setup action."
-      ),
-      configured: false
-    };
+    try {
+      const installation = inspectCodexInstallation(environment, deps);
+      return {
+        ...notConfigured(
+          "Codex is installed but Koed is not configured in Codex.",
+          "Run the Codex-specific setup action.",
+          { ...installation, codexConfigPath }
+        ),
+        configured: false,
+        detected: true
+      };
+    } catch {
+      return {
+        ...notConfigured(
+          "Codex is not installed or could not be started.",
+          "Install Codex, then select it in Desktop AI Client setup."
+        ),
+        configured: false
+      };
+    }
   }
 
   const configuredKoedHome = tomlStringValue(mcpEnvBlock, "KOED_HOME");

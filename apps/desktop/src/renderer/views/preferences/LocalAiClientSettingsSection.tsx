@@ -1,6 +1,6 @@
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { useState } from "react";
-import { Button, Input } from "@koed/ui";
+import { Button, Input, Spinner } from "@koed/ui";
 import type { DesktopApi } from "../../../types.js";
 import { FlowSettingsFieldset } from "./FlowSettingsFieldset.js";
 import { assignmentFrom, flows } from "./local-ai-client-settings-helpers.js";
@@ -19,7 +19,7 @@ export function LocalAiClientSettingsSection({
 
   if (!localAiClients) return <UnavailableSettings />;
   if (settings.loading && !settings.readModel) {
-    return <p role="status">Opening saved AI Client settings…</p>;
+    return <LoadingSettings />;
   }
   if (!settings.readModel) {
     return (
@@ -107,6 +107,21 @@ const SettingsToolbar = ({
       </label>
     ) : null}
   </>
+);
+
+const LoadingSettings = () => (
+  <div
+    aria-busy="true"
+    aria-label="Loading AI Client settings"
+    className="koed-local-ai-settings-loading"
+    role="status"
+  >
+    <Spinner aria-hidden="true" />
+    <div>
+      <strong>Loading AI Client settings</strong>
+      <p>Checking configured agents and available models…</p>
+    </div>
+  </div>
 );
 
 const UnavailableSettings = () => (

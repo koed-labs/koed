@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 
 export {
+  nodeCliInvocation,
+  nodeCliProcessEnvironment,
+  type NodeCliInvocation
+} from "./node-cli-invocation.js";
+
+export {
   createNotificationDrainController,
   type NotificationDrainClient,
   type NotificationDrainController,

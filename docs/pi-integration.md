@@ -5,11 +5,19 @@ Koed supports independently installed Pi as an AI Client driver. Koed does not b
 ## Requirements
 
 - Pi `0.84.2` or newer
-- Pi installed separately and available on `PATH`, or configured with absolute `KOED_PI_EXECUTABLE`
+- Pi installed separately and available on `PATH`, in a common macOS executable directory, or configured with absolute `KOED_PI_EXECUTABLE`
 - At least one Pi model authenticated through Pi
 - Persistent Pi sessions enabled for automatic capture
 
 Koed canonicalizes configured executable paths and fails closed when executable, version, selected model, or Pi-managed authentication is unavailable. Models use full Pi provider/model identity, such as `anthropic/claude-opus-4-6` or `openai/gpt-5.4`.
+
+Koed first uses `KOED_PI_EXECUTABLE`, then searches the inherited `PATH`. On
+macOS it also searches `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin`
+without loading interactive shell startup files. It stores the stable absolute
+launcher or verified npm package entry in the AI Client registry and resolves
+the launcher's current target at execution time. Node-based Pi entries are
+invoked through Koed's trusted Node runtime rather than depending on
+`/usr/bin/env node` and an interactive-shell `PATH`.
 
 ## Setup
 

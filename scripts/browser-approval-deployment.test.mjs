@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { SOURCE_RUNTIME_BUILD_SPEC } from "./source-runtime-build-lib.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
 const readRepositoryFile = (path) =>
@@ -10,7 +11,13 @@ const readRepositoryFile = (path) =>
 test("the server image builds API-owned browser approval assets", () => {
   const dockerfile = readRepositoryFile("packages/koed-server/Dockerfile");
 
-  assert.match(dockerfile, /pnpm --filter @koed\/api build/);
+  assert.match(dockerfile, /pnpm source-runtime:prepare/);
+  assert.ok(SOURCE_RUNTIME_BUILD_SPEC.rootPackages.includes("@koed/api"));
+  assert.ok(
+    SOURCE_RUNTIME_BUILD_SPEC.requiredOutputs.includes(
+      "apps/api/dist/browser-approval/index.html"
+    )
+  );
   assert.match(dockerfile, /EXPOSE 3300/);
   assert.doesNotMatch(dockerfile, /explorer/i);
 });

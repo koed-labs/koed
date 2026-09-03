@@ -281,6 +281,54 @@ const selectionRoute = (selection: CollaborationSelection): DesktopRoute => {
   }
 };
 
+const selectionForRoute = (
+  route: DesktopRoute
+): CollaborationSelection | null => {
+  switch (route.kind) {
+    case "personal-memory-projects":
+      return { kind: "personal_memory" };
+    case "personal-chat":
+      return { kind: "personal_channel", threadId: route.threadId };
+    case "team-people":
+      return { kind: "team_people", teamId: route.teamId };
+    case "team-direct-message":
+      return {
+        kind: "team_direct_message",
+        teamId: route.teamId,
+        threadId: route.threadId
+      };
+    case "workspace-channel":
+      return {
+        kind: "workspace_channel",
+        teamId: route.teamId,
+        workspaceId: route.workspaceId,
+        threadId: route.threadId
+      };
+    case "workspace-shared-memory":
+      return {
+        kind: "workspace_shared_memory",
+        teamId: route.teamId,
+        workspaceId: route.workspaceId
+      };
+    case "shared-session":
+      return {
+        kind: "shared_session",
+        teamId: route.teamId,
+        workspaceId: route.workspaceId,
+        sharedSessionId: route.sharedSessionId
+      };
+    case "inbox":
+    case "personal-memory-ask":
+    case "personal-memory-notes":
+    case "personal-memory-shares":
+    case "personal-memory-project":
+    case "personal-memory-session":
+    case "preferences":
+    case "onboarding":
+      return null;
+  }
+};
+
 const selectionRequiresTeamCollaboration = (
   selection: CollaborationSelection
 ): boolean =>
@@ -801,6 +849,16 @@ export function App({
       navigate(selectionEntry(snapshot, selection));
     }
     collaboration.choose(selection);
+  };
+
+  const traverseHistory = (direction: "back" | "forward") => {
+    const index =
+      direction === "back"
+        ? Math.max(0, navigation.index - 1)
+        : Math.min(navigation.entries.length - 1, navigation.index + 1);
+    const selection = selectionForRoute(navigation.entries[index]!.route);
+    if (selection) collaboration.choose(selection);
+    dispatch({ type: direction });
   };
 
   const invokeCommand = (command: DesktopCommand) => {
@@ -1685,12 +1743,12 @@ export function App({
         onGoBack={() => {
           setInspector(null);
           setInspectorOpen(false);
-          dispatch({ type: "back" });
+          traverseHistory("back");
         }}
         onGoForward={() => {
           setInspector(null);
           setInspectorOpen(false);
-          dispatch({ type: "forward" });
+          traverseHistory("forward");
         }}
         onOpenCommandPalette={() => setCommandOpen(true)}
         onOpenDevices={() => setDevicesOpen(true)}

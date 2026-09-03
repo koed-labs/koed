@@ -1,13 +1,16 @@
 import {
+  chmodSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CLAUDE_HOOK_EVENTS,
   claudeMcpEntryIsKoedOwned,
@@ -20,6 +23,8 @@ const spawnResult = (stdout = "", status = 0, stderr = "") =>
   ({ stdout, stderr, status, signal: null, pid: 1, output: [] }) as never;
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -55,10 +60,21 @@ describe("Claude Code setup", () => {
       root,
       "packages/mcp-server/dist/capture-hook.js"
     );
+    const claudeExecutable = resolve(root, ".local/bin/claude");
+    const claudeNodeEntry = resolve(
+      root,
+      ".local/lib/node_modules/@anthropic-ai/claude-code/cli.js"
+    );
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
     mkdirSync(resolve(root, ".claude"), { recursive: true });
+    mkdirSync(resolve(root, ".local/bin"), { recursive: true });
+    mkdirSync(resolve(claudeNodeEntry, ".."), { recursive: true });
     writeFileSync(mcpCli, "");
     writeFileSync(captureHook, "");
+    writeFileSync(claudeNodeEntry, "process.exit(0);\n");
+    chmodSync(claudeNodeEntry, 0o755);
+    symlinkSync(claudeNodeEntry, claudeExecutable);
+    const canonicalClaudeNodeEntry = realpathSync(claudeNodeEntry);
     writeFileSync(
       settingsPath,
       JSON.stringify({
@@ -79,28 +95,33 @@ describe("Claude Code setup", () => {
       })
     );
     const calls: Array<{
+      command: string;
       args: string[];
+      rawArgs: string[];
       env?: NodeJS.ProcessEnv;
     }> = [];
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.stubEnv("ELECTRON_RUN_AS_NODE", "1");
 
     const result = setupClaude(
       {
         HOME: root,
+        PATH: "/usr/bin:/bin",
         KOED_HOME: resolve(root, "koed"),
         KOED_REPO_ROOT: root,
         CLAUDE_SETTINGS_PATH: settingsPath,
-        KOED_CLAUDE_CODE_EXECUTABLE: "/bin/sh",
         MEMORY_API_TOKEN: "must-not-leak",
         MEMORY_API_URL: "https://must-not-leak.example",
         ANTHROPIC_API_KEY: "provider-secret-must-not-leak",
         OPENAI_API_KEY: "other-provider-secret-must-not-leak"
       },
       ((
-        _command: string,
-        args: string[],
+        command: string,
+        rawArgs: string[],
         options?: { env?: NodeJS.ProcessEnv }
       ) => {
-        calls.push({ args, env: options?.env });
+        const args = command === process.execPath ? rawArgs.slice(1) : rawArgs;
+        calls.push({ command, args, rawArgs, env: options?.env });
         return args[0] === "--version"
           ? spawnResult("2.1.227 (Claude Code)\n")
           : args[0] === "mcp" && args[1] === "get"
@@ -110,6 +131,15 @@ describe("Claude Code setup", () => {
     );
 
     expect(result).toMatchObject({ ok: true, state: "healthy" });
+    expect(calls.every(({ command }) => command === process.execPath)).toBe(
+      true
+    );
+    expect(
+      calls.every(({ rawArgs }) => rawArgs[0] === canonicalClaudeNodeEntry)
+    ).toBe(true);
+    expect(calls.every(({ env }) => env?.ELECTRON_RUN_AS_NODE === "1")).toBe(
+      true
+    );
     const add = calls.find(
       ({ args }) => args[0] === "mcp" && args[1] === "add"
     );
@@ -134,6 +164,21 @@ describe("Claude Code setup", () => {
     for (const eventName of CLAUDE_HOOK_EVENTS) {
       expect(JSON.stringify(settings.hooks[eventName])).toContain(captureHook);
     }
+    expect(
+      JSON.parse(
+        readFileSync(
+          resolve(root, "koed/config/ai-client-instances.json"),
+          "utf8"
+        )
+      )
+    ).toMatchObject({
+      instances: [
+        {
+          instanceId: "claude.default",
+          executablePath: claudeExecutable
+        }
+      ]
+    });
   });
 
   it("removes only Koed-owned MCP and hooks while preserving unrelated settings", () => {
@@ -246,6 +291,7 @@ describe("Claude Code setup", () => {
       resolve(root, "packages/mcp-server/dist/capture-hook.js"),
       ""
     );
+    const registry = resolve(root, "koed/config/ai-client-instances.json");
     const calls: string[][] = [];
     const result = setupClaude(
       {
@@ -253,7 +299,8 @@ describe("Claude Code setup", () => {
         PATH: "/bin",
         KOED_HOME: resolve(root, "koed"),
         KOED_REPO_ROOT: root,
-        KOED_CLAUDE_CODE_EXECUTABLE: "claude"
+        KOED_CLAUDE_CODE_EXECUTABLE: "/bin/sh",
+        KOED_AI_CLIENT_INSTANCE_REGISTRY: registry
       },
       ((_command: string, args: string[]) => {
         calls.push(args);
@@ -261,6 +308,10 @@ describe("Claude Code setup", () => {
           return spawnResult("2.1.227 (Claude Code)\\n");
         if (args[0] === "mcp" && args[1] === "get") {
           return spawnResult("", 1, "not found");
+        }
+        if (args[0] === "mcp" && args[1] === "add") {
+          mkdirSync(resolve(registry, ".."), { recursive: true });
+          writeFileSync(registry, "{");
         }
         return spawnResult();
       }) as never
@@ -290,20 +341,30 @@ describe("Claude Code setup", () => {
     );
     const koedHome = resolve(root, "koed");
     const prior = `koed:\n  Command: node\n  Args: ${mcpCli}\n  Environment:\n    KOED_HOME=${koedHome}\n`;
+    const registry = resolve(koedHome, "config/ai-client-instances.json");
     const calls: string[][] = [];
+    let addCalls = 0;
     const result = setupClaude(
       {
         HOME: root,
         PATH: "/bin",
         KOED_HOME: koedHome,
         KOED_REPO_ROOT: root,
-        KOED_CLAUDE_CODE_EXECUTABLE: "claude"
+        KOED_CLAUDE_CODE_EXECUTABLE: "/bin/sh",
+        KOED_AI_CLIENT_INSTANCE_REGISTRY: registry
       },
       ((_command: string, args: string[]) => {
         calls.push(args);
         if (args[0] === "--version")
           return spawnResult("2.1.227 (Claude Code)\\n");
         if (args[0] === "mcp" && args[1] === "get") return spawnResult(prior);
+        if (args[0] === "mcp" && args[1] === "add") {
+          addCalls += 1;
+          if (addCalls === 1) {
+            mkdirSync(resolve(registry, ".."), { recursive: true });
+            writeFileSync(registry, "{");
+          }
+        }
         return spawnResult();
       }) as never
     );

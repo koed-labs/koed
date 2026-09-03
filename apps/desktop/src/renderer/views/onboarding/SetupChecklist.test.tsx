@@ -746,7 +746,7 @@ describe("SetupChecklist", () => {
     );
   });
 
-  it("limits client capability summaries and hides unknown managed conversations", async () => {
+  it("shows static capability support before client setup", async () => {
     const status = statusWithClientProfiles({
       codex: "not_configured",
       claude: "not_configured",
@@ -798,18 +798,18 @@ describe("SetupChecklist", () => {
     expect(codexCard.querySelectorAll(".koed-client-cap")).toHaveLength(3);
     expect(
       codexCard
-        .querySelector('[aria-label="Auto-capture: Unknown"]')
+        .querySelector('[aria-label="Auto-capture"]')
         ?.getAttribute("title")
-    ).toBe("Auto-capture: Unknown");
+    ).toBe("Auto-capture");
+    expect(codexCard.querySelectorAll(".koed-client-cap-dot")).toHaveLength(0);
     expect(
       container.querySelector('[aria-label="Capability status legend"]')
-        ?.textContent
-    ).toBe("ReadyNeeds attentionUnknownUnsupported");
+    ).toBeNull();
   });
 
-  it("distinguishes unsupported capabilities from unknown capabilities", async () => {
+  it("shows capability readiness after a client is configured", async () => {
     const status = statusWithClientProfiles({
-      codex: "not_configured",
+      codex: "healthy",
       claude: "not_configured",
       pi: "not_configured"
     });
@@ -863,6 +863,10 @@ describe("SetupChecklist", () => {
         '[aria-label="MCP Recall: Unsupported"] .is-unsupported'
       )
     ).toBeTruthy();
+    expect(
+      container.querySelector('[aria-label="Capability status legend"]')
+        ?.textContent
+    ).toBe("ReadyNeeds attentionUnknownUnsupported");
   });
 
   it("keeps one client's failure isolated from the rest of the queue", async () => {
