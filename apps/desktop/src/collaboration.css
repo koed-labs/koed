@@ -9,6 +9,7 @@
   --collab-sidebar-muted: var(--muted-foreground);
   --collab-accent: var(--primary);
   --collab-accent-soft: color-mix(in srgb, var(--primary) 14%, transparent);
+  --collab-hover: var(--accent);
   --collab-warning: var(--warning-foreground);
   --collab-danger: var(--destructive);
   --collab-success: var(--success);
@@ -1354,14 +1355,6 @@
   max-width: 420px;
 }
 
-.collab-people-list {
-  container-name: team-people-list;
-  container-type: inline-size;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-
 .collab-source-state.live {
   color: var(--collab-accent);
 }
@@ -1417,103 +1410,41 @@
   padding: 16px 18px;
 }
 
-.collab-workspace-admin-row,
-.collab-invitation-row {
-  align-items: center;
-  border-bottom: 1px solid var(--collab-border);
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  min-height: 58px;
-  padding: 8px 18px;
-}
-
-.collab-workspace-admin-row:last-child,
-.collab-invitation-row:last-child {
-  border-bottom: 0;
-}
-
-:is(.collab-route-root, .collab-modal) .collab-row-link {
-  background: transparent;
-  border: 0;
-  color: var(--collab-text);
-  display: grid;
-  flex: 1 1 auto;
-  gap: 10px;
-  grid-template-columns: 34px minmax(0, 1fr);
-  justify-content: flex-start;
-  min-width: 0;
-  padding: 4px 0;
-  text-align: left;
-}
-
-.collab-row-link > svg {
-  justify-self: center;
-}
-
-:is(.collab-route-root, .collab-modal) .collab-row-link:hover {
-  background: transparent;
-  color: var(--collab-accent);
-}
-
-.collab-row-link > span,
-.collab-invitation-row > div,
-.collab-person-identity {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.collab-row-link strong,
-.collab-invitation-row strong,
-.collab-person-identity strong {
-  align-items: center;
-  display: flex;
-  gap: 7px;
-  font-size: 13px;
-}
-
+/*
+ * A small filled dot, not an icon. The Status column carries the words, so
+ * the dot only needs to read as a state at a glance.
+ */
 .collab-presence-icon {
-  align-items: center;
-  color: var(--collab-muted);
-  display: inline-flex;
-  flex: 0 0 18px;
-  height: 18px;
-  justify-content: center;
-  width: 18px;
+  background: var(--collab-border-strong);
+  border-radius: 50%;
+  display: block;
+  flex: 0 0 auto;
+  height: 9px;
+  width: 9px;
 }
 
-.collab-presence-icon svg {
-  height: 16px;
-  width: 16px;
+.collab-presence-icon[data-presence="active"],
+.collab-presence-icon[data-presence="available"] {
+  background: var(--presence-available);
 }
 
-.collab-presence-icon svg[data-activity="active"] {
-  color: #238636;
+.collab-presence-icon[data-presence="recently_active"] {
+  background: color-mix(in srgb, var(--presence-available) 62%, var(--muted));
 }
 
-.collab-presence-icon svg[data-activity="recently_active"] {
-  color: #bf8700;
+.collab-presence-icon[data-presence="idle"],
+.collab-presence-icon[data-presence="out_of_office"] {
+  background: var(--presence-away);
 }
 
-.collab-presence-icon svg[data-activity="idle"] {
-  color: #cf222e;
-}
-
-.collab-presence-icon svg[data-activity="inactive"] {
-  color: #24292f;
+.collab-presence-icon[data-presence="do_not_disturb"] {
+  background: var(--collab-danger);
 }
 
 .collab-presence-controls {
   align-items: center;
   display: flex;
   gap: 8px;
-  min-width: 138px;
-  justify-self: end;
-}
-
-.collab-person-admin-row[data-current-user] .collab-presence-controls {
-  grid-column: -2 / -1;
 }
 
 .collab-presence-auto {
@@ -1556,9 +1487,298 @@
   width: 15px;
 }
 
-.collab-row-link small,
-.collab-invitation-row span,
-.collab-person-identity span,
+/* ── People roster ──────────────────────────────────────────────────────── */
+
+.collab-people .collab-admin-scroll {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 18px;
+}
+
+.collab-roster-toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 18px;
+}
+
+.collab-roster-search {
+  align-items: center;
+  background: var(--background);
+  border: 1px solid var(--collab-border-strong);
+  border-radius: 6px;
+  display: flex;
+  flex: 1 1 200px;
+  gap: 7px;
+  max-width: 280px;
+  min-height: 32px;
+  padding-inline: 9px;
+}
+
+.collab-roster-search svg {
+  color: var(--collab-muted);
+  flex: 0 0 auto;
+  height: 15px;
+  width: 15px;
+}
+
+.collab-roster-search input {
+  background: none;
+  border: 0;
+  color: var(--collab-text);
+  font-size: 12px;
+  min-width: 0;
+  outline: none;
+  padding: 0;
+  width: 100%;
+}
+
+.collab-roster-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+:is(.collab-route-root, .collab-modal) .collab-roster-filter {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--collab-muted);
+  font-size: 12px;
+  min-height: 26px;
+  padding: 2px 10px;
+}
+
+:is(.collab-route-root, .collab-modal) .collab-roster-filter:hover {
+  background: var(--collab-hover);
+  color: var(--collab-text);
+}
+
+:is(.collab-route-root, .collab-modal)
+  .collab-roster-filter[aria-pressed="true"] {
+  background: var(--collab-accent-soft);
+  border-color: var(--collab-accent);
+  color: var(--collab-accent);
+  font-weight: 600;
+}
+
+.collab-roster-filter small {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+/* ── Workspace strip ────────────────────────────────────────────────────── */
+
+.collab-workspace-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 0 18px 14px;
+}
+
+.collab-workspace-card {
+  align-items: center;
+  background: var(--collab-surface);
+  border: 1px solid var(--collab-border);
+  border-radius: 9px;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  min-width: 210px;
+  padding: 4px 6px 4px 10px;
+}
+
+.collab-workspace-card[data-state="archived"] {
+  opacity: 0.65;
+}
+
+:is(.collab-route-root, .collab-modal) .collab-workspace-open {
+  background: transparent;
+  border: 0;
+  color: var(--collab-text);
+  column-gap: 9px;
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: 26px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  min-width: 0;
+  padding: 6px 0;
+  row-gap: 0;
+  text-align: left;
+}
+
+:is(.collab-route-root, .collab-modal) .collab-workspace-open:hover:enabled {
+  background: transparent;
+  color: var(--collab-accent);
+}
+
+.collab-workspace-glyph {
+  align-items: center;
+  align-self: center;
+  background: var(--collab-accent-soft);
+  border-radius: 7px;
+  color: var(--collab-accent);
+  display: flex;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+
+.collab-workspace-glyph svg {
+  height: 15px;
+  width: 15px;
+}
+
+.collab-workspace-name {
+  align-self: end;
+  font-size: 13px;
+  grid-column: 2;
+  grid-row: 1;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collab-workspace-meta {
+  align-self: start;
+  color: var(--collab-muted);
+  font-size: 11px;
+  grid-column: 2;
+  grid-row: 2;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:is(.collab-route-root, .collab-modal) .collab-workspace-new {
+  border-style: dashed;
+  color: var(--collab-muted);
+  font-size: 12px;
+  gap: 6px;
+  justify-content: center;
+  min-width: 168px;
+  padding: 10px;
+}
+
+:is(.collab-route-root, .collab-modal) .collab-workspace-new:hover {
+  background: var(--collab-hover);
+  color: var(--collab-text);
+}
+
+.collab-workspace-new svg {
+  height: 15px;
+  width: 15px;
+}
+
+/* ── Roster table ───────────────────────────────────────────────────────── */
+
+.collab-roster-wrap {
+  flex: 0 0 auto;
+  overflow-x: auto;
+}
+
+.collab-roster {
+  border-collapse: collapse;
+  min-width: 640px;
+  width: 100%;
+}
+
+.collab-roster th {
+  background: var(--background);
+  border-bottom: 1px solid var(--collab-border);
+  color: var(--collab-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 8px 12px;
+  position: sticky;
+  text-align: left;
+  text-transform: uppercase;
+  top: 0;
+  z-index: 1;
+}
+
+.collab-roster th:first-child,
+.collab-roster td:first-child {
+  padding-left: 18px;
+}
+
+.collab-roster th:last-child,
+.collab-roster td:last-child {
+  padding-right: 18px;
+}
+
+.collab-roster td {
+  border-bottom: 1px solid var(--collab-border);
+  padding: 8px 12px;
+  vertical-align: middle;
+}
+
+.collab-roster tbody tr:hover {
+  background: var(--collab-hover);
+}
+
+.collab-person-row[data-current-user] td:first-child {
+  box-shadow: inset 2px 0 0 var(--collab-accent);
+}
+
+.collab-person-row[data-membership="disabled"] .collab-person-identity strong {
+  color: var(--collab-muted);
+}
+
+.collab-roster-actions-head,
+.collab-roster-actions {
+  width: 44px;
+}
+
+.collab-roster-role {
+  width: 132px;
+}
+
+.collab-roster-access {
+  width: 190px;
+}
+
+.collab-roster-status {
+  width: 130px;
+}
+
+.collab-roster-status span,
+.collab-roster-quiet {
+  color: var(--collab-muted);
+  font-size: 12px;
+}
+
+.collab-person-identity {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+
+.collab-person-identity > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.collab-person-identity strong {
+  align-items: center;
+  display: flex;
+  font-size: 13px;
+  gap: 7px;
+}
+
+/*
+ * Scoped to the secondary line only. A broader `.collab-person-identity span`
+ * outranks the badge rules below and repaints them muted.
+ */
+.collab-person-identity > div > span,
 .collab-member-state {
   color: var(--collab-muted);
   font-size: 11px;
@@ -1567,123 +1787,281 @@
   white-space: nowrap;
 }
 
-.collab-person-admin-row {
-  align-items: center;
-  border-bottom: 1px solid var(--collab-border);
-  display: grid;
-  gap: 10px;
-  grid-template-columns:
-    34px minmax(150px, 1fr) minmax(138px, auto) 100px
-    minmax(190px, 1.4fr) auto;
-  min-height: 64px;
-  padding: 9px 18px;
-}
-
 .collab-person-avatar {
   position: relative;
 }
 
 .collab-person-avatar .collab-presence-icon {
-  position: absolute;
-  right: -5px;
-  bottom: -5px;
-  width: 17px;
-  height: 17px;
-  border: 2px solid var(--collab-surface);
-  border-radius: 50%;
-  background: var(--collab-surface);
-}
-
-.collab-person-avatar .collab-presence-icon svg {
-  width: 13px;
+  border: 2px solid var(--collab-bg);
+  bottom: -1px;
   height: 13px;
+  inset-inline-end: -1px;
+  position: absolute;
+  width: 13px;
 }
 
 .collab-me-badge {
+  background: var(--collab-accent-soft);
   border-radius: 999px;
-  background: var(--collab-hover);
   color: var(--collab-accent);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  text-transform: uppercase;
+}
+
+.collab-avatar-pending {
+  background: transparent;
+  border: 1px dashed var(--collab-border-strong);
+  color: var(--collab-muted);
+}
+
+.collab-invite-badge {
+  background: color-mix(in srgb, var(--info) 16%, transparent);
+  border-radius: 999px;
+  color: var(--info);
   font-size: 10px;
   font-weight: 700;
   padding: 1px 6px;
 }
 
-.collab-member-role {
-  grid-column: 4;
-}
-
-.collab-person-admin-row > select,
-.collab-access-grid select {
-  background: var(--background);
-  border: 1px solid var(--collab-border-strong);
+:is(.collab-route-root, .collab-modal) .collab-member-role {
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: 5px;
   color: var(--collab-text);
   font-size: 12px;
-  min-height: 32px;
+  min-height: 30px;
   padding: 4px 7px;
+  width: 100%;
 }
 
-.collab-access-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
+:is(.collab-route-root, .collab-modal) .collab-member-role:hover:enabled {
+  background: var(--background);
+  border-color: var(--collab-border-strong);
 }
 
-.collab-access-grid label {
+/* ── Workspace Access summary and popover ───────────────────────────────── */
+
+.collab-menu-host {
+  position: relative;
+}
+
+:is(.collab-route-root, .collab-modal) .collab-access-summary {
   align-items: center;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: minmax(80px, 1fr) 92px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--collab-text);
+  display: flex;
+  font-size: 12px;
+  gap: 7px;
+  max-width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
 }
 
-.collab-access-grid label > span {
+:is(.collab-route-root, .collab-modal) .collab-access-summary:hover:enabled {
+  background: var(--background);
+  border-color: var(--collab-border-strong);
+}
+
+.collab-access-bars {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.collab-access-bars i {
+  background: var(--collab-border-strong);
+  border-radius: 1px;
+  display: block;
+  height: 13px;
+  width: 4px;
+}
+
+.collab-access-bars i[data-access="read"] {
+  background: var(--info);
+}
+
+.collab-access-bars i[data-access="write"] {
+  background: var(--collab-accent);
+}
+
+.collab-access-summary em {
   color: var(--collab-muted);
-  font-size: 11px;
+  font-style: normal;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-@container team-people-list (max-width: 880px) {
-  .collab-person-admin-row {
-    grid-template-columns: 34px minmax(0, 1fr) minmax(138px, auto) 100px;
-  }
-
-  .collab-access-grid {
-    grid-column: 2 / 4;
-  }
-
-  .collab-member-disable {
-    grid-column: 4;
-    justify-self: end;
-  }
-
-  .collab-person-admin-row[data-current-user] .collab-presence-controls {
-    grid-column: 3;
-  }
+.collab-access-summary[data-dirty] em,
+.collab-member-role[data-dirty] {
+  color: var(--warning);
+  font-weight: 600;
 }
 
-@container team-people-list (max-width: 620px) {
-  .collab-person-admin-row {
-    grid-template-columns: 34px minmax(0, 1fr) 92px;
+.collab-member-role[data-dirty] {
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+}
+
+.collab-access-popover,
+.collab-menu {
+  background: var(--popover);
+  border: 1px solid var(--collab-border);
+  border-radius: 9px;
+  box-shadow: 0 12px 30px -12px rgb(0 0 0 / 0.35);
+  inset-inline-end: 0;
+  position: absolute;
+  top: calc(100% + 4px);
+  z-index: 20;
+}
+
+.collab-access-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 244px;
+  padding: 11px;
+}
+
+.collab-access-popover label {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 104px;
+}
+
+.collab-access-popover label > span {
+  color: var(--collab-text);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collab-access-popover select {
+  background: var(--background);
+  border: 1px solid var(--collab-border-strong);
+  border-radius: 5px;
+  color: var(--collab-text);
+  font-size: 12px;
+  min-height: 30px;
+  padding: 4px 7px;
+}
+
+.collab-access-popover p {
+  border-top: 1px solid var(--collab-border);
+  color: var(--collab-muted);
+  font-size: 11px;
+  margin: 2px 0 0;
+  padding-top: 8px;
+}
+
+.collab-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 168px;
+  padding: 4px;
+}
+
+:is(.collab-route-root, .collab-modal) .collab-menu button {
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: var(--collab-text);
+  font-size: 12px;
+  gap: 7px;
+  justify-content: flex-start;
+  min-height: 30px;
+  padding: 4px 8px;
+  text-align: left;
+  width: 100%;
+}
+
+:is(.collab-route-root, .collab-modal) .collab-menu button:hover:enabled {
+  background: var(--collab-hover);
+}
+
+:is(.collab-route-root, .collab-modal) .collab-menu button.danger {
+  color: var(--collab-danger);
+}
+
+:is(.collab-route-root, .collab-modal) .collab-menu button:disabled {
+  color: var(--collab-muted);
+  opacity: 0.6;
+}
+
+:is(.collab-route-root, .collab-modal)
+  .collab-menu
+  .collab-menu-item-with-reason {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.collab-menu-item-with-reason small {
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.3;
+  white-space: normal;
+}
+
+.collab-menu button svg {
+  height: 14px;
+  width: 14px;
+}
+
+/* ── Pending change bar ─────────────────────────────────────────────────── */
+
+.collab-pending-bar {
+  align-items: center;
+  background: color-mix(in srgb, var(--warning) 10%, var(--collab-surface));
+  border-top: 1px solid var(--collab-border);
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 18px;
+}
+
+.collab-pending-bar > strong {
+  font-size: 12px;
+}
+
+.collab-pending-list {
+  color: var(--collab-muted);
+  display: flex;
+  flex: 1 1 220px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  gap: 4px 12px;
+  list-style: none;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.collab-pending-actions {
+  display: flex;
+  gap: 8px;
+  margin-inline-start: auto;
+}
+
+@media (max-width: 760px) {
+  .collab-roster th:first-child,
+  .collab-roster td:first-child,
+  .collab-roster-toolbar,
+  .collab-workspace-strip {
+    padding-left: 12px;
   }
 
-  .collab-member-role {
-    grid-column: 3;
-  }
-
-  .collab-presence-controls,
-  .collab-access-grid {
-    grid-column: 2 / -1;
-  }
-
-  .collab-person-admin-row[data-current-user] .collab-presence-controls {
-    grid-column: 2 / -1;
-  }
-
-  .collab-member-disable {
-    grid-column: 3;
+  .collab-roster th:last-child,
+  .collab-roster td:last-child {
+    padding-right: 12px;
   }
 }
 
@@ -2525,19 +2903,6 @@
   }
 }
 
-@media (max-width: 1080px) {
-  .collab-person-admin-row {
-    grid-template-columns:
-      34px minmax(130px, 1fr) minmax(138px, auto) 92px
-      minmax(160px, 1.2fr);
-  }
-
-  .collab-person-admin-row > button {
-    grid-column: 2 / -1;
-    justify-self: end;
-  }
-}
-
 @media (max-width: 760px) {
   .collab-content-header {
     padding-left: 12px;
@@ -2563,15 +2928,6 @@
   .collab-header-actions button svg {
     height: 17px;
     width: 17px;
-  }
-
-  .collab-person-admin-row {
-    grid-template-columns: 34px minmax(0, 1fr) 92px;
-  }
-
-  .collab-presence-controls,
-  .collab-access-grid {
-    grid-column: 2 / -1;
   }
 }
 

@@ -284,6 +284,32 @@
   gap: 14px;
 }
 
+.koed-local-ai-settings-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-block-size: 112px;
+  padding: 20px;
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.koed-local-ai-settings-loading > svg {
+  flex: 0 0 auto;
+}
+
+.koed-local-ai-settings-loading strong {
+  display: block;
+  color: var(--foreground);
+  font-size: 13px;
+}
+
+.koed-local-ai-settings-loading p {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
 .koed-local-ai-toolbar {
   display: flex;
   align-items: flex-start;

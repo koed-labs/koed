@@ -156,6 +156,35 @@ describe("Agent Configuration selectors", () => {
     act(() => root?.unmount());
   });
 
+  it("uses the shared spinner in a scoped loading state", async () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    let resolveList: ((value: LocalAiClientResponse) => void) | undefined;
+    const api = {
+      list: vi.fn(
+        () =>
+          new Promise<LocalAiClientResponse>((resolve) => {
+            resolveList = resolve;
+          })
+      ),
+      refresh: vi.fn(async () => response()),
+      set: vi.fn(async () => response()),
+      reset: vi.fn(async () => response())
+    };
+    root = createRoot(container);
+    await act(async () =>
+      root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
+    );
+
+    const loading = container.querySelector(".koed-local-ai-settings-loading");
+    expect(loading?.getAttribute("role")).toBe("status");
+    expect(loading?.getAttribute("aria-busy")).toBe("true");
+    expect(loading?.textContent).toContain("Loading AI Client settings");
+    expect(loading?.querySelector("svg")).toBeTruthy();
+
+    await act(async () => resolveList?.(response()));
+  });
+
   it("shows exactly supported flows, provider/model metadata, reasoning, and stale assignment diagnostics", async () => {
     container = document.createElement("div");
     document.body.append(container);
