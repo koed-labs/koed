@@ -33,19 +33,15 @@
     "test:browser": "pnpm build && electron scripts/validate-project-workspace.mjs && electron scripts/validate-collaboration-interactions.mjs"
   },
   "dependencies": {
-    "@koed/api": "workspace:*",
     "@koed/koed-server": "workspace:*",
-    "@koed/memory-ui": "workspace:*",
     "@koed/shared": "workspace:*",
-    "@koed/ui": "workspace:*",
-    "lucide-react": "^0.564.0",
-    "qrcode": "1.5.4",
-    "react": "19.2.6",
-    "react-dom": "19.2.6",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@electron/asar": "^3.4.1",
+    "@koed/api": "workspace:*",
+    "@koed/memory-ui": "workspace:*",
+    "@koed/ui": "workspace:*",
     "@tailwindcss/vite": "^4.3.0",
     "@types/qrcode": "1.5.5",
     "@types/react": "~19.2.14",
@@ -54,6 +50,10 @@
     "electron": "^39.2.7",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.0",
-    "happy-dom": "^20.9.0"
+    "happy-dom": "^20.9.0",
+    "lucide-react": "^0.564.0",
+    "qrcode": "1.5.4",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
   }
 }

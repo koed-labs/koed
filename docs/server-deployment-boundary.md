@@ -80,6 +80,26 @@ should use `koed-server status --json`, `koed-server doctor --json`,
 `/v1/capabilities`, authenticated diagnostics, and `/ops/status` for richer
 status and remediation.
 
+For an external runtime, required startup checks are the API, database, chosen
+queue backend and Worker, Embedding Service, and the Privacy Filter Service when
+Team collaboration is enabled. The external server does not supervise a Local
+AI Runtime. A missing, invalid, or revoked User-owned Personal API Token remains
+visible as Diagnostic Status but does not make external startup or core status
+unhealthy. Local-personal and developer modes do supervise a Local AI Runtime
+and require its Personal API Token.
+
+If startup reaches its deadline, the supervisor reports every required blocker
+by stable component name and state. Match those entries to `/ready`, then use
+`koed-server status --json` for detailed remediation. Timeout summaries exclude
+non-blocking diagnostics and credential values.
+
+Identity-provider sessions establish a verified User identity. Koed Team
+Membership and roles authorize Team operations. Personal API Tokens authenticate
+User-owned AI Client integrations; they are not Team or Operator administrative
+credentials. Operator-controlled secrets such as `API_TOKEN_PEPPER`, database
+passwords, encryption keys, broker secrets, and service tokens remain server
+configuration and must not be supplied to AI Clients.
+
 Reverse proxies and load balancers should route only the intended
 browser/API-facing surface. Postgres, Redis, and the Embedding Service should
 stay private to the deployment network.

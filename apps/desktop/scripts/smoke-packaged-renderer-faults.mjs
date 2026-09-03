@@ -1,4 +1,4 @@
-/* global AbortSignal, clearTimeout, fetch, setTimeout, WebSocket */
+/* global AbortSignal, clearTimeout, console, fetch, setTimeout, WebSocket */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -104,7 +104,17 @@ const connect = (url) =>
           sequence += 1;
           const id = sequence;
           return new Promise((resolveCall, rejectCall) => {
-            pending.set(id, { resolve: resolveCall, reject: rejectCall });
+            const callTimer = setTimeout(() => {
+              pending.delete(id);
+              rejectCall(
+                new Error(`Packaged renderer CDP ${method} call timed out.`)
+              );
+            }, 15_000);
+            pending.set(id, {
+              resolve: resolveCall,
+              reject: rejectCall,
+              timer: callTimer
+            });
             socket.send(JSON.stringify({ id, method, params }));
           });
         },
@@ -124,6 +134,7 @@ const connect = (url) =>
       if (!pending.has(message.id)) return;
       const item = pending.get(message.id);
       pending.delete(message.id);
+      clearTimeout(item.timer);
       if (message.error) item.reject(new Error(message.error.message));
       else item.resolve(message.result);
     });
@@ -280,6 +291,17 @@ export const smokePackagedRendererFaults = async ({
       }
       return response.result.value;
     };
+    console.error("[packaged-renderer] setup surface started");
+    await waitFor(
+      evaluate,
+      `document.querySelector('.koed-setup-card h1')?.textContent?.trim() === 'Set up Koed'`,
+      "setup surface",
+      `(() => ({
+        title: document.querySelector('h1')?.textContent ?? null,
+        body: document.body.innerText.slice(0, 1000)
+      }))()`
+    );
+    console.error("[packaged-renderer] setup surface finished");
     const openProductChannel = async (suffix = "") => {
       const productControl = `[...document.querySelectorAll('.desktop-sidebar-nav-item')].find((item) => item.textContent?.trim() === 'product')`;
       await waitFor(
@@ -313,6 +335,7 @@ export const smokePackagedRendererFaults = async ({
     const validationUrl =
       "koed://app/browser-validation.html?view=collaboration-interactions&actor=alice";
     await cdp.call("Page.navigate", { url: validationUrl });
+    console.error("[packaged-renderer] collaboration fixture started");
     await waitFor(
       evaluate,
       `document.documentElement.dataset.browserValidationReady === "true" && Boolean(window.__koedCollaborationInteractions)`,
@@ -347,7 +370,42 @@ export const smokePackagedRendererFaults = async ({
       `[...document.querySelectorAll(".collab-message")].filter((item) => item.textContent?.includes(${JSON.stringify(replayBody)})).length === 1 && window.__koedCollaborationInteractions.commands().some((item) => item.command === "collaboration.acknowledge_delivery")`,
       "redelivery after renderer restart"
     );
+    console.error("[packaged-renderer] collaboration fixture finished");
 
+    console.error("[packaged-renderer] Personal Memory navigation started");
+    await evaluate(
+      `document.querySelector('[aria-label="Personal"]')?.click()`
+    );
+    await waitFor(
+      evaluate,
+      `[...document.querySelectorAll('.desktop-sidebar-nav-item')].some((item) => item.textContent?.trim() === 'Projects')`,
+      "Personal Projects navigation"
+    );
+    await evaluate(
+      `[...document.querySelectorAll('.desktop-sidebar-nav-item')].find((item) => item.textContent?.trim() === 'Projects')?.click()`
+    );
+    await waitFor(
+      evaluate,
+      `Boolean(document.querySelector('.personal-memory-workspace [data-project-id="browser-project"]'))`,
+      "Personal Memory Projects surface"
+    );
+    await evaluate(
+      `document.querySelector('[data-project-id="browser-project"]')?.click()`
+    );
+    await waitFor(
+      evaluate,
+      `Boolean(document.querySelector('[data-session-id] .personal-session-row-select'))`,
+      "Personal Memory Captured Session list"
+    );
+    await evaluate(
+      `document.querySelector('[data-session-id] .personal-session-row-select')?.click()`
+    );
+    await waitFor(
+      evaluate,
+      `document.querySelectorAll('.native-event-wrap').length > 0 && document.body.innerText.includes('Browser validation Memory Event')`,
+      "Personal Memory Captured Session timeline"
+    );
+    console.error("[packaged-renderer] Personal Memory navigation finished");
     await evaluate(
       `document.querySelector('[aria-label="Personal"]')?.click()`
     );
@@ -454,6 +512,7 @@ export const smokePackagedRendererFaults = async ({
       `[...document.querySelectorAll('.collab-share-section')].some((item) => item.querySelector('h2')?.textContent?.trim() === 'Revoked' && item.textContent?.includes('Packaged revocation fixture')) && window.__koedCollaborationInteractions.commands().some((item) => item.command === 'collaboration.revoke_shared_memory')`,
       "packaged Shares confirmed revocation"
     );
+    console.error("[packaged-renderer] Personal Shares finished");
     await openProductChannel(" after Shares validation");
 
     const accessibleText = `(() => {
@@ -487,6 +546,7 @@ export const smokePackagedRendererFaults = async ({
       }
     };
     cdp.notifications.length = 0;
+    console.error("[packaged-renderer] redacted failure checks started");
 
     const apiSentinels = [
       "api-secret-7H2K",
@@ -572,7 +632,11 @@ export const smokePackagedRendererFaults = async ({
       `window.__koedCollaborationInteractions.emitRealtimeFailure(${JSON.stringify(realtimeSentinels.join(" | "))})`
     );
     await assertRedacted("realtime", realtimeSentinels, "Unavailable");
+    console.error("[packaged-renderer] redacted failure checks finished");
     return {
+      setupSurface: true,
+      personalMemoryNavigation: true,
+      preferencesNavigation: true,
       crashAfterApplyBeforeAcknowledgement: true,
       redeliveryAppliedOnceAfterRestart: true,
       ownerWideSharesAccessibility: true,

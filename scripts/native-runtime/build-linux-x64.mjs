@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -11,11 +12,19 @@ import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
 import { copyNativeRuntimeSource } from "../native-runtime-copy.mjs";
 import {
+  sourceDate,
+  writeDeterministicTarGz
+} from "../deterministic-tar-gzip.mjs";
+import {
   prunePythonEmbeddingRuntimeFiles,
   writeRuntimeAssetManifest,
   sha256File
 } from "./manifest-lib.mjs";
 import { procureRuntime } from "./procure-runtime.mjs";
+import {
+  pruneNativeRuntimeBuildArtifacts,
+  stripNativeRuntimeBinaries
+} from "./content-policy.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
 
@@ -41,12 +50,7 @@ const parseArgs = (argv) => {
   options.outDir ||=
     process.env.KOED_NATIVE_RUNTIME_OUT_DIR ??
     resolve(repoRoot, "dist", "native-runtime", "linux-x64");
-  options.version ||=
-    process.env.KOED_NATIVE_RUNTIME_VERSION ??
-    `dev-${new Date()
-      .toISOString()
-      .replace(/[^0-9]/g, "")
-      .slice(0, 14)}`;
+  options.version ||= process.env.KOED_NATIVE_RUNTIME_VERSION ?? "dev";
   return options;
 };
 
@@ -89,6 +93,24 @@ const assertHost = (allowMismatch) => {
   }
 };
 
+const readSources = (sourcesPath) =>
+  JSON.parse(readFileSync(resolve(sourcesPath), "utf8"));
+
+const describeSource = (sourceDir, sourcesPath) => {
+  if (!sourceDir) {
+    return { kind: "pinned-sources", manifest: readSources(sourcesPath) };
+  }
+  const provenancePath = resolve(sourceDir, "provenance.json");
+  if (existsSync(provenancePath)) {
+    const provenance = JSON.parse(readFileSync(provenancePath, "utf8"));
+    if (provenance.source) return provenance.source;
+    if (provenance.sources) {
+      return { kind: "pinned-sources", manifest: provenance.sources };
+    }
+  }
+  return { kind: "verified-runtime-source" };
+};
+
 const main = () => {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -125,6 +147,11 @@ const main = () => {
     );
   }
   prunePythonEmbeddingRuntimeFiles(runtimeRoot);
+  const contentPruning = pruneNativeRuntimeBuildArtifacts(runtimeRoot);
+  const binaryStripping = stripNativeRuntimeBinaries({
+    runtimeRoot,
+    platform: "linux"
+  });
   const nativeAssets = writeRuntimeAssetManifest({
     runtimeRoot,
     platform: "linux",
@@ -141,9 +168,8 @@ const main = () => {
       architecture: "x64",
       version: options.version
     },
-    sourceDir,
-    sourcesPath: options.sourcesPath,
-    generatedAt: new Date().toISOString(),
+    source: describeSource(sourceDir, options.sourcesPath),
+    generatedAt: sourceDate(),
     glibcBaseline: "2.35+"
   };
   writeFileSync(
@@ -156,7 +182,12 @@ const main = () => {
   );
   const tarName = `koed-native-runtime-linux-x64-${options.version}.tar.gz`;
   const tarPath = resolve(outDir, tarName);
-  run("tar", ["-czf", tarPath, "koed-runtime"], { cwd: outDir });
+  writeDeterministicTarGz({
+    sourceDir: runtimeRoot,
+    rootName: "koed-runtime",
+    tarPath,
+    streaming: true
+  });
   const sha256 = sha256File(tarPath);
   const sha256Path = resolve(outDir, `${tarName}.sha256`);
   writeFileSync(sha256Path, `${sha256}  ${basename(tarPath)}\n`);
@@ -166,7 +197,9 @@ const main = () => {
     runtimeRoot,
     nativeAssets,
     artifact: { tarPath, sha256Path, sha256 },
-    procurement
+    procurement,
+    contentPruning,
+    binaryStripping
   };
   if (options.json) console.log(JSON.stringify(result, null, 2));
   else console.log(`Built ${tarPath}`);

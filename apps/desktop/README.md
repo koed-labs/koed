@@ -186,13 +186,17 @@ packaging, signing, runtime distribution, or packaged smoke support.
   renderer, bundled `koed-server`, and `koed-runtime` JS/service artifact layout
   can run without checkout overrides. The smoke launches the packaged
   `koed-server` with a temporary `KOED_HOME`, unsets `KOED_REPO_ROOT`, verifies
-  collaboration and renderer fault handling, and verifies daemon
+  the setup surface, Personal Memory navigation, collaboration, preferences,
+  and renderer fault handling, and verifies daemon
   start/status/reconnect/stop. The focused `--missing-assets` mode checks
   packaged-CLI status and actionable `doctor --json` output without launching
   Electron services. Add `--mask-native-assets` to temporarily hide and then
   restore `postgres` and `llama.cpp` in an already-built packaged app. Set
   `KOED_NATIVE_RUNTIME_SOURCE_DIR` to stage native assets into the package
-  manifest for packaged-provider runtime install tests.
+  manifest for packaged-provider runtime install tests. For deterministic
+  offline smoke, pass `--embedding-model-source <gguf>` and
+  `--privacy-model-source <privacy-model-directory>`; the packaged CLI still
+  verifies the pinned hashes before starting services.
   `pnpm native-runtime:stage:homebrew -- --out /tmp/koed-native-runtime --force`
   can produce a local Homebrew-backed staging directory for those smoke tests.
   `desktop:package:smoke` currently aliases the macOS smoke and guards

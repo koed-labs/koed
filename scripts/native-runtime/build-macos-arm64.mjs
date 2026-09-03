@@ -7,16 +7,23 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
 import { copyNativeRuntimeSource } from "../native-runtime-copy.mjs";
+import {
+  sourceDate,
+  writeDeterministicTarGz
+} from "../deterministic-tar-gzip.mjs";
 import {
   prunePythonEmbeddingRuntimeFiles,
   writeRuntimeAssetManifest,
   sha256File
 } from "./manifest-lib.mjs";
 import { procureRuntime } from "./procure-runtime.mjs";
+import {
+  pruneNativeRuntimeBuildArtifacts,
+  stripNativeRuntimeBinaries
+} from "./content-policy.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
 
@@ -43,29 +50,8 @@ const parseArgs = (argv) => {
   options.outDir ||=
     process.env.KOED_NATIVE_RUNTIME_OUT_DIR ??
     resolve(repoRoot, "dist", "native-runtime", "macos-arm64");
-  options.version ||=
-    process.env.KOED_NATIVE_RUNTIME_VERSION ??
-    `dev-${new Date()
-      .toISOString()
-      .replace(/[^0-9]/g, "")
-      .slice(0, 14)}`;
+  options.version ||= process.env.KOED_NATIVE_RUNTIME_VERSION ?? "dev";
   return options;
-};
-
-const run = (command, args, opts = {}) => {
-  const result = spawnSync(command, args, {
-    cwd: repoRoot,
-    encoding: "utf8",
-    stdio: opts.stdio ?? "pipe",
-    ...opts
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(
-      `${command} ${args.join(" ")} failed with ${result.status ?? 1}: ${result.stderr || result.stdout}`
-    );
-  }
-  return result;
 };
 
 const assertHost = (allowMismatch) => {
@@ -77,12 +63,28 @@ const assertHost = (allowMismatch) => {
   }
 };
 
-const readSources = () => {
-  const path =
-    process.env.KOED_NATIVE_RUNTIME_SOURCES ??
-    resolve(import.meta.dirname, "sources.macos-arm64.json");
+const readSources = (sourcesPath) => {
+  const path = resolve(sourcesPath);
   if (!existsSync(path)) return { path, sources: null };
   return { path, sources: JSON.parse(readFileSync(path, "utf8")) };
+};
+
+const describeSource = (sourceDir, sourcesPath) => {
+  if (!sourceDir) {
+    return {
+      kind: "pinned-sources",
+      manifest: readSources(sourcesPath).sources
+    };
+  }
+  const provenancePath = resolve(sourceDir, "provenance.json");
+  if (existsSync(provenancePath)) {
+    const provenance = JSON.parse(readFileSync(provenancePath, "utf8"));
+    if (provenance.source) return provenance.source;
+    if (provenance.sources) {
+      return { kind: "pinned-sources", manifest: provenance.sources };
+    }
+  }
+  return { kind: "verified-runtime-source" };
 };
 
 const copySourceRuntime = ({
@@ -114,17 +116,18 @@ const writeProvenance = ({
   runtimeRoot,
   version,
   sourceDir,
+  sourcesPath,
   noArchive
 }) => {
+  const source = describeSource(sourceDir, sourcesPath);
   const provenance = {
     schemaVersion: 1,
     artifact: { platform: "macos", architecture: "arm64", version },
     strategy: noArchive
       ? "koed-verified-runtime-staging"
       : "koed-verified-runtime-tarball",
-    sourceDir: sourceDir ? resolve(sourceDir) : undefined,
-    sources: readSources().sources,
-    generatedAt: new Date().toISOString(),
+    source,
+    generatedAt: sourceDate(),
     node: process.version,
     host: { platform: process.platform, architecture: process.arch },
     validation: {
@@ -149,7 +152,12 @@ const writeProvenance = ({
 const archive = ({ outDir, version }) => {
   const tarName = `koed-native-runtime-macos-arm64-${version}.tar.gz`;
   const tarPath = resolve(outDir, tarName);
-  run("tar", ["-czf", tarPath, "koed-runtime"], { cwd: outDir });
+  writeDeterministicTarGz({
+    sourceDir: resolve(outDir, "koed-runtime"),
+    rootName: "koed-runtime",
+    tarPath,
+    streaming: true
+  });
   const sha = sha256File(tarPath);
   writeFileSync(
     resolve(outDir, `${tarName}.sha256`),
@@ -191,6 +199,8 @@ const main = () => {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(runtimeRoot, { recursive: true });
   const timings = {};
+  let contentPruning;
+  let binaryStripping;
   const procurement = timedPhase(timings, "runtime payload procurement", () =>
     copySourceRuntime({
       sourceDir: options.sourceDir,
@@ -204,6 +214,11 @@ const main = () => {
     "payload pruning and manifest generation",
     () => {
       prunePythonEmbeddingRuntimeFiles(runtimeRoot);
+      contentPruning = pruneNativeRuntimeBuildArtifacts(runtimeRoot);
+      binaryStripping = stripNativeRuntimeBinaries({
+        runtimeRoot,
+        platform: "darwin"
+      });
       return writeRuntimeAssetManifest({
         runtimeRoot,
         platform: "macos",
@@ -221,6 +236,7 @@ const main = () => {
       runtimeRoot,
       version: options.version,
       sourceDir: options.sourceDir,
+      sourcesPath: options.sourcesPath,
       noArchive: options.noArchive
     })
   );
@@ -236,6 +252,8 @@ const main = () => {
     nativeAssets,
     artifact,
     procurement,
+    contentPruning,
+    binaryStripping,
     timings
   };
   if (options.json) console.log(JSON.stringify(result, null, 2));

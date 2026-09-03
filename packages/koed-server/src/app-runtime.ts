@@ -59,7 +59,7 @@ const packagedRuntime = (
     "local-runtime-cli.js"
   );
   const captureHook = resolve(root, "mcp-server", "dist", "capture-hook.js");
-  const dbPackageRoot = resolve(root, "api", "node_modules", "@koed", "db");
+  const dbPackageRoot = resolve(root, "node_modules", "@koed", "db");
   const required = [
     apiEntry,
     workerEntry,
@@ -68,6 +68,13 @@ const packagedRuntime = (
     mcpCli,
     localAiRuntime,
     captureHook,
+    resolve(
+      root,
+      "mcp-server",
+      "dist",
+      "prompts",
+      "codex-global-agent-guidance.md"
+    ),
     resolve(dbPackageRoot, "dist", "index.js"),
     resolve(dbPackageRoot, "dist", "connection.js"),
     resolve(dbPackageRoot, "dist", "user-api-token-repository.js"),

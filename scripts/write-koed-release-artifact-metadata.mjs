@@ -1,6 +1,7 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const usage =
@@ -59,46 +60,138 @@ const readSha256Sidecar = (path) => {
   return sha256;
 };
 
-const findManifest = (files, archive, manifest) => {
-  const expected = `koed-server-app-runtime-${manifest.version}-${manifest.platform}-${manifest.architecture}.manifest.json`;
-  const explicit = files.find((file) => basename(file) === expected);
-  if (explicit) return explicit;
-  const archiveDir = dirname(archive);
-  return files.find(
-    (file) =>
-      dirname(file) === archiveDir && basename(file).endsWith(".manifest.json")
-  );
+const sha256File = (path) =>
+  createHash("sha256").update(readFileSync(path)).digest("hex");
+
+const findUniqueNamedFile = (files, expected, description) => {
+  const matches = files.filter((file) => basename(file) === expected);
+  if (matches.length !== 1) {
+    throw new Error(
+      `${matches.length === 0 ? "Missing" : "Duplicate"} ${description}: ${expected}`
+    );
+  }
+  return matches[0];
 };
 
-const collectServerPackageTargets = ({ artifactRoot, repository, tag }) => {
+const parseServerArchiveName = (archive) => {
+  const match = basename(archive).match(
+    /^koed-server-(.+)-(linux|macos)-(x64|arm64)\.tar\.gz$/
+  );
+  if (!match) throw new Error(`Invalid app-runtime archive name: ${archive}`);
+  return { version: match[1], platform: match[2], architecture: match[3] };
+};
+
+const parseNativeArchiveName = (archive) => {
+  const match = basename(archive).match(
+    /^koed-native-runtime-(linux|macos)-(x64|arm64)-(.+)\.tar\.gz$/
+  );
+  if (!match)
+    throw new Error(`Invalid native-runtime archive name: ${archive}`);
+  return { version: match[3], platform: match[1], architecture: match[2] };
+};
+
+const assertTarget = (label, actual, expected) => {
+  for (const key of ["version", "platform", "architecture"]) {
+    if (actual?.[key] !== expected[key]) {
+      throw new Error(
+        `${label} ${key} mismatch: expected ${expected[key]}, received ${actual?.[key] ?? "missing"}`
+      );
+    }
+  }
+};
+
+const collectServerPackageTargets = ({
+  artifactRoot,
+  repository,
+  tag,
+  version
+}) => {
   const files = listFiles(resolve(artifactRoot));
   const archives = files
     .filter((file) => basename(file).match(/^koed-server-.+\.tar\.gz$/))
     .sort();
   return archives.map((archive) => {
+    const target = parseServerArchiveName(archive);
+    if (target.version !== version) {
+      throw new Error(
+        `App-runtime archive version mismatch: expected ${version}, received ${target.version}`
+      );
+    }
     const checksum = `${archive}.sha256`;
     if (!files.includes(checksum)) {
       throw new Error(`Missing SHA-256 sidecar for ${archive}`);
     }
     const sha256 = readSha256Sidecar(checksum);
-    const manifestFile = files.find(
-      (file) =>
-        dirname(file) === dirname(archive) &&
-        basename(file).endsWith(".manifest.json")
+    const manifestFile = findUniqueNamedFile(
+      files,
+      `koed-server-app-runtime-${target.version}-${target.platform}-${target.architecture}.manifest.json`,
+      "app-runtime manifest"
     );
-    if (!manifestFile) {
-      throw new Error(`Missing app-runtime manifest sidecar for ${archive}`);
-    }
     const manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
-    const canonicalManifestFile = findManifest(files, archive, manifest);
-    const provenanceFile = files.find(
-      (file) =>
-        dirname(file) === dirname(archive) &&
-        basename(file).endsWith(".provenance.json")
+    assertTarget("App-runtime manifest", manifest, target);
+    if (
+      manifest.id !== "koed-server" ||
+      manifest.packageKind !== "app-runtime"
+    ) {
+      throw new Error(`Invalid app-runtime manifest identity: ${manifestFile}`);
+    }
+    const provenanceFile = findUniqueNamedFile(
+      files,
+      `koed-server-app-runtime-${target.version}-${target.platform}-${target.architecture}.provenance.json`,
+      "app-runtime provenance"
     );
-    const signatureFile = provenanceFile
-      ? files.find((file) => file === `${provenanceFile}.sig`)
-      : undefined;
+    const provenance = JSON.parse(readFileSync(provenanceFile, "utf8"));
+    if (provenance.statement?.schemaVersion !== 1) {
+      throw new Error(`Invalid app-runtime provenance: ${provenanceFile}`);
+    }
+    assertTarget(
+      "App-runtime provenance subject",
+      provenance.statement.subject,
+      target
+    );
+    if (
+      provenance.statement.subject?.id !== manifest.id ||
+      provenance.statement.subject?.packageKind !== manifest.packageKind ||
+      provenance.statement.subject?.archiveName !== basename(archive) ||
+      provenance.statement.subject?.archiveSha256 !== sha256
+    ) {
+      throw new Error(
+        `App-runtime provenance subject mismatch: ${provenanceFile}`
+      );
+    }
+    if (
+      provenance.statement.subject?.manifestName !==
+        "koed-server-package-manifest.json" ||
+      provenance.statement.subject?.manifestSha256 !== sha256File(manifestFile)
+    ) {
+      throw new Error(
+        `App-runtime provenance manifest mismatch: ${provenanceFile}`
+      );
+    }
+    const signatureName = `${basename(provenanceFile)}.sig`;
+    const signatureMatches = files.filter(
+      (file) => basename(file) === signatureName
+    );
+    if (signatureMatches.length > 1) {
+      throw new Error(
+        `Duplicate app-runtime provenance signature: ${signatureName}`
+      );
+    }
+    const signatureFile = signatureMatches[0];
+    const signatureStatus = provenance.signature?.status;
+    if (signatureStatus === "signed" && !signatureFile) {
+      throw new Error(
+        `Missing app-runtime provenance signature: ${signatureName}`
+      );
+    }
+    if (
+      signatureStatus !== "signed" &&
+      signatureStatus !== "unsigned-placeholder"
+    ) {
+      throw new Error(
+        `Invalid app-runtime provenance signature state: ${provenanceFile}`
+      );
+    }
     return {
       packageKind: manifest.packageKind,
       id: manifest.id,
@@ -116,56 +209,52 @@ const collectServerPackageTargets = ({ artifactRoot, repository, tag }) => {
         algorithm: "sha256"
       },
       manifest: {
-        name: basename(canonicalManifestFile),
-        url: releaseUrl({ repository, tag, file: canonicalManifestFile }),
+        name: basename(manifestFile),
+        url: releaseUrl({ repository, tag, file: manifestFile }),
         schemaVersion: manifest.schemaVersion
       },
-      ...(provenanceFile
-        ? {
-            provenance: {
-              name: basename(provenanceFile),
-              url: releaseUrl({ repository, tag, file: provenanceFile }),
-              schemaVersion: 1,
-              signature:
-                signatureFile !== undefined
-                  ? {
-                      name: basename(signatureFile),
-                      url: releaseUrl({
-                        repository,
-                        tag,
-                        file: signatureFile
-                      }),
-                      algorithm: "ed25519"
-                    }
-                  : {
-                      status: "unsigned-placeholder",
-                      algorithm: "ed25519"
-                    }
+      provenance: {
+        name: basename(provenanceFile),
+        url: releaseUrl({ repository, tag, file: provenanceFile }),
+        schemaVersion: provenance.statement.schemaVersion,
+        signature: signatureFile
+          ? {
+              name: basename(signatureFile),
+              url: releaseUrl({ repository, tag, file: signatureFile }),
+              algorithm: "ed25519"
             }
-          }
-        : {})
+          : { status: "unsigned-placeholder", algorithm: "ed25519" }
+      }
     };
   });
 };
 
-const collectNativeRuntimeTargets = ({ artifactRoot, repository, tag }) => {
+const collectNativeRuntimeTargets = ({
+  artifactRoot,
+  repository,
+  tag,
+  version
+}) => {
   const files = listFiles(resolve(artifactRoot));
   return files
     .filter((file) => basename(file).match(/^koed-native-runtime-.+\.tar\.gz$/))
     .sort()
     .map((archive) => {
+      const target = parseNativeArchiveName(archive);
+      if (target.version !== version) {
+        throw new Error(
+          `Native-runtime archive version mismatch: expected ${version}, received ${target.version}`
+        );
+      }
       const checksum = `${archive}.sha256`;
       if (!files.includes(checksum)) {
         throw new Error(`Missing SHA-256 sidecar for ${archive}`);
       }
-      const provenanceFile = files.find(
-        (file) =>
-          dirname(file) === dirname(archive) &&
-          basename(file).endsWith(".provenance.json")
+      const provenanceFile = findUniqueNamedFile(
+        files,
+        `koed-native-runtime-${target.platform}-${target.architecture}-${target.version}.provenance.json`,
+        "native-runtime provenance"
       );
-      if (!provenanceFile) {
-        throw new Error(`Missing native-runtime provenance for ${archive}`);
-      }
       const provenance = JSON.parse(readFileSync(provenanceFile, "utf8"));
       if (
         provenance.schemaVersion !== 1 ||
@@ -175,6 +264,11 @@ const collectNativeRuntimeTargets = ({ artifactRoot, repository, tag }) => {
       ) {
         throw new Error(`Invalid native-runtime provenance: ${provenanceFile}`);
       }
+      assertTarget(
+        "Native-runtime provenance artifact",
+        provenance.artifact,
+        target
+      );
       return {
         version: provenance.artifact?.version,
         platform: provenance.artifact?.platform,
@@ -201,7 +295,7 @@ const collectNativeRuntimeTargets = ({ artifactRoot, repository, tag }) => {
 export const buildReleaseArtifactMetadata = (options) => {
   const targets = collectServerPackageTargets(options);
   const nativeRuntimeTargets = collectNativeRuntimeTargets(options);
-  return {
+  const metadata = {
     schemaVersion: 1,
     release: {
       version: options.version,
@@ -234,6 +328,51 @@ export const buildReleaseArtifactMetadata = (options) => {
       }
     }
   };
+  validateReleaseArtifactMetadata(metadata, options);
+  return metadata;
+};
+
+export const validateReleaseArtifactMetadata = (metadata, options) => {
+  if (
+    metadata.schemaVersion !== 1 ||
+    metadata.release?.version !== options.version ||
+    metadata.release?.tag !== options.tag
+  ) {
+    throw new Error("Release metadata identity is inconsistent.");
+  }
+  const groups = [
+    metadata.artifacts?.koedServerAppRuntime?.targets ?? [],
+    metadata.artifacts?.nativeRuntime?.targets ?? []
+  ];
+  for (const targets of groups) {
+    const identities = new Set();
+    for (const target of targets) {
+      assertTarget("Release metadata target", target, {
+        version: options.version,
+        platform: target.platform,
+        architecture: target.architecture
+      });
+      const identity = `${target.version}/${target.platform}/${target.architecture}`;
+      if (identities.has(identity)) {
+        throw new Error(`Duplicate release metadata target: ${identity}`);
+      }
+      identities.add(identity);
+      for (const sidecar of [
+        target.archive,
+        target.checksum,
+        target.manifest,
+        target.provenance,
+        target.provenance?.signature?.name
+          ? target.provenance.signature
+          : undefined
+      ].filter(Boolean)) {
+        if (!sidecar.name || !sidecar.url?.endsWith(`/${sidecar.name}`)) {
+          throw new Error(`Release metadata URL mismatch for ${identity}.`);
+        }
+      }
+    }
+  }
+  return metadata;
 };
 
 const main = () => {

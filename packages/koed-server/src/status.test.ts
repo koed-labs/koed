@@ -41,6 +41,68 @@ const response = (ok: boolean, status: number, body: unknown): Response =>
     json: async () => body
   }) as Response;
 
+const healthyReadyPayload = {
+  status: "ok",
+  checks: [
+    { service: "api", status: "ok" },
+    { service: "postgres", status: "ok" },
+    { service: "postgres-version", status: "ok" },
+    { service: "migrations", status: "ok" },
+    { service: "pgvector", status: "ok" },
+    { service: "redis", status: "ok" },
+    { service: "work-queue", status: "ok" },
+    { service: "embedding-service", status: "ok" },
+    { service: "embedding-model", status: "ok" }
+  ]
+};
+
+const writeStartupRuntime = (
+  root: string,
+  runtimeMode: "external" | "developer" | "local-personal"
+): void => {
+  mkdirSync(resolve(root, "run"), { recursive: true });
+  writeFileSync(
+    resolve(root, "run/koed-server.json"),
+    JSON.stringify({
+      pid: 42,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      repoRoot: root,
+      apiUrl: "http://127.0.0.1:43300",
+      runtimeMode,
+      dependencyMode: "external",
+      automaticPorts: false,
+      services: [
+        "api",
+        "worker",
+        ...(runtimeMode === "external" ? [] : ["local-ai-runtime"])
+      ],
+      processes: {
+        api: 43,
+        worker: 44,
+        ...(runtimeMode === "external" ? {} : { localAiRuntime: 45 })
+      }
+    })
+  );
+};
+
+const healthyStartupFetcher = (apiTokenStatus = 200): typeof fetch =>
+  (async (input) => {
+    const url = String(input);
+    if (url.endsWith("/ready")) {
+      return response(true, 200, healthyReadyPayload);
+    }
+    if (url.endsWith("/health")) {
+      return response(true, 200, { status: "ok" });
+    }
+    if (url.endsWith("/v1/runtime/status")) {
+      return response(true, 200, { status: "ok" });
+    }
+    if (url.endsWith("/v1/access/check")) {
+      return response(apiTokenStatus === 200, apiTokenStatus, {});
+    }
+    return response(true, 200, {});
+  }) as typeof fetch;
+
 const spawnResult = (stdout: string, status = 0) =>
   ({ stdout, stderr: "", status, signal: null, pid: 1, output: [] }) as never;
 
@@ -100,6 +162,168 @@ afterEach(() => {
 });
 
 describe("startup status", () => {
+  it.each(["team_self_hosted", "private_vps"])(
+    "keeps a %s external Team backend healthy without a Personal API Token",
+    async (deploymentProfile) => {
+      const root = tempDir();
+      writeStartupRuntime(root, "external");
+
+      const status = await collectKoedServerStartupStatus(
+        {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_RUNTIME_MODE: "external",
+          KOED_DEPENDENCY_MODE: "external",
+          KOED_DEPLOYMENT_PROFILE: deploymentProfile,
+          KOED_TEAM_COLLABORATION_ENABLED: "true",
+          DATABASE_URL: "postgres://operator/database",
+          REDIS_URL: "redis://operator:6379",
+          EMBEDDING_SERVICE_URL: "http://embedding:8000",
+          PRIVACY_SERVICE_URL: "http://privacy:8092",
+          PRIVACY_SERVICE_TOKEN: "privacy-service-token",
+          PRIVACY_RUNTIME_CONTROL_TOKEN: "privacy-control-token"
+        },
+        {
+          fetch: healthyStartupFetcher(),
+          checkPid: (pid) => [42, 43, 44].includes(pid),
+          now: () => new Date("2026-01-01T00:00:00.000Z")
+        }
+      );
+
+      expect(status).toMatchObject({
+        ok: true,
+        state: "healthy",
+        runtimeMode: "external",
+        api: { state: "healthy" },
+        database: { state: "healthy" },
+        redis: { state: "healthy" },
+        workerQueues: { state: "healthy" },
+        embeddingService: { state: "healthy" },
+        privacyService: { state: "healthy" },
+        localAiRuntime: { state: "healthy" },
+        apiToken: { state: "not_configured", configured: false }
+      });
+    }
+  );
+
+  it.each([401, 403])(
+    "reports an external runtime's rejected Personal API Token at HTTP %s without failing startup",
+    async (apiTokenStatus) => {
+      const root = tempDir();
+      writeStartupRuntime(root, "external");
+
+      const status = await collectKoedServerStartupStatus(
+        {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_RUNTIME_MODE: "external",
+          KOED_DEPENDENCY_MODE: "external",
+          DATABASE_URL: "postgres://operator/database",
+          REDIS_URL: "redis://operator:6379",
+          EMBEDDING_SERVICE_URL: "http://embedding:8000",
+          MEMORY_API_TOKEN: "rejected-personal-token"
+        },
+        {
+          fetch: healthyStartupFetcher(apiTokenStatus),
+          checkPid: (pid) => [42, 43, 44].includes(pid),
+          now: () => new Date("2026-01-01T00:00:00.000Z")
+        }
+      );
+
+      expect(status).toMatchObject({
+        ok: true,
+        state: "healthy",
+        apiToken: { state: "needs_attention", configured: true }
+      });
+    }
+  );
+
+  it("keeps full external core status healthy while reporting a missing Personal API Token", async () => {
+    const root = tempDir();
+    writeStartupRuntime(root, "external");
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    const environment = {
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      KOED_RUNTIME_MODE: "external",
+      KOED_DEPENDENCY_MODE: "external",
+      DATABASE_URL: "postgres://operator/database",
+      REDIS_URL: "redis://operator:6379",
+      EMBEDDING_SERVICE_URL: "http://embedding:8000"
+    };
+    const dependencies = {
+      fetch: healthyStartupFetcher(),
+      spawnSync: () => spawnResult("", 0),
+      checkPid: (pid: number) => [42, 43, 44].includes(pid),
+      now: () => new Date("2026-01-01T00:00:00.000Z")
+    };
+
+    const status = await collectKoedServerStatus(environment, dependencies);
+    const doctor = await collectKoedServerDoctor(environment, dependencies);
+
+    expect(status).toMatchObject({
+      ok: true,
+      state: "healthy",
+      runtimeMode: "external",
+      apiToken: { state: "not_configured", configured: false },
+      localAiRuntime: { state: "healthy" },
+      core: { state: "healthy" }
+    });
+    expect(Object.keys(status.core.components)).toEqual([
+      "api",
+      "database",
+      "redis",
+      "workerQueues",
+      "embeddingService",
+      "privacyService",
+      "mcpServer"
+    ]);
+    expect(status.core.components).not.toHaveProperty("apiToken");
+    expect(status.core.components).not.toHaveProperty("localAiRuntime");
+    expect(doctor).toMatchObject({
+      ok: true,
+      state: "healthy",
+      summary: "Koed local control plane is healthy.",
+      runtimeMode: "external"
+    });
+    expect(
+      doctor.checks.find((check) => check.id === "apiToken")
+    ).toMatchObject({ state: "not_configured", configured: false });
+  });
+
+  it.each(["developer", "local-personal"] as const)(
+    "keeps the Personal API Token blocking for %s runtime startup",
+    async (runtimeMode) => {
+      const root = tempDir();
+      writeStartupRuntime(root, runtimeMode);
+
+      const status = await collectKoedServerStartupStatus(
+        {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_RUNTIME_MODE: runtimeMode,
+          KOED_DEPENDENCY_MODE: "external",
+          DATABASE_URL: "postgres://operator/database",
+          REDIS_URL: "redis://operator:6379",
+          EMBEDDING_SERVICE_URL: "http://embedding:8000"
+        },
+        {
+          fetch: healthyStartupFetcher(),
+          checkPid: (pid) => [42, 43, 44, 45].includes(pid),
+          now: () => new Date("2026-01-01T00:00:00.000Z")
+        }
+      );
+
+      expect(status).toMatchObject({
+        ok: false,
+        state: "not_configured",
+        localAiRuntime: { state: "healthy" },
+        apiToken: { state: "not_configured", configured: false }
+      });
+    }
+  );
+
   it("uses individual readiness checks and live process health without deep diagnostics", async () => {
     const root = tempDir();
     mkdirSync(resolve(root, "run"), { recursive: true });
