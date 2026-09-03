@@ -105,3 +105,25 @@ test("prunes package documentation but preserves runtime MCP prompt Markdown", (
   assert.equal(existsSync(lockfile), false);
   assert.equal(existsSync(nativeSource), false);
 });
+
+test("prunes repository placeholders and directories left empty", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-shared-runtime-"));
+  roots.push(root);
+  const packageRoot = resolve(root, "node_modules/runtime-fixture");
+  const emptyTypes = resolve(packageRoot, "types/nested");
+  const placeholder = resolve(packageRoot, "lib/llhttp/.gitkeep");
+  const runtimeFile = resolve(packageRoot, "lib/index.js");
+  mkdirSync(emptyTypes, { recursive: true });
+  write(placeholder, "");
+  write(runtimeFile);
+  write(
+    resolve(packageRoot, "package.json"),
+    '{"name":"runtime-fixture","version":"1.0.0"}\n'
+  );
+
+  pruneSharedAppRuntimeMetadata(root);
+
+  assert.equal(existsSync(resolve(packageRoot, "types")), false);
+  assert.equal(existsSync(resolve(packageRoot, "lib/llhttp")), false);
+  assert.equal(existsSync(runtimeFile), true);
+});
