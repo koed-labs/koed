@@ -61,6 +61,7 @@ export type AppShellProps = {
   onToggleInspector: () => void;
   personalUnreadCount: number;
   scopeLine: ReactNode;
+  teamCollaborationEnabled: boolean;
   teams: readonly TeamRailItem[];
   routeFocusKey: string;
 };
@@ -135,6 +136,7 @@ function Rail({
   onOpenDevices,
   onOpenPreferences,
   personalUnreadCount,
+  teamCollaborationEnabled,
   teams
 }: Pick<
   AppShellProps,
@@ -147,6 +149,7 @@ function Rail({
   | "onOpenDevices"
   | "onOpenPreferences"
   | "personalUnreadCount"
+  | "teamCollaborationEnabled"
   | "teams"
 >) {
   const activeTeamId =
@@ -197,64 +200,68 @@ function Rail({
         </RailButton>
       </div>
 
-      <div className="desktop-team-rail" aria-label="Teams">
-        {teams.map((team, index) => {
-          const active =
-            typeof activeScope === "object" && activeScope.teamId === team.id;
-          return (
-            <RailButton
-              active={active}
-              badge={team.unreadCount}
-              buttonRef={(button) => {
-                if (button) teamButtonRefs.current.set(team.id, button);
-                else teamButtonRefs.current.delete(team.id);
-              }}
-              key={team.id}
-              label={team.name}
-              onClick={() => onActivateTeam(team.id)}
-              onKeyDown={(event) => {
-                const targetIndex =
-                  event.key === "ArrowDown"
-                    ? Math.min(teams.length - 1, index + 1)
-                    : event.key === "ArrowUp"
-                      ? Math.max(0, index - 1)
-                      : event.key === "Home"
-                        ? 0
-                        : event.key === "End"
-                          ? teams.length - 1
-                          : null;
-                if (targetIndex === null) return;
-                event.preventDefault();
-                focusTeam(targetIndex);
-              }}
-              tabIndex={rovingTeamId === team.id ? 0 : -1}
-            >
-              <span
-                className="desktop-team-disc"
-                data-swatch={teamDiscIndex(team.id)}
-                aria-hidden="true"
+      {teamCollaborationEnabled ? (
+        <div className="desktop-team-rail" aria-label="Teams">
+          {teams.map((team, index) => {
+            const active =
+              typeof activeScope === "object" && activeScope.teamId === team.id;
+            return (
+              <RailButton
+                active={active}
+                badge={team.unreadCount}
+                buttonRef={(button) => {
+                  if (button) teamButtonRefs.current.set(team.id, button);
+                  else teamButtonRefs.current.delete(team.id);
+                }}
+                key={team.id}
+                label={team.name}
+                onClick={() => onActivateTeam(team.id)}
+                onKeyDown={(event) => {
+                  const targetIndex =
+                    event.key === "ArrowDown"
+                      ? Math.min(teams.length - 1, index + 1)
+                      : event.key === "ArrowUp"
+                        ? Math.max(0, index - 1)
+                        : event.key === "Home"
+                          ? 0
+                          : event.key === "End"
+                            ? teams.length - 1
+                            : null;
+                  if (targetIndex === null) return;
+                  event.preventDefault();
+                  focusTeam(targetIndex);
+                }}
+                tabIndex={rovingTeamId === team.id ? 0 : -1}
               >
-                {teamInitials(team.name)}
-              </span>
-              {team.connectionState && team.connectionState !== "healthy" ? (
                 <span
-                  className="desktop-team-connection"
-                  data-state={team.connectionState}
-                  aria-label={`${team.connectionState} connection`}
-                />
-              ) : null}
-            </RailButton>
-          );
-        })}
-      </div>
+                  className="desktop-team-disc"
+                  data-swatch={teamDiscIndex(team.id)}
+                  aria-hidden="true"
+                >
+                  {teamInitials(team.name)}
+                </span>
+                {team.connectionState && team.connectionState !== "healthy" ? (
+                  <span
+                    className="desktop-team-connection"
+                    data-state={team.connectionState}
+                    aria-label={`${team.connectionState} connection`}
+                  />
+                ) : null}
+              </RailButton>
+            );
+          })}
+        </div>
+      ) : null}
 
       <div className="desktop-rail-fixed desktop-rail-bottom">
         <RailButton label="Search and commands" onClick={onOpenCommandPalette}>
           <Search aria-hidden="true" />
         </RailButton>
-        <RailButton label="Add or join Team" onClick={onAddTeam}>
-          <Plus aria-hidden="true" />
-        </RailButton>
+        {teamCollaborationEnabled ? (
+          <RailButton label="Add or join Team" onClick={onAddTeam}>
+            <Plus aria-hidden="true" />
+          </RailButton>
+        ) : null}
         <RailButton label="Devices" onClick={onOpenDevices}>
           <MonitorSmartphone aria-hidden="true" />
         </RailButton>
@@ -300,6 +307,7 @@ export function AppShell({
   onToggleInspector,
   personalUnreadCount,
   scopeLine,
+  teamCollaborationEnabled,
   teams,
   routeFocusKey
 }: AppShellProps) {
@@ -411,6 +419,7 @@ export function AppShell({
         onOpenDevices={onOpenDevices}
         onOpenPreferences={onOpenPreferences}
         personalUnreadCount={personalUnreadCount}
+        teamCollaborationEnabled={teamCollaborationEnabled}
         teams={teams}
       />
       <aside

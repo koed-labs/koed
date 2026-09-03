@@ -79,6 +79,7 @@ export type PreferencesViewProps = {
   onSectionChange?: (section: PreferencesSection) => void;
   onThemeChange: (theme: DesktopThemePreference) => void;
   statusStore: DesktopStatusStore;
+  teamCollaborationEnabled?: boolean;
   theme: DesktopThemePreference;
   version: string;
 };
@@ -96,6 +97,15 @@ const sections: readonly {
 
 const sectionTitle = (section: PreferencesSection): string =>
   sections.find(({ id }) => id === section)?.label ?? "Preferences";
+
+const visiblePreferencesSection = (
+  section: PreferencesSection,
+  teamCollaborationEnabled: boolean
+): PreferencesSection =>
+  section === "capture" ||
+  (!teamCollaborationEnabled && section === "team-connection")
+    ? "general"
+    : section;
 
 function SettingRow({
   children,
@@ -1067,19 +1077,29 @@ export function PreferencesView({
   onSectionChange,
   onThemeChange,
   statusStore,
+  teamCollaborationEnabled = true,
   theme,
   version
 }: PreferencesViewProps) {
-  const visibleInitialSection =
-    initialSection === "capture" ? "general" : initialSection;
+  const visibleInitialSection = visiblePreferencesSection(
+    initialSection,
+    teamCollaborationEnabled
+  );
   const [section, setSection] = useState<PreferencesSection>(
     visibleInitialSection
   );
 
   useEffect(
-    () => setSection(initialSection === "capture" ? "general" : initialSection),
-    [initialSection]
+    () =>
+      setSection(
+        visiblePreferencesSection(initialSection, teamCollaborationEnabled)
+      ),
+    [initialSection, teamCollaborationEnabled]
   );
+
+  const visibleSections = teamCollaborationEnabled
+    ? sections
+    : sections.filter(({ id }) => id !== "team-connection");
 
   const selectSection = (next: PreferencesSection) => {
     setSection(next);
@@ -1090,7 +1110,7 @@ export function PreferencesView({
     <main className="koed-preferences">
       <nav aria-label="Preference sections">
         <h1>Preferences</h1>
-        {sections.map((item) => (
+        {visibleSections.map((item) => (
           <button
             aria-current={section === item.id ? "page" : undefined}
             data-active={section === item.id || undefined}

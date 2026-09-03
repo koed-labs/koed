@@ -177,8 +177,10 @@ consumption or an authoritative pre-consumption denial.
 
 The approval protocol is independent of the browser identity provider. The
 API-hosted page loads the advertised providers from `/v1/capabilities`: Team
-Self-Hosted can offer local sessions and WorkOS/AuthKit together, while
-Koed-managed cloud offers WorkOS/AuthKit only. When fresh authentication is
+Self-Hosted offers local sessions when WorkOS/AuthKit is not configured and
+offers WorkOS/AuthKit only when it is configured. Koed-managed cloud also
+offers WorkOS/AuthKit only. Local setup, registration, and password-login
+routes are unavailable on these WorkOS-only deployments. When fresh authentication is
 required, a WorkOS-capable Step-up page renders `Sign in with WorkOS`, follows
 `/auth/workos/login`, and returns to the same exact activation after the
 verified callback creates a fresh Koed browser session. The decision endpoint

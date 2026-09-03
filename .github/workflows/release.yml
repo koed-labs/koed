@@ -193,6 +193,51 @@ jobs:
           SOURCE_DATE_EPOCH: 0
         run: pnpm koed-server:package -- --version "${{ needs.release.outputs.version }}" --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}" --json
 
+      - name: Verify standalone package reproducibility
+        env:
+          SOURCE_DATE_EPOCH: 0
+        run: |
+          set -euo pipefail
+          target="${{ matrix.platform }}-${{ matrix.arch }}"
+          version="${{ needs.release.outputs.version }}"
+          first="dist/koed-server-package/${target}"
+          second="${RUNNER_TEMP}/koed-server-package-repeat/${target}"
+          pnpm koed-server:package -- \
+            --version "${version}" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --out-dir "${second}" \
+            --json
+          cmp \
+            "${first}/koed-server-${version}-${target}.tar.gz" \
+            "${second}/koed-server-${version}-${target}.tar.gz"
+          cmp \
+            "${first}/koed-server-app-runtime-${version}-${target}.provenance.json" \
+            "${second}/koed-server-app-runtime-${version}-${target}.provenance.json"
+          cmp \
+            "${first}/koed-server-${version}-${target}/koed-server-package-manifest.json" \
+            "${second}/koed-server-${version}-${target}/koed-server-package-manifest.json"
+          node scripts/compare-package-trees.mjs \
+            --first "${first}/koed-server-${version}-${target}" \
+            --second "${second}/koed-server-${version}-${target}" \
+            --json
+
+      - name: Validate exact packaged Privacy runtime
+        run: |
+          set -euo pipefail
+          target="${{ matrix.platform }}-${{ matrix.arch }}"
+          package_root="dist/koed-server-package/${target}/koed-server-${{ needs.release.outputs.version }}-${target}"
+          koed_home="${RUNNER_TEMP}/koed-standalone-privacy-${target}"
+          provider="cpu"
+          if [[ "${{ matrix.platform }}" == "macos" ]]; then
+            provider="coreml"
+          fi
+          KOED_HOME="${koed_home}" node packages/koed-server/dist/cli.js models install --kind privacy --json
+          node scripts/validate-packaged-privacy-runtime.mjs \
+            --runtime-root "${package_root}/koed-runtime" \
+            --transformers-cache "${koed_home}/models/privacy/transformers-cache" \
+            --provider "${provider}"
+
       - name: Stage standalone koed-server package assets
         run: |
           set -euo pipefail
@@ -209,6 +254,23 @@ jobs:
           manifest="$(find "${package_dir}" -path '*/koed-server-package-manifest.json' -print -quit)"
           test -n "${manifest}"
           cp "${manifest}" "${release_dir}/koed-server-app-runtime-${{ needs.release.outputs.version }}-${target}.manifest.json"
+
+      - name: Inspect standalone koed-server package
+        run: |
+          set -euo pipefail
+          target="${{ matrix.platform }}-${{ matrix.arch }}"
+          package_dir="dist/koed-server-package/${target}"
+          release_dir="release-artifacts/koed-server-app-runtime-${target}"
+          archive="$(find "${package_dir}" -maxdepth 1 -name 'koed-server-*.tar.gz' -print -quit)"
+          test -n "${archive}"
+          node scripts/inspect-release-artifact.mjs \
+            --path "${archive}" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --policy config/release-artifact-size-policy.json \
+            --baseline config/release-artifact-baseline-v0.6.2.json \
+            --out "${release_dir}/koed-server-app-runtime-${target}-artifact-size-report.json" \
+            >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload standalone koed-server assets to workflow
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -311,7 +373,7 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ runner.temp }}/koed-native-runtime-cache/linux-x64/koed-runtime
-          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
+          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/content-policy.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
 
       - name: Require prebuilt verified native runtime payload
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -327,11 +389,38 @@ jobs:
           node scripts/native-runtime/validate-runtime.mjs --runtime-root "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --platform linux --json > "${report}"
           status=$?
           set -e
-          jq '{ok, error, errors, timings, postgresExtensions: (.postgresExtensions | {ok, error, log}), packagedProvider: (.packagedProvider | {skipped, ok, status: (.status | {status, stderr}), install: (.install | {status, stderr})})}' "${report}"
+          jq '{ok, error, errors, timings, contentPolicy, postgresExtensions: (.postgresExtensions | {ok, error, log}), packagedProvider: (.packagedProvider | {skipped, ok, status: (.status | {status, stderr}), install: (.install | {status, stderr})})}' "${report}"
           exit "${status}"
 
       - name: Package native runtime release artifact
+        env:
+          SOURCE_DATE_EPOCH: 0
         run: pnpm native-runtime:build:linux-x64 -- --source-dir "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --version "${{ needs.release.outputs.version }}" --json
+
+      - name: Verify native runtime artifact reproducibility
+        env:
+          SOURCE_DATE_EPOCH: 0
+        run: |
+          set -euo pipefail
+          version="${{ needs.release.outputs.version }}"
+          first="dist/native-runtime/linux-x64"
+          second="${RUNNER_TEMP}/koed-native-runtime-repeat/linux-x64"
+          SOURCE_DATE_EPOCH=0 pnpm native-runtime:build:linux-x64 -- \
+            --source-dir "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" \
+            --out-dir "${second}" \
+            --version "${version}" \
+            --json
+          cmp \
+            "${first}/koed-native-runtime-linux-x64-${version}.tar.gz" \
+            "${second}/koed-native-runtime-linux-x64-${version}.tar.gz"
+          cmp "${first}/provenance.json" "${second}/provenance.json"
+          cmp \
+            "${first}/koed-runtime/runtime-asset-manifest.json" \
+            "${second}/koed-runtime/runtime-asset-manifest.json"
+          node scripts/compare-package-trees.mjs \
+            --first "${first}/koed-runtime" \
+            --second "${second}/koed-runtime" \
+            --json
 
       - name: Validate packaged native runtime artifact
         run: |
@@ -340,7 +429,7 @@ jobs:
           node scripts/native-runtime/validate-runtime.mjs --runtime-root dist/native-runtime/linux-x64/koed-runtime --platform linux --json > "${report}"
           status=$?
           set -e
-          jq '{ok, error, errors, timings, postgresExtensions: (.postgresExtensions | {ok, error, log}), packagedProvider: (.packagedProvider | {skipped, ok, status: (.status | {status, stderr}), install: (.install | {status, stderr})})}' "${report}"
+          jq '{ok, error, errors, timings, contentPolicy, postgresExtensions: (.postgresExtensions | {ok, error, log}), packagedProvider: (.packagedProvider | {skipped, ok, status: (.status | {status, stderr}), install: (.install | {status, stderr})})}' "${report}"
           exit "${status}"
 
       - name: Stage native runtime release assets
@@ -351,6 +440,21 @@ jobs:
           cp dist/native-runtime/linux-x64/koed-native-runtime-linux-x64-*.tar.gz "${release_dir}/"
           cp dist/native-runtime/linux-x64/koed-native-runtime-linux-x64-*.tar.gz.sha256 "${release_dir}/"
           cp dist/native-runtime/linux-x64/provenance.json "${release_dir}/koed-native-runtime-linux-x64-${{ needs.release.outputs.version }}.provenance.json"
+
+      - name: Inspect and gate native runtime artifact
+        run: |
+          set -euo pipefail
+          release_dir="release-artifacts/native-runtime-linux-x64"
+          archive="$(find dist/native-runtime/linux-x64 -maxdepth 1 -name 'koed-native-runtime-linux-x64-*.tar.gz' -print -quit)"
+          test -n "${archive}"
+          node scripts/inspect-release-artifact.mjs \
+            --path "${archive}" \
+            --platform linux \
+            --arch x64 \
+            --policy config/release-artifact-size-policy.json \
+            --baseline config/release-artifact-baseline-v0.6.2.json \
+            --out "${release_dir}/koed-native-runtime-linux-x64-artifact-size-report.json" \
+            >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload native runtime assets to workflow
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -441,6 +545,22 @@ jobs:
           cd apps/desktop/release
           shasum -a 256 Koed-*-arm64.dmg Koed-*-arm64.zip > koed-desktop-macos-arm64-unsigned.sha256
 
+      - name: Inspect and gate Desktop artifact composition
+        run: |
+          set -euo pipefail
+          dmg="$(find apps/desktop/release -maxdepth 1 -name 'Koed-*-arm64.dmg' -print -quit)"
+          zip="$(find apps/desktop/release -maxdepth 1 -name 'Koed-*-arm64.zip' -print -quit)"
+          test -n "${dmg}"
+          test -n "${zip}"
+          node apps/desktop/scripts/inspect-desktop-artifact.mjs \
+            --app apps/desktop/release/mac/Koed.app \
+            --dmg "${dmg}" \
+            --zip "${zip}" \
+            --policy config/release-artifact-size-policy.json \
+            --baseline config/release-artifact-baseline-v0.6.2.json \
+            --out apps/desktop/release/desktop-artifact-size-report.json \
+            >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Report release artifact sizes
         run: |
           du -h apps/desktop/release/Koed-*-arm64.dmg apps/desktop/release/Koed-*-arm64.zip
@@ -459,6 +579,7 @@ jobs:
           gh release upload "${{ needs.release.outputs.tag }}" \
             apps/desktop/release/Koed-*-arm64.dmg \
             apps/desktop/release/Koed-*-arm64.zip \
+            apps/desktop/release/desktop-artifact-size-report.json \
             apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256 \
             --clobber
 
@@ -522,6 +643,27 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Validate published metadata URLs against draft assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.release.outputs.release_id }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          release_json="${RUNNER_TEMP}/koed-release.json"
+          metadata_json="${RUNNER_TEMP}/koed-release-artifacts.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > "${release_json}"
+          metadata_asset_id="$(jq -r --arg name "koed-release-artifacts-${VERSION}.json" '.assets[] | select(.name == $name) | .id' "${release_json}")"
+          test -n "${metadata_asset_id}"
+          gh api \
+            --header 'Accept: application/octet-stream' \
+            "repos/${GITHUB_REPOSITORY}/releases/assets/${metadata_asset_id}" \
+            > "${metadata_json}"
+          node scripts/validate-published-release-assets.mjs \
+            --metadata "${metadata_json}" \
+            --release "${release_json}" \
+            --json
 
       - name: Publish verified release
         env:

@@ -3628,6 +3628,81 @@ describe("CollaborationApp", () => {
     );
   });
 
+  it("removes every Team surface from a retained snapshot when Team collaboration is disabled", async () => {
+    const retained = viewFor(baseSnapshot(), {
+      kind: "team_people",
+      teamId: ids.team
+    });
+    const client = createClient(retained);
+
+    await act(async () =>
+      root.render(
+        <App
+          collaborationClient={client}
+          initialCollaborationSelection={retained.selection}
+          onboardingComplete
+          personalMemoryApi={createPersonalMemoryApi()}
+          statusReadyOverride
+          teamCollaborationEnabled={false}
+        />
+      )
+    );
+
+    expect(document.body.querySelector(".desktop-app-shell")).not.toBeNull();
+    expect(document.body.textContent).toContain("Private to you");
+    expect(document.body.textContent).not.toContain("Atlas Research");
+    expect(document.body.textContent).not.toContain("Beta Team");
+    expect(document.body.textContent).not.toContain("Shares");
+    expect(document.body.querySelector('[aria-label="Teams"]')).toBeNull();
+    expect(
+      document.body.querySelector('[aria-label="Add or join Team"]')
+    ).toBeNull();
+    expect(client.select).not.toHaveBeenCalled();
+    expect(client.reportTeamActivity).not.toHaveBeenCalled();
+
+    await click(container, "Search and commands");
+    expect(document.body.textContent).not.toContain("Atlas Research");
+    expect(document.body.textContent).not.toContain("Shared Memory");
+
+    await click(container, "Inbox");
+    expect(document.body.textContent).not.toContain("Team Backend");
+    expect(document.body.textContent).not.toContain("Atlas Research");
+  });
+
+  it("removes Team entries from navigation history when Team collaboration is disabled", async () => {
+    const client = createClient();
+    const initialSelection = client.current()!.selection;
+    const personalMemoryApi = createPersonalMemoryApi();
+    const app = (teamCollaborationEnabled: boolean) => (
+      <App
+        collaborationClient={client}
+        initialCollaborationSelection={initialSelection}
+        onboardingComplete
+        personalMemoryApi={personalMemoryApi}
+        statusReadyOverride
+        teamCollaborationEnabled={teamCollaborationEnabled}
+      />
+    );
+
+    await act(async () => root.render(app(true)));
+    await click(container, "Atlas Research");
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Members")
+    );
+    await click(container, "Inbox");
+
+    await act(async () => root.render(app(false)));
+    expect(document.body.textContent).not.toContain("Atlas Research");
+
+    await click(container, "Go back");
+    expect(document.body.textContent).toContain("Private to you");
+    expect(document.body.textContent).not.toContain("Atlas Research");
+
+    await click(container, "Go forward");
+    expect(document.body.textContent).toContain("Inbox");
+    expect(document.body.textContent).not.toContain("Atlas Research");
+  });
+
   it("shows safe denied and conflict states without exposing internal errors", async () => {
     const client = await render();
     vi.mocked(client.listInvitations).mockRejectedValueOnce(

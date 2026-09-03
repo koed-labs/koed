@@ -12,6 +12,7 @@ import type {
   LocalAiClientFlowKey,
   LocalAiClientResponse
 } from "./ipc/local-ai-client-protocol.js";
+import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
 
 export type ComponentState =
   | "not_configured"
@@ -152,6 +153,7 @@ export interface DesktopLaunchAtStartupState {
 }
 
 export interface DesktopApi {
+  featureFlags?: DesktopFeatureFlags;
   invoke: <T = unknown>(
     command: string,
     args?: Record<string, unknown>

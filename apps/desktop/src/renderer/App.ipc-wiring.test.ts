@@ -9,4 +9,12 @@ describe("App Desktop IPC wiring", () => {
       "localAiClients={window.koedDesktop?.localAiClients}"
     );
   });
+
+  it("reads the Team collaboration flag from the trusted preload bridge", () => {
+    const source = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain(
+      "window.koedDesktop?.featureFlags?.teamCollaborationEnabled ?? false"
+    );
+  });
 });

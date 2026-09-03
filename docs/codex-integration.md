@@ -55,6 +55,11 @@ Run the same command with `--with-memory-guidance` to enable it again. Setup,
 repair, status, and doctor honor the persisted choice. Opting out removes only
 Koed's marked block and preserves all other global instructions.
 
+Packaged app runtimes keep the Codex guidance beside the stable MCP Server
+wrapper under `mcp-server/dist/prompts`. Setup and status read that copy. The
+MCP Server's complete prompt bundle remains in the shared production dependency
+graph under `node_modules/@koed/mcp-server/dist/prompts`.
+
 ## API Token
 
 Create a local API token and copy it immediately. Full token values are shown once.
