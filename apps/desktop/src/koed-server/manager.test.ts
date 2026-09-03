@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
   mkdirSync,
@@ -296,6 +297,91 @@ describe("Koed server desktop manager", () => {
             git: {
               remotes: [{ display: "github.com/koed-labs/koed" }]
             }
+          }
+        ]
+      }
+    });
+  });
+
+  it("reconciles graph Project paths into fresh local metadata", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-metadata-"));
+    const projectPath = mkdtempSync(resolve(tmpdir(), "koed-desktop-project-"));
+    execFileSync("git", ["init", projectPath]);
+    execFileSync("git", [
+      "-C",
+      projectPath,
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/koed-labs/koed.git"
+    ]);
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "personal_token" })
+    );
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) =>
+        callback(
+          null,
+          JSON.stringify(
+            args.includes("status")
+              ? {
+                  ok: true,
+                  api: { state: "healthy", url: "http://127.0.0.1:4170" }
+                }
+              : { ok: true }
+          ),
+          ""
+        ),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch: async () =>
+        new Response(
+          JSON.stringify({
+            projects: [
+              {
+                id: "project",
+                name: "Koed",
+                path: projectPath,
+                threads: []
+              }
+            ]
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+    });
+
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.projects.list",
+        input: {}
+      })
+    ).resolves.toMatchObject({ ok: true });
+
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.projects.metadata.list",
+        input: {}
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        projects: [
+          {
+            path: { cwd: projectPath },
+            git: { remotes: [{ display: "github.com/koed-labs/koed" }] }
           }
         ]
       }

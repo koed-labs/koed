@@ -83,10 +83,20 @@ describe("PersonalMemoryStore", () => {
         remotes: [{ display: "github.com/koed-labs/koed" }]
       }
     };
+    let graphProjectsLoaded = false;
     const store = new PersonalMemoryStore(
       api({
-        listProjects: vi.fn(async () => [source]),
-        listProjectMetadata: vi.fn(async () => [metadata])
+        listProjects: vi.fn(async () => {
+          await Promise.resolve();
+          graphProjectsLoaded = true;
+          return [source];
+        }),
+        listProjectMetadata: vi.fn(async () => {
+          if (!graphProjectsLoaded) {
+            throw new Error("Project metadata read before reconciliation");
+          }
+          return [metadata];
+        })
       })
     );
 

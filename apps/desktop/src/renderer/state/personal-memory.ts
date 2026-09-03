@@ -128,13 +128,11 @@ export class PersonalMemoryStore {
       this.#replace({ ...this.#snapshot, loading: true, error: null });
     }
     try {
-      const [graphProjects, metadataProjects] = await Promise.all([
-        this.#api.listProjects(),
-        (
-          this.#api.listProjectMetadata?.() ??
-          Promise.resolve<DesktopProjectMetadata[]>([])
-        ).catch(() => [])
-      ]);
+      const graphProjects = await this.#api.listProjects();
+      const metadataProjects = await (
+        this.#api.listProjectMetadata?.() ??
+        Promise.resolve<DesktopProjectMetadata[]>([])
+      ).catch(() => []);
       const projects = mergeProjectSources(graphProjects, metadataProjects);
       if (request !== this.#projectRequest) return this.#snapshot;
       const projectsById = new Map<string, DesktopProject>();

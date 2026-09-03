@@ -33,6 +33,7 @@ import {
   type PersonalDesktopResult
 } from "@koed/shared";
 import {
+  discoverProjectMetadata,
   listProjectMetadata,
   loadRepoEnv,
   resolveKoedServerConfig,
@@ -695,6 +696,31 @@ const localProjectMetadataData = (environment: NodeJS.ProcessEnv) => {
         : {})
     }))
   });
+};
+
+const reconcileLocalProjectMetadata = async (
+  environment: NodeJS.ProcessEnv,
+  projects: Array<{ path: string | null }>
+): Promise<void> => {
+  const paths = resolveKoedServerPaths(environment);
+  const projectPaths = new Set<string>();
+  for (const project of projects) {
+    if (!project.path?.trim()) continue;
+    const cwd = resolve(project.path);
+    try {
+      if (statSync(cwd).isDirectory()) projectPaths.add(cwd);
+    } catch {
+      // Missing or inaccessible Project paths have no local metadata.
+    }
+  }
+  // Discovery rewrites shared metadata, so keep Git probes bounded at one.
+  for (const cwd of projectPaths) {
+    try {
+      await discoverProjectMetadata(paths, { cwd });
+    } catch {
+      // One unavailable Project must not block Personal Memory.
+    }
+  }
 };
 
 const personalEventsData = (payload: Record<string, unknown>) => {
@@ -2406,8 +2432,8 @@ export const createKoedServerManager = ({
     return remote.payload;
   };
 
-  const listPersonalProjects = async () =>
-    personalProjectsData(
+  const listPersonalProjects = async () => {
+    const projects = personalProjectsData(
       await authenticatedPersonalMemoryRequest(
         ({ apiOrigin }) => {
           const url = new URL("/v1/memory/graph/threads", apiOrigin);
@@ -2421,6 +2447,9 @@ export const createKoedServerManager = ({
         16 * 1_024 * 1_024
       )
     );
+    await reconcileLocalProjectMetadata(environment, projects.projects);
+    return projects;
+  };
 
   const managedExecutionFrom = (
     value: unknown

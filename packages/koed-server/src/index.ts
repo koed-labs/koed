@@ -78,7 +78,10 @@ export {
   runDesktopCollaborationBrokerProcess
 } from "./desktop-collaboration-broker.js";
 export { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
-export { listProjectMetadata } from "./project-metadata.js";
+export {
+  discoverProjectMetadata,
+  listProjectMetadata
+} from "./project-metadata.js";
 export { loadRepoEnv } from "./env-file.js";
 export {
   deviceIdentityLockTarget,
