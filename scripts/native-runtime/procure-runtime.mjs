@@ -6,6 +6,7 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -16,6 +17,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -233,6 +235,36 @@ const writeLlamaLauncher = (target) => {
   chmodIfExists(resolve(target, "llama-server"));
 };
 
+export const stageFlattenedRuntimeFiles = (files, target) => {
+  const entries = files.map((path) => ({
+    path,
+    name: basename(path),
+    symlink: lstatSync(path).isSymbolicLink(),
+    realPath: realpathSync(path)
+  }));
+  const byName = new Map();
+  const physicalByRealPath = new Map();
+  for (const entry of entries) {
+    const existing = byName.get(entry.name);
+    if (existing && existing.realPath !== entry.realPath) {
+      throw new Error(
+        `llama.cpp runtime contains duplicate runtime filename ${entry.name}.`
+      );
+    }
+    byName.set(entry.name, entry);
+    if (!entry.symlink) physicalByRealPath.set(entry.realPath, entry);
+  }
+  for (const entry of byName.values()) {
+    const destination = resolve(target, entry.name);
+    const physical = physicalByRealPath.get(entry.realPath);
+    if (entry.symlink && physical && physical.name !== entry.name) {
+      symlinkSync(physical.name, destination);
+    } else {
+      copyFileSync(entry.path, destination);
+    }
+  }
+};
+
 const stageLlama = ({ source, runtimeRoot, cacheDir, workDir, variant }) => {
   const archive = download({ ...source, cacheDir });
   const extractDir = resolve(workDir, "llama.cpp");
@@ -252,18 +284,7 @@ const stageLlama = ({ source, runtimeRoot, cacheDir, workDir, variant }) => {
   const runtimeFiles = listFiles(unpackedRoot)
     .filter(isLlamaRuntimeFile)
     .sort();
-  for (const file of runtimeFiles) {
-    const destination = resolve(variantTarget, basename(file));
-    if (
-      existsSync(destination) &&
-      realpathSync(file) !== realpathSync(destination)
-    ) {
-      throw new Error(
-        `llama.cpp runtime archive contains duplicate runtime filename ${basename(file)}.`
-      );
-    }
-    copyFileSync(file, destination);
-  }
+  stageFlattenedRuntimeFiles(runtimeFiles, variantTarget);
   materializeAbsoluteSymlinks(variantTarget);
   chmodIfExists(resolve(variantTarget, "llama-server"));
   if (!existsSync(resolve(variantTarget, "llama-server"))) {
@@ -379,9 +400,7 @@ export const buildLlamaCuda = ({ source, runtimeRoot, cacheDir, workDir }) => {
   rmSync(target, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
   const files = listFiles(binaryRoot).filter(isLlamaRuntimeFile);
-  for (const file of files) {
-    copyFileSync(file, resolve(target, basename(file)));
-  }
+  stageFlattenedRuntimeFiles(files, target);
   const cudaLibraries = copyCudaRuntimeLibraries(binaryRoot, target);
   chmodIfExists(resolve(target, "llama-server"));
   if (!existsSync(resolve(target, "llama-server"))) {

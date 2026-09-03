@@ -4,11 +4,12 @@ import {
   createReadStream,
   lstatSync,
   openSync,
+  readlinkSync,
   readSync,
   readdirSync,
   statSync
 } from "node:fs";
-import { basename, relative, resolve, sep } from "node:path";
+import { basename, posix, relative, resolve, sep } from "node:path";
 import { createGunzip } from "node:zlib";
 
 const nativePattern = /\.(?:node|so(?:\.\d+)*|dylib|dll)$/i;
@@ -229,6 +230,36 @@ const foreignNative = (entry, platform, architecture) => {
   );
 };
 
+const symlinkTargetPath = (entry) => {
+  if (!entry.linkTarget || posix.isAbsolute(entry.linkTarget)) return null;
+  const parent = posix.dirname(entry.path);
+  const parts = parent === "." ? [] : parent.split("/");
+  for (const part of entry.linkTarget.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (parts.length === 0) return null;
+      parts.pop();
+    } else {
+      parts.push(part);
+    }
+  }
+  return parts.join("/");
+};
+
+const safeSymlink = (entry, entriesByPath) => {
+  const seen = new Set();
+  let current = entry;
+  while (current.type === "symlink") {
+    if (seen.has(current.path)) return false;
+    seen.add(current.path);
+    const target = symlinkTargetPath(current);
+    if (!target) return false;
+    current = entriesByPath.get(target);
+    if (!current) return false;
+  }
+  return current.type === "file";
+};
+
 const createCollector = ({ platform, architecture }) => {
   const entries = [];
   return {
@@ -271,6 +302,13 @@ const createCollector = ({ platform, architecture }) => {
           entries.filter((entry) => entry.type === type).length
         ])
       );
+      const entriesByPath = new Map(
+        entries.map((entry) => [entry.path, entry])
+      );
+      const symlinks = entries.filter((entry) => entry.type === "symlink");
+      const unsafeSymlinks = symlinks
+        .filter((entry) => !safeSymlink(entry, entriesByPath))
+        .map((entry) => entry.path);
       return {
         schemaVersion: 1,
         source: basename(source),
@@ -314,9 +352,8 @@ const createCollector = ({ platform, architecture }) => {
               b.expandedBytes - a.expandedBytes || a.name.localeCompare(b.name)
           ),
         findings: {
-          symlinks: entries
-            .filter((entry) => entry.type === "symlink")
-            .map((entry) => entry.path),
+          symlinks: symlinks.map((entry) => entry.path),
+          unsafeSymlinks,
           specialFiles: entries
             .filter((entry) => entry.type === "special")
             .map((entry) => entry.path),
@@ -427,7 +464,12 @@ export const inspectTree = async ({ path, platform, architecture }) => {
           sourceCheckoutLeak
         });
       } else if (stat.isSymbolicLink()) {
-        collector.add({ path: name, type: "symlink", size: 0 });
+        collector.add({
+          path: name,
+          type: "symlink",
+          size: 0,
+          linkTarget: readlinkSync(absolute)
+        });
       } else {
         collector.add({ path: name, type: "special", size: 0 });
       }
@@ -486,6 +528,7 @@ export const inspectArchive = async ({ path, platform, architecture }) => {
             path: current.path,
             type: current.type,
             size: current.size,
+            ...(current.linkTarget ? { linkTarget: current.linkTarget } : {}),
             ...(current.hash ? { sha256: current.hash.digest("hex") } : {}),
             ...(current.nativeHeader
               ? { nativeTarget: detectNativeTarget(current.nativeHeader) }
@@ -519,6 +562,7 @@ export const inspectArchive = async ({ path, platform, architecture }) => {
       const name = tarString(header, 0, 100);
       const prefix = tarString(header, 345, 155);
       const entryPath = pax.path ?? (prefix ? `${prefix}/${name}` : name);
+      const linkTarget = pax.linkpath ?? tarString(header, 157, 100);
       pax = {};
       const type =
         typeCode === "0" || typeCode === ""
@@ -535,6 +579,7 @@ export const inspectArchive = async ({ path, platform, architecture }) => {
         type,
         path: entryPath,
         size,
+        linkTarget: type === "symlink" ? linkTarget : undefined,
         remaining: size,
         padding,
         hash: type === "file" ? createHash("sha256") : undefined,
@@ -574,7 +619,7 @@ export const evaluateArtifactPolicy = (report, policy, baseline = null) => {
     );
   }
   for (const key of [
-    "symlinks",
+    "unsafeSymlinks",
     "specialFiles",
     "foreignPlatformNativeFiles",
     "absolutePaths",
