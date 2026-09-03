@@ -179,6 +179,21 @@ jobs:
           cd apps/desktop/release
           shasum -a 256 Koed-*-arm64.dmg Koed-*-arm64.zip > koed-desktop-macos-arm64-unsigned.sha256
 
+      - name: Inspect and gate Desktop artifact composition
+        run: |
+          set -euo pipefail
+          dmg="$(find apps/desktop/release -maxdepth 1 -name 'Koed-*-arm64.dmg' -print -quit)"
+          zip="$(find apps/desktop/release -maxdepth 1 -name 'Koed-*-arm64.zip' -print -quit)"
+          test -n "${dmg}"
+          test -n "${zip}"
+          node apps/desktop/scripts/inspect-desktop-artifact.mjs \
+            --app apps/desktop/release/mac/Koed.app \
+            --dmg "${dmg}" \
+            --zip "${zip}" \
+            --policy config/release-artifact-size-policy.json \
+            --baseline config/release-artifact-baseline-v0.6.2.json \
+            --out apps/desktop/release/desktop-artifact-size-report.json
+
       - name: Upload recovered Desktop assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -186,6 +201,7 @@ jobs:
           gh release upload "${{ inputs.tag }}" --repo "${GITHUB_REPOSITORY}" \
             apps/desktop/release/Koed-*-arm64.dmg \
             apps/desktop/release/Koed-*-arm64.zip \
+            apps/desktop/release/desktop-artifact-size-report.json \
             apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256 \
             --clobber
 

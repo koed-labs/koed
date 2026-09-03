@@ -1,10 +1,14 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { gunzipSync } from "node:zlib";
+import { createGunzip } from "node:zlib";
 import {
   chmodSync,
+  closeSync,
   cpSync,
+  createReadStream,
+  createWriteStream,
   existsSync,
   lstatSync,
+  openSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -12,15 +16,28 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
-  writeFileSync
+  writeSync
 } from "node:fs";
+import { constants as fsConstants, statSync } from "node:fs";
 import { basename, dirname, relative, resolve } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { Readable, Transform } from "node:stream";
 import type { KoedServerPaths } from "./paths.js";
 
-export const standalonePackageSchemaVersion = 1;
+export const standalonePackageSchemaVersion = 2;
 export const standalonePackageId = "koed-server";
 export const standalonePackageKind = "app-runtime";
 export const packageProvenanceSchemaVersion = 1;
+
+export const packageExtractionLimits = {
+  compressedBytes: 2 * 1024 * 1024 * 1024,
+  expandedBytes: 8 * 1024 * 1024 * 1024,
+  fileCount: 200_000,
+  individualFileBytes: 2 * 1024 * 1024 * 1024,
+  pathBytes: 4_096,
+  manifestBytes: 8 * 1024 * 1024,
+  paxHeaderBytes: 1024 * 1024
+} as const;
 
 export const requiredPackageRuntimeFiles = [
   "api/dist/index.js",
@@ -28,10 +45,11 @@ export const requiredPackageRuntimeFiles = [
   "embedding-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
-  "api/node_modules/@koed/db/dist/index.js",
-  "api/node_modules/@koed/db/dist/connection.js",
-  "api/node_modules/@koed/db/dist/user-api-token-repository.js",
-  "api/node_modules/@koed/db/drizzle/meta/_journal.json"
+  "mcp-server/dist/prompts/codex-global-agent-guidance.md",
+  "node_modules/@koed/db/dist/index.js",
+  "node_modules/@koed/db/dist/connection.js",
+  "node_modules/@koed/db/dist/user-api-token-repository.js",
+  "node_modules/@koed/db/drizzle/meta/_journal.json"
 ];
 
 const excludedPackagePatterns = [
@@ -70,7 +88,7 @@ export type ServerPackageState =
   | "cleaned";
 
 export interface KoedServerPackageManifest {
-  schemaVersion: 1;
+  schemaVersion: 2;
   id: "koed-server";
   version: string;
   platform: string;
@@ -370,7 +388,9 @@ const validateManifestShape = (
     return ["Package manifest must be an object."];
   }
   if (manifest.schemaVersion !== standalonePackageSchemaVersion) {
-    errors.push("Package manifest schemaVersion must be 1.");
+    errors.push(
+      "Package manifest schemaVersion must be 2 for shared staging; upgrade koed-server or rebuild the package with the current release tooling."
+    );
   }
   if (manifest.id !== standalonePackageId) {
     errors.push("Package manifest id must be koed-server.");
@@ -471,8 +491,8 @@ export const validateServerPackageRoot = (
     !existsSync(resolve(resolvedRoot, "bin", "koed-server"))
       ? "bin/koed-server"
       : null,
-    !existsSync(resolve(resolvedRoot, "koed-server", "dist", "cli.js"))
-      ? "koed-server/dist/cli.js"
+    !existsSync(resolve(runtimeRoot, "koed-server", "dist", "cli.js"))
+      ? "koed-runtime/koed-server/dist/cli.js"
       : null,
     ...requiredFiles.map((file) =>
       existsSync(resolve(runtimeRoot, file)) ? null : `${runtimePath}/${file}`
@@ -835,8 +855,32 @@ const copyOrDownloadArchive = async (
     if (!response.ok) {
       throw new Error(`Package download failed with HTTP ${response.status}.`);
     }
+    if (!response.body) throw new Error("Package download returned no body.");
     const target = resolve(cacheDir, basename(new URL(source).pathname));
-    writeFileSync(target, Buffer.from(await response.arrayBuffer()));
+    const temporaryTarget = `${target}.download-${process.pid}-${Date.now()}`;
+    let received = 0;
+    const limiter = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        received += chunk.length;
+        callback(
+          received > packageExtractionLimits.compressedBytes
+            ? new Error("Package archive exceeds the compressed byte limit.")
+            : null,
+          chunk
+        );
+      }
+    });
+    try {
+      await pipeline(
+        Readable.fromWeb(response.body as never),
+        limiter,
+        createWriteStream(temporaryTarget, { flags: "wx", mode: 0o600 })
+      );
+      renameSync(temporaryTarget, target);
+    } catch (error) {
+      rmSync(temporaryTarget, { force: true });
+      throw error;
+    }
     return target;
   }
   const sourcePath = resolve(source);
@@ -856,53 +900,200 @@ const tarString = (buffer: Buffer, start: number, length: number): string =>
 
 const tarNumber = (buffer: Buffer, start: number, length: number): number => {
   const value = tarString(buffer, start, length).trim();
-  return value ? Number.parseInt(value, 8) : 0;
+  if (!value) return 0;
+  if (!/^[0-7]+$/.test(value)) throw new Error("Malformed tar numeric field.");
+  const result = Number.parseInt(value, 8);
+  if (!Number.isSafeInteger(result))
+    throw new Error("Oversized tar numeric field.");
+  return result;
 };
 
-const extractTarGz = (archivePath: string, destination: string): void => {
-  mkdirSync(destination, { recursive: true, mode: 0o700 });
-  const buffer = gunzipSync(readFileSync(archivePath));
+const parsePax = (content: Buffer): Record<string, string> => {
+  const result: Record<string, string> = {};
   let offset = 0;
-  let pax: Record<string, string> = {};
-  while (offset + 512 <= buffer.length) {
-    const header = buffer.subarray(offset, offset + 512);
-    offset += 512;
-    if (header.every((byte) => byte === 0)) break;
-    const type = tarString(header, 156, 1) || "0";
-    const size = tarNumber(header, 124, 12);
-    const name = tarString(header, 0, 100);
-    const prefix = tarString(header, 345, 155);
-    const rawPath = pax.path ?? (prefix ? `${prefix}/${name}` : name);
-    const linkPath = pax.linkpath ?? tarString(header, 157, 100);
-    const content = buffer.subarray(offset, offset + size);
-    offset += Math.ceil(size / 512) * 512;
-    if (type === "x") {
-      pax = Object.fromEntries(
-        content
-          .toString("utf8")
-          .split("\n")
-          .filter(Boolean)
-          .map((line) => {
-            const body = line.replace(/^\d+\s/, "");
-            const index = body.indexOf("=");
-            return [body.slice(0, index), body.slice(index + 1)];
-          })
-      );
-      continue;
+  while (offset < content.length) {
+    const space = content.indexOf(0x20, offset);
+    if (space < 0) throw new Error("Malformed pax header.");
+    const lengthText = content.subarray(offset, space).toString("ascii");
+    if (!/^\d+$/.test(lengthText))
+      throw new Error("Malformed pax header length.");
+    const length = Number.parseInt(lengthText, 10);
+    if (length <= space - offset + 1 || offset + length > content.length) {
+      throw new Error("Truncated pax header.");
     }
-    const target = safeResolve(destination, rawPath);
-    if (type === "5") {
-      mkdirSync(target, { recursive: true, mode: 0o755 });
-    } else if (type === "2") {
-      void linkPath;
-      throw new Error("Package archives must not contain symbolic links.");
-    } else if (type === "0" || type === "") {
-      mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
-      writeFileSync(target, content);
-      chmodSync(target, tarNumber(header, 100, 8) || 0o644);
-    }
-    pax = {};
+    const record = content
+      .subarray(space + 1, offset + length - 1)
+      .toString("utf8");
+    const equals = record.indexOf("=");
+    if (equals <= 0) throw new Error("Malformed pax header record.");
+    result[record.slice(0, equals)] = record.slice(equals + 1);
+    offset += length;
   }
+  return result;
+};
+
+const assertSafeParents = (destination: string, target: string): void => {
+  let current = dirname(target);
+  while (current !== destination) {
+    if (existsSync(current) && lstatSync(current).isSymbolicLink()) {
+      throw new Error(
+        "Package archive would write through a symlinked parent."
+      );
+    }
+    const next = dirname(current);
+    if (next === current)
+      throw new Error("Package archive path escaped destination.");
+    current = next;
+  }
+};
+
+const extractTarGz = async (
+  archivePath: string,
+  destination: string
+): Promise<void> => {
+  if (statSync(archivePath).size > packageExtractionLimits.compressedBytes) {
+    throw new Error("Package archive exceeds the compressed byte limit.");
+  }
+  mkdirSync(destination, { recursive: true, mode: 0o700 });
+  const stream = createReadStream(archivePath).pipe(createGunzip());
+  let buffer: Buffer = Buffer.alloc(0);
+  let pax: Record<string, string> = {};
+  const seen = new Set<string>();
+  let expandedBytes = 0;
+  let fileCount = 0;
+  let current:
+    | {
+        type: string;
+        remaining: number;
+        padding: number;
+        chunks?: Buffer[];
+        fd?: number;
+        path?: string;
+        mode?: number;
+      }
+    | undefined;
+  let ended = false;
+  try {
+    for await (const chunk of stream) {
+      const bytes = Buffer.from(chunk as Uint8Array);
+      buffer = buffer.length === 0 ? bytes : Buffer.concat([buffer, bytes]);
+      while (true) {
+        if (current) {
+          if (current.remaining > 0 && buffer.length > 0) {
+            const length = Math.min(current.remaining, buffer.length);
+            const part = buffer.subarray(0, length);
+            buffer = buffer.subarray(length);
+            current.remaining -= length;
+            if (current.fd !== undefined) writeSync(current.fd, part);
+            else current.chunks?.push(Buffer.from(part));
+          }
+          if (current.remaining > 0) break;
+          if (current.fd !== undefined) {
+            closeSync(current.fd);
+            current.fd = undefined;
+            if (current.path && current.mode !== undefined) {
+              chmodSync(current.path, current.mode);
+            }
+          }
+          if (buffer.length < current.padding) break;
+          buffer = buffer.subarray(current.padding);
+          if (current.type === "x")
+            pax = parsePax(Buffer.concat(current.chunks ?? []));
+          current = undefined;
+          continue;
+        }
+        if (buffer.length < 512) break;
+        const header = buffer.subarray(0, 512);
+        buffer = buffer.subarray(512);
+        if (header.every((byte) => byte === 0)) {
+          ended = true;
+          break;
+        }
+        const storedChecksum = tarNumber(header, 148, 8);
+        const checksumHeader = Buffer.from(header);
+        checksumHeader.fill(0x20, 148, 156);
+        const actualChecksum = checksumHeader.reduce(
+          (sum, byte) => sum + byte,
+          0
+        );
+        if (storedChecksum !== actualChecksum)
+          throw new Error("Malformed tar header checksum.");
+        const type = tarString(header, 156, 1) || "0";
+        const size = tarNumber(header, 124, 12);
+        if (size > packageExtractionLimits.individualFileBytes) {
+          throw new Error(
+            "Package archive entry exceeds the individual file limit."
+          );
+        }
+        expandedBytes += size;
+        if (expandedBytes > packageExtractionLimits.expandedBytes) {
+          throw new Error("Package archive exceeds the expanded byte limit.");
+        }
+        const padding = (512 - (size % 512)) % 512;
+        if (type === "x") {
+          if (size > packageExtractionLimits.paxHeaderBytes) {
+            throw new Error("Pax header exceeds limit.");
+          }
+          current = { type, remaining: size, padding, chunks: [] };
+          continue;
+        }
+        const name = tarString(header, 0, 100);
+        const prefix = tarString(header, 345, 155);
+        const rawPath = pax.path ?? (prefix ? `${prefix}/${name}` : name);
+        pax = {};
+        if (Buffer.byteLength(rawPath) > packageExtractionLimits.pathBytes) {
+          throw new Error(
+            "Package archive path exceeds the path length limit."
+          );
+        }
+        const target = safeResolve(destination, rawPath);
+        const normalized = relative(destination, target).replaceAll("\\", "/");
+        if (seen.has(normalized))
+          throw new Error(`Duplicate package archive path: ${normalized}`);
+        seen.add(normalized);
+        if (type === "5") {
+          if (size !== 0) throw new Error("Directory tar entry must be empty.");
+          assertSafeParents(destination, target);
+          mkdirSync(target, { recursive: true, mode: 0o755 });
+        } else if (type === "0" || type === "") {
+          fileCount += 1;
+          if (fileCount > packageExtractionLimits.fileCount)
+            throw new Error("Package archive exceeds the file count limit.");
+          if (
+            basename(target) === "koed-server-package-manifest.json" &&
+            size > packageExtractionLimits.manifestBytes
+          ) {
+            throw new Error(
+              "Package manifest exceeds the manifest size limit."
+            );
+          }
+          mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
+          assertSafeParents(destination, target);
+          const mode = tarNumber(header, 100, 8) & 0o111 ? 0o755 : 0o644;
+          const flags =
+            fsConstants.O_CREAT |
+            fsConstants.O_EXCL |
+            fsConstants.O_WRONLY |
+            (fsConstants.O_NOFOLLOW ?? 0);
+          const fd = openSync(target, flags, mode);
+          current = { type, remaining: size, padding, fd, path: target, mode };
+          continue;
+        } else if (type === "1") {
+          throw new Error("Package archives must not contain hard links.");
+        } else if (type === "2") {
+          throw new Error("Package archives must not contain symbolic links.");
+        } else {
+          throw new Error(
+            `Package archives contain unsupported tar entry type: ${type}`
+          );
+        }
+      }
+      if (ended) break;
+    }
+  } finally {
+    if (current?.fd !== undefined) closeSync(current.fd);
+  }
+  if (current || !ended) throw new Error("Package archive is truncated.");
 };
 
 const findExtractedPackageRoot = (extractDir: string): string => {
@@ -971,7 +1162,7 @@ export const installServerPackage = async (
   const extractDir = resolve(root, `.install-${process.pid}-${Date.now()}`);
   rmSync(extractDir, { recursive: true, force: true });
   try {
-    extractTarGz(archivePath, extractDir);
+    await extractTarGz(archivePath, extractDir);
     const extractedRoot = findExtractedPackageRoot(extractDir);
     const validation = validateServerPackageRoot(extractedRoot);
     if (!validation.ok || !validation.version) {

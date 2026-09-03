@@ -1,6 +1,6 @@
 # Standalone koed-server Package Boundary
 
-Status: Proposed by KOE-292.
+Status: Accepted.
 
 Related decisions:
 

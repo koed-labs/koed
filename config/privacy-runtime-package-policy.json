@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "packages": {
+    "@huggingface/transformers": "4.2.0",
+    "onnxruntime-node": "1.24.3",
+    "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
+    "sharp": "0.34.5",
+    "argon2": "0.44.0"
+  },
+  "licenses": {
+    "@huggingface/transformers": "Apache-2.0",
+    "onnxruntime-node": "MIT",
+    "onnxruntime-web": "MIT",
+    "sharp": "Apache-2.0",
+    "argon2": "MIT"
+  },
+  "nodeBackend": "onnxruntime-node",
+  "onnxNativeFiles": {
+    "macos-arm64": ["libonnxruntime.1.24.3.dylib", "onnxruntime_binding.node"],
+    "linux-x64": [
+      "libonnxruntime.so.1",
+      "libonnxruntime_providers_cuda.so",
+      "libonnxruntime_providers_shared.so",
+      "libonnxruntime_providers_tensorrt.so",
+      "onnxruntime_binding.node"
+    ]
+  },
+  "executionProviderFiles": {
+    "linux-x64": {
+      "cuda": [
+        "libonnxruntime_providers_cuda.so",
+        "libonnxruntime_providers_shared.so"
+      ],
+      "retainedUntilHardwareValidation": [
+        "libonnxruntime_providers_tensorrt.so"
+      ]
+    }
+  },
+  "removeStandaloneOnnxruntimeWeb": true
+}

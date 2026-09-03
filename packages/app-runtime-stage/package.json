@@ -1,0 +1,16 @@
+{
+  "name": "@koed/app-runtime-stage",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "Private aggregate used to stage one Koed production app-runtime dependency graph.",
+  "dependencies": {
+    "@koed/api": "workspace:*",
+    "@koed/embedding-service": "workspace:*",
+    "@koed/koed-server": "workspace:*",
+    "@koed/mcp-server": "workspace:*",
+    "@koed/privacy-service": "workspace:*",
+    "@koed/worker": "workspace:*"
+  }
+}

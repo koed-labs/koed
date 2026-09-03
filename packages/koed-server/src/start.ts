@@ -59,7 +59,10 @@ import type {
   KoedServerRuntimeState,
   KoedServerStartupStatus
 } from "./types.js";
-import { provisionDesktopApiToken } from "./local-api-token.js";
+import {
+  provisionDesktopApiToken,
+  provisionLocalApiToken
+} from "./local-api-token.js";
 import { migrateKoedOwnedCodexRegistrationBestEffort } from "./ai-client-registry.js";
 import { resolveTeamCollaborationEnabled } from "@koed/shared";
 export {
@@ -133,6 +136,7 @@ export interface KoedServerStartOptions {
   spawnSync?: SpawnSyncLike;
   spawn?: SpawnLike;
   collectStatus?: typeof collectKoedServerStartupStatus;
+  provisionLocalApiToken?: typeof provisionLocalApiToken;
   signal?: AbortSignal;
 }
 
@@ -857,6 +861,8 @@ export const startKoedServer = async ({
   spawnSync = nodeSpawnSync as SpawnSyncLike,
   spawn = nodeSpawn as SpawnLike,
   collectStatus = collectKoedServerStartupStatus,
+  provisionLocalApiToken:
+    provisionLocalApiTokenDependency = provisionLocalApiToken,
   signal
 }: KoedServerStartOptions = {}): Promise<void> => {
   const startupId = randomBytes(12).toString("hex");
@@ -1310,6 +1316,20 @@ export const startKoedServer = async ({
         });
       }
       emitStartupMilestone("desktop_credential_provisioned");
+    } else if (
+      useBundledLocalDependencies &&
+      config.runtimeMode === "local-personal" &&
+      appRuntime.kind === "packaged" &&
+      !resolveActiveIntegrationApiToken(paths, refreshedEnv, refreshedRepoEnv)
+    ) {
+      const provisioned = await provisionLocalApiTokenDependency(
+        paths,
+        appRuntime,
+        refreshedEnv,
+        refreshedRepoEnv
+      );
+      Object.assign(refreshedEnv, { MEMORY_API_TOKEN: provisioned.token });
+      emitStartupMilestone("packaged_personal_credential_provisioned");
     }
 
     let localAiRuntime: ChildProcess | undefined;

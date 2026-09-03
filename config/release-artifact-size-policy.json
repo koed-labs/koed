@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "maxDuplicateRatio": 0.1,
+  "maxManifestBytes": 8388608,
+  "standaloneReductionMinimum": 0.5,
+  "desktopReductionMinimum": 0.2,
+  "nativeRuntimeGrowthMaximum": 0.05
+}
