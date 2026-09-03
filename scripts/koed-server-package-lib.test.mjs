@@ -47,27 +47,28 @@ const createPackageRoot = () => {
   const runtime = resolve(root, "koed-runtime");
   for (const file of [
     "api/dist/index.js",
-    "api/dist/browser-approval/index.html",
-    "api/dist/browser-approval/assets/index-abc12345.js",
-    "api/dist/browser-approval/assets/index-abc12345.css",
+    "node_modules/@koed/api/dist/browser-approval/index.html",
+    "node_modules/@koed/api/dist/browser-approval/assets/index-abc12345.js",
+    "node_modules/@koed/api/dist/browser-approval/assets/index-abc12345.css",
     "worker/dist/index.js",
     "embedding-service/dist/index.js",
     "privacy-service/dist/index.js",
     "mcp-server/dist/cli.js",
     "mcp-server/dist/capture-hook.js",
-    "api/node_modules/@koed/db/dist/index.js",
-    "api/node_modules/@koed/db/dist/connection.js",
-    "api/node_modules/@koed/db/dist/user-api-token-repository.js"
+    "mcp-server/dist/prompts/codex-global-agent-guidance.md",
+    "node_modules/@koed/db/dist/index.js",
+    "node_modules/@koed/db/dist/connection.js",
+    "node_modules/@koed/db/dist/user-api-token-repository.js"
   ]) {
     writeFile(resolve(runtime, file));
   }
   writeFile(
-    resolve(runtime, "api/node_modules/@koed/db/drizzle/meta/_journal.json"),
+    resolve(runtime, "node_modules/@koed/db/drizzle/meta/_journal.json"),
     JSON.stringify({ version: "7", entries: [{ when: 20260708000000 }] })
   );
   writeFile(resolve(root, "README.txt"), "Standalone koed-server package\n");
   writeExecutable(resolve(root, "bin", "koed-server"));
-  writeFile(resolve(root, "koed-server", "dist", "cli.js"));
+  writeFile(resolve(runtime, "koed-server", "dist", "cli.js"));
   return root;
 };
 
@@ -186,7 +187,16 @@ test("reports missing required runtime files", () => {
 test("requires packaged API browser approval assets", () => {
   const root = createPackageRoot();
   rmSync(
-    resolve(root, "koed-runtime", "api", "dist", "browser-approval", "assets"),
+    resolve(
+      root,
+      "koed-runtime",
+      "node_modules",
+      "@koed",
+      "api",
+      "dist",
+      "browser-approval",
+      "assets"
+    ),
     { recursive: true }
   );
   writeManifest(root);

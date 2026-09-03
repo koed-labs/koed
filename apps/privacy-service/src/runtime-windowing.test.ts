@@ -113,6 +113,36 @@ const fakeTransformers = (options?: {
 };
 
 describe("bounded Privacy Filter runtime", () => {
+  it("mounts the pinned external ONNX data explicitly for Core ML", async () => {
+    const fixture = fakeTransformers();
+    const runtime = new HuggingFacePrivacyRuntime(
+      "openai/privacy-filter",
+      "pinned",
+      "/verified/privacy-cache",
+      async () => fixture.module,
+      async () => calibration,
+      "coreml"
+    );
+
+    await runtime.load();
+
+    expect(fixture.loadOptions).toEqual([
+      expect.objectContaining({
+        device: "coreml",
+        use_external_data_format: false,
+        session_options: {
+          externalData: [
+            {
+              path: "model_q4.onnx_data",
+              data: "onnx/model_q4.onnx_data"
+            }
+          ]
+        }
+      }),
+      expect.objectContaining({ device: "coreml" })
+    ]);
+  });
+
   it("reassembles overlapped windows exactly across a BIOES boundary", async () => {
     const fixture = fakeTransformers();
     const text = `${"a".repeat(255)}YZ${"b".repeat(443)}`;

@@ -32,6 +32,11 @@ extraResources:
     to: koed-runtime
     filter:
       - "**/*"
+      - "!node_modules/**/*"
+  - from: .koed-runtime/node_modules
+    to: koed-runtime/node_modules
+    filter:
+      - "**/*"
 
 directories:
   output: release

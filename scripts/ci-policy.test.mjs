@@ -68,6 +68,61 @@ test("draft release workflows resolve releases through API IDs", () => {
   }
 });
 
+test("release validation compares clean package trees and deterministic archives", () => {
+  const ci = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
+  const release = readFileSync(
+    resolve(".github/workflows/release.yml"),
+    "utf8"
+  );
+  assert.match(ci, /Verify native runtime packaging reproducibility/);
+  assert.match(ci, /Verify clean Desktop runtime and app reproducibility/);
+  assert.match(ci, /scripts\/compare-package-trees\.mjs/);
+  assert.match(release, /Verify standalone package reproducibility/);
+  assert.match(release, /Verify native runtime artifact reproducibility/);
+  assert.match(release, /SOURCE_DATE_EPOCH: 0/);
+  assert.match(release, /cmp \\\n\s+"\$\{first\}\/koed-server-/);
+  assert.match(
+    release,
+    /cmp \\\n\s+"\$\{first\}\/koed-native-runtime-linux-x64-/
+  );
+});
+
+test("release artifact size reports have unique target-specific asset names", () => {
+  const release = readFileSync(
+    resolve(".github/workflows/release.yml"),
+    "utf8"
+  );
+
+  assert.match(
+    release,
+    /koed-server-app-runtime-\$\{target\}-artifact-size-report\.json/
+  );
+  assert.match(
+    release,
+    /koed-native-runtime-linux-x64-artifact-size-report\.json/
+  );
+  assert.doesNotMatch(release, /\$\{release_dir\}\/artifact-size-report\.json/);
+});
+
+test("trusted CUDA validation runs exact packages only on the protected GPU runner", () => {
+  const workflow = readFileSync(
+    resolve(".github/workflows/native-runtime-linux-cuda-validation.yml"),
+    "utf8"
+  );
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.doesNotMatch(workflow, /pull_request:/);
+  assert.match(
+    workflow,
+    /github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/
+  );
+  assert.match(workflow, /runs-on: \[self-hosted, linux, x64, koed-cuda\]/);
+  assert.match(workflow, /validate-runtime\.mjs/);
+  assert.match(workflow, /llama\.cpp\/cuda\/llama-server/);
+  assert.match(workflow, /embedding:benchmark/);
+  assert.match(workflow, /validate-packaged-privacy-runtime\.mjs/);
+  assert.match(workflow, /--provider cuda/);
+});
+
 test("the workflow model cache key and filename track the pinned runtime model", () => {
   const runtimeSource = readFileSync(
     resolve("packages/koed-server/src/local-models-runtime.ts"),

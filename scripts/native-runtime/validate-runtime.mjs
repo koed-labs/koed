@@ -12,6 +12,7 @@ import {
   linuxLoaderIssues,
   macLoaderIssues
 } from "./loader-validation-lib.mjs";
+import { inspectNativeRuntimeContents } from "./content-policy.mjs";
 
 const parseArgs = (argv) => {
   const options = { runtimeRoot: "", json: false, platform: process.platform };
@@ -343,6 +344,11 @@ const runValidation = async (options) => {
   if (!existsSync(runtimeRoot))
     throw new Error(`runtime root missing: ${runtimeRoot}`);
   const timings = {};
+  const contentPolicy = await timedPhase(
+    timings,
+    "native content policy",
+    async () => inspectNativeRuntimeContents(runtimeRoot)
+  );
   const executables = await timedPhase(
     timings,
     "executable verification",
@@ -369,6 +375,13 @@ const runValidation = async (options) => {
     async () => validatePackagedProvider(runtimeRoot)
   );
   const errors = [
+    ...contentPolicy.forbidden.map(
+      (path) => `forbidden native build artifact: ${path}`
+    ),
+    ...contentPolicy.duplicateCudaLibraries.map(
+      (entry) =>
+        `duplicate CUDA redistributable content: ${entry.paths.join(", ")}`
+    ),
     ...executables
       .filter((entry) => !entry.ok)
       .map((entry) => `${entry.name} failed: ${entry.output ?? entry.message}`),
@@ -388,6 +401,7 @@ const runValidation = async (options) => {
     ok: errors.length === 0,
     runtimeRoot,
     platform: options.platform,
+    contentPolicy,
     executables,
     loaders,
     postgresExtensions,

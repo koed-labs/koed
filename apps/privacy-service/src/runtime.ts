@@ -13,7 +13,7 @@ import {
 } from "./decoder.js";
 import { ClassificationError } from "./errors.js";
 import { TOKEN_LABELS, type PrivacyLabel } from "./labels.js";
-import { utf8Offsets, type TokenOffset } from "./offsets.js";
+import { createUtf8OffsetLookup, type TokenOffset } from "./offsets.js";
 import type { PrivacyRuntimeProvider } from "./provider.js";
 import { PRIVACY_CLASSIFIER_HASH } from "./provenance.js";
 
@@ -270,7 +270,22 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
     const options = {
       dtype: "q4",
       local_files_only: true,
-      device: this.provider
+      device: this.provider,
+      ...(this.provider === "coreml"
+        ? {
+            // Core ML cannot resolve ONNX external data relative to the model
+            // file path. Mount the pinned q4 data file explicitly.
+            use_external_data_format: false,
+            session_options: {
+              externalData: [
+                {
+                  path: "model_q4.onnx_data",
+                  data: "onnx/model_q4.onnx_data"
+                }
+              ]
+            }
+          }
+        : {})
     };
     const verifiedModelPath = resolve(
       this.cacheDir,
@@ -361,17 +376,20 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
       clean_up_tokenization_spaces: false
     });
     const tokenOffsets = encoded.offset_mapping
-      ? numericRows(
-          tensorList(encoded.offset_mapping, "offset_mapping"),
-          "offset_mapping"
-        ).map((offset) => {
-          if (offset.length !== 2) {
-            throw new ClassificationError(
-              "privacy runtime emitted invalid offset_mapping"
-            );
-          }
-          return utf8Offsets(text, offset[0] as number, offset[1] as number);
-        })
+      ? (() => {
+          const offsetLookup = createUtf8OffsetLookup(text);
+          return numericRows(
+            tensorList(encoded.offset_mapping, "offset_mapping"),
+            "offset_mapping"
+          ).map((offset) => {
+            if (offset.length !== 2) {
+              throw new ClassificationError(
+                "privacy runtime emitted invalid offset_mapping"
+              );
+            }
+            return offsetLookup(offset[0] as number, offset[1] as number);
+          });
+        })()
       : vocabularyTokenOffsets(tokenizer, tokenIds, text);
 
     const logits: number[][] = [];
@@ -491,8 +509,9 @@ export class DeterministicPrivacyRuntime implements PrivacyRuntimeAdapter {
       start += width;
     }
     const tokenLabels = new Array<string>(tokenOffsets.length).fill("O");
+    const offsetLookup = createUtf8OffsetLookup(text);
     for (const detection of this.detections.get(text) ?? []) {
-      const detectionBytes = utf8Offsets(text, detection.start, detection.end);
+      const detectionBytes = offsetLookup(detection.start, detection.end);
       const covered = tokenOffsets
         .map((offset, index) => ({ offset, index }))
         .filter(

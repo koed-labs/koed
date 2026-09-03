@@ -72,8 +72,9 @@ test("Linux native artifact CI installs and requires the pinned CUDA toolkit", (
   );
   assert.doesNotMatch(releaseJob, /cuda-toolkit|Cold-build/);
   assert.equal(
-    releaseJob.match(/jq '\{ok, error, errors, timings, postgresExtensions:/g)
-      ?.length,
+    releaseJob.match(
+      /jq '\{ok, error, errors, timings, contentPolicy, postgresExtensions:/g
+    )?.length,
     2,
     "both Linux release validations should preserve top-level errors in compact failure diagnostics"
   );

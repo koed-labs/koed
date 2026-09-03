@@ -10,6 +10,7 @@ on:
       - scripts/native-runtime/sources.linux-x64.json
       - scripts/native-runtime/procure-runtime.mjs
       - scripts/native-runtime/manifest-lib.mjs
+      - scripts/native-runtime/content-policy.mjs
       - scripts/native-runtime/build-linux-x64.mjs
       - scripts/native-runtime/loader-validation-lib.mjs
       - scripts/native-runtime/validate-runtime.mjs
@@ -63,7 +64,7 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ runner.temp }}/koed-native-runtime-cache/linux-x64/koed-runtime
-          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
+          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/content-policy.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
 
       - name: Install native runtime build dependencies
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -99,7 +100,7 @@ jobs:
           node scripts/native-runtime/validate-runtime.mjs --runtime-root "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --platform linux --json > "${report}"
           status=$?
           set -e
-          jq '{ok, errors, timings, packagedProvider: (.packagedProvider | {skipped, ok, status: (.status | {status, stderr}), install: (.install | {status, stderr})})}' "${report}"
+          jq '{ok, errors, timings, contentPolicy, packagedProvider: (.packagedProvider | {skipped, ok, status: (.status | {status, stderr}), install: (.install | {status, stderr})})}' "${report}"
           exit "${status}"
 
       - name: Save verified Linux native runtime payload
@@ -107,4 +108,4 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ runner.temp }}/koed-native-runtime-cache/linux-x64/koed-runtime
-          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
+          key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/content-policy.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}

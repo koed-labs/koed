@@ -24,6 +24,7 @@ import {
   cleanupServerPackages,
   collectServerPackageStatus,
   installServerPackage,
+  packageExtractionLimits,
   requiredPackageRuntimeFiles,
   sha256File,
   validateServerPackageRoot,
@@ -88,7 +89,7 @@ const writeManifest = (
     resolve(root, "koed-server-package-manifest.json"),
     `${JSON.stringify(
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         id: "koed-server",
         version,
         platform: process.platform === "darwin" ? "macos" : process.platform,
@@ -138,7 +139,7 @@ const createPackageRoot = (
   writeFile(resolve(root, "README.txt"), "Standalone koed-server package\n");
   writeFile(resolve(root, "bin", "koed-server"), "#!/usr/bin/env sh\n");
   chmodSync(resolve(root, "bin", "koed-server"), 0o755);
-  writeFile(resolve(root, "koed-server", "dist", "cli.js"));
+  writeFile(resolve(root, "koed-runtime", "koed-server", "dist", "cli.js"));
   writeManifest(root, version, migrationTimestamp);
   return root;
 };
@@ -316,6 +317,16 @@ const writeSymlinkArchive = (outDir: string, outsideDir: string): string => {
   return archive;
 };
 
+const writeRawArchive = (
+  outDir: string,
+  blocks: Buffer[],
+  name: string
+): string => {
+  const archive = resolve(outDir, name);
+  writeFileSync(archive, gzipSync(Buffer.concat(blocks)));
+  return archive;
+};
+
 afterEach(() => {
   for (const path of temps.splice(0)) {
     rmSync(path, { recursive: true, force: true });
@@ -353,6 +364,22 @@ describe("standalone koed-server package runtime", () => {
     const invalid = validateServerPackageRoot(root);
     expect(invalid.ok).toBe(false);
     expect(invalid.errors.join("\n")).toMatch(/incompatible/);
+  });
+
+  it("rejects retired schema 1 manifests with upgrade guidance", () => {
+    const root = createPackageRoot(tempDir(), "0.2.0");
+    const manifestPath = resolve(root, "koed-server-package-manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    manifest.schemaVersion = 1;
+    writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
+
+    const result = validateServerPackageRoot(root);
+
+    expect(result.ok).toBe(false);
+    expect(result.errors.join("\n")).toMatch(/upgrade koed-server/);
   });
 
   it("rejects retired Explorer artifacts", () => {
@@ -569,6 +596,145 @@ describe("standalone koed-server package runtime", () => {
     expect(existsSync(resolve(outsideDir, "api", "dist", "index.js"))).toBe(
       false
     );
+  });
+
+  it.each([
+    ["hard links", "1"],
+    ["devices", "3"],
+    ["FIFOs", "6"]
+  ])("rejects package archives containing %s", async (_label, type) => {
+    const home = tempDir();
+    const outDir = tempDir();
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: home,
+      KOED_REPO_ROOT: home
+    });
+    const archive = writeRawArchive(
+      outDir,
+      [tarHeader("pkg-0.2.0/unsafe", 0, type), Buffer.alloc(1024)],
+      `${type}.tar.gz`
+    );
+    await expect(
+      installServerPackage(paths, {
+        source: archive,
+        sha256: sha256File(archive)
+      })
+    ).rejects.toThrow(/hard links|unsupported tar entry type/);
+    expect(
+      readdirSync(resolve(home, "runtime", "koed-server"))
+    ).not.toContainEqual(expect.stringMatching(/^\.install-/));
+  });
+
+  it("rejects duplicate normalized paths and removes the partial extraction", async () => {
+    const home = tempDir();
+    const outDir = tempDir();
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: home,
+      KOED_REPO_ROOT: home
+    });
+    const content = Buffer.from("duplicate");
+    const archive = writeRawArchive(
+      outDir,
+      [
+        tarHeader("pkg-0.2.0/file", content.length, "0"),
+        padded(content),
+        tarHeader("pkg-0.2.0/./file", content.length, "0"),
+        padded(content),
+        Buffer.alloc(1024)
+      ],
+      "duplicate.tar.gz"
+    );
+    await expect(
+      installServerPackage(paths, {
+        source: archive,
+        sha256: sha256File(archive)
+      })
+    ).rejects.toThrow("Duplicate package archive path");
+    expect(
+      readdirSync(resolve(home, "runtime", "koed-server"))
+    ).not.toContainEqual(expect.stringMatching(/^\.install-/));
+  });
+
+  it("rejects traversal, malformed, oversized, and truncated archives", async () => {
+    const cases: Array<[string, Buffer[], RegExp]> = [
+      [
+        "traversal.tar.gz",
+        [tarHeader("../outside", 0, "0"), Buffer.alloc(1024)],
+        /escapes/
+      ],
+      [
+        "oversized.tar.gz",
+        [
+          tarHeader("pkg-0.2.0/huge", 2 * 1024 * 1024 * 1024 + 1, "0"),
+          Buffer.alloc(1024)
+        ],
+        /individual file limit/
+      ],
+      [
+        "truncated.tar.gz",
+        [tarHeader("pkg-0.2.0/file", 20, "0"), Buffer.from("short")],
+        /truncated/
+      ]
+    ];
+    const malformed = tarHeader("pkg-0.2.0/file", 0, "0");
+    malformed.writeUInt8(malformed.readUInt8(0) ^ 1, 0);
+    cases.push([
+      "malformed.tar.gz",
+      [malformed, Buffer.alloc(1024)],
+      /checksum/
+    ]);
+    for (const [name, blocks, error] of cases) {
+      const home = tempDir();
+      const outDir = tempDir();
+      const paths = resolveKoedServerPaths({
+        KOED_HOME: home,
+        KOED_REPO_ROOT: home
+      });
+      const archive = writeRawArchive(outDir, blocks, name);
+      await expect(
+        installServerPackage(paths, {
+          source: archive,
+          sha256: sha256File(archive)
+        })
+      ).rejects.toThrow(error);
+    }
+  });
+
+  it("stops highly compressed archives at the expanded-byte limit", async () => {
+    const home = tempDir();
+    const outDir = tempDir();
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: home,
+      KOED_REPO_ROOT: home
+    });
+    const content = Buffer.alloc(2048, 0);
+    const archive = writeRawArchive(
+      outDir,
+      [
+        tarHeader("pkg-0.2.0/repeated", content.length, "0"),
+        padded(content),
+        Buffer.alloc(1024)
+      ],
+      "decompression-bomb.tar.gz"
+    );
+    const mutableExtractionLimits = packageExtractionLimits as {
+      expandedBytes: number;
+    };
+    const previousLimit = mutableExtractionLimits.expandedBytes;
+    mutableExtractionLimits.expandedBytes = 1024;
+    try {
+      await expect(
+        installServerPackage(paths, {
+          source: archive,
+          sha256: sha256File(archive)
+        })
+      ).rejects.toThrow("expanded byte limit");
+    } finally {
+      mutableExtractionLimits.expandedBytes = previousLimit;
+    }
+    expect(
+      readdirSync(resolve(home, "runtime", "koed-server"))
+    ).not.toContainEqual(expect.stringMatching(/^\.install-/));
   });
 
   it("activates installed versions and cleans inactive versions and cache", async () => {
