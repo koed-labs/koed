@@ -18,6 +18,7 @@
     }
   },
   "include": [
+    "apps/**/src/**/*.d.ts",
     "apps/**/*.test.ts",
     "apps/**/*.test.tsx",
     "apps/**/*.spec.ts",
