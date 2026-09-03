@@ -454,7 +454,7 @@ jobs:
             --policy config/release-artifact-size-policy.json \
             --baseline config/release-artifact-baseline-v0.6.2.json \
             --out "${release_dir}/koed-native-runtime-linux-x64-artifact-size-report.json" \
-            >> "${GITHUB_STEP_SUMMARY}"
+            | tee -a "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload native runtime assets to workflow
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

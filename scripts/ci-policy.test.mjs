@@ -101,6 +101,10 @@ test("release artifact size reports have unique target-specific asset names", ()
     release,
     /koed-native-runtime-linux-x64-artifact-size-report\.json/
   );
+  assert.match(
+    release,
+    /koed-native-runtime-linux-x64-artifact-size-report\.json" \\\n\s+\| tee -a "\$\{GITHUB_STEP_SUMMARY\}"/
+  );
   assert.doesNotMatch(release, /\$\{release_dir\}\/artifact-size-report\.json/);
 });
 
