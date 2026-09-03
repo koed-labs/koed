@@ -438,6 +438,23 @@ describe("PreferencesView", () => {
     );
   });
 
+  it("hides Team preferences when Team collaboration is disabled", async () => {
+    await renderPreferences({
+      initialSection: "team-connection",
+      teamCollaborationEnabled: false
+    });
+
+    expect(
+      [...container.querySelectorAll("nav button")].map((button) =>
+        button.textContent?.trim()
+      )
+    ).toEqual(["General", "Agents", "Services", "About"]);
+    expect(container.textContent).not.toContain("Remote Team Backend URL");
+    expect(container.querySelector("[aria-current='page']")?.textContent).toBe(
+      "General"
+    );
+  });
+
   it("renders concise connection states and icon-only actions", async () => {
     const component = { state: "healthy" as const };
     const status = advancedStatus({

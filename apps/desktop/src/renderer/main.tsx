@@ -44,6 +44,9 @@ function DesktopRoot() {
         setOnboardingComplete(true);
       }}
       onboardingComplete={onboardingComplete}
+      teamCollaborationEnabled={
+        window.koedDesktop?.featureFlags?.teamCollaborationEnabled ?? false
+      }
     />
   );
 }

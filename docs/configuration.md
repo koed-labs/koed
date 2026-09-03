@@ -77,6 +77,10 @@ Supported mode fields:
   after restart. Upgrading an existing Desktop installation preserves an
   explicit environment value; otherwise, Team collaboration becomes disabled
   until this opt-in is supplied. When disabled,
+  Desktop presents a Personal-only interface: Team rail entries, navigation,
+  commands, sharing actions, connection preferences, and add-or-join actions
+  are absent. Retained Team selections and navigation history reconcile to a
+  Personal route rather than exposing cached Team state.
   capability discovery reports Team Workspaces, collaboration, Share Grants,
   Cross-Identity Sync, remote upstreams, and device enrollment unavailable.
   Team chat, Shared Memory, Team realtime, retention, high-risk, support, Team
@@ -110,7 +114,9 @@ Supported mode fields:
 
 Authentication providers are part of the deployment capability contract.
 Private VPS and Team Self-Hosted profiles expose local session authentication;
-Team Self-Hosted may additionally expose WorkOS/AuthKit when configured.
+when WorkOS/AuthKit is configured, Team Self-Hosted exposes it instead of
+local session authentication. Local setup, registration, and password-login
+routes are unavailable while WorkOS/AuthKit is the configured provider.
 Koed-managed cloud never advertises local session authentication and exposes
 WorkOS/AuthKit only when it is configured. Local session authentication alone
 does not establish verified Team identity. Outside the isolated `developer`
@@ -630,7 +636,7 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `KOED_LAUNCH_TEAM_NODE_ID`: optional Memory node id consumed by staged launch validation; defaults to a synthetic fixture node.
 - `KOED_LAUNCH_LOCAL_EDGE_BASE_URL`: optional local-edge API target consumed by staged launch validation for proxy probes.
 - `KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID`: optional registered upstream backend id consumed by staged launch validation for proxy probes.
-- `WORKOS_AUTHKIT_ENABLED`: set `true` on Team Self-Hosted backends that use WorkOS/AuthKit for browser-session identity; it is required for verified Team invite acceptance on Koed-managed cloud. The backend still uses Koed Team Membership, Workspace Access, Share Grants, lifecycle state, and entitlement records for Memory authorization.
+- `WORKOS_AUTHKIT_ENABLED`: set `true` on Team Self-Hosted backends that use WorkOS/AuthKit as their browser-session identity provider. A configured Team Self-Hosted backend exposes only WorkOS/AuthKit for browser sign-in; local setup, registration, and password-login routes are unavailable. WorkOS/AuthKit is required for verified Team invite acceptance on Koed-managed cloud. The backend still uses Koed Team Membership, Workspace Access, Share Grants, lifecycle state, and entitlement records for Memory authorization.
 - `WORKOS_CLIENT_ID`: WorkOS/AuthKit client id used to build `/auth/workos/login` authorization redirects.
 - `WORKOS_API_KEY`: WorkOS server API key used only by `koed-server`/API when exchanging an AuthKit callback code. It must not be exposed to browser clients, MCP Server, Capture Hook, upstream registries, logs, or diagnostics.
 - `WORKOS_REDIRECT_URI`: absolute callback URL registered with WorkOS, normally ending in `/auth/workos/callback`.

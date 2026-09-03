@@ -47,6 +47,7 @@ describe("AppShell", () => {
       onToggleInspector: vi.fn(),
       personalUnreadCount: 3,
       scopeLine: <span>Personal · Private to you</span>,
+      teamCollaborationEnabled: true,
       routeFocusKey: "/personal",
       teams: [
         {
@@ -100,6 +101,15 @@ describe("AppShell", () => {
       "Devices",
       "Preferences"
     ]);
+  });
+
+  it("hides every Team rail action when Team collaboration is disabled", async () => {
+    await renderShell({ teamCollaborationEnabled: false });
+    expect(
+      container.querySelector('[aria-label="Add or join Team"]')
+    ).toBeNull();
+    expect(container.querySelector('[aria-label="Alpha Team"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Teams"]')).toBeNull();
   });
 
   it("marks the selected Team as the active rail scope", async () => {

@@ -206,7 +206,8 @@ export function PersonalContextNavigation({
   projectsSelected,
   selectedAskThreadId,
   sharesSelected,
-  sharesUnavailable = false
+  sharesUnavailable = false,
+  teamCollaborationEnabled = true
 }: {
   askRecents?: readonly PersonalDesktopAskThread[];
   askRecentsError?: string | null;
@@ -223,6 +224,7 @@ export function PersonalContextNavigation({
   selectedAskThreadId?: string;
   sharesSelected: boolean;
   sharesUnavailable?: boolean;
+  teamCollaborationEnabled?: boolean;
 }) {
   return (
     <div className="desktop-context-content desktop-personal-context-content">
@@ -251,16 +253,18 @@ export function PersonalContextNavigation({
           }}
           onSelect={onOpenNotes}
         />
-        <NavItem
-          icon={<Library aria-hidden="true" />}
-          item={{
-            id: "shares",
-            label: "Shares",
-            selected: sharesSelected,
-            unavailable: sharesUnavailable
-          }}
-          onSelect={onOpenShares}
-        />
+        {teamCollaborationEnabled ? (
+          <NavItem
+            icon={<Library aria-hidden="true" />}
+            item={{
+              id: "shares",
+              label: "Shares",
+              selected: sharesSelected,
+              unavailable: sharesUnavailable
+            }}
+            onSelect={onOpenShares}
+          />
+        ) : null}
       </Section>
       <Section className="desktop-sidebar-recents-section" title="Recents">
         {askRecents.map((thread) => (

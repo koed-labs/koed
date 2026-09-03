@@ -6173,7 +6173,7 @@ describe("api health", () => {
     );
   });
 
-  it("advertises WorkOS only when AuthKit is configured", async () => {
+  it("advertises WorkOS as the sole provider when AuthKit is configured", async () => {
     process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
     process.env.WORKOS_AUTHKIT_ENABLED = "true";
     process.env.WORKOS_CLIENT_ID = "client_test_123";
@@ -6199,6 +6199,24 @@ describe("api health", () => {
     );
     expect(response.body).not.toContain("sk_test_hidden");
     expect(response.body).not.toContain("client_test_123");
+
+    process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
+    const teamApp = await buildServer();
+    const teamResponse = await teamApp.inject({
+      method: "GET",
+      url: "/v1/capabilities"
+    });
+    await teamApp.close();
+
+    const teamCapabilities = jsonBody<CapabilitiesResponse>(teamResponse);
+    expect(teamCapabilities.auth.providers).toEqual(["workos"]);
+    expect(teamCapabilities.auth.session).toBe("available");
+    expect(teamCapabilities.capabilities["auth.local"]!.availability).toBe(
+      "unavailable"
+    );
+    expect(teamCapabilities.capabilities["auth.workos"]!.availability).toBe(
+      "partial"
+    );
   });
 
   it("does not expose WorkOS auth routes when the deployment profile does not support WorkOS", async () => {
@@ -6849,6 +6867,67 @@ describe("api health", () => {
 });
 
 describe("account and access flows", () => {
+  it("fails closed for local auth routes when WorkOS is the sole provider", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-auth-gate-"));
+    process.env.KOED_HOME = koedHome;
+    const repository = createFakeRepository();
+    const localApp = await buildServer({ repository });
+    const registered = await localApp.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "local-auth-disabled@example.com",
+        password: "password123"
+      }
+    });
+    await localApp.close();
+    expect(registered.statusCode).toBe(200);
+
+    process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    configureTestWorkos();
+    const app = await buildServer({ repository });
+    const setupStatus = await app.inject({
+      method: "GET",
+      url: "/auth/setup-status"
+    });
+    const setup = await app.inject({
+      method: "POST",
+      url: "/auth/setup",
+      payload: {
+        email: "setup-disabled@example.com",
+        password: "password123"
+      }
+    });
+    const register = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "registration-disabled@example.com",
+        password: "password123"
+      }
+    });
+    const login = await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: {
+        email: "local-auth-disabled@example.com",
+        password: "password123"
+      }
+    });
+    await app.close();
+
+    for (const response of [setupStatus, setup, register, login]) {
+      expect(response.statusCode).toBe(404);
+      expect(jsonBody<{ error: string }>(response).error).toBe(
+        "Local authentication is unavailable"
+      );
+    }
+    expect(login.headers["set-cookie"]).toBeUndefined();
+    expect(await repository.countUsers()).toBe(1);
+    rmSync(koedHome, { recursive: true, force: true });
+  });
+
   it("disables browser session bootstrap by default outside tests", async () => {
     const previousNodeEnv = process.env.NODE_ENV;
     const previousLogLevel = process.env.LOG_LEVEL;
@@ -10471,11 +10550,10 @@ describe("account and access flows", () => {
     configureTestWorkos();
     const repository = createFakeRepository();
     const app = await buildServer({ repository });
-    const operator = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: { email: "ops@example.test", password: "password123" }
-    });
+    const operatorCookie = await createVerifiedWorkosSessionForTest(
+      repository,
+      "ops@example.test"
+    );
     const userCookie = await createVerifiedWorkosSessionForTest(
       repository,
       "user@example.test"
@@ -10491,7 +10569,7 @@ describe("account and access flows", () => {
     const operatorStatus = await app.inject({
       method: "GET",
       url: "/ops/status",
-      headers: browserSessionHeaders(cookieHeader(operator))
+      headers: browserSessionHeaders(operatorCookie)
     });
     const userStatus = await app.inject({
       method: "GET",
@@ -10501,7 +10579,7 @@ describe("account and access flows", () => {
     const operatorAlert = await app.inject({
       method: "POST",
       url: "/ops/test-alert",
-      headers: browserSessionHeaders(cookieHeader(operator))
+      headers: browserSessionHeaders(operatorCookie)
     });
     const userAlert = await app.inject({
       method: "POST",
@@ -10528,22 +10606,17 @@ describe("account and access flows", () => {
       repository,
       "hosted-support-owner@example.test"
     );
-    const operator = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: {
-        email: "ops-support@example.test",
-        password: "password123"
-      }
-    });
-    const normalUser = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: {
-        email: "hosted-support-user@example.test",
-        password: "password123"
-      }
-    });
+    const operatorCookie = await createVerifiedWorkosSessionForTest(
+      repository,
+      "ops-support@example.test"
+    );
+    const operatorUser = await repository.findUserByEmail(
+      "ops-support@example.test"
+    );
+    const normalUserCookie = await createVerifiedWorkosSessionForTest(
+      repository,
+      "hosted-support-user@example.test"
+    );
     const createdTeam = await app.inject({
       method: "POST",
       url: "/v1/teams",
@@ -10557,12 +10630,12 @@ describe("account and access flows", () => {
     const accepted = await app.inject({
       method: "GET",
       url: `/ops/support/teams/${team.id}/overview`,
-      headers: browserSessionHeaders(cookieHeader(operator))
+      headers: browserSessionHeaders(operatorCookie)
     });
     const rejectedNormalUser = await app.inject({
       method: "GET",
       url: `/ops/support/teams/${team.id}/overview`,
-      headers: browserSessionHeaders(cookieHeader(normalUser))
+      headers: browserSessionHeaders(normalUserCookie)
     });
     const rejectedAnonymous = await app.inject({
       method: "GET",
@@ -10610,7 +10683,7 @@ describe("account and access flows", () => {
         (event) => event.action === "team.hosted_support_overview.viewed"
       )
     ).toMatchObject({
-      actorUserId: jsonBody<{ user: { id: string } }>(operator).user.id,
+      actorUserId: operatorUser!.id,
       targetTable: "teams",
       targetId: team.id,
       metadata: {
@@ -10638,14 +10711,10 @@ describe("account and access flows", () => {
       repository,
       "hosted-support-bundle-owner@example.test"
     );
-    const operator = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: {
-        email: "ops-bundle@example.test",
-        password: "password123"
-      }
-    });
+    const operatorCookie = await createVerifiedWorkosSessionForTest(
+      repository,
+      "ops-bundle@example.test"
+    );
     const createdTeam = await app.inject({
       method: "POST",
       url: "/v1/teams",
@@ -10659,7 +10728,7 @@ describe("account and access flows", () => {
     const bundleResponse = await app.inject({
       method: "POST",
       url: `/ops/support/teams/${team.id}/bundle`,
-      headers: browserSessionHeaders(cookieHeader(operator))
+      headers: browserSessionHeaders(operatorCookie)
     });
     const auditEventsResponse = await app.inject({
       method: "GET",
@@ -10737,14 +10806,10 @@ describe("account and access flows", () => {
       repository,
       "hosted-support-bundle-required-owner@example.test"
     );
-    const operator = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: {
-        email: "ops-bundle-required@example.test",
-        password: "password123"
-      }
-    });
+    const operatorCookie = await createVerifiedWorkosSessionForTest(
+      repository,
+      "ops-bundle-required@example.test"
+    );
     const createdTeam = await app.inject({
       method: "POST",
       url: "/v1/teams",
@@ -10758,7 +10823,7 @@ describe("account and access flows", () => {
     const response = await app.inject({
       method: "POST",
       url: `/ops/support/teams/${team.id}/bundle`,
-      headers: browserSessionHeaders(cookieHeader(operator))
+      headers: browserSessionHeaders(operatorCookie)
     });
     await app.close();
 
@@ -12134,6 +12199,7 @@ describe("account and access flows", () => {
 
   it("closes managed-profile plaintext classification side channels", async () => {
     process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+    configureTestWorkos();
     const repository = createFakeRepository();
     const createConversationItems =
       repository.createConversationItems.bind(repository);
@@ -12143,10 +12209,20 @@ describe("account and access flows", () => {
       return createConversationItems(actor, input);
     };
     const app = await buildServer({ repository });
-    const client = await registerApiClientForTest(
-      app,
+    const clientCookie = await createVerifiedWorkosSessionForTest(
+      repository,
       "managed-raw-classification@example.com"
     );
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: browserSessionHeaders(clientCookie),
+      payload: { name: "Raw Classification Test Client" }
+    });
+    expect(tokenResponse.statusCode).toBe(200);
+    const client = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
     const session = await createCapturedSessionForTest(
       app,
       client.authorization
@@ -14655,22 +14731,20 @@ describe("account and access flows", () => {
 
   it("fails closed for hosted memory exports without envelope encryption", async () => {
     process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+    configureTestWorkos();
+    const repository = createFakeRepository();
     const app = await buildServer({
-      repository: createFakeRepository(),
+      repository,
       runMemoryJobsInlineForTests: true
     });
-    const registered = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: {
-        email: "hosted-export@example.com",
-        password: "password123"
-      }
-    });
+    const cookie = await createVerifiedWorkosSessionForTest(
+      repository,
+      "hosted-export@example.com"
+    );
     const exported = await app.inject({
       method: "GET",
       url: "/v1/memory/export",
-      headers: browserSessionHeaders(cookieHeader(registered))
+      headers: browserSessionHeaders(cookie)
     });
     await app.close();
 

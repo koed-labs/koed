@@ -5,6 +5,13 @@ Team-shared Memory in one application without merging their authority or
 lifecycle. This document describes the User-facing model, supported workflows,
 recovery behavior, accessibility contract, and tested performance boundaries.
 
+Team collaboration is visible only when the Operator starts Desktop with
+`KOED_TEAM_COLLABORATION_ENABLED=true`. When the switch is false or absent,
+Desktop presents a Personal-only interface and removes Team navigation,
+commands, sharing, connection settings, and cached Team routes from navigation
+history. Retained Team data remains stored behind its existing authority and
+lifecycle boundaries; disabling the UI does not delete it.
+
 For service and authorization details, see
 [Team Collaboration Architecture](team-collaboration.md). For runtime setup and
 operation, see [Running Koed](running-koed.md).

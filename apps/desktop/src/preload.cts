@@ -13,6 +13,7 @@ import { createPersonalMemoryPreloadApi } from "./ipc/personal-memory-preload.js
 import { createManagedConversationPreloadApi } from "./ipc/managed-conversation-preload.js";
 import { createLocalAiClientPreloadApi } from "./ipc/local-ai-client-preload.js";
 import { createPersonalDevicePairingPreloadApi } from "./ipc/personal-device-pairing-preload.js";
+import { desktopFeatureFlagsFromEnvironment } from "./ipc/desktop-feature-flags.js";
 import {
   clipboardWriteChannel,
   desktopCommandNames,
@@ -31,6 +32,7 @@ const collaborationCommandChannel = "koed:collaboration:command";
 const collaborationEventChannel = "koed:collaboration:event";
 const allowedDesktopCommandNames = new Set<string>(desktopCommandNames);
 contextBridge.exposeInMainWorld("koedDesktop", {
+  featureFlags: desktopFeatureFlagsFromEnvironment(process.env),
   invoke: (command: string, args?: Record<string, unknown>) => {
     if (!allowedDesktopCommandNames.has(command)) {
       throw new Error("Unsupported Desktop command.");
