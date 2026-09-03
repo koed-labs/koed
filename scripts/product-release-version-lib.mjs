@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export const productReleasePackagePath = "packages/koed/package.json";
@@ -11,6 +11,7 @@ export const synchronizedProductPackagePaths = [
 
 export const internalWorkspacePackageNames = [
   "@koed/api",
+  "@koed/app-runtime-stage",
   "@koed/core",
   "@koed/db",
   "@koed/desktop",
@@ -30,6 +31,24 @@ const semverPattern =
 
 const readJson = (root, relativePath) =>
   JSON.parse(readFileSync(resolve(root, relativePath), "utf8"));
+
+const discoverWorkspacePackageNames = (root) =>
+  ["apps", "packages"].flatMap((workspaceRoot) =>
+    readdirSync(resolve(root, workspaceRoot), { withFileTypes: true }).flatMap(
+      (entry) => {
+        if (!entry.isDirectory()) return [];
+        const relativePath = `${workspaceRoot}/${entry.name}/package.json`;
+        if (!existsSync(resolve(root, relativePath))) return [];
+        const name = readJson(root, relativePath).name;
+        if (typeof name !== "string" || name.length === 0) {
+          throw new Error(
+            `Workspace package has no valid name: ${relativePath}`
+          );
+        }
+        return [name];
+      }
+    )
+  );
 
 const assertReleaseVersion = (value, source) => {
   if (typeof value !== "string" || !semverPattern.test(value)) {
@@ -85,6 +104,16 @@ export const assertProductPackageVersions = (root) => {
 export const assertChangesetReleasePolicy = (root) => {
   const config = readJson(root, ".changeset/config.json");
   const ignored = new Set(Array.isArray(config.ignore) ? config.ignore : []);
+  const classifiedPackages = new Set(internalWorkspacePackageNames);
+  const unclassifiedPackages = discoverWorkspacePackageNames(root).filter(
+    (packageName) =>
+      packageName !== "@koed/koed" && !classifiedPackages.has(packageName)
+  );
+  if (unclassifiedPackages.length > 0) {
+    throw new Error(
+      `Internal workspace packages are missing from the release policy:\n- ${unclassifiedPackages.join("\n- ")}`
+    );
+  }
   const missing = internalWorkspacePackageNames.filter(
     (packageName) => !ignored.has(packageName)
   );

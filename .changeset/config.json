@@ -9,6 +9,7 @@
   "updateInternalDependencies": "patch",
   "ignore": [
     "@koed/api",
+    "@koed/app-runtime-stage",
     "@koed/core",
     "@koed/db",
     "@koed/embedding-service",

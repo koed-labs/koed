@@ -30,8 +30,16 @@ const fixture = () => {
     name: "@koed/koed",
     version: "1.4.0"
   });
+  const synchronizedPackageNames = new Map([
+    ["package.json", "koed"],
+    ["packages/koed-server/package.json", "@koed/koed-server"],
+    ["apps/desktop/package.json", "@koed/desktop"]
+  ]);
   for (const [, relativePath] of synchronizedProductPackagePaths) {
-    writeJson(root, relativePath, { name: relativePath, version: "1.3.2" });
+    writeJson(root, relativePath, {
+      name: synchronizedPackageNames.get(relativePath),
+      version: "1.3.2"
+    });
   }
   writeJson(root, "apps/api/package.json", {
     name: "@koed/api",
@@ -90,6 +98,24 @@ test("accepts the single product release-unit policy", () => {
   const root = fixture();
   try {
     assert.equal(assertChangesetReleasePolicy(root), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects an unclassified internal workspace package", () => {
+  const root = fixture();
+  try {
+    writeJson(root, "packages/unclassified/package.json", {
+      name: "@koed/unclassified",
+      version: "0.0.0",
+      private: true
+    });
+
+    assert.throws(
+      () => assertChangesetReleasePolicy(root),
+      /missing from the release policy:[\s\S]*@koed\/unclassified/
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
