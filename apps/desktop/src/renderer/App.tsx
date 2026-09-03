@@ -281,6 +281,57 @@ const selectionRoute = (selection: CollaborationSelection): DesktopRoute => {
   }
 };
 
+const selectionRequiresTeamCollaboration = (
+  selection: CollaborationSelection
+): boolean =>
+  selection.kind !== "personal_memory" && selection.kind !== "personal_channel";
+
+const routeRequiresTeamCollaboration = (route: DesktopRoute): boolean =>
+  "teamId" in route ||
+  route.kind === "personal-memory-shares" ||
+  (route.kind === "preferences" && route.section === "team-connection");
+
+const snapshotWithoutTeamCollaboration = (
+  snapshot: CollaborationSnapshot | null
+): CollaborationSnapshot | null => {
+  if (!snapshot) return null;
+  const hasTeamSelection = selectionRequiresTeamCollaboration(
+    snapshot.selection
+  );
+  return {
+    ...snapshot,
+    connection: {
+      ...snapshot.connection,
+      state: "disconnected",
+      backendId: null,
+      connectedAt: null,
+      retryAt: null,
+      reconnectAttempt: 0
+    },
+    navigation: {
+      ...snapshot.navigation,
+      teamPrincipal: null,
+      teams: []
+    },
+    selection: hasTeamSelection
+      ? { kind: "personal_memory" }
+      : snapshot.selection,
+    view: hasTeamSelection
+      ? {
+          kind: "personal_memory",
+          entries: snapshot.navigation.personal.memory
+        }
+      : snapshot.view,
+    ...(snapshot.outbox
+      ? {
+          outbox: snapshot.outbox.filter(
+            ({ authority }) => authority.scope === "personal"
+          )
+        }
+      : {})
+  };
+};
+
 const selectionEntry = (
   snapshot: CollaborationSnapshot,
   selection: CollaborationSelection = snapshot.selection
@@ -326,8 +377,15 @@ function StaticBreadcrumb({ labels }: { labels: readonly string[] }) {
 
 const entryAuthorized = (
   entry: NavigationEntry,
-  snapshot: CollaborationSnapshot
+  snapshot: CollaborationSnapshot,
+  teamCollaborationEnabled: boolean
 ): boolean => {
+  if (
+    !teamCollaborationEnabled &&
+    routeRequiresTeamCollaboration(entry.route)
+  ) {
+    return false;
+  }
   if (entry.route.kind === "inbox" || entry.route.kind === "onboarding") {
     return true;
   }
@@ -416,7 +474,7 @@ export type AppProps = {
   personalMemoryApi?: PersonalDesktopApi | null;
   statusReadyOverride?: boolean;
   statusStoreOverride?: DesktopStatusStore;
-  teamBackendEnabled?: boolean;
+  teamCollaborationEnabled?: boolean;
 };
 
 export function App({
@@ -428,7 +486,7 @@ export function App({
   personalMemoryApi = window.koedDesktop?.personalMemory ?? null,
   statusReadyOverride,
   statusStoreOverride,
-  teamBackendEnabled = true
+  teamCollaborationEnabled = true
 }: AppProps = {}) {
   const askAvailable = Boolean(
     personalMemoryApi?.submitAsk &&
@@ -441,9 +499,15 @@ export function App({
     undefined,
     () => {
       const initialSnapshot = client.current();
+      const allowedInitialSelection =
+        initialCollaborationSelection &&
+        (teamCollaborationEnabled ||
+          !selectionRequiresTeamCollaboration(initialCollaborationSelection))
+          ? initialCollaborationSelection
+          : null;
       return createNavigationState(
-        initialCollaborationSelection && initialSnapshot
-          ? selectionEntry(initialSnapshot, initialCollaborationSelection)
+        allowedInitialSelection && initialSnapshot
+          ? selectionEntry(initialSnapshot, allowedInitialSelection)
           : initialEntry(onboardingComplete, askAvailable)
       );
     }
@@ -463,7 +527,10 @@ export function App({
   const [managedConversationRevision, setManagedConversationRevision] =
     useState(0);
   const initialSelectionApplied = useRef(
-    !initialCollaborationSelection || Boolean(client.current())
+    !initialCollaborationSelection ||
+      Boolean(client.current()) ||
+      (!teamCollaborationEnabled &&
+        selectionRequiresTeamCollaboration(initialCollaborationSelection))
   );
   const personalMemoryStore = useMemo(
     () =>
@@ -503,7 +570,13 @@ export function App({
   const route = currentNavigationEntry(navigation).route;
   const selectedAskThreadId =
     route.kind === "personal-memory-ask" ? route.askThreadId : undefined;
-  const snapshot = collaboration.snapshot;
+  const snapshot = useMemo(
+    () =>
+      teamCollaborationEnabled
+        ? collaboration.snapshot
+        : snapshotWithoutTeamCollaboration(collaboration.snapshot),
+    [collaboration.snapshot, teamCollaborationEnabled]
+  );
   const liveHealthRefreshKey = useRef<string | null>(null);
   const lastTeamActivityReportAt = useRef(0);
   const activeTeamId = routeTeamId(route);
@@ -557,6 +630,7 @@ export function App({
   }, [askAvailable, personalMemoryApi, refreshAskRecents]);
 
   useEffect(() => {
+    if (!teamCollaborationEnabled) return;
     const teamIds =
       snapshot?.navigation.teams
         .filter((candidate) => candidate.lifecycle === "active")
@@ -589,7 +663,7 @@ export function App({
       window.removeEventListener("focus", report);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [client, snapshot?.navigation.teams]);
+  }, [client, snapshot?.navigation.teams, teamCollaborationEnabled]);
 
   useEffect(() => {
     void themeStore.load();
@@ -670,7 +744,12 @@ export function App({
 
   useEffect(() => {
     if (!snapshot) return;
-    if (initialCollaborationSelection && !initialSelectionApplied.current) {
+    if (
+      initialCollaborationSelection &&
+      !initialSelectionApplied.current &&
+      (teamCollaborationEnabled ||
+        !selectionRequiresTeamCollaboration(initialCollaborationSelection))
+    ) {
       initialSelectionApplied.current = true;
       dispatch({
         type: "replace",
@@ -679,7 +758,8 @@ export function App({
     }
     dispatch({
       type: "reconcile-authority",
-      isAuthorized: (entry) => entryAuthorized(entry, snapshot),
+      isAuthorized: (entry) =>
+        entryAuthorized(entry, snapshot, teamCollaborationEnabled),
       fallback: {
         authority: {
           backendId: null,
@@ -700,7 +780,8 @@ export function App({
     snapshot?.navigation.personalOwner.id,
     snapshot?.navigation.teamPrincipal?.id,
     snapshot?.selection,
-    snapshot?.snapshotRevision
+    snapshot?.snapshotRevision,
+    teamCollaborationEnabled
   ]);
 
   const navigate = (entry: NavigationEntry) => {
@@ -710,6 +791,12 @@ export function App({
   };
 
   const choose = (selection: CollaborationSelection) => {
+    if (
+      !teamCollaborationEnabled &&
+      selectionRequiresTeamCollaboration(selection)
+    ) {
+      return;
+    }
     if (snapshot) {
       navigate(selectionEntry(snapshot, selection));
     }
@@ -737,7 +824,13 @@ export function App({
   ) =>
     navigate({
       authority: currentNavigationEntry(navigation).authority,
-      route: { kind: "preferences", section }
+      route: {
+        kind: "preferences",
+        section:
+          !teamCollaborationEnabled && section === "team-connection"
+            ? "general"
+            : section
+      }
     });
 
   if (route.kind === "onboarding") {
@@ -974,6 +1067,7 @@ export function App({
         }
         sharesSelected={route.kind === "personal-memory-shares"}
         sharesUnavailable={sharesUnavailable}
+        teamCollaborationEnabled={teamCollaborationEnabled}
         selectedAskThreadId={selectedAskThreadId}
       />
     );
@@ -1133,20 +1227,24 @@ export function App({
   if (route.kind === "inbox") {
     content = (
       <InboxView
-        activeApprovals={collaboration.actionGrants
-          .filter(
-            ({ state }) =>
-              state === "awaiting_approval" ||
-              state === "awaiting_review" ||
-              state === "approved" ||
-              state === "executing"
-          )
-          .map((grant) => ({
-            expiresAt: grant.expiresAt,
-            id: grant.id,
-            scope: "Protected operation",
-            title: grant.operation
-          }))}
+        activeApprovals={
+          teamCollaborationEnabled
+            ? collaboration.actionGrants
+                .filter(
+                  ({ state }) =>
+                    state === "awaiting_approval" ||
+                    state === "awaiting_review" ||
+                    state === "approved" ||
+                    state === "executing"
+                )
+                .map((grant) => ({
+                  expiresAt: grant.expiresAt,
+                  id: grant.id,
+                  scope: "Protected operation",
+                  title: grant.operation
+                }))
+            : []
+        }
         error={collaboration.error}
         loading={collaboration.loadState === "loading"}
         onOpenPreferences={openPreferences}
@@ -1461,7 +1559,7 @@ export function App({
         }
         onThemeChange={(preference) => void themeStore.set(preference)}
         statusStore={activeStatusStore}
-        teamBackendEnabled={teamBackendEnabled}
+        teamCollaborationEnabled={teamCollaborationEnabled}
         theme={theme.preference}
         version="0.4.4"
       />
@@ -1610,7 +1708,7 @@ export function App({
             : 0
         }
         scopeLine={<ScopeLine>{scopeLine}</ScopeLine>}
-        teamBackendEnabled={teamBackendEnabled}
+        teamCollaborationEnabled={teamCollaborationEnabled}
         teams={teamRail}
         routeFocusKey={JSON.stringify(route)}
       >
@@ -1618,10 +1716,12 @@ export function App({
           announcement={collaboration.announcement}
           clearAnnouncement={collaboration.clearAnnouncement}
         />
-        <ActionGrantStatus
-          actionGrants={collaboration.actionGrants}
-          client={client}
-        />
+        {teamCollaborationEnabled ? (
+          <ActionGrantStatus
+            actionGrants={collaboration.actionGrants}
+            client={client}
+          />
+        ) : null}
         {content}
       </AppShell>
 
@@ -1647,7 +1747,13 @@ export function App({
           <CollaborationModalLayer
             client={client}
             markdownAdapters={collaboration.markdownAdapters}
-            modal={collaboration.modal}
+            modal={
+              teamCollaborationEnabled ||
+              collaboration.modal?.kind === "personal_channel" ||
+              collaboration.modal?.kind === "edit_personal_channel"
+                ? collaboration.modal
+                : null
+            }
             onModalChange={collaboration.setModal}
             onViewShare={(shareKey) => {
               collaboration.setModal(null);

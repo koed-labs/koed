@@ -79,7 +79,7 @@ export type PreferencesViewProps = {
   onSectionChange?: (section: PreferencesSection) => void;
   onThemeChange: (theme: DesktopThemePreference) => void;
   statusStore: DesktopStatusStore;
-  teamBackendEnabled?: boolean;
+  teamCollaborationEnabled?: boolean;
   theme: DesktopThemePreference;
   version: string;
 };
@@ -100,10 +100,10 @@ const sectionTitle = (section: PreferencesSection): string =>
 
 const visiblePreferencesSection = (
   section: PreferencesSection,
-  teamBackendEnabled: boolean
+  teamCollaborationEnabled: boolean
 ): PreferencesSection =>
   section === "capture" ||
-  (!teamBackendEnabled && section === "team-connection")
+  (!teamCollaborationEnabled && section === "team-connection")
     ? "general"
     : section;
 
@@ -1077,13 +1077,13 @@ export function PreferencesView({
   onSectionChange,
   onThemeChange,
   statusStore,
-  teamBackendEnabled = true,
+  teamCollaborationEnabled = true,
   theme,
   version
 }: PreferencesViewProps) {
   const visibleInitialSection = visiblePreferencesSection(
     initialSection,
-    teamBackendEnabled
+    teamCollaborationEnabled
   );
   const [section, setSection] = useState<PreferencesSection>(
     visibleInitialSection
@@ -1091,11 +1091,13 @@ export function PreferencesView({
 
   useEffect(
     () =>
-      setSection(visiblePreferencesSection(initialSection, teamBackendEnabled)),
-    [initialSection, teamBackendEnabled]
+      setSection(
+        visiblePreferencesSection(initialSection, teamCollaborationEnabled)
+      ),
+    [initialSection, teamCollaborationEnabled]
   );
 
-  const visibleSections = teamBackendEnabled
+  const visibleSections = teamCollaborationEnabled
     ? sections
     : sections.filter(({ id }) => id !== "team-connection");
 

@@ -438,10 +438,10 @@ describe("PreferencesView", () => {
     );
   });
 
-  it("hides Team preferences when the developer Team backend is disabled", async () => {
+  it("hides Team preferences when Team collaboration is disabled", async () => {
     await renderPreferences({
       initialSection: "team-connection",
-      teamBackendEnabled: false
+      teamCollaborationEnabled: false
     });
 
     expect(

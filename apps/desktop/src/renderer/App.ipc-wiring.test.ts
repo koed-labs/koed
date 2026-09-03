@@ -10,11 +10,11 @@ describe("App Desktop IPC wiring", () => {
     );
   });
 
-  it("reads the developer Team backend flag from the trusted preload bridge", () => {
+  it("reads the Team collaboration flag from the trusted preload bridge", () => {
     const source = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
 
     expect(source).toContain(
-      "window.koedDesktop?.featureFlags?.developerTeamBackendEnabled ?? false"
+      "window.koedDesktop?.featureFlags?.teamCollaborationEnabled ?? false"
     );
   });
 });

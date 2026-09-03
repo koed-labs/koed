@@ -77,6 +77,10 @@ Supported mode fields:
   after restart. Upgrading an existing Desktop installation preserves an
   explicit environment value; otherwise, Team collaboration becomes disabled
   until this opt-in is supplied. When disabled,
+  Desktop presents a Personal-only interface: Team rail entries, navigation,
+  commands, sharing actions, connection preferences, and add-or-join actions
+  are absent. Retained Team selections and navigation history reconcile to a
+  Personal route rather than exposing cached Team state.
   capability discovery reports Team Workspaces, collaboration, Share Grants,
   Cross-Identity Sync, remote upstreams, and device enrollment unavailable.
   Team chat, Shared Memory, Team realtime, retention, high-risk, support, Team
@@ -102,9 +106,7 @@ Supported mode fields:
   Team backend capability foundation. It accepts only `true` or `false`,
   defaults to `false`, requires `KOED_TEAM_COLLABORATION_ENABLED=true`, and is
   ignored by every non-developer deployment profile. Do not enable it for a
-  production deployment. Koed Desktop hides the Teams preferences section and
-  its add-or-join-Team navigation action when this switch is not enabled. When
-  enabled, the isolated developer backend reports
+  production deployment. When enabled, the isolated developer backend reports
   Cross-Identity Sync available only while application-layer encryption and
   the Cross-Identity Sync Worker are ready. It does not relax the verified
   WorkOS/AuthKit identity requirement for Team Self-Hosted or Koed-managed
