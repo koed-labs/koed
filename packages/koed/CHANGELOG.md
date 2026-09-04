@@ -1,5 +1,11 @@
 # @koed/koed
 
+## 0.7.5
+
+### Patch Changes
+
+- 337ae9e: Trigger a fresh release after release publication validation fixes.
+
 ## 0.7.4
 
 ### Patch Changes
