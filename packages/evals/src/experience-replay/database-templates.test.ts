@@ -27,6 +27,71 @@ const within = async <T>(
   }
 };
 
+const logCleanupActivity = async (
+  admin: pg.Pool,
+  databaseNames: string[]
+): Promise<void> => {
+  try {
+    const activity = await admin.query<{
+      pid: number;
+      datname: string;
+      state: string | null;
+      query: string;
+      application_name: string;
+    }>(
+      `SELECT pid, datname, state, query, application_name
+         FROM pg_stat_activity
+        WHERE datname = ANY($1::text[])
+        ORDER BY datname, pid`,
+      [databaseNames]
+    );
+    console.error(
+      "[database template cleanup pg_stat_activity]",
+      JSON.stringify(activity.rows, null, 2)
+    );
+  } catch (error) {
+    console.error(
+      "[database template cleanup diagnostics failed]",
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+};
+
+const cleanupIntegrationDatabases = async ({
+  admin,
+  manager,
+  source,
+  databaseNames
+}: {
+  admin: pg.Pool;
+  manager: ExperienceReplayDatabaseTemplates;
+  source: string;
+  databaseNames: string[];
+}): Promise<void> => {
+  const failures: unknown[] = [];
+  try {
+    await manager.close();
+  } catch (error) {
+    failures.push(error);
+    await logCleanupActivity(admin, databaseNames);
+  }
+  try {
+    await admin.query(`DROP DATABASE IF EXISTS "${source}" WITH (FORCE)`);
+  } catch (error) {
+    failures.push(error);
+    await logCleanupActivity(admin, databaseNames);
+  }
+  try {
+    await admin.end();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Failed to clean integration databases");
+  }
+};
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -509,7 +574,14 @@ describe("experience replay database template guards", () => {
       const source = `koed_eval_${suffix}_source`;
       const template = `koed_eval_${suffix}_template`;
       const clone = `koed_eval_${suffix}_clone`;
-      const admin = new pg.Pool({ connectionString: databaseUrl });
+      const databaseNames = [source, template, clone];
+      const admin = new pg.Pool({
+        connectionString: databaseUrl,
+        application_name: "koed-eval-template-test-admin",
+        connectionTimeoutMillis: 5_000,
+        statement_timeout: 15_000,
+        query_timeout: 15_000
+      });
       const manager = new ExperienceReplayDatabaseTemplates({
         adminDatabaseUrl: parsed.toString(),
         user,
@@ -523,20 +595,29 @@ describe("experience replay database template guards", () => {
         const sourceUrl = new URL(databaseUrl!);
         sourceUrl.pathname = `/${source}`;
         const sourceClient = new pg.Client({
-          connectionString: sourceUrl.toString()
+          connectionString: sourceUrl.toString(),
+          application_name: "koed-eval-template-test-source",
+          connectionTimeoutMillis: 5_000,
+          statement_timeout: 5_000,
+          query_timeout: 5_000
         });
-        await within("connecting source client", sourceClient.connect());
-        await within(
-          "creating source data",
-          sourceClient.query("CREATE TABLE replay_probe (value text NOT NULL)")
-        );
-        await within(
-          "inserting source data",
-          sourceClient.query(
-            "INSERT INTO replay_probe (value) VALUES ('frozen')"
-          )
-        );
-        await within("closing source client", sourceClient.end());
+        try {
+          await within("connecting source client", sourceClient.connect());
+          await within(
+            "creating source data",
+            sourceClient.query(
+              "CREATE TABLE replay_probe (value text NOT NULL)"
+            )
+          );
+          await within(
+            "inserting source data",
+            sourceClient.query(
+              "INSERT INTO replay_probe (value) VALUES ('frozen')"
+            )
+          );
+        } finally {
+          await sourceClient.end();
+        }
 
         await within(
           "creating frozen template",
@@ -552,23 +633,29 @@ describe("experience replay database template guards", () => {
         const cloneUrl = new URL(databaseUrl!);
         cloneUrl.pathname = `/${clone}`;
         const cloneClient = new pg.Client({
-          connectionString: cloneUrl.toString()
+          connectionString: cloneUrl.toString(),
+          application_name: "koed-eval-template-test-clone",
+          connectionTimeoutMillis: 5_000,
+          statement_timeout: 5_000,
+          query_timeout: 5_000
         });
-        await within("connecting clone client", cloneClient.connect());
-        await expect(
-          cloneClient.query<{ value: string }>("SELECT value FROM replay_probe")
-        ).resolves.toMatchObject({ rows: [{ value: "frozen" }] });
-        await within("closing clone client", cloneClient.end());
-      } finally {
         try {
-          await within("closing template manager", manager.close(), 15_000);
+          await within("connecting clone client", cloneClient.connect());
+          await expect(
+            cloneClient.query<{ value: string }>(
+              "SELECT value FROM replay_probe"
+            )
+          ).resolves.toMatchObject({ rows: [{ value: "frozen" }] });
         } finally {
-          await within(
-            "dropping caller-owned source database",
-            admin.query(`DROP DATABASE IF EXISTS "${source}"`)
-          );
-          await within("closing admin pool", admin.end());
+          await cloneClient.end();
         }
+      } finally {
+        await cleanupIntegrationDatabases({
+          admin,
+          manager,
+          source,
+          databaseNames
+        });
       }
     },
     45_000
