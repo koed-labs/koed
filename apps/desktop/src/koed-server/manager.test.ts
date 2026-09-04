@@ -361,13 +361,29 @@ describe("Koed server desktop manager", () => {
         )
     });
 
+    const listProjectsRequest = {
+      contractVersion: 7,
+      operation: "personal.projects.list",
+      input: {}
+    } as const;
     await expect(
-      manager.personalMemory({
-        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-        operation: "personal.projects.list",
-        input: {}
-      })
-    ).resolves.toMatchObject({ ok: true });
+      Promise.all([
+        manager.personalMemory(listProjectsRequest),
+        manager.personalMemory(listProjectsRequest)
+      ])
+    ).resolves.toEqual([
+      expect.objectContaining({ ok: true }),
+      expect.objectContaining({ ok: true })
+    ]);
+    const metadataPath = resolve(koedHome, "config/projects.json");
+    const firstMetadata = readFileSync(metadataPath, "utf8");
+
+    await expect(
+      manager.personalMemory(listProjectsRequest)
+    ).resolves.toMatchObject({
+      ok: true
+    });
+    expect(readFileSync(metadataPath, "utf8")).toBe(firstMetadata);
 
     await expect(
       manager.personalMemory({
