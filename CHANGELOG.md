@@ -1,5 +1,17 @@
 # Koed
 
+## 0.7.2
+
+### Patch Changes
+
+- 0f3e462: Remove duplicated native shared-library payloads from release archives.
+
+## 0.7.1
+
+### Patch Changes
+
+- c604e52: Print Linux native runtime artifact gate reports in release-job logs.
+
 ## 0.7.0
 
 ### Minor Changes

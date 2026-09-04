@@ -4,13 +4,19 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  lstatSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { llamaLauncher, pgvectorBuildArgs } from "./procure-runtime.mjs";
+import {
+  llamaLauncher,
+  pgvectorBuildArgs,
+  stageFlattenedRuntimeFiles
+} from "./procure-runtime.mjs";
 
 const executable = (path, body) => {
   mkdirSync(resolve(path, ".."), { recursive: true });
@@ -25,6 +31,44 @@ const fixture = () => {
   chmodSync(launcher, 0o755);
   return { root, launcher };
 };
+
+test("staging preserves shared-library aliases as relative symlinks", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-llama-staging-"));
+  try {
+    const source = resolve(root, "source");
+    const target = resolve(root, "target");
+    mkdirSync(source, { recursive: true });
+    mkdirSync(target, { recursive: true });
+    const library = resolve(source, "libllama.so.0.1.2");
+    writeFileSync(library, "native-library");
+    symlinkSync("libllama.so.0.1.2", resolve(source, "libllama.so.0"));
+    symlinkSync("libllama.so.0", resolve(source, "libllama.so"));
+
+    stageFlattenedRuntimeFiles(
+      [
+        resolve(source, "libllama.so"),
+        resolve(source, "libllama.so.0"),
+        library
+      ],
+      target
+    );
+
+    assert.equal(
+      lstatSync(resolve(target, "libllama.so")).isSymbolicLink(),
+      true
+    );
+    assert.equal(
+      lstatSync(resolve(target, "libllama.so.0")).isSymbolicLink(),
+      true
+    );
+    assert.equal(
+      lstatSync(resolve(target, "libllama.so.0.1.2")).isFile(),
+      true
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("pgvector builds do not target the cache runner CPU", () => {
   assert.deepEqual(pgvectorBuildArgs("/runtime/postgres/bin/pg_config"), [

@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -49,7 +50,7 @@ const fixture = () => {
   return root;
 };
 
-const tarHeader = (path, size, type = "0") => {
+const tarHeader = (path, size, type = "0", linkname = "") => {
   const header = Buffer.alloc(512);
   header.write(path, 0, 100, "utf8");
   const octal = (offset, length, value) =>
@@ -61,6 +62,7 @@ const tarHeader = (path, size, type = "0") => {
   octal(136, 12, 0);
   header.fill(0x20, 148, 156);
   header.write(type, 156, 1);
+  header.write(linkname, 157, 100, "utf8");
   header.write("ustar", 257, 6);
   let checksum = 0;
   for (const byte of header) checksum += byte;
@@ -116,6 +118,56 @@ test("detects triplicated pnpm-style native payloads deterministically", async (
       .length,
     3
   );
+});
+
+test("permits in-package relative symlinks and rejects unsafe targets", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-artifact-symlink-"));
+  roots.push(root);
+  writeFileSync(resolve(root, "library.so.1"), "native-library");
+  symlinkSync("library.so.1", resolve(root, "library.so"));
+
+  const safe = await inspectTree({
+    path: root,
+    platform: "linux",
+    architecture: "x64"
+  });
+  assert.deepEqual(safe.findings.unsafeSymlinks, []);
+  assert.equal(evaluateArtifactPolicy(safe, permissivePolicy).ok, true);
+
+  symlinkSync("../../outside", resolve(root, "unsafe.so"));
+  const unsafe = await inspectTree({
+    path: root,
+    platform: "linux",
+    architecture: "x64"
+  });
+  assert.deepEqual(unsafe.findings.unsafeSymlinks, ["unsafe.so"]);
+  assert.match(
+    evaluateArtifactPolicy(unsafe, permissivePolicy).errors.join("\n"),
+    /unsafeSymlinks/
+  );
+});
+
+test("archive inspection resolves relative symlink targets", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-artifact-symlink-archive-"));
+  roots.push(root);
+  const archive = resolve(root, "fixture.tar.gz");
+  const payload = Buffer.from("native-library");
+  const tar = Buffer.concat([
+    tarHeader("fixture/", 0, "5"),
+    tarHeader("fixture/library.so.1", payload.length),
+    pad(payload),
+    tarHeader("fixture/library.so", 0, "2", "library.so.1"),
+    Buffer.alloc(1024)
+  ]);
+  writeFileSync(archive, gzipSync(tar, { mtime: 0 }));
+
+  const report = await inspectArchive({
+    path: archive,
+    platform: "linux",
+    architecture: "x64"
+  });
+  assert.deepEqual(report.findings.unsafeSymlinks, []);
+  assert.equal(evaluateArtifactPolicy(report, permissivePolicy).ok, true);
 });
 
 test("uses the checked-in policy and immutable baseline", async () => {

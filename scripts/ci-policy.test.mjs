@@ -101,7 +101,22 @@ test("release artifact size reports have unique target-specific asset names", ()
     release,
     /koed-native-runtime-linux-x64-artifact-size-report\.json/
   );
+  assert.match(
+    release,
+    /koed-native-runtime-linux-x64-artifact-size-report\.json" \\\n\s+\| tee -a "\$\{GITHUB_STEP_SUMMARY\}"/
+  );
   assert.doesNotMatch(release, /\$\{release_dir\}\/artifact-size-report\.json/);
+});
+
+test("release publication checks out validation scripts", () => {
+  const release = readFileSync(
+    resolve(".github/workflows/release.yml"),
+    "utf8"
+  );
+  assert.match(
+    release,
+    /publish-release:[\s\S]*?- name: Checkout\n\s+uses: actions\/checkout@[\da-f]+[\s\S]*?Validate published metadata URLs against draft assets/
+  );
 });
 
 test("trusted CUDA validation runs exact packages only on the protected GPU runner", () => {
