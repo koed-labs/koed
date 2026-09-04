@@ -37,6 +37,39 @@ const referencedAssets = (metadata) =>
     ].filter(Boolean)
   );
 
+const canonicalPublishedUrl = ({ draftUrl, tag, name }) => {
+  let url;
+  try {
+    url = new URL(draftUrl);
+  } catch {
+    return undefined;
+  }
+  const segments = url.pathname.split("/");
+  const releasesIndex = segments.findIndex(
+    (segment, index) =>
+      segment === "releases" && segments[index + 1] === "download"
+  );
+  const releaseSegmentIndex = releasesIndex + 2;
+  const assetSegmentIndex = releasesIndex + 3;
+  if (
+    releasesIndex < 2 ||
+    assetSegmentIndex !== segments.length - 1 ||
+    decodeURIComponent(segments[assetSegmentIndex]) !== name
+  ) {
+    return undefined;
+  }
+  const releaseSegment = decodeURIComponent(segments[releaseSegmentIndex]);
+  // GitHub uses a temporary untagged-* target until a draft is published.
+  if (releaseSegment !== tag && !/^untagged-[0-9a-f]+$/.test(releaseSegment)) {
+    return undefined;
+  }
+  segments[releaseSegmentIndex] = encodeURIComponent(tag);
+  url.pathname = segments.join("/");
+  url.search = "";
+  url.hash = "";
+  return url.href;
+};
+
 export const validatePublishedReleaseAssets = ({ metadata, release }) => {
   validateReleaseArtifactMetadata(metadata, {
     version: metadata.release?.version,
@@ -67,7 +100,13 @@ export const validatePublishedReleaseAssets = ({ metadata, release }) => {
     ) {
       throw new Error(`Published asset is incomplete: ${reference.name}`);
     }
-    if (asset.browser_download_url !== reference.url) {
+    if (
+      canonicalPublishedUrl({
+        draftUrl: asset.browser_download_url,
+        tag: metadata.release.tag,
+        name: reference.name
+      }) !== reference.url
+    ) {
       throw new Error(`Published asset URL mismatch: ${reference.name}`);
     }
     verified.push({

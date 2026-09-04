@@ -4,6 +4,8 @@ import { validatePublishedReleaseAssets } from "./validate-published-release-ass
 
 const url = (name) =>
   `https://github.com/koed/koed/releases/download/v1.0.0/${name}`;
+const draftUrl = (name) =>
+  `https://github.com/koed/koed/releases/download/untagged-7161980e343013b6be41/${name}`;
 const metadata = () => ({
   schemaVersion: 1,
   release: { version: "1.0.0", tag: "v1.0.0" },
@@ -46,17 +48,29 @@ const release = () => ({
     name,
     state: "uploaded",
     size: 10,
-    browser_download_url: url(name)
+    browser_download_url: draftUrl(name)
   }))
 });
 
-test("binds every metadata URL to a complete draft asset", () => {
+test("binds canonical metadata URLs to complete temporary draft assets", () => {
   const result = validatePublishedReleaseAssets({
     metadata: metadata(),
     release: release()
   });
   assert.equal(result.ok, true);
   assert.equal(result.verified.length, 4);
+});
+
+test("accepts canonical asset URLs returned without a temporary draft target", () => {
+  const canonicalRelease = release();
+  for (const asset of canonicalRelease.assets) {
+    asset.browser_download_url = url(asset.name);
+  }
+  const result = validatePublishedReleaseAssets({
+    metadata: metadata(),
+    release: canonicalRelease
+  });
+  assert.equal(result.ok, true);
 });
 
 test("rejects missing, incomplete, and mismatched published assets", () => {
@@ -89,6 +103,19 @@ test("rejects missing, incomplete, and mismatched published assets", () => {
       validatePublishedReleaseAssets({
         metadata: metadata(),
         release: mismatched
+      }),
+    /URL mismatch/
+  );
+
+  const wrongRelease = release();
+  wrongRelease.assets[0].browser_download_url = url(
+    wrongRelease.assets[0].name
+  ).replace("/v1.0.0/", "/v0.9.0/");
+  assert.throws(
+    () =>
+      validatePublishedReleaseAssets({
+        metadata: metadata(),
+        release: wrongRelease
       }),
     /URL mismatch/
   );
