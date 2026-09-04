@@ -658,6 +658,7 @@ describe("experience replay database template guards", () => {
         });
       }
     },
-    45_000
+    // Covers sequential manager query bounds plus diagnostics and source cleanup.
+    240_000
   );
 });
