@@ -1,5 +1,11 @@
 # @koed/koed
 
+## 0.7.3
+
+### Patch Changes
+
+- d63f2b0: Restore release publication metadata validation.
+
 ## 0.7.2
 
 ### Patch Changes
