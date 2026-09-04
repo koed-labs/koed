@@ -1,5 +1,11 @@
 # Koed
 
+## 0.7.4
+
+### Patch Changes
+
+- 3c92fa5: Reconcile displayed Personal Memory Projects with local metadata so repository presentation is available on fresh installs.
+
 ## 0.7.3
 
 ### Patch Changes
