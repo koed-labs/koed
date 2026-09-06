@@ -72,6 +72,52 @@ export type DesktopConversationTimelineItem =
       events: DesktopConversationEvent[];
     };
 
+export type StableConversationTimelineItemsState = {
+  byId: ReadonlyMap<string, DesktopConversationTimelineItem>;
+  result: DesktopConversationTimelineItem[];
+};
+
+const timelineItemContentMatches = (
+  previous: DesktopConversationTimelineItem,
+  next: DesktopConversationTimelineItem
+): boolean => {
+  if (previous.kind !== next.kind || previous.timestamp !== next.timestamp) {
+    return false;
+  }
+  if (previous.kind === "event" && next.kind === "event") {
+    return previous.event === next.event;
+  }
+  if (previous.kind === "tool-group" && next.kind === "tool-group") {
+    return (
+      previous.events.length === next.events.length &&
+      previous.events.every((event, index) => event === next.events[index])
+    );
+  }
+  return false;
+};
+
+export function stabilizeConversationTimelineItems(
+  items: DesktopConversationTimelineItem[],
+  previous: StableConversationTimelineItemsState
+): StableConversationTimelineItemsState {
+  const byId = new Map<string, DesktopConversationTimelineItem>();
+  const result = items.map((item) => {
+    const prior = previous.byId.get(item.id);
+    const stable =
+      prior && timelineItemContentMatches(prior, item) ? prior : item;
+    byId.set(stable.id, stable);
+    return stable;
+  });
+  return {
+    byId,
+    result:
+      result.length === previous.result.length &&
+      result.every((item, index) => item === previous.result[index])
+        ? previous.result
+        : result
+  };
+}
+
 export function conversationEventText(event: DesktopConversationEvent): string {
   return (event.content ?? event.contentPreview ?? "").trim();
 }

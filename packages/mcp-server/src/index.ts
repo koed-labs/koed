@@ -26,11 +26,19 @@ export type {
   AiClientCapabilityPublisherHandle
 } from "./ai-client-capability-publisher.js";
 export {
+  aiClientPermissionModeMapping,
+  requireSupportedAiClientPermissionMode,
+  type AiClientNativePermissionConfiguration,
+  type AiClientPermissionMode,
+  type AiClientPermissionModeMapping
+} from "./ai-client-permission-mode.js";
+export {
   aiClientDriverFor,
   aiClientDriverRegistry,
   aiClientTaskDriverFor,
   checkClaudeCodeAvailability,
   checkPiAvailability,
+  claudeAgentSdkTokenUsage,
   listClaudeAgentSdkModels,
   listPiModels,
   resolveClaudeSdkExecutablePath,
@@ -42,9 +50,8 @@ export {
 } from "./ai-client-runner.js";
 export {
   checkCodexAppServerAvailability,
-  destroyManagedCodexHome,
-  prepareManagedCodexHome,
-  reuseManagedCodexHome,
+  inspectCodexAppServer,
+  resolveCodexHome,
   runCodexAppServerJsonTask
 } from "./codex-app-server-runner.js";
 export { assertCodexConversationProtocolCompatibility } from "./codex-app-server-protocol-compatibility.js";
@@ -61,7 +68,8 @@ export {
 export type {
   CodexAppServerJsonTaskConfig,
   CodexAppServerProcessMetrics,
-  CodexAppServerRunResult
+  CodexAppServerRunResult,
+  CodexThreadTokenUsage
 } from "./codex-app-server-runner.js";
 export {
   CodexManagedConversationIdentityError,
@@ -98,10 +106,17 @@ export {
 export {
   discoverPiTranscriptSignals,
   piSessionRoots,
+  piSessionIdentity,
   processPiTranscriptSignal,
   startPiTranscriptWatcher
 } from "./pi-transcript-watcher.js";
 export { parsePiSessionJournalBytes } from "./pi-session-parser.js";
+export { completeTranscriptBoundary } from "./codex-transcript-journal.js";
+export { PiManagedConversationSession } from "./pi-managed-conversation.js";
+export type {
+  PiManagedConversationConfig,
+  PiManagedConversationIdentity
+} from "./pi-managed-conversation.js";
 export {
   importPiHistoricalSource,
   importSelectedPiHistory,
@@ -757,6 +772,18 @@ export class MemoryApiClient {
     input: Record<string, unknown> = {}
   ): Promise<Record<string, unknown>> {
     return this.request("POST", "/v1/memory/conversation-items/project", input);
+  }
+
+  async releaseManagedJournalProjection(input: {
+    sessionId: string;
+    artifactId: string;
+    sourceOffset: number;
+  }): Promise<{ conversationItemIds: string[] }> {
+    return this.request(
+      "POST",
+      "/v1/memory/conversation-items/release-journal",
+      input
+    );
   }
 
   async releaseConversationProjectionHold(input: {

@@ -592,8 +592,18 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `API_GRAPH_CACHE_TTL_SECONDS`: graph overview/thread cache TTL when Redis caching is enabled.
 - `API_GRAPH_UPDATE_DEBOUNCE_MS`: debounce window for coalescing graph stream update events.
 - `API_MEMORY_EVENT_GRAPH_UPDATE_DEBOUNCE_MS`: shorter debounce window for captured event stream updates that drive the open history thread.
+- `API_MANAGED_TERMINAL_DETACHED_TTL_MS`: maximum time an unattached managed terminal remains alive before its owning runner stops the process group. Default `1800000` (30 minutes).
 - `API_COLLABORATION_REALTIME_STREAM_MAX_CLIENTS`: maximum concurrent collaboration realtime clients for one API process. The default is 1000.
 - `API_COLLABORATION_REALTIME_STREAM_MAX_CLIENTS_PER_PRINCIPAL`: maximum concurrent collaboration realtime clients for one authenticated principal on one API process. The default is 6.
+- `API_COLLABORATION_REALTIME_WEBTRANSPORT_ENABLED`: enables the optional sibling UDP/TLS HTTP/3 and WebTransport listener. Default `false`. Enabling it is an explicit deployment choice and fails startup when its endpoint, TLS material, provider, or socket is unavailable.
+- `API_COLLABORATION_REALTIME_WEBTRANSPORT_ENDPOINT`: canonical public `https://` WebTransport endpoint, including its path and non-default port where applicable.
+- `API_COLLABORATION_REALTIME_WEBTRANSPORT_LISTEN_HOST`: UDP bind host. Default `0.0.0.0`.
+- `API_COLLABORATION_REALTIME_WEBTRANSPORT_LISTEN_PORT`: UDP bind port. Default `3443`; the public endpoint may differ when an HTTP/3-capable edge forwards it.
+- `API_COLLABORATION_REALTIME_WEBTRANSPORT_TLS_CERTIFICATE_PATH`: readable PEM certificate chain for the HTTP/3 listener.
+- `API_COLLABORATION_REALTIME_WEBTRANSPORT_TLS_KEY_PATH`: readable PEM private key for the HTTP/3 listener. Keep it outside the repository with operator-managed file permissions.
+- `API_COLLABORATION_REALTIME_WEBTRANSPORT_MAX_SESSIONS`: maximum pending plus admitted WebTransport sessions for one API process. Default `200`.
+- `API_COLLABORATION_REALTIME_WEBTRANSPORT_MAX_STREAMS_PER_SESSION`: maximum concurrent application streams in one admitted session. Default `16`.
+- `API_COLLABORATION_REALTIME_WEBTRANSPORT_MAX_DATAGRAM_BYTES`: disposable datagram byte limit, capped at `1200`. Datagrams remain disabled at the domain layer until a resource-authorized handler is registered.
 - `API_COLLABORATION_REALTIME_CURSOR_SECRET`: signs and encrypts Personal and
   Team durable realtime cursors. It remains required when Team collaboration is
   disabled because Personal realtime remains available.
@@ -992,6 +1002,15 @@ These values are copied into the AI Client configuration and are not consumed au
 - `KOED_CLAUDE_CODE_EXECUTABLE`: optional absolute path to a separately installed Claude Code executable. When unset or blank, Koed searches `PATH` and, on macOS, `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin`. Koed validates the local installation; it never accepts an Anthropic API key or bundles Claude Code.
 - `KOED_PI_EXECUTABLE`: optional absolute path to separately installed Pi `0.84.2+`. When unset or blank, Koed searches `PATH` and, on macOS, `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin`. Koed canonicalizes and validates the installation, resolves Windows npm shims to a verified Node entry point, and reuses Pi-managed authentication; it never accepts Pi provider credentials or bundles Pi.
 - `KOED_CLAUDE_CODE_DISCOVERY_CACHE`: optional absolute local path for the owner-only confirmed installation record. Default `KOED_HOME/state/claude-code-installation.json`.
+- `KOED_AI_CLIENT_INSTANCE_REGISTRY`: optional absolute path to the owner-only
+  local AI Client instance registry. Default
+  `KOED_HOME/config/ai-client-instances.json`. The version-1 JSON object has an
+  `instances` array whose entries contain exactly `instanceId`, `driverId`,
+  `displayName`, `executablePath`, and optional `configHome`. Paths must resolve
+  to an executable file and directory respectively. This build accepts only
+  `codex` and `claude` drivers. The file stays in the Local AI Runtime boundary;
+  executable paths, configuration homes, and account details are never exposed
+  through browser-visible instance descriptors.
 - `KOED_MANAGED_CONVERSATION_CLAUDE_MODEL`: model used for Koed-managed Claude Conversations. Default `claude-haiku-4-5-20251001`.
 - `MEMORY_ANSWER_PROVIDER`: AI Client provider for MCP Memory Answer synthesis. Supported values are `codex`, `claude`, and `pi`; default `codex`. Pi requires full provider/model ID.
 - `MEMORY_ANSWER_AI_CLIENT_INSTANCE`: selected local AI Client instance. Default `<provider>.default`.
@@ -1015,7 +1034,7 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_LCM_SUMMARY_CONCURRENCY`: maximum concurrent local LCM Summary workers.
 - `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: maximum prompt budget for selected local AI Client LCM Summary calls. Default `48000`.
 - `MEMORY_LCM_BACKGROUND_INITIAL_DELAY_MS`: delay before the Local AI Runtime first checks for pending work.
-- `MEMORY_LCM_BACKGROUND_PUSH_DELAY_MS`: delay used when the local service is nudged after capture.
+- `MEMORY_LCM_BACKGROUND_PUSH_DELAY_MS`: delay used when the local service is nudged after capture or continues after a full batch that may have unlocked parent rollups. Nudges received during an active run are retained.
 - `MEMORY_LCM_BACKGROUND_INTERVAL_MS`: periodic background check interval for pending summaries.
 - `MEMORY_LCM_BACKGROUND_BATCH_LIMIT`: maximum pending LCM summaries processed in one background batch.
 - `MEMORY_SESSION_TITLE_BACKGROUND_BATCH_LIMIT`: maximum pending captured-session titles processed in one local memory processing batch.
@@ -1052,13 +1071,18 @@ path.
 Capture Policy state `ask` currently blocks automatic capture. It is reserved
 for a future AI-client approval flow and is not an implemented backend prompt.
 
-Projection selection is configured through the DB-backed
-`projection_policy_rules` table, not `.env`. These rows define which Codex
-transcript item types are projected into Desktop, semantic Memory
-Events, embeddings, and LCM sources. The seeded defaults keep UI projection and
-embedding selection matched for every transcript type in the current build, but
-the fields are independent so future policy rows can support display-only or
-recall-only transcript types without a schema change.
+Semantic Projection selection is configured through the DB-backed
+`projection_policy_rules` table, not `.env`. These rows define which transcript
+item types create Memory Events and may contribute to embeddings and LCM.
+
+Owned Conversation rendering is configured independently through
+`conversation_presentation_policy_rules`. Its positive allowlist chooses a
+bounded renderer and one of `expanded`, `collapsed`, `status`, or `hidden` for
+each supported source-adapter item type. Managed runtime approvals, structured
+input, and transient output are classified by the same table under
+`managed_runtime` / `managed-runtime-v1`. Unknown and unclassified sensitive
+types fail closed. Neither policy table changes whether complete source records
+are retained in the Conversation Source Journal.
 
 ## Historical Import Scheduling
 

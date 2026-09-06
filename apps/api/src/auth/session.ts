@@ -79,6 +79,10 @@ export interface AuthHelpers {
       | "capture_writes"
       | "sync"
       | "managed_execution"
+      | "managed_file_read"
+      | "managed_terminal"
+      | "managed_preview"
+      | "managed_source_control"
       | "admin",
     options?: { apiTokenError?: string }
   ): Promise<{
@@ -286,6 +290,10 @@ export const createAuthHelpers = (
       | "capture_writes"
       | "sync"
       | "managed_execution"
+      | "managed_file_read"
+      | "managed_terminal"
+      | "managed_preview"
+      | "managed_source_control"
       | "admin",
     options: { apiTokenError?: string } = {}
   ) => {

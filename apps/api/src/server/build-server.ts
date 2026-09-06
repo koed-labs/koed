@@ -1,6 +1,8 @@
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
+import websocket from "@fastify/websocket";
 import Fastify, { type FastifyRequest } from "fastify";
+import { readFile } from "node:fs/promises";
 import { Redis } from "ioredis";
 import { z } from "zod";
 import { type Visibility } from "@koed/core";
@@ -10,13 +12,16 @@ import {
   createEmbeddingCapacityRepository,
   createMemorySourceRepository,
   createPrivacyClassificationRepository,
+  createRealtimeTransportTicketRepository,
   createRetentionLifecycleRepository,
   databaseErrorCode,
   runDbMigrations,
+  type CollaborationRealtimeMaterializationRepository,
   type CollaborationRepository,
   type EmbeddingCapacityRepository,
   type MemorySourceRepository,
   type PrivacyClassificationRepository,
+  type RealtimeTransportTicketRepository,
   type RetentionLifecycleRepository
 } from "@koed/db";
 import {
@@ -122,6 +127,9 @@ import {
   registerConversationSourceRestoreRoutes
 } from "../source-replication/index.js";
 import {
+  createManagedDevelopmentPreviewRuntime,
+  createManagedTerminalRuntime,
+  createManagedTerminalWebTransportHandler,
   registerManagedConversationRoutes,
   registerManagedConversationRunnerRoutes
 } from "../managed-conversations/index.js";
@@ -130,6 +138,15 @@ import {
   createCollaborationRealtimeService,
   registerCollaborationRoutes
 } from "../collaboration/index.js";
+import {
+  createRealtimeTransportAdmissionService,
+  createWebTransportDurableEventAdapter,
+  registerRealtimeTransportRoutes,
+  startWebTransportGateway,
+  type RealtimeTransportAdapterDescriptor,
+  type RealtimeTransportAdmissionService,
+  type WebTransportGateway
+} from "../realtime-transport/index.js";
 import { registerHighRiskRoutes } from "../high-risk/index.js";
 import { registerSharedMemoryRoutes } from "../shared-memory/index.js";
 import { prepareSourceSyncRelationship } from "../cross-identity-sync/source-relationship-service.js";
@@ -164,6 +181,10 @@ import {
 import { registerOperationalRoutes } from "./operational-routes.js";
 import type { ApiRouteContext } from "./context.js";
 import { registerTeamCollaborationFeatureGate } from "./team-collaboration-feature.js";
+import {
+  createSourceControlRuntime,
+  registerSourceControlRoutes
+} from "../source-control/index.js";
 
 export {
   canReceiveGraphStreamPayload,
@@ -173,8 +194,12 @@ export {
 
 export interface BuildServerOptions {
   repository?: MemorySourceRepository;
-  collaborationRepository?: CollaborationRepository;
+  collaborationRepository?: CollaborationRepository &
+    CollaborationRealtimeMaterializationRepository;
   retentionRepository?: RetentionLifecycleRepository;
+  realtimeTransportTicketRepository?: RealtimeTransportTicketRepository;
+  /** Test/runtime adapter injection. Only instantiated adapters are advertised. */
+  realtimeTransportAdapters?: readonly RealtimeTransportAdapterDescriptor[];
   embeddingCapacityRepository?: EmbeddingCapacityRepository;
   historicalImportAdmission?: ApiRouteContext["historicalImport"]["admission"];
   privacyClassificationRepository?: PrivacyClassificationRepository;
@@ -210,6 +235,10 @@ export interface BuildServerOptions {
   pdsSecureKeyProvider?: PdsSecureKeyProvider | null;
   /** Test-only signer injection. Production derives generation keys from device proof. */
   conversationSourceSignerFactory?: ConversationSourceSignerFactory;
+  /** Test/deployment injection for runner-owned source-control credentials. */
+  sourceControlCredentialResolver?: (
+    reference: string
+  ) => Promise<string | null>;
 }
 
 const normalizeOrigin = (value: string): string => value.replace(/\/+$/, "");
@@ -300,6 +329,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           }
         },
     bodyLimit: config.requestBodyLimitBytes
+  });
+  await app.register(websocket, {
+    options: { maxPayload: 64 * 1024 }
   });
 
   const pool =
@@ -405,6 +437,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           }
         })
       : null);
+  const realtimeTransportTicketRepository =
+    options.realtimeTransportTicketRepository ??
+    (pool ? createRealtimeTransportTicketRepository(pool) : null);
   if (repository && !options.repository) {
     const legacyDeployment = await repository.getLocalSyncDeployment();
     reconcileDeviceIdentityDeployment({
@@ -461,10 +496,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     (cacheRedis ? new RedisCacheProvider(cacheRedis) : new NoopCacheProvider());
   let graphStreamService: { registerRoutes(): void; close(): void } | null =
     null;
-  let collaborationRealtimeService: {
-    registerRoutes(): void;
-    close(): void;
-  } | null = null;
+  let collaborationRealtimeService: Awaited<
+    ReturnType<typeof createCollaborationRealtimeService>
+  > | null = null;
   let collaborationRealtimeBroker: {
     registerRoutes(): void;
     close(): Promise<void>;
@@ -481,6 +515,15 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   let requestContinuousNoteAdvancementWork: (() => void) | null = null;
   let personalNoteMemoryRepairService: ReturnType<
     typeof createPersonalNoteMemoryRepairService
+  > | null = null;
+  let realtimeTransportAdmissionService: RealtimeTransportAdmissionService | null =
+    null;
+  let webTransportGateway: WebTransportGateway | null = null;
+  let managedTerminalRuntime: ReturnType<
+    typeof createManagedTerminalRuntime
+  > | null = null;
+  let managedPreviewRuntime: ReturnType<
+    typeof createManagedDevelopmentPreviewRuntime
   > | null = null;
   const relayCleanup = (
     repository as
@@ -613,7 +656,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const hashSecret = createHashSecret(config.apiTokenPepper);
   app.addHook("onClose", async () => {
     graphStreamService?.close();
-    collaborationRealtimeService?.close();
+    await webTransportGateway?.close();
+    managedPreviewRuntime?.close();
+    await managedTerminalRuntime?.close();
+    await collaborationRealtimeService?.close();
     await collaborationRealtimeBroker?.close();
     await teamConversationSourceService?.close();
     if (relayCleanupTimer) clearInterval(relayCleanupTimer);
@@ -1251,6 +1297,55 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       }
     });
   }
+  const inspectDeploymentIdentity =
+    options.inspectDeploymentIdentity ??
+    (() =>
+      inspectDeviceIdentityAtKoedHome({
+        koedHome: config.koedHome,
+        environment: process.env
+      }));
+  managedTerminalRuntime = createManagedTerminalRuntime({
+    requireRepository,
+    inspectIdentity: inspectDeploymentIdentity,
+    koedHome: config.koedHome,
+    detachedTtlMs: config.managedTerminal.detachedTtlMs,
+    onError: (error, code) =>
+      app.log.warn(
+        {
+          event: {
+            name: "managed_terminal.runtime_error",
+            category: "runtime"
+          },
+          terminal_error_code: code,
+          error_name: error instanceof Error ? error.name : "Error"
+        },
+        "Managed terminal runtime operation failed"
+      )
+  });
+  managedPreviewRuntime = createManagedDevelopmentPreviewRuntime({
+    requireRepository,
+    terminalRuntime: managedTerminalRuntime,
+    onError: (error, code) =>
+      app.log.warn(
+        {
+          event: {
+            name: "managed_preview.runtime_error",
+            category: "runtime"
+          },
+          preview_error_code: code,
+          error_name: error instanceof Error ? error.name : "Error"
+        },
+        "Managed preview runtime operation failed"
+      )
+  });
+  const sourceControlRuntime = createSourceControlRuntime({
+    koedHome: config.koedHome,
+    requireRepository,
+    fetch: localEdgeFetch,
+    ...(options.sourceControlCredentialResolver
+      ? { resolveCredential: options.sourceControlCredentialResolver }
+      : {})
+  });
   const routeContext = {
     config,
     requireRepository,
@@ -1304,19 +1399,18 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       rejectUnsupportedCapturePolicy
     },
     deploymentIdentity: {
-      inspect:
-        options.inspectDeploymentIdentity ??
-        (() =>
-          inspectDeviceIdentityAtKoedHome({
-            koedHome: config.koedHome,
-            environment: process.env
-          }))
+      inspect: inspectDeploymentIdentity
     },
     managedConversations: {
+      terminalRuntime: managedTerminalRuntime,
+      previewRuntime: managedPreviewRuntime,
       commandWakePool: pool
     },
     trustedServices: {
       fetch: trustedServiceFetch
+    },
+    sourceControl: {
+      runtime: sourceControlRuntime
     },
     localEdge: {
       upstreamBackendsPath: localEdgeUpstreamBackendsPath,
@@ -1352,6 +1446,21 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       wakePool: pool
     }
   };
+  if (realtimeTransportTicketRepository) {
+    const transportIdentity = routeContext.deploymentIdentity.inspect();
+    if (
+      transportIdentity.health === "healthy" &&
+      transportIdentity.deploymentId
+    ) {
+      realtimeTransportAdmissionService =
+        createRealtimeTransportAdmissionService({
+          repository: realtimeTransportTicketRepository,
+          hashSecret,
+          backendIdentity: transportIdentity.deploymentId,
+          adapters: options.realtimeTransportAdapters ?? []
+        });
+    }
+  }
   graphStreamService = await createGraphStreamService({
     app,
     auth: authHelpers,
@@ -1377,11 +1486,29 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       profile: config.deploymentProfile,
       protocolDeploymentId: identity.deploymentId
     });
+    const collaborationRealtimeMaterializationRepository = {
+      isEventAuthorized: collaborationRepository.isEventAuthorized,
+      getMessageForRealtime: collaborationRepository.getMessageForRealtime,
+      getReceiptStateForRealtime:
+        collaborationRepository.getReceiptStateForRealtime,
+      listMessageReceiptsForRealtime:
+        collaborationRepository.listMessageReceiptsForRealtime,
+      getPersonalMemoryForRealtime:
+        collaborationRepository.getPersonalMemoryForRealtime,
+      getManagedConversationExecution:
+        repository.getManagedConversationExecution,
+      getManagedConversationRuntimeBinding:
+        repository.getManagedConversationRuntimeBinding,
+      getLatestManagedConversationCommandForExecution:
+        repository.getLatestManagedConversationCommandForExecution,
+      getManagedConversationRuntimeItem:
+        repository.getManagedConversationRuntimeItem
+    };
     collaborationRealtimeService = await createCollaborationRealtimeService({
       app,
       auth: authHelpers,
       repository: collaborationRepository,
-      materializationRepository: repository,
+      materializationRepository: collaborationRealtimeMaterializationRepository,
       sharedMemoryRepository: repository,
       teamPresenceRepository: repository,
       pool,
@@ -1392,6 +1519,70 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       maxClientsPerPrincipal:
         config.collaborationRealtime.streamMaxClientsPerPrincipal
     });
+    const webTransport = config.collaborationRealtime.webTransport;
+    if (webTransport.enabled) {
+      if (!realtimeTransportAdmissionService) {
+        throw new Error(
+          "WebTransport requires realtime transport ticket persistence and a verified deployment identity"
+        );
+      }
+      if (
+        !webTransport.endpoint ||
+        !webTransport.tlsCertificatePath ||
+        !webTransport.tlsKeyPath
+      ) {
+        throw new Error(
+          "WebTransport requires endpoint, TLS certificate path, and TLS key path"
+        );
+      }
+      const durableAdapter = createWebTransportDurableEventAdapter({
+        endpoint: webTransport.endpoint,
+        admissionService: realtimeTransportAdmissionService,
+        prepareDurableStream: collaborationRealtimeService.prepareDurableStream
+      });
+      const [tlsCertificate, tlsKey] = await Promise.all([
+        readFile(webTransport.tlsCertificatePath),
+        readFile(webTransport.tlsKeyPath)
+      ]);
+      webTransportGateway = await startWebTransportGateway({
+        endpoint: webTransport.endpoint,
+        listenHost: webTransport.listenHost,
+        listenPort: webTransport.listenPort,
+        tlsCertificate,
+        tlsKey,
+        admissionService: realtimeTransportAdmissionService,
+        durableAdapter,
+        interactiveHandlers: new Map([
+          [
+            "managed_terminal",
+            createManagedTerminalWebTransportHandler(managedTerminalRuntime)
+          ]
+        ]),
+        maxSessions: webTransport.maxSessions,
+        maxStreamsPerSession: webTransport.maxStreamsPerSession,
+        maxDatagramBytes: webTransport.maxDatagramBytes,
+        onError: (error, context) =>
+          app.log.warn(
+            {
+              realtime_transport: "webtransport",
+              realtime_context: context,
+              error_name: error instanceof Error ? error.name : "Error"
+            },
+            "WebTransport runtime rejected traffic"
+          )
+      });
+      realtimeTransportAdmissionService.registerAdapter(
+        webTransportGateway.descriptor
+      );
+    }
+  }
+  if (
+    config.collaborationRealtime.webTransport.enabled &&
+    !webTransportGateway
+  ) {
+    throw new Error(
+      "WebTransport requires database-backed realtime admission, collaboration realtime, and a verified deployment identity"
+    );
   }
   if (
     pool &&
@@ -1517,6 +1708,19 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     compactionQueue,
     embeddingCapacityRepository,
     envelopeEncryptionProvider,
+    realtimeTransportOffers:
+      realtimeTransportAdmissionService?.adapters().map((adapter) => ({
+        id: adapter.transport,
+        availability: "available" as const,
+        protocolVersions: [...adapter.protocolVersions],
+        endpoint: adapter.endpoint,
+        authentication: "single_use_ticket" as const,
+        reliability: "reliable_ordered" as const,
+        direction: "bidirectional" as const
+      })) ?? [],
+    realtimeTransportMetrics: webTransportGateway
+      ? () => webTransportGateway!.inspect()
+      : undefined,
     alertFetch: options.fetch ?? globalThis.fetch.bind(globalThis),
     runCompactionInline,
     enqueueEmbedding
@@ -1537,6 +1741,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     readRateLimit: rateLimitHandlers.memoryRead,
     writeRateLimit: rateLimitHandlers.memoryWrite,
     admission: routeContext.collaboration.admission
+  });
+  registerRealtimeTransportRoutes(app, {
+    auth: authHelpers,
+    writeRateLimit: rateLimitHandlers.memoryWrite,
+    admissionService: realtimeTransportAdmissionService
   });
   registerHighRiskRoutes(app, {
     requireRepository,
@@ -1595,6 +1804,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerConversationSourceReplicationRoutes(app, routeContext);
   registerConversationSourceRestoreRoutes(app, routeContext);
   registerManagedConversationRoutes(app, routeContext);
+  registerSourceControlRoutes(app, routeContext);
   registerManagedConversationRunnerRoutes(app, routeContext);
   registerPersonalDeviceSyncRoutes(app, routeContext);
   registerPersonalDeviceSyncRelayRoutes(app, routeContext);

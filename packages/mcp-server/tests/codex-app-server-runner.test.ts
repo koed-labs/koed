@@ -7,6 +7,7 @@ import {
   CodexAppServerClient,
   CodexAppServerThreadSession,
   CodexAppServerTurnError,
+  inspectCodexAppServer,
   koedAppServerMinimalContextConfig,
   koedAiClientWorkerDeveloperInstructions,
   listCodexAppServerModels,
@@ -30,6 +31,7 @@ const writeFakeAppServer = (
       expectedCursor?: string | null;
       response: Record<string, unknown>;
     }>;
+    accountResponse?: Record<string, unknown>;
     turnStatus?: "completed" | "failed" | "interrupted" | "running";
     turnStatuses?: Array<"completed" | "failed" | "interrupted" | "running">;
     transientErrorBeforeCompletion?: boolean;
@@ -93,6 +95,12 @@ const lineReader = readline.createInterface({ input: process.stdin });
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 const malformedStdout = ${JSON.stringify(options.malformedStdout ?? "")};
 const modelPages = ${JSON.stringify(options.modelPages ?? [])};
+const accountResponse = ${JSON.stringify(
+      options.accountResponse ?? {
+        account: null,
+        requiresOpenaiAuth: true
+      }
+    )};
 const turnStatus = ${JSON.stringify(options.turnStatus ?? "completed")};
 const turnStatuses = ${JSON.stringify(options.turnStatuses ?? [])};
 const transientErrorBeforeCompletion = ${JSON.stringify(
@@ -138,6 +146,14 @@ lineReader.on("line", (line) => {
     send({ id: message.id, result: page.response });
     return;
   }
+  if (message.method === "account/read") {
+    if (message.params.refreshToken !== false) {
+      console.error("expected account/read without token refresh");
+      process.exit(52);
+    }
+    send({ id: message.id, result: accountResponse });
+    return;
+  }
   if (message.method === "thread/start") {
     const expectedConfig = ${JSON.stringify(koedAppServerMinimalContextConfig)};
     for (const [key, value] of Object.entries(expectedConfig)) {
@@ -181,6 +197,42 @@ lineReader.on("line", (line) => {
     { mode: 0o700 }
   );
   return options.nodeEntry ? modulePath : scriptPath;
+};
+
+const writeConfiguredHomeProbeAppServer = (
+  directory: string,
+  expectedHome: string
+): string => {
+  const modulePath = path.join(directory, "configured-home-probe.mjs");
+  const scriptPath = path.join(directory, "configured-home-probe");
+  fs.writeFileSync(
+    scriptPath,
+    `#!/bin/sh
+exec "${process.execPath}" "${modulePath}" "$@"
+`,
+    { mode: 0o700 }
+  );
+  fs.writeFileSync(
+    modulePath,
+    `
+import readline from "node:readline";
+
+if (process.env.CODEX_HOME !== ${JSON.stringify(expectedHome)}) process.exit(44);
+const reader = readline.createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+reader.on("line", (line) => {
+  if (!line.trim()) return;
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ id: message.id, result: { userAgent: "fake", codexHome: process.env.CODEX_HOME, platformFamily: "unix", platformOs: "linux" } });
+  } else if (message.method === "model/list") {
+    send({ id: message.id, result: { data: [{ id: "gpt-test", model: "gpt-test", hidden: false, isDefault: true, supportedReasoningEfforts: [] }] } });
+  }
+});
+`,
+    { mode: 0o600 }
+  );
+  return scriptPath;
 };
 
 describe("Codex app-server runner", () => {
@@ -342,6 +394,69 @@ describe("Codex app-server runner", () => {
     }
   });
 
+  it("inspects models and authentication without exposing account details", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-app-server-inspection-test-")
+    );
+    const realCodexHome = path.join(tempDirectory, "real-codex-home");
+    fs.mkdirSync(realCodexHome, { mode: 0o700 });
+
+    try {
+      const inspection = await inspectCodexAppServer(
+        {
+          appServerBinary: writeFakeAppServer(tempDirectory, {
+            modelPages: [
+              {
+                expectedCursor: null,
+                response: {
+                  data: [
+                    {
+                      id: "model-a",
+                      model: "gpt-5.4-mini",
+                      displayName: "GPT-5.4 mini",
+                      hidden: false,
+                      isDefault: true,
+                      supportedReasoningEfforts: []
+                    }
+                  ]
+                }
+              }
+            ],
+            accountResponse: {
+              account: {
+                type: "chatgpt",
+                email: "private@example.com"
+              },
+              requiresOpenaiAuth: true
+            }
+          }),
+          model: "gpt-5.4-mini",
+          cwd: tempDirectory,
+          env: {
+            ...process.env,
+            CODEX_HOME: realCodexHome,
+            FAKE_REAL_CODEX_HOME: realCodexHome
+          }
+        },
+        3000
+      );
+
+      expect(inspection).toEqual({
+        models: [
+          expect.objectContaining({
+            id: "model-a",
+            label: "gpt-5.4-mini",
+            isDefault: true
+          })
+        ],
+        authenticationState: "authenticated"
+      });
+      expect(JSON.stringify(inspection)).not.toContain("private@example.com");
+    } finally {
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("requires the configured model to be exposed by Codex app-server", async () => {
     const tempDirectory = fs.mkdtempSync(
       path.join(os.tmpdir(), "koed-app-server-availability-test-")
@@ -420,69 +535,124 @@ describe("Codex app-server runner", () => {
     }
   });
 
-  it("runs a turn through app-server stdio without using codex exec", async () => {
+  it("can probe the selected configured Codex home", async () => {
     const tempDirectory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "koed-app-server-runner-test-")
+      path.join(os.tmpdir(), "koed-app-server-configured-home-test-")
     );
-    const realCodexHome = path.join(tempDirectory, "real-codex-home");
-    fs.mkdirSync(realCodexHome, { mode: 0o700 });
-    fs.writeFileSync(
-      path.join(realCodexHome, "auth.json"),
-      JSON.stringify({ OPENAI_API_KEY: "fake" }),
-      { mode: 0o600 }
-    );
+    const codexHome = path.join(tempDirectory, "real-codex-home");
+    fs.mkdirSync(codexHome, { mode: 0o700 });
 
     try {
-      const result = await runCodexAppServerTurn(
-        "Prompt text",
-        {
-          appServerBinary: writeFakeAppServer(tempDirectory),
-          model: "gpt-5.4-mini",
-          reasoningEffort: "low",
-          cwd: tempDirectory,
-          env: {
-            ...process.env,
-            CODEX_HOME: realCodexHome,
-            FAKE_REAL_CODEX_HOME: realCodexHome
+      await expect(
+        checkCodexAppServerAvailability(
+          {
+            appServerBinary: writeConfiguredHomeProbeAppServer(
+              tempDirectory,
+              codexHome
+            ),
+            model: "gpt-test",
+            cwd: tempDirectory,
+            env: { ...process.env, CODEX_HOME: codexHome },
+            homeMode: "configured"
           },
-          clientName: "koed-test",
-          baseInstructions: "Return the answer.",
-          developerInstructions: "",
-          captureProcessMetrics: true
-        },
-        3000
-      );
-
-      expect(result).toMatchObject({
-        text: "app-server answer turn-test",
-        model: "codex-app-server:gpt-5.4-mini:low",
-        threadId: "thread-test",
-        turnId: "turn-test"
-      });
-      expect(result.tokenUsage?.last?.cachedInputTokens).toBe(1);
-      expect(result.rawEvents?.map((event) => event.method)).toEqual(
-        expect.arrayContaining([
-          "thread/start",
-          "turn/start",
-          "item/agentMessage/delta",
-          "thread/tokenUsage/updated",
-          "turn/completed"
-        ])
-      );
-      expect(result.rawEvents).toHaveLength(5);
-      expect(typeof result.processMetrics?.pid).toBe("number");
-      expect(typeof result.processMetrics?.peakRssBytes).toBe("number");
-      expect(typeof result.processMetrics?.sampleCount).toBe("number");
-      expect(result.processMetrics?.samplingIntervalMs).toBe(50);
-      expect([
-        "proc_status_tree",
-        "ps_rss",
-        "powershell_working_set"
-      ]).toContain(result.processMetrics?.measurement);
+          3000
+        )
+      ).resolves.toEqual({ available: true });
     } finally {
       fs.rmSync(tempDirectory, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    ["on-request", "workspace-write", "user", "workspaceWrite"],
+    ["on-request", "workspace-write", "auto_review", "workspaceWrite"],
+    ["untrusted", "read-only", "user", "readOnly"],
+    ["never", "danger-full-access", "user", "dangerFullAccess"]
+  ] as const)(
+    "runs a turn with %s/%s/%s native settings",
+    async (approvalPolicy, sandboxMode, approvalsReviewer, sandboxType) => {
+      const tempDirectory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-app-server-runner-test-")
+      );
+      const realCodexHome = path.join(tempDirectory, "real-codex-home");
+      fs.mkdirSync(realCodexHome, { mode: 0o700 });
+      fs.writeFileSync(
+        path.join(realCodexHome, "auth.json"),
+        JSON.stringify({ OPENAI_API_KEY: "fake" }),
+        { mode: 0o600 }
+      );
+
+      try {
+        const result = await runCodexAppServerTurn(
+          "Prompt text",
+          {
+            appServerBinary: writeFakeAppServer(tempDirectory),
+            model: "gpt-5.4-mini",
+            reasoningEffort: "low",
+            cwd: tempDirectory,
+            env: {
+              ...process.env,
+              CODEX_HOME: realCodexHome,
+              FAKE_REAL_CODEX_HOME: realCodexHome
+            },
+            clientName: "koed-test",
+            baseInstructions: "Return the answer.",
+            developerInstructions: "",
+            approvalPolicy,
+            sandboxMode,
+            approvalsReviewer,
+            captureProcessMetrics: true
+          },
+          3000
+        );
+
+        expect(result).toMatchObject({
+          text: "app-server answer turn-test",
+          model: "codex-app-server:gpt-5.4-mini:low",
+          threadId: "thread-test",
+          turnId: "turn-test"
+        });
+        expect(result.tokenUsage?.last?.cachedInputTokens).toBe(1);
+        expect(result.rawEvents?.map((event) => event.method)).toEqual(
+          expect.arrayContaining([
+            "thread/start",
+            "turn/start",
+            "item/agentMessage/delta",
+            "thread/tokenUsage/updated",
+            "turn/completed"
+          ])
+        );
+        expect(result.rawEvents).toHaveLength(5);
+        const threadStart = result.rawEvents?.find(
+          (event) => event.method === "thread/start"
+        )?.params as Record<string, unknown> | undefined;
+        const turnStart = result.rawEvents?.find(
+          (event) => event.method === "turn/start"
+        )?.params as Record<string, unknown> | undefined;
+        expect(threadStart).toMatchObject({
+          approvalPolicy,
+          sandbox: sandboxMode,
+          approvalsReviewer
+        });
+        expect(turnStart).toMatchObject({
+          approvalPolicy,
+          approvalsReviewer,
+          sandboxPolicy: { type: sandboxType }
+        });
+        expect(typeof result.processMetrics?.pid).toBe("number");
+        expect(typeof result.processMetrics?.peakRssBytes).toBe("number");
+        expect(typeof result.processMetrics?.sampleCount).toBe("number");
+        expect(result.processMetrics?.samplingIntervalMs).toBe(50);
+        expect([
+          "proc_status_tree",
+          "ps_rss",
+          "powershell_working_set"
+        ]).toContain(result.processMetrics?.measurement);
+      } finally {
+        fs.rmSync(tempDirectory, { recursive: true, force: true });
+      }
+    }
+  );
 
   it("retains child-thread events for managed durable ingestion", async () => {
     const tempDirectory = fs.mkdtempSync(
@@ -508,7 +678,8 @@ describe("Codex app-server runner", () => {
       ].join("\n"),
       { mode: 0o600 }
     );
-    const durableEvents: string[] = [];
+    const durableEvents: Array<{ method: string; threadId: string }> = [];
+    const transientEvents: string[] = [];
     const appServerBinary = writeFakeAppServer(tempDirectory, {
       childCompletedNotifications: 4
     });
@@ -532,13 +703,19 @@ describe("Codex app-server runner", () => {
       config.env,
       (event) => {
         const params = event.params as Record<string, unknown> | undefined;
-        durableEvents.push(String(params?.threadId ?? "none"));
+        durableEvents.push({
+          method: event.method,
+          threadId: String(params?.threadId ?? "none")
+        });
       },
       {
         maxTurnBytes: 128,
         maxTurnStates: 2,
         maxPendingRawEvents: 16,
-        maxPendingRawEventBytes: 4_096
+        maxPendingRawEventBytes: 4_096,
+        transientEventHandler: (event) => {
+          transientEvents.push(event.method);
+        }
       }
     );
 
@@ -552,7 +729,13 @@ describe("Codex app-server runner", () => {
       expect(result.text).toBe("app-server answer turn-test");
       expect(client.terminalFailure()).toBeNull();
       expect(client.turnStateCount()).toBe(0);
-      expect(durableEvents).toContain("child-thread");
+      expect(durableEvents.map((event) => event.threadId)).toContain(
+        "child-thread"
+      );
+      expect(durableEvents.map((event) => event.method)).not.toContain(
+        "item/agentMessage/delta"
+      );
+      expect(transientEvents).toContain("item/agentMessage/delta");
       expect(
         client
           .getRawEvents()

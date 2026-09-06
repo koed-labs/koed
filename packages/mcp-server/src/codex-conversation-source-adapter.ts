@@ -39,6 +39,15 @@ const record = (value: unknown): RecordValue => (isRecord(value) ? value : {});
 const string = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim() ? value : undefined;
 
+export const koedClientUserMessageId = (value: unknown): string | undefined => {
+  const candidate = string(value);
+  if (!candidate) return undefined;
+  const prefix = "koed-user-message:";
+  return candidate.startsWith(prefix)
+    ? string(candidate.slice(prefix.length))
+    : candidate;
+};
+
 const finiteNumber = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
@@ -561,15 +570,16 @@ export const adaptCodexAppServerConversationEvent = (
         reason: `projectable ${itemType} lifecycle event has no provider item.id`
       });
     }
-    const clientUserMessageId =
+    const rawClientUserMessageId =
       itemType === "userMessage"
         ? (string(item.clientId) ??
           (externalTurnId
             ? context.clientUserMessageIds?.get(externalTurnId)
             : undefined))
         : undefined;
+    const clientUserMessageId = koedClientUserMessageId(rawClientUserMessageId);
     const stableItemId =
-      itemType === "userMessage" ? clientUserMessageId : itemId;
+      itemType === "userMessage" ? rawClientUserMessageId : itemId;
     if (!stableItemId) {
       return unresolvedBatch({
         event,

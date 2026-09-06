@@ -30,6 +30,8 @@ export type LocalEdgeOperationFamily =
   | "capture_writes"
   | "sync"
   | "managed_execution"
+  | "managed_file_read"
+  | "managed_terminal"
   | "admin";
 
 export type LocalEdgeRouteMode =
@@ -77,6 +79,8 @@ const operationRoutePolicyKey: Record<
   capture_writes: "captureWrites",
   sync: "sync",
   managed_execution: "managedExecution",
+  managed_file_read: "managedExecution",
+  managed_terminal: "managedExecution",
   admin: "admin"
 };
 
@@ -92,6 +96,8 @@ const defaultRouteMode: Record<LocalEdgeOperationFamily, LocalEdgeRouteMode> = {
   capture_writes: "queued_sync_handoff",
   sync: "queued_sync_handoff",
   managed_execution: "live_upstream_proxy",
+  managed_file_read: "live_upstream_proxy",
+  managed_terminal: "live_upstream_proxy",
   admin: "live_upstream_proxy"
 };
 
@@ -109,8 +115,8 @@ export const upstreamSupportsCollaborationRealtime = (
     backend.capabilities?.payload?.capabilities?.["memory.collaboration"]
       ?.availability;
   return (
-    backend.capabilities?.schemaVersion === 6 &&
-    backend.capabilities.payload?.capabilitySchemaVersion === 6 &&
+    backend.capabilities?.schemaVersion === 9 &&
+    backend.capabilities.payload?.capabilitySchemaVersion === 9 &&
     (availability === "available" || availability === "partial") &&
     backend.capabilities.payload?.protocols?.collaborationRealtime?.version ===
       COLLABORATION_CONTRACT_VERSION
@@ -394,11 +400,16 @@ export const assertUpstreamOperationPathAllowed = (
   if (operationFamily === "managed_execution") {
     if (
       pathname === "/v1/managed-conversation-runner/commands/claim" ||
+      pathname === "/v1/managed-conversation-runner/commands/claim-controls" ||
+      pathname === "/v1/managed-conversation-runner/runtime-items" ||
       pathname === "/v1/managed-conversation-runner/wake" ||
       pathname === "/v1/managed-conversations" ||
       pathname === "/v1/managed-conversations/target-devices" ||
       /^\/v1\/managed-conversations\/[^/]+$/.test(pathname) ||
-      /^\/v1\/managed-conversations\/[^/]+\/(?:prompts|handoffs|forks)$/.test(
+      /^\/v1\/managed-conversations\/[^/]+\/(?:prompts|handoffs|forks|runtime|interrupt|stop)$/.test(
+        pathname
+      ) ||
+      /^\/v1\/managed-conversations\/[^/]+\/runtime-items\/[^/]+\/respond$/.test(
         pathname
       ) ||
       /^\/v1\/managed-conversations\/[^/]+\/(?:handoffs|forks)\/active$/.test(
@@ -408,7 +419,13 @@ export const assertUpstreamOperationPathAllowed = (
       /^\/v1\/managed-conversation-runner\/commands\/[^/]+\/(?:lease|complete|fail)$/.test(
         pathname
       ) ||
-      /^\/v1\/managed-conversation-runner\/executions\/[^/]+\/(?:lease|release|state|runtime|runtime-binding-ready)$/.test(
+      /^\/v1\/managed-conversation-runner\/executions\/[^/]+\/(?:lease|release|state|runtime|runtime-binding-(?:ready|failed))$/.test(
+        pathname
+      ) ||
+      /^\/v1\/managed-conversation-runner\/runtime-items\/[^/]+(?:\/resolve)?$/.test(
+        pathname
+      ) ||
+      /^\/v1\/managed-conversation-runner\/executions\/[^/]+\/runtime-items\/cancel$/.test(
         pathname
       ) ||
       /^\/v1\/managed-conversation-runner\/handoffs\/[^/]+\/(?:prepare|attest|verify|commit|restore|restore-lease|complete)$/.test(
@@ -418,6 +435,38 @@ export const assertUpstreamOperationPathAllowed = (
         pathname
       ) ||
       /^\/v1\/managed-conversation-runner\/(?:handoffs|forks)\/active\/[^/]+$/.test(
+        pathname
+      )
+    ) {
+      return;
+    }
+    deny();
+  }
+
+  if (operationFamily === "managed_file_read") {
+    if (
+      /^\/v1\/managed-conversations\/[^/]+\/files(?:\/[^/]+)?$/.test(
+        pathname
+      ) ||
+      pathname === "/v1/managed-conversation-runner/commands/claim-files" ||
+      /^\/v1\/managed-conversation-runner\/commands\/[^/]+\/(?:file-complete|file-fail)$/.test(
+        pathname
+      )
+    ) {
+      return;
+    }
+    deny();
+  }
+
+  if (operationFamily === "managed_terminal") {
+    if (
+      /^\/v1\/managed-conversations\/[^/]+\/terminals(?:\/[^/]+)?$/.test(
+        pathname
+      ) ||
+      /^\/v1\/managed-conversations\/[^/]+\/terminals\/[^/]+\/(?:stop|context)$/.test(
+        pathname
+      ) ||
+      /^\/v1\/managed-conversations\/[^/]+\/terminals\/[^/]+\/attach$/.test(
         pathname
       )
     ) {

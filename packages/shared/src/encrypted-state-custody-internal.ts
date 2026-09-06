@@ -72,7 +72,11 @@ export interface EnrollmentCredentialCustodyResult {
 
 export const DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES = [
   "personal_collaboration_read",
-  "personal_collaboration_write"
+  "personal_collaboration_write",
+  "managed_file_read",
+  "managed_terminal",
+  "managed_preview",
+  "managed_source_control"
 ] as const;
 
 export type DesktopLocalCredentialOperationFamily =

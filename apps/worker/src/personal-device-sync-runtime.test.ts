@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import type { MemorySourceRepository } from "@koed/db";
-import type { PdsSessionManifest } from "@koed/shared";
+import type { PdsSessionManifest, PdsSessionPackage } from "@koed/shared";
 import {
   canonicalizePdsJson,
   pdsFinalizedTwoStageRecordHash,
@@ -8,12 +11,139 @@ import {
 } from "@koed/shared";
 import {
   createReloadablePdsWorkerRuntimeFromEnvironment,
+  deliverPdsPackageDirect,
   materializePdsSession,
   resolvePdsEmbeddingCapability,
   resolvePdsLifecycleAuthorizationPublicKey,
+  resolvePdsPeerEndpoint,
   resolvePdsProviderRuntimeSecret,
   validatePdsLifecycleStatementBinding
 } from "./personal-device-sync-runtime.js";
+
+describe("PDS direct package delivery", () => {
+  const pkg = {
+    header: {
+      transportId: Buffer.alloc(32, 1).toString("base64url")
+    }
+  } as PdsSessionPackage;
+
+  const client = (input: {
+    state?: "committed" | "acked";
+    transportId?: string;
+    receipt?: string | null;
+  }) => ({
+    upload: vi.fn().mockResolvedValue({
+      transportId: input.transportId ?? pkg.header.transportId,
+      deliveryState: input.state ?? "acked"
+    }),
+    waitForWake: vi.fn().mockResolvedValue(undefined),
+    peerReceipt: vi
+      .fn()
+      .mockResolvedValue(
+        input.receipt === undefined ? "signed-ack" : input.receipt
+      )
+  });
+
+  it("requires every selected peer to return a verified materialization receipt", async () => {
+    const ready = client({ state: "acked" });
+    const waiting = client({ state: "committed" });
+    const verifyReceipt = vi.fn();
+
+    await expect(
+      deliverPdsPackageDirect({
+        pkg,
+        clients: new Map([
+          ["device-a", ready],
+          ["device-b", waiting]
+        ]),
+        verifyReceipt,
+        receiptSignal: () => new AbortController().signal
+      })
+    ).resolves.toBe(true);
+
+    expect(ready.waitForWake).not.toHaveBeenCalled();
+    expect(waiting.waitForWake).toHaveBeenCalledWith(expect.any(AbortSignal), [
+      pkg.header.transportId
+    ]);
+    expect(verifyReceipt).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    {
+      label: "no complete route set",
+      clients: null,
+      verifyReceipt: vi.fn()
+    },
+    {
+      label: "wrong committed transport",
+      clients: new Map([
+        [
+          "device-a",
+          client({ transportId: Buffer.alloc(32, 2).toString("base64url") })
+        ]
+      ]),
+      verifyReceipt: vi.fn()
+    },
+    {
+      label: "missing recipient receipt",
+      clients: new Map([["device-a", client({ receipt: null })]]),
+      verifyReceipt: vi.fn()
+    },
+    {
+      label: "invalid recipient receipt",
+      clients: new Map([["device-a", client({})]]),
+      verifyReceipt: vi.fn(() => {
+        throw new Error("invalid receipt");
+      })
+    }
+  ])(
+    "falls back to the relay for $label",
+    async ({ clients, verifyReceipt }) => {
+      await expect(
+        deliverPdsPackageDirect({ pkg, clients, verifyReceipt })
+      ).resolves.toBe(false);
+    }
+  );
+});
+
+describe("PDS peer endpoint discovery", () => {
+  it("reads a strict Desktop-published endpoint record dynamically", () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-worker-peer-"));
+    try {
+      mkdirSync(resolve(koedHome, "run"), { recursive: true });
+      writeFileSync(
+        resolve(koedHome, "run", "pds-peer-endpoint.json"),
+        JSON.stringify({
+          version: 1,
+          endpointUrl: "http://192.168.1.20:3310/pds"
+        })
+      );
+      expect(resolvePdsPeerEndpoint({ KOED_HOME: koedHome })).toBe(
+        "http://192.168.1.20:3310/pds"
+      );
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for malformed records and public plaintext endpoints", () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-worker-peer-"));
+    try {
+      mkdirSync(resolve(koedHome, "run"), { recursive: true });
+      writeFileSync(
+        resolve(koedHome, "run", "pds-peer-endpoint.json"),
+        JSON.stringify({
+          version: 1,
+          endpointUrl: "http://public.example/pds",
+          injected: true
+        })
+      );
+      expect(resolvePdsPeerEndpoint({ KOED_HOME: koedHome })).toBeNull();
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("PDS semantic capability", () => {
   const model = resolveSupportedEmbeddingModelConfig("qwen3-0.6b");

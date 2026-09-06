@@ -11,6 +11,10 @@ import type {
 } from "./desktop-conversation.js";
 import type { DesktopThreadGroup } from "./project-memory-ui.js";
 
+const { recordMemoryEventFrameRender } = vi.hoisted(() => ({
+  recordMemoryEventFrameRender: vi.fn()
+}));
+
 vi.mock("@koed/memory-ui", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@koed/memory-ui")>();
   return {
@@ -27,14 +31,17 @@ vi.mock("@koed/memory-ui", async (importOriginal) => {
       className?: string;
       header: ReactNode;
       metadata?: ReactNode;
-    }) => (
-      <article className={className}>
-        <header>{header}</header>
-        {actions}
-        {children}
-        <footer>{metadata}</footer>
-      </article>
-    ),
+    }) => {
+      recordMemoryEventFrameRender(className);
+      return (
+        <article className={className}>
+          <header>{header}</header>
+          {actions}
+          {children}
+          <footer>{metadata}</footer>
+        </article>
+      );
+    },
     VirtualizedTimeline: ({
       events,
       hasOlderEvents,
@@ -175,6 +182,40 @@ describe("NativeConversationSurface", () => {
       container.querySelector(".native-conversation-loading-icon")
     ).not.toBeNull();
     expect(container.textContent).not.toContain("Loading Conversation");
+  });
+
+  it("does not rerender an unchanged visible row when live output advances", async () => {
+    const settled = event("settled", "Earlier answer");
+    const streaming = event("streaming", "First chunk");
+    const onInspectEvent = vi.fn();
+    const render = (events: DesktopConversationEvent[]) => (
+      <NativeConversationSurface
+        markdownAdapters={markdownAdapters}
+        model={{
+          error: "",
+          events,
+          hasOlderEvents: false,
+          status: "ready"
+        }}
+        onInspectEvent={onInspectEvent}
+        onLoadOlder={vi.fn()}
+        onRetry={vi.fn()}
+        thread={thread}
+      />
+    );
+
+    await act(async () => root.render(render([settled, streaming])));
+    recordMemoryEventFrameRender.mockClear();
+    await act(async () =>
+      root.render(
+        render([
+          settled,
+          { ...streaming, content: "First chunk and second chunk" }
+        ])
+      )
+    );
+
+    expect(recordMemoryEventFrameRender).toHaveBeenCalledTimes(1);
   });
 
   it("renders rich Markdown and copies fenced code through the Desktop adapter", async () => {
@@ -437,6 +478,33 @@ const ready = true;
     expect(document.activeElement).toBe(summary);
     await act(async () => summary?.click());
     expect(group?.open).toBe(true);
+  });
+
+  it("uses the server-selected collapsed reasoning presentation", async () => {
+    const reasoning = {
+      ...event("reasoning-1", "Compared the available implementation paths."),
+      presentation: {
+        mode: "collapsed",
+        renderer: "reasoning_summary",
+        policyKey: "reasoning_summary",
+        policyRevision: 3,
+        reason: "presentation-policy:reasoning_summary"
+      }
+    } satisfies DesktopConversationEvent;
+
+    await renderSurface(vi.fn().mockResolvedValue([reasoning]));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(
+        "Compared the available implementation paths."
+      )
+    );
+
+    const disclosure =
+      container.querySelector<HTMLDetailsElement>(".native-tool-event");
+    expect(disclosure?.open).toBe(false);
+    expect(disclosure?.querySelector("summary")?.textContent).toContain(
+      "Compared the available implementation paths."
+    );
   });
 
   it("renders source diffs, visible invalidation labels, and Inspector callbacks", async () => {

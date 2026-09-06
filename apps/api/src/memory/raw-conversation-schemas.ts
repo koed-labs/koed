@@ -778,3 +778,19 @@ export const conversationItemStableIdentityQuerySchema = z
 export const resetConversationProjectionSchema = z.object({
   sessionId: z.string().uuid()
 });
+
+export const resetConversationPresentationSchema = z.object({
+  sessionId: z.string().uuid()
+});
+
+export const releaseManagedJournalProjectionSchema = z
+  .object({
+    sessionId: z.string().uuid(),
+    artifactId: z.string().uuid(),
+    sourceOffset: z
+      .number()
+      .int()
+      .positive()
+      .max(64 * 1024 * 1024)
+  })
+  .strict();

@@ -1,13 +1,15 @@
 import type {
   ClaudeManagedConversationSession,
-  CodexManagedConversationSession
+  CodexManagedConversationSession,
+  PiManagedConversationSession
 } from "@koed/mcp-server";
 
-export type ManagedConversationProvider = "codex" | "claude";
+export type ManagedConversationProvider = "codex" | "claude" | "pi";
 
 type ProviderSession = {
   codex: CodexManagedConversationSession;
   claude: ClaudeManagedConversationSession;
+  pi: PiManagedConversationSession;
 };
 
 export type RuntimeSessionEntry<P extends ManagedConversationProvider> = {
@@ -20,7 +22,8 @@ export type RuntimeSessionEntry<P extends ManagedConversationProvider> = {
 
 type AnyRuntimeSessionEntry =
   | RuntimeSessionEntry<"codex">
-  | RuntimeSessionEntry<"claude">;
+  | RuntimeSessionEntry<"claude">
+  | RuntimeSessionEntry<"pi">;
 
 export class ManagedConversationRuntimeRegistry {
   readonly #sessions = new Map<string, AnyRuntimeSessionEntry>();
@@ -79,6 +82,10 @@ export class ManagedConversationRuntimeRegistry {
 
   deleteAny(executionId: string): boolean {
     return this.#sessions.delete(executionId);
+  }
+
+  has(executionId: string): boolean {
+    return this.#sessions.has(executionId);
   }
 
   entries(): IterableIterator<[string, AnyRuntimeSessionEntry]> {

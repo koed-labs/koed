@@ -66,7 +66,7 @@ associated with one **Local Personal Identity**. This is one user-facing
 personal profile across devices, not a set of locally selectable Users.
 
 V1 is frozen by [Personal Device Sync Protocol V1](../personal-device-sync-protocol.md):
-relay-required full replication of future closed Captured Sessions; Ed25519
+relay-backed full replication of future closed Captured Sessions; Ed25519
 signatures; X25519/HKDF-SHA-256/AES-256-GCM recipient envelopes with
 role-separated keys; active-device or recovery-root authorization plus Authority
 countersignature; conflict quarantine; current protocol version only; bounded
@@ -93,12 +93,17 @@ Personal artifacts:
   portable serializers. It does not copy PostgreSQL tables, primary keys,
   migrations, or arbitrary rows.
 - Devices exchange versioned, encrypted, checksummed, idempotent packages and
-  signed lifecycle records through an encrypted mailbox/relay.
+  signed lifecycle records through the encrypted relay or an authenticated
+  peer-assisted data path.
 - The relay supports discovery, offline delivery, resumable chunks, and
   anti-entropy cursors. It is not a plaintext Memory store, Projection service,
   recall authority, Team authority, or source of truth.
-- Relay transfer is required in V1. Direct peer transfer is non-V1 and requires
-  a later protocol decision; it cannot become an implicit relay fallback.
+- The Authority/Relay remains required for membership, lifecycle, signed route
+  discovery, anti-entropy, and offline delivery. When every intended recipient
+  advertises a current reachable route, a sender may transfer the identical
+  package directly and accept success only after verifying each recipient's
+  signed materialization acknowledgement. Any missing route, timeout, invalid
+  acknowledgement, or partial delivery falls back to the relay.
 - The same-network V1 deployment has one fixed Authority/Relay-hosting
   installation. That installation is an operational availability hub for
   enrollment, governance, and package transfer even though every admitted
@@ -442,8 +447,10 @@ allowlists, downgrade resistance, and redacted operational logging. Compromise
 of relay storage should reveal encrypted bytes and bounded redacted metadata
 only.
 
-A self-hosted relay or Koed-managed relay can implement V1. Direct peer
-transport is non-V1. Relay deployment choice is separate from Memory ownership.
+A self-hosted relay or Koed-managed relay can implement V1. Peer-assisted
+transfer is an optional data path and never changes Authority, package identity,
+source ownership, or relay anti-entropy. Relay deployment choice is separate
+from Memory ownership.
 
 ## Local Materialization And Recall
 
@@ -588,9 +595,11 @@ exposure. Neither model removes trust; they place it differently.
 
 The Personal Memory Hub design is not selected: no device owns canonical
 plaintext Memory or aggregate Recall. The V1 same-network transport still has a
-fixed operational Authority/Relay host. Removing that availability dependency
-requires a later protocol decision covering direct or multiple relay endpoints,
-Authority transfer/rotation, recovery-kit evolution, and split-brain handling.
+fixed operational Authority/Relay host. Peer-assisted package transfer reduces
+byte-routing dependence but does not remove the control-plane dependency.
+Removing that dependency requires a later protocol decision covering Authority
+transfer/rotation, recovery-kit evolution, durable discovery, and split-brain
+handling.
 
 ## Consequences
 
@@ -613,8 +622,8 @@ Costs:
 - more upgrade and current-version coordination cases;
 - greater storage and bandwidth use;
 - more complex stale/partial/error UX;
-- enrollment, governance, and package transfer pause while the fixed V1
-  Authority/Relay host is unavailable;
+- enrollment, governance, new route discovery, anti-entropy, and offline
+  delivery pause while the fixed V1 Authority/Relay host is unavailable;
 - wider security and two-node/N-device test matrix.
 
 The complexity is materially greater than a Personal Hub. It remains bounded by
@@ -637,7 +646,7 @@ This decision does not add:
 - selective partial replication in V1;
 - relay plaintext processing;
 - consensus or leader election between personal devices;
-- direct or multiple relay endpoints and Authority transfer/rotation.
+- multiple Authority/Relay endpoints and Authority transfer/rotation.
 
 ## Required Follow-Up Work
 

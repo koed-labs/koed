@@ -11,8 +11,20 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: "@koed/shared/collaboration-client-runtime",
+        replacement: `${root}packages/shared/src/collaboration-client-runtime.ts`
+      },
+      {
         find: "@koed/shared/collaboration",
         replacement: `${root}packages/shared/src/collaboration-contract.ts`
+      },
+      {
+        find: "@koed/shared/durable-realtime",
+        replacement: `${root}packages/shared/src/durable-realtime.ts`
+      },
+      {
+        find: "@koed/shared/execution-workspace",
+        replacement: `${root}packages/shared/src/execution-workspace.ts`
       },
       {
         find: "@koed/shared/personal-desktop",
@@ -59,7 +71,7 @@ export default defineConfig({
         replacement: `${root}apps/worker/src/embedding-workflow.ts`
       },
       {
-        find: "@koed/shared",
+        find: /^@koed\/shared$/,
         replacement: `${root}packages/shared/src/index.ts`
       }
     ]

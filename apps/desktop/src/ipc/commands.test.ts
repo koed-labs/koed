@@ -5,7 +5,10 @@ import {
   collaborationSafeErrorMessages,
   personalDesktopResultSchema
 } from "@koed/shared";
-import type { PersonalMemoryDesktopHandler } from "../koed-server/manager.js";
+import type {
+  ManagedWorkspaceDesktopHandler,
+  PersonalMemoryDesktopHandler
+} from "../koed-server/manager.js";
 import { describe, expect, it, vi } from "vitest";
 import { invokeChannel, registerDesktopCommandHandlers } from "./commands.js";
 import {
@@ -17,6 +20,7 @@ import {
   launchAtStartupSetChannel,
   isDesktopCommandName,
   managedConversationCommandChannel,
+  managedWorkspaceCommandChannel,
   personalDevicePairingLinkConsumeChannel,
   personalDevicePairingProgressChannel,
   personalMemoryCommandChannel,
@@ -100,6 +104,9 @@ describe("desktop IPC command registry", () => {
         };
       }
       throw new Error("Unexpected Managed Conversation request.");
+    });
+    const managedWorkspace = vi.fn<ManagedWorkspaceDesktopHandler>(async () => {
+      throw new Error("Unexpected managed workspace request.");
     });
     const setupInspect = vi.fn(async () => ({ state: "ready" }));
     const setupRun = vi.fn(async (_args, context) => {
@@ -201,6 +208,15 @@ describe("desktop IPC command registry", () => {
         allowedRendererOrigins: new Set(["koed://app"]),
         personalMemory,
         managedConversation: managedConversation as never,
+        managedWorkspace: managedWorkspace as never,
+        managedPreview: {
+          attach: vi.fn(),
+          setBounds: vi.fn(),
+          reload: vi.fn(),
+          detach: vi.fn(),
+          detachSender: vi.fn(),
+          close: vi.fn()
+        },
         consumePendingPersonalDevicePairingLink,
         writeClipboard,
         getThemePreference,
@@ -215,6 +231,7 @@ describe("desktop IPC command registry", () => {
       registered,
       collaboration,
       managedConversation,
+      managedWorkspace,
       personalMemory,
       setupInspect,
       setupRun,
@@ -370,6 +387,10 @@ describe("desktop IPC command registry", () => {
         projectId: "project-1",
         aiClientDriverId: "codex",
         aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
         idempotencyKey: "start-1"
       })
     ).resolves.toEqual({
@@ -388,6 +409,10 @@ describe("desktop IPC command registry", () => {
       projectId: "project-1",
       aiClientDriverId: "codex",
       aiClientInstanceId: "codex.default",
+      model: "gpt-test",
+      reasoningEffort: "low",
+      permissionMode: "full_access",
+      runnerKind: "local_device",
       idempotencyKey: "start-1"
     });
     await expect(
@@ -396,6 +421,10 @@ describe("desktop IPC command registry", () => {
         projectId: "project-1",
         aiClientDriverId: "codex",
         aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
         idempotencyKey: "start-1",
         cwd: "/private/project"
       })
@@ -406,6 +435,10 @@ describe("desktop IPC command registry", () => {
         projectId: "project-1",
         aiClientDriverId: "codex",
         aiClientInstanceId: "codex.default",
+        model: "gpt-test",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
         idempotencyKey: "start-1"
       })
     ).rejects.toThrow("Untrusted Desktop IPC sender");
@@ -417,10 +450,53 @@ describe("desktop IPC command registry", () => {
       projectId: "project-1",
       aiClientDriverId: "codex",
       aiClientInstanceId: "codex.default",
+      model: "gpt-test",
+      reasoningEffort: "low",
+      permissionMode: "full_access",
+      runnerKind: "local_device",
       idempotencyKey: "start-1"
     });
     await expect(failedStart).rejects.toThrow("Koed could not start");
     await expect(failedStart).rejects.not.toThrow("/private/managed");
+  });
+
+  it("validates and correlates managed workspace IPC for trusted renderers", async () => {
+    const { registered, managedWorkspace } = register();
+    const invoke = registered.get(managedWorkspaceCommandChannel)!;
+    const executionId = "768ae5ae-fcbe-4e17-9d83-14a97d5f92a6";
+    const request = {
+      requestId: "5a1f3c7c-72f2-49c1-9c83-d8e81e5c57ec",
+      executionId,
+      operation: "terminal_list" as const
+    };
+    managedWorkspace.mockResolvedValueOnce({
+      ...request,
+      terminals: []
+    });
+
+    await expect(invoke(renderer(), request)).resolves.toEqual({
+      ...request,
+      terminals: []
+    });
+    expect(managedWorkspace).toHaveBeenCalledWith(
+      request,
+      expect.objectContaining({ ownerId: "7", signal: expect.any(AbortSignal) })
+    );
+    await expect(
+      invoke(renderer("https://attacker.example/"), request)
+    ).rejects.toThrow("Untrusted Desktop IPC sender");
+    await expect(
+      invoke(renderer(), { ...request, authorization: "Koed-Desktop secret" })
+    ).rejects.toThrow();
+
+    managedWorkspace.mockResolvedValueOnce({
+      ...request,
+      requestId: "11111111-1111-4111-8111-111111111111",
+      terminals: []
+    });
+    await expect(invoke(renderer(), request)).rejects.toThrow(
+      "Invalid managed workspace operation correlation"
+    );
   });
 
   it("writes bounded text to the native clipboard for trusted renderers", async () => {

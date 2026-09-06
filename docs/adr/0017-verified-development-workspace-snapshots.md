@@ -7,6 +7,7 @@ Related decisions:
 - [0014 Hosted Personal Replication Uses The Conversation Source Journal](./0014-hosted-personal-source-replication.md)
 - [0015 Managed Conversation Execution Uses A Fenced Runtime And Durable Realtime Stream](./0015-managed-conversation-execution-and-realtime.md)
 - [0016 Conversation Continuation Uses Exclusive Handoff And Explicit Fork Lineage](./0016-exclusive-execution-handoff-and-fork-lineage.md)
+- [0033 Runner-Owned Worktrees And Execution Checkpoints](./0033-runner-owned-worktrees-and-execution-checkpoints.md)
 
 ## Context
 
@@ -270,6 +271,11 @@ Snapshot inventory states whether continuation is exact or incompatible and
 records the accepted repository, files, object closure, remote evidence, and
 failure reason. Project association is device-local organization and remains
 separate from any Team Workspace mapping or Team authorization.
+
+A Development Workspace Snapshot is a portable, policy-checked artifact. It is
+not an ADR 0033 prompt checkpoint and does not package or replicate
+`refs/koed/checkpoints/**`. A target device establishes new local checkpoints
+after it verifies and materializes the snapshot.
 
 ### Lifecycle
 

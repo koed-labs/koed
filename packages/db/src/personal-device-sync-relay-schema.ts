@@ -101,6 +101,7 @@ export const pdsRelayRecipients = pgTable(
       .references(() => pdsRelayTransports.id, { onDelete: "cascade" }),
     recipientDeviceId: text("recipient_device_id").notNull(),
     ackHash: text("ack_hash"),
+    canonicalAck: text("canonical_ack"),
     ackedAt: timestamp("acked_at", { withTimezone: true }),
     waiverHash: text("waiver_hash"),
     waivedAt: timestamp("waived_at", { withTimezone: true }),
@@ -115,6 +116,30 @@ export const pdsRelayRecipients = pgTable(
       table.recipientDeviceId,
       table.ackedAt
     )
+  ]
+);
+export const pdsPeerRoutes = pgTable(
+  "pds_peer_routes",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    deviceId: text("device_id").notNull(),
+    endpointUrl: text("endpoint_url").notNull(),
+    recordHash: text("record_hash").notNull(),
+    canonicalAdvertisement: text("canonical_advertisement").notNull(),
+    canonicalRequestProof: text("canonical_request_proof").notNull(),
+    advertisedAt: timestamp("advertised_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: now(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    unique("pds_peer_route_device_unique").on(table.groupId, table.deviceId),
+    index("pds_peer_route_expiry_idx").on(table.groupId, table.expiresAt)
   ]
 );
 export const pdsRelayRequestNonces = pgTable(

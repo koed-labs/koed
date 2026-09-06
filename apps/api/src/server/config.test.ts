@@ -37,6 +37,9 @@ describe("resolveApiServerConfig", () => {
         updateDebounceMs: 1_000,
         memoryEventUpdateDebounceMs: 100
       },
+      managedTerminal: {
+        detachedTtlMs: 1_800_000
+      },
       collaborationRealtime: {
         streamMaxClients: 1_000,
         streamMaxClientsPerPrincipal: 6
@@ -52,6 +55,14 @@ describe("resolveApiServerConfig", () => {
     expect(config.upstreamEnrollmentsPath).toMatch(
       /[/\\]\.koed[/\\]run[/\\]upstream-enrollments\.json$/
     );
+  });
+
+  it("resolves the detached managed terminal lifetime", () => {
+    expect(
+      resolveApiServerConfig({
+        MANAGED_TERMINAL_DETACHED_TTL_MS: "45000"
+      }).managedTerminal
+    ).toEqual({ detachedTtlMs: 45_000 });
   });
 
   it("enables Team collaboration only with an explicit validated value", () => {
@@ -158,7 +169,47 @@ describe("resolveApiServerConfig", () => {
       cursorSecret: "cursor-secret",
       localBrokerSecret: "local-broker-secret",
       streamMaxClients: 400,
-      streamMaxClientsPerPrincipal: 4
+      streamMaxClientsPerPrincipal: 4,
+      webTransport: {
+        enabled: false,
+        endpoint: undefined,
+        listenHost: "0.0.0.0",
+        listenPort: 3443,
+        tlsCertificatePath: undefined,
+        tlsKeyPath: undefined,
+        maxSessions: 200,
+        maxStreamsPerSession: 16,
+        maxDatagramBytes: 1_200
+      }
+    });
+  });
+
+  it("resolves explicit bounded WebTransport runtime settings", () => {
+    expect(
+      resolveApiServerConfig({
+        COLLABORATION_REALTIME_WEBTRANSPORT_ENABLED: "true",
+        COLLABORATION_REALTIME_WEBTRANSPORT_ENDPOINT:
+          "https://api.example.test:3443/v1/realtime/webtransport",
+        COLLABORATION_REALTIME_WEBTRANSPORT_LISTEN_HOST: "127.0.0.1",
+        COLLABORATION_REALTIME_WEBTRANSPORT_LISTEN_PORT: "8443",
+        COLLABORATION_REALTIME_WEBTRANSPORT_TLS_CERTIFICATE_PATH:
+          "/run/secrets/realtime.crt",
+        COLLABORATION_REALTIME_WEBTRANSPORT_TLS_KEY_PATH:
+          "/run/secrets/realtime.key",
+        COLLABORATION_REALTIME_WEBTRANSPORT_MAX_SESSIONS: "80",
+        COLLABORATION_REALTIME_WEBTRANSPORT_MAX_STREAMS_PER_SESSION: "12",
+        COLLABORATION_REALTIME_WEBTRANSPORT_MAX_DATAGRAM_BYTES: "900"
+      }).collaborationRealtime.webTransport
+    ).toEqual({
+      enabled: true,
+      endpoint: "https://api.example.test:3443/v1/realtime/webtransport",
+      listenHost: "127.0.0.1",
+      listenPort: 8443,
+      tlsCertificatePath: "/run/secrets/realtime.crt",
+      tlsKeyPath: "/run/secrets/realtime.key",
+      maxSessions: 80,
+      maxStreamsPerSession: 12,
+      maxDatagramBytes: 900
     });
   });
 

@@ -13,6 +13,7 @@ import type {
   LocalAiClientResponse
 } from "./ipc/local-ai-client-protocol.js";
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
+import type { ManagedWorkspaceDesktopApi } from "./ipc/managed-workspace-protocol.js";
 
 export type ComponentState =
   | "not_configured"
@@ -176,6 +177,7 @@ export interface DesktopApi {
     ) => Promise<LocalAiClientResponse>;
     reset: (flowKey: LocalAiClientFlowKey) => Promise<LocalAiClientResponse>;
   };
+  managedWorkspace?: ManagedWorkspaceDesktopApi;
   clipboard?: {
     writeText: (value: string) => Promise<void>;
   };
@@ -207,6 +209,9 @@ export interface DesktopApi {
     set: (enabled: boolean) => Promise<DesktopLaunchAtStartupState>;
   };
   setup?: DesktopSetupApi;
+  status?: {
+    subscribe: (listener: () => void) => () => void;
+  };
   collaboration?: {
     command: (
       command: CollaborationRendererCommand

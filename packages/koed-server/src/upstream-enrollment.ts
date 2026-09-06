@@ -507,6 +507,8 @@ const routePolicyOperationFamilies = (
     ["captureWrites", "capture_writes"],
     ["sync", "sync"],
     ["managedExecution", "managed_execution"],
+    ["managedExecution", "managed_file_read"],
+    ["managedExecution", "managed_terminal"],
     ["admin", "action_grant"]
   ];
   return entries
@@ -528,7 +530,9 @@ const localClientOperationFamiliesFor = (operationFamilies: string[]) =>
       family === "team_chat_read" ||
       family === "team_chat_write" ||
       family === "share_grant_management" ||
-      family === "managed_execution"
+      family === "managed_execution" ||
+      family === "managed_file_read" ||
+      family === "managed_terminal"
   );
 
 const expiresAtFor = (now: Date): string =>

@@ -330,3 +330,70 @@ describe("Personal Note Share Grant migrations", () => {
     );
   });
 });
+
+describe("Conversation presentation migration", () => {
+  it("keeps presentation state owner-scoped and separate from session lifecycle", async () => {
+    const migrationSql = await readDrizzleFile(
+      "0037_coding_workspace_runtime.sql"
+    );
+
+    expect(migrationSql).toContain(
+      'CONSTRAINT "conversation_presentation_states_owner_session_pk" PRIMARY KEY("owner_user_id","logical_session_id")'
+    );
+    expect(migrationSql).toContain(
+      'CONSTRAINT "conversation_presentation_states_owner_session_fk" FOREIGN KEY ("owner_user_id","logical_session_id") REFERENCES "public"."sessions"("owner_user_id","logical_session_id") ON DELETE cascade'
+    );
+    expect(migrationSql).toContain(
+      'CONSTRAINT "conversation_presentation_states_snooze_shape_check"'
+    );
+  });
+
+  it("wakes projection workers only when watched values change", async () => {
+    const migrationSql = await readDrizzleFile(
+      "0037_coding_workspace_runtime.sql"
+    );
+
+    expect(migrationSql).toContain(
+      "CREATE TRIGGER conversation_items_projection_work_update_notify"
+    );
+    expect(migrationSql).toContain(
+      'OLD."projection_status" IS DISTINCT FROM NEW."projection_status"'
+    );
+    expect(migrationSql).toContain(
+      'OLD."projection_work_class" IS DISTINCT FROM NEW."projection_work_class"'
+    );
+    expect(migrationSql).toContain(
+      "CREATE TRIGGER conversation_projection_outbox_work_update_notify"
+    );
+    expect(migrationSql).toContain(
+      'OLD."dispatched_at" IS DISTINCT FROM NEW."dispatched_at"'
+    );
+    expect(migrationSql).toContain(
+      "CREATE TRIGGER semantic_memory_rebuild_work_update_notify"
+    );
+    expect(migrationSql).not.toMatch(
+      /AFTER UPDATE[^;]+FOR EACH STATEMENT\s+EXECUTE FUNCTION notify_koed_projection_work\(\)/s
+    );
+  });
+});
+
+describe("Managed Conversation launch configuration migration", () => {
+  it("persists immutable AI Client, model, permission, and runner selections", async () => {
+    const migrationSql = await readDrizzleFile(
+      "0037_coding_workspace_runtime.sql"
+    );
+
+    for (const column of [
+      "model",
+      "reasoning_effort",
+      "permission_mode",
+      "runner_kind"
+    ]) {
+      expect(migrationSql).toContain(`ADD COLUMN "${column}"`);
+    }
+    expect(migrationSql).toContain(
+      `"permission_mode" in ('supervised', 'auto_edit', 'auto', 'full_access')`
+    );
+    expect(migrationSql).toContain(`"runner_kind" = 'local_device'`);
+  });
+});

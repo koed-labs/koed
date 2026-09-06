@@ -22,10 +22,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   createCollaborationRealtimeService,
+  materializeManagedConversationChangedEvent,
   materializePendingShareLifecycleEvent,
   materializePersonalMemoryChangedEvent,
   type CollaborationRealtimeServiceOptions
 } from "./realtime.js";
+
+type TestCollaborationRealtimeService = Awaited<
+  ReturnType<typeof createCollaborationRealtimeService>
+>;
+
+declare module "fastify" {
+  interface FastifyInstance {
+    realtimeService: TestCollaborationRealtimeService;
+  }
+}
 
 const iso = "2026-07-17T00:00:00.000Z";
 const cursorSecret = "test-collaboration-realtime-secret";
@@ -314,7 +325,9 @@ const createRepositoryFixture = () => {
       CollaborationRealtimeMaterializationRepository["getPersonalMemoryForRealtime"]
     >(async () => null),
     getManagedConversationExecution: vi.fn(async () => null),
-    getManagedConversationRuntimeBinding: vi.fn(async () => null)
+    getManagedConversationRuntimeBinding: vi.fn(async () => null),
+    getLatestManagedConversationCommandForExecution: vi.fn(async () => null),
+    getManagedConversationRuntimeItem: vi.fn(async () => null)
   };
 
   const repository: CollaborationRepository = {
@@ -561,7 +574,36 @@ const buildTestServer = async (
   });
   service.registerRoutes();
   services.push(service, app);
-  return app;
+  return Object.assign(app, { realtimeService: service });
+};
+
+const createMemoryRealtimeSink = () => {
+  const frames: Array<{ event: string; data: string; id: string | null }> = [];
+  const closeListeners = new Set<() => void>();
+  let closed = false;
+  const notifyClose = () => {
+    if (closed) return;
+    closed = true;
+    for (const listener of closeListeners) listener();
+    closeListeners.clear();
+  };
+  return {
+    frames,
+    sink: {
+      async send(event: string, data: string, id?: string) {
+        if (closed) throw new Error("memory realtime sink is closed");
+        frames.push({ event, data, id: id ?? null });
+      },
+      async close() {
+        notifyClose();
+      },
+      onClose(listener: () => void) {
+        if (closed) listener();
+        else closeListeners.add(listener);
+      }
+    },
+    disconnect: notifyClose
+  };
 };
 
 const sessionHeaders = (
@@ -1340,6 +1382,82 @@ describe("collaboration realtime protocol", () => {
     expect(forgedAck.statusCode).toBe(400);
   });
 
+  it("replays an unacknowledged event after a reliable transport disconnect", async () => {
+    const fixture = createRepositoryFixture();
+    const app = await buildTestServer(fixture);
+    const snapshot = await createTeamSnapshot(
+      app,
+      fixture.ids.alice,
+      fixture.ids.teamA
+    );
+    const principal = {
+      user: fixture.users.get(fixture.ids.alice)!,
+      deviceCredentialId: null,
+      operationFamilies: null
+    };
+    const streamInput = {
+      principal,
+      scope: { scope: "team" as const, teamId: fixture.ids.teamA },
+      clientInstanceId: "client-instance-0001",
+      subscriptionKey: "subscription-key-0001",
+      cursor: snapshot.cursor,
+      reauthenticate: async () => principal
+    };
+
+    const first = createMemoryRealtimeSink();
+    const firstPrepared =
+      await app.realtimeService.prepareDurableStream(streamInput);
+    await firstPrepared.activate(first.sink);
+    await vi.waitFor(() => {
+      expect(
+        first.frames.filter((frame) => frame.event === "collaboration_event")
+      ).toHaveLength(1);
+    });
+    const firstEvent = first.frames.find(
+      (frame) => frame.event === "collaboration_event"
+    )!;
+    first.disconnect();
+
+    const persistedAfterDisconnect = fixture.subscriptions.get(
+      snapshot.subscription.id
+    )!;
+    expect(persistedAfterDisconnect.acknowledgedCursor).toBe(0);
+    expect(persistedAfterDisconnect.acknowledgedEventId).toBeNull();
+
+    const second = createMemoryRealtimeSink();
+    const secondPrepared =
+      await app.realtimeService.prepareDurableStream(streamInput);
+    await secondPrepared.activate(second.sink);
+    await vi.waitFor(() => {
+      expect(
+        second.frames.filter((frame) => frame.event === "collaboration_event")
+      ).toHaveLength(1);
+    });
+    const replayedEvent = second.frames.find(
+      (frame) => frame.event === "collaboration_event"
+    )!;
+
+    const firstEnvelope = JSON.parse(firstEvent.data) as Record<
+      string,
+      unknown
+    >;
+    const replayedEnvelope = JSON.parse(replayedEvent.data) as Record<
+      string,
+      unknown
+    >;
+    expect({ ...replayedEnvelope, cursor: null }).toEqual({
+      ...firstEnvelope,
+      cursor: null
+    });
+    expect(replayedEvent.id).toBe(replayedEnvelope.cursor);
+    expect(firstEvent.id).toBe(firstEnvelope.cursor);
+    expect(replayedEvent.id).not.toBe(firstEvent.id);
+    expect(
+      fixture.subscriptions.get(snapshot.subscription.id)?.acknowledgedCursor
+    ).toBe(0);
+    second.disconnect();
+  });
+
   it("delivers read state only to the principal whose state changed", async () => {
     const fixture = createRepositoryFixture();
     const threadId = randomUUID();
@@ -1810,6 +1928,95 @@ describe("collaboration realtime protocol", () => {
         repository
       )
     ).resolves.toEqual({ action: "requires_snapshot" });
+  });
+
+  it("materializes one versioned managed runtime-item delta", async () => {
+    const ownerId = randomUUID();
+    const executionId = randomUUID();
+    const itemId = randomUUID();
+    const commandId = randomUUID();
+    const eventRecord = event({
+      cursor: 1,
+      scope: "personal",
+      actorPrincipalId: ownerId,
+      resourceType: "managed_conversation_runtime_item",
+      resourceId: itemId,
+      family: "managed_conversation_changed"
+    });
+    eventRecord.personalOwnerUserId = ownerId;
+    eventRecord.threadId = null;
+    eventRecord.messageId = null;
+    eventRecord.shareGrantId = null;
+    eventRecord.logicalMemoryId = null;
+    const repository = {
+      getManagedConversationExecution: vi.fn(async () => ({
+        id: executionId,
+        ownerUserId: ownerId,
+        projectId: "/tmp/project",
+        provider: "codex",
+        state: "running",
+        stateVersion: 4,
+        executionGeneration: 2,
+        logicalSessionId: null,
+        providerThreadId: null,
+        providerCliVersion: null,
+        lastErrorCode: null,
+        createdAt: iso,
+        updatedAt: iso,
+        startedAt: iso,
+        quiescedAt: null,
+        stoppedAt: null
+      })),
+      getManagedConversationRuntimeBinding: vi.fn(async () => null),
+      getLatestManagedConversationCommandForExecution: vi.fn(async () => ({
+        id: commandId,
+        sequence: 3,
+        executionGeneration: 2,
+        commandKind: "prompt",
+        state: "dispatching",
+        lastErrorCode: null,
+        updatedAt: iso
+      })),
+      getManagedConversationRuntimeItem: vi.fn(async () => ({
+        id: itemId,
+        executionId,
+        executionGeneration: 2,
+        providerTurnId: "turn-1",
+        providerItemId: "item-1",
+        itemKind: "transient_output",
+        presentation: {
+          mode: "expanded",
+          renderer: "message",
+          policyKey: "agent_message",
+          policyRevision: 1,
+          reason: "presentation-policy:agent_message"
+        },
+        state: "pending",
+        payload: { text: "Live output" },
+        revision: 5,
+        createdAt: iso,
+        updatedAt: iso
+      }))
+    };
+
+    await expect(
+      materializeManagedConversationChangedEvent(
+        { userId: ownerId },
+        eventRecord,
+        repository as never
+      )
+    ).resolves.toMatchObject({
+      action: "deliver",
+      update: {
+        type: "managed_conversation_upserted",
+        execution: { id: executionId, stateVersion: 4 },
+        latestCommand: { id: commandId, sequence: 3 },
+        runtimeItemChange: {
+          kind: "upsert",
+          item: { id: itemId, revision: 5, payload: { text: "Live output" } }
+        }
+      }
+    });
   });
 
   it("materializes owner-only Pending Share lifecycle status without Team authority", async () => {
@@ -3141,7 +3348,7 @@ describe("collaboration realtime protocol", () => {
       expect(listener.query).toHaveBeenCalledWith(
         "LISTEN koed_collaboration_realtime"
       );
-      service.close();
+      await service.close();
       expect(listener.release).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();

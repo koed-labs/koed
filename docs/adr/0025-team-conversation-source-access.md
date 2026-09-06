@@ -18,6 +18,9 @@ decisions. It would also make a representation change unexpectedly grant or
 remove access to prompts, tool calls, tool results, and other retained records
 that Projection intentionally excludes from Memory.
 
+Owner-facing Conversation Item Presentation is also not source-access
+authority. A record being visible to its owner does not make it Team-visible.
+
 ## Decision
 
 Koed models Conversation Source Access as an explicit capability attached to
@@ -57,6 +60,12 @@ and SSE. Notifications carry structural wake metadata only. Clients resume
 with an opaque viewer-bound cursor and fetch verified sanitized source segments
 through authorized routes. There is no data polling and no plaintext in the
 durable event envelope. Authorization loss closes the stream.
+
+After authorization, Team viewing applies source sanitization and a bounded
+Team-audience presentation policy. It never reuses owner presentation as an
+authorization decision. Records hidden from semantic Memory, including
+operational activity, remain unavailable unless the explicit source grant and
+Team-audience policy both permit them.
 
 Forking is an explicit export operation, not participation in the owner's
 Conversation. It requires a fresh browser session, enforces segment and byte

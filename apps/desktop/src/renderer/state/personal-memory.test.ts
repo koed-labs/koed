@@ -31,7 +31,8 @@ const thread = (
   eventCount: 100,
   invalidatedCount: 0,
   latestAt: "2026-07-23T00:00:00.000Z",
-  sample: `Sample ${index}`
+  sample: `Sample ${index}`,
+  presentation: null
 });
 
 const event = (index: number): PersonalDesktopConversationEvent => ({
@@ -63,6 +64,9 @@ const api = (overrides: Partial<PersonalDesktopApi> = {}) =>
     loadEventPage: vi.fn(async () => []),
     assignSessionProject: vi.fn(async () => ({ projectId: null })),
     updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
+    updateSessionPresentation: vi.fn(async () => {
+      throw new Error("not used");
+    }),
     subscribe: vi.fn(() => () => undefined),
     ...overrides
   }) satisfies PersonalDesktopApi;
@@ -139,6 +143,29 @@ describe("PersonalMemoryStore", () => {
     expect(second.threadsByKey.size).toBe(2);
   });
 
+  it("keeps a newly established managed Conversation in project navigation", async () => {
+    const original = thread(1);
+    const store = new PersonalMemoryStore(
+      api({ listProjects: vi.fn(async () => [project([original])]) })
+    );
+    await store.loadProjects();
+    const managed = {
+      ...thread(2),
+      sessionId: "00000000-0000-4000-8000-000000000002",
+      latestAt: "2026-07-23T00:01:00.000Z"
+    };
+
+    store.upsertThread(managed);
+
+    expect(store.current().projectsById.get("project")?.threads).toEqual([
+      managed,
+      original
+    ]);
+    expect(
+      store.current().threadsByKey.get(personalMemoryThreadKey(managed))
+    ).toBe(managed);
+  });
+
   it("loads a warm head once and pages older events without duplicates", async () => {
     const selected = thread(1);
     const loadEventPage = vi
@@ -212,7 +239,7 @@ describe("PersonalMemoryStore", () => {
     expect(store.detail(thread(personalMemoryCacheLimit + 7))).toBeNull();
   });
 
-  it("refreshes affected session state from a coalesced live change", async () => {
+  it("refreshes the affected conversation and its navigation summary", async () => {
     let onChange: ((change: PersonalDesktopChange) => void) | undefined;
     const initialThread = thread(1);
     const updatedThread = {
@@ -248,6 +275,7 @@ describe("PersonalMemoryStore", () => {
         {
           id: "00000000-0000-4000-8000-000000000100",
           projectId: initialThread.projectId,
+          sourceTable: "messages",
           threadId: initialThread.id
         }
       ]
@@ -259,6 +287,7 @@ describe("PersonalMemoryStore", () => {
         {
           id: "00000000-0000-4000-8000-000000000101",
           projectId: initialThread.projectId,
+          sourceTable: "messages",
           threadId: initialThread.id
         }
       ]
@@ -267,10 +296,10 @@ describe("PersonalMemoryStore", () => {
     await vi.waitFor(() => expect(listProjects).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(loadEventPage).toHaveBeenCalledTimes(2));
     expect(
-      store.current().threadsByKey.get(personalMemoryThreadKey(updatedThread))
+      store.current().threadsByKey.get(personalMemoryThreadKey(initialThread))
     ).toMatchObject({
-      eventCount: 101,
-      latestAt: "2026-07-23T00:01:00.000Z"
+      eventCount: updatedThread.eventCount,
+      latestAt: updatedThread.latestAt
     });
     expect(
       store
@@ -314,6 +343,7 @@ describe("PersonalMemoryStore", () => {
         {
           id: event(1).id,
           projectId: selected.projectId,
+          sourceTable: "messages",
           threadId: selected.id
         }
       ]
@@ -346,7 +376,6 @@ describe("PersonalMemoryStore", () => {
       .fn<PersonalDesktopApi["loadEventPage"]>()
       .mockResolvedValueOnce([event(50), event(51)])
       .mockResolvedValueOnce([event(1), event(2)])
-      .mockResolvedValueOnce([event(50), event(51)])
       .mockResolvedValueOnce([changedOlder]);
     const bridge = api({
       listProjects: vi.fn(async () => [project([selected])]),
@@ -368,6 +397,7 @@ describe("PersonalMemoryStore", () => {
         {
           id: changedOlder.id,
           projectId: selected.projectId,
+          sourceTable: "messages",
           threadId: selected.id
         }
       ]
@@ -428,6 +458,7 @@ describe("PersonalMemoryStore", () => {
         {
           id: "00000000-0000-4000-8000-000000000100",
           projectId: selected.projectId,
+          sourceTable: "messages",
           threadId: selected.id
         }
       ]
@@ -491,6 +522,7 @@ describe("PersonalMemoryStore", () => {
         {
           id: "00000000-0000-4000-8000-000000000052",
           projectId: selected.projectId,
+          sourceTable: "messages",
           threadId: selected.id
         }
       ]
@@ -561,6 +593,7 @@ describe("PersonalMemoryStore", () => {
         {
           id: "00000000-0000-4000-8000-000000000052",
           projectId: selected.projectId,
+          sourceTable: "messages",
           threadId: selected.id
         }
       ]
@@ -620,6 +653,7 @@ describe("PersonalMemoryStore", () => {
         {
           id: "00000000-0000-4000-8000-000000000100",
           projectId: selected.projectId,
+          sourceTable: "messages",
           threadId: selected.id
         }
       ]
@@ -677,6 +711,7 @@ describe("PersonalMemoryStore", () => {
         {
           id: "00000000-0000-4000-8000-000000000100",
           projectId: selected.projectId,
+          sourceTable: "messages",
           threadId: selected.id
         }
       ]

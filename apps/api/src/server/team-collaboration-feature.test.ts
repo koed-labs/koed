@@ -383,4 +383,34 @@ describe("Team collaboration feature switch", () => {
       ])
     });
   });
+
+  it("advertises local managed previews only with the encrypted managed runtime", () => {
+    const disabled = buildCapabilitiesResponse({
+      deploymentProfile: "local_personal",
+      runtimeMode: "local-personal",
+      dependencyMode: "bundled-local",
+      teamCollaborationEnabled: false,
+      applicationLayerEncryption: "unavailable"
+    });
+    const enabled = buildCapabilitiesResponse({
+      deploymentProfile: "local_personal",
+      runtimeMode: "local-personal",
+      dependencyMode: "bundled-local",
+      teamCollaborationEnabled: false,
+      applicationLayerEncryption: "available"
+    });
+
+    expect(disabled.memory.managedDevelopmentPreviews).toBe("unavailable");
+    expect(enabled.memory.managedDevelopmentPreviews).toBe("available");
+    expect(
+      enabled.capabilities["memory.managedDevelopmentPreviews"]
+    ).toMatchObject({
+      availability: "available",
+      endpoints: expect.arrayContaining([
+        "/v1/managed-conversations/{executionId}/previews",
+        "/v1/managed-conversations/{executionId}/previews/{previewId}/access"
+      ]),
+      requiresAuthentication: true
+    });
+  });
 });

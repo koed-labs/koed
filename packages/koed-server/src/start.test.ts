@@ -439,7 +439,11 @@ describe("start supervisor", () => {
     expect(stored?.ownerUserId).toBe(ownerUserId);
     expect(stored?.operationFamilies).toEqual([
       "personal_collaboration_read",
-      "personal_collaboration_write"
+      "personal_collaboration_write",
+      "managed_file_read",
+      "managed_terminal",
+      "managed_preview",
+      "managed_source_control"
     ]);
   });
 
@@ -1534,7 +1538,11 @@ describe("start supervisor", () => {
     expect(desktopCredential?.ownerUserId).toBe(ownerUserId);
     expect(desktopCredential?.operationFamilies).toEqual([
       "personal_collaboration_read",
-      "personal_collaboration_write"
+      "personal_collaboration_write",
+      "managed_file_read",
+      "managed_terminal",
+      "managed_preview",
+      "managed_source_control"
     ]);
   });
 
@@ -1667,7 +1675,14 @@ describe("start supervisor", () => {
         PRIVACY_SERVICE_URL: "",
         PRIVACY_SERVICE_TOKEN: "",
         PRIVACY_RUNTIME_CONTROL_TOKEN: "",
-        MEMORY_API_TOKEN: "test-runtime-token"
+        MEMORY_API_TOKEN: "test-runtime-token",
+        TEAM_MEMORY_DATA_ENCRYPTION_KEY: "runtime-team-data-key",
+        TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER: "runtime-local-test-key",
+        TEAM_MEMORY_MANAGED_KMS_KEY_ID: "runtime-team-kms-key",
+        TEAM_MEMORY_MANAGED_KMS_KEY_VERSION: "8",
+        TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL:
+          "https://runtime-kms.koed.example",
+        TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN: "runtime-team-kms-token"
       },
       timeoutMs: 1,
       pollIntervalMs: 1,
@@ -1706,20 +1721,20 @@ describe("start supervisor", () => {
       spawned[0]?.env?.DATA_ENCRYPTION_KEY
     );
     expect(spawned[0]?.env?.TEAM_MEMORY_DATA_ENCRYPTION_KEY).toBe(
-      "root-team-data-key"
+      "runtime-team-data-key"
     );
     expect(spawned[0]?.env?.TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER).toBe(
-      "local_test_key"
+      "runtime-local-test-key"
     );
     expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_KEY_ID).toBe(
-      "root-team-kms-key"
+      "runtime-team-kms-key"
     );
-    expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_KEY_VERSION).toBe("7");
+    expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_KEY_VERSION).toBe("8");
     expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL).toBe(
-      "https://kms.koed.example"
+      "https://runtime-kms.koed.example"
     );
     expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN).toBe(
-      "root-team-kms-token"
+      "runtime-team-kms-token"
     );
     expect(spawned[2]?.env?.EMBEDDING_MODEL).toBe("qwen3-0.6b");
     expect(spawned).toHaveLength(3);
@@ -1838,69 +1853,89 @@ describe("start supervisor", () => {
     ).toThrow();
   });
 
-  it("starts the Local AI Runtime after readiness with the final API Token", async () => {
-    const root = tempDir();
-    const controller = new AbortController();
-    const spawned: Array<{
-      args: string[];
-      env?: NodeJS.ProcessEnv;
-    }> = [];
+  it.each(["environment", "stored"])(
+    "starts the Local AI Runtime and Worker with the final %s API Token",
+    async (tokenSource) => {
+      const root = tempDir();
+      if (tokenSource === "stored") {
+        mkdirSync(resolve(root, "config"), { recursive: true });
+        writeFileSync(
+          resolve(root, "config/local-app-credential.json"),
+          JSON.stringify({
+            apiToken: "watcher-token",
+            provisionedAt: "2026-01-01T00:00:00.000Z",
+            source: "environment"
+          })
+        );
+      }
+      const controller = new AbortController();
+      const spawned: Array<{
+        args: string[];
+        env?: NodeJS.ProcessEnv;
+      }> = [];
 
-    const running = startKoedServer({
-      signal: controller.signal,
-      environment: {
-        KOED_HOME: root,
-        KOED_REPO_ROOT: root,
-        KOED_RUNTIME_MODE: "developer",
-        MEMORY_API_TOKEN: "watcher-token",
-        DATABASE_URL: "postgres://operator/db",
-        REDIS_URL: "redis://operator:6379",
-        EMBEDDING_SERVICE_URL: "http://operator:8000"
-      },
-      timeoutMs: 1,
-      pollIntervalMs: 1,
-      spawnSync: () => spawnResult(),
-      spawn: (_command, args, options) => {
-        spawned.push({ args, env: options?.env });
-        return child(spawned.length);
-      },
-      collectStatus: async () => healthyStatus(root)
-    });
-    while (
-      !spawned.some((entry) =>
-        entry.args.some((arg) => arg.endsWith("local-runtime-cli.js"))
-      )
-    ) {
-      await new Promise((resolveWait) => setTimeout(resolveWait, 1));
-    }
+      const running = startKoedServer({
+        signal: controller.signal,
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_RUNTIME_MODE: "developer",
+          ...(tokenSource === "environment"
+            ? { MEMORY_API_TOKEN: "watcher-token" }
+            : {}),
+          DATABASE_URL: "postgres://operator/db",
+          REDIS_URL: "redis://operator:6379",
+          EMBEDDING_SERVICE_URL: "http://operator:8000"
+        },
+        timeoutMs: 1,
+        pollIntervalMs: 1,
+        spawnSync: () => spawnResult(),
+        spawn: (_command, args, options) => {
+          spawned.push({ args, env: options?.env });
+          return child(spawned.length);
+        },
+        collectStatus: async () => healthyStatus(root)
+      });
+      while (
+        !spawned.some((entry) =>
+          entry.args.some((arg) => arg.endsWith("local-runtime-cli.js"))
+        )
+      ) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 1));
+      }
 
-    try {
-      const localAiRuntime = spawned.find((entry) =>
-        entry.args.some((arg) => arg.endsWith("local-runtime-cli.js"))
-      );
-      expect(localAiRuntime?.args).toEqual([
-        resolve(root, "packages/mcp-server/dist/local-runtime-cli.js")
-      ]);
-      expect(localAiRuntime?.env?.MEMORY_API_TOKEN).toBe("watcher-token");
-      expect(localAiRuntime?.env?.KOED_HOME).toBe(root);
-      expect(localAiRuntime?.env?.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED).toBe(
-        "true"
-      );
-      expect(
-        localAiRuntime?.env?.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED
-      ).toBe("true");
-      const runtime = JSON.parse(
-        readFileSync(resolve(root, "run/koed-server.json"), "utf8")
-      ) as { services: string[]; processes: Record<string, number> };
-      expect(runtime.services).toContain("local-ai-runtime");
-      expect(runtime.processes.localAiRuntime).toBeGreaterThan(0);
-      expect(runtime.processes).not.toHaveProperty("codexTranscriptWatcher");
-      expect(runtime.processes).not.toHaveProperty("claudeTranscriptWatcher");
-    } finally {
-      controller.abort();
-      await running;
+      try {
+        const localAiRuntime = spawned.find((entry) =>
+          entry.args.some((arg) => arg.endsWith("local-runtime-cli.js"))
+        );
+        expect(localAiRuntime?.args).toEqual([
+          resolve(root, "packages/mcp-server/dist/local-runtime-cli.js")
+        ]);
+        expect(localAiRuntime?.env?.MEMORY_API_TOKEN).toBe("watcher-token");
+        const worker = spawned.find((entry) =>
+          entry.args.some((arg) => arg.endsWith("apps/worker/dist/index.js"))
+        );
+        expect(worker?.env?.MEMORY_API_TOKEN).toBe("watcher-token");
+        expect(localAiRuntime?.env?.KOED_HOME).toBe(root);
+        expect(
+          localAiRuntime?.env?.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED
+        ).toBe("true");
+        expect(
+          localAiRuntime?.env?.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED
+        ).toBe("true");
+        const runtime = JSON.parse(
+          readFileSync(resolve(root, "run/koed-server.json"), "utf8")
+        ) as { services: string[]; processes: Record<string, number> };
+        expect(runtime.services).toContain("local-ai-runtime");
+        expect(runtime.processes.localAiRuntime).toBeGreaterThan(0);
+        expect(runtime.processes).not.toHaveProperty("codexTranscriptWatcher");
+        expect(runtime.processes).not.toHaveProperty("claudeTranscriptWatcher");
+      } finally {
+        controller.abort();
+        await running;
+      }
     }
-  });
+  );
 
   it.each(["developer", "local-personal"] as const)(
     "refuses to run the %s Local AI Runtime without a Personal API Token",

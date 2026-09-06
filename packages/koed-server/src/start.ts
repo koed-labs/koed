@@ -232,8 +232,8 @@ const prefixedApiEnv = (
   name: string
 ): string | undefined =>
   environment[`API_${name}`] ??
-  repoEnv[`API_${name}`] ??
   environment[name] ??
+  repoEnv[`API_${name}`] ??
   repoEnv[name];
 
 const resolveEffectiveWorkQueueBackend = (
@@ -1332,13 +1332,16 @@ export const startKoedServer = async ({
       emitStartupMilestone("packaged_personal_credential_provisioned");
     }
 
+    const finalApiToken = resolveActiveIntegrationApiToken(
+      paths,
+      refreshedEnv,
+      refreshedRepoEnv
+    )?.token;
+    if (finalApiToken) {
+      Object.assign(refreshedEnv, { MEMORY_API_TOKEN: finalApiToken });
+    }
     let localAiRuntime: ChildProcess | undefined;
     if (localAiRuntimeEnabled) {
-      const finalApiToken = resolveActiveIntegrationApiToken(
-        paths,
-        refreshedEnv,
-        refreshedRepoEnv
-      )?.token;
       if (!finalApiToken) {
         throw new Error(
           "A Personal API Token is required to start the local AI runtime."

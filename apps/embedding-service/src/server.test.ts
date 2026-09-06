@@ -107,6 +107,20 @@ const json = async (response: Response) =>
 const logger = () => createEmbeddingLogger("critical", () => undefined);
 
 describe("Embedding Service routes", () => {
+  it("does not treat an informational device listing as an active CPU accelerator", async () => {
+    const identity = await capacityHardwareIdentity({
+      policy: "auto",
+      backend: "cpu",
+      device: null,
+      gpuLayers: "0",
+      fallbackReason: "no_supported_accelerator",
+      deviceListing: "CUDA0: available but not selected"
+    });
+
+    expect(identity.acceleratorFingerprint).toBeNull();
+    expect(identity.hardwareFingerprint).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it("changes non-CPU hardware identity when the accelerator changes", async () => {
     const first = await capacityHardwareIdentity({
       policy: "cuda",

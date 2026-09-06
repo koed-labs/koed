@@ -185,7 +185,10 @@ retained in the signal files.
 Independently of Hook and filesystem notification delivery, a one-second
 catch-up tick checks a bounded rotation of known sources and the newest
 discovery page. A canonical cursor with an open turn additionally rechecks only
-its own transcript until `task_complete` or `turn_aborted` is consumed.
+its own transcript until exact `task_complete` or `turn_aborted` evidence is
+persisted. That evidence is authoritative regardless of which legitimate
+transcript reader records it; a managed runner or the Projection worker can
+then release the corresponding held turn.
 Unchanged open turns back off to a five-second interval; terminal turns stop
 rechecking immediately. Exact hints and active sources are always serviced
 before discovery work.
@@ -237,31 +240,37 @@ MEMORY_CODEX_TRANSCRIPT_MAX_FILES_PER_SCAN=200
 MEMORY_CODEX_TRANSCRIPT_MAX_BYTES_PER_BATCH=1048576
 ```
 
-## Experimental Koed-managed threads
+## Koed-managed Conversations
 
-The MCP package also exports a local `CodexManagedConversationSession` for the
-app-server-first ingestion experiment. It owns a persistent stdio app-server
-thread and journals generated JSONL before consuming it into the same canonical
-records and sealing each turn. It can
-resume an existing provider thread and Koed Captured Session after restart.
-Its isolated Codex home is durable under `KOED_HOME`; the rollout and atomic
-database-backed journal consumer cursor must be retained for the managed Captured Session's
-lifetime and removed only through explicit managed-home cleanup.
-An exclusive process lease prevents concurrent coordinators from using the same
-home and includes operating-system process-start identity so PID reuse cannot
-adopt a stale lease. Managed subagent `thread/started` events create linked
-child Captured Sessions and reconcile each child rollout separately. Normal
-shutdown releases the lease without deleting the rollout. Managed terminal
-boundaries are held until their journaled records project successfully, so a
-later turn cannot be folded into an earlier seal.
+`CodexManagedConversationSession` owns a persistent stdio app-server thread and
+journals generated JSONL before consuming it into the same canonical records
+and sealing each turn. It can resume an existing provider thread and Koed
+Captured Session after restart.
 
-There is no Desktop entry point for this legacy experiment. Desktop-managed
-Conversations use explicit registered AI Client ownership instead: Desktop
-selects `codex` plus exact instance ID from a fresh capability snapshot, and the
-API persists that owner. Worker resumes and transfers only through that exact
-Codex instance; it never falls back to another instance or client. Existing
-Codex CLI and native-app conversations remain captured from transcript growth;
-Capture Hook signals only reduce watcher latency.
+Desktop-managed Conversations use explicit registered AI Client ownership:
+Desktop selects the driver and exact instance ID from a fresh capability
+snapshot, and the API persists that owner. Worker resumes and transfers only
+through that exact instance; it never falls back to another instance or client.
+
+Local managed Conversations use the selected AI Client instance's normal Codex
+home, normally `~/.codex`, and the selected Project checkout or explicit
+worktree as `cwd`. This preserves the User's authentication, MCP servers,
+Capture Hooks, skills, settings, and provider session history. Multiple managed
+Conversations may share that Codex home; command and workspace fencing provide
+execution isolation. Koed never removes or rewrites the provider home during
+shutdown or cleanup.
+
+When Desktop runs against a non-default `KOED_HOME`, its managed app-server
+process overlays only `[mcp_servers.koed.env].KOED_HOME` for that process. The
+User's normal Codex configuration remains unchanged, while `memory_answer`
+uses the same active Koed runtime as Desktop.
+
+Managed subagent `thread/started` events create linked child Captured Sessions
+and reconcile each child rollout separately. Managed terminal boundaries are
+held until their journaled records project successfully, so a later turn cannot
+be folded into an earlier seal. Existing Codex CLI and native-app conversations
+remain captured from transcript growth; Capture Hook signals only reduce watcher
+latency.
 
 Codex hook configuration should include `Stop` as well as prompt/tool hooks. If
 Codex asks you to review or trust changed hooks after editing `config.toml`,
@@ -311,6 +320,11 @@ evidence/detail option only when debugging retrieval. Optional bounded
 retrieval hints can seed exact checks, semantic reformulations, entities, and
 temporal intent. The Local AI Runtime treats them as untrusted suggestions and
 cannot use them to broaden authorization or the selected Search Domain.
+
+Koed's generated Codex configuration pre-approves `memory_answer`, so read-only
+recall does not require a separate tool approval. This rule does not pre-approve
+Curated Memory intake or other write-capable tools. Their approval behavior
+follows the Conversation's selected permission mode.
 
 `memory_intake_propose` is also exposed by default for Curated Memory intake. It
 only queues async review of durable source-linked facts; it does not directly

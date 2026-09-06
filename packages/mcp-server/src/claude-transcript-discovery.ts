@@ -180,7 +180,7 @@ export const verifiedTranscriptPath = async (
   env: NodeJS.ProcessEnv
 ): Promise<string> => {
   const [home, candidate] = await Promise.all([
-    realpath(claudeHome(env)),
+    realpath(env.KOED_CLAUDE_SESSION_STORE_DIR ?? claudeHome(env)),
     realpath(path.resolve(transcriptPath))
   ]);
   if (candidate !== home && !candidate.startsWith(`${home}${path.sep}`)) {

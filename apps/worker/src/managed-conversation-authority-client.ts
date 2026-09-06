@@ -8,6 +8,7 @@ import type {
   ManagedConversationForkTargetMaterial,
   ManagedConversationHandoffRecord,
   ManagedConversationHandoffTargetMaterial,
+  ManagedConversationRuntimeItemRecord,
   MemorySourceRepository
 } from "@koed/db";
 import {
@@ -23,6 +24,8 @@ const ordinaryResponseBytes = 4 * 1024 * 1024;
 export type ManagedConversationAuthorityRepository = Pick<
   MemorySourceRepository,
   | "claimManagedConversationCommands"
+  | "claimManagedConversationControlCommands"
+  | "claimManagedConversationFileOperations"
   | "reconcileAbandonedManagedConversationCommands"
   | "renewManagedConversationCommandLease"
   | "renewManagedConversationExecutionLease"
@@ -32,16 +35,27 @@ export type ManagedConversationAuthorityRepository = Pick<
   | "bindManagedConversationSourceGeneration"
   | "setManagedConversationExecutionState"
   | "completeManagedConversationCommand"
+  | "completeManagedConversationFileOperation"
+  | "markManagedConversationCheckpointPending"
   | "failManagedConversationCommand"
+  | "failManagedConversationFileOperation"
+  | "putManagedConversationRuntimeItem"
+  | "getManagedConversationRuntimeItem"
+  | "resolveManagedConversationRuntimeItem"
+  | "cancelManagedConversationRuntimeItems"
   | "blockManagedConversationCommand"
   | "releaseManagedConversationCommandsForSourceGeneration"
   | "isManagedConversationSourceGenerationReady"
+  | "releaseManagedConversationStartForRuntimeBinding"
+  | "failManagedConversationStartForRuntimeBinding"
   | "beginDevelopmentWorkspaceSnapshot"
   | "putDevelopmentWorkspaceSnapshotChunk"
   | "finalizeDevelopmentWorkspaceSnapshot"
   | "getDevelopmentWorkspaceSnapshot"
   | "getDevelopmentWorkspaceSnapshotChunk"
   | "getManagedConversationExecution"
+  | "listManagedConversationExecutionCheckpoints"
+  | "recordManagedConversationExecutionCheckpoint"
   | "listManagedConversationExecutionsForRunner"
   | "getActiveManagedConversationHandoffForExecution"
   | "getLatestManagedConversationHandoffForExecution"
@@ -84,9 +98,11 @@ export type ManagedConversationAuthorityRepository = Pick<
 class ManagedConversationAuthorityError extends Error {
   readonly transient: boolean;
   readonly code: string | null;
+  readonly statusCode: number;
 
   constructor(status: number, message: string, code?: string) {
     super(message);
+    this.statusCode = status;
     this.name =
       status === 401 || status === 403
         ? "ManagedConversationAuthorityAuthorizationError"
@@ -216,6 +232,40 @@ export const createManagedConversationAuthorityClient = (options: {
             "managed execution"
           ) as unknown as ManagedConversationExecutionRecord
       );
+    },
+
+    async listManagedConversationExecutionCheckpoints(_actor, input) {
+      const payload = await request(
+        "GET",
+        `/v1/managed-conversation-runner/executions/${encodeURIComponent(
+          input.executionId
+        )}/checkpoints`,
+        undefined,
+        ordinaryResponseBytes,
+        { executionGeneration: String(input.executionGeneration) }
+      );
+      if (!Array.isArray(payload.checkpoints)) {
+        throw new ManagedConversationAuthorityError(
+          502,
+          "Managed authority returned invalid execution checkpoints"
+        );
+      }
+      return payload.checkpoints as never;
+    },
+
+    async recordManagedConversationExecutionCheckpoint(_actor, input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/executions/${encodeURIComponent(
+          input.checkpoint.executionId
+        )}/checkpoints`,
+        input,
+        ordinaryResponseBytes
+      );
+      return object(
+        payload.checkpoint,
+        "managed execution checkpoint"
+      ) as never;
     },
 
     async reconcileAbandonedManagedConversationCommands() {
@@ -477,6 +527,132 @@ export const createManagedConversationAuthorityClient = (options: {
       );
     },
 
+    async claimManagedConversationControlCommands(input) {
+      const payload = await request(
+        "POST",
+        "/v1/managed-conversation-runner/commands/claim-controls",
+        {
+          runnerId: input.runnerId,
+          limit: input.limit,
+          leaseMs: input.leaseMs
+        }
+      );
+      if (!Array.isArray(payload.commands)) {
+        throw new ManagedConversationAuthorityError(
+          502,
+          "Managed authority returned invalid control commands"
+        );
+      }
+      return payload.commands.map(
+        (entry) =>
+          object(
+            entry,
+            "managed control command"
+          ) as unknown as ClaimedManagedConversationCommand
+      );
+    },
+
+    async claimManagedConversationFileOperations(input) {
+      const payload = await request(
+        "POST",
+        "/v1/managed-conversation-runner/commands/claim-files",
+        {
+          runnerId: input.runnerId,
+          limit: input.limit,
+          leaseMs: input.leaseMs
+        }
+      );
+      if (!Array.isArray(payload.commands)) {
+        throw new ManagedConversationAuthorityError(
+          502,
+          "Managed authority returned invalid file commands"
+        );
+      }
+      return payload.commands.map(
+        (entry) =>
+          object(
+            entry,
+            "managed file command"
+          ) as unknown as ClaimedManagedConversationCommand
+      );
+    },
+
+    async putManagedConversationRuntimeItem(_actor, input) {
+      const payload = await request(
+        "POST",
+        "/v1/managed-conversation-runner/runtime-items",
+        input
+      );
+      return object(
+        payload.item,
+        "managed runtime item"
+      ) as unknown as ManagedConversationRuntimeItemRecord;
+    },
+
+    async getManagedConversationRuntimeItem(_actor, itemId) {
+      try {
+        const payload = await request(
+          "GET",
+          `/v1/managed-conversation-runner/runtime-items/${encodeURIComponent(
+            itemId
+          )}`
+        );
+        return object(
+          payload.item,
+          "managed runtime item"
+        ) as unknown as ManagedConversationRuntimeItemRecord;
+      } catch (error) {
+        if (
+          error instanceof ManagedConversationAuthorityError &&
+          error.statusCode === 404
+        ) {
+          return null;
+        }
+        throw error;
+      }
+    },
+
+    async resolveManagedConversationRuntimeItem(_actor, input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/runtime-items/${encodeURIComponent(
+          input.itemId
+        )}/resolve`,
+        {
+          executionGeneration: input.executionGeneration,
+          state: input.state
+        }
+      );
+      return boolean(payload.resolved, "runtime item resolution");
+    },
+
+    async cancelManagedConversationRuntimeItems(_actor, input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/executions/${encodeURIComponent(
+          input.executionId
+        )}/runtime-items/cancel`,
+        {
+          executionGeneration: input.executionGeneration,
+          ...(input.providerTurnId
+            ? { providerTurnId: input.providerTurnId }
+            : {})
+        }
+      );
+      const canceled = payload.canceled;
+      if (
+        typeof canceled !== "number" ||
+        !Number.isSafeInteger(canceled) ||
+        canceled < 0
+      ) {
+        throw new ManagedConversationAuthorityError(
+          502,
+          "Managed authority returned invalid runtime cancellation count"
+        );
+      }
+      return canceled;
+    },
+
     async renewManagedConversationCommandLease(input) {
       const payload = await request(
         "POST",
@@ -619,6 +795,37 @@ export const createManagedConversationAuthorityClient = (options: {
       return boolean(payload.completed, "command completion result");
     },
 
+    async completeManagedConversationFileOperation(input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/commands/${encodeURIComponent(
+          input.commandId
+        )}/file-complete`,
+        {
+          leaseToken: input.leaseToken,
+          result: input.result
+        }
+      );
+      return boolean(payload.completed, "file command completion result");
+    },
+
+    async markManagedConversationCheckpointPending(input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/commands/${encodeURIComponent(
+          input.commandId
+        )}/checkpoint-pending`,
+        {
+          leaseToken: input.leaseToken,
+          sourceGenerationId: input.sourceGenerationId,
+          ...(input.providerTurnId
+            ? { providerTurnId: input.providerTurnId }
+            : {})
+        }
+      );
+      return boolean(payload.marked, "checkpoint pending result");
+    },
+
     async failManagedConversationCommand(input) {
       const payload = await request(
         "POST",
@@ -633,8 +840,27 @@ export const createManagedConversationAuthorityClient = (options: {
       );
       return {
         updated: boolean(payload.updated, "command failure result"),
-        reconciled: boolean(payload.reconciled, "command reconciliation result")
+        reconciled: boolean(
+          payload.reconciled,
+          "command reconciliation result"
+        ),
+        requeued: boolean(payload.requeued, "command checkpoint retry result")
       };
+    },
+
+    async failManagedConversationFileOperation(input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/commands/${encodeURIComponent(
+          input.commandId
+        )}/file-fail`,
+        {
+          leaseToken: input.leaseToken,
+          state: input.state,
+          errorCode: input.errorCode
+        }
+      );
+      return boolean(payload.updated, "file command failure result");
     },
 
     async blockManagedConversationCommand(input) {
@@ -687,6 +913,31 @@ export const createManagedConversationAuthorityClient = (options: {
         { readiness: input.readiness ?? "finalized" }
       );
       return boolean(payload.ready, "managed source readiness result");
+    },
+
+    async releaseManagedConversationStartForRuntimeBinding(input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/executions/${encodeURIComponent(
+          input.executionId
+        )}/runtime-binding-ready`,
+        { executionGeneration: input.executionGeneration }
+      );
+      return boolean(payload.ready, "managed runtime binding readiness result");
+    },
+
+    async failManagedConversationStartForRuntimeBinding(input) {
+      const payload = await request(
+        "POST",
+        `/v1/managed-conversation-runner/executions/${encodeURIComponent(
+          input.executionId
+        )}/runtime-binding-failed`,
+        {
+          executionGeneration: input.executionGeneration,
+          errorCode: input.errorCode
+        }
+      );
+      return boolean(payload.failed, "managed runtime binding failure result");
     },
 
     async getManagedConversationExecution(_actor, executionId) {
@@ -1009,12 +1260,19 @@ export const createManagedConversationAuthorityClient = (options: {
 
 const localManagedConversationMethods = new Set<PropertyKey>([
   "upsertManagedConversationRuntimeBinding",
+  "listPendingManagedConversationRuntimeBindings",
+  "bindManagedConversationExecutionWorkspace",
+  "requestManagedConversationExecutionWorkspaceCleanup",
+  "listManagedConversationExecutionWorkspaceCleanupRequests",
+  "completeManagedConversationExecutionWorkspaceCleanup",
+  "failManagedConversationExecutionWorkspaceCleanup",
   "bindManagedConversationLocalRuntime",
   "getManagedConversationRuntimeBinding",
   "clearManagedConversationRuntimeBinding",
   "createCapturedSession",
   "getCapturedSession",
-  "listLcmGraphThreads"
+  "listLcmGraphThreads",
+  "recordWorkflowTokenUsage"
 ]);
 
 export const combineManagedConversationRepositories = (

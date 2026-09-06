@@ -129,7 +129,7 @@ The target must:
 6. prove no conflicting writable runtime exists on the target;
 7. atomically acquire the next execution generation;
 8. restore through the provider adapter;
-9. require `thread/resume(expectedThreadId)` without a `thread/start` fallback;
+9. require native resume of the expected provider identity without a new-session fallback;
 10. verify the returned thread id and provider session-tree identity;
 11. verify restored rollout metadata is anchored to the transferred closure
     digest and exact source range;
@@ -179,9 +179,14 @@ Each provider adapter maintains a compatibility declaration covering:
 - whether continuation preserves provider-native Conversation identity;
 - safe quiesce and stop behavior.
 
-Koed materializes provider artifacts only into a fresh isolated provider home.
-It does not merge arbitrary provider-home directories or transfer provider
-credentials, login state, global settings, caches, or unrelated Conversations.
+Koed materializes only the transferred provider artifact into the target
+adapter's verified session store. For local Codex, that store is the selected AI
+Client instance's existing Codex home; Koed writes the provider-native rollout
+at its bounded expected path without replacing global configuration. An adapter
+may use a dedicated runtime store when its native restoration model requires
+one. Koed never copies or merges an arbitrary provider-home directory and never
+transfers provider credentials, login state, global settings, caches, or
+unrelated Conversations.
 
 Restoration is successful only after the identity proof above reaches
 `identity_verified`. The first subsequent prompt is an ordinary fenced command,
@@ -240,6 +245,11 @@ handoff only when a configured Personal Device authority log can countersign and
 commit the transfer position and old-owner tombstone. Otherwise the receiving
 device creates an explicit fork. Direct reachability does not weaken the
 one-writer rule.
+
+Local execution checkpoint refs from ADR 0033 are not transferred during
+handoff or fork. Portability uses the sealed Conversation source and the
+verified Development Workspace Snapshot. The target runner creates its own
+local checkpoint namespace after materialization.
 
 ### Authorization And Audit
 

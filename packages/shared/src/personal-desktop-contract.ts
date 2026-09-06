@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
 export const PERSONAL_DESKTOP_CONTRACT_VERSION = 7;
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
+export const PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS = 3;
 
 const APPROVAL_REVIEW_TRANSCRIPT_MAX_SEGMENTS = 200;
 const APPROVAL_REVIEW_TRANSCRIPT_MAX_CONTENT_LENGTH = 65_536;
@@ -198,6 +200,17 @@ const projectNameSchema = z.string().trim().min(1).max(160);
 const localProjectPathSchema = z.string().trim().min(1).max(4_096);
 const timestampSchema = z.string().max(64).datetime({ offset: true });
 
+export const personalConversationPresentationSchema = z
+  .object({
+    pinnedAt: timestampSchema.nullable(),
+    displayMode: z.enum(["automatic", "active", "settled"]),
+    snoozedAt: timestampSchema.nullable(),
+    snoozedUntil: timestampSchema.nullable(),
+    version: z.number().int().safe().nonnegative(),
+    updatedAt: timestampSchema
+  })
+  .strict();
+
 export const personalDesktopProjectThreadSchema = z
   .object({
     id: identifierSchema,
@@ -217,7 +230,8 @@ export const personalDesktopProjectThreadSchema = z
     sample: z.string().max(16_384),
     threadKind: z.enum(["conversation", "subagent"]).optional(),
     parentThreadId: identifierSchema.nullable().optional(),
-    parentSessionId: identifierSchema.nullable().optional()
+    parentSessionId: identifierSchema.nullable().optional(),
+    presentation: personalConversationPresentationSchema.nullable()
   })
   .strict();
 
@@ -272,6 +286,11 @@ export const personalDesktopConversationEventSchema = z
     content: z.string().max(1_048_576).optional(),
     contentPreview: z.string().max(16_384),
     invalidatedAt: timestampSchema.nullable(),
+    presentation: conversationPresentationDecisionSchema
+      .refine((value) => value.mode !== "hidden", {
+        message: "Hidden Conversation items cannot cross the Desktop boundary"
+      })
+      .optional(),
     approvalDecisionDisplay: approvalDecisionDisplaySchema.optional(),
     transcriptDisplay: approvalReviewTranscriptDisplaySchema.optional(),
     toolDisplay: personalDesktopToolDisplaySchema.optional(),
@@ -311,6 +330,9 @@ export const personalDesktopConversationEventSchema = z
         parentSourceComponentId: identifierSchema.optional(),
         sourceComponentId: identifierSchema.optional(),
         sourceComponentRole: z.enum(["primary", "auxiliary"]).optional(),
+        clientUserMessageId: z.uuid().optional(),
+        providerTurnId: identifierSchema.optional(),
+        providerItemId: identifierSchema.optional(),
         toolName: z.string().max(256).optional()
       })
       .strict()
@@ -329,6 +351,7 @@ export const personalDesktopChangeEventRefSchema = z
   .object({
     id: z.uuid(),
     projectId: identifierSchema,
+    sourceTable: z.enum(["messages", "tool_events"]),
     threadId: identifierSchema
   })
   .strict();
@@ -353,6 +376,13 @@ export const personalDesktopChangeSchema = z.discriminatedUnion("type", [
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       type: z.literal("notes_changed"),
       noteIds: z.array(z.uuid()).min(1).max(500)
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      type: z.literal("conversation_presentation_changed"),
+      sessionIds: z.array(z.uuid()).min(1).max(500)
     })
     .strict()
 ]);
@@ -518,6 +548,22 @@ export const personalDesktopNoteUpdateInputSchema = z
     idempotencyKey: z.string().trim().min(1).max(500)
   })
   .strict();
+export const personalDesktopSessionPresentationInputSchema = z
+  .object({
+    sessionId: z.uuid(),
+    expectedVersion: z.number().int().safe().nonnegative(),
+    pinned: z.boolean().optional(),
+    displayMode: z.enum(["automatic", "active", "settled"]).optional(),
+    snoozedUntil: timestampSchema.nullable().optional()
+  })
+  .strict()
+  .refine(
+    (input) =>
+      input.pinned !== undefined ||
+      input.displayMode !== undefined ||
+      input.snoozedUntil !== undefined,
+    { message: "At least one presentation change is required" }
+  );
 
 export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
   z
@@ -610,6 +656,13 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
       operation: z.literal("personal.notes.update"),
       input: personalDesktopNoteUpdateInputSchema
     })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.update_presentation"),
+      input: personalDesktopSessionPresentationInputSchema
+    })
     .strict()
 ]);
 
@@ -673,11 +726,18 @@ export const personalDesktopNoteRenameDataSchema = z
   .object({ note: personalDesktopNoteSummarySchema })
   .strict();
 
+export const personalDesktopSessionPresentationDataSchema = z
+  .object({
+    presentation: personalConversationPresentationSchema
+  })
+  .strict();
+
 export const personalDesktopErrorSchema = z
   .object({
     code: z.enum([
       "not_ready",
       "not_found",
+      "conflict",
       "request_failed",
       "invalid_response"
     ]),
@@ -817,7 +877,16 @@ export const personalDesktopResultSchema = z.union([
       data: personalDesktopNoteDataSchema
     })
     .strict(),
-  failedResult("personal.notes.update")
+  failedResult("personal.notes.update"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.update_presentation"),
+      ok: z.literal(true),
+      data: personalDesktopSessionPresentationDataSchema
+    })
+    .strict(),
+  failedResult("personal.sessions.update_presentation")
 ]);
 
 export type PersonalDesktopProjectThread = z.infer<
@@ -887,6 +956,12 @@ export type PersonalDesktopNoteRenameInput = z.infer<
 >;
 export type PersonalDesktopNoteUpdateInput = z.infer<
   typeof personalDesktopNoteUpdateInputSchema
+>;
+export type PersonalDesktopSessionPresentationInput = z.infer<
+  typeof personalDesktopSessionPresentationInputSchema
+>;
+export type PersonalConversationPresentation = z.infer<
+  typeof personalConversationPresentationSchema
 >;
 export type PersonalDesktopRequest = z.infer<
   typeof personalDesktopRequestSchema
@@ -996,5 +1071,8 @@ export interface PersonalDesktopApi {
   updateNote?: (
     input: PersonalDesktopNoteUpdateInput
   ) => Promise<PersonalDesktopNote>;
+  updateSessionPresentation: (
+    input: PersonalDesktopSessionPresentationInput
+  ) => Promise<{ presentation: PersonalConversationPresentation }>;
   subscribe: (listener: (change: PersonalDesktopChange) => void) => () => void;
 }

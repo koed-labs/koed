@@ -127,15 +127,18 @@ canonical records and observations.
 ## Seal ordering
 
 The server stores every turn-scoped managed canonical row as `held`, including
-the app-server completion control. Koed drains JSONL reconciliation first and
-requires the matching persisted `task_complete` or `turn_aborted` observation
-before it atomically releases all held rows in that turn to `pending`. The
-normal worker cannot project held rows, so no message, Memory Event, embedding,
-or LCM work can run early. The app-server terminal event establishes the live
-lifecycle state but cannot authorize Projection by itself. Reconciliation waits
-for a bounded period when the terminal JSONL record trails the app-server
-notification, then fails visibly without releasing the turn if durable evidence
-still has not arrived.
+the app-server completion control. Koed requires the matching persisted
+`task_complete` or `turn_aborted` transcript observation before it releases all
+held rows in that turn to `pending`. The managed runner performs that release as
+the fast path after JSONL reconciliation. If another transcript reader records
+the exact terminal evidence first, or the runner exits after evidence is
+persisted, the Projection worker promotes the same held rows before selecting
+its normal backlog. It never promotes a held turn without that exact durable
+evidence, so no message, Memory Event, embedding, or LCM work can run early. The
+app-server terminal event establishes the live lifecycle state but cannot
+authorize Projection by itself. Reconciliation waits for a bounded period when
+the terminal JSONL record trails the app-server notification, then fails visibly
+without releasing the turn if durable evidence still has not arrived.
 
 Projection orders a canonical turn-completion control after every non-control
 item in that turn even when provider timestamps have different precision or
@@ -145,23 +148,20 @@ display rows may legitimately share a provider sequence; display idempotency
 and source hashes, rather than transcript-sequence uniqueness, prevent
 duplicates.
 
-Each managed thread keeps its isolated Codex home under `KOED_HOME`, including
-the rollout and a mode-`0600` atomic ingestion checkpoint. Resuming after
-restart requires that Codex home, the original provider thread id, Koed
-Captured Session id, and rollout path. Koed refreshes provider credentials,
-verifies the resumed identities and path, revalidates the Captured Session,
-then continues reconciliation from the last fully persisted checkpoint. A
-crash between database persistence and checkpoint rename only causes an
-idempotent replay. Releasing a terminal turn happens before advancing its
-checkpoint, so the same replay also recovers a crash in that window.
+Each local managed thread uses the selected AI Client instance's existing Codex
+home and persists its rollout in that provider-native session store. Resuming
+after restart requires the same configured Codex home, original provider thread
+id, Koed Captured Session id, and rollout path. Koed verifies the resumed
+identities and path, revalidates the Captured Session, then continues
+reconciliation from the database-backed journal cursor. A crash after database
+persistence only causes an idempotent replay. Releasing a terminal turn happens
+before advancing its cursor, so the same replay also recovers a crash in that
+window.
 
-Only one coordinator may use a managed Codex home. Acquisition uses an
-exclusive owner lease tied to the PID and operating-system process start
-identity, so PID reuse cannot inherit a stale lease. A dead owner's lease is
-quarantined without allowing two contenders to replace one another's live
-lease. Normal close releases the lease but preserves the durable home. Explicit
-managed-home destruction acquires the same lease before removing the home,
-rollout, checkpoint, and stale-lease tombstones.
+Multiple app-server processes may use the same Codex home. Koed fences each
+managed execution and writable execution workspace instead of locking provider
+configuration. Shutdown and workspace cleanup never remove or rewrite the
+User's Codex home.
 
 The watcher and managed coordinator append complete JSONL bytes to the
 Conversation Source Journal before canonical consumption. A page-ending
@@ -218,7 +218,7 @@ the parent thread; they are not flattened into the parent transcript.
 - `codex-managed-conversation.test.ts` exercises a real stdio JSON-RPC child,
   verifies reconciliation-before-seal ordering, byte-bounded multi-page
   completion, parent/child thread isolation, delayed terminal reconciliation,
-  exclusive durable-home ownership, checkpoint reuse, and completion recovery
+  shared configured-home operation, cursor reuse, and completion recovery
   through `thread/resume` plus JSONL.
 - `codex-app-server-protocol-compatibility.test.ts` checks generated protocol
   capability acceptance and explicit drift failure.

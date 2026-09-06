@@ -210,7 +210,7 @@ const validateBackendCapabilities = async (
       response(true, 200, {
         product: "koed",
         apiVersion: "v1",
-        capabilitySchemaVersion: 6,
+        capabilitySchemaVersion: 9,
         deployment: { profile: "team_self_hosted" },
         capabilities:
           options.collaboration === false

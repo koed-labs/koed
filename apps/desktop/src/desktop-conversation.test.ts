@@ -7,6 +7,7 @@ import {
   expandConversationDisplayEvents,
   groupConversationEvents,
   mergeConversationEvents,
+  stabilizeConversationTimelineItems,
   summarizeToolActivity,
   type DesktopConversationEvent
 } from "./desktop-conversation.js";
@@ -58,6 +59,54 @@ describe("native Desktop conversation contract", () => {
       kind: "tool-group",
       events: [{ id: "tool-1" }, { id: "tool-2" }]
     });
+  });
+
+  it("preserves unchanged timeline row identities across live updates", () => {
+    const user = event("user", "2026-07-13T11:00:00.000Z", {
+      actor: "user"
+    });
+    const firstTool = event("tool-1", "2026-07-13T11:01:00.000Z", {
+      actor: "tool"
+    });
+    const secondTool = event("tool-2", "2026-07-13T11:02:00.000Z", {
+      actor: "tool"
+    });
+    const initial = stabilizeConversationTimelineItems(
+      groupConversationEvents([user, firstTool, secondTool]),
+      { byId: new Map(), result: [] }
+    );
+    const assistant = event("assistant", "2026-07-13T11:03:00.000Z");
+    const updated = stabilizeConversationTimelineItems(
+      groupConversationEvents([user, firstTool, secondTool, assistant]),
+      initial
+    );
+
+    expect(updated.result[0]).toBe(initial.result[0]);
+    expect(updated.result[1]).toBe(initial.result[1]);
+    expect(updated.result[2]).not.toBe(initial.result[1]);
+  });
+
+  it("limits a 500-row live update to the one changed row", () => {
+    const events = Array.from({ length: 500 }, (_, index) =>
+      event(
+        `event-${index}`,
+        `2026-07-13T11:${String(index % 60).padStart(2, "0")}:00.000Z`
+      )
+    );
+    const initial = stabilizeConversationTimelineItems(
+      groupConversationEvents(events),
+      { byId: new Map(), result: [] }
+    );
+    const changed = [...events];
+    changed[499] = { ...changed[499]!, content: "Updated live output" };
+    const updated = stabilizeConversationTimelineItems(
+      groupConversationEvents(changed),
+      initial
+    );
+
+    expect(
+      updated.result.filter((item, index) => item === initial.result[index])
+    ).toHaveLength(499);
   });
 
   it("expands approval-review fallback data into the standard timeline shape", () => {

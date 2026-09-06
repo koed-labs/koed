@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createManagedConversationAuthorityClient } from "./managed-conversation-authority-client.js";
+import {
+  combineManagedConversationRepositories,
+  createManagedConversationAuthorityClient
+} from "./managed-conversation-authority-client.js";
 
 describe("Managed Conversation authority client", () => {
   const ids = {
@@ -11,6 +14,39 @@ describe("Managed Conversation authority client", () => {
     snapshot: "00000000-0000-4000-8000-000000000014",
     session: "00000000-0000-4000-8000-000000000015"
   };
+
+  it("keeps provider usage on the execution device while authority stays remote", async () => {
+    const localOwnerUserId = ids.session;
+    const recordWorkflowTokenUsage = vi.fn(async () => ({ id: "usage-1" }));
+    const remoteClaim = vi.fn(async () => []);
+    const repository = combineManagedConversationRepositories(
+      { recordWorkflowTokenUsage } as never,
+      { claimManagedConversationCommands: remoteClaim } as never,
+      localOwnerUserId
+    );
+
+    await repository.recordWorkflowTokenUsage(
+      { userId: "remote-owner-is-not-local" },
+      {
+        workflowType: "managed_conversation",
+        workflowId: "execution-1",
+        totalTokens: 42
+      }
+    );
+    await repository.claimManagedConversationCommands({
+      runnerId: "runner-1",
+      deviceId: "00000000-0000-4000-8000-000000000020",
+      deploymentId: "00000000-0000-4000-8000-000000000021",
+      limit: 1,
+      leaseMs: 30_000
+    });
+
+    expect(recordWorkflowTokenUsage).toHaveBeenCalledWith(
+      { userId: localOwnerUserId },
+      expect.objectContaining({ workflowId: "execution-1" })
+    );
+    expect(remoteClaim).toHaveBeenCalledOnce();
+  });
 
   it("binds the first durable source generation through runner authority", async () => {
     const execution = {
@@ -53,6 +89,266 @@ describe("Managed Conversation authority client", () => {
       runnerId: "runner-1",
       expectedSourceGenerationId: "source-generation-before",
       sourceGenerationId: execution.sourceGenerationId
+    });
+  });
+
+  it("persists checkpoint-only recovery through runner authority", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (request) => {
+      const path = new URL(String(request)).pathname;
+      return new Response(
+        JSON.stringify(
+          path.endsWith("checkpoint-pending")
+            ? { marked: true }
+            : { updated: true, reconciled: false, requeued: true }
+        ),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      );
+    });
+    const client = createManagedConversationAuthorityClient({
+      baseUrl: "https://team.example.test",
+      authorization: "Koed-Device test",
+      envelopeEncryptionProvider: {} as never,
+      fetch: fetch as typeof globalThis.fetch
+    });
+    const commandId = "00000000-0000-4000-8000-000000000030";
+    const leaseToken = "00000000-0000-4000-8000-000000000031";
+
+    await expect(
+      client.markManagedConversationCheckpointPending({
+        commandId,
+        leaseToken,
+        sourceGenerationId: ids.generation,
+        providerTurnId: "provider-turn-1"
+      })
+    ).resolves.toBe(true);
+    await expect(
+      client.failManagedConversationCommand({
+        commandId,
+        leaseToken,
+        state: "indeterminate",
+        errorCode: "ExecutionCheckpointConcurrentMutationError"
+      })
+    ).resolves.toEqual({
+      updated: true,
+      reconciled: false,
+      requeued: true
+    });
+    expect(new URL(String(fetch.mock.calls[0]?.[0])).pathname).toBe(
+      `/v1/managed-conversation-runner/commands/${commandId}/checkpoint-pending`
+    );
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
+      leaseToken,
+      sourceGenerationId: ids.generation,
+      providerTurnId: "provider-turn-1"
+    });
+  });
+
+  it("lists and records checkpoints through runner authority", async () => {
+    const executionId = "00000000-0000-4000-8000-000000000040";
+    const checkpoint = {
+      id: "00000000-0000-4000-8000-000000000041",
+      executionId,
+      executionGeneration: 3,
+      commandId: "00000000-0000-4000-8000-000000000042",
+      providerTurnId: null,
+      sourceGenerationId: null,
+      sequence: 0,
+      checkpointKind: "baseline" as const,
+      checkpointStatus: "unsupported" as const,
+      failureCode: null,
+      repositoryIdentityHash: null,
+      worktreeIdentityHash: null,
+      vcsDriver: null,
+      checkpointRef: null,
+      commitObjectId: null,
+      capturedAt: "2026-08-18T00:00:00.000Z"
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>(async (request, init) => {
+      const method = init?.method ?? "GET";
+      return new Response(
+        JSON.stringify(
+          method === "GET"
+            ? { checkpoints: [{ ...checkpoint, ownerUserId: ids.session }] }
+            : {
+                checkpoint: {
+                  ...checkpoint,
+                  ownerUserId: ids.session,
+                  createdAt: checkpoint.capturedAt
+                }
+              }
+        ),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    const client = createManagedConversationAuthorityClient({
+      baseUrl: "https://team.example.test",
+      authorization: "Koed-Device test",
+      envelopeEncryptionProvider: {} as never,
+      fetch: fetch as typeof globalThis.fetch
+    });
+
+    await expect(
+      client.listManagedConversationExecutionCheckpoints(
+        { userId: "local-owner-is-not-forwarded" },
+        { executionId, executionGeneration: 3 }
+      )
+    ).resolves.toEqual([{ ...checkpoint, ownerUserId: ids.session }]);
+    await expect(
+      client.recordManagedConversationExecutionCheckpoint(
+        { userId: "local-owner-is-not-forwarded" },
+        { checkpoint, diffs: [] }
+      )
+    ).resolves.toEqual({
+      ...checkpoint,
+      ownerUserId: ids.session,
+      createdAt: checkpoint.capturedAt
+    });
+
+    const listUrl = new URL(String(fetch.mock.calls[0]?.[0]));
+    expect(listUrl.pathname).toBe(
+      `/v1/managed-conversation-runner/executions/${executionId}/checkpoints`
+    );
+    expect(listUrl.searchParams.get("executionGeneration")).toBe("3");
+    expect(new URL(String(fetch.mock.calls[1]?.[0])).pathname).toBe(
+      `/v1/managed-conversation-runner/executions/${executionId}/checkpoints`
+    );
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toEqual({
+      checkpoint,
+      diffs: []
+    });
+  });
+
+  it("claims and settles file operations through runner authority", async () => {
+    const commandId = "00000000-0000-4000-8000-000000000050";
+    const leaseToken = "00000000-0000-4000-8000-000000000051";
+    const checkpointId = "00000000-0000-4000-8000-000000000052";
+    const command = {
+      id: commandId,
+      commandKind: "file_read",
+      executionId: "00000000-0000-4000-8000-000000000053"
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>(async (request) => {
+      const path = new URL(String(request)).pathname;
+      return new Response(
+        JSON.stringify(
+          path.endsWith("claim-files")
+            ? { commands: [command] }
+            : path.endsWith("file-complete")
+              ? { completed: true }
+              : { updated: true }
+        ),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    const client = createManagedConversationAuthorityClient({
+      baseUrl: "https://team.example.test",
+      authorization: "Koed-Device test",
+      envelopeEncryptionProvider: {} as never,
+      fetch: fetch as typeof globalThis.fetch
+    });
+    const result = {
+      protocolVersion: 1 as const,
+      checkpointId,
+      checkpointSequence: 1,
+      revision: { checkpointId, revisionDigest: "a".repeat(64) },
+      kind: "read" as const,
+      path: "src/example.ts",
+      content: "export {};\n",
+      contentDigest: "b".repeat(64),
+      totalBytes: 11,
+      offset: 0,
+      nextOffset: null,
+      lineCount: 2
+    };
+
+    await expect(
+      client.claimManagedConversationFileOperations({
+        runnerId: "runner",
+        deploymentId: ids.generation,
+        deviceId: ids.session,
+        limit: 2,
+        leaseMs: 30_000
+      })
+    ).resolves.toEqual([command]);
+    await expect(
+      client.completeManagedConversationFileOperation({
+        commandId,
+        leaseToken,
+        result
+      })
+    ).resolves.toBe(true);
+    await expect(
+      client.failManagedConversationFileOperation({
+        commandId,
+        leaseToken,
+        state: "queued",
+        errorCode: "ManagedConversationAuthorityUnavailableError"
+      })
+    ).resolves.toBe(true);
+    expect(
+      fetch.mock.calls.map((call) => new URL(String(call[0])).pathname)
+    ).toEqual([
+      "/v1/managed-conversation-runner/commands/claim-files",
+      `/v1/managed-conversation-runner/commands/${commandId}/file-complete`,
+      `/v1/managed-conversation-runner/commands/${commandId}/file-fail`
+    ]);
+  });
+
+  it("publishes verified workspace readiness and bounded rejection through runner authority", async () => {
+    const executionId = "00000000-0000-4000-8000-000000000001";
+    const fetch = vi.fn<typeof globalThis.fetch>(async (request) => {
+      const path = new URL(String(request)).pathname;
+      return new Response(
+        JSON.stringify(
+          path.endsWith("runtime-binding-ready")
+            ? { ready: true }
+            : { failed: true }
+        ),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      );
+    });
+    const client = createManagedConversationAuthorityClient({
+      baseUrl: "https://team.example.test",
+      authorization: "Koed-Device test",
+      envelopeEncryptionProvider: {} as never,
+      fetch: fetch as typeof globalThis.fetch
+    });
+    const binding = {
+      ownerUserId: ids.session,
+      executionId,
+      executionGeneration: 2,
+      deploymentId: "00000000-0000-4000-8000-000000000020",
+      deviceId: "00000000-0000-4000-8000-000000000021"
+    };
+
+    await expect(
+      client.releaseManagedConversationStartForRuntimeBinding(binding)
+    ).resolves.toBe(true);
+    await expect(
+      client.failManagedConversationStartForRuntimeBinding({
+        ...binding,
+        errorCode: "ExecutionWorkspaceSourceDirtyError"
+      })
+    ).resolves.toBe(true);
+
+    expect(new URL(String(fetch.mock.calls[0]?.[0])).pathname).toBe(
+      `/v1/managed-conversation-runner/executions/${executionId}/runtime-binding-ready`
+    );
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
+      executionGeneration: 2
+    });
+    expect(new URL(String(fetch.mock.calls[1]?.[0])).pathname).toBe(
+      `/v1/managed-conversation-runner/executions/${executionId}/runtime-binding-failed`
+    );
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toEqual({
+      executionGeneration: 2,
+      errorCode: "ExecutionWorkspaceSourceDirtyError"
     });
   });
 

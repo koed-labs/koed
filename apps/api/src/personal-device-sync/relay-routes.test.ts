@@ -67,6 +67,147 @@ const relayContext = (
   }) as unknown as ApiRouteContext;
 
 describe("PDS relay routes", () => {
+  it("stores and returns only signed, current peer route advertisements", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const publicKey = keys.publicKey.export({ format: "jwk" }).x!;
+    const authenticatePdsRelayRequest = vi.fn(async () => ({
+      groupDbId: "group-db",
+      groupId: "group",
+      headHash: "head",
+      epoch: "1",
+      deviceId,
+      signingKeyId,
+      signingPublicKey: publicKey,
+      recipientDeviceIds: [deviceId],
+      certificate: {}
+    }));
+    const advertisePdsPeerRoute = vi.fn(async () => undefined);
+    const listPdsPeerRoutes = vi.fn(async () => [
+      {
+        deviceId: "AgICAgICAgICAgICAgICAg",
+        canonicalAdvertisement: "{}",
+        canonicalRequestProof: "{}"
+      }
+    ]);
+    const repository = {
+      authenticatePdsRelayRequest,
+      consumePdsRelayRequestNonce: vi.fn(async () => undefined),
+      advertisePdsPeerRoute,
+      listPdsPeerRoutes
+    };
+    const app = Fastify();
+    registerPersonalDeviceSyncRelayRoutes(app, relayContext(repository));
+    const target = "/v1/personal-device-sync/relay/peer-routes";
+    const advertisedAt = new Date();
+    const payload = canonicalizePdsJson({
+      protocol: "koed/pds-peer/v1",
+      endpointUrl: "http://192.168.1.20:3310/pds",
+      advertisedAt: advertisedAt.toISOString(),
+      expiresAt: new Date(advertisedAt.getTime() + 180_000).toISOString()
+    });
+    const proof = relayProof({
+      privateKey: keys.privateKey,
+      target,
+      nonce: Buffer.alloc(32, 8).toString("base64url"),
+      method: "POST",
+      body: Buffer.from(payload, "utf8")
+    });
+    const accepted = await app.inject({
+      method: "POST",
+      url: target,
+      payload,
+      headers: {
+        "content-type": "application/json",
+        "x-pds-membership-certificate": certificate,
+        "x-pds-relay-proof": proof
+      }
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(advertisePdsPeerRoute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deviceId,
+        endpointUrl: "http://192.168.1.20:3310/pds",
+        canonicalAdvertisement: payload,
+        canonicalRequestProof: Buffer.from(proof, "base64url").toString("utf8")
+      })
+    );
+
+    const listed = await app.inject({
+      method: "GET",
+      url: target,
+      headers: {
+        "x-pds-membership-certificate": certificate,
+        "x-pds-relay-proof": relayProof({
+          privateKey: keys.privateKey,
+          target,
+          nonce: Buffer.alloc(32, 9).toString("base64url")
+        })
+      }
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toEqual({ routes: await listPdsPeerRoutes() });
+    await app.close();
+  });
+
+  it("keeps route discovery on the Authority relay but permits signed local data-plane receipts", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const publicKey = keys.publicKey.export({ format: "jwk" }).x!;
+    const canonicalAck = canonicalizePdsJson({ result: "materialized" });
+    const repository = {
+      authenticatePdsRelayRequest: vi.fn(async () => ({
+        groupDbId: "group-db",
+        groupId: "group",
+        headHash: "head",
+        epoch: "1",
+        deviceId,
+        signingKeyId,
+        signingPublicKey: publicKey,
+        recipientDeviceIds: [deviceId],
+        certificate: {}
+      })),
+      consumePdsRelayRequestNonce: vi.fn(async () => undefined),
+      getPdsPeerReceipt: vi.fn(async () => canonicalAck)
+    };
+    const context = relayContext(repository);
+    context.personalDeviceSync.authoritySigner = null;
+    context.personalDeviceSync.secureKeyProvider = {} as never;
+    const app = Fastify();
+    registerPersonalDeviceSyncRelayRoutes(app, context);
+
+    const routesTarget = "/v1/personal-device-sync/relay/peer-routes";
+    const routes = await app.inject({
+      method: "GET",
+      url: routesTarget,
+      headers: {
+        "x-pds-membership-certificate": certificate,
+        "x-pds-relay-proof": relayProof({
+          privateKey: keys.privateKey,
+          target: routesTarget,
+          nonce: Buffer.alloc(32, 10).toString("base64url")
+        })
+      }
+    });
+    expect(routes.statusCode).toBe(503);
+
+    const transportId = Buffer.alloc(32, 11).toString("base64url");
+    const receiptTarget = `/v1/personal-device-sync/relay/transports/${transportId}/peer-receipts/${deviceId}`;
+    const receipt = await app.inject({
+      method: "GET",
+      url: receiptTarget,
+      headers: {
+        "x-pds-membership-certificate": certificate,
+        "x-pds-relay-proof": relayProof({
+          privateKey: keys.privateKey,
+          target: receiptTarget,
+          nonce: Buffer.alloc(32, 12).toString("base64url")
+        })
+      }
+    });
+    expect(receipt.statusCode).toBe(200);
+    expect(receipt.json()).toEqual({ canonicalAck });
+    await app.close();
+  });
+
   it("accepts only a signed, fresh semantic capability advertisement", async () => {
     const keys = generateKeyPairSync("ed25519");
     const publicKey = keys.publicKey.export({ format: "jwk" }).x!;

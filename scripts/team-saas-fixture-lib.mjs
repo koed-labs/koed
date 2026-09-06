@@ -2267,9 +2267,10 @@ const seedConversationSourceFixture = async (client, runtime) => {
     await client.query(
       `insert into conversation_source_artifacts (
          id, owner_user_id, session_id, logical_source_id,
-         source_generation_id, replica_role, source_kind, source_runtime,
-         external_session_id, source_fingerprint, artifact_format,
-         artifact_format_version, source_adapter_version, lifecycle,
+         source_generation_id, source_component_id, source_component_role,
+         parent_source_component_id, content_framing, replica_role,
+         source_kind, source_runtime, external_session_id, source_fingerprint,
+         artifact_format, artifact_format_version, source_adapter_version, lifecycle,
          journal_start_offset, journal_start_line, live_start_offset,
          live_start_line, provider_cursor_offset, provider_cursor_line,
          current_source_length, current_journal_sequence, source_created_at,
@@ -2280,10 +2281,11 @@ const seedConversationSourceFixture = async (client, runtime) => {
          origin_deployment_id, origin_device_id, origin_key_id,
          origin_public_key, redacted_source_label, finalized_at
        ) values (
-         $1,$2,$3,$4,$5,'origin_local','codex','codex',$6,$7,'codex_rollout_jsonl',1,
-         'codex-transcript-v1','finalized',0,0,0,0,$8,$9,$8,$10,$11,$11,
-         'envelope_db',$12,$13,$14,$15,$16,$17,$18,$19,
-         $20,$21,$22,$23,'Fixture Codex session',$19
+         $1,$2,$3,$4,$5,'main','primary',null,'jsonl','origin_local',
+         'codex','codex',$6,$7,'jsonl',1,'codex-transcript-v1','finalized',
+         0,0,0,0,$8,$9,$8,$10,$11,$11,'envelope_db',$12,
+         $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
+         'Fixture Codex session',$19
        )`,
       [
         source.artifactId,
@@ -2336,7 +2338,7 @@ const seedConversationSourceFixture = async (client, runtime) => {
           row.ciphertextDigest,
           row.plaintextSize,
           row.storedSize,
-          `${source.logicalSourceId}/${source.sourceGenerationId}/${row.manifest.segmentIndex}`,
+          `${source.logicalSourceId}/${source.sourceGenerationId}/main/${row.manifest.segmentIndex}`,
           json(row.envelope),
           json(row.manifest),
           row.signedManifest.signature,
@@ -2362,11 +2364,11 @@ const seedConversationSourceFixture = async (client, runtime) => {
          mutation_id, granted_by_user_id, creator_authority, created_at,
          updated_at, revoked_at, revoked_by_user_id, revocation_reason
        ) values (
-         $1,$2,$3,$4,$15,$5,$6,$7,$8,$9,$10,$11,1,$12,$13,$5,
-         'fixture_seed',$14,$14,
-         case when $12='revoked' then $14::timestamptz else null end,
-         case when $12='revoked' then $5::uuid else null end,
-         case when $12='revoked' then 'fixture_revocation' else null end
+         $1,$2,$3,$4,$6,$5,$7,$8,$9,$10,$11,$12,1,$13,$14,$5,
+         'fixture_seed',$15,$15,
+         case when $13='revoked' then $15::timestamptz else null end,
+         case when $13='revoked' then $5::uuid else null end,
+         case when $13='revoked' then 'fixture_revocation' else null end
        )`,
       [
         source.id,
@@ -2374,6 +2376,7 @@ const seedConversationSourceFixture = async (client, runtime) => {
         source.artifactId,
         source.logicalSourceId,
         owner.id,
+        source.sourceGenerationId,
         memory.sessionId,
         fixtureTeam.id,
         fixtureWorkspaces[memory.workspace].id,
@@ -2382,8 +2385,7 @@ const seedConversationSourceFixture = async (client, runtime) => {
         snapshotMaximumOffset,
         source.lifecycle,
         source.mutationId,
-        sourceCreatedAt,
-        source.sourceGenerationId
+        sourceCreatedAt
       ]
     );
     await client.query(

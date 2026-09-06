@@ -5,6 +5,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  type MessageBoxOptions,
   nativeImage,
   nativeTheme,
   net,
@@ -18,6 +19,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
 import {
+  desktopStatusChangedChannel,
   desktopRendererOrigin,
   personalDevicePairingLinkChannel,
   personalMemoryEventChannel
@@ -59,6 +61,7 @@ import {
   type DesktopThemePreference
 } from "./window/theme-preference.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
+import { createManagedPreviewController } from "./window/managed-preview-controller.js";
 import { startDesktopWindowAndRuntime } from "./window/startup.js";
 import {
   createLaunchAtStartupController,
@@ -113,6 +116,7 @@ let mainWindow: BrowserWindow | null = null;
 let desktopMenuBar: DesktopMenuBar | null = null;
 let backgroundLaunchPending = false;
 const pairingLinkInbox = createPersonalDevicePairingInbox();
+const managedPreviewController = createManagedPreviewController();
 
 const acceptPairingDeepLink = (value: string): string | null => {
   const pairingLink = pairingLinkFromDeepLink(value);
@@ -181,7 +185,9 @@ const openExternal = createExternalUrlOpener({
     })
 });
 
-const createServerManager = (): KoedServerManager =>
+const createServerManager = (
+  managedConversationDraftStore?: ReturnType<typeof createPdsDesktopSecretStore>
+): KoedServerManager =>
   createKoedServerManager({
     repoRoot,
     cliPath: koedServerCli,
@@ -213,6 +219,23 @@ const createServerManager = (): KoedServerManager =>
         properties: ["createDirectory", "showOverwriteConfirmation"]
       });
       return selected.canceled ? null : (selected.filePath ?? null);
+    },
+    ...(managedConversationDraftStore ? { managedConversationDraftStore } : {}),
+    confirmSourceControlMutation: async ({ operation }) => {
+      const options: MessageBoxOptions = {
+        type: "warning",
+        title: "Confirm source-control action",
+        message: "Allow this source-control change?",
+        detail: `Koed will run the exact ${operation.replaceAll("_", " ")} action against the selected repository revision.`,
+        buttons: ["Cancel", "Allow"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true
+      };
+      const result = mainWindow
+        ? await dialog.showMessageBox(mainWindow, options)
+        : await dialog.showMessageBox(options);
+      return result.response === 1;
     }
   });
 
@@ -339,8 +362,12 @@ const bootstrap = async () => {
   );
   themePreference = readDesktopThemePreference(themePreferenceFile);
   nativeTheme.themeSource = themePreference;
+  const managedConversationDraftStore = createPdsDesktopSecretStore({
+    userDataPath: app.getPath("userData"),
+    storeFilename: "managed-conversation-drafts.json"
+  });
   koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
-  koedServer = createServerManager();
+  koedServer = createServerManager(managedConversationDraftStore);
   const server = koedServer;
   const desktopIcon = getDesktopIcon();
   if (desktopIcon && process.platform === "darwin") {
@@ -352,6 +379,8 @@ const bootstrap = async () => {
     localAiClients: server.localAiClients,
     personalMemory: server.personalMemory,
     managedConversation: server.managedConversation,
+    managedWorkspace: server.managedWorkspace,
+    managedPreview: managedPreviewController,
     consumePendingPersonalDevicePairingLink: (expectedLink) =>
       pairingLinkInbox.consume(expectedLink),
     writeClipboard: (value) => clipboard.writeText(value),
@@ -452,6 +481,13 @@ const bootstrap = async () => {
       }
       void desktopMenuBar?.refresh();
       return result;
+    },
+    onRuntimeSettled: () => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) {
+          window.webContents.send(desktopStatusChangedChannel);
+        }
+      }
     }
   });
 };
@@ -486,6 +522,7 @@ app.on("before-quit", (event) => {
   }
   event.preventDefault();
   void (async () => {
+    await managedPreviewController.close();
     await koedServer?.stop();
     await pdsSecretBridge?.close();
     pdsSecretBridge = null;

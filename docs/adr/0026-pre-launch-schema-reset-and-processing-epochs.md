@@ -62,7 +62,7 @@ These terms are architecture mechanics, not new User-facing product language, so
 
 ### Reset first-release names
 
-Koed will still reset alpha-era externally consumed payload and user-memory processing labels to clean release-V1 baselines before first external release. This includes the active canonical conversation JSON envelope, public capability schema, Projection display label, LCM processing display label, embedding display label, and retrieval/reranking display label. Release capability V1 must carry forward all current capability-schema-6 collaboration, shared-memory, and realtime semantics; reset naming never drops a current capability gate or consumer.
+Koed will still reset alpha-era externally consumed payload and user-memory processing labels to clean release-V1 baselines before first external release. This includes the active canonical conversation JSON envelope, public capability schema, Projection display label, LCM processing display label, embedding display label, and retrieval/reranking display label. Release capability V1 must carry forward all current capability-schema-9 collaboration, shared-memory, and realtime semantics; reset naming never drops a current capability gate or consumer.
 
 Already coherent first-version contracts remain V1 and are not renumbered, including HTTP route namespace V1, `lcm-semantic-summary-v1`, Directed Hosted Cross-Identity Sync V1, frozen `koed/pds/v1`, source adapter V1 contracts, encryption envelope versions, package schemas, and log schemas.
 

@@ -1178,6 +1178,56 @@ describe("LCM summary background service", () => {
     service!.stop();
   });
 
+  it("preserves a work signal received while summarisation is running", async () => {
+    vi.useFakeTimers();
+    let releasePending!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      releasePending = resolve;
+    });
+    let pendingRequests = 0;
+    const fakeClient = {
+      async listLocalMemoryAgentSettings() {
+        return { settings: [] };
+      },
+      async listAiClientInstances() {
+        return { instances: [], capabilitySnapshots: [] };
+      },
+      async listPendingSessionTitles() {
+        return { sessions: [] };
+      },
+      async claimLcmSummaries() {
+        pendingRequests += 1;
+        if (pendingRequests === 1) {
+          await pending;
+        }
+        return { claims: [] };
+      }
+    } as unknown as MemoryApiClient;
+
+    const service = startLcmSummaryService(fakeClient, {
+      serviceConfig: {
+        initialDelayMs: 60_000,
+        pushDelayMs: 10_000,
+        intervalMs: 60_000,
+        batchLimit: 2,
+        titleBatchLimit: 5,
+        titleMinUserEvents: 3
+      }
+    });
+
+    try {
+      const firstRun = service!.trigger("test");
+      service!.nudge("work_arrived_during_run");
+      releasePending();
+      await firstRun;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(pendingRequests).toBe(2);
+    } finally {
+      service!.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("applies persisted LCM summary settings before startup env fallback", async () => {
     const fakeClient = {
       async listLocalMemoryAgentSettings() {

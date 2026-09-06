@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { personalConversationPresentationSchema } from "@koed/shared/personal-desktop";
 import { queryBooleanSchema, visibilitySchema } from "./common-schemas.js";
 import { searchDomainSchema } from "./retrieval-schemas.js";
 
@@ -36,7 +37,8 @@ export const graphThreadIndexResponseSchema = z.object({
           sample: z.string(),
           threadKind: z.enum(["conversation", "subagent"]),
           parentThreadId: z.string().nullable(),
-          parentSessionId: z.string().nullable()
+          parentSessionId: z.string().nullable(),
+          presentation: personalConversationPresentationSchema.nullable()
         })
       )
     })
@@ -159,6 +161,37 @@ export const graphSessionParamsSchema = z.object({
 export const graphSessionTitlePatchSchema = z.object({
   title: z.string().trim().min(1).max(120)
 });
+
+export const graphSessionPresentationPatchSchema = z
+  .object({
+    expectedVersion: z.number().int().safe().nonnegative(),
+    pinned: z.boolean().optional(),
+    displayMode: z.enum(["automatic", "active", "settled"]).optional(),
+    snoozedUntil: z.string().datetime({ offset: true }).nullable().optional()
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (
+      input.pinned === undefined &&
+      input.displayMode === undefined &&
+      input.snoozedUntil === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "At least one presentation change is required"
+      });
+    }
+    if (
+      typeof input.snoozedUntil === "string" &&
+      Date.parse(input.snoozedUntil) <= Date.now()
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["snoozedUntil"],
+        message: "Snooze time must be in the future"
+      });
+    }
+  });
 
 const personalProjectReferenceSchema = z
   .object({

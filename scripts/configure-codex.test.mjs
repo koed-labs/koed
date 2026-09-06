@@ -32,7 +32,7 @@ const stageGuidance = (dir) => {
   );
 };
 
-test("codex configure writes credential-free signal hooks and KOED_HOME-only MCP config", async () => {
+test("codex configure writes credential-free hooks and pre-approved read-only recall", async () => {
   const dir = path.join(
     realpathSync(tmpdir()),
     `koed-configure-codex-${process.pid}-${Date.now()}`
@@ -61,6 +61,11 @@ test("codex configure writes credential-free signal hooks and KOED_HOME-only MCP
     assert.equal(existsSync(hookConfigPath), false);
     const codexConfig = readFileSync(codexConfigPath, "utf8");
     assert.ok(codexConfig.includes(`KOED_HOME = ${JSON.stringify(koedHome)}`));
+    assert.ok(
+      codexConfig.includes(
+        '[mcp_servers.koed.tools.memory_answer]\napproval_mode = "approve"'
+      )
+    );
     assert.doesNotMatch(codexConfig, /MEMORY_API_URL/);
     assert.doesNotMatch(codexConfig, /MEMORY_API_TOKEN/);
     assert.doesNotMatch(codexConfig, /MEMORY_CODEX_APP_SERVER_BINARY/);

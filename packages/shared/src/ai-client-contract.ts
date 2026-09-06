@@ -4,6 +4,24 @@ export const aiClientIdentifierPattern =
 export type AiClientDriverId = string;
 export type AiClientInstanceId = string;
 export type SupportedAiClientDriverId = "codex" | "claude" | "pi";
+export const aiClientPermissionModes = [
+  "supervised",
+  "auto_edit",
+  "auto",
+  "full_access"
+] as const;
+export type AiClientPermissionMode = (typeof aiClientPermissionModes)[number];
+export type AiClientPermissionModeSupport =
+  | "supported"
+  | "requires_bridge"
+  | "unsupported";
+export interface AiClientPermissionContract {
+  defaultPermissionMode: AiClientPermissionMode;
+  permissionModes: Array<{
+    mode: AiClientPermissionMode;
+    support: AiClientPermissionModeSupport;
+  }>;
+}
 
 export const supportedAiClientDriverIds = ["codex", "claude", "pi"] as const;
 export const aiClientDriverIdMaxLength = 96;
@@ -114,6 +132,26 @@ export const isSupportedAiClientDriverId = (
 export const defaultAiClientInstanceId = (
   driverId: SupportedAiClientDriverId
 ): AiClientInstanceId => `${driverId}.default`;
+
+const supportedPermissionModes: Readonly<
+  Record<SupportedAiClientDriverId, ReadonlySet<AiClientPermissionMode>>
+> = Object.freeze({
+  codex: new Set<AiClientPermissionMode>(aiClientPermissionModes),
+  claude: new Set<AiClientPermissionMode>(aiClientPermissionModes),
+  pi: new Set<AiClientPermissionMode>(aiClientPermissionModes)
+});
+
+export const aiClientPermissionContractFor = (
+  driverId: SupportedAiClientDriverId
+): AiClientPermissionContract => ({
+  defaultPermissionMode: "full_access",
+  permissionModes: aiClientPermissionModes.map((mode) => ({
+    mode,
+    support: supportedPermissionModes[driverId].has(mode)
+      ? "supported"
+      : "unsupported"
+  }))
+});
 
 export type AiClientModelProvenance =
   | "reported"

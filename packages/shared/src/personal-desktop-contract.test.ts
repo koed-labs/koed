@@ -93,7 +93,7 @@ TRANSCRIPT DELTA END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb5596
     expect(display?.truncated).toBe(true);
   });
 
-  it("accepts only the four exact Personal Memory operations", () => {
+  it("accepts only the exact Personal Memory operations", () => {
     expect(
       personalDesktopRequestSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
@@ -129,6 +129,13 @@ TRANSCRIPT DELTA END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb5596
       operation: "personal.sessions.update_title",
       input: { title: "Release planning" }
     });
+    expect(
+      personalDesktopRequestSchema.parse({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.sessions.update_presentation",
+        input: { sessionId, expectedVersion: 0, pinned: true }
+      })
+    ).toMatchObject({ operation: "personal.sessions.update_presentation" });
   });
 
   it.each([
@@ -222,6 +229,44 @@ TRANSCRIPT DELTA END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb5596
         input: { sessionId, title: "Release planning", apiToken: "secret" }
       })
     ).toThrow();
+  });
+
+  it("accepts only exact versioned Conversation presentation mutations", () => {
+    const valid = {
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.sessions.update_presentation",
+      input: {
+        sessionId,
+        expectedVersion: 2,
+        displayMode: "active",
+        snoozedUntil: "2026-08-20T10:00:00.000Z"
+      }
+    } as const;
+    expect(personalDesktopRequestSchema.parse(valid)).toEqual(valid);
+    expect(() =>
+      personalDesktopRequestSchema.parse({
+        ...valid,
+        input: { sessionId, expectedVersion: 2 }
+      })
+    ).toThrow();
+    expect(() =>
+      personalDesktopRequestSchema.parse({
+        ...valid,
+        input: { ...valid.input, retention: "delete_source" }
+      })
+    ).toThrow();
+    expect(
+      personalDesktopResultSchema.parse({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.sessions.update_presentation",
+        ok: false,
+        error: {
+          code: "conflict",
+          message: "Conversation navigation changed on another device.",
+          retryable: false
+        }
+      })
+    ).toMatchObject({ ok: false, error: { code: "conflict" } });
   });
 
   it("admits only named display-safe tool fields in event results", () => {

@@ -84,5 +84,10 @@ export const personalDevicePairingLinkConsumeChannel =
 export const personalDevicePairingProgressChannel =
   "koed:personal-device-pairing:progress";
 export { managedConversationCommandChannel } from "./managed-conversation-protocol.js";
+export {
+  managedWorkspaceCommandChannel,
+  managedWorkspaceEventChannel
+} from "./managed-workspace-protocol.js";
 export const setupCommandChannel = "koed:setup:command";
 export const setupProgressEventChannel = "koed:setup:progress";
+export const desktopStatusChangedChannel = "koed:status:changed";

@@ -23,6 +23,7 @@ const ids = {
   device: randomUUID(),
   otherDevice: randomUUID(),
   execution: randomUUID(),
+  command: randomUUID(),
   handoff: randomUUID(),
   fork: randomUUID(),
   snapshot: randomUUID(),
@@ -42,6 +43,8 @@ const buildServer = async (options?: {
 }) => {
   const repository = {
     claimManagedConversationCommands: vi.fn(async () => []),
+    claimManagedConversationControlCommands: vi.fn(async () => []),
+    claimManagedConversationFileOperations: vi.fn(async () => []),
     listManagedConversationExecutionsForRunner: vi.fn(async () => []),
     reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
     getManagedConversationExecution: vi.fn(async () => null),
@@ -105,6 +108,7 @@ const buildServer = async (options?: {
             verifierKind: "secret_hash",
             operationFamilies: options?.operationFamilies ?? [
               "managed_execution",
+              "managed_file_read",
               "sync"
             ],
             metadata:
@@ -142,6 +146,148 @@ const runnerHeaders = {
 };
 
 describe("managed Conversation runner routes", () => {
+  it("lists and records checkpoints only for the assigned execution runner", async () => {
+    const digest = "a".repeat(64);
+    const objectId = "b".repeat(40);
+    const checkpoint = {
+      id: randomUUID(),
+      executionId: ids.execution,
+      executionGeneration: 2,
+      commandId: ids.command,
+      providerTurnId: null,
+      sourceGenerationId: ids.sourceGeneration,
+      sequence: 0,
+      checkpointKind: "baseline",
+      checkpointStatus: "ready",
+      failureCode: null,
+      repositoryIdentityHash: digest,
+      worktreeIdentityHash: digest,
+      vcsDriver: "git",
+      checkpointRef: `refs/koed/checkpoints/${ids.execution}/2/0/baseline`,
+      commitObjectId: objectId,
+      capturedAt: new Date().toISOString()
+    } as const;
+    const list = vi.fn(async () => [{ ...checkpoint, ownerUserId: ids.user }]);
+    const record = vi.fn(async () => ({
+      ...checkpoint,
+      ownerUserId: ids.user,
+      createdAt: new Date().toISOString()
+    }));
+    const fixture = await buildServer({
+      repository: {
+        getManagedConversationExecution: vi.fn(async () => ({
+          id: ids.execution,
+          executionGeneration: 2,
+          runnerDeviceId: ids.device,
+          runnerDeploymentId: ids.deployment
+        })),
+        listManagedConversationExecutionCheckpoints: list,
+        recordManagedConversationExecutionCheckpoint: record
+      }
+    });
+
+    const listed = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/managed-conversation-runner/executions/${ids.execution}/checkpoints?executionGeneration=2`,
+      headers: runnerHeaders
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(list).toHaveBeenCalledWith(
+      { userId: ids.user },
+      { executionId: ids.execution, executionGeneration: 2 }
+    );
+
+    const recorded = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/managed-conversation-runner/executions/${ids.execution}/checkpoints`,
+      headers: runnerHeaders,
+      payload: { checkpoint, diffs: [] }
+    });
+    expect(recorded.statusCode).toBe(200);
+    expect(record).toHaveBeenCalledWith(
+      { userId: ids.user },
+      { checkpoint, diffs: [] }
+    );
+
+    await fixture.app.close();
+  });
+
+  it("rejects checkpoint access from a device not assigned to the execution", async () => {
+    const fixture = await buildServer({
+      repository: {
+        getManagedConversationExecution: vi.fn(async () => ({
+          id: ids.execution,
+          executionGeneration: 1,
+          runnerDeviceId: ids.otherDevice,
+          runnerDeploymentId: ids.deployment
+        }))
+      }
+    });
+
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/managed-conversation-runner/executions/${ids.execution}/checkpoints?executionGeneration=1`,
+      headers: runnerHeaders
+    });
+    expect(response.statusCode).toBe(403);
+    await fixture.app.close();
+  });
+
+  it("records checkpoint-only recovery only for the assigned command runner", async () => {
+    const mark = vi.fn(async () => true);
+    const fixture = await buildServer({
+      repository: {
+        getManagedConversationCommand: vi.fn(async () => ({
+          id: ids.command,
+          executionId: ids.execution,
+          targetDeviceId: null,
+          targetDeploymentId: null
+        })),
+        getManagedConversationExecution: vi.fn(async () => ({
+          id: ids.execution,
+          runnerDeviceId: ids.device,
+          runnerDeploymentId: ids.deployment
+        })),
+        markManagedConversationCheckpointPending: mark
+      }
+    });
+    const leaseToken = randomUUID();
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/managed-conversation-runner/commands/${ids.command}/checkpoint-pending`,
+      headers: runnerHeaders,
+      payload: {
+        leaseToken,
+        sourceGenerationId: ids.sourceGeneration,
+        providerTurnId: "provider-turn-1"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ marked: true });
+    expect(mark).toHaveBeenCalledWith({
+      commandId: ids.command,
+      leaseToken,
+      sourceGenerationId: ids.sourceGeneration,
+      providerTurnId: "provider-turn-1"
+    });
+
+    const malformed = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/managed-conversation-runner/commands/${ids.command}/checkpoint-pending`,
+      headers: runnerHeaders,
+      payload: {
+        leaseToken,
+        sourceGenerationId: ids.sourceGeneration,
+        providerTurnId: "provider-turn-1",
+        ref: "refs/heads/main"
+      }
+    });
+    expect(malformed.statusCode).toBe(400);
+    expect(mark).toHaveBeenCalledTimes(1);
+    await fixture.app.close();
+  });
+
   it("reports exact authority source readiness for the authenticated owner", async () => {
     const readiness = vi.fn(async () => true);
     const fixture = await buildServer({
@@ -215,6 +361,42 @@ describe("managed Conversation runner routes", () => {
       executionGeneration: 2,
       deploymentId: ids.deployment,
       deviceId: ids.device
+    });
+    await fixture.app.close();
+  });
+
+  it("fails a deferred start with a bounded workspace error for its assigned runner", async () => {
+    const fail = vi.fn(async () => true);
+    const fixture = await buildServer({
+      repository: {
+        getManagedConversationExecution: vi.fn(async () => ({
+          id: ids.execution,
+          executionGeneration: 2,
+          runnerDeviceId: ids.device,
+          runnerDeploymentId: ids.deployment
+        })),
+        failManagedConversationStartForRuntimeBinding: fail
+      }
+    });
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/managed-conversation-runner/executions/${ids.execution}/runtime-binding-failed`,
+      headers: runnerHeaders,
+      payload: {
+        executionGeneration: 2,
+        errorCode: "ExecutionWorkspaceSourceDirtyError"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ failed: true });
+    expect(fail).toHaveBeenCalledWith({
+      ownerUserId: ids.user,
+      executionId: ids.execution,
+      executionGeneration: 2,
+      deploymentId: ids.deployment,
+      deviceId: ids.device,
+      errorCode: "ExecutionWorkspaceSourceDirtyError"
     });
     await fixture.app.close();
   });
@@ -444,6 +626,201 @@ describe("managed Conversation runner routes", () => {
       limit: 2,
       leaseMs: 30_000
     });
+    await fixture.app.close();
+  });
+
+  it("scopes the concurrent control lane to the authenticated runner", async () => {
+    const fixture = await buildServer();
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/managed-conversation-runner/commands/claim-controls",
+      headers: runnerHeaders,
+      payload: { runnerId: "control-runner", limit: 3, leaseMs: 30_000 }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(
+      fixture.repository.claimManagedConversationControlCommands
+    ).toHaveBeenCalledWith({
+      ownerUserId: ids.user,
+      runnerId: "control-runner",
+      deviceId: ids.device,
+      deploymentId: ids.deployment,
+      limit: 3,
+      leaseMs: 30_000
+    });
+    await fixture.app.close();
+  });
+
+  it("claims and completes rooted file operations only for the assigned runner", async () => {
+    const complete = vi.fn(async () => true);
+    const checkpointId = randomUUID();
+    const fixture = await buildServer({
+      repository: {
+        getManagedConversationCommand: vi.fn(async () => ({
+          id: ids.command,
+          executionId: ids.execution,
+          commandKind: "file_read"
+        })),
+        getManagedConversationExecution: vi.fn(async () => ({
+          id: ids.execution,
+          runnerDeviceId: ids.device,
+          runnerDeploymentId: ids.deployment
+        })),
+        completeManagedConversationFileOperation: complete
+      }
+    });
+    const claimed = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/managed-conversation-runner/commands/claim-files",
+      headers: runnerHeaders,
+      payload: { runnerId: "file-runner", limit: 4, leaseMs: 30_000 }
+    });
+    const completed = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/managed-conversation-runner/commands/${ids.command}/file-complete`,
+      headers: runnerHeaders,
+      payload: {
+        leaseToken: randomUUID(),
+        result: {
+          protocolVersion: 1,
+          checkpointId,
+          checkpointSequence: 1,
+          revision: {
+            checkpointId,
+            revisionDigest: "a".repeat(64)
+          },
+          kind: "read",
+          path: "src/example.ts",
+          content: "export {};\n",
+          contentDigest: "b".repeat(64),
+          totalBytes: 11,
+          offset: 0,
+          nextOffset: null,
+          lineCount: 2
+        }
+      }
+    });
+    await fixture.app.close();
+
+    expect(claimed.statusCode).toBe(200);
+    expect(
+      fixture.repository.claimManagedConversationFileOperations
+    ).toHaveBeenCalledWith({
+      ownerUserId: ids.user,
+      runnerId: "file-runner",
+      deviceId: ids.device,
+      deploymentId: ids.deployment,
+      limit: 4,
+      leaseMs: 30_000
+    });
+    expect(completed.statusCode).toBe(200);
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        commandId: ids.command,
+        result: expect.objectContaining({ kind: "read" })
+      })
+    );
+  });
+
+  it("requires the managed file-read family independently of managed execution", async () => {
+    const fixture = await buildServer({
+      operationFamilies: ["managed_execution"]
+    });
+    const claimed = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/managed-conversation-runner/commands/claim-files",
+      headers: runnerHeaders,
+      payload: { runnerId: "file-runner", limit: 1, leaseMs: 30_000 }
+    });
+    await fixture.app.close();
+
+    expect(claimed.statusCode).toBe(403);
+    expect(claimed.json()).toEqual({
+      error: "Device credential is not allowed for managed file inspection"
+    });
+    expect(
+      fixture.repository.claimManagedConversationFileOperations
+    ).not.toHaveBeenCalled();
+  });
+
+  it("fences runtime items to the assigned device and exact generation", async () => {
+    const put = vi.fn(async (_actor, input) => ({ id: ids.other, ...input }));
+    const resolve = vi.fn(async () => true);
+    const execution = {
+      id: ids.execution,
+      executionGeneration: 2,
+      runnerDeviceId: ids.device,
+      runnerDeploymentId: ids.deployment
+    };
+    const fixture = await buildServer({
+      repository: {
+        getManagedConversationExecution: vi.fn(async () => execution),
+        putManagedConversationRuntimeItem: put,
+        getManagedConversationRuntimeItem: vi.fn(async () => ({
+          id: ids.other,
+          executionId: ids.execution,
+          executionGeneration: 1
+        })),
+        resolveManagedConversationRuntimeItem: resolve
+      }
+    });
+    const accepted = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/managed-conversation-runner/runtime-items",
+      headers: runnerHeaders,
+      payload: {
+        executionId: ids.execution,
+        executionGeneration: 2,
+        providerRequestId: "provider:request-1",
+        itemKind: "command_approval",
+        payload: { command: "printf safe" }
+      }
+    });
+    const stale = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/managed-conversation-runner/runtime-items",
+      headers: runnerHeaders,
+      payload: {
+        executionId: ids.execution,
+        executionGeneration: 1,
+        providerRequestId: "provider:request-2",
+        itemKind: "command_approval",
+        payload: { command: "printf stale" }
+      }
+    });
+    const staleRead = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/managed-conversation-runner/runtime-items/${ids.other}`,
+      headers: runnerHeaders
+    });
+    const staleResolve = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/managed-conversation-runner/runtime-items/${ids.other}/resolve`,
+      headers: runnerHeaders,
+      payload: { executionGeneration: 1, state: "resolved" }
+    });
+    execution.runnerDeviceId = ids.otherDevice;
+    const wrongDevice = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/managed-conversation-runner/runtime-items",
+      headers: runnerHeaders,
+      payload: {
+        executionId: ids.execution,
+        executionGeneration: 2,
+        providerRequestId: "provider:request-3",
+        itemKind: "command_approval",
+        payload: { command: "printf wrong-device" }
+      }
+    });
+
+    expect(accepted.statusCode).toBe(200);
+    expect(stale.statusCode).toBe(409);
+    expect(staleRead.statusCode).toBe(409);
+    expect(staleResolve.statusCode).toBe(409);
+    expect(wrongDevice.statusCode).toBe(403);
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(resolve).not.toHaveBeenCalled();
     await fixture.app.close();
   });
 

@@ -100,18 +100,11 @@ try {
       items: replicatedTranscriptItems({ sessionId, marker, observedAt })
     }
   });
-  const projected = await request(
-    originA,
-    "/v1/memory/conversation-items/project",
-    {
-      token: tokenA,
-      method: "POST",
-      body: { limit: 100 }
-    }
-  );
-  if (Number(projected.projection?.memoryEventsCreated ?? 0) < 1) {
-    throw new Error("Device A Projection did not create a Memory Event.");
-  }
+  await request(originA, "/v1/memory/conversation-items/project", {
+    token: tokenA,
+    method: "POST",
+    body: { limit: 100 }
+  });
 
   let closure;
   const received = await waitForReplicatedRetrieval({

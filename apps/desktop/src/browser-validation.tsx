@@ -58,15 +58,76 @@ const personalThread: PersonalDesktopProjectThread = {
   invalidatedCount: 1,
   latestAt: timestamp,
   sample:
-    "Captured Session preview used for browser-computed layout validation."
+    "Captured Session preview used for browser-computed layout validation.",
+  presentation: {
+    pinnedAt: timestamp,
+    displayMode: "automatic",
+    snoozedAt: null,
+    snoozedUntil: null,
+    version: 1,
+    updatedAt: timestamp
+  }
 };
+
+const presentationThread = (
+  suffix: number,
+  name: string,
+  presentation: PersonalDesktopProjectThread["presentation"]
+): PersonalDesktopProjectThread => ({
+  ...personalThread,
+  id: `browser-thread-${suffix}`,
+  name,
+  sessionId: uuid(suffix),
+  eventCount: suffix,
+  invalidatedCount: 0,
+  sample: `${name} browser validation preview.`,
+  presentation
+});
+
+const activePresentationThread = presentationThread(2, "Active Conversation", {
+  pinnedAt: null,
+  displayMode: "active",
+  snoozedAt: null,
+  snoozedUntil: null,
+  version: 2,
+  updatedAt: timestamp
+});
+const settledPresentationThread = presentationThread(
+  3,
+  "Settled Conversation",
+  {
+    pinnedAt: null,
+    displayMode: "settled",
+    snoozedAt: null,
+    snoozedUntil: null,
+    version: 3,
+    updatedAt: timestamp
+  }
+);
+const snoozedPresentationThread = presentationThread(
+  4,
+  "Snoozed Conversation",
+  {
+    pinnedAt: null,
+    displayMode: "automatic",
+    snoozedAt: "2099-01-02T09:39:00.000Z",
+    snoozedUntil: "2099-01-03T09:39:00.000Z",
+    version: 4,
+    updatedAt: "2099-01-02T09:39:00.000Z"
+  }
+);
 
 const personalProject: PersonalDesktopProject = {
   id: "browser-project",
   name: "Koed Desktop browser validation",
   path: "/private/operator/koed",
   eventCount: 10_000,
-  threads: [personalThread]
+  threads: [
+    personalThread,
+    activePresentationThread,
+    settledPresentationThread,
+    snoozedPresentationThread
+  ]
 };
 
 const richMarkdownFixture = `# Formatting parity
@@ -285,13 +346,46 @@ const personalEvents: PersonalDesktopConversationEvent[] = [
 
 const personalMemoryApi: PersonalDesktopApi = {
   assignSessionProject: async () => ({ projectId: personalProject.id }),
+  updateSessionPresentation: async () => ({
+    presentation: {
+      pinnedAt: null,
+      displayMode: "automatic",
+      snoozedAt: null,
+      snoozedUntil: null,
+      version: 1,
+      updatedAt: timestamp
+    }
+  }),
   listProjects: async () => [personalProject],
   loadEventPage: async () => personalEvents,
   updateSessionTitle: async ({ title }) => ({ title }),
   subscribe: () => () => undefined
 };
 
-const managedConversations = {
+const unavailableManagedOperation = async (): Promise<never> => {
+  throw new Error("This browser fixture is read-only.");
+};
+
+const managedConversations: ManagedConversationDesktopApi = {
+  launchOptions: async () => ({
+    operation: "launch_options",
+    options: { runners: [], instances: [] }
+  }),
+  start: unavailableManagedOperation,
+  inspect: unavailableManagedOperation,
+  send: unavailableManagedOperation,
+  readDraft: async () => ({ operation: "draft_read", value: "" }),
+  writeDraft: async () => ({ operation: "draft_write", ok: true }),
+  deleteDraft: async () => ({ operation: "draft_delete", ok: true }),
+  targets: unavailableManagedOperation,
+  usage: unavailableManagedOperation,
+  runtime: unavailableManagedOperation,
+  respond: unavailableManagedOperation,
+  interrupt: unavailableManagedOperation,
+  stop: unavailableManagedOperation,
+  transferStatus: unavailableManagedOperation,
+  handoff: unavailableManagedOperation,
+  fork: unavailableManagedOperation,
   resume: async (input) => ({
     operation: "resume",
     status: "read_only",
@@ -303,7 +397,7 @@ const managedConversations = {
     },
     message: "This browser fixture is read-only."
   })
-} as ManagedConversationDesktopApi;
+};
 
 const ValidationApp = () => {
   const client = useMemo(

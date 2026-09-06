@@ -11,6 +11,7 @@ const requiredScenarios = [
   "two-order-convergence",
   "n-device-conflict-quarantine-and-resolution",
   "relay-replay-chunk-reorder-drop-and-duplicate",
+  "peer-direct-route-ack-and-relay-fallback",
   "relay-and-authority-outage",
   "membership-expiry",
   "key-rotation-and-revoked-member",
@@ -54,6 +55,7 @@ run("@koed/shared", [
   "src/personal-device-sync-adversarial-fixture.test.ts",
   "src/personal-device-sync-v1-fixture.test.ts",
   "src/personal-device-session-package.test.ts",
+  "src/personal-device-peer.test.ts",
   "src/personal-device-sync-relay.test.ts"
 ]);
 run("@koed/koed-server", ["src/personal-sync.test.ts"]);

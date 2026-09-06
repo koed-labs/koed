@@ -80,6 +80,7 @@ export class PersonalMemoryStore {
   #liveRefreshAgain = false;
   #liveRefreshQueued = false;
   #liveRefreshRunning = false;
+  #projectRefreshPending = false;
 
   constructor(
     api: PersonalDesktopApi,
@@ -88,12 +89,18 @@ export class PersonalMemoryStore {
     this.#api = api;
     this.#retryBaseMs = Math.max(0, retryBaseMs);
     api.subscribe((change) => {
-      if (change.type !== "conversation_events_changed") return;
-      for (const { id, projectId, threadId } of change.eventRefs) {
-        const key = `${projectId}:${threadId}`;
-        const eventIds = this.#detailRefreshEventIds.get(key) ?? new Set();
-        eventIds.add(id);
-        this.#detailRefreshEventIds.set(key, eventIds);
+      if (change.type === "conversation_events_changed") {
+        this.#projectRefreshPending = true;
+        for (const { id, projectId, threadId } of change.eventRefs) {
+          const key = `${projectId}:${threadId}`;
+          const eventIds = this.#detailRefreshEventIds.get(key) ?? new Set();
+          eventIds.add(id);
+          this.#detailRefreshEventIds.set(key, eventIds);
+        }
+      } else if (change.type === "conversation_presentation_changed") {
+        this.#projectRefreshPending = true;
+      } else {
+        return;
       }
       this.#scheduleLiveRefresh();
     });
@@ -107,7 +114,42 @@ export class PersonalMemoryStore {
   };
 
   refreshFromDurableEvent = (): void => {
+    this.#projectRefreshPending = true;
     this.#scheduleLiveRefresh();
+  };
+
+  upsertThread = (thread: PersonalDesktopProjectThread): void => {
+    const project = this.#snapshot.projectsById.get(thread.projectId);
+    if (!project) return;
+    const threads = [
+      thread,
+      ...project.threads.filter(
+        (candidate) =>
+          candidate.id !== thread.id &&
+          (!thread.sessionId || candidate.sessionId !== thread.sessionId)
+      )
+    ].sort(
+      (left, right) => Date.parse(right.latestAt) - Date.parse(left.latestAt)
+    );
+    const projectsById = new Map(this.#snapshot.projectsById);
+    projectsById.set(thread.projectId, { ...project, threads });
+    const threadsByKey = new Map(this.#snapshot.threadsByKey);
+    for (const [key, candidate] of threadsByKey) {
+      if (
+        candidate.projectId === thread.projectId &&
+        (candidate.id === thread.id ||
+          (thread.sessionId && candidate.sessionId === thread.sessionId))
+      ) {
+        threadsByKey.delete(key);
+      }
+    }
+    threadsByKey.set(personalMemoryThreadKey(thread), thread);
+    this.#replace({
+      ...this.#snapshot,
+      projectsById,
+      revision: this.#snapshot.revision + 1,
+      threadsByKey
+    });
   };
 
   detail(
@@ -200,7 +242,10 @@ export class PersonalMemoryStore {
     try {
       do {
         this.#liveRefreshAgain = false;
-        await this.loadProjects({ silent: true });
+        if (this.#projectRefreshPending) {
+          this.#projectRefreshPending = false;
+          await this.loadProjects({ silent: true });
+        }
         await this.#refreshChangedDetails();
       } while (this.#liveRefreshAgain);
     } finally {
@@ -310,34 +355,16 @@ export class PersonalMemoryStore {
       }
       entry.thread = thread;
       try {
-        const cachedChangedEventIds = new Set(
-          entry.events
-            .filter(({ id }) => changedEventIds.has(id))
-            .map(({ id }) => id)
-        );
         const events = await this.#api.loadEventPage({
           projectId: thread.projectId,
           threadId: thread.id,
-          limit: PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT
+          limit: PERSONAL_DESKTOP_OLDER_EVENT_LIMIT,
+          eventIds: [...changedEventIds]
         });
-        if (this.#cache.get(key) !== entry) continue;
-        const headEventIds = new Set(events.map(({ id }) => id));
-        const changedEventsOutsideHead = [...cachedChangedEventIds].filter(
-          (eventId) => !headEventIds.has(eventId)
-        );
-        const reconciledChangedEvents =
-          changedEventsOutsideHead.length > 0
-            ? await this.#api.loadEventPage({
-                projectId: thread.projectId,
-                threadId: thread.id,
-                limit: PERSONAL_DESKTOP_OLDER_EVENT_LIMIT,
-                eventIds: changedEventsOutsideHead
-              })
-            : [];
         if (this.#cache.get(key) !== entry) continue;
         entry.events = mergeConversationEvents(
           entry.events.filter(({ id }) => !changedEventIds.has(id)),
-          [...events, ...reconciledChangedEvents]
+          events
         );
         entry.hasOlder = entry.events.length < thread.eventCount;
         entry.loadedAt = Date.now();

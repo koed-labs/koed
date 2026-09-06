@@ -15,6 +15,18 @@
       "types": "./dist/collaboration-contract.d.ts",
       "import": "./dist/collaboration-contract.js"
     },
+    "./collaboration-client-runtime": {
+      "types": "./dist/collaboration-client-runtime.d.ts",
+      "import": "./dist/collaboration-client-runtime.js"
+    },
+    "./client-foundation": {
+      "types": "./dist/client-foundation.d.ts",
+      "import": "./dist/client-foundation.js"
+    },
+    "./durable-realtime": {
+      "types": "./dist/durable-realtime.d.ts",
+      "import": "./dist/durable-realtime.js"
+    },
     "./personal-desktop": {
       "types": "./dist/personal-desktop-contract.d.ts",
       "import": "./dist/personal-desktop-contract.js"
@@ -30,6 +42,30 @@
     "./ai-client-contract": {
       "types": "./dist/ai-client-contract.d.ts",
       "import": "./dist/ai-client-contract.js"
+    },
+    "./execution-workspace": {
+      "types": "./dist/execution-workspace.d.ts",
+      "import": "./dist/execution-workspace.js"
+    },
+    "./managed-conversation-diff": {
+      "types": "./dist/managed-conversation-diff.d.ts",
+      "import": "./dist/managed-conversation-diff.js"
+    },
+    "./managed-conversation-files": {
+      "types": "./dist/managed-conversation-files.d.ts",
+      "import": "./dist/managed-conversation-files.js"
+    },
+    "./managed-development-preview": {
+      "types": "./dist/managed-development-preview.d.ts",
+      "import": "./dist/managed-development-preview.js"
+    },
+    "./managed-terminal": {
+      "types": "./dist/managed-terminal.d.ts",
+      "import": "./dist/managed-terminal.js"
+    },
+    "./source-control": {
+      "types": "./dist/source-control.d.ts",
+      "import": "./dist/source-control.js"
     }
   },
   "files": [

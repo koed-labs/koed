@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import {
+  DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES,
   LOCAL_PERSONAL_USER_EMAIL,
   readDesktopLocalCredentialAuthorization,
   storeDesktopLocalCredential
@@ -14,10 +15,8 @@ import { resolve } from "node:path";
 import type { KoedAppRuntime } from "./app-runtime.js";
 import type { KoedServerPaths } from "./paths.js";
 
-const desktopLocalOperationFamilies = [
-  "personal_collaboration_read",
-  "personal_collaboration_write"
-] as const;
+const desktopLocalOperationFamilies =
+  DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES;
 
 export interface LocalApiTokenRepository {
   findUserByEmail: (email: string) => Promise<{ id: string } | null>;

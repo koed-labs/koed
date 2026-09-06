@@ -236,6 +236,15 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     health so a local service failure is actionable. Desktop manages only its
     local personal `koed-server`; remote, Team
     Self-Hosted, and cloud targets are connect-only.
+12. Personal Conversation navigation augments Captured Session rows with an
+    owner-scoped presentation record keyed by stable logical session identity.
+    Pin, explicit active/settled mode, and snooze are display-only state. The
+    renderer computes the fixed three-day automatic settle deadline from latest
+    activity and schedules only the next transition. A successful versioned
+    presentation update publishes a content-free graph invalidation through the
+    existing durable realtime stream; clients resnapshot rather than poll.
+    Presentation changes never mutate source, Capture, Projection, Memory,
+    retention, Share Grants, managed execution, or workspace cleanup.
 
 ## Server Deployment Boundary
 
@@ -323,6 +332,30 @@ upstream pairing. Remote/private/cloud backends report
 The same block repeats the device-enrollment availability, the personal-only API
 Token fallback scope, and the invariant that MCP Server and Supported Capture
 Hook configuration should normally target local `koed-server`.
+
+## Managed source-control sequence
+
+Desktop sends a typed source-control operation through its allowlisted preload
+API. Electron main requests native confirmation for a mutation and calls the
+local API with its scoped Desktop credential; it never returns credential or
+remote URL material to the renderer.
+
+The API then:
+
+1. authenticates the User and required approval tier;
+2. verifies the current managed-execution generation and exact Git workspace;
+3. rediscovers and normalizes the selected remote;
+4. resolves the exact active connection, capability, credential generation,
+   and opaque secure-store reference;
+5. checks expected local and remote revisions;
+6. records mutation dispatch immediately before the bounded provider or Git
+   side effect; and
+7. returns a provider-neutral result and durable idempotent outcome.
+
+Fetch and explicit fast-forward are separate. Provider HTTP uses the shared
+DNS-pinned secure upstream transport and fixed driver paths. See
+[Managed Source Control](source-control.md) and
+[ADR 0038](adr/0038-runner-owned-source-control-credentials.md).
 
 ## Route Identity Contract
 
@@ -567,6 +600,68 @@ upstream device credential from secret storage and never forwards the local
 credential, arbitrary paths, methods, browser headers, or reusable credentials.
 Chat, Shared Memory, Team lifecycle, and realtime use their own typed
 collaboration controls; there is no general local-edge HTTP proxy.
+Capability schema 9 advertises the currently instantiated realtime adapters
+and local managed-development-preview availability.
+SSE remains available through session or scoped device authentication.
+WebTransport and future WebSocket sessions must first obtain a 30-second, hash-only,
+single-use ticket from `POST /v1/realtime/transport-tickets`; the ticket binds
+the current principal/session-or-device, deployment, client instance,
+transport, protocol, operation families, and Origin or native device. The
+first reliable control stream consumes the ticket and stays open for the
+session lifetime. Independent durable and interactive streams then use strict
+ticket-free attach frames, inherit only the admitted operation-family set, and
+reauthorize the active principal and requested resource. Durable streams
+delegate replay, materialization, revocation, backpressure, and heartbeat to
+the same engine used by SSE and preserve the same event/data/cursor semantics.
+Acknowledgement remains an authenticated HTTPS mutation, so an unacknowledged
+disconnect never advances durable state. The optional sibling UDP/TLS HTTP/3
+listener is advertised only after it starts successfully; a disabled listener
+leaves SSE as the compatibility path. Datagrams remain bounded disposable
+hints and are dropped until a resource-authorized domain handler exists.
+Managed Conversation launch treats a local Project path as a source locator,
+not an execution-ready binding. The local API stores a pending binding and
+wakes the assigned worker. For a clean Git Project the worker creates an opaque,
+operation-owned linked worktree; for an explicitly selected existing checkout
+or non-Git directory it records the weaker ownership class. It verifies the
+canonical filesystem and VCS identity, persists the immutable execution
+workspace, and only then releases the authority's blocked start command. Local
+paths and Git administration never cross the authority boundary. Cleanup is a
+separate authenticated request after execution becomes terminal and removes
+only an unchanged, clean Koed-owned worktree and its exact branch.
+Desktop composes the coding workspace around the existing Conversation timeline
+through strict main-process IPC. Recorded diffs and changed-file summaries come
+from runner checkpoints. Rooted browse, read, search, and file mentions remain
+queued runner work and settle from durable realtime revisions rather than UI
+polling. Electron main owns the loopback-scoped file credential and terminal
+WebSocket; renderer code receives only validated DTOs, inert diff/file text,
+terminal frames, and opaque prompt-attachment references. General Conversation
+revisions do not tear down an attached terminal.
+Managed Conversation events carry a versioned execution, latest-command
+sequence, and at most one changed runtime item. Desktop reduces those events
+directly by execution generation and item revision. It reads the bounded
+runtime snapshot only on initial attachment, authoritative stream recovery,
+generation change, or an explicit runtime reset; ordinary streaming output
+does not create a snapshot-fetch loop.
+When a terminal emits a credential-free loopback HTTP(S) URL, the runner uses a
+bounded event-driven verification sequence to prove the exact listener belongs
+to that terminal's process tree before issuing a readiness request. A User may
+also nominate a port for the same verified terminal. The API returns only an
+opaque preview lifecycle record; Electron main obtains the verified URL through
+a loopback-only `managed_preview` credential operation and loads it in an
+ephemeral origin-restricted `WebContentsView`. Renderer code never receives the
+URL or port. Stopping the terminal closes its previews, and an execution
+workspace cannot enter cleanup while any managed terminal process remains
+live. Remote preview relay remains unavailable until its dedicated origin and
+ticketed outbound-runner transport are implemented.
+Source-control operations follow ADR 0038 and remain separate from file,
+terminal, Conversation, and Team authority. The assigned runner binds one
+verified remote, provider host, account, repository, execution generation, and
+credential generation before any network action. Local credentials remain in
+platform-secure storage or an explicitly selected delegated CLI/SSH provider;
+hosted credentials use scoped provider applications and envelope-encrypted
+custody. Renderer and AI Client code receive neither credential material nor a
+generic Git, provider-CLI, or HTTP operation surface. Mutations are structured,
+revision-bound, idempotent, and approval-gated.
 Cross-Identity Sync uses a typed `queued_sync_handoff` route decision, durable
 source outbox and target inbox processing, resumable encrypted upload sessions,
 bounded chunks, and idempotent target apply. Its state model records logical
@@ -831,11 +926,53 @@ health or another client's capture path.
 ## Managed Conversation threads
 
 For a Managed Conversation thread, local `koed-server` owns persistent work for
-selected Codex or Claude Code AI Client instance. Before starting, provider
+the selected Codex, Claude Code, or Pi AI Client instance. Before starting, provider
 adapter verifies installed client compatibility. Stable item lifecycle events
 are persisted immediately as source observations of canonical Conversation
 items; completed item payloads are preferred over started snapshots. Provider
 source time and Koed observation time remain separate.
+
+### Verified managed terminal Projection
+
+Live managed output may precede native item identity. Desktop displays those
+updates by runtime item identity and retires them after the prompt completes.
+Runtime snapshots and realtime command updates include the exact client User
+message ID, so completed Claude and Pi prompts clear their optimistic copy
+without relying on matching text or Codex-specific item IDs.
+
+Managed Conversation items remain held for semantic Projection until native
+terminal evidence is verified. Codex retains its transcript reconciliation
+check. After Claude or Pi capture drains the completed source frontier, the
+runner asks the local API to release the journal boundary. The API authenticates
+the owner, reads the retained source segments in contiguous order, verifies their
+digests, and parses the native completion records independently of runtime or
+Capture Hook completion claims.
+
+Claude completion requires a native assistant stop reason (`end_turn`,
+`stop_sequence`, or `max_tokens`). Pi completion requires a terminal assistant
+stop reason and a connected parent-entry chain back to a User message. An
+unfinished tool call, disconnected branch, partial JSONL record, or unfinished
+latest turn cannot release the hold. Pi preserves the existing canonical
+parent-entry identities when matching captured items.
+
+Release is restricted to the verified source identities and exact captured
+content blocks and adapter-derived text in both the canonical item and its
+observation. Encrypted payloads are authorized before decryption and checked
+against the same source evidence. A mismatch rolls back the release.
+The transaction rechecks the source artifact owner, session, generation, and
+lifecycle after source reads. Claude's content-free completion control is
+released only when its frontier falls after the matching native terminal and
+before the next User turn. Pi retains the native record on the final content
+block; ingestion derives the semantic completion signal from that record, and
+release checks the record against the journal. Projection orders completion
+after the preceding content and seals the assistant Memory. Released items use normal Projection and
+embedding work; repeat capture can retry a failed release.
+
+The local-only `POST /v1/memory/conversation-items/release-journal` request
+contains a Captured Session ID, artifact ID, and byte frontier, never a
+caller-supplied verification result. Verification currently requires a journal
+beginning at byte zero and bounds each request to 64 MiB. Unsupported or
+incomplete evidence fails closed with the items held.
 
 ### Codex app-server transport
 
@@ -848,6 +985,39 @@ Claude Code uses its Agent SDK transport and provider-specific transcript
 frontier. Worker persists same canonical Conversation items and applies same
 terminal evidence, ownership, and no-fallback rules as Codex.
 
+Desktop first requests redacted launch options from its local edge. Those
+options contain current AI Client instance labels, model and reasoning choices,
+exactly supported permission modes, and the current runner identity, but no
+executable paths or account details. The local edge validates the User's
+selection against its current capability snapshot. The authority then stores
+the AI Client driver and instance, model, reasoning effort, permission mode,
+and runner kind as immutable execution configuration. The selected runner
+resolves the same instance and native permission mapping again before create or
+resume. Resume failure never falls through to a new provider thread.
+
+After the API durably accepts a start command, Desktop opens its Conversation
+surface without waiting for Codex app-server startup. The accepted execution id
+is the provisional UI and command identity until the runner publishes the
+canonical Captured Session and provider thread identities. Desktop can accept a
+draft immediately and can enqueue its first prompt against that execution while
+it remains `starting`. Repository command claiming permits only the earliest
+non-terminal command for an execution generation, so the prompt cannot reach
+the provider until startup has completed and a fresh claim contains the bound
+canonical identities. Realtime events replace the provisional identity; no
+renderer polling loop drives this transition.
+
+The runner captures a content baseline before each managed prompt and a
+terminal checkpoint after its durable provider turn. Capture uses one temporary
+index and bounded Git batch plumbing, so child-process count does not grow with
+Project file count. Provider startup and optimistic Conversation rendering do
+not wait on terminal capture; mutating prompt dispatch remains fenced until its
+baseline is durable.
+
+Unsent prompt text remains Desktop presentation state. Desktop main stores it
+through platform secure storage under a hash of authenticated User, backend,
+Project, Captured Session, and provider thread. It is not replicated, ingested,
+or projected and is deleted only after durable prompt-command acceptance.
+
 Koed assigns each managed prompt a `clientUserMessageId`, which is the exact
 shared user-item identity in app-server and JSONL. Role-user response records
 without that id are retained as raw-only context because Codex uses that shape
@@ -858,11 +1028,14 @@ Koed first reconciles the persisted JSONL rollout. JSONL records attach to the
 same canonical keys, provide transcript-only context and chronology, and
 recover missed lifecycle notifications. Only after that pass and terminal
 verification from a persisted `task_complete` or `turn_aborted` record does the
-API release the full turn for Projection. Projection orders that control after
+API release the full turn for Projection. If another transcript reader persists
+the exact terminal record first, or the managed runner exits before release,
+the Projection worker promotes that turn from the same durable evidence before
+processing it. Projection orders the terminal control after
 all non-control items in the same turn and orders tool calls before their
 results even when source times or source sequence spaces differ. A restarted
-coordinator reuses the durable isolated Codex home and atomic transcript
-checkpoint, resumes by provider thread id, verifies the rollout path,
+coordinator reuses the selected AI Client instance's existing Codex home and
+atomic transcript checkpoint, resumes by provider thread id, verifies the rollout path,
 revalidates the existing Captured Session, and runs the same reconciliation.
 The common Projection, embedding, LCM, encryption, retention, and sync paths
 receive only canonical rows and do not know whether app-server or JSONL was the
@@ -873,11 +1046,8 @@ Captured Session and reconciles that child's rollout independently. Parent and
 child turns use the same terminal-evidence requirement and remain distinct
 through Projection and downstream memory.
 
-Desktop exposes explicit managed Conversation start, resume, send, handoff, and
-fork actions for selected AI Client instances. It does not expose provider-native
-cancel, approvals, or token streaming controls because those capabilities remain
-unsupported. Threads started outside Koed are captured from transcript growth;
-Supported Capture Hook signals only reduce watcher latency.
+Threads started outside Koed are captured from transcript growth; Supported
+Capture Hook signals only reduce watcher latency.
 
 Commercial/private VPS/Team deployments can run encrypted-field backfill over
 existing human-readable Memory and evidence columns. Backfill is whitelist-based
@@ -1013,7 +1183,10 @@ sequenceDiagram
 2. The Local AI Runtime starts the LCM Summary Service on a timer and can also
    nudge it after capture.
 3. The LCM Summary Service asks the API for pending session titles and pending
-   LCM summaries.
+   LCM summaries. A work signal received during an active run is retained. When
+   a complete batch is submitted, the service schedules a prompt follow-up
+   batch because those summaries may have made a parent rollup eligible; an
+   empty or partial batch returns to the ordinary background interval.
 4. The API returns LCM nodes plus ordered source items and marks the work as
    local-only; the backend does not call an LLM for LCM summaries. If the node
    is encrypted at rest, the repository hydrates source items and child
@@ -1343,9 +1516,12 @@ derived from the invitation fragment. The active Desktop uses its loopback-only
 scoped Desktop credential to reach its local Authority, displays the joining
 device and comparison code, and requires explicit approval. Its approval IPC
 remains pending without polling until the joining device activates the new
-epoch. The gateway then invalidates the invitation but remains the encrypted
-PDS relay endpoint for that local-only topology. PDS private keys, runtime
-secrets, browser sessions, and Desktop credentials never enter renderer IPC.
+epoch. The Authority-hosting gateway then invalidates the invitation. Every
+enrolled Desktop may keep a package receive path available and advertise a
+short-lived signed route through the Authority/Relay; the unchanged encrypted
+package falls back to the durable relay unless every intended recipient returns
+a verified materialization acknowledgement. PDS private keys, runtime secrets,
+browser sessions, and Desktop credentials never enter renderer IPC.
 
 Any future eligible closed Captured Session sequence remains separate: source
 seals contiguous raw closure; origin signs JCS source manifest; source encrypts

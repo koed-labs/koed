@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   createRecipientPublicKeyEnvelopeEncryptionProvider,
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
+  managedConversationFileOperationResultSchema,
   type RecipientPublicKeyMaterial
 } from "@koed/shared";
 
@@ -25,6 +26,72 @@ const claimSchema = z
 
 const commandParamsSchema = z.object({ commandId: uuid }).strict();
 const executionParamsSchema = z.object({ executionId: uuid }).strict();
+const checkpointQuerySchema = z
+  .object({
+    executionGeneration: z.coerce.number().int().safe().positive()
+  })
+  .strict();
+const nullableObjectId = z
+  .string()
+  .regex(/^[0-9a-f]{40,64}$/)
+  .nullable();
+const nullableDigest = z
+  .string()
+  .regex(/^[0-9a-f]{64}$/)
+  .nullable();
+const checkpointSchema = z
+  .object({
+    id: uuid,
+    executionId: uuid,
+    executionGeneration: z.number().int().safe().positive(),
+    commandId: uuid,
+    providerTurnId: z.string().trim().min(1).max(512).nullable(),
+    sourceGenerationId: uuid.nullable(),
+    sequence: z.number().int().safe().nonnegative(),
+    checkpointKind: z.enum(["baseline", "terminal", "recovery"]),
+    checkpointStatus: z.enum(["pending", "ready", "failed", "unsupported"]),
+    failureCode: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z][A-Za-z0-9_.-]*$/)
+      .nullable(),
+    repositoryIdentityHash: nullableDigest,
+    worktreeIdentityHash: nullableDigest,
+    vcsDriver: z.literal("git").nullable(),
+    checkpointRef: z.string().trim().min(1).max(4_096).nullable(),
+    commitObjectId: nullableObjectId,
+    capturedAt: z.iso.datetime().nullable()
+  })
+  .strict();
+const checkpointDiffSchema = z
+  .object({
+    id: uuid,
+    scopeKey: z.string().trim().min(1).max(128),
+    diffScope: z.enum(["turn", "full"]),
+    fromCheckpointId: uuid,
+    toCheckpointId: uuid,
+    revisionDigest: z.string().regex(/^[0-9a-f]{64}$/),
+    complete: z.boolean(),
+    truncated: z.boolean(),
+    fileCount: z.number().int().safe().min(0).max(25_000),
+    byteCount: z
+      .number()
+      .int()
+      .safe()
+      .min(0)
+      .max(16 * 1024 * 1024),
+    payload: z.record(z.string(), z.unknown())
+  })
+  .strict();
+const recordCheckpointSchema = z
+  .object({
+    checkpoint: checkpointSchema,
+    diffs: z.array(checkpointDiffSchema).max(2).optional()
+  })
+  .strict();
+const runtimeItemParamsSchema = z.object({ itemId: uuid }).strict();
 const handoffParamsSchema = z.object({ handoffId: uuid }).strict();
 const forkParamsSchema = z.object({ forkId: uuid }).strict();
 const handoffSnapshotParamsSchema = handoffParamsSchema
@@ -75,6 +142,14 @@ const completeCommandSchema = z
   })
   .strict();
 
+const checkpointPendingSchema = z
+  .object({
+    leaseToken: uuid,
+    sourceGenerationId: uuid,
+    providerTurnId: z.string().trim().min(1).max(512).optional()
+  })
+  .strict();
+
 const failCommandSchema = z
   .object({
     leaseToken: uuid,
@@ -85,6 +160,60 @@ const failCommandSchema = z
       .min(1)
       .max(120)
       .regex(/^[A-Za-z][A-Za-z0-9_.-]*$/)
+  })
+  .strict();
+
+const completeFileOperationSchema = z
+  .object({
+    leaseToken: uuid,
+    result: managedConversationFileOperationResultSchema
+  })
+  .strict();
+
+const failFileOperationSchema = z
+  .object({
+    leaseToken: uuid,
+    state: z.enum(["queued", "failed"]),
+    errorCode: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z][A-Za-z0-9_.-]*$/)
+  })
+  .strict();
+
+const runtimeItemKindSchema = z.enum([
+  "command_approval",
+  "file_approval",
+  "permissions_approval",
+  "user_input",
+  "transient_output"
+]);
+
+const putRuntimeItemSchema = z
+  .object({
+    executionId: uuid,
+    executionGeneration: z.number().int().safe().positive(),
+    providerRequestId: z.string().trim().min(1).max(512),
+    providerTurnId: z.string().trim().min(1).max(512).optional(),
+    providerItemId: z.string().trim().min(1).max(512).optional(),
+    itemKind: runtimeItemKindSchema,
+    payload: z.record(z.string(), z.unknown())
+  })
+  .strict();
+
+const resolveRuntimeItemSchema = z
+  .object({
+    executionGeneration: z.number().int().safe().positive(),
+    state: z.enum(["resolved", "canceled"])
+  })
+  .strict();
+
+const cancelRuntimeItemsSchema = z
+  .object({
+    executionGeneration: z.number().int().safe().positive(),
+    providerTurnId: z.string().trim().min(1).max(512).optional()
   })
   .strict();
 
@@ -123,6 +252,16 @@ const sourceGenerationStatusQuerySchema = z
 const runtimeBindingReadySchema = z
   .object({
     executionGeneration: z.number().int().safe().positive()
+  })
+  .strict();
+const runtimeBindingFailedSchema = runtimeBindingReadySchema
+  .extend({
+    errorCode: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^ExecutionWorkspace[A-Za-z0-9_.-]*$/)
   })
   .strict();
 
@@ -352,12 +491,19 @@ const protocolDeploymentId = (
 
 const authenticateRunner = async (
   request: FastifyRequest,
-  context: ApiRouteContext
+  context: ApiRouteContext,
+  requiredOperationFamily:
+    | "managed_execution"
+    | "managed_file_read" = "managed_execution"
 ): Promise<RunnerAuth> => {
   const auth = await context.auth.authenticateDeviceCredential(request);
-  if (!auth.credential.operationFamilies.includes("managed_execution")) {
+  if (!auth.credential.operationFamilies.includes(requiredOperationFamily)) {
     throw Object.assign(
-      new Error("Device credential is not allowed for managed execution"),
+      new Error(
+        requiredOperationFamily === "managed_file_read"
+          ? "Device credential is not allowed for managed file inspection"
+          : "Device credential is not allowed for managed execution"
+      ),
       { statusCode: 403 }
     );
   }
@@ -866,6 +1012,163 @@ export const registerManagedConversationRunnerRoutes = (
           leaseMs: input.leaseMs
         });
       return { commands };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/commands/claim-controls",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const input = claimSchema.parse(request.body);
+      const commands = await context
+        .requireRepository()
+        .claimManagedConversationControlCommands({
+          ownerUserId: auth.userId,
+          runnerId: input.runnerId,
+          deviceId: auth.deviceId,
+          deploymentId: auth.deploymentId,
+          limit: input.limit,
+          leaseMs: input.leaseMs
+        });
+      return { commands };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/commands/claim-files",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(
+        request,
+        context,
+        "managed_file_read"
+      );
+      const input = claimSchema.parse(request.body);
+      const commands = await context
+        .requireRepository()
+        .claimManagedConversationFileOperations({
+          ownerUserId: auth.userId,
+          runnerId: input.runnerId,
+          deviceId: auth.deviceId,
+          deploymentId: auth.deploymentId,
+          limit: input.limit,
+          leaseMs: input.leaseMs
+        });
+      return { commands };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/runtime-items",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const input = putRuntimeItemSchema.parse(request.body);
+      const execution = await requireExecutionForRunner(
+        context,
+        auth,
+        input.executionId
+      );
+      if (execution.executionGeneration !== input.executionGeneration) {
+        throw Object.assign(
+          new Error("Managed execution generation conflicted"),
+          {
+            statusCode: 409
+          }
+        );
+      }
+      return {
+        item: await context
+          .requireRepository()
+          .putManagedConversationRuntimeItem({ userId: auth.userId }, input)
+      };
+    }
+  );
+
+  app.get(
+    "/v1/managed-conversation-runner/runtime-items/:itemId",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { itemId } = runtimeItemParamsSchema.parse(request.params);
+      const item = await context
+        .requireRepository()
+        .getManagedConversationRuntimeItem({ userId: auth.userId }, itemId);
+      if (!item) {
+        throw Object.assign(new Error("Managed runtime item not found"), {
+          statusCode: 404
+        });
+      }
+      const execution = await requireExecutionForRunner(
+        context,
+        auth,
+        item.executionId
+      );
+      if (execution.executionGeneration !== item.executionGeneration) {
+        throw Object.assign(new Error("Managed runtime item is fenced"), {
+          statusCode: 409
+        });
+      }
+      return { item };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/runtime-items/:itemId/resolve",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { itemId } = runtimeItemParamsSchema.parse(request.params);
+      const input = resolveRuntimeItemSchema.parse(request.body);
+      const item = await context
+        .requireRepository()
+        .getManagedConversationRuntimeItem({ userId: auth.userId }, itemId);
+      if (!item) {
+        throw Object.assign(new Error("Managed runtime item not found"), {
+          statusCode: 404
+        });
+      }
+      const execution = await requireExecutionForRunner(
+        context,
+        auth,
+        item.executionId
+      );
+      if (
+        execution.executionGeneration !== input.executionGeneration ||
+        item.executionGeneration !== input.executionGeneration
+      ) {
+        throw Object.assign(new Error("Managed runtime item is fenced"), {
+          statusCode: 409
+        });
+      }
+      return {
+        resolved: await context
+          .requireRepository()
+          .resolveManagedConversationRuntimeItem(
+            { userId: auth.userId },
+            { itemId, ...input }
+          )
+      };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/executions/:executionId/runtime-items/cancel",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      const input = cancelRuntimeItemsSchema.parse(request.body);
+      await requireExecutionForRunner(context, auth, executionId);
+      return {
+        canceled: await context
+          .requireRepository()
+          .cancelManagedConversationRuntimeItems(
+            { userId: auth.userId },
+            { executionId, ...input }
+          )
+      };
     }
   );
 
@@ -1654,6 +1957,67 @@ export const registerManagedConversationRunnerRoutes = (
     }
   );
 
+  app.get(
+    "/v1/managed-conversation-runner/executions/:executionId/checkpoints",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      const query = checkpointQuerySchema.parse(request.query);
+      const execution = await requireExecutionForRunner(
+        context,
+        auth,
+        executionId
+      );
+      if (execution.executionGeneration !== query.executionGeneration) {
+        throw Object.assign(
+          new Error("Managed execution generation conflicted"),
+          { statusCode: 409 }
+        );
+      }
+      return {
+        checkpoints: await context
+          .requireRepository()
+          .listManagedConversationExecutionCheckpoints(
+            { userId: auth.userId },
+            { executionId, executionGeneration: query.executionGeneration }
+          )
+      };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/executions/:executionId/checkpoints",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      const input = recordCheckpointSchema.parse(request.body);
+      const execution = await requireExecutionForRunner(
+        context,
+        auth,
+        executionId
+      );
+      if (
+        input.checkpoint.executionId !== executionId ||
+        input.checkpoint.executionGeneration !== execution.executionGeneration
+      ) {
+        throw Object.assign(
+          new Error("Managed checkpoint identity conflicted"),
+          { statusCode: 409 }
+        );
+      }
+      return {
+        checkpoint: await context
+          .requireRepository()
+          .recordManagedConversationExecutionCheckpoint(
+            { userId: auth.userId },
+            input
+          )
+      };
+    }
+  );
+
   app.post(
     "/v1/managed-conversation-runner/commands/:commandId/lease",
     { preHandler: context.rateLimit.memoryWrite },
@@ -1754,6 +2118,83 @@ export const registerManagedConversationRunnerRoutes = (
         .requireRepository()
         .completeManagedConversationCommand({ commandId, ...input });
       return { completed };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/commands/:commandId/checkpoint-pending",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { commandId } = commandParamsSchema.parse(request.params);
+      const input = checkpointPendingSchema.parse(request.body);
+      await requireCommandForRunner(context, auth, commandId);
+      return {
+        marked: await context
+          .requireRepository()
+          .markManagedConversationCheckpointPending({ commandId, ...input })
+      };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/commands/:commandId/file-complete",
+    {
+      bodyLimit: 8 * 1024 * 1024,
+      preHandler: context.rateLimit.memoryWrite
+    },
+    async (request) => {
+      const auth = await authenticateRunner(
+        request,
+        context,
+        "managed_file_read"
+      );
+      const { commandId } = commandParamsSchema.parse(request.params);
+      const input = completeFileOperationSchema.parse(request.body);
+      const { command } = await requireCommandForRunner(
+        context,
+        auth,
+        commandId
+      );
+      if (!command.commandKind.startsWith("file_")) {
+        throw Object.assign(new Error("Managed file command not found"), {
+          statusCode: 404
+        });
+      }
+      return {
+        completed: await context
+          .requireRepository()
+          .completeManagedConversationFileOperation({ commandId, ...input })
+      };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/commands/:commandId/file-fail",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(
+        request,
+        context,
+        "managed_file_read"
+      );
+      const { commandId } = commandParamsSchema.parse(request.params);
+      const input = failFileOperationSchema.parse(request.body);
+      const { command } = await requireCommandForRunner(
+        context,
+        auth,
+        commandId
+      );
+      if (!command.commandKind.startsWith("file_")) {
+        throw Object.assign(new Error("Managed file command not found"), {
+          statusCode: 404
+        });
+      }
+      return {
+        updated: await context
+          .requireRepository()
+          .failManagedConversationFileOperation({ commandId, ...input })
+      };
     }
   );
 
@@ -1862,6 +2303,44 @@ export const registerManagedConversationRunnerRoutes = (
         );
       }
       return { ready: true };
+    }
+  );
+
+  app.post(
+    "/v1/managed-conversation-runner/executions/:executionId/runtime-binding-failed",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const auth = await authenticateRunner(request, context);
+      const { executionId } = executionParamsSchema.parse(request.params);
+      const input = runtimeBindingFailedSchema.parse(request.body);
+      const execution = await requireExecutionForRunner(
+        context,
+        auth,
+        executionId
+      );
+      if (execution.executionGeneration !== input.executionGeneration) {
+        throw Object.assign(
+          new Error("Managed execution generation changed before failure"),
+          { statusCode: 409 }
+        );
+      }
+      const failed = await context
+        .requireRepository()
+        .failManagedConversationStartForRuntimeBinding({
+          ownerUserId: auth.userId,
+          executionId,
+          executionGeneration: input.executionGeneration,
+          deploymentId: auth.deploymentId,
+          deviceId: auth.deviceId,
+          errorCode: input.errorCode
+        });
+      if (!failed) {
+        throw Object.assign(
+          new Error("Managed execution is not available for failure"),
+          { statusCode: 409 }
+        );
+      }
+      return { failed: true };
     }
   );
 
