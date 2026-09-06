@@ -6,38 +6,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "noEmit": true,
-    "types": ["node", "vite/client", "vitest/globals"],
-    "paths": {
-      "@koed/core": ["packages/core/src/index.ts"],
-      "@koed/db": ["packages/db/src/index.ts"],
-      "@koed/api": ["apps/api/src/server/index.ts"],
-      "@koed/mcp-server": ["packages/mcp-server/src/index.ts"],
-      "@koed/mcp-server/codex-transcript-parser": [
-        "packages/mcp-server/src/codex-transcript-parser.ts"
-      ],
-      "@koed/mcp-server/claude-transcript-parser": [
-        "packages/mcp-server/src/claude-transcript-parser.ts"
-      ],
-      "@koed/mcp-server/runtime-contracts": [
-        "packages/mcp-server/src/runtime-contracts.ts"
-      ],
-      "@koed/shared": ["packages/shared/src/index.ts"],
-      "@koed/shared/collaboration": [
-        "packages/shared/src/collaboration-contract.ts"
-      ],
-      "@koed/shared/execution-workspace": [
-        "packages/shared/src/execution-workspace.ts"
-      ],
-      "@koed/shared/personal-desktop": [
-        "packages/shared/src/personal-desktop-contract.ts"
-      ],
-      "@koed/shared/secure-upstream-fetch": [
-        "packages/shared/src/secure-upstream-fetch.ts"
-      ],
-      "@koed/worker/embedding-workflow": [
-        "apps/worker/src/embedding-workflow.ts"
-      ]
-    }
+    "types": ["node", "vite/client", "vitest/globals"]
   },
   "include": [
     "*.config.ts",
