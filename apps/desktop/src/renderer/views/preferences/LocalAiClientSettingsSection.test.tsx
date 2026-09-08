@@ -294,6 +294,16 @@ describe("Agent Configuration selectors", () => {
       support: "supported",
       readiness: "not_ready"
     };
+    const piSnapshot = signedOut.readModel.capabilitySnapshots.find(
+      (snapshot) => snapshot.instanceId === "pi.default"
+    )!;
+    piSnapshot.authenticationState = "unauthenticated";
+    piSnapshot.healthState = "unavailable";
+    piSnapshot.models = [];
+    piSnapshot.localSynthesis = {
+      support: "supported",
+      readiness: "not_ready"
+    };
     const writeText = vi.fn(async () => undefined);
     window.koedDesktop = { invoke: vi.fn(), clipboard: { writeText } };
     const api = {
@@ -323,6 +333,10 @@ describe("Agent Configuration selectors", () => {
     );
     expect(container.textContent).toContain(
       "Profile reinstall is not required"
+    );
+    expect(container.textContent).toContain("Pi model authentication required");
+    expect(container.textContent).toContain(
+      "Recall and Local Synthesis through Pi stay unavailable"
     );
     const copy = [...container.querySelectorAll("button")].find((button) =>
       button.textContent?.includes("Copy `claude auth login`")

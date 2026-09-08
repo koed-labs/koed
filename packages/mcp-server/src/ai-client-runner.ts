@@ -1206,6 +1206,50 @@ const claudeDriver: AiClientDriver = {
   }
 };
 
+const piAuthenticationUnavailableDiscovery = (
+  input: AiClientDriverDiscoveryInput,
+  availability: Awaited<ReturnType<typeof checkPiAvailability>>
+): AiClientDriverDiscovery => {
+  const unauthenticated =
+    availability.authenticationState === "unauthenticated";
+  const message = unauthenticated
+    ? "Pi model authentication is required for Recall and Local Synthesis."
+    : "Pi model authentication could not be verified; execution remains unavailable.";
+  const diagnostics: AiClientDiagnostic[] = [
+    {
+      code: unauthenticated
+        ? "authentication_required"
+        : "authentication_probe_failed",
+      message,
+      severity: "warning"
+    }
+  ];
+  return {
+    installationIdentityHash: installationIdentityHash(
+      availability.executablePath ?? input.executablePath ?? input.instanceId
+    ),
+    clientVersion: availability.version,
+    authenticationState: availability.authenticationState,
+    healthState: "unavailable",
+    models: [],
+    capabilities: capabilitiesFor("pi", false).map((descriptor) => ({
+      ...descriptor,
+      diagnostics,
+      ...(descriptor.id === aiClientCapabilityIds.automaticCapture
+        ? { readiness: "unknown" as const }
+        : descriptor.id === aiClientCapabilityIds.mcpRecall ||
+            descriptor.id === aiClientCapabilityIds.localSynthesis
+          ? {
+              readiness: unauthenticated
+                ? ("unauthenticated" as const)
+                : ("unavailable" as const)
+            }
+          : {})
+    })),
+    diagnostics
+  };
+};
+
 const piDriver: AiClientDriver = {
   id: "pi",
   displayName: "Pi",
@@ -1223,6 +1267,9 @@ const piDriver: AiClientDriver = {
           new Error(availability.error ?? "Pi is unavailable")
         );
       }
+      if (!availability.authenticated) {
+        return piAuthenticationUnavailableDiscovery(input, availability);
+      }
       const models = availability.models.map((model) =>
         normalizedModelCapability({
           id: model.id,
@@ -1232,6 +1279,15 @@ const piDriver: AiClientDriver = {
           supportedReasoningEfforts: model.supportedReasoningEfforts
         })
       );
+      const diagnostics: AiClientDiagnostic[] = availability.error
+        ? [
+            {
+              code: "model_discovery_partial",
+              message: availability.error,
+              severity: "warning"
+            }
+          ]
+        : [];
       return {
         installationIdentityHash: installationIdentityHash(
           availability.executablePath
@@ -1240,8 +1296,11 @@ const piDriver: AiClientDriver = {
         authenticationState: "authenticated",
         healthState: "healthy",
         models,
-        capabilities: capabilitiesFor("pi", true),
-        diagnostics: []
+        capabilities: capabilitiesFor("pi", true).map((descriptor) => ({
+          ...descriptor,
+          diagnostics
+        })),
+        diagnostics
       };
     } catch (error) {
       return aiClientDiscoveryError(input, "pi", error);

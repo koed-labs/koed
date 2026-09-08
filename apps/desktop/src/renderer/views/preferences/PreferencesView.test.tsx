@@ -590,6 +590,12 @@ describe("PreferencesView", () => {
         detected: true,
         details: { authenticated: false, profileConfigured: true }
       },
+      pi: {
+        state: "needs_attention",
+        configured: true,
+        detected: true,
+        details: { authenticated: false, packageRegistered: true }
+      },
       aiClients: {
         claude: {
           driverId: "claude",
@@ -597,6 +603,31 @@ describe("PreferencesView", () => {
           displayName: "Claude Code",
           installed: healthy,
           version: "2.1.227",
+          authentication: "unauthenticated",
+          profile: { state: "needs_attention" },
+          capabilities: [
+            {
+              id: "automatic_capture",
+              support: "supported",
+              readiness: "ready",
+              diagnostics: []
+            },
+            {
+              id: "local_synthesis",
+              support: "supported",
+              readiness: "unauthenticated",
+              diagnostics: []
+            }
+          ],
+          observedAt: "2026-08-28T00:00:00.000Z",
+          snapshotState: "current"
+        },
+        pi: {
+          driverId: "pi",
+          instanceId: "pi.default",
+          displayName: "Pi",
+          installed: healthy,
+          version: "0.84.2",
           authentication: "unauthenticated",
           profile: { state: "needs_attention" },
           capabilities: [
@@ -648,6 +679,14 @@ describe("PreferencesView", () => {
     expect(
       claudeCard.querySelector('button[aria-label="Check Claude Code"]')
     ).toBeTruthy();
+    const piCard = [...container.querySelectorAll(".koed-client-card")].find(
+      (card) => card.querySelector("strong")?.textContent === "Pi"
+    )!;
+    expect(piCard.textContent).toContain("Model authentication required");
+    expect(piCard.textContent).toContain(
+      "Authenticate at least one model through Pi"
+    );
+    expect(piCard.textContent).toContain("Profile reinstall is not required");
   });
 
   it("summarizes healthy diagnostics and keeps icon actions accessible", async () => {

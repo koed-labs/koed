@@ -416,7 +416,7 @@ const resultIsOk = (value: unknown): boolean =>
   typeof value === "object" &&
   (value as { ok?: unknown }).ok === true;
 
-const claudeSetupAuthentication = (
+const setupAuthentication = (
   value: unknown
 ): "authenticated" | "unauthenticated" | "unknown" | null => {
   if (
@@ -434,6 +434,16 @@ const claudeSetupAuthentication = (
     ? authenticationState
     : null;
 };
+
+const clientProfileIsConfigured = (
+  id: OnboardingClientId,
+  status: KoedServerStatus | null
+): boolean =>
+  id === "codex"
+    ? status?.codex?.configured === true
+    : id === "claude"
+      ? status?.claudeCode?.configured === true
+      : status?.pi?.configured === true;
 
 const resultError = (value: unknown, fallback: string): string => {
   if (!value || typeof value !== "object") return fallback;
@@ -457,11 +467,14 @@ function AiClientSetup({
   statusStore: DesktopStatusStore;
 }) {
   const { status, busyCommand } = useDesktopStatus(statusStore);
-  const showCapabilityLegend = onboardingClients.some(
-    ({ id }) =>
-      status?.aiClients?.[id]?.profile.state === "healthy" ||
-      (id === "claude" && status?.claudeCode?.configured === true)
-  );
+  const showCapabilityLegend = onboardingClients.some(({ id }) => {
+    const profileState = status?.aiClients?.[id]?.profile.state;
+    return (
+      profileState === "healthy" ||
+      (profileState === "needs_attention" &&
+        clientProfileIsConfigured(id, status))
+    );
+  });
   const [selected, setSelected] = useState<Set<OnboardingClientId>>(
     () => new Set()
   );
@@ -557,15 +570,12 @@ function AiClientSetup({
         completeCurrent(id, { state: "ready" });
       } else {
         const refreshedStatus = await statusStore.refresh();
-        const claudeAuthentication =
-          id === "claude" ? claudeSetupAuthentication(operationResult) : null;
-        const partialClaudeSetup =
-          claudeAuthentication !== null &&
-          claudeAuthentication !== "authenticated";
+        const authentication = setupAuthentication(operationResult);
+        const partialSetup =
+          authentication !== null && authentication !== "authenticated";
         const profileConfirmed =
           refreshedStatus?.aiClients?.[id]?.profile.state === "healthy" ||
-          (partialClaudeSetup &&
-            refreshedStatus?.claudeCode?.configured === true);
+          (partialSetup && clientProfileIsConfigured(id, refreshedStatus));
         if (!profileConfirmed) {
           throw new Error(
             `${onboardingClients.find((client) => client.id === id)?.label ?? "AI Client"} integration was configured, but its profile was not confirmed healthy. Refresh status and retry.`
@@ -573,9 +583,9 @@ function AiClientSetup({
         }
         completeCurrent(id, {
           state:
-            claudeAuthentication === "unauthenticated"
+            authentication === "unauthenticated"
               ? "configured_sign_in_required"
-              : claudeAuthentication === "unknown"
+              : authentication === "unknown"
                 ? "configured_auth_unknown"
                 : "configured"
         });
@@ -623,7 +633,8 @@ function AiClientSetup({
               );
               const showCapabilityReadiness =
                 readiness?.profile.state === "healthy" ||
-                (id === "claude" && status?.claudeCode?.configured === true);
+                (readiness?.profile.state === "needs_attention" &&
+                  clientProfileIsConfigured(id, status));
               const metaLine = clientMetaLine(readiness, detected);
               const result = results[id];
               const isActive = activeClient === id;
@@ -655,7 +666,9 @@ function AiClientSetup({
                 ? result.state === "failed"
                   ? "Failed"
                   : result.state === "configured_sign_in_required"
-                    ? "Configured — sign in required"
+                    ? id === "pi"
+                      ? "Configured — model authentication required"
+                      : "Configured — sign in required"
                     : result.state === "configured_auth_unknown"
                       ? "Configured — check sign-in"
                       : result.state === "configured"
@@ -699,13 +712,25 @@ function AiClientSetup({
                     <span className="koed-client-error">{result.error}</span>
                   ) : result?.state === "configured_sign_in_required" ? (
                     <span className="koed-client-warning">
-                      Run `claude auth login`, then refresh capabilities. Claude
-                      Desktop sign-in does not authenticate Claude Code.
+                      {id === "pi" ? (
+                        <>
+                          Authenticate at least one model through Pi, then
+                          refresh capabilities. Automatic capture remains
+                          available.
+                        </>
+                      ) : (
+                        <>
+                          Run `claude auth login`, then refresh capabilities.
+                          Claude Desktop sign-in does not authenticate Claude
+                          Code.
+                        </>
+                      )}
                     </span>
                   ) : result?.state === "configured_auth_unknown" ? (
                     <span className="koed-client-warning">
-                      Run `claude auth status`, resolve its error, then refresh
-                      capabilities. Claude-executed work remains unavailable.
+                      {id === "pi"
+                        ? "Fix Pi model discovery, then refresh capabilities. Pi-executed work remains unavailable."
+                        : "Run `claude auth status`, resolve its error, then refresh capabilities. Claude-executed work remains unavailable."}
                     </span>
                   ) : null}
                   <span className="koed-client-caps">
@@ -795,7 +820,9 @@ function AiClientSetup({
               <li key={id}>
                 {onboardingClients.find((client) => client.id === id)?.label}:{" "}
                 {result?.state === "configured_sign_in_required"
-                  ? "configured — sign in required"
+                  ? id === "pi"
+                    ? "configured — model authentication required"
+                    : "configured — sign in required"
                   : result?.state === "configured_auth_unknown"
                     ? "configured — check sign-in"
                     : result?.state}

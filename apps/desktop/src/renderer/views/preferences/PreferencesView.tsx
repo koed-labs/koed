@@ -745,8 +745,7 @@ function AiClientIntegrationsSection({
           const detected = readiness?.installed.state === "healthy";
           const flat = flatClientStatus(id, status);
           const profileState = flat?.state ?? "not_configured";
-          const signInRequired =
-            id === "claude" &&
+          const authenticationRequired =
             flat?.configured === true &&
             (readiness?.authentication === "unauthenticated" ||
               flat.details?.authenticated === false);
@@ -754,7 +753,7 @@ function AiClientIntegrationsSection({
             readiness?.capabilities
           );
           const metaLine =
-            profileState === "healthy" || signInRequired
+            profileState === "healthy" || authenticationRequired
               ? clientMetaLine(readiness, detected)
               : profileState === "starting"
                 ? null
@@ -772,8 +771,10 @@ function AiClientIntegrationsSection({
           const pillText =
             profileState === "healthy"
               ? "Healthy"
-              : signInRequired
-                ? "Sign in required"
+              : authenticationRequired
+                ? id === "pi"
+                  ? "Model authentication required"
+                  : "Sign in required"
                 : profileState === "needs_attention"
                   ? "Needs attention"
                   : profileState === "starting"
@@ -801,11 +802,27 @@ function AiClientIntegrationsSection({
               {metaLine ? (
                 <span className="koed-client-meta">{metaLine}</span>
               ) : null}
-              {signInRequired ? (
+              {authenticationRequired ? (
                 <span className="koed-client-warning">
-                  Claude Code profile configured. Run `claude auth login`, then
-                  check or refresh capabilities. Claude Desktop sign-in does not
-                  authenticate Claude Code.
+                  {id === "pi" ? (
+                    <>
+                      Pi profile configured. Authenticate at least one model
+                      through Pi, then check or refresh capabilities. Profile
+                      reinstall is not required.
+                    </>
+                  ) : id === "claude" ? (
+                    <>
+                      Claude Code profile configured. Run `claude auth login`,
+                      then check or refresh capabilities. Claude Desktop sign-in
+                      does not authenticate Claude Code.
+                    </>
+                  ) : (
+                    <>
+                      Codex profile configured. Authenticate Codex, then check
+                      or refresh capabilities. Profile reinstall is not
+                      required.
+                    </>
+                  )}
                 </span>
               ) : null}
               <span className="koed-client-caps">

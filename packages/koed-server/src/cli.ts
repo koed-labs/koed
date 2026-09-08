@@ -682,7 +682,9 @@ export const runKoedServerCli = async (
       } else {
         stdout.write(
           result.ok
-            ? "Pi setup completed.\n"
+            ? result.authenticationState === "authenticated"
+              ? "Pi setup completed.\n"
+              : "Pi profile configured. Authenticate at least one model through Pi, then refresh capabilities; Pi-executed work remains unavailable until authentication.\n"
             : `${result.error ?? "Pi setup failed."}\n`
         );
       }

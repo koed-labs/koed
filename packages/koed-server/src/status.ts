@@ -29,7 +29,8 @@ import {
   isSupportedPiVersion,
   MINIMUM_PI_VERSION,
   piSetupInvocation,
-  piModelIdsFromListOutput,
+  parsePiModelListOutput,
+  piPackageIsListed,
   piSetupEnvironment,
   resolvePiSetupExecutable
 } from "./pi-setup.js";
@@ -269,7 +270,7 @@ export const inspectPi = (
       detected: true
     };
   }
-  if (!listed.stdout.includes(packagePath)) {
+  if (!piPackageIsListed(listed.stdout, packagePath)) {
     return {
       ...notConfigured(
         "Koed's package is not registered in the active Pi profile.",
@@ -281,10 +282,26 @@ export const inspectPi = (
     };
   }
   const listedModels = runPi(["--list-models"], 15_000, 4 * 1024 * 1024);
-  const models =
-    listedModels.error || listedModels.status !== 0
-      ? []
-      : piModelIdsFromListOutput(listedModels.stdout ?? "");
+  const parsedModels = parsePiModelListOutput(listedModels.stdout ?? "");
+  if (listedModels.error || listedModels.status !== 0 || !parsedModels.valid) {
+    return {
+      ...needsAttention(
+        "Pi's Koed package is registered, but model authentication could not be inspected.",
+        "Fix Pi model discovery, then refresh status.",
+        {
+          executable,
+          version: versionText,
+          packagePath,
+          packageRegistered: true,
+          authenticationState: "unknown",
+          modelCount: 0
+        }
+      ),
+      configured: true,
+      detected: true
+    };
+  }
+  const models = parsedModels.models;
   if (models.length === 0) {
     return {
       ...needsAttention(
@@ -296,6 +313,7 @@ export const inspectPi = (
           packagePath,
           packageRegistered: true,
           authenticated: false,
+          authenticationState: "unauthenticated",
           modelCount: 0
         }
       ),
@@ -310,6 +328,7 @@ export const inspectPi = (
       packagePath,
       packageRegistered: true,
       authenticated: true,
+      authenticationState: "authenticated",
       modelCount: models.length
     }),
     configured: true,
@@ -752,6 +771,12 @@ const koedServerConfigEnvironment = (
   MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED:
     environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED ??
     repoEnv.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED,
+  MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED:
+    environment.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED ??
+    repoEnv.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED,
+  MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED:
+    environment.MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED ??
+    repoEnv.MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED,
   KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED:
     environment.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED ??
     repoEnv.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED
@@ -1287,6 +1312,47 @@ const inspectClaudeTranscriptWatcher = (
   );
 };
 
+const inspectPiTranscriptWatcher = (
+  enabled: boolean,
+  runtime: KoedServerRuntimeState | null,
+  runtimeProcessRunning: boolean,
+  deps: Required<KoedServerStatusDependencies>
+): KoedServerComponentStatus => {
+  const localAiRuntimePid = runtime?.processes?.localAiRuntime;
+  const details = { enabled, localAiRuntimePid: localAiRuntimePid ?? null };
+  if (!enabled) {
+    return notConfigured(
+      "Pi Transcript Watcher is disabled.",
+      undefined,
+      details
+    );
+  }
+  if (!runtimeProcessRunning) {
+    return starting(
+      "Koed server supervisor is not currently running.",
+      details
+    );
+  }
+  if (!localAiRuntimePid) {
+    return needsAttention(
+      "Local AI Runtime process is not recorded in koed-server runtime state.",
+      "Verify an API Token is configured, then restart koed-server or inspect Koed logs.",
+      details
+    );
+  }
+  if (!deps.checkPid(localAiRuntimePid)) {
+    return needsAttention(
+      "Local AI Runtime process hosting the Pi Transcript Watcher is not running.",
+      "Run koed-server restart --json or inspect Koed logs.",
+      details
+    );
+  }
+  return healthy(
+    "Pi Transcript Watcher is running in the Local AI Runtime.",
+    details
+  );
+};
+
 const readinessForState = (
   state: KoedServerComponentStatus["state"]
 ): "ready" | "not_ready" | "unknown" =>
@@ -1531,6 +1597,7 @@ export const inspectAiClientReadiness = (input: {
   pi: KoedServerStatus["pi"];
   codexTranscriptWatcher: KoedServerComponentStatus;
   claudeTranscriptWatcher: KoedServerComponentStatus;
+  piTranscriptWatcher?: KoedServerComponentStatus;
   mcpServer: KoedServerComponentStatus;
   localAiRuntime: KoedServerComponentStatus;
   capabilityReadModel?: CapabilitySnapshotReadModel | null;
@@ -1555,7 +1622,7 @@ export const inspectAiClientReadiness = (input: {
       driverId: "pi" as const,
       displayName: "Pi",
       profile: input.pi,
-      capture: input.pi
+      capture: input.piTranscriptWatcher ?? input.pi
     }
   ];
   return Object.fromEntries(
@@ -1572,12 +1639,13 @@ export const inspectAiClientReadiness = (input: {
         profile.state === "healthy" ||
         ("configured" in profile && profile.configured === true);
       const profileAuthentication =
-        snapshot?.authenticationState ??
-        (details.authenticated === true
+        details.authenticated === true
           ? "authenticated"
           : details.authenticated === false
             ? "unauthenticated"
-            : "unknown");
+            : details.authenticationState === "unknown"
+              ? "unknown"
+              : (snapshot?.authenticationState ?? "unknown");
       const captureProfileConfigured =
         profileConfigured || details.captureConfigured === true;
       const captureFallback = captureProfileConfigured
@@ -1630,7 +1698,7 @@ export const inspectAiClientReadiness = (input: {
           input.mcpServer.message ?? "MCP Recall profile check completed."
         );
       const mcpDescriptor =
-        driverId === "claude" && profileAuthentication === "unknown"
+        profileAuthentication === "unknown"
           ? {
               ...discoveredMcpDescriptor,
               readiness: "unknown" as const,
@@ -1638,8 +1706,7 @@ export const inspectAiClientReadiness = (input: {
                 ...discoveredMcpDescriptor.diagnostics,
                 {
                   code: "authentication_state_unknown",
-                  message:
-                    "Claude Code authentication is unknown; MCP Recall cannot be admitted.",
+                  message: `${displayName} authentication is unknown; MCP Recall cannot be admitted.`,
                   severity: "warning" as const
                 }
               ]
@@ -2387,6 +2454,13 @@ export const collectKoedServerStatus = async (
                 MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: String(
                   runtime.claudeTranscriptWatcherEnabled
                 )
+              }),
+          ...(runtime.piTranscriptWatcherEnabled === undefined
+            ? {}
+            : {
+                MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED: String(
+                  runtime.piTranscriptWatcherEnabled
+                )
               })
         }
       : environment;
@@ -2473,6 +2547,12 @@ export const collectKoedServerStatus = async (
   );
   const claudeTranscriptWatcher = inspectClaudeTranscriptWatcher(
     serverConfig.claudeTranscriptWatcherEnabled,
+    runtime,
+    runtimeProcessRunning,
+    deps
+  );
+  const piTranscriptWatcher = inspectPiTranscriptWatcher(
+    serverConfig.piTranscriptWatcherEnabled,
     runtime,
     runtimeProcessRunning,
     deps
@@ -2616,6 +2696,7 @@ export const collectKoedServerStatus = async (
     pi,
     codexTranscriptWatcher,
     claudeTranscriptWatcher,
+    piTranscriptWatcher,
     mcpServer,
     localAiRuntime,
     capabilityReadModel,
@@ -2651,6 +2732,7 @@ export const collectKoedServerStatus = async (
     captureHook,
     codexTranscriptWatcher,
     claudeTranscriptWatcher,
+    piTranscriptWatcher,
     codex,
     claudeCode,
     pi,
@@ -2699,6 +2781,15 @@ export const collectKoedServerDoctor = async (
     ],
     ["codex", "Codex configuration", status.codex],
     ["claudeCode", "Claude Code configuration", status.claudeCode],
+    ...(status.piTranscriptWatcher
+      ? [
+          [
+            "piTranscriptWatcher",
+            "Pi Transcript Watcher",
+            status.piTranscriptWatcher
+          ] as [string, string, KoedServerComponentStatus]
+        ]
+      : []),
     ["pi", "Pi configuration", status.pi],
     ["lcmSummaryService", "LCM Summary Service", status.lcmSummaryService],
     ...localAiClientFlowKeys.map(

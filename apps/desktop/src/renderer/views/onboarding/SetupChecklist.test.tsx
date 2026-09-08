@@ -503,7 +503,7 @@ describe("SetupChecklist", () => {
     }
   );
 
-  it("shows signed-out Claude as configured and continues the setup queue", async () => {
+  it("shows unauthenticated clients as configured and continues the setup queue", async () => {
     const configured = new Set<ClientId>();
     const status = (): KoedServerStatus => {
       const current = statusWithClientProfiles({
@@ -537,6 +537,32 @@ describe("SetupChecklist", () => {
           ]
         };
       }
+      if (configured.has("pi")) {
+        current.pi = {
+          state: "needs_attention",
+          configured: true,
+          detected: true,
+          details: { authenticated: false, packageRegistered: true }
+        };
+        current.aiClients!.pi = {
+          ...clientReadiness("pi", "needs_attention"),
+          authentication: "unauthenticated",
+          capabilities: [
+            {
+              id: "automatic_capture",
+              support: "supported",
+              readiness: "ready",
+              diagnostics: []
+            },
+            {
+              id: "local_synthesis",
+              support: "supported",
+              readiness: "unauthenticated",
+              diagnostics: []
+            }
+          ]
+        };
+      }
       return current;
     };
     const invoke = vi.fn(async (command: string) => {
@@ -553,7 +579,13 @@ describe("SetupChecklist", () => {
       }
       if (command === "setup_pi") {
         configured.add("pi");
-        return { ok: true, state: "healthy" };
+        return {
+          ok: true,
+          state: "needs_attention",
+          profileConfigured: true,
+          authenticationState: "unauthenticated",
+          executionCapabilities: "unavailable"
+        };
       }
       throw new Error(`Unexpected command: ${command}`);
     });
@@ -605,7 +637,9 @@ describe("SetupChecklist", () => {
       expect(container.textContent).toContain(
         "Claude Code: configured — sign in required"
       );
-      expect(container.textContent).toContain("Pi: configured");
+      expect(container.textContent).toContain(
+        "Pi: configured — model authentication required"
+      );
     });
     const claudeCard = [
       ...container.querySelectorAll(".koed-client-card")
@@ -618,6 +652,16 @@ describe("SetupChecklist", () => {
       "Claude Desktop sign-in does not authenticate Claude Code"
     );
     expect(claudeCard?.querySelector(".koed-client-error")).toBeNull();
+    const piCard = [...container.querySelectorAll(".koed-client-card")].find(
+      (card) => card.querySelector("strong")?.textContent === "Pi"
+    );
+    expect(piCard?.textContent).toContain(
+      "Configured — model authentication required"
+    );
+    expect(piCard?.textContent).toContain(
+      "Authenticate at least one model through Pi"
+    );
+    expect(piCard?.querySelector(".koed-client-error")).toBeNull();
     expect(invoke.mock.calls.map(([command]) => command)).toEqual(
       expect.arrayContaining(["setup_claude", "setup_pi"])
     );

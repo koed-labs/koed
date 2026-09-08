@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   assertPiVersionCompatibility,
+  checkPiAvailability,
   listPiModels,
   piRpcEnvironment,
   resolvePiExecutable,
@@ -114,6 +115,95 @@ process.stdin.on("data", chunk => {
         supportedReasoningEfforts: ["off", "low", "high"]
       }
     ]);
+  });
+
+  it("reports unknown authentication for malformed model discovery", async () => {
+    const root = mkdtempSync(join(tmpdir(), "koed-pi-invalid-models-"));
+    const executable = join(root, "pi");
+    writeFileSync(
+      executable,
+      `#!/usr/bin/env node
+if (process.argv[2] === "--version") {
+  process.stdout.write("0.84.2\\n");
+  process.exit(0);
+}
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => {
+  const command = JSON.parse(chunk.trim());
+  process.stdout.write(JSON.stringify({ id: command.id, type: "response", command: command.type, success: true, data: {} }) + "\\n");
+});
+`
+    );
+    chmodSync(executable, 0o700);
+
+    await expect(
+      checkPiAvailability({
+        KOED_PI_EXECUTABLE: executable,
+        PATH: process.env.PATH
+      })
+    ).resolves.toMatchObject({
+      available: true,
+      authenticated: false,
+      authenticationState: "unknown",
+      models: [],
+      error: "Pi RPC returned an invalid available-models response"
+    });
+  });
+
+  it("reports partial model capability discovery", async () => {
+    const root = mkdtempSync(join(tmpdir(), "koed-pi-partial-models-"));
+    const executable = join(root, "pi");
+    writeFileSync(
+      executable,
+      `#!/usr/bin/env node
+if (process.argv[2] === "--version") {
+  process.stdout.write("0.84.2\\n");
+  process.exit(0);
+}
+let selected = "";
+process.stdin.setEncoding("utf8");
+let input = "";
+process.stdin.on("data", chunk => {
+  input += chunk;
+  let newline;
+  while ((newline = input.indexOf("\\n")) >= 0) {
+    const command = JSON.parse(input.slice(0, newline));
+    input = input.slice(newline + 1);
+    if (command.type === "get_available_models") {
+      process.stdout.write(JSON.stringify({ id: command.id, type: "response", command: command.type, success: true, data: { models: [{ provider: "test", id: "good" }, { provider: "test", id: "bad" }, { provider: " ", id: " " }] } }) + "\\n");
+      continue;
+    }
+    if (command.type === "set_model") {
+      selected = command.modelId;
+      process.stdout.write(JSON.stringify({ id: command.id, type: "response", command: command.type, success: selected !== "bad", error: selected === "bad" ? "unavailable" : undefined, data: {} }) + "\\n");
+      continue;
+    }
+    process.stdout.write(JSON.stringify({ id: command.id, type: "response", command: command.type, success: true, data: { levels: ["off"] } }) + "\\n");
+  }
+});
+`
+    );
+    chmodSync(executable, 0o700);
+
+    await expect(
+      checkPiAvailability({
+        KOED_PI_EXECUTABLE: executable,
+        PATH: process.env.PATH
+      })
+    ).resolves.toMatchObject({
+      available: true,
+      authenticated: true,
+      authenticationState: "authenticated",
+      models: [
+        {
+          id: "test/good",
+          provider: "test",
+          model: "good",
+          supportedReasoningEfforts: ["off"]
+        }
+      ],
+      error: "Pi capability discovery skipped 2 of 3 model candidates."
+    });
   });
 
   it("cancels RPC worker and terminates process tree", async () => {

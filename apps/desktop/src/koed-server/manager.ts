@@ -4790,7 +4790,7 @@ export const createKoedServerManager = ({
         resultMessage(result, `${client} integration operation failed.`)
       );
     }
-    if (args[1] !== "claude" || args[0] === "remove") return result;
+    if (args[0] === "remove") return result;
     try {
       const capabilityRefresh = await refreshLocalAiRuntime({
         fetch: personalMemoryFetch,
@@ -4803,7 +4803,7 @@ export const createKoedServerManager = ({
         capabilityRefresh: {
           refreshed: false,
           refreshError:
-            "Capability refresh could not be completed; refresh after Claude Code sign-in."
+            "Capability refresh could not be completed; refresh after AI Client authentication."
         }
       };
     }
@@ -4813,15 +4813,13 @@ export const createKoedServerManager = ({
     client: "Codex" | "Claude Code" | "Pi",
     args: ["check", "codex" | "claude" | "pi"]
   ) => {
-    if (args[1] === "claude") {
-      try {
-        await refreshLocalAiRuntime({
-          fetch: personalMemoryFetch,
-          koedHome: resolveKoedHome(environment)
-        });
-      } catch {
-        // Check remains fail-closed against current persisted capability state.
-      }
+    try {
+      await refreshLocalAiRuntime({
+        fetch: personalMemoryFetch,
+        koedHome: resolveKoedHome(environment)
+      });
+    } catch {
+      // Check remains fail-closed against current persisted capability state.
     }
     const result = await runJson(args, 90_000);
     if (!resultOk(result)) {

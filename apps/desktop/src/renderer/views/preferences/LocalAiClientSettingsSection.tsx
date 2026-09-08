@@ -31,15 +31,18 @@ export function LocalAiClientSettingsSection({
     );
   }
 
-  const claudeSignInRequired = settings.readModel.instances.some(
-    (instance) =>
-      instance.driverId === "claude" &&
-      settings.readModel!.capabilitySnapshots.some(
-        (snapshot) =>
-          snapshot.instanceId === instance.instanceId &&
-          snapshot.authenticationState === "unauthenticated"
-      )
-  );
+  const authenticationRequired = (driverId: "claude" | "pi") =>
+    settings.readModel!.instances.some(
+      (instance) =>
+        instance.driverId === driverId &&
+        settings.readModel!.capabilitySnapshots.some(
+          (snapshot) =>
+            snapshot.instanceId === instance.instanceId &&
+            snapshot.authenticationState === "unauthenticated"
+        )
+    );
+  const claudeSignInRequired = authenticationRequired("claude");
+  const piAuthenticationRequired = authenticationRequired("pi");
   const copyClaudeLogin = async () => {
     setCopiedClaudeLogin(false);
     setCopyError(null);
@@ -89,6 +92,23 @@ export function LocalAiClientSettingsSection({
             not required.
           </p>
           {copyError ? <p role="alert">{copyError}</p> : null}
+        </div>
+      ) : null}
+      {piAuthenticationRequired ? (
+        <div className="koed-local-ai-auth-warning" role="status">
+          <AlertTriangle aria-hidden="true" />
+          <div>
+            <strong>Pi model authentication required</strong>
+            <p>
+              Automatic capture remains available. Recall and Local Synthesis
+              through Pi stay unavailable until at least one model is
+              authenticated through Pi.
+            </p>
+          </div>
+          <p className="koed-local-ai-auth-action">
+            After authenticating a model, refresh capabilities above. Profile
+            reinstall is not required.
+          </p>
         </div>
       ) : null}
       {settings.refreshError ? (

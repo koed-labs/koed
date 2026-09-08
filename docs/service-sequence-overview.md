@@ -162,12 +162,13 @@ AI Runtime.
    AI Client instance capability read model best-effort: current or stale
    snapshots authoritatively gate Local Synthesis and Managed Conversation;
    profile checks only fill unknown Capture Hook or MCP Recall descriptors.
-   Claude Code installation, Koed-owned profile configuration, and execution
-   authentication are separate states. A configured signed-out Claude profile
-   can report automatic capture Ready from profile and Transcript Watcher health
-   while MCP Recall, Local Synthesis, and Managed Conversation execution report
-   Unauthenticated. Automatic capture is not downgraded by an unauthenticated or
-   stale execution snapshot. Execution admission still requires a fresh,
+   AI Client installation, Koed-owned profile configuration, and execution
+   authentication are separate states. Configured unauthenticated Claude Code
+   and Pi profiles can report automatic capture Ready from profile and
+   Transcript Watcher health while their supported execution capabilities report
+   Unauthenticated. Pi continues to report Managed Conversation unsupported.
+   Automatic capture is not downgraded by an unauthenticated or stale execution
+   snapshot. Execution admission still requires a fresh,
    healthy, authenticated snapshot. Stale snapshots are non-runnable, and
    read-model failure reports Unknown
    without degrading core status. Pi reports Managed Conversation unsupported.
@@ -229,10 +230,13 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     the Local AI Runtime to refresh capabilities after registration. Running
     `claude auth login` and refreshing makes execution capabilities ready without
     profile reinstall. Claude Desktop authentication and Anthropic API keys are
-    outside this flow and are never inspected or reused. `koed-server setup pi --json`
-    independently registers Koed's stable local package in the active Pi
-    profile after canonical executable and authenticated-model checks. Both
-    commands are idempotent and use strict subprocess environment allowlists.
+    outside this flow and are never inspected or reused. `koed-server setup pi
+--json` independently installs Koed's stable local package and registers
+    `pi.default` after canonical executable/version checks. Authenticated-model
+    discovery is advisory for profile setup: no-model setup succeeds with
+    structured partial readiness, while Pi execution remains unavailable until
+    model authentication and capability refresh. Both commands are idempotent
+    and use strict subprocess environment allowlists.
     Claude setup replaces only an MCP entry proven to be Koed-owned; Pi's
     installed package derives custom `KOED_HOME` from its stable package path.
 11. Koed Desktop can start/connect to the same headless command surface, run
