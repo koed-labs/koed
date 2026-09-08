@@ -576,6 +576,191 @@ describe("status state aggregation", () => {
     expect(clients.claude!.profile.state).toBe("needs_attention");
     expect(clients.codex!.profile.state).toBe("healthy");
   });
+  it("keeps Claude capture ready when MCP profile configuration needs repair", () => {
+    const clients = inspectAiClientReadiness({
+      codex: { ...notConfigured("Codex unavailable"), configured: false },
+      claudeCode: {
+        ...notConfigured("Claude MCP configuration is incomplete", undefined, {
+          captureConfigured: true,
+          mcpConfigured: false,
+          version: "2.1.227"
+        }),
+        configured: false,
+        detected: true
+      },
+      pi: {
+        ...notConfigured("Pi unavailable"),
+        configured: false,
+        detected: false
+      },
+      codexTranscriptWatcher: notConfigured("Codex watcher disabled"),
+      claudeTranscriptWatcher: healthy("Claude watcher is running"),
+      mcpServer: healthy("MCP Server is running"),
+      localAiRuntime: healthy("Local AI Runtime is running"),
+      now: "2026-01-01T00:01:00.000Z"
+    });
+
+    expect(clients.claude!.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "ready"
+        }),
+        expect.objectContaining({ id: "mcp_recall", readiness: "unknown" })
+      ])
+    );
+  });
+
+  it("does not trust a ready Claude MCP descriptor when authentication is unknown", () => {
+    const clients = inspectAiClientReadiness({
+      codex: { ...notConfigured("Codex unavailable"), configured: false },
+      claudeCode: { ...healthy(), configured: true, detected: true },
+      pi: {
+        ...notConfigured("Pi unavailable"),
+        configured: false,
+        detected: false
+      },
+      codexTranscriptWatcher: notConfigured("Codex watcher disabled"),
+      claudeTranscriptWatcher: healthy("Claude watcher running"),
+      mcpServer: healthy("MCP Server running"),
+      localAiRuntime: healthy("Local AI Runtime running"),
+      capabilityReadModel: {
+        instances: [
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code"
+          }
+        ],
+        capabilitySnapshots: [
+          {
+            instanceId: "claude.default",
+            clientVersion: "2.1.227",
+            authenticationState: "unknown",
+            healthState: "healthy",
+            models: [],
+            capabilities: {
+              descriptors: {
+                mcp_recall: {
+                  id: "mcp_recall",
+                  support: "supported",
+                  readiness: "ready",
+                  diagnostics: []
+                }
+              }
+            },
+            observedAt: "2026-01-01T00:00:00.000Z",
+            expiresAt: "2026-01-01T00:10:00.000Z"
+          }
+        ]
+      },
+      now: "2026-01-01T00:01:00.000Z"
+    });
+
+    expect(
+      clients.claude!.capabilities.find(
+        (capability) => capability.id === "mcp_recall"
+      )
+    ).toMatchObject({ readiness: "unknown" });
+  });
+
+  it("keeps Claude automatic capture ready while signed-out execution stays unavailable", () => {
+    const unauthenticated = (id: string) => ({
+      id,
+      support: "supported" as const,
+      readiness: "unauthenticated" as const,
+      diagnostics: []
+    });
+    const clients = inspectAiClientReadiness({
+      codex: {
+        ...notConfigured("Codex is not configured."),
+        configured: false
+      },
+      claudeCode: {
+        ...needsAttention("Claude Code sign-in required", undefined, {
+          version: "2.1.227",
+          authenticated: false
+        }),
+        configured: true,
+        detected: true
+      },
+      pi: {
+        ...notConfigured("Pi is not configured."),
+        configured: false,
+        detected: false
+      },
+      codexTranscriptWatcher: notConfigured("Codex watcher disabled"),
+      claudeTranscriptWatcher: healthy("Claude watcher is running"),
+      mcpServer: healthy("MCP Server is running"),
+      localAiRuntime: healthy("Local AI Runtime is running"),
+      capabilityReadModel: {
+        instances: [
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code"
+          }
+        ],
+        capabilitySnapshots: [
+          {
+            instanceId: "claude.default",
+            clientVersion: "2.1.227",
+            authenticationState: "unauthenticated",
+            healthState: "unavailable",
+            models: [],
+            capabilities: {
+              descriptors: {
+                automatic_capture: {
+                  id: "automatic_capture",
+                  support: "supported",
+                  readiness: "unknown",
+                  diagnostics: []
+                },
+                mcp_recall: unauthenticated("mcp_recall"),
+                local_synthesis: unauthenticated("local_synthesis"),
+                managed_conversation_start: unauthenticated(
+                  "managed_conversation_start"
+                )
+              }
+            },
+            observedAt: "2026-01-01T00:00:00.000Z",
+            expiresAt: "2026-01-01T00:10:00.000Z"
+          }
+        ]
+      },
+      now: "2026-01-01T00:01:00.000Z"
+    });
+
+    expect(clients.claude).toMatchObject({
+      authentication: "unauthenticated",
+      profile: { state: "needs_attention" }
+    });
+    expect(clients.claude!.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "ready"
+        }),
+        expect.objectContaining({
+          id: "mcp_recall",
+          readiness: "unauthenticated"
+        }),
+        expect.objectContaining({
+          id: "local_synthesis",
+          readiness: "unauthenticated"
+        }),
+        expect.objectContaining({
+          id: "managed_conversation_start",
+          readiness: "unauthenticated"
+        }),
+        expect.objectContaining({
+          id: "managed_conversation_send",
+          readiness: "unauthenticated"
+        })
+      ])
+    );
+  });
+
   it("reports independent flow assignment readiness from defaults and settings", () => {
     const readModel = {
       instances: [
@@ -898,7 +1083,7 @@ describe("status state aggregation", () => {
     );
   });
 
-  it("keeps stale snapshots non-runnable and does not use runtime for synthesis", () => {
+  it("keeps stale execution snapshots non-runnable without downgrading capture", () => {
     const descriptor = (id: string) => ({
       id,
       support: "supported" as const,
@@ -950,7 +1135,7 @@ describe("status state aggregation", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: "automatic_capture",
-          readiness: "stale"
+          readiness: "ready"
         }),
         expect.objectContaining({ id: "mcp_recall", readiness: "stale" }),
         expect.objectContaining({ id: "local_synthesis", readiness: "stale" }),
@@ -1407,7 +1592,7 @@ describe("Claude Code integration status", () => {
               ? spawnResult(
                   `koed:\n  Type: stdio\n  Command: node\n  Args: ${resolve(root, "packages/mcp-server/dist/cli.js")}\n  Environment:\n    KOED_HOME=${resolve(root, "koed")}\n`
                 )
-              : spawnResult("");
+              : spawnResult('{"loggedIn":true}\n');
         }
       } as never
     );
@@ -1431,6 +1616,80 @@ describe("Claude Code integration status", () => {
     expect(commands.every(({ env }) => env?.ELECTRON_RUN_AS_NODE === "1")).toBe(
       true
     );
+  });
+
+  it("reports configured capture separately from signed-out execution", () => {
+    const root = tempDir();
+    const settingsPath = resolve(root, ".claude/settings.json");
+    const runtimeDirectory = resolve(root, "packages/mcp-server/dist");
+    const captureHook = resolve(runtimeDirectory, "capture-hook.js");
+    const mcpCli = resolve(runtimeDirectory, "cli.js");
+    mkdirSync(runtimeDirectory, { recursive: true });
+    mkdirSync(resolve(root, ".claude"), { recursive: true });
+    writeFileSync(mcpCli, "");
+    writeFileSync(captureHook, "");
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: Object.fromEntries(
+          [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "Stop",
+            "StopFailure",
+            "SubagentStart",
+            "SubagentStop",
+            "SessionEnd"
+          ].map((eventName) => [
+            eventName,
+            [{ hooks: [{ command: `node ${captureHook}` }] }]
+          ])
+        )
+      })
+    );
+    const environment = {
+      HOME: root,
+      KOED_HOME: resolve(root, "koed"),
+      KOED_REPO_ROOT: root,
+      CLAUDE_SETTINGS_PATH: settingsPath
+    };
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        existsSync,
+        readFileSync,
+        resolveClaudeExecutable: () => "/bin/sh",
+        spawnSync: (_command: string, args: string[]) => {
+          if (args[0] === "--version") {
+            return spawnResult("2.1.227 (Claude Code)\n");
+          }
+          if (args[0] === "mcp") {
+            return spawnResult(
+              `koed:\n  Command: node\n  Args: ${mcpCli}\n  Environment:\n    KOED_HOME=${resolve(root, "koed")}\n`
+            );
+          }
+          return spawnResult(
+            '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}',
+            1
+          );
+        }
+      } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "needs_attention",
+      configured: true,
+      detected: true,
+      details: {
+        profileConfigured: true,
+        authenticated: false
+      }
+    });
+    expect(status.action).toContain("Claude Desktop sign-in");
   });
 
   it("keeps missing Claude Code optional but actionable", () => {

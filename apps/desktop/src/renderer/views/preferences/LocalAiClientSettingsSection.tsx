@@ -1,4 +1,4 @@
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import { AlertTriangle, Check, Copy, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { Button, Input, Spinner } from "@koed/ui";
 import type { DesktopApi } from "../../../types.js";
@@ -15,6 +15,8 @@ export function LocalAiClientSettingsSection({
   localAiClients?: DesktopApi["localAiClients"];
 }) {
   const [search, setSearch] = useState("");
+  const [copiedClaudeLogin, setCopiedClaudeLogin] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const settings = useLocalAiClientSettings(localAiClients);
 
   if (!localAiClients) return <UnavailableSettings />;
@@ -29,6 +31,28 @@ export function LocalAiClientSettingsSection({
     );
   }
 
+  const claudeSignInRequired = settings.readModel.instances.some(
+    (instance) =>
+      instance.driverId === "claude" &&
+      settings.readModel!.capabilitySnapshots.some(
+        (snapshot) =>
+          snapshot.instanceId === instance.instanceId &&
+          snapshot.authenticationState === "unauthenticated"
+      )
+  );
+  const copyClaudeLogin = async () => {
+    setCopiedClaudeLogin(false);
+    setCopyError(null);
+    try {
+      const clipboard = window.koedDesktop?.clipboard;
+      if (!clipboard) throw new Error("Clipboard unavailable.");
+      await clipboard.writeText("claude auth login");
+      setCopiedClaudeLogin(true);
+    } catch (error) {
+      setCopyError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   return (
     <div className="koed-local-ai-settings">
       <SettingsToolbar
@@ -40,6 +64,33 @@ export function LocalAiClientSettingsSection({
           settings.setSearch(value);
         }}
       />
+      {claudeSignInRequired ? (
+        <div className="koed-local-ai-auth-warning" role="status">
+          <AlertTriangle aria-hidden="true" />
+          <div>
+            <strong>Claude Code sign-in required</strong>
+            <p>
+              Automatic capture remains available. Recall through Claude Code,
+              Local Synthesis, and Managed Conversations stay unavailable until
+              Claude Code is signed in. Claude Desktop sign-in does not
+              authenticate Claude Code.
+            </p>
+          </div>
+          <Button onClick={() => void copyClaudeLogin()} variant="outline">
+            {copiedClaudeLogin ? (
+              <Check aria-hidden="true" />
+            ) : (
+              <Copy aria-hidden="true" />
+            )}
+            {copiedClaudeLogin ? "Copied" : "Copy `claude auth login`"}
+          </Button>
+          <p className="koed-local-ai-auth-action">
+            After signing in, refresh capabilities above. Profile reinstall is
+            not required.
+          </p>
+          {copyError ? <p role="alert">{copyError}</p> : null}
+        </div>
+      ) : null}
       {settings.refreshError ? (
         <p className="koed-diagnostic-error" role="alert">
           {settings.refreshError}

@@ -35,6 +35,7 @@ import {
 } from "./pi-setup.js";
 import {
   CLAUDE_HOOK_EVENTS,
+  claudeAuthenticationState,
   claudeMcpEntryIsKoedOwned,
   claudeProcessEnvironment,
   hasClaudeKoedHook,
@@ -431,7 +432,9 @@ export const inspectClaudeCode = (
       detected: true
     };
   }
-  if (mcp.error || mcp.status !== 0 || missingHooks.length > 0) {
+  const mcpConfigured = !mcp.error && mcp.status === 0;
+  const captureConfigured = missingHooks.length === 0;
+  if (!mcpConfigured || !captureConfigured) {
     return {
       ...notConfigured(
         "Claude Code's Koed MCP or Capture Hook configuration is incomplete.",
@@ -440,6 +443,8 @@ export const inspectClaudeCode = (
           executable,
           version: versionText,
           settingsPath,
+          mcpConfigured,
+          captureConfigured,
           missingHooks
         }
       ),
@@ -448,14 +453,30 @@ export const inspectClaudeCode = (
     };
   }
   const auth = runClaude(["auth", "status", "--json"], 10_000);
-  if (auth.error || auth.status !== 0) {
+  const authenticationState = claudeAuthenticationState(auth);
+  if (authenticationState !== "authenticated") {
     return {
       ...needsAttention(
-        "Claude Code is configured for Koed but is not signed in.",
-        "Run `claude auth login`, then refresh status.",
-        { executable, version: versionText, settingsPath, authenticated: false }
+        authenticationState === "unauthenticated"
+          ? "Claude Code is configured for Koed capture but is not signed in for execution."
+          : "Claude Code is configured for Koed capture, but execution authentication could not be verified.",
+        authenticationState === "unauthenticated"
+          ? "Run `claude auth login`, then refresh capabilities. Claude Desktop sign-in does not authenticate Claude Code."
+          : "Run `claude auth status`, resolve its error, then refresh capabilities.",
+        {
+          executable,
+          version: versionText,
+          settingsPath,
+          profileConfigured: true,
+          mcpConfigured: true,
+          captureConfigured: true,
+          authenticationState,
+          ...(authenticationState === "unauthenticated"
+            ? { authenticated: false }
+            : {})
+        }
       ),
-      configured: false,
+      configured: true,
       detected: true
     };
   }
@@ -464,6 +485,9 @@ export const inspectClaudeCode = (
       executable,
       version: versionText,
       settingsPath,
+      profileConfigured: true,
+      mcpConfigured: true,
+      captureConfigured: true,
       authenticated: true
     }),
     configured: true,
@@ -1317,7 +1341,7 @@ const capabilityDescriptor = (
     | "local_synthesis"
     | "managed_conversation_start",
   support: "supported" | "unsupported",
-  readiness: "ready" | "not_ready" | "unknown",
+  readiness: "ready" | "not_ready" | "unauthenticated" | "unknown",
   message: string
 ): AiClientCapabilityDescriptor => ({
   id,
@@ -1460,14 +1484,18 @@ const unknownCapabilityDescriptor = (
 
 const localSynthesisReadiness = (
   snapshot: SelectedCapabilitySnapshot | null,
-  descriptor: AiClientCapabilityDescriptor | null
+  descriptor: AiClientCapabilityDescriptor | null,
+  profileAuthentication: "authenticated" | "unauthenticated" | "unknown"
 ): AiClientCapabilityDescriptor => {
   if (!snapshot || !descriptor) {
-    return unknownCapabilityDescriptor(
+    const unknown = unknownCapabilityDescriptor(
       "local_synthesis",
       "supported",
       "Local Synthesis capability snapshot is unavailable."
     );
+    return profileAuthentication === "unauthenticated"
+      ? { ...unknown, readiness: "unauthenticated" }
+      : unknown;
   }
   const current = staleDescriptor(descriptor, snapshot.stale);
   if (current.readiness === "stale") return current;
@@ -1540,21 +1568,37 @@ export const inspectAiClientReadiness = (input: {
         input.instanceId
       );
       const profileReady = readinessForState(profile.state);
-      const captureFallback =
-        profileReady === "ready"
-          ? readinessForState(capture.state)
-          : profileReady === "unknown"
-            ? "unknown"
-            : "not_ready";
+      const profileConfigured =
+        profile.state === "healthy" ||
+        ("configured" in profile && profile.configured === true);
+      const profileAuthentication =
+        snapshot?.authenticationState ??
+        (details.authenticated === true
+          ? "authenticated"
+          : details.authenticated === false
+            ? "unauthenticated"
+            : "unknown");
+      const captureProfileConfigured =
+        profileConfigured || details.captureConfigured === true;
+      const captureFallback = captureProfileConfigured
+        ? readinessForState(capture.state)
+        : profileReady === "unknown"
+          ? "unknown"
+          : "not_ready";
       const mcpFallback =
-        profileReady === "ready" && input.mcpServer.state === "healthy"
-          ? "ready"
-          : profileReady === "unknown" || input.mcpServer.state === "starting"
+        profileAuthentication === "unauthenticated"
+          ? "unauthenticated"
+          : driverId === "claude" && profileAuthentication === "unknown"
             ? "unknown"
-            : "not_ready";
+            : profileConfigured && input.mcpServer.state === "healthy"
+              ? "ready"
+              : profileReady === "unknown" ||
+                  input.mcpServer.state === "starting"
+                ? "unknown"
+                : "not_ready";
       const overlayUnknownProfileReadiness = (
         descriptor: AiClientCapabilityDescriptor,
-        fallback: "ready" | "not_ready" | "unknown"
+        fallback: "ready" | "not_ready" | "unauthenticated" | "unknown"
       ): AiClientCapabilityDescriptor =>
         descriptor.readiness === "unknown" && descriptor.support === "supported"
           ? {
@@ -1571,29 +1615,43 @@ export const inspectAiClientReadiness = (input: {
               ]
             }
           : descriptor;
-      const captureDescriptor = overlayUnknownProfileReadiness(
-        descriptorFor(snapshot, "automatic_capture") ??
-          capabilityDescriptor(
-            "automatic_capture",
-            "supported",
-            captureFallback,
-            capture.message ?? "Automatic capture profile check completed."
-          ),
-        captureFallback
+      const captureDescriptor = capabilityDescriptor(
+        "automatic_capture",
+        "supported",
+        captureFallback,
+        capture.message ?? "Automatic capture profile check completed."
       );
-      const mcpDescriptor = overlayUnknownProfileReadiness(
+      const discoveredMcpDescriptor =
         descriptorFor(snapshot, "mcp_recall") ??
-          capabilityDescriptor(
-            "mcp_recall",
-            "supported",
-            mcpFallback,
-            input.mcpServer.message ?? "MCP Recall profile check completed."
-          ),
-        mcpFallback
-      );
+        capabilityDescriptor(
+          "mcp_recall",
+          "supported",
+          mcpFallback,
+          input.mcpServer.message ?? "MCP Recall profile check completed."
+        );
+      const mcpDescriptor =
+        driverId === "claude" && profileAuthentication === "unknown"
+          ? {
+              ...discoveredMcpDescriptor,
+              readiness: "unknown" as const,
+              diagnostics: [
+                ...discoveredMcpDescriptor.diagnostics,
+                {
+                  code: "authentication_state_unknown",
+                  message:
+                    "Claude Code authentication is unknown; MCP Recall cannot be admitted.",
+                  severity: "warning" as const
+                }
+              ]
+            }
+          : overlayUnknownProfileReadiness(
+              discoveredMcpDescriptor,
+              mcpFallback
+            );
       const synthesisDescriptor = localSynthesisReadiness(
         snapshot,
-        descriptorFor(snapshot, "local_synthesis")
+        descriptorFor(snapshot, "local_synthesis"),
+        profileAuthentication
       );
       const managedCapabilityIds = [
         "managed_conversation_start",
@@ -1606,8 +1664,8 @@ export const inspectAiClientReadiness = (input: {
         "handoff",
         "fork"
       ] as const;
-      const managedDescriptors = managedCapabilityIds.map((id) =>
-        staleDescriptor(
+      const managedDescriptors = managedCapabilityIds.map((id) => {
+        const descriptor =
           driverId === "pi"
             ? unknownCapabilityDescriptor(
                 id,
@@ -1615,16 +1673,22 @@ export const inspectAiClientReadiness = (input: {
                 "Pi does not support Managed Conversation."
               )
             : (descriptorFor(snapshot, id) ??
-                unknownCapabilityDescriptor(
-                  id,
-                  "supported",
-                  "Managed Conversation capability snapshot is unavailable."
-                )),
+              unknownCapabilityDescriptor(
+                id,
+                "supported",
+                "Managed Conversation capability snapshot is unavailable."
+              ));
+        return staleDescriptor(
+          driverId !== "pi" &&
+            profileAuthentication === "unauthenticated" &&
+            snapshot?.stale !== true
+            ? { ...descriptor, readiness: "unauthenticated" }
+            : descriptor,
           snapshot?.stale ?? false
-        )
-      );
+        );
+      });
       const capabilities = [
-        staleDescriptor(captureDescriptor, snapshot?.stale ?? false),
+        captureDescriptor,
         staleDescriptor(mcpDescriptor, snapshot?.stale ?? false),
         synthesisDescriptor,
         ...managedDescriptors
@@ -1632,13 +1696,7 @@ export const inspectAiClientReadiness = (input: {
       const version =
         snapshot?.clientVersion ??
         (typeof details.version === "string" ? details.version : null);
-      const authenticated =
-        snapshot?.authenticationState ??
-        (details.authenticated === true
-          ? "authenticated"
-          : details.authenticated === false
-            ? "unauthenticated"
-            : "unknown");
+      const authenticated = profileAuthentication;
       const installed =
         version || ("detected" in profile && profile.detected === true)
           ? healthy(

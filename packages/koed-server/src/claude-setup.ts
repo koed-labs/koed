@@ -58,6 +58,9 @@ export interface KoedServerSetupClaudeResult {
   koedHome: string;
   checkedAt: string;
   settingsPath: string;
+  profileConfigured?: boolean;
+  authenticationState?: "authenticated" | "unauthenticated" | "unknown";
+  executionCapabilities?: "ready" | "unavailable";
   stdout?: string;
   stderr?: string;
   error?: string;
@@ -137,6 +140,21 @@ const withoutKoedHook = (
   (Array.isArray(entries) ? entries : []).filter(
     (entry) => !looksLikeKoedClaudeHook(entry, captureHookPath)
   );
+
+export const claudeAuthenticationState = (
+  result: Pick<SpawnSyncReturns<string>, "error" | "status" | "stdout">
+): "authenticated" | "unauthenticated" | "unknown" => {
+  if (result.error) return "unknown";
+  try {
+    const status = JSON.parse(result.stdout) as { loggedIn?: unknown };
+    if (status.loggedIn === false) return "unauthenticated";
+    return result.status === 0 && status.loggedIn === true
+      ? "authenticated"
+      : "unknown";
+  } catch {
+    return "unknown";
+  }
+};
 
 export const claudeProcessEnvironment = (
   environment: NodeJS.ProcessEnv
@@ -449,6 +467,9 @@ export const setupClaude = (
     koedHome: paths.koedHome,
     checkedAt,
     settingsPath,
+    profileConfigured: false,
+    authenticationState: "unknown",
+    executionCapabilities: "unavailable",
     ...(output?.stdout?.trim() ? { stdout: output.stdout.trim() } : {}),
     ...(output?.stderr?.trim() ? { stderr: output.stderr.trim() } : {}),
     error,
@@ -491,13 +512,7 @@ export const setupClaude = (
         timeout: 10_000
       }
     );
-    if (auth.error || auth.status !== 0) {
-      return failure(
-        "Claude Code is not signed in.",
-        "Run `claude auth login`, then set up Claude Code integration again.",
-        auth
-      );
-    }
+    const authenticationState = claudeAuthenticationState(auth);
 
     registrySnapshot = captureAiClientRegistry(environment);
     originalSettings = existsSync(settingsPath)
@@ -620,13 +635,23 @@ export const setupClaude = (
     });
     if (!registered) throw new Error("Claude Code registration failed.");
 
+    const authenticated = authenticationState === "authenticated";
     return {
       ok: true,
-      state: "healthy",
+      state: authenticated ? "healthy" : "needs_attention",
       command,
       koedHome: paths.koedHome,
       checkedAt,
       settingsPath,
+      profileConfigured: true,
+      authenticationState,
+      executionCapabilities: authenticated ? "ready" : "unavailable",
+      ...(!authenticated
+        ? {
+            action:
+              "Run `claude auth login`, then refresh capabilities. Claude Desktop sign-in does not authenticate Claude Code."
+          }
+        : {}),
       ...(add.stdout?.trim() ? { stdout: add.stdout.trim() } : {}),
       ...(add.stderr?.trim() ? { stderr: add.stderr.trim() } : {})
     };

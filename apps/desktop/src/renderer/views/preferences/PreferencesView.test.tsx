@@ -581,6 +581,75 @@ describe("PreferencesView", () => {
     ).toBeTruthy();
   });
 
+  it("distinguishes configured signed-out Claude Code from Claude Desktop", async () => {
+    const healthy = { state: "healthy" as const };
+    const status = advancedStatus({
+      claudeCode: {
+        state: "needs_attention",
+        configured: true,
+        detected: true,
+        details: { authenticated: false, profileConfigured: true }
+      },
+      aiClients: {
+        claude: {
+          driverId: "claude",
+          instanceId: "claude.default",
+          displayName: "Claude Code",
+          installed: healthy,
+          version: "2.1.227",
+          authentication: "unauthenticated",
+          profile: { state: "needs_attention" },
+          capabilities: [
+            {
+              id: "automatic_capture",
+              support: "supported",
+              readiness: "ready",
+              diagnostics: []
+            },
+            {
+              id: "local_synthesis",
+              support: "supported",
+              readiness: "unauthenticated",
+              diagnostics: []
+            }
+          ],
+          observedAt: "2026-08-28T00:00:00.000Z",
+          snapshotState: "current"
+        }
+      }
+    });
+    window.koedDesktop = {
+      invoke: vi.fn(async (command) =>
+        command === "status" ? status : { ok: true }
+      )
+    } as DesktopApi;
+
+    await renderPreferences({ initialSection: "ai-clients" });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Sign in required")
+    );
+    const claudeCard = [
+      ...container.querySelectorAll(".koed-client-card")
+    ].find(
+      (card) => card.querySelector("strong")?.textContent === "Claude Code"
+    )!;
+    expect(claudeCard.textContent).toContain(
+      "Claude Code profile configured. Run `claude auth login`"
+    );
+    expect(claudeCard.textContent).toContain(
+      "Claude Desktop sign-in does not authenticate Claude Code"
+    );
+    expect(claudeCard.textContent).toContain("v2.1.227 · Unauthenticated");
+    expect(claudeCard.textContent).toContain("Auto-capture");
+    expect(claudeCard.textContent).toContain("Local Synthesis");
+    expect(
+      claudeCard.querySelector('button[aria-label="Repair Claude Code"]')
+    ).toBeTruthy();
+    expect(
+      claudeCard.querySelector('button[aria-label="Check Claude Code"]')
+    ).toBeTruthy();
+  });
+
   it("summarizes healthy diagnostics and keeps icon actions accessible", async () => {
     const status = advancedStatus();
     window.koedDesktop = {

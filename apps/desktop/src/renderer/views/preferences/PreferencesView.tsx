@@ -745,11 +745,16 @@ function AiClientIntegrationsSection({
           const detected = readiness?.installed.state === "healthy";
           const flat = flatClientStatus(id, status);
           const profileState = flat?.state ?? "not_configured";
+          const signInRequired =
+            id === "claude" &&
+            flat?.configured === true &&
+            (readiness?.authentication === "unauthenticated" ||
+              flat.details?.authenticated === false);
           const capabilitySummaries = summarizeCapabilities(
             readiness?.capabilities
           );
           const metaLine =
-            profileState === "healthy"
+            profileState === "healthy" || signInRequired
               ? clientMetaLine(readiness, detected)
               : profileState === "starting"
                 ? null
@@ -767,11 +772,13 @@ function AiClientIntegrationsSection({
           const pillText =
             profileState === "healthy"
               ? "Healthy"
-              : profileState === "needs_attention"
-                ? "Needs attention"
-                : profileState === "starting"
-                  ? "Starting…"
-                  : "Not set up";
+              : signInRequired
+                ? "Sign in required"
+                : profileState === "needs_attention"
+                  ? "Needs attention"
+                  : profileState === "starting"
+                    ? "Starting…"
+                    : "Not set up";
           const notConfigured = profileState === "not_configured";
           const primaryCommand =
             `${notConfigured ? "setup" : "repair"}_${id}` as IntegrationMutationCommand;
@@ -793,6 +800,13 @@ function AiClientIntegrationsSection({
               </span>
               {metaLine ? (
                 <span className="koed-client-meta">{metaLine}</span>
+              ) : null}
+              {signInRequired ? (
+                <span className="koed-client-warning">
+                  Claude Code profile configured. Run `claude auth login`, then
+                  check or refresh capabilities. Claude Desktop sign-in does not
+                  authenticate Claude Code.
+                </span>
               ) : null}
               <span className="koed-client-caps">
                 {capabilitySummaries.map((capability) => (

@@ -361,7 +361,13 @@ export function SetupChecklist({
 }
 
 type OnboardingClientId = "codex" | "claude" | "pi";
-type AiClientSetupResultState = "configured" | "ready" | "skipped" | "failed";
+type AiClientSetupResultState =
+  | "configured"
+  | "configured_sign_in_required"
+  | "configured_auth_unknown"
+  | "ready"
+  | "skipped"
+  | "failed";
 type AiClientSetupResult = {
   state: AiClientSetupResultState;
   error?: string;
@@ -410,6 +416,25 @@ const resultIsOk = (value: unknown): boolean =>
   typeof value === "object" &&
   (value as { ok?: unknown }).ok === true;
 
+const claudeSetupAuthentication = (
+  value: unknown
+): "authenticated" | "unauthenticated" | "unknown" | null => {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    (value as { profileConfigured?: unknown }).profileConfigured !== true
+  ) {
+    return null;
+  }
+  const authenticationState = (value as { authenticationState?: unknown })
+    .authenticationState;
+  return authenticationState === "authenticated" ||
+    authenticationState === "unauthenticated" ||
+    authenticationState === "unknown"
+    ? authenticationState
+    : null;
+};
+
 const resultError = (value: unknown, fallback: string): string => {
   if (!value || typeof value !== "object") return fallback;
   const details = value as {
@@ -433,7 +458,9 @@ function AiClientSetup({
 }) {
   const { status, busyCommand } = useDesktopStatus(statusStore);
   const showCapabilityLegend = onboardingClients.some(
-    ({ id }) => status?.aiClients?.[id]?.profile.state === "healthy"
+    ({ id }) =>
+      status?.aiClients?.[id]?.profile.state === "healthy" ||
+      (id === "claude" && status?.claudeCode?.configured === true)
   );
   const [selected, setSelected] = useState<Set<OnboardingClientId>>(
     () => new Set()
@@ -530,12 +557,28 @@ function AiClientSetup({
         completeCurrent(id, { state: "ready" });
       } else {
         const refreshedStatus = await statusStore.refresh();
-        if (refreshedStatus?.aiClients?.[id]?.profile.state !== "healthy") {
+        const claudeAuthentication =
+          id === "claude" ? claudeSetupAuthentication(operationResult) : null;
+        const partialClaudeSetup =
+          claudeAuthentication !== null &&
+          claudeAuthentication !== "authenticated";
+        const profileConfirmed =
+          refreshedStatus?.aiClients?.[id]?.profile.state === "healthy" ||
+          (partialClaudeSetup &&
+            refreshedStatus?.claudeCode?.configured === true);
+        if (!profileConfirmed) {
           throw new Error(
             `${onboardingClients.find((client) => client.id === id)?.label ?? "AI Client"} integration was configured, but its profile was not confirmed healthy. Refresh status and retry.`
           );
         }
-        completeCurrent(id, { state: "configured" });
+        completeCurrent(id, {
+          state:
+            claudeAuthentication === "unauthenticated"
+              ? "configured_sign_in_required"
+              : claudeAuthentication === "unknown"
+                ? "configured_auth_unknown"
+                : "configured"
+        });
       }
     } catch (cause) {
       completeCurrent(id, {
@@ -579,7 +622,8 @@ function AiClientSetup({
                 readiness?.capabilities
               );
               const showCapabilityReadiness =
-                readiness?.profile.state === "healthy";
+                readiness?.profile.state === "healthy" ||
+                (id === "claude" && status?.claudeCode?.configured === true);
               const metaLine = clientMetaLine(readiness, detected);
               const result = results[id];
               const isActive = activeClient === id;
@@ -596,7 +640,10 @@ function AiClientSetup({
               const pillClass = result
                 ? result.state === "failed"
                   ? "is-failed"
-                  : "is-success"
+                  : result.state === "configured_sign_in_required" ||
+                      result.state === "configured_auth_unknown"
+                    ? "is-warning"
+                    : "is-success"
                 : isActive
                   ? "is-active"
                   : isQueued
@@ -607,11 +654,15 @@ function AiClientSetup({
               const pillText = result
                 ? result.state === "failed"
                   ? "Failed"
-                  : result.state === "configured"
-                    ? "Configured"
-                    : result.state === "ready"
-                      ? "Ready"
-                      : "Skipped"
+                  : result.state === "configured_sign_in_required"
+                    ? "Configured — sign in required"
+                    : result.state === "configured_auth_unknown"
+                      ? "Configured — check sign-in"
+                      : result.state === "configured"
+                        ? "Configured"
+                        : result.state === "ready"
+                          ? "Ready"
+                          : "Skipped"
                 : isActive
                   ? "Setting up…"
                   : isQueued
@@ -646,6 +697,16 @@ function AiClientSetup({
                   <span className="koed-client-meta">{metaLine}</span>
                   {result?.error ? (
                     <span className="koed-client-error">{result.error}</span>
+                  ) : result?.state === "configured_sign_in_required" ? (
+                    <span className="koed-client-warning">
+                      Run `claude auth login`, then refresh capabilities. Claude
+                      Desktop sign-in does not authenticate Claude Code.
+                    </span>
+                  ) : result?.state === "configured_auth_unknown" ? (
+                    <span className="koed-client-warning">
+                      Run `claude auth status`, resolve its error, then refresh
+                      capabilities. Claude-executed work remains unavailable.
+                    </span>
                   ) : null}
                   <span className="koed-client-caps">
                     {capabilitySummaries.map((capability) => (
@@ -733,7 +794,11 @@ function AiClientSetup({
             {Object.entries(results).map(([id, result]) => (
               <li key={id}>
                 {onboardingClients.find((client) => client.id === id)?.label}:{" "}
-                {result?.state}
+                {result?.state === "configured_sign_in_required"
+                  ? "configured — sign in required"
+                  : result?.state === "configured_auth_unknown"
+                    ? "configured — check sign-in"
+                    : result?.state}
                 {result?.error ? ` — ${result.error}` : ""}
               </li>
             ))}

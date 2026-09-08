@@ -696,7 +696,9 @@ export const runKoedServerCli = async (
       } else {
         stdout.write(
           result.ok
-            ? "Claude Code setup completed. Restart Claude Code before verifying capture and recall.\n"
+            ? result.authenticationState === "authenticated"
+              ? "Claude Code setup completed. Restart Claude Code before verifying capture and recall.\n"
+              : "Claude Code profile configured. Run `claude auth login`, then refresh capabilities; Claude-executed work remains unavailable until sign-in.\n"
             : `${result.error ?? "Claude Code setup failed."}\n`
         );
       }

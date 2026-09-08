@@ -162,7 +162,14 @@ AI Runtime.
    AI Client instance capability read model best-effort: current or stale
    snapshots authoritatively gate Local Synthesis and Managed Conversation;
    profile checks only fill unknown Capture Hook or MCP Recall descriptors.
-   Stale snapshots are non-runnable, and read-model failure reports Unknown
+   Claude Code installation, Koed-owned profile configuration, and execution
+   authentication are separate states. A configured signed-out Claude profile
+   can report automatic capture Ready from profile and Transcript Watcher health
+   while MCP Recall, Local Synthesis, and Managed Conversation execution report
+   Unauthenticated. Automatic capture is not downgraded by an unauthenticated or
+   stale execution snapshot. Execution admission still requires a fresh,
+   healthy, authenticated snapshot. Stale snapshots are non-runnable, and
+   read-model failure reports Unknown
    without degrading core status. Pi reports Managed Conversation unsupported.
    Legacy `aiClients` remains provider-keyed; `aiClientInstances` exposes every
    registered instance, including healthy secondary instances when a default is
@@ -214,9 +221,15 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     both mint the token through the active runtime repository with the same
     database and token pepper used by the API; Electron main only retains and
     rereads that supervisor-owned credential.
-    `koed-server setup claude --json` independently verifies Claude Code version
-    and sign-in, then preserves unrelated user settings while installing Koed's
-    MCP and Supported Capture Hook entries. `koed-server setup pi --json`
+    `koed-server setup claude --json` independently verifies Claude Code version,
+    records sign-in as advisory readiness, and preserves unrelated user settings
+    while transactionally installing Koed's user-scoped MCP and Supported
+    Capture Hook entries and registering `claude.default`. Signed-out setup
+    succeeds with structured partial-readiness output. Desktop boundedly asks
+    the Local AI Runtime to refresh capabilities after registration. Running
+    `claude auth login` and refreshing makes execution capabilities ready without
+    profile reinstall. Claude Desktop authentication and Anthropic API keys are
+    outside this flow and are never inspected or reused. `koed-server setup pi --json`
     independently registers Koed's stable local package in the active Pi
     profile after canonical executable and authenticated-model checks. Both
     commands are idempotent and use strict subprocess environment allowlists.

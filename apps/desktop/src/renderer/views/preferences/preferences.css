@@ -284,6 +284,38 @@
   gap: 14px;
 }
 
+.koed-local-ai-auth-warning {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warning) 8%, var(--background));
+}
+
+.koed-local-ai-auth-warning > svg {
+  color: var(--warning-foreground);
+}
+
+.koed-local-ai-auth-warning strong {
+  font-size: 13px;
+}
+
+.koed-local-ai-auth-warning p {
+  margin: 4px 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.koed-local-ai-auth-warning .koed-local-ai-auth-action,
+.koed-local-ai-auth-warning > [role="alert"] {
+  grid-column: 2 / -1;
+  margin: 0;
+}
+
 .koed-local-ai-settings-loading {
   display: flex;
   align-items: center;

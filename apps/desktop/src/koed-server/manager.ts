@@ -4790,13 +4790,39 @@ export const createKoedServerManager = ({
         resultMessage(result, `${client} integration operation failed.`)
       );
     }
-    return result;
+    if (args[1] !== "claude" || args[0] === "remove") return result;
+    try {
+      const capabilityRefresh = await refreshLocalAiRuntime({
+        fetch: personalMemoryFetch,
+        koedHome: resolveKoedHome(environment)
+      });
+      return { ...(objectValue(result) ?? {}), capabilityRefresh };
+    } catch {
+      return {
+        ...(objectValue(result) ?? {}),
+        capabilityRefresh: {
+          refreshed: false,
+          refreshError:
+            "Capability refresh could not be completed; refresh after Claude Code sign-in."
+        }
+      };
+    }
   };
 
   const runAiClientCheck = async (
     client: "Codex" | "Claude Code" | "Pi",
     args: ["check", "codex" | "claude" | "pi"]
   ) => {
+    if (args[1] === "claude") {
+      try {
+        await refreshLocalAiRuntime({
+          fetch: personalMemoryFetch,
+          koedHome: resolveKoedHome(environment)
+        });
+      } catch {
+        // Check remains fail-closed against current persisted capability state.
+      }
+    }
     const result = await runJson(args, 90_000);
     if (!resultOk(result)) {
       throw new Error(
