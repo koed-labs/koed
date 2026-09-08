@@ -7884,6 +7884,9 @@ export const createMemorySourceRepository = (
           from sessions s
           where ($2::boolean = true or s.invalidated_at is null)
             and ($3::visibility_scope is null or s.visibility = $3::visibility_scope)
+            and btrim(coalesce(s.metadata ->> 'threadName', '')) <> ''
+            and s.metadata ->> 'threadName' <> coalesce(s.external_session_id, '')
+            and s.metadata ->> 'threadName' <> s.id::text
             and (
               $4::text is null
               or coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4

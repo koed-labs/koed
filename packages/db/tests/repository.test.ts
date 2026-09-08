@@ -19064,6 +19064,48 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("hides untitled Captured Session shells until they contain visible activity", async () => {
+    const alice = await repo.createUser({
+      email: `alice-untitled-session-shell-${randomUUID()}@example.com`
+    });
+    const untitled = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: randomUUID(),
+        sourceRuntime: "codex-cli",
+        captureMethod: "transcript",
+        idempotencyKey: `untitled-session-shell-${randomUUID()}`
+      }
+    );
+    const titled = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: randomUUID(),
+        sourceRuntime: "codex-cli",
+        captureMethod: "transcript",
+        idempotencyKey: `titled-session-shell-${randomUUID()}`,
+        metadata: { threadName: "Ready to inspect" }
+      }
+    );
+
+    const projects = await repo.listLcmGraphThreads(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const threads = projects.flatMap((project) => project.threads);
+
+    expect(threads).toEqual([
+      expect.objectContaining({
+        id: titled.externalSessionId,
+        name: "Ready to inspect",
+        eventCount: 0
+      })
+    ]);
+    expect(threads.some((thread) => thread.sessionId === untitled.id)).toBe(
+      false
+    );
+  });
+
   it("normalizes native Codex guardian lineage in Captured Session graph rows", async () => {
     const alice = await repo.createUser({
       email: `alice-native-guardian-${randomUUID()}@example.com`
