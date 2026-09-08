@@ -30,6 +30,9 @@
         "packages/mcp-server/src/runtime-contracts.ts"
       ],
       "@koed/shared": ["packages/shared/src/index.ts"],
+      "@koed/shared/ai-client-contract": [
+        "packages/shared/src/ai-client-contract.ts"
+      ],
       "@koed/shared/collaboration": [
         "packages/shared/src/collaboration-contract.ts"
       ],

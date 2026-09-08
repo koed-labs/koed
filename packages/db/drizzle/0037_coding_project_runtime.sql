@@ -706,3 +706,6 @@ WHEN (
 	OR OLD."processing_lease_until" IS DISTINCT FROM NEW."processing_lease_until"
 )
 EXECUTE FUNCTION notify_koed_projection_work();
+
+--> statement-breakpoint
+ALTER TABLE "managed_conversation_runtime_bindings" ADD COLUMN "start_authority_acknowledged_at" timestamp with time zone;

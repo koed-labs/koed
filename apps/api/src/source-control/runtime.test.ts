@@ -32,7 +32,7 @@ const defaultCapabilities = [
 
 const fixture = async (options?: {
   remoteUrl?: string;
-  provider?: "azure_devops";
+  provider?: "azure_devops" | "bitbucket";
   host?: string;
   capabilities?: readonly string[];
 }) => {
@@ -85,9 +85,11 @@ const fixture = async (options?: {
           apiOrigin:
             options?.provider === "azure_devops"
               ? "https://dev.azure.com"
-              : options?.host
-                ? `https://${options.host}/api/v3`
-                : "https://api.github.com",
+              : options?.provider === "bitbucket"
+                ? "https://api.bitbucket.org/2.0"
+                : options?.host
+                  ? `https://${options.host}/api/v3`
+                  : "https://api.github.com",
           accountLabel: "Fixture account",
           credentialReference: "source-control:fixture",
           credentialGeneration: 4,
@@ -205,6 +207,68 @@ const fixture = async (options?: {
 };
 
 describe("source-control runtime", () => {
+  it.each([
+    {
+      remoteUrl: "git@github.com:acme/repo.git",
+      unavailable: ["fetch", "push"]
+    },
+    {
+      remoteUrl: "https://bitbucket.org/acme/repo.git",
+      provider: "bitbucket" as const,
+      host: "bitbucket.org",
+      unavailable: ["reviews_write"]
+    },
+    {
+      remoteUrl: "https://dev.azure.com/acme/project/_git/repo",
+      provider: "azure_devops" as const,
+      host: "dev.azure.com",
+      unavailable: ["reviews_write"]
+    }
+  ])("advertises usable operations for $remoteUrl", async (options) => {
+    const { runtime, credentialResolver } = await fixture({
+      ...options,
+      capabilities: [...defaultCapabilities, "push", "reviews_write"]
+    });
+    const result = await runtime.execute(userId, {
+      contractVersion: 1,
+      executionId,
+      executionGeneration: 2,
+      kind: "remotes"
+    });
+    expect(result.kind).toBe("remotes");
+    if (result.kind !== "remotes") throw new Error("Expected remotes");
+    const remote = result.remotes[0]!;
+    expect(remote.connectionState).toBe("connected");
+    expect(remote.capabilities).toEqual(
+      [...defaultCapabilities, "push", "reviews_write"].filter(
+        (capability) => !options.unavailable.includes(capability)
+      )
+    );
+    const operation = options.unavailable.includes("fetch")
+      ? {
+          kind: "fetch" as const,
+          remoteName: "origin"
+        }
+      : {
+          kind: "review_create" as const,
+          number: 7,
+          decision: "approve" as const,
+          body: "Approved"
+        };
+    await expect(
+      runtime.execute(userId, {
+        contractVersion: 1,
+        executionId,
+        executionGeneration: 2,
+        remoteIdentityHash: remote.remoteIdentityHash,
+        expectedHeadObjectId: "a".repeat(40),
+        credentialGeneration: 4,
+        idempotencyKey: "unavailable-operation",
+        ...operation
+      })
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(credentialResolver).not.toHaveBeenCalled();
+  });
   it("connects a standard Azure SSH Project remote to its public API connection", async () => {
     const { runtime, credentialResolver } = await fixture({
       provider: "azure_devops",

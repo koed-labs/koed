@@ -538,6 +538,13 @@ export interface ManagedConversationRepository {
       projectPath: string;
     }
   ): Promise<ManagedConversationRuntimeBindingRecord>;
+  acknowledgeManagedConversationRuntimeBinding(input: {
+    ownerUserId: string;
+    executionId: string;
+    executionGeneration: number;
+    deploymentId: string;
+    deviceId: string;
+  }): Promise<boolean>;
   listPendingManagedConversationRuntimeBindings(input: {
     ownerUserId?: string;
     deploymentId: string;
@@ -4007,6 +4014,11 @@ export const createManagedConversationRepository = (
                  when managed_conversation_runtime_bindings.execution_generation = excluded.execution_generation
                    and managed_conversation_runtime_bindings.source_project_path = excluded.source_project_path
                  then managed_conversation_runtime_bindings.project_path else excluded.project_path end,
+               start_authority_acknowledged_at = case
+                 when managed_conversation_runtime_bindings.execution_generation = excluded.execution_generation
+                   and managed_conversation_runtime_bindings.source_project_path = excluded.source_project_path
+                   and managed_conversation_runtime_bindings.deployment_id = excluded.deployment_id
+                 then managed_conversation_runtime_bindings.start_authority_acknowledged_at else null end,
                checkout_id = case
                  when managed_conversation_runtime_bindings.execution_generation = excluded.execution_generation
                    and managed_conversation_runtime_bindings.source_project_path = excluded.source_project_path
@@ -4122,20 +4134,34 @@ export const createManagedConversationRepository = (
       }
     },
 
+    async acknowledgeManagedConversationRuntimeBinding(input) {
+      const result = await pool.query(
+        `update managed_conversation_runtime_bindings
+            set start_authority_acknowledged_at = coalesce(start_authority_acknowledged_at, now())
+          where owner_user_id = $1 and execution_id = $2
+            and execution_generation = $3 and deployment_id = $4 and device_id = $5
+            and checkout_lifecycle = 'ready'`,
+        [
+          input.ownerUserId,
+          input.executionId,
+          input.executionGeneration,
+          input.deploymentId,
+          input.deviceId
+        ]
+      );
+      return (result.rowCount ?? 0) === 1;
+    },
+
     async listPendingManagedConversationRuntimeBindings(input) {
       const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
       const result = await pool.query<RuntimeBindingRow>(
         `select binding.*
            from managed_conversation_runtime_bindings binding
-           left join managed_conversation_executions execution
-             on execution.id = binding.execution_id
           where binding.deployment_id = $1
             and binding.device_id = $2
-            and binding.checkout_lifecycle = 'pending'
-            and (execution.id is null or (
-              execution.owner_user_id = binding.owner_user_id
-              and execution.execution_generation = binding.execution_generation
-              and execution.state = 'starting'))
+            and (binding.checkout_lifecycle = 'pending'
+              or (binding.checkout_lifecycle = 'ready'
+                and binding.start_authority_acknowledged_at is null))
             and ($3::uuid is null or binding.owner_user_id = $3)
           order by binding.created_at, binding.execution_id
           limit $4`,

@@ -34,6 +34,141 @@ describe("ManagedSourceControlPane", () => {
       );
     });
   };
+  it.each(["detail", "detail-error", "comments-page", "remote-page"])(
+    "keeps responses attached to their selection (%s)",
+    async (race) => {
+      let finish: ((result: unknown) => void) | undefined;
+      let fail: ((error: Error) => void) | undefined;
+      let hold = false;
+      const remotes = ["origin", "upstream"].map((name, index) => ({
+        remoteName: name,
+        provider: "github",
+        host: "github.com",
+        transport: "https",
+        locator: { namespace: "acme", repository: name, project: null },
+        remoteIdentityHash: String(index + 1).repeat(64),
+        connectionId: "connection",
+        credentialGeneration: 1,
+        connectionState: "connected",
+        capabilities: [
+          "review_request_read",
+          "checks_read",
+          "comments_read",
+          "reviews_write"
+        ]
+      }));
+      const review = (number: number) => ({
+        id: `review-${number}`,
+        number,
+        title: `Review ${number}`,
+        state: "open",
+        draft: false,
+        sourceBranch: "feature",
+        targetBranch: "main",
+        headObjectId: String(number).repeat(40),
+        author: "author",
+        webUrl: null,
+        updatedAt: now
+      });
+      const comment = (body: string) => ({
+        id: body,
+        author: "author",
+        body,
+        createdAt: now,
+        webUrl: null
+      });
+      const command = vi.fn(
+        async (
+          request: ManagedProjectRequest
+        ): Promise<ManagedProjectResult> => {
+          if (request.operation !== "source_control")
+            throw new Error("Expected source control");
+          const op = request.sourceControlOperation;
+          let result: unknown;
+          if (op.kind === "remotes")
+            result = { kind: "remotes", remotes, headObjectId: "a".repeat(40) };
+          else if (op.kind === "review_requests")
+            result = {
+              kind: op.kind,
+              reviewRequests: [review(1), review(2)],
+              nextCursor: null
+            };
+          else if (op.kind === "checks") result = { kind: op.kind, checks: [] };
+          else if (op.kind === "comments") {
+            if (
+              hold &&
+              (race.startsWith("detail") ? op.number === 2 : Boolean(op.cursor))
+            ) {
+              result = await new Promise((resolve, reject) => {
+                finish = resolve;
+                fail = reject;
+              });
+            } else
+              result = {
+                kind: op.kind,
+                comments: [comment(`Current ${op.number}`)],
+                nextCursor: "next"
+              };
+          } else throw new Error(`Unexpected ${op.kind}`);
+          return {
+            requestId: request.requestId,
+            operation: "source_control",
+            result
+          } as ManagedProjectResult;
+        }
+      );
+      await render({ command, subscribe: () => () => undefined }, 1);
+      const click = async (text: string) => {
+        const button = Array.from(container.querySelectorAll("button")).find(
+          (item) => item.textContent?.includes(text)
+        );
+        expect(button).toBeDefined();
+        await act(async () => button!.click());
+      };
+      hold = true;
+      if (race.startsWith("detail")) {
+        await click("Review 2");
+        expect(container.textContent).not.toContain("Current 1");
+        expect(
+          Array.from(container.querySelectorAll("button")).find(
+            (item) => item.textContent === "Approve"
+          )?.disabled
+        ).toBe(true);
+        hold = false;
+        await click("Review 1");
+      } else {
+        await click("Load more comments");
+        hold = false;
+        if (race === "remote-page") {
+          await act(async () => {
+            const select = container.querySelector("select")!;
+            select.value = remotes[1]!.remoteIdentityHash;
+            select.dispatchEvent(new Event("change", { bubbles: true }));
+          });
+        } else await click("Review 2");
+      }
+      expect(finish).toBeDefined();
+      await act(async () => {
+        if (race === "detail-error") fail!(new Error("Old request failed"));
+        else
+          finish!({
+            kind: "comments",
+            comments: [comment("Obsolete response")],
+            nextCursor: "obsolete"
+          });
+      });
+      expect(container.textContent).not.toContain("Obsolete response");
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.textContent).toContain(
+        race === "comments-page" ? "Current 2" : "Current 1"
+      );
+      expect(
+        Array.from(container.querySelectorAll("button")).find(
+          (item) => item.textContent === "Approve"
+        )?.disabled
+      ).toBe(false);
+    }
+  );
   it.each([false, true])(
     "loads reviews, comments, and the correct push revision (pagination: %s)",
     async (paged) => {

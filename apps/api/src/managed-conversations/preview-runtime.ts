@@ -350,10 +350,9 @@ export const createManagedDevelopmentPreviewRuntime = (options: {
           records[0].executionGeneration
         );
       } else {
-        const execution = await options
-          .requireRepository()
-          .getManagedConversationExecution(
-            { userId: ownerUserId },
+        const execution =
+          await options.terminalRuntime.assertExecutionAuthority(
+            ownerUserId,
             executionId
           );
         if (!execution)

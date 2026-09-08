@@ -7,7 +7,7 @@ import type {
   SourceControlReviewRequest
 } from "@koed/shared";
 import { GitBranch, LoaderCircle, RefreshCw, Upload } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
 
 type UnboundOperation<T = SourceControlOperation> =
@@ -19,15 +19,35 @@ const commandRequest = (executionId: string) => ({
   executionId
 });
 
-export function ManagedSourceControlPane({
-  api,
-  identity,
-  revision
-}: {
+type PaneProps = {
   api: ManagedProjectDesktopApi;
   identity: { executionId: string; executionGeneration: number };
   revision: number;
-}) {
+};
+
+export function ManagedSourceControlPane(props: PaneProps) {
+  return (
+    <SourceControlSelection
+      key={`${props.identity.executionId}:${props.identity.executionGeneration}`}
+      {...props}
+    />
+  );
+}
+
+function SourceControlSelection({ api, identity, revision }: PaneProps) {
+  const selectionGeneration = useRef(0);
+  const sourceRequest = useRef(0);
+  const detailRequest = useRef(0);
+  const [detailReady, setDetailReady] = useState(false);
+  const clearReviewDetail = useCallback(() => {
+    detailRequest.current += 1;
+    setDetailReady(false);
+    setSourceChecks([]);
+    setSourceComments([]);
+    setCommentCursor(null);
+    setSourceComment("");
+    setError("");
+  }, []);
   const [error, setError] = useState("");
   const [sourceRemotes, setSourceRemotes] = useState<SourceControlRemote[]>([]);
   const [sourceRemote, setSourceRemote] = useState<SourceControlRemote | null>(
@@ -53,6 +73,7 @@ export function ManagedSourceControlPane({
   const [reviewCursor, setReviewCursor] = useState<string | null>(null);
   const [commentCursor, setCommentCursor] = useState<string | null>(null);
   const [sourceBusy, setSourceBusy] = useState(false);
+  const [mutationBusy, setMutationBusy] = useState(false);
   const [sourceComment, setSourceComment] = useState("");
   const [sourceReviewTitle, setSourceReviewTitle] = useState("");
   const sourceControl = useCallback(
@@ -76,10 +97,15 @@ export function ManagedSourceControlPane({
   );
 
   const loadSourceControl = useCallback(async () => {
+    const generation = selectionGeneration.current;
+    const request = ++sourceRequest.current;
+    const isCurrent = () =>
+      generation === selectionGeneration.current &&
+      request === sourceRequest.current;
     setSourceBusy(true);
     try {
       const result = await sourceControl({ kind: "remotes" });
-      if (result.kind !== "remotes") return;
+      if (!isCurrent() || result.kind !== "remotes") return;
       setSourceRemotes(result.remotes);
       setSourceHead(result.headObjectId);
       const selected =
@@ -92,6 +118,17 @@ export function ManagedSourceControlPane({
         ) ??
         result.remotes[0] ??
         null;
+      if (selected?.remoteIdentityHash !== sourceRemote?.remoteIdentityHash) {
+        clearReviewDetail();
+        setActiveReview(null);
+        setReviewRequests([]);
+        setReviewCursor(null);
+        setBranchCursor(null);
+        setSourceBranches([]);
+        setSourceDefaultBranch("");
+        setSourceDefaultObjectId("");
+        setSourceCurrentBranch("");
+      }
       setSourceRemote(selected);
       if (!selected || selected.connectionState !== "connected") {
         setReviewRequests([]);
@@ -125,6 +162,7 @@ export function ManagedSourceControlPane({
             })
           : null
       ]);
+      if (!isCurrent()) return;
       if (inspection?.kind === "inspect") {
         setSourceDefaultBranch(inspection.defaultBranch);
         setSourceDefaultObjectId(inspection.defaultBranchObjectId);
@@ -147,15 +185,21 @@ export function ManagedSourceControlPane({
           null
       );
     } catch {
-      setError("Koed could not load source control.");
+      if (isCurrent()) setError("Koed could not load source control.");
     } finally {
-      setSourceBusy(false);
+      if (isCurrent()) setSourceBusy(false);
     }
-  }, [sourceControl, sourceRemote?.remoteIdentityHash]);
+  }, [clearReviewDetail, sourceControl, sourceRemote?.remoteIdentityHash]);
 
   const loadReviewDetail = useCallback(
     async (review: SourceControlReviewRequest) => {
       if (!sourceRemote) return;
+      clearReviewDetail();
+      const generation = selectionGeneration.current;
+      const request = detailRequest.current;
+      const isCurrent = () =>
+        generation === selectionGeneration.current &&
+        request === detailRequest.current;
       setSourceBusy(true);
       try {
         const [checks, comments] = await Promise.all([
@@ -175,6 +219,8 @@ export function ManagedSourceControlPane({
               })
             : null
         ]);
+        if (!isCurrent()) return;
+        setDetailReady(true);
         setSourceChecks(checks?.kind === "checks" ? checks.checks : []);
         setCommentCursor(
           comments?.kind === "comments" ? comments.nextCursor : null
@@ -183,16 +229,21 @@ export function ManagedSourceControlPane({
           comments?.kind === "comments" ? comments.comments : []
         );
       } catch {
-        setError("Koed could not load this review request.");
+        if (isCurrent()) setError("Koed could not load this review request.");
       } finally {
-        setSourceBusy(false);
+        if (isCurrent()) setSourceBusy(false);
       }
     },
-    [sourceControl, sourceRemote]
+    [clearReviewDetail, sourceControl, sourceRemote]
   );
 
   const loadMore = async (kind: "review_requests" | "comments") => {
     if (!sourceRemote || sourceBusy) return;
+    const generation = selectionGeneration.current;
+    const request = detailRequest.current;
+    const isCurrent = () =>
+      generation === selectionGeneration.current &&
+      request === detailRequest.current;
     setSourceBusy(true);
     try {
       if (kind === "review_requests" && reviewCursor) {
@@ -202,6 +253,7 @@ export function ManagedSourceControlPane({
           state: "open",
           cursor: reviewCursor
         });
+        if (!isCurrent()) return;
         if (page.kind !== kind) throw new Error("Unexpected review page");
         setReviewRequests((current) => [
           ...current,
@@ -217,6 +269,7 @@ export function ManagedSourceControlPane({
           number: activeReview.number,
           cursor: commentCursor
         });
+        if (!isCurrent()) return;
         if (page.kind !== kind) throw new Error("Unexpected comment page");
         setSourceComments((current) => [
           ...current,
@@ -227,9 +280,9 @@ export function ManagedSourceControlPane({
         setCommentCursor(page.nextCursor);
       }
     } catch {
-      setError("Koed could not load the next page.");
+      if (isCurrent()) setError("Koed could not load the next page.");
     } finally {
-      setSourceBusy(false);
+      if (isCurrent()) setSourceBusy(false);
     }
   };
 
@@ -263,16 +316,21 @@ export function ManagedSourceControlPane({
 
   useEffect(() => {
     void loadSourceControl();
+    return () => {
+      sourceRequest.current += 1;
+    };
   }, [loadSourceControl, revision]);
 
   useEffect(() => {
     if (!activeReview) {
-      setSourceChecks([]);
-      setSourceComments([]);
+      clearReviewDetail();
       return;
     }
     void loadReviewDetail(activeReview);
-  }, [activeReview, loadReviewDetail]);
+    return () => {
+      detailRequest.current += 1;
+    };
+  }, [activeReview, clearReviewDetail, loadReviewDetail]);
 
   return (
     <>
@@ -280,15 +338,31 @@ export function ManagedSourceControlPane({
         <div className="personal-source-toolbar">
           <select
             aria-label="Source-control remote"
+            disabled={mutationBusy}
             onChange={(event) => {
               const selected =
                 sourceRemotes.find(
                   (remote) =>
                     remote.remoteIdentityHash === event.currentTarget.value
                 ) ?? null;
+              if (
+                selected?.remoteIdentityHash ===
+                sourceRemote?.remoteIdentityHash
+              )
+                return;
+              selectionGeneration.current += 1;
+              sourceRequest.current += 1;
+              clearReviewDetail();
               setSourceRemote(selected);
               setReviewRequests([]);
               setActiveReview(null);
+              setReviewCursor(null);
+              setBranchCursor(null);
+              setSourceBranches([]);
+              setSourceDefaultBranch("");
+              setSourceDefaultObjectId("");
+              setSourceCurrentBranch("");
+              setSourceBusy(false);
             }}
             value={sourceRemote?.remoteIdentityHash ?? ""}
           >
@@ -314,6 +388,7 @@ export function ManagedSourceControlPane({
             onClick={() => {
               if (!sourceRemote?.credentialGeneration) return;
               setSourceBusy(true);
+              setMutationBusy(true);
               void sourceControl({
                 kind: "fetch",
                 remoteIdentityHash: sourceRemote.remoteIdentityHash,
@@ -326,7 +401,10 @@ export function ManagedSourceControlPane({
                 .catch(() =>
                   setError("Koed could not fetch the selected remote.")
                 )
-                .finally(() => setSourceBusy(false));
+                .finally(() => {
+                  setSourceBusy(false);
+                  setMutationBusy(false);
+                });
             }}
             title="Fetch remote"
             type="button"
@@ -351,6 +429,7 @@ export function ManagedSourceControlPane({
               )
                 return;
               setSourceBusy(true);
+              setMutationBusy(true);
               void sourceControl({
                 kind: "fast_forward",
                 remoteIdentityHash: sourceRemote.remoteIdentityHash,
@@ -365,7 +444,10 @@ export function ManagedSourceControlPane({
                 .catch(() =>
                   setError("Koed could not fast-forward this branch.")
                 )
-                .finally(() => setSourceBusy(false));
+                .finally(() => {
+                  setSourceBusy(false);
+                  setMutationBusy(false);
+                });
             }}
             title="Fast-forward from default branch"
             type="button"
@@ -385,6 +467,7 @@ export function ManagedSourceControlPane({
                 return;
               const credentialGeneration = sourceRemote.credentialGeneration;
               setSourceBusy(true);
+              setMutationBusy(true);
               void currentRemoteObjectId()
                 .then((expectedRemoteObjectId) =>
                   sourceControl({
@@ -402,7 +485,10 @@ export function ManagedSourceControlPane({
                 .catch(() =>
                   setError("Koed could not push the current branch.")
                 )
-                .finally(() => setSourceBusy(false));
+                .finally(() => {
+                  setSourceBusy(false);
+                  setMutationBusy(false);
+                });
             }}
             title="Push current branch"
             type="button"
@@ -430,6 +516,7 @@ export function ManagedSourceControlPane({
                   )
                     return;
                   setSourceBusy(true);
+                  setMutationBusy(true);
                   void sourceControl({
                     kind: "review_request_create",
                     remoteIdentityHash: sourceRemote.remoteIdentityHash,
@@ -449,7 +536,10 @@ export function ManagedSourceControlPane({
                     .catch(() =>
                       setError("Koed could not create that review request.")
                     )
-                    .finally(() => setSourceBusy(false));
+                    .finally(() => {
+                      setSourceBusy(false);
+                      setMutationBusy(false);
+                    });
                 }}
               >
                 <input
@@ -477,7 +567,13 @@ export function ManagedSourceControlPane({
                         review.id === activeReview?.id ? "true" : undefined
                       }
                       key={review.id}
-                      onClick={() => setActiveReview(review)}
+                      disabled={mutationBusy}
+                      onClick={() => {
+                        if (review.id === activeReview?.id) return;
+                        clearReviewDetail();
+                        setSourceBusy(false);
+                        setActiveReview(review);
+                      }}
                       type="button"
                     >
                       <span>#{review.number}</span>
@@ -534,10 +630,15 @@ export function ManagedSourceControlPane({
                     {sourceRemote.capabilities.includes("reviews_write") ? (
                       <div className="personal-source-review-actions">
                         <button
-                          disabled={sourceBusy}
+                          disabled={sourceBusy || !detailReady}
                           onClick={() => {
-                            if (!sourceRemote.credentialGeneration) return;
+                            if (
+                              !detailReady ||
+                              !sourceRemote.credentialGeneration
+                            )
+                              return;
                             setSourceBusy(true);
+                            setMutationBusy(true);
                             void sourceControl({
                               kind: "review_create",
                               remoteIdentityHash:
@@ -553,21 +654,28 @@ export function ManagedSourceControlPane({
                               .catch(() =>
                                 setError("Koed could not submit that review.")
                               )
-                              .finally(() => setSourceBusy(false));
+                              .finally(() => {
+                                setSourceBusy(false);
+                                setMutationBusy(false);
+                              });
                           }}
                           type="button"
                         >
                           Approve
                         </button>
                         <button
-                          disabled={sourceBusy || !sourceComment.trim()}
+                          disabled={
+                            sourceBusy || !detailReady || !sourceComment.trim()
+                          }
                           onClick={() => {
                             if (
+                              !detailReady ||
                               !sourceRemote.credentialGeneration ||
                               !sourceComment.trim()
                             )
                               return;
                             setSourceBusy(true);
+                            setMutationBusy(true);
                             void sourceControl({
                               kind: "review_create",
                               remoteIdentityHash:
@@ -584,7 +692,10 @@ export function ManagedSourceControlPane({
                               .catch(() =>
                                 setError("Koed could not submit that review.")
                               )
-                              .finally(() => setSourceBusy(false));
+                              .finally(() => {
+                                setSourceBusy(false);
+                                setMutationBusy(false);
+                              });
                           }}
                           type="button"
                         >
@@ -598,11 +709,13 @@ export function ManagedSourceControlPane({
                         onSubmit={(event) => {
                           event.preventDefault();
                           if (
+                            !detailReady ||
                             !sourceComment.trim() ||
                             !sourceRemote.credentialGeneration
                           )
                             return;
                           setSourceBusy(true);
+                          setMutationBusy(true);
                           void sourceControl({
                             kind: "comment_create",
                             remoteIdentityHash: sourceRemote.remoteIdentityHash,
@@ -620,7 +733,10 @@ export function ManagedSourceControlPane({
                             .catch(() =>
                               setError("Koed could not post that comment.")
                             )
-                            .finally(() => setSourceBusy(false));
+                            .finally(() => {
+                              setSourceBusy(false);
+                              setMutationBusy(false);
+                            });
                         }}
                       >
                         <textarea
@@ -633,7 +749,9 @@ export function ManagedSourceControlPane({
                           value={sourceComment}
                         />
                         <button
-                          disabled={sourceBusy || !sourceComment.trim()}
+                          disabled={
+                            sourceBusy || !detailReady || !sourceComment.trim()
+                          }
                           type="submit"
                         >
                           Comment

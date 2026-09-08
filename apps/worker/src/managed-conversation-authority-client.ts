@@ -1261,6 +1261,7 @@ export const createManagedConversationAuthorityClient = (options: {
 const localManagedConversationMethods = new Set<PropertyKey>([
   "upsertManagedConversationRuntimeBinding",
   "listPendingManagedConversationRuntimeBindings",
+  "acknowledgeManagedConversationRuntimeBinding",
   "bindManagedConversationExecutionCheckout",
   "requestManagedConversationExecutionCheckoutCleanup",
   "listManagedConversationExecutionCheckoutCleanupRequests",

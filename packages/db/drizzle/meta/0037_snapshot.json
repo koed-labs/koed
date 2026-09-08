@@ -16133,6 +16133,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "start_authority_acknowledged_at": {
+          "name": "start_authority_acknowledged_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {

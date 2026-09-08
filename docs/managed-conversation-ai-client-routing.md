@@ -87,13 +87,13 @@ settings never bypass Koed authentication, file authority, or execution leases.
 
 The source runner stops writing and seals an exact journal boundary. The target
 verifies the signed transfer, provider compatibility, local credentials, source
-closure, workspace snapshot, and exclusive next execution generation before
+closure, verified snapshot of Project files, and exclusive next execution generation before
 resuming. Credentials and origin signing keys are not transferred.
 
 Pi managed execution requires the configured npm installation's public SDK.
-The SDK receives the target workspace explicitly; the original transcript
+The SDK receives the target checkout explicitly; the original transcript
 header remains unchanged during handoff. Native fork creates a new identity
-and target-workspace header, and the adapter verifies its parent reference and
+and header recording the target Project, and the adapter verifies its parent reference and
 that parent bytes were not modified. Ordinary Pi capture and background
 Local Synthesis continue to use their separate integration paths.
 
@@ -101,4 +101,15 @@ Pi resume reads the verified transcript once from an opened regular file, then
 starts the provider against an exclusively created copy in a private managed
 session directory. That copy becomes the active transcript; provider migration
 and append operations preserve the original transcript, including hard-linked
-sources.
+sources. The runner persists the private transcript identity before exposing a
+resumed process, even when no new prompt follows. Later resumes atomically
+replace that owned file with a freshly verified copy at the same path. This
+keeps resume storage bounded and preserves external hard links to earlier
+inodes. Unmarked source transcripts remain retained.
+
+Runner-local checkout readiness and upstream start acknowledgement are separate
+durable steps. Ready bindings remain discoverable until the authority has
+released the start and the runner records acknowledgement. Retries verify the
+existing checkout, including after runner restart. Pending assignments are
+checked against current execution authority before preparation or fenced cleanup;
+a stale local execution mirror cannot hide them from reconciliation.

@@ -187,6 +187,51 @@ describe("Pi managed RPC conversation", () => {
       await session.closeAndWait();
     }
   );
+  it("reuses the durable private transcript path across resumes while preserving source inodes", async () => {
+    const f = fixture();
+    fs.mkdirSync(f.config.sessionDirectory);
+    const source = path.join(f.config.sessionDirectory, "original.jsonl");
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const original =
+      JSON.stringify({
+        type: "session",
+        version: 3,
+        id: sessionId,
+        cwd: f.root
+      }) + "\n";
+    fs.writeFileSync(source, original);
+    let current = source;
+    let expected = original;
+    let privatePath: string | undefined;
+    for (let iteration = 0; iteration < 6; iteration += 1) {
+      const retained = path.join(f.root, `retained-${iteration}.jsonl`);
+      fs.linkSync(current, retained);
+      const session = new PiManagedConversationSession({
+        ...f.config,
+        resumeSessionPath: current,
+        expectedSessionId: sessionId,
+        onResumeIdentity: async (identity) => {
+          current = identity.transcriptPath!;
+        }
+      });
+      const identity = await session.start();
+      expect(current).toBe(identity.transcriptPath);
+      if (privatePath) expect(current).toBe(privatePath);
+      privatePath = current;
+      expect(fs.readFileSync(current, "utf8")).toBe(expected);
+      fs.appendFileSync(current, "\n");
+      expect(fs.readFileSync(retained, "utf8")).toBe(expected);
+      expected += "\n";
+      await session.closeAndWait();
+      expect(
+        fs
+          .readdirSync(f.config.sessionDirectory)
+          .filter((name) => name.startsWith(".resume-"))
+      ).toHaveLength(1);
+    }
+    expect(fs.readFileSync(source, "utf8")).toBe(original);
+  });
+
   it("resolves the public SDK for a bundled native launcher", async () => {
     const { session } = fixture(0, true);
     await expect(session.start()).resolves.toMatchObject({

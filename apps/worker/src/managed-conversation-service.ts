@@ -1820,6 +1820,36 @@ export const createManagedConversationService = (options: {
           : binding.providerThreadId
             ? { sessionId: binding.providerThreadId }
             : {}),
+      onResumeIdentity: async (identity) => {
+        if (
+          !binding.localSessionId ||
+          identity.sessionId !== binding.providerThreadId ||
+          !identity.transcriptPath
+        ) {
+          throw new Error("ManagedConversationRuntimeRecoveryIdentityError");
+        }
+        // Adopt the private path before exposing the resumed process. Recovery
+        // can reuse it even when no new prompt or capture happens before restart.
+        await options.repository.bindManagedConversationLocalRuntime(
+          { userId: execution.ownerUserId },
+          {
+            executionId: execution.id,
+            deploymentId: options.deploymentId,
+            deviceId: options.deviceId,
+            executionGeneration: execution.executionGeneration,
+            localSessionId: binding.localSessionId,
+            providerThreadId: identity.sessionId,
+            transcriptPath: identity.transcriptPath,
+            managedHome: sessionDirectory,
+            ...(binding.sourceGenerationId
+              ? { sourceGenerationId: binding.sourceGenerationId }
+              : {}),
+            ...(binding.providerCliVersion
+              ? { providerCliVersion: binding.providerCliVersion }
+              : {})
+          }
+        );
+      },
       onTextDelta: (delta, turnId) =>
         queueProviderText(execution, turnId, delta),
       onUiRequest: async (request, signal) => {
@@ -6854,6 +6884,14 @@ export const createManagedConversationService = (options: {
         limit: 20
       });
     for (const binding of pendingBindings) {
+      const acknowledgeBinding = () =>
+        options.repository.acknowledgeManagedConversationRuntimeBinding({
+          ownerUserId: binding.ownerUserId,
+          executionId: binding.executionId,
+          executionGeneration: binding.executionGeneration,
+          deploymentId: binding.deploymentId,
+          deviceId: binding.deviceId
+        });
       const clearPendingBinding = () =>
         options.repository.clearManagedConversationRuntimeBinding(
           { userId: binding.ownerUserId },
@@ -6877,7 +6915,8 @@ export const createManagedConversationService = (options: {
           execution.runnerDeploymentId !== options.deploymentId ||
           execution.runnerDeviceId !== options.deviceId
         ) {
-          await clearPendingBinding();
+          if (binding.checkoutLifecycle === "ready") await acknowledgeBinding();
+          else await clearPendingBinding();
           continue;
         }
         await bindExecutionCheckout(execution, binding);
@@ -6894,6 +6933,11 @@ export const createManagedConversationService = (options: {
         if (!released) {
           throw managedConversationError(
             "ExecutionCheckoutReleaseConflictError"
+          );
+        }
+        if (!(await acknowledgeBinding())) {
+          throw managedConversationError(
+            "ExecutionCheckoutAcknowledgementConflictError"
           );
         }
         executionCheckoutRetryAttempt = 0;

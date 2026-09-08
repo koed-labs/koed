@@ -2126,7 +2126,7 @@ describeDb("memory repository visibility", () => {
     ).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  it("does not retry pending workspaces after their execution becomes terminal", async () => {
+  it("discovers terminal pending bindings for fenced cleanup", async () => {
     const owner = await repo.createUser({
       email: `managed-project-terminal-${randomUUID()}@example.com`
     });
@@ -2177,6 +2177,24 @@ describeDb("memory repository visibility", () => {
         errorCode: "ExecutionCheckoutSourceDirtyError"
       })
     ).resolves.toBe(true);
+    await expect(
+      repo.listPendingManagedConversationRuntimeBindings({
+        ownerUserId: owner.id,
+        deploymentId,
+        deviceId
+      })
+    ).resolves.toEqual([
+      expect.objectContaining({ executionId: managed.execution.id })
+    ]);
+    await repo.clearManagedConversationRuntimeBinding(
+      { userId: owner.id },
+      managed.execution.id,
+      {
+        executionGeneration: 1,
+        deploymentId,
+        deviceId
+      }
+    );
     await expect(
       repo.listPendingManagedConversationRuntimeBindings({
         ownerUserId: owner.id,
@@ -4422,6 +4440,33 @@ describeDb("memory repository visibility", () => {
       branchRef: "refs/heads/main",
       creationOperationId: randomUUID()
     });
+    const pendingBindings = () =>
+      repo.listPendingManagedConversationRuntimeBindings({
+        ...assignment,
+        ownerUserId: owner.id
+      });
+    await expect(pendingBindings()).resolves.toEqual([
+      expect.objectContaining({ executionId, checkoutLifecycle: "ready" })
+    ]);
+    await expect(
+      repo.acknowledgeManagedConversationRuntimeBinding({
+        ownerUserId: owner.id,
+        executionId,
+        ...assignment,
+        executionGeneration: 2
+      })
+    ).resolves.toBe(false);
+    await expect(pendingBindings()).resolves.toHaveLength(1);
+    await expect(
+      repo.acknowledgeManagedConversationRuntimeBinding({
+        ownerUserId: owner.id,
+        executionId,
+        ...assignment
+      })
+    ).resolves.toBe(true);
+    await expect(pendingBindings()).resolves.toEqual([]);
+    await pending();
+    await expect(pendingBindings()).resolves.toEqual([]);
     expect(ready).toMatchObject({
       checkoutLifecycle: "ready",
       headObjectId: null,
@@ -30229,6 +30274,21 @@ describeDb("memory repository visibility", () => {
           { id: "project-a", name: "Project A", path: "/work/a" },
           { id: "project-b", name: "Project B", path: "/work/b" }
         ]
+      }
+    );
+    await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        projectId: randomUUID(),
+        sessionId: session.id,
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_prompt",
+        visibility: "personal",
+        content:
+          "Keep this Conversation unassigned when Project detection is ambiguous.",
+        idempotencyKey: `ambiguous-project-event-${randomUUID()}`,
+        sourceHash: `ambiguous-project-event-${randomUUID()}`
       }
     );
     const graph = await repo.listLcmGraphThreads(

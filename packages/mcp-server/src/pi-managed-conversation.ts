@@ -23,6 +23,7 @@ export interface PiManagedConversationConfig {
   requestTimeoutMs?: number;
   startupTimeoutMs?: number;
   onTextDelta?: (delta: string, turnId: string) => void;
+  onResumeIdentity?: (identity: PiManagedConversationIdentity) => Promise<void>;
   onUiRequest: (
     request: Record<string, unknown>,
     signal: AbortSignal
@@ -120,7 +121,43 @@ export class PiManagedConversationSession {
           piSessionIdentity(privatePath).id !== this.config.expectedSessionId
         )
           throw new Error("Pi resume requires an exact session identity.");
-        this.resumeSessionPath = privatePath;
+        const sourceDirectory = path.dirname(transcriptPath);
+        const markerName = ".koed-resume-session";
+        let ownedResume = false;
+        if (
+          path.dirname(sourceDirectory) === sessionDirectory &&
+          /^\.resume-[A-Za-z0-9]+$/.test(path.basename(sourceDirectory)) &&
+          path.basename(transcriptPath) === "session.jsonl"
+        ) {
+          try {
+            const marker = fs.lstatSync(path.join(sourceDirectory, markerName));
+            ownedResume =
+              marker.isFile() &&
+              !marker.isSymbolicLink() &&
+              fs.readFileSync(
+                path.join(sourceDirectory, markerName),
+                "utf8"
+              ) === this.config.expectedSessionId;
+          } catch {
+            /* Unmarked transcripts remain retained source files. */
+          }
+        }
+        if (ownedResume) {
+          // Replace only the managed directory entry, never the opened inode.
+          // The same durable transcript path continues to hold the full history,
+          // while external hard links retain their original bytes.
+          fs.renameSync(privatePath, transcriptPath);
+          fs.rmdirSync(privateDirectory);
+          privateDirectory = undefined;
+          this.resumeSessionPath = transcriptPath;
+        } else {
+          fs.writeFileSync(
+            path.join(privateDirectory, markerName),
+            this.config.expectedSessionId,
+            { flag: "wx", mode: 0o600 }
+          );
+          this.resumeSessionPath = privatePath;
+        }
       } catch (error) {
         if (privateDirectory)
           fs.rmSync(privateDirectory, { recursive: true, force: true });
@@ -243,6 +280,8 @@ export class PiManagedConversationSession {
           );
         }
       }
+      if (this.resumeSessionPath)
+        await this.config.onResumeIdentity?.(this.identity);
       return this.identity;
     } catch (error) {
       await this.closeAndWait();

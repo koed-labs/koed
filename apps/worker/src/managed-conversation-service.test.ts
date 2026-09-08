@@ -958,9 +958,14 @@ describe("Managed Conversation service lifecycle", () => {
     }
   });
 
-  it.each([false, true])(
-    "releases a start against the selected Project (unborn: %s)",
-    async (unborn) => {
+  it.each([
+    { unborn: false, retry: false },
+    { unborn: true, retry: false },
+    { unborn: false, retry: true },
+    { unborn: false, retry: false, ackLost: true }
+  ])(
+    "releases a start against the selected Project (unborn: $unborn, retry: $retry, ack lost: $ackLost)",
+    async ({ unborn, retry, ackLost }) => {
       const root = await mkdtemp(resolve(tmpdir(), "koed-checkout-prepare-"));
       try {
         const ownerUserId = randomUUID();
@@ -998,25 +1003,44 @@ describe("Managed Conversation service lifecycle", () => {
           deviceId,
           sourceProjectPath
         });
-        const bindWorkspace = vi.fn(async (_actor, input) => ({
-          ...binding,
-          ...input,
-          checkoutLifecycle: "ready" as const,
-          cleanupState: "not_requested" as const,
-          createdAt: binding.createdAt,
-          updatedAt: binding.updatedAt
-        }));
-        const releaseStart = vi.fn(async () => true);
+        let currentBinding = binding;
+        let acknowledged = false;
+        const acknowledge = vi.fn(async () => {
+          acknowledged = true;
+          return true;
+        });
+        if (ackLost)
+          acknowledge.mockRejectedValueOnce(
+            new Error("Local acknowledgement unavailable")
+          );
+        const bindWorkspace = vi.fn(
+          async (_actor, input) =>
+            (currentBinding = {
+              ...binding,
+              ...input,
+              checkoutLifecycle: "ready" as const,
+              cleanupState: "not_requested" as const,
+              createdAt: binding.createdAt,
+              updatedAt: binding.updatedAt
+            })
+        );
+        const releaseStart = vi.fn(async () => {
+          if (ackLost) execution.state = "running";
+          return true;
+        });
+        if (retry)
+          releaseStart.mockRejectedValueOnce(new Error("Upstream unavailable"));
         const repository = {
           listManagedConversationExecutionsForRunner: vi.fn(async () => []),
           listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
             async () => []
           ),
           listPendingManagedConversationRuntimeBindings: vi.fn(async () => [
-            binding
+            ...(acknowledged ? [] : [currentBinding])
           ]),
           getManagedConversationExecution: vi.fn(async () => execution),
           bindManagedConversationExecutionCheckout: bindWorkspace,
+          acknowledgeManagedConversationRuntimeBinding: acknowledge,
           releaseManagedConversationStartForRuntimeBinding: releaseStart,
           reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
           claimManagedConversationCommands: vi.fn(async () => [])
@@ -1042,6 +1066,16 @@ describe("Managed Conversation service lifecycle", () => {
           completed: 0,
           failed: 0
         });
+        if (retry || ackLost) {
+          expect(acknowledged).toBe(false);
+          expect(currentBinding.checkoutLifecycle).toBe("ready");
+          await service.processOnce();
+          expect(releaseStart).toHaveBeenCalledTimes(ackLost ? 1 : 2);
+          expect(bindWorkspace).toHaveBeenCalledOnce();
+        }
+        expect(acknowledge).toHaveBeenCalledTimes(ackLost ? 2 : 1);
+        expect(acknowledged).toBe(true);
+        await service.stop();
         const canonicalProjectPath = await realpath(sourceProjectPath);
         expect(bindWorkspace).toHaveBeenCalledWith(
           { userId: ownerUserId },
@@ -1254,6 +1288,7 @@ describe("Managed Conversation service lifecycle", () => {
       ]),
       getManagedConversationExecution: vi.fn(async () => execution),
       bindManagedConversationExecutionCheckout: bindWorkspace,
+      acknowledgeManagedConversationRuntimeBinding: vi.fn(async () => true),
       releaseManagedConversationStartForRuntimeBinding: releaseStart,
       failManagedConversationStartForRuntimeBinding: failStart,
       clearManagedConversationRuntimeBinding: vi.fn(async () => true),

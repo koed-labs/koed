@@ -482,7 +482,19 @@ export const createSourceControlRuntime = (options: {
                   : connected
                     ? "connected"
                     : "connection_required",
-            capabilities: connected ? connection.capabilities : []
+            capabilities: connected
+              ? connection.capabilities.filter(
+                  (capability) =>
+                    !(
+                      normalized.transport === "ssh" &&
+                      (capability === "fetch" || capability === "push")
+                    ) &&
+                    !(
+                      ["bitbucket", "azure_devops"].includes(provider) &&
+                      capability === "reviews_write"
+                    )
+                )
+              : []
           }),
           repository,
           transportUrl: raw
@@ -568,7 +580,7 @@ export const createSourceControlRuntime = (options: {
       );
     }
     const capability = requiredCapability(operation);
-    if (!connection.capabilities.includes(capability)) {
+    if (!selected.capabilities.includes(capability)) {
       throw sourceControlError(
         `Source-control connection does not grant ${capability}`,
         403,

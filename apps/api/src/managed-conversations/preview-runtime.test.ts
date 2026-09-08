@@ -77,6 +77,26 @@ const fixture = () => {
 };
 
 describe("managed development preview runtime", () => {
+  it("lists no previews for an upstream-authorized execution and propagates authority denial", async () => {
+    const test = fixture();
+    try {
+      await expect(
+        test.runtime.list(test.ownerUserId, test.executionId)
+      ).resolves.toEqual([]);
+      expect(test.assertExecutionAuthority).toHaveBeenCalledWith(
+        test.ownerUserId,
+        test.executionId
+      );
+      test.assertExecutionAuthority.mockRejectedValueOnce(
+        Object.assign(new Error("Assignment changed"), { statusCode: 409 })
+      );
+      await expect(
+        test.runtime.list(test.ownerUserId, test.executionId)
+      ).rejects.toMatchObject({ statusCode: 409 });
+    } finally {
+      test.runtime.close();
+    }
+  });
   it("rechecks authoritative assignment before accessing a published preview", async () => {
     const test = fixture();
     try {

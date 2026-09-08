@@ -4010,6 +4010,9 @@ export const managedConversationRuntimeBindings = pgTable(
     checkoutId: uuid("checkout_id"),
     checkoutKind: text("checkout_kind").notNull().default("pending"),
     checkoutLifecycle: text("checkout_lifecycle").notNull().default("pending"),
+    startAuthorityAcknowledgedAt: timestamp("start_authority_acknowledged_at", {
+      withTimezone: true
+    }),
     cleanupState: text("cleanup_state").notNull().default("not_requested"),
     vcsDriver: text("vcs_driver"),
     localRepositoryCommonDirectory: text("local_repository_common_directory"),

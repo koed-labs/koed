@@ -61,12 +61,17 @@ recognized only by an exact configured host/provider connection. Provider
 requests use the configured HTTPS API origin, fixed method/path templates,
 disabled redirects, bounded bodies and timeouts, and Koed's DNS-pinned secure
 upstream fetch. Shared UI branches on advertised capabilities rather than a
-provider name.
+provider name. Advertised capabilities are the connection's grants filtered by
+what that remote transport and provider driver can execute. SSH remotes omit
+fetch and push; Bitbucket and Azure DevOps omit formal review writes. The same
+filtered capabilities govern runtime admission before credential resolution.
 
 Desktop follows provider continuations for later review requests and comments.
 Push resolves a branch beyond the first page before choosing the expected remote
 revision. Standard Azure DevOps SSH remotes map to the configured public Azure
-API connection.
+API connection. Review details and continuation pages are tied to the selected
+remote and review request. Selection changes clear the previous details and
+ignore late responses; review actions wait for the current details to load.
 
 Bitbucket approvals remain unavailable because the provider approval operation
 cannot bind the reviewed commit atomically. Unsupported formal review decisions
