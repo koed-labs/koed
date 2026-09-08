@@ -4801,6 +4801,18 @@ export const createMemorySourceRepository = (
             projectionCoordinatorClient
           );
         if (
+          input.expectedPresentationPolicyRevision !== undefined &&
+          presentationPolicySnapshot.revision !==
+            input.expectedPresentationPolicyRevision
+        ) {
+          throw Object.assign(
+            new Error(
+              "Presentation Policy changed after this rebuild was prepared"
+            ),
+            { statusCode: 409, code: "presentation_policy_changed" }
+          );
+        }
+        if (
           !presentationOnly &&
           rows.rows.some(
             (row) =>

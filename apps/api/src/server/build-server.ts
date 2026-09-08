@@ -1342,6 +1342,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       )
   });
   const sourceControlRuntime = createSourceControlRuntime({
+    assertExecutionAuthority: managedTerminalRuntime.assertExecutionAuthority,
     koedHome: config.koedHome,
     requireRepository,
     fetch: localEdgeFetch,

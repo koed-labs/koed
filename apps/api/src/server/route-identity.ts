@@ -2282,7 +2282,7 @@ export const routeIdentityContracts = [
     "/v1/managed-conversations/{executionId}/diff",
     "session_or_api_token",
     "personal_memory",
-    "Read a revision-bound encrypted turn or full-Conversation workspace diff.",
+    "Read a revision-bound encrypted turn or full-Conversation checkout diff.",
     "none",
     "implemented",
     localEdgeDeploymentModes
@@ -2290,7 +2290,7 @@ export const routeIdentityContracts = [
   route(
     "DELETE",
     "/v1/managed-conversations/{executionId}/execution-checkout",
-    "session_or_api_token",
+    "session_or_device_credential",
     "personal_memory",
     "Request cleanup of the exact terminal Koed-managed execution checkout.",
     "none",

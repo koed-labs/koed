@@ -4232,6 +4232,71 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("persists an unborn Git Project and fences pending-binding removal", async () => {
+    const owner = await repo.createUser({
+      email: `unborn-project-${randomUUID()}@example.test`
+    });
+    const executionId = randomUUID();
+    const assignment = {
+      executionGeneration: 1,
+      deploymentId: randomUUID(),
+      deviceId: randomUUID()
+    };
+    const actor = { userId: owner.id };
+    const projectPath = `/tmp/unborn-${randomUUID()}`;
+    const pending = () =>
+      repo.upsertManagedConversationRuntimeBinding(actor, {
+        executionId,
+        ...assignment,
+        projectPath
+      });
+    await pending();
+    await expect(
+      repo.clearManagedConversationRuntimeBinding(actor, executionId, {
+        ...assignment,
+        executionGeneration: 2
+      })
+    ).resolves.toBe(false);
+    await expect(
+      repo.clearManagedConversationRuntimeBinding(
+        actor,
+        executionId,
+        assignment
+      )
+    ).resolves.toBe(true);
+    await pending();
+    const ready = await repo.bindManagedConversationExecutionCheckout(actor, {
+      executionId,
+      ...assignment,
+      projectPath,
+      sourceProjectPath: projectPath,
+      checkoutId: randomUUID(),
+      checkoutKind: "user_managed_checkout",
+      vcsDriver: "git",
+      localRepositoryCommonDirectory: `${projectPath}/.git`,
+      localGitDirectory: `${projectPath}/.git`,
+      repositoryIdentityHash: "a".repeat(64),
+      worktreeIdentityHash: "b".repeat(64),
+      branchRef: "refs/heads/main",
+      creationOperationId: randomUUID()
+    });
+    expect(ready).toMatchObject({
+      checkoutLifecycle: "ready",
+      headObjectId: null,
+      branchRef: "refs/heads/main"
+    });
+    await expect(
+      repo.clearManagedConversationRuntimeBinding(
+        actor,
+        executionId,
+        assignment
+      )
+    ).resolves.toBe(false);
+    await expect(
+      repo.getManagedConversationRuntimeBinding(actor, executionId)
+    ).resolves.toMatchObject({ checkoutLifecycle: "ready" });
+  });
+
   it("stores runner-owned terminals for an upstream execution without a local execution row", async () => {
     const owner = await repo.createUser({
       email: `terminal-runner-${randomUUID()}@example.test`
@@ -4250,6 +4315,19 @@ describeDb("memory repository visibility", () => {
         projectPath
       }
     );
+    await expect(
+      repo.listPendingManagedConversationRuntimeBindings({
+        deploymentId,
+        deviceId,
+        ownerUserId: owner.id
+      })
+    ).resolves.toEqual([expect.objectContaining({ executionId })]);
+    await expect(
+      repo.listPendingManagedConversationRuntimeBindings({
+        deploymentId,
+        deviceId: randomUUID()
+      })
+    ).resolves.toEqual([]);
     await repo.bindManagedConversationExecutionCheckout(
       { userId: owner.id },
       {
@@ -19774,11 +19852,27 @@ describeDb("memory repository visibility", () => {
         { userId: owner.id },
         { sessionId: session.id }
       );
+      await expect(
+        repo.projectPendingConversationItems(
+          { userId: owner.id },
+          {
+            conversationItemIds: presentationReset.conversationItemIds,
+            presentationOnly: true,
+            expectedPresentationPolicyRevision:
+              presentationReset.presentationPolicyRevision + 1
+          }
+        )
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        code: "presentation_policy_changed"
+      });
       const presentationOnly = await repo.projectPendingConversationItems(
         { userId: owner.id },
         {
           limit: 10,
           conversationItemIds: presentationReset.conversationItemIds,
+          expectedPresentationPolicyRevision:
+            presentationReset.presentationPolicyRevision,
           presentationOnly: true
         }
       );

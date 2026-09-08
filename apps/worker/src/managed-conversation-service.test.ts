@@ -874,111 +874,175 @@ describe("Managed Conversation service lifecycle", () => {
     }
   });
 
-  it("releases a start against the selected dirty checkout without creating a worktree", async () => {
-    const root = await mkdtemp(resolve(tmpdir(), "koed-checkout-prepare-"));
-    try {
-      const ownerUserId = randomUUID();
-      const executionId = randomUUID();
-      const deploymentId = randomUUID();
-      const deviceId = randomUUID();
-      const sourceProjectPath = resolve(root, "project");
-      await mkdir(sourceProjectPath);
-      await writeFile(resolve(sourceProjectPath, "tracked.txt"), "initial\n");
-      execFileSync("git", ["init", "--initial-branch=main"], {
-        cwd: sourceProjectPath
-      });
-      execFileSync("git", ["config", "user.name", "Koed Test"], {
-        cwd: sourceProjectPath
-      });
-      execFileSync("git", ["config", "user.email", "test@example.invalid"], {
-        cwd: sourceProjectPath
-      });
-      execFileSync("git", ["add", "tracked.txt"], { cwd: sourceProjectPath });
-      execFileSync("git", ["commit", "-m", "initial"], {
-        cwd: sourceProjectPath
-      });
-      await writeFile(resolve(sourceProjectPath, "tracked.txt"), "dirty\n");
-      const execution = startingExecutionFixture({
-        ownerUserId,
-        executionId,
-        deploymentId,
-        deviceId
-      });
-      const binding = pendingBindingFixture({
-        ownerUserId,
-        executionId,
-        deploymentId,
-        deviceId,
-        sourceProjectPath
-      });
-      const bindWorkspace = vi.fn(async (_actor, input) => ({
-        ...binding,
-        ...input,
-        checkoutLifecycle: "ready" as const,
-        cleanupState: "not_requested" as const,
-        createdAt: binding.createdAt,
-        updatedAt: binding.updatedAt
-      }));
-      const releaseStart = vi.fn(async () => true);
-      const repository = {
-        listManagedConversationExecutionsForRunner: vi.fn(async () => []),
-        listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
-          async () => []
-        ),
-        listPendingManagedConversationRuntimeBindings: vi.fn(async () => [
-          binding
-        ]),
-        getManagedConversationExecution: vi.fn(async () => execution),
-        bindManagedConversationExecutionCheckout: bindWorkspace,
-        releaseManagedConversationStartForRuntimeBinding: releaseStart,
-        reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
-        claimManagedConversationCommands: vi.fn(async () => [])
-      } as unknown as MemorySourceRepository;
-      const service = createManagedConversationService({
-        repository,
-        apiUrl: "http://127.0.0.1:3300",
-        apiToken: "test-token",
-        localOwnerUserId: ownerUserId,
-        appServerBinary: "codex",
-        deviceId,
-        deploymentId,
-        koedHome: resolve(root, "koed-home"),
-        envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
-        logger: {
-          info: vi.fn(),
-          warn: vi.fn(),
-          error: vi.fn()
-        } as never
-      });
-
-      await expect(service.processOnce()).resolves.toEqual({
-        completed: 0,
-        failed: 0
-      });
-      const canonicalProjectPath = await realpath(sourceProjectPath);
-      expect(bindWorkspace).toHaveBeenCalledWith(
-        { userId: ownerUserId },
-        expect.objectContaining({
+  it.each([false, true])(
+    "releases a start against the selected Project (unborn: %s)",
+    async (unborn) => {
+      const root = await mkdtemp(resolve(tmpdir(), "koed-checkout-prepare-"));
+      try {
+        const ownerUserId = randomUUID();
+        const executionId = randomUUID();
+        const deploymentId = randomUUID();
+        const deviceId = randomUUID();
+        const sourceProjectPath = resolve(root, "project");
+        await mkdir(sourceProjectPath);
+        await writeFile(resolve(sourceProjectPath, "tracked.txt"), "initial\n");
+        execFileSync("git", ["init", "--initial-branch=main"], {
+          cwd: sourceProjectPath
+        });
+        execFileSync("git", ["config", "user.name", "Koed Test"], {
+          cwd: sourceProjectPath
+        });
+        execFileSync("git", ["config", "user.email", "test@example.invalid"], {
+          cwd: sourceProjectPath
+        });
+        execFileSync("git", ["add", "tracked.txt"], { cwd: sourceProjectPath });
+        if (!unborn)
+          execFileSync("git", ["commit", "-m", "initial"], {
+            cwd: sourceProjectPath
+          });
+        await writeFile(resolve(sourceProjectPath, "tracked.txt"), "dirty\n");
+        const execution = startingExecutionFixture({
+          ownerUserId,
           executionId,
-          sourceProjectPath,
-          projectPath: canonicalProjectPath,
-          checkoutKind: "user_managed_checkout",
-          vcsDriver: "git"
-        })
-      );
-      expect(releaseStart).toHaveBeenCalledWith({
-        ownerUserId,
-        executionId,
-        executionGeneration: 1,
-        deploymentId,
-        deviceId
-      });
-      expect(bindWorkspace.mock.invocationCallOrder[0]).toBeLessThan(
-        releaseStart.mock.invocationCallOrder[0]!
-      );
-    } finally {
-      await rm(root, { recursive: true, force: true });
+          deploymentId,
+          deviceId
+        });
+        const binding = pendingBindingFixture({
+          ownerUserId,
+          executionId,
+          deploymentId,
+          deviceId,
+          sourceProjectPath
+        });
+        const bindWorkspace = vi.fn(async (_actor, input) => ({
+          ...binding,
+          ...input,
+          checkoutLifecycle: "ready" as const,
+          cleanupState: "not_requested" as const,
+          createdAt: binding.createdAt,
+          updatedAt: binding.updatedAt
+        }));
+        const releaseStart = vi.fn(async () => true);
+        const repository = {
+          listManagedConversationExecutionsForRunner: vi.fn(async () => []),
+          listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
+            async () => []
+          ),
+          listPendingManagedConversationRuntimeBindings: vi.fn(async () => [
+            binding
+          ]),
+          getManagedConversationExecution: vi.fn(async () => execution),
+          bindManagedConversationExecutionCheckout: bindWorkspace,
+          releaseManagedConversationStartForRuntimeBinding: releaseStart,
+          reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
+          claimManagedConversationCommands: vi.fn(async () => [])
+        } as unknown as MemorySourceRepository;
+        const service = createManagedConversationService({
+          repository,
+          apiUrl: "http://127.0.0.1:3300",
+          apiToken: "test-token",
+          localOwnerUserId: ownerUserId,
+          appServerBinary: "codex",
+          deviceId,
+          deploymentId,
+          koedHome: resolve(root, "koed-home"),
+          envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+          logger: {
+            info: vi.fn(),
+            warn: vi.fn(),
+            error: vi.fn()
+          } as never
+        });
+
+        await expect(service.processOnce()).resolves.toEqual({
+          completed: 0,
+          failed: 0
+        });
+        const canonicalProjectPath = await realpath(sourceProjectPath);
+        expect(bindWorkspace).toHaveBeenCalledWith(
+          { userId: ownerUserId },
+          expect.objectContaining({
+            executionId,
+            sourceProjectPath,
+            projectPath: canonicalProjectPath,
+            checkoutKind: "user_managed_checkout",
+            vcsDriver: "git"
+          })
+        );
+        expect(releaseStart).toHaveBeenCalledWith({
+          ownerUserId,
+          executionId,
+          executionGeneration: 1,
+          deploymentId,
+          deviceId
+        });
+        expect(bindWorkspace.mock.invocationCallOrder[0]).toBeLessThan(
+          releaseStart.mock.invocationCallOrder[0]!
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
     }
+  );
+
+  it("discards a stale pending assignment before touching its Project", async () => {
+    const ownerUserId = randomUUID();
+    const executionId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const execution = startingExecutionFixture({
+      ownerUserId,
+      executionId,
+      deploymentId,
+      deviceId
+    });
+    const binding = pendingBindingFixture({
+      ownerUserId,
+      executionId,
+      deploymentId,
+      deviceId,
+      sourceProjectPath: "/unused"
+    });
+    const clear = vi.fn(async () => true);
+    const select = vi.fn();
+    const repository = {
+      listManagedConversationExecutionsForRunner: vi.fn(async () => []),
+      listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
+        async () => []
+      ),
+      listPendingManagedConversationRuntimeBindings: vi.fn(async () => [
+        binding
+      ]),
+      getManagedConversationExecution: vi.fn(async () => ({
+        ...execution,
+        runnerDeviceId: randomUUID()
+      })),
+      clearManagedConversationRuntimeBinding: clear,
+      reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
+      claimManagedConversationCommands: vi.fn(async () => [])
+    } as unknown as MemorySourceRepository;
+    const service = createManagedConversationService({
+      repository,
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token",
+      localOwnerUserId: ownerUserId,
+      appServerBinary: "codex",
+      deviceId,
+      deploymentId,
+      koedHome: "/unused",
+      envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      executionCheckoutDriver: {
+        select
+      } as unknown as GitExecutionCheckoutDriver,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never
+    });
+    await service.processOnce();
+    expect(select).not.toHaveBeenCalled();
+    expect(clear).toHaveBeenCalledWith({ userId: ownerUserId }, executionId, {
+      executionGeneration: 1,
+      deploymentId,
+      deviceId
+    });
   });
 
   it("durably fails a blocked start when its selected checkout is invalid", async () => {
@@ -1010,6 +1074,7 @@ describe("Managed Conversation service lifecycle", () => {
       ]),
       getManagedConversationExecution: vi.fn(async () => execution),
       failManagedConversationStartForRuntimeBinding: failStart,
+      clearManagedConversationRuntimeBinding: vi.fn(async () => true),
       reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
       claimManagedConversationCommands: vi.fn(async () => [])
     } as unknown as MemorySourceRepository;
@@ -1107,6 +1172,7 @@ describe("Managed Conversation service lifecycle", () => {
       bindManagedConversationExecutionCheckout: bindWorkspace,
       releaseManagedConversationStartForRuntimeBinding: releaseStart,
       failManagedConversationStartForRuntimeBinding: failStart,
+      clearManagedConversationRuntimeBinding: vi.fn(async () => true),
       reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
       claimManagedConversationCommands: vi.fn(async () => [])
     } as unknown as MemorySourceRepository;

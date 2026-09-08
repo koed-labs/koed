@@ -104,8 +104,8 @@ export const createManagedDevelopmentPreviewRuntime = (options: {
   ) => {
     const repository = options.requireRepository();
     const [execution, binding] = await Promise.all([
-      repository.getManagedConversationExecution(
-        { userId: ownerUserId },
+      options.terminalRuntime.assertExecutionAuthority(
+        ownerUserId,
         executionId
       ),
       repository.getManagedConversationRuntimeBinding(
@@ -121,7 +121,7 @@ export const createManagedDevelopmentPreviewRuntime = (options: {
       binding.checkoutLifecycle !== "ready"
     ) {
       throw previewError(
-        "Development preview workspace authority is stale",
+        "Development preview checkout authority is stale",
         409,
         "preview_checkout_stale"
       );

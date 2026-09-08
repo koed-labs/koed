@@ -37,9 +37,9 @@ const gitMaybe = (cwd: string, ...args: string[]): string | null => {
   }
 };
 
-const repository = (): string => {
+const repository = (objectFormat = "sha1"): string => {
   const path = temporaryDirectory("koed-checkout-repository-");
-  git(path, "init", "--initial-branch=main");
+  git(path, "init", "--initial-branch=main", `--object-format=${objectFormat}`);
   git(path, "config", "user.name", "Koed Test");
   git(path, "config", "user.email", "koed@example.test");
   writeFileSync(join(path, "README.md"), "initial\n");
@@ -55,6 +55,38 @@ afterEach(() => {
 });
 
 describe("runner-owned execution checkouts", () => {
+  it("selects an initialized Project before its first commit and verifies it after committing", async () => {
+    const project = temporaryDirectory("koed-unborn-project-");
+    git(project, "init", "--initial-branch=main");
+    const driver = await createGitExecutionCheckoutDriver({
+      managedRoot: temporaryDirectory("koed-unborn-managed-")
+    });
+    const selected = await driver.select({
+      operationId: randomUUID(),
+      path: project
+    });
+    expect(selected).toMatchObject({
+      ownership: "user_managed_checkout",
+      vcsDriver: "git",
+      branchRef: "refs/heads/main",
+      headObjectId: null
+    });
+    expect((await driver.verify(selected)).headObjectId).toBeNull();
+    git(
+      project,
+      "-c",
+      "user.name=Koed",
+      "-c",
+      "user.email=koed@example.test",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "Initial commit"
+    );
+    expect((await driver.verify(selected)).headObjectId).toBe(
+      git(project, "rev-parse", "HEAD")
+    );
+  });
   it("reports a non-Git directory without inventing VCS capabilities", async () => {
     const root = temporaryDirectory("koed-managed-root-");
     const project = temporaryDirectory("koed-non-git-project-");
@@ -73,75 +105,78 @@ describe("runner-owned execution checkouts", () => {
     });
   });
 
-  it("creates, lists, verifies, retries, and removes one opaque managed worktree", async () => {
-    const source = repository();
-    const managedRoot = temporaryDirectory("koed-managed-root-");
-    const driver = await createGitExecutionCheckoutDriver({ managedRoot });
-    const creation = {
-      executionId: randomUUID(),
-      executionGeneration: 1,
-      operationId: randomUUID(),
-      sourcePath: source
-    };
+  it.each(["sha1", "sha256"])(
+    "creates, lists, verifies, retries, and removes a %s managed worktree",
+    async (objectFormat) => {
+      const source = repository(objectFormat);
+      const managedRoot = temporaryDirectory("koed-managed-root-");
+      const driver = await createGitExecutionCheckoutDriver({ managedRoot });
+      const creation = {
+        executionId: randomUUID(),
+        executionGeneration: 1,
+        operationId: randomUUID(),
+        sourcePath: source
+      };
 
-    const created = await driver.create(creation);
-    expect(created).toMatchObject({
-      checkoutId: creation.operationId,
-      vcsDriver: "git",
-      ownership: "koed_managed_worktree",
-      baseRef: "HEAD",
-      baseObjectId: git(source, "rev-parse", "HEAD"),
-      headObjectId: git(source, "rev-parse", "HEAD")
-    });
-    expect(created.branchRef).toBe(
-      `refs/heads/koed/${creation.executionId}/1/${creation.operationId}`
-    );
-    expect(created.canonicalPath).toContain(managedRoot);
-    expect(await driver.create(creation)).toMatchObject({
-      checkoutId: created.checkoutId,
-      worktreeIdentityHash: created.worktreeIdentityHash
-    });
-    expect(await driver.verify(created)).toMatchObject({
-      repositoryIdentityHash: created.repositoryIdentityHash,
-      worktreeIdentityHash: created.worktreeIdentityHash
-    });
-    expect(await driver.list(source)).toContainEqual(
-      expect.objectContaining({
+      const created = await driver.create(creation);
+      expect(created).toMatchObject({
+        checkoutId: creation.operationId,
+        vcsDriver: "git",
+        ownership: "koed_managed_worktree",
+        baseRef: "HEAD",
+        baseObjectId: git(source, "rev-parse", "HEAD"),
+        headObjectId: git(source, "rev-parse", "HEAD")
+      });
+      expect(created.branchRef).toBe(
+        `refs/heads/koed/${creation.executionId}/1/${creation.operationId}`
+      );
+      expect(created.canonicalPath).toContain(managedRoot);
+      expect(await driver.create(creation)).toMatchObject({
+        checkoutId: created.checkoutId,
+        worktreeIdentityHash: created.worktreeIdentityHash
+      });
+      expect(await driver.verify(created)).toMatchObject({
+        repositoryIdentityHash: created.repositoryIdentityHash,
+        worktreeIdentityHash: created.worktreeIdentityHash
+      });
+      expect(await driver.list(source)).toContainEqual(
+        expect.objectContaining({
+          checkoutId: created.checkoutId,
+          ownership: "koed_managed_worktree",
+          canonicalPath: created.canonicalPath,
+          branchRef: created.branchRef
+        })
+      );
+      await expect(
+        driver.select({
+          operationId: created.checkoutId,
+          path: created.canonicalPath,
+          expectedRepositoryIdentityHash: created.repositoryIdentityHash!
+        })
+      ).resolves.toMatchObject({
         checkoutId: created.checkoutId,
         ownership: "koed_managed_worktree",
-        canonicalPath: created.canonicalPath,
         branchRef: created.branchRef
-      })
-    );
-    await expect(
-      driver.select({
-        operationId: created.checkoutId,
-        path: created.canonicalPath,
-        expectedRepositoryIdentityHash: created.repositoryIdentityHash!
-      })
-    ).resolves.toMatchObject({
-      checkoutId: created.checkoutId,
-      ownership: "koed_managed_worktree",
-      branchRef: created.branchRef
-    });
-    await expect(
-      driver.select({
-        operationId: randomUUID(),
-        path: created.canonicalPath,
-        expectedRepositoryIdentityHash: created.repositoryIdentityHash!
-      })
-    ).rejects.toThrow("ExecutionCheckoutSelectionOwnershipError");
+      });
+      await expect(
+        driver.select({
+          operationId: randomUUID(),
+          path: created.canonicalPath,
+          expectedRepositoryIdentityHash: created.repositoryIdentityHash!
+        })
+      ).rejects.toThrow("ExecutionCheckoutSelectionOwnershipError");
 
-    await driver.remove(created);
-    expect(
-      gitMaybe(source, "show-ref", "--verify", created.branchRef!)
-    ).toBeNull();
-    expect(
-      (await driver.list(source)).some(
-        (checkout) => checkout.canonicalPath === created.canonicalPath
-      )
-    ).toBe(false);
-  });
+      await driver.remove(created);
+      expect(
+        gitMaybe(source, "show-ref", "--verify", created.branchRef!)
+      ).toBeNull();
+      expect(
+        (await driver.list(source)).some(
+          (checkout) => checkout.canonicalPath === created.canonicalPath
+        )
+      ).toBe(false);
+    }
+  );
 
   it("recovers exact branch reservation and completed filesystem cleanup after process interruption", async () => {
     const source = repository();

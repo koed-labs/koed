@@ -765,6 +765,12 @@ export const registerManagedConversationRoutes = (
       : null;
     if (!backend) return null;
     if (backend.routePolicy.managedExecution !== "enabled") return null;
+    if (!context.localEdge.remoteOperationsAllowed()) {
+      throw Object.assign(
+        new Error("Managed Conversation remote operations are suspended"),
+        { statusCode: 503 }
+      );
+    }
     const capabilities = backend.capabilities;
     const capabilitiesValid =
       capabilities?.state === "validated" &&
@@ -1957,7 +1963,7 @@ export const registerManagedConversationRoutes = (
       if (!["stopped", "failed", "fenced"].includes(execution.state)) {
         throw Object.assign(
           new Error(
-            "Managed Conversation must be terminal before workspace cleanup"
+            "Managed Conversation must be terminal before checkout cleanup"
           ),
           { statusCode: 409 }
         );
@@ -1970,7 +1976,7 @@ export const registerManagedConversationRoutes = (
         })
       ) {
         throw Object.assign(
-          new Error("Managed terminals must stop before workspace cleanup"),
+          new Error("Managed terminals must stop before checkout cleanup"),
           { statusCode: 409 }
         );
       }

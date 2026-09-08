@@ -6,12 +6,7 @@ import type {
   ManagedDevelopmentPreviewRecord,
   ManagedTerminalRecord,
   ManagedTerminalServerFrame,
-  ManagedTerminalShellProfile,
-  SourceControlCheck,
-  SourceControlBranch,
-  SourceControlComment,
-  SourceControlRemote,
-  SourceControlReviewRequest
+  ManagedTerminalShellProfile
 } from "@koed/shared";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
@@ -22,7 +17,6 @@ import {
   FileDiff,
   Files,
   Folder,
-  GitBranch,
   GitPullRequest,
   LoaderCircle,
   Monitor,
@@ -33,7 +27,6 @@ import {
   Smartphone,
   SquareTerminal,
   Undo2,
-  Upload,
   X
 } from "lucide-react";
 import {
@@ -46,6 +39,8 @@ import {
 } from "react";
 
 import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
+
+import { ManagedSourceControlPane } from "./ManagedSourceControlPane.js";
 
 type CheckoutIdentity = {
   executionId: string;
@@ -150,29 +145,6 @@ export function ManagedProjectCockpit({
   const [previewViewport, setPreviewViewport] = useState<"desktop" | "mobile">(
     "desktop"
   );
-  const [sourceRemotes, setSourceRemotes] = useState<SourceControlRemote[]>([]);
-  const [sourceRemote, setSourceRemote] = useState<SourceControlRemote | null>(
-    null
-  );
-  const [sourceHead, setSourceHead] = useState("");
-  const [sourceDefaultBranch, setSourceDefaultBranch] = useState("");
-  const [sourceDefaultObjectId, setSourceDefaultObjectId] = useState("");
-  const [sourceCurrentBranch, setSourceCurrentBranch] = useState("");
-  const [sourceBranches, setSourceBranches] = useState<SourceControlBranch[]>(
-    []
-  );
-  const [reviewRequests, setReviewRequests] = useState<
-    SourceControlReviewRequest[]
-  >([]);
-  const [activeReview, setActiveReview] =
-    useState<SourceControlReviewRequest | null>(null);
-  const [sourceChecks, setSourceChecks] = useState<SourceControlCheck[]>([]);
-  const [sourceComments, setSourceComments] = useState<SourceControlComment[]>(
-    []
-  );
-  const [sourceBusy, setSourceBusy] = useState(false);
-  const [sourceComment, setSourceComment] = useState("");
-  const [sourceReviewTitle, setSourceReviewTitle] = useState("");
   const terminalElementRef = useRef<HTMLDivElement | null>(null);
   const previewElementRef = useRef<HTMLDivElement | null>(null);
   const previewSurfaceIdRef = useRef(crypto.randomUUID());
@@ -208,133 +180,6 @@ export function ManagedProjectCockpit({
       setError("Koed could not load development previews.");
     }
   }, [api, identity.executionId]);
-
-  const sourceControl = useCallback(
-    async (sourceControlOperation: Record<string, unknown>) => {
-      const result = await api.command({
-        ...commandRequest(identity.executionId),
-        operation: "source_control",
-        sourceControlOperation: {
-          contractVersion: 1,
-          executionId: identity.executionId,
-          executionGeneration: identity.executionGeneration,
-          ...sourceControlOperation
-        } as never
-      });
-      if (result.operation !== "source_control") {
-        throw new Error("Unexpected source-control response.");
-      }
-      return result.result;
-    },
-    [api, identity.executionGeneration, identity.executionId]
-  );
-
-  const loadSourceControl = useCallback(async () => {
-    setSourceBusy(true);
-    try {
-      const result = await sourceControl({ kind: "remotes" });
-      if (result.kind !== "remotes") return;
-      setSourceRemotes(result.remotes);
-      setSourceHead(result.headObjectId);
-      const selected =
-        result.remotes.find(
-          (remote) =>
-            remote.remoteIdentityHash === sourceRemote?.remoteIdentityHash
-        ) ??
-        result.remotes.find(
-          (remote) => remote.connectionState === "connected"
-        ) ??
-        result.remotes[0] ??
-        null;
-      setSourceRemote(selected);
-      if (!selected || selected.connectionState !== "connected") {
-        setReviewRequests([]);
-        setActiveReview(null);
-        setSourceDefaultBranch("");
-        setSourceDefaultObjectId("");
-        setSourceCurrentBranch("");
-        setSourceBranches([]);
-        return;
-      }
-      const [inspection, reviews, branches] = await Promise.all([
-        selected.capabilities.includes("repository_read")
-          ? sourceControl({
-              kind: "inspect",
-              remoteIdentityHash: selected.remoteIdentityHash
-            })
-          : null,
-        selected.capabilities.includes("review_request_read")
-          ? sourceControl({
-              kind: "review_requests",
-              remoteIdentityHash: selected.remoteIdentityHash,
-              state: "open",
-              cursor: null
-            })
-          : null,
-        selected.capabilities.includes("branch_read")
-          ? sourceControl({
-              kind: "branches",
-              remoteIdentityHash: selected.remoteIdentityHash,
-              cursor: null
-            })
-          : null
-      ]);
-      if (inspection?.kind === "inspect") {
-        setSourceDefaultBranch(inspection.defaultBranch);
-        setSourceDefaultObjectId(inspection.defaultBranchObjectId);
-        setSourceCurrentBranch(inspection.currentBranch ?? "");
-      }
-      setSourceBranches(branches?.kind === "branches" ? branches.branches : []);
-      const nextReviews =
-        reviews?.kind === "review_requests" ? reviews.reviewRequests : [];
-      setReviewRequests(nextReviews);
-      setActiveReview(
-        (current) =>
-          nextReviews.find((item) => item.id === current?.id) ??
-          nextReviews[0] ??
-          null
-      );
-    } catch {
-      setError("Koed could not load source control.");
-    } finally {
-      setSourceBusy(false);
-    }
-  }, [sourceControl, sourceRemote?.remoteIdentityHash]);
-
-  const loadReviewDetail = useCallback(
-    async (review: SourceControlReviewRequest) => {
-      if (!sourceRemote) return;
-      setSourceBusy(true);
-      try {
-        const [checks, comments] = await Promise.all([
-          sourceRemote.capabilities.includes("checks_read")
-            ? sourceControl({
-                kind: "checks",
-                remoteIdentityHash: sourceRemote.remoteIdentityHash,
-                objectId: review.headObjectId
-              })
-            : null,
-          sourceRemote.capabilities.includes("comments_read")
-            ? sourceControl({
-                kind: "comments",
-                remoteIdentityHash: sourceRemote.remoteIdentityHash,
-                number: review.number,
-                cursor: null
-              })
-            : null
-        ]);
-        setSourceChecks(checks?.kind === "checks" ? checks.checks : []);
-        setSourceComments(
-          comments?.kind === "comments" ? comments.comments : []
-        );
-      } catch {
-        setError("Koed could not load this review request.");
-      } finally {
-        setSourceBusy(false);
-      }
-    },
-    [sourceControl, sourceRemote]
-  );
 
   const updateOutputRange = useCallback(
     (next: { earliest: number; latest: number }) => {
@@ -575,20 +420,6 @@ export function ManagedProjectCockpit({
     void loadPreviews();
     return loadTerminals();
   }, [loadPreviews, loadTerminals, open, tab]);
-
-  useEffect(() => {
-    if (!open || tab !== "source") return;
-    void loadSourceControl();
-  }, [loadSourceControl, open, revision, tab]);
-
-  useEffect(() => {
-    if (!open || tab !== "source" || !activeReview) {
-      setSourceChecks([]);
-      setSourceComments([]);
-      return;
-    }
-    void loadReviewDetail(activeReview);
-  }, [activeReview, loadReviewDetail, open, tab]);
 
   useLayoutEffect(() => {
     const element = previewElementRef.current;
@@ -1395,365 +1226,12 @@ export function ManagedProjectCockpit({
         </div>
       ) : null}
       {tab === "source" ? (
-        <div className="personal-source-view">
-          <div className="personal-source-toolbar">
-            <select
-              aria-label="Source-control remote"
-              onChange={(event) => {
-                const selected =
-                  sourceRemotes.find(
-                    (remote) =>
-                      remote.remoteIdentityHash === event.currentTarget.value
-                  ) ?? null;
-                setSourceRemote(selected);
-                setReviewRequests([]);
-                setActiveReview(null);
-              }}
-              value={sourceRemote?.remoteIdentityHash ?? ""}
-            >
-              <option value="">No remote</option>
-              {sourceRemotes.map((remote) => (
-                <option
-                  key={remote.remoteIdentityHash}
-                  value={remote.remoteIdentityHash}
-                >
-                  {remote.remoteName} · {remote.provider.replace("_", " ")}
-                </option>
-              ))}
-            </select>
-            <span title={sourceHead}>{sourceHead.slice(0, 8)}</span>
-            <button
-              aria-label="Fetch remote"
-              disabled={
-                sourceBusy ||
-                sourceRemote?.connectionState !== "connected" ||
-                !sourceRemote.credentialGeneration ||
-                !sourceRemote.capabilities.includes("fetch")
-              }
-              onClick={() => {
-                if (!sourceRemote?.credentialGeneration) return;
-                setSourceBusy(true);
-                void sourceControl({
-                  kind: "fetch",
-                  remoteIdentityHash: sourceRemote.remoteIdentityHash,
-                  remoteName: sourceRemote.remoteName,
-                  expectedHeadObjectId: sourceHead,
-                  credentialGeneration: sourceRemote.credentialGeneration,
-                  idempotencyKey: `desktop-source-fetch:${crypto.randomUUID()}`
-                })
-                  .then(() => loadSourceControl())
-                  .catch(() =>
-                    setError("Koed could not fetch the selected remote.")
-                  )
-                  .finally(() => setSourceBusy(false));
-              }}
-              title="Fetch remote"
-              type="button"
-            >
-              <RefreshCw aria-hidden="true" />
-            </button>
-            <button
-              aria-label="Fast-forward current branch"
-              disabled={
-                sourceBusy ||
-                !sourceRemote?.credentialGeneration ||
-                !sourceRemote.capabilities.includes("fetch") ||
-                !sourceDefaultBranch ||
-                !sourceDefaultObjectId ||
-                sourceDefaultObjectId === sourceHead
-              }
-              onClick={() => {
-                if (
-                  !sourceRemote?.credentialGeneration ||
-                  !sourceDefaultBranch ||
-                  !sourceDefaultObjectId
-                )
-                  return;
-                setSourceBusy(true);
-                void sourceControl({
-                  kind: "fast_forward",
-                  remoteIdentityHash: sourceRemote.remoteIdentityHash,
-                  remoteName: sourceRemote.remoteName,
-                  remoteBranch: sourceDefaultBranch,
-                  expectedRemoteObjectId: sourceDefaultObjectId,
-                  expectedHeadObjectId: sourceHead,
-                  credentialGeneration: sourceRemote.credentialGeneration,
-                  idempotencyKey: `desktop-source-fast-forward:${crypto.randomUUID()}`
-                })
-                  .then(() => loadSourceControl())
-                  .catch(() =>
-                    setError("Koed could not fast-forward this branch.")
-                  )
-                  .finally(() => setSourceBusy(false));
-              }}
-              title="Fast-forward from default branch"
-              type="button"
-            >
-              <GitBranch aria-hidden="true" />
-            </button>
-            <button
-              aria-label="Push current branch"
-              disabled={
-                sourceBusy ||
-                !sourceRemote?.credentialGeneration ||
-                !sourceRemote.capabilities.includes("push") ||
-                !sourceCurrentBranch
-              }
-              onClick={() => {
-                if (!sourceRemote?.credentialGeneration || !sourceCurrentBranch)
-                  return;
-                const currentRemoteBranch = sourceBranches.find(
-                  (branch) => branch.name === sourceCurrentBranch
-                );
-                setSourceBusy(true);
-                void sourceControl({
-                  kind: "push",
-                  remoteIdentityHash: sourceRemote.remoteIdentityHash,
-                  remoteName: sourceRemote.remoteName,
-                  targetBranch: sourceCurrentBranch,
-                  expectedRemoteObjectId: currentRemoteBranch?.objectId ?? null,
-                  expectedHeadObjectId: sourceHead,
-                  credentialGeneration: sourceRemote.credentialGeneration,
-                  idempotencyKey: `desktop-source-push:${crypto.randomUUID()}`
-                })
-                  .then(() => loadSourceControl())
-                  .catch(() =>
-                    setError("Koed could not push the current branch.")
-                  )
-                  .finally(() => setSourceBusy(false));
-              }}
-              title="Push current branch"
-              type="button"
-            >
-              <Upload aria-hidden="true" />
-            </button>
-          </div>
-          {sourceRemote?.connectionState !== "connected" ? (
-            <p className="personal-source-empty">
-              Connect an account for this repository host to review remote work.
-            </p>
-          ) : (
-            <>
-              {sourceRemote.capabilities.includes("review_request_create") &&
-              sourceCurrentBranch &&
-              sourceDefaultBranch &&
-              sourceCurrentBranch !== sourceDefaultBranch ? (
-                <form
-                  className="personal-source-create"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    if (
-                      !sourceReviewTitle.trim() ||
-                      !sourceRemote.credentialGeneration
-                    )
-                      return;
-                    setSourceBusy(true);
-                    void sourceControl({
-                      kind: "review_request_create",
-                      remoteIdentityHash: sourceRemote.remoteIdentityHash,
-                      title: sourceReviewTitle.trim(),
-                      body: "",
-                      sourceBranch: sourceCurrentBranch,
-                      targetBranch: sourceDefaultBranch,
-                      draft: false,
-                      expectedHeadObjectId: sourceHead,
-                      credentialGeneration: sourceRemote.credentialGeneration,
-                      idempotencyKey: `desktop-source-review-create:${crypto.randomUUID()}`
-                    })
-                      .then(() => {
-                        setSourceReviewTitle("");
-                        return loadSourceControl();
-                      })
-                      .catch(() =>
-                        setError("Koed could not create that review request.")
-                      )
-                      .finally(() => setSourceBusy(false));
-                  }}
-                >
-                  <input
-                    aria-label="Review request title"
-                    onChange={(event) =>
-                      setSourceReviewTitle(event.currentTarget.value)
-                    }
-                    placeholder={`Open ${sourceCurrentBranch} into ${sourceDefaultBranch}`}
-                    value={sourceReviewTitle}
-                  />
-                  <button
-                    disabled={sourceBusy || !sourceReviewTitle.trim()}
-                    type="submit"
-                  >
-                    Open review request
-                  </button>
-                </form>
-              ) : null}
-              <div className="personal-source-split">
-                <nav aria-label="Open review requests">
-                  {reviewRequests.length ? (
-                    reviewRequests.map((review) => (
-                      <button
-                        aria-current={
-                          review.id === activeReview?.id ? "true" : undefined
-                        }
-                        key={review.id}
-                        onClick={() => setActiveReview(review)}
-                        type="button"
-                      >
-                        <span>#{review.number}</span>
-                        {review.title}
-                      </button>
-                    ))
-                  ) : (
-                    <p>No open review requests.</p>
-                  )}
-                </nav>
-                <section className="personal-source-detail">
-                  {activeReview ? (
-                    <>
-                      <header>
-                        <strong>{activeReview.title}</strong>
-                        <span>
-                          {activeReview.sourceBranch} →{" "}
-                          {activeReview.targetBranch}
-                        </span>
-                      </header>
-                      <div className="personal-source-checks">
-                        {sourceChecks.map((check) => (
-                          <span data-state={check.state} key={check.id}>
-                            {check.name}: {check.conclusion ?? check.state}
-                          </span>
-                        ))}
-                      </div>
-                      <div className="personal-source-comments">
-                        {sourceComments.map((comment) => (
-                          <article key={comment.id}>
-                            <strong>{comment.author}</strong>
-                            <p>{comment.body}</p>
-                          </article>
-                        ))}
-                      </div>
-                      {sourceRemote.capabilities.includes("reviews_write") ? (
-                        <div className="personal-source-review-actions">
-                          <button
-                            disabled={sourceBusy}
-                            onClick={() => {
-                              if (!sourceRemote.credentialGeneration) return;
-                              setSourceBusy(true);
-                              void sourceControl({
-                                kind: "review_create",
-                                remoteIdentityHash:
-                                  sourceRemote.remoteIdentityHash,
-                                number: activeReview.number,
-                                decision: "approve",
-                                body: "Approved in Koed.",
-                                expectedHeadObjectId: activeReview.headObjectId,
-                                credentialGeneration:
-                                  sourceRemote.credentialGeneration,
-                                idempotencyKey: `desktop-source-review:${crypto.randomUUID()}`
-                              })
-                                .catch(() =>
-                                  setError("Koed could not submit that review.")
-                                )
-                                .finally(() => setSourceBusy(false));
-                            }}
-                            type="button"
-                          >
-                            Approve
-                          </button>
-                          <button
-                            disabled={sourceBusy || !sourceComment.trim()}
-                            onClick={() => {
-                              if (
-                                !sourceRemote.credentialGeneration ||
-                                !sourceComment.trim()
-                              )
-                                return;
-                              setSourceBusy(true);
-                              void sourceControl({
-                                kind: "review_create",
-                                remoteIdentityHash:
-                                  sourceRemote.remoteIdentityHash,
-                                number: activeReview.number,
-                                decision: "request_changes",
-                                body: sourceComment.trim(),
-                                expectedHeadObjectId: activeReview.headObjectId,
-                                credentialGeneration:
-                                  sourceRemote.credentialGeneration,
-                                idempotencyKey: `desktop-source-review:${crypto.randomUUID()}`
-                              })
-                                .then(() => setSourceComment(""))
-                                .catch(() =>
-                                  setError("Koed could not submit that review.")
-                                )
-                                .finally(() => setSourceBusy(false));
-                            }}
-                            type="button"
-                          >
-                            Request changes
-                          </button>
-                        </div>
-                      ) : null}
-                      {sourceRemote.capabilities.includes("comments_write") ? (
-                        <form
-                          className="personal-source-comment"
-                          onSubmit={(event) => {
-                            event.preventDefault();
-                            if (
-                              !sourceComment.trim() ||
-                              !sourceRemote.credentialGeneration
-                            )
-                              return;
-                            setSourceBusy(true);
-                            void sourceControl({
-                              kind: "comment_create",
-                              remoteIdentityHash:
-                                sourceRemote.remoteIdentityHash,
-                              number: activeReview.number,
-                              body: sourceComment.trim(),
-                              expectedHeadObjectId: activeReview.headObjectId,
-                              credentialGeneration:
-                                sourceRemote.credentialGeneration,
-                              idempotencyKey: `desktop-source-comment:${crypto.randomUUID()}`
-                            })
-                              .then(() => {
-                                setSourceComment("");
-                                return loadReviewDetail(activeReview);
-                              })
-                              .catch(() =>
-                                setError("Koed could not post that comment.")
-                              )
-                              .finally(() => setSourceBusy(false));
-                          }}
-                        >
-                          <textarea
-                            aria-label="Review comment"
-                            onChange={(event) =>
-                              setSourceComment(event.currentTarget.value)
-                            }
-                            placeholder="Add a comment"
-                            rows={3}
-                            value={sourceComment}
-                          />
-                          <button
-                            disabled={sourceBusy || !sourceComment.trim()}
-                            type="submit"
-                          >
-                            Comment
-                          </button>
-                        </form>
-                      ) : null}
-                    </>
-                  ) : null}
-                </section>
-              </div>
-            </>
-          )}
-          {sourceBusy ? (
-            <LoaderCircle
-              aria-label="Loading source control"
-              className="personal-cockpit-spin"
-            />
-          ) : null}
-        </div>
+        <ManagedSourceControlPane
+          api={api}
+          identity={identity}
+          revision={revision}
+          key={`${identity.executionId}:${identity.executionGeneration}`}
+        />
       ) : null}
       {error ? (
         <p className="personal-cockpit-error" role="alert">

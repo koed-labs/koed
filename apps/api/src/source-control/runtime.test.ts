@@ -32,6 +32,7 @@ const defaultCapabilities = [
 
 const fixture = async (options?: {
   remoteUrl?: string;
+  provider?: "azure_devops";
   host?: string;
   capabilities?: readonly string[];
 }) => {
@@ -79,11 +80,14 @@ const fixture = async (options?: {
       connections: [
         {
           id: connectionId,
-          provider: "github",
+          provider: options?.provider ?? "github",
           host: options?.host ?? "github.com",
-          apiOrigin: options?.host
-            ? `https://${options.host}/api/v3`
-            : "https://api.github.com",
+          apiOrigin:
+            options?.provider === "azure_devops"
+              ? "https://dev.azure.com"
+              : options?.host
+                ? `https://${options.host}/api/v3`
+                : "https://api.github.com",
           accountLabel: "Fixture account",
           credentialReference: "source-control:fixture",
           credentialGeneration: 4,
@@ -97,7 +101,10 @@ const fixture = async (options?: {
   const execution = {
     id: executionId,
     ownerUserId: userId,
-    executionGeneration: 2
+    executionGeneration: 2,
+    runnerDeploymentId: "44444444-4444-4444-8444-444444444444",
+    runnerDeviceId: "55555555-5555-4555-8555-555555555555",
+    state: "running"
   };
   const binding = {
     executionId,
@@ -131,7 +138,7 @@ const fixture = async (options?: {
     updatedAt: new Date().toISOString()
   };
   const repository = {
-    getManagedConversationExecution: vi.fn(async () => execution),
+    getManagedConversationExecution: vi.fn(async () => null),
     getManagedConversationRuntimeBinding: vi.fn(async () => binding)
   } as unknown as MemorySourceRepository;
   const providerFetch = vi.fn<typeof fetch>(async (input, init) => {
@@ -171,13 +178,22 @@ const fixture = async (options?: {
   const credentialResolver = vi.fn(async () =>
     JSON.stringify({ scheme: "bearer", token: "fixture-secret" })
   );
+  const assertExecutionAuthority = vi.fn(async (owner: string) => {
+    if (owner !== userId)
+      throw Object.assign(new Error("Execution not found"), {
+        statusCode: 404
+      });
+    return execution;
+  });
   const runtime = createSourceControlRuntime({
+    assertExecutionAuthority,
     koedHome,
     requireRepository: () => repository,
     fetch: providerFetch,
     resolveCredential: credentialResolver
   });
   return {
+    assertExecutionAuthority,
     binding,
     credentialResolver,
     headObjectId,
@@ -189,6 +205,53 @@ const fixture = async (options?: {
 };
 
 describe("source-control runtime", () => {
+  it("connects a standard Azure SSH Project remote to its public API connection", async () => {
+    const { runtime, credentialResolver } = await fixture({
+      provider: "azure_devops",
+      host: "dev.azure.com",
+      remoteUrl: "git@ssh.dev.azure.com:v3/acme/project/repo"
+    });
+    const result = await runtime.execute(userId, {
+      contractVersion: 1,
+      executionId,
+      executionGeneration: 2,
+      kind: "remotes"
+    });
+    expect(result).toMatchObject({
+      kind: "remotes",
+      remotes: [
+        {
+          provider: "azure_devops",
+          connectionState: "connected",
+          connectionId,
+          locator: { namespace: "acme", project: "project", repository: "repo" }
+        }
+      ]
+    });
+    expect(credentialResolver).not.toHaveBeenCalled();
+  });
+
+  it("requires current assignment before accessing source-control credentials", async () => {
+    const {
+      runtime,
+      assertExecutionAuthority,
+      credentialResolver,
+      providerFetch
+    } = await fixture();
+    assertExecutionAuthority.mockRejectedValueOnce(
+      Object.assign(new Error("Assignment changed"), { statusCode: 409 })
+    );
+    await expect(
+      runtime.execute(userId, {
+        contractVersion: 1,
+        executionId,
+        executionGeneration: 2,
+        kind: "remotes"
+      })
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(credentialResolver).not.toHaveBeenCalled();
+    expect(providerFetch).not.toHaveBeenCalled();
+  });
   it("discovers an exact remote without exposing its URL or credential", async () => {
     const { headObjectId, runtime } = await fixture();
     const result = await runtime.execute(userId, {
@@ -336,6 +399,15 @@ describe("source-control runtime", () => {
     const first = await runtime.execute(userId, operation);
     const second = await runtime.execute(userId, operation);
     expect(second).toEqual(first);
+    await expect(
+      runtime.execute("66666666-6666-4666-8666-666666666666", operation)
+    ).rejects.toMatchObject({ statusCode: 404 });
+    await expect(
+      runtime.execute("66666666-6666-4666-8666-666666666666", {
+        ...operation,
+        body: "Different comment"
+      })
+    ).rejects.toMatchObject({ statusCode: 404 });
     expect(providerFetch).toHaveBeenCalledTimes(2);
     const journal = readFileSync(
       resolve(koedHome, "state", "source-control-operations.json"),

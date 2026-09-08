@@ -244,7 +244,7 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     presentation update publishes a content-free graph invalidation through the
     existing durable realtime stream; clients resnapshot rather than poll.
     Presentation changes never mutate source, Capture, Projection, Memory,
-    retention, Share Grants, managed execution, or workspace cleanup.
+    retention, Share Grants, managed execution, or checkout cleanup.
 
 ## Server Deployment Boundary
 
@@ -343,7 +343,7 @@ remote URL material to the renderer.
 The API then:
 
 1. authenticates the User and required approval tier;
-2. verifies the current managed-execution generation and exact Git workspace;
+2. verifies the current managed-execution generation and exact Git checkout;
 3. rediscovers and normalizes the selected remote;
 4. resolves the exact active connection, capability, credential generation,
    and opaque secure-store reference;
@@ -620,11 +620,14 @@ leaves SSE as the compatibility path. Datagrams remain bounded disposable
 hints and are dropped until a resource-authorized domain handler exists.
 Managed Conversation launch treats a local Project path as a source locator,
 not an execution-ready binding. The local API stores a pending binding and
-wakes the assigned worker. For a clean Git Project the worker creates an opaque,
-operation-owned linked worktree; for an explicitly selected existing checkout
-or non-Git directory it records the weaker ownership class. It verifies the
+wakes the assigned worker. Pending discovery includes runner-local bindings
+whose execution record lives upstream. The worker verifies the current
+assignment with that authority before preparing the checkout and releasing
+start. Project selection records the existing user-managed Git checkout or
+non-Git directory; an initialized Git Project may have an unborn branch.
+The checkout driver also supports explicit Koed-owned linked worktree creation. It verifies the
 canonical filesystem and VCS identity, persists the immutable execution
-workspace, and only then releases the authority's blocked start command. Local
+checkout, and only then releases the authority's blocked start command. Local
 paths and Git administration never cross the authority boundary. Cleanup is a
 separate authenticated request after execution becomes terminal and removes
 only an unchanged, clean Koed-owned worktree and its exact branch.
@@ -650,8 +653,11 @@ opaque preview lifecycle record; Electron main obtains the verified URL through
 a loopback-only `managed_preview` credential operation and loads it in an
 ephemeral origin-restricted `WebContentsView`. Renderer code never receives the
 URL or port. Stopping the terminal closes its previews, and an execution
-workspace cannot enter cleanup while any managed terminal process remains
-live. Remote preview relay remains unavailable until its dedicated origin and
+checkout cannot enter cleanup while any managed terminal process remains
+live. Local preview and source-control operations use the same current-assignment
+resolver as terminals, including when only the runtime binding is stored locally.
+Remote-operation suspension prevents managed proxy requests before upstream
+credentials are resolved. Remote preview relay remains unavailable until its dedicated origin and
 ticketed outbound-runner transport are implemented.
 Source-control operations follow ADR 0038 and remain separate from file,
 terminal, Conversation, and Team authority. The assigned runner binds one
@@ -1782,3 +1788,8 @@ Conversation Source artifacts and access grants are outside this correction.
 - Repository retrieval stages: `packages/db/src/repository.ts`
 - Team routes: `apps/api/src/team/routes.ts`
 - Team audit repository: `packages/db/src/audit-repository.ts`
+
+Conversation presentation rebuilds pass the reset-time presentation-policy
+revision to every batch. The projector checks it while holding the shared policy
+lock; a policy change returns a conflict instead of completing a rebuild with
+mixed revisions. The User can retry the rebuild under the new policy.

@@ -628,7 +628,7 @@ export const createManagedConversationService = (options: {
     executionCheckoutRetryTimer.unref?.();
   };
 
-  const workspaceOperationId = (
+  const checkoutOperationId = (
     executionId: string,
     executionGeneration: number
   ): string => {
@@ -1077,7 +1077,7 @@ export const createManagedConversationService = (options: {
     if (binding.checkoutLifecycle !== "pending") {
       throw new Error("ManagedConversationExecutionCheckoutUnavailableError");
     }
-    const operationId = workspaceOperationId(
+    const operationId = checkoutOperationId(
       execution.id,
       execution.executionGeneration
     );
@@ -6809,6 +6809,16 @@ export const createManagedConversationService = (options: {
         limit: 20
       });
     for (const binding of pendingBindings) {
+      const clearPendingBinding = () =>
+        options.repository.clearManagedConversationRuntimeBinding(
+          { userId: binding.ownerUserId },
+          binding.executionId,
+          {
+            executionGeneration: binding.executionGeneration,
+            deploymentId: binding.deploymentId,
+            deviceId: binding.deviceId
+          }
+        );
       try {
         const execution =
           await options.repository.getManagedConversationExecution(
@@ -6822,9 +6832,8 @@ export const createManagedConversationService = (options: {
           execution.runnerDeploymentId !== options.deploymentId ||
           execution.runnerDeviceId !== options.deviceId
         ) {
-          throw managedConversationError(
-            "ManagedConversationExecutionCheckoutAssignmentError"
-          );
+          await clearPendingBinding();
+          continue;
         }
         await bindExecutionCheckout(execution, binding);
         const released =
@@ -6857,6 +6866,7 @@ export const createManagedConversationService = (options: {
             })
             .catch(() => false);
           if (failed) {
+            await clearPendingBinding();
             executionCheckoutRetryAttempt = 0;
             options.logger.warn(
               {

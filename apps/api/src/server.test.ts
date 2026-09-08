@@ -12769,6 +12769,7 @@ describe("account and access flows", () => {
     const displayed = new Set<string>();
     repository.projectPendingConversationItems = async (_actor, input) => {
       expect(input?.presentationOnly).toBe(true);
+      expect(input?.expectedPresentationPolicyRevision).toBe(2);
       const ids =
         input?.conversationItemIds?.slice(
           0,
