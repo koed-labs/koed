@@ -570,6 +570,13 @@ describe("PersonalMemoryWorkspace", () => {
         )
         ?.click();
     });
+    const automaticActions = container
+      .querySelector(
+        '[aria-label="Conversation actions for Captured Session 1"]'
+      )
+      ?.closest("details");
+    expect(automaticActions?.textContent).toContain("Keep active");
+    expect(automaticActions?.textContent).not.toContain("Automatic");
     expect(activeActions?.hasAttribute("open")).toBe(false);
     await act(async () => {
       container
@@ -581,6 +588,8 @@ describe("PersonalMemoryWorkspace", () => {
     const activeShell = container
       .querySelector('[data-session-id="00000000-0000-4000-8000-000000000004"]')
       ?.closest(".personal-session-row");
+    expect(activeShell?.textContent).toContain("Automatic");
+    expect(activeShell?.textContent).not.toContain("Keep active");
     await act(async () => {
       [...(activeShell?.querySelectorAll("button") ?? [])]
         .find((button) => button.textContent?.trim() === "Settle")
@@ -2181,7 +2190,7 @@ describe("PersonalMemoryWorkspace", () => {
     ).toContain("state-reconciling");
   });
 
-  it("surfaces provider-aware Git links and keeps Session actions outside the row selection button", async () => {
+  it("keeps Project actions in headers and removes them from Session rows", async () => {
     const source = project([thread(1)]);
     const metadata: PersonalDesktopProjectMetadata = {
       schemaVersion: 1,
@@ -2253,35 +2262,30 @@ describe("PersonalMemoryWorkspace", () => {
       "https://github.com/koed-labs/koed"
     );
 
+    const headerFolder = container.querySelector<HTMLButtonElement>(
+      ".personal-project-detail-heading .personal-project-folder"
+    );
+    expect(headerFolder?.getAttribute("aria-label")).toBe(
+      `Reveal ${source.name} in file browser`
+    );
+    await act(async () => headerFolder?.click());
+    expect(revealLocalProject).toHaveBeenCalledWith(metadata.localProjectId);
+
     const sessionRow = container.querySelector(".personal-session-row");
     const sessionSelect = sessionRow?.querySelector(
       ".personal-session-row-select"
     );
     expect(sessionRow?.tagName).toBe("DIV");
     expect(sessionSelect?.tagName).toBe("BUTTON");
-    expect(sessionSelect?.querySelector(".personal-session-link")).toBeNull();
-    const sessionLinks = Array.from(
-      sessionRow?.querySelectorAll(".personal-session-link") ?? []
-    );
-    expect(sessionLinks).toHaveLength(2);
-    expect(sessionLinks[0]?.getAttribute("title")).toBeNull();
-    expect(sessionLinks[0]?.getAttribute("data-tooltip")).toBe(
-      `Reveal ${source.name} in file browser`
-    );
-    expect(sessionLinks[1]?.getAttribute("title")).toBeNull();
-    expect(sessionLinks[1]?.getAttribute("data-tooltip")).toBe(
-      "Open koed-labs/koed on GitHub"
-    );
-    await act(async () => {
-      (sessionLinks[0] as HTMLElement).click();
-    });
-    expect(revealLocalProject).toHaveBeenCalledWith(metadata.localProjectId);
-    await act(async () => {
-      (sessionLinks[1] as HTMLElement).click();
-    });
-    expect(openExternal).toHaveBeenCalledWith(
-      "https://github.com/koed-labs/koed"
-    );
+    expect(sessionRow?.querySelector(".personal-session-links")).toBeNull();
+    expect(
+      sessionRow?.querySelector(
+        `[aria-label="Reveal ${source.name} in file browser"]`
+      )
+    ).toBeNull();
+    expect(
+      sessionRow?.querySelector('[aria-label="Open koed-labs/koed on GitHub"]')
+    ).toBeNull();
 
     await act(async () => {
       container

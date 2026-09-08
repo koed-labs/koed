@@ -265,15 +265,22 @@ const nextConversationPresentationDeadline = (
 
 function ProjectOverview({
   eventCount,
+  localProjectId,
   onOpenRepository,
+  onRevealLocalProject,
+  projectName,
   remoteDisplay,
   sessionCount
 }: {
   eventCount: number;
+  localProjectId?: string | null;
   onOpenRepository?: (url: string) => void;
+  onRevealLocalProject?: (localProjectId: string) => void;
+  projectName?: string;
   remoteDisplay?: string | null;
   sessionCount: number;
 }) {
+  const revealLabel = `Reveal ${projectName ?? "Project"} in file browser`;
   return (
     <span className="personal-project-overview-group">
       {remoteDisplay ? (
@@ -286,6 +293,20 @@ function ProjectOverview({
         aria-label={`${countLabel(sessionCount, "Captured Session")} · ${countLabel(eventCount, "Memory Event")}`}
         className="personal-project-overview"
       >
+        {localProjectId && onRevealLocalProject ? (
+          <>
+            <button
+              aria-label={revealLabel}
+              className="personal-project-folder"
+              onClick={() => onRevealLocalProject(localProjectId)}
+              title={revealLabel}
+              type="button"
+            >
+              <Folder aria-hidden="true" />
+            </button>
+            <span aria-hidden="true">·</span>
+          </>
+        ) : null}
         <span>
           {sessionCount}
           <BookText aria-hidden="true" />
@@ -557,12 +578,7 @@ function SessionRow({
   onActionsOpenChange,
   onChangePresentation,
   presentationStatus,
-  localProjectId,
-  onOpenRepository,
-  onRevealLocalProject,
   onSelect,
-  projectName,
-  remoteDisplay,
   thread
 }: {
   actionsOpen: boolean;
@@ -575,12 +591,7 @@ function SessionRow({
       "sessionId" | "expectedVersion"
     >
   ) => void;
-  localProjectId?: string | null;
-  onOpenRepository?: (url: string) => void;
-  onRevealLocalProject?: (localProjectId: string) => void;
   onSelect: () => void;
-  projectName: string;
-  remoteDisplay?: string | null;
   thread: PersonalDesktopProjectThread;
 }) {
   const presentation =
@@ -595,16 +606,6 @@ function SessionRow({
     actionsRef.current?.removeAttribute("open");
     onChangePresentation(input);
   };
-  const repository = remoteDisplay
-    ? repositoryPresentationFromRemoteDisplay(remoteDisplay)
-    : null;
-  const RepositoryIcon = repository?.provider === "github" ? Github : GitFork;
-  const repositoryActionLabel = repository
-    ? repository.provider === "github"
-      ? `Open ${repository.label} on GitHub`
-      : `Open repository ${repository.label}`
-    : null;
-  const revealLabel = `Reveal ${projectName} in file browser`;
   return (
     <div
       className={`personal-session-row${thread.threadKind === "subagent" ? " is-child-agent" : ""}`}
@@ -647,34 +648,6 @@ function SessionRow({
           </time>
         </span>
       </button>
-      {(localProjectId && onRevealLocalProject) ||
-      (repository && repositoryActionLabel && onOpenRepository) ? (
-        <span className="personal-session-links">
-          {localProjectId && onRevealLocalProject ? (
-            <button
-              aria-label={revealLabel}
-              className="personal-session-link"
-              data-tooltip={revealLabel}
-              onClick={() => onRevealLocalProject(localProjectId)}
-              type="button"
-            >
-              <Folder aria-hidden="true" />
-            </button>
-          ) : null}
-          {repository && repositoryActionLabel && onOpenRepository ? (
-            <button
-              aria-label={repositoryActionLabel}
-              className="personal-session-link"
-              data-repository-provider={repository.provider}
-              data-tooltip={repositoryActionLabel}
-              onClick={() => onOpenRepository(repository.url)}
-              type="button"
-            >
-              <RepositoryIcon aria-hidden="true" />
-            </button>
-          ) : null}
-        </span>
-      ) : null}
       {thread.sessionId ? (
         <details
           className="personal-session-actions"
@@ -701,24 +674,27 @@ function SessionRow({
               <Pin aria-hidden="true" />
               {presentation.pinnedAt ? "Unpin" : "Pin"}
             </button>
-            <button
-              disabled={busy || presentation.displayMode === "automatic"}
-              onClick={() => changePresentation({ displayMode: "automatic" })}
-              role="menuitem"
-              type="button"
-            >
-              <RefreshCw aria-hidden="true" />
-              Automatic
-            </button>
-            <button
-              disabled={busy || presentation.displayMode === "active"}
-              onClick={() => changePresentation({ displayMode: "active" })}
-              role="menuitem"
-              type="button"
-            >
-              <CirclePlay aria-hidden="true" />
-              Keep active
-            </button>
+            {presentation.displayMode === "automatic" ? (
+              <button
+                disabled={busy}
+                onClick={() => changePresentation({ displayMode: "active" })}
+                role="menuitem"
+                type="button"
+              >
+                <CirclePlay aria-hidden="true" />
+                Keep active
+              </button>
+            ) : (
+              <button
+                disabled={busy}
+                onClick={() => changePresentation({ displayMode: "automatic" })}
+                role="menuitem"
+                type="button"
+              >
+                <RefreshCw aria-hidden="true" />
+                Automatic
+              </button>
+            )}
             <button
               disabled={busy || presentation.displayMode === "settled"}
               onClick={() => changePresentation({ displayMode: "settled" })}
@@ -1141,11 +1117,6 @@ function ProjectDetail({
               });
             });
         }}
-        localProjectId={project.localProjectId}
-        onOpenRepository={onOpenRepository}
-        onRevealLocalProject={onRevealLocalProject}
-        projectName={project.name}
-        remoteDisplay={project.remoteDisplay}
         onSelect={() => onSelectSession(selectionId)}
         presentationStatus={conversationPresentationStatus(
           thread,
@@ -1241,7 +1212,10 @@ function ProjectDetail({
           </h2>
           <ProjectOverview
             eventCount={project.eventCount}
+            localProjectId={project.localProjectId}
             onOpenRepository={onOpenRepository}
+            onRevealLocalProject={onRevealLocalProject}
+            projectName={project.name}
             remoteDisplay={project.remoteDisplay}
             sessionCount={project.threads.length}
           />

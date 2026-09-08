@@ -230,6 +230,28 @@
   width: 0.95em;
 }
 
+.personal-project-folder {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  justify-content: center;
+  padding: 0;
+}
+
+.personal-project-folder:hover {
+  color: var(--foreground);
+}
+
+.personal-project-folder:focus-visible {
+  border-radius: 0.2rem;
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 .personal-project-repo {
   align-items: center;
   color: var(--foreground);
@@ -739,73 +761,6 @@ button.personal-new-conversation-owner-picker > svg {
 
 .personal-session-meta {
   align-items: flex-end;
-}
-
-.personal-session-links {
-  align-items: center;
-  display: inline-flex;
-  gap: 0.35rem;
-  padding-inline-start: 0.75rem;
-}
-
-.personal-session-link {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: 0.3rem;
-  color: var(--muted-foreground);
-  cursor: pointer;
-  display: inline-flex;
-  height: 1.35rem;
-  justify-content: center;
-  padding: 0;
-  position: relative;
-  width: 1.35rem;
-}
-
-.personal-session-link::after {
-  background: var(--foreground);
-  border-radius: 0.3rem;
-  bottom: calc(100% + 0.35rem);
-  color: var(--background);
-  content: attr(data-tooltip);
-  font-size: 0.75rem;
-  font-weight: 500;
-  line-height: 1.2;
-  max-width: 18rem;
-  opacity: 0;
-  padding: 0.35rem 0.45rem;
-  pointer-events: none;
-  position: absolute;
-  right: 0;
-  text-align: left;
-  transform: translateY(0.15rem);
-  transition:
-    opacity 0s,
-    transform 0s,
-    visibility 0s;
-  visibility: hidden;
-  white-space: nowrap;
-  z-index: 2;
-}
-
-.personal-session-link:hover::after,
-.personal-session-link:focus-visible::after {
-  opacity: 1;
-  transform: translateY(0);
-  visibility: visible;
-}
-
-.personal-session-link:hover,
-.personal-session-link:focus-visible {
-  background: var(--accent);
-  color: var(--foreground);
-  outline: none;
-}
-
-.personal-session-link svg {
-  height: 0.95rem;
-  width: 0.95rem;
 }
 
 .personal-session-detail {
