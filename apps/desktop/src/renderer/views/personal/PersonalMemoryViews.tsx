@@ -26,7 +26,6 @@ import {
   CirclePlay,
   Clock3,
   Ellipsis,
-  Gauge,
   GitFork,
   LoaderCircle,
   MonitorSmartphone,
@@ -199,15 +198,6 @@ const managedProviderLabel = (
       : provider === "claude"
         ? "Claude"
         : "AI Client";
-
-const usageAccuracyLabel = (
-  accuracy: ManagedConversationContextUsage["usageAccuracy"]
-): string => {
-  if (accuracy === "local_estimate") return "Estimated";
-  if (accuracy === "provider_partial") return "Partial provider data";
-  if (accuracy === "provider_replayed") return "Provider replay";
-  return "Provider reported";
-};
 
 const defaultConversationPresentation = (
   thread: PersonalDesktopProjectThread
@@ -1454,6 +1444,7 @@ function StoreConversation({
   pendingCanonicalConversation,
   managedDraft,
   onRetryManagedConversation,
+  onStopControlChange,
   onInspectEvent,
   project,
   routeSessionId,
@@ -1470,6 +1461,7 @@ function StoreConversation({
   pendingCanonicalConversation: boolean;
   managedDraft: ManagedConversationDraft | null;
   onRetryManagedConversation: (() => void) | null;
+  onStopControlChange: (control: ManagedConversationStopControl | null) => void;
   onInspectEvent?: (selection: PersonalMemoryInspectorEvent) => void;
   project: PersonalDesktopProject;
   routeSessionId: string;
@@ -1759,6 +1751,7 @@ function StoreConversation({
           startupStatus={managedDraft?.status ?? null}
           startupMessage={managedDraft?.message ?? ""}
           onRetryStartup={onRetryManagedConversation}
+          onStopControlChange={onStopControlChange}
           managedConversationRecoveryRevision={
             managedConversationRecoveryRevision
           }
@@ -1818,6 +1811,11 @@ type ComposerState =
   | { status: "read_only"; message: string }
   | { status: "error"; message: string };
 
+type ManagedConversationStopControl = {
+  disabled: boolean;
+  stop: () => void;
+};
+
 const transferLifecycleMessage = (
   transfer: Awaited<
     ReturnType<ManagedConversationDesktopApi["transferStatus"]>
@@ -1858,84 +1856,87 @@ const transferLifecycleMessage = (
 };
 
 function ManagedConversationUsage({
+  model,
   provider,
+  reasoningEffort,
   usage
 }: {
-  provider: "codex" | "claude" | "pi" | null;
+  model: string | null;
+  provider: "codex" | "claude" | "pi";
+  reasoningEffort: string | null;
   usage: ManagedConversationContextUsage | null;
 }) {
-  const providerLabel = managedProviderLabel(provider);
-  if (!usage || usage.usedTokens === null) {
-    return (
-      <div className="personal-managed-usage is-unavailable" role="status">
-        <Gauge aria-hidden="true" />
-        <span>{providerLabel}</span>
-        <span aria-hidden="true">·</span>
-        <span>Context usage unavailable</span>
-      </div>
-    );
-  }
+  const displayModel = usage?.model ?? model;
   const percentage =
-    usage.modelContextWindow && usage.modelContextWindow > 0
+    usage?.usedTokens !== null &&
+    usage?.usedTokens !== undefined &&
+    usage.modelContextWindow &&
+    usage.modelContextWindow > 0
       ? Math.min(100, (usage.usedTokens / usage.modelContextWindow) * 100)
       : null;
-  const contextLabel = usage.modelContextWindow
-    ? `${compactTokenCount(usage.usedTokens)} / ${compactTokenCount(
-        usage.modelContextWindow
-      )} context`
-    : `${compactTokenCount(usage.usedTokens)} context tokens`;
   const details = [
-    usage.inputTokens !== null
+    usage?.inputTokens !== null && usage?.inputTokens !== undefined
       ? `Input ${compactTokenCount(usage.inputTokens)}`
       : null,
-    usage.cachedInputTokens !== null
+    usage?.cachedInputTokens !== null && usage?.cachedInputTokens !== undefined
       ? `Cached ${compactTokenCount(usage.cachedInputTokens)}`
       : null,
-    usage.outputTokens !== null
+    usage?.outputTokens !== null && usage?.outputTokens !== undefined
       ? `Output ${compactTokenCount(usage.outputTokens)}`
       : null,
-    usage.totalProcessedTokens !== null
-      ? `${compactTokenCount(usage.totalProcessedTokens)} processed`
+    usage?.reasoningOutputTokens !== null &&
+    usage?.reasoningOutputTokens !== undefined
+      ? `Reasoning output ${compactTokenCount(usage.reasoningOutputTokens)}`
       : null
   ]
     .filter((value): value is string => value !== null)
     .join("; ");
   return (
-    <div
-      className="personal-managed-usage"
-      title={`${usageAccuracyLabel(usage.usageAccuracy)}. ${details}`}
-    >
-      <Gauge aria-hidden="true" />
-      <span>{providerLabel}</span>
-      {usage.model ? (
+    <div className="personal-managed-usage" title={details || undefined}>
+      <AiClientMark
+        ariaLabel={managedProviderLabel(provider)}
+        id={provider}
+        title={managedProviderLabel(provider)}
+      />
+      {displayModel ? (
         <>
           <span aria-hidden="true">·</span>
-          <span className="personal-managed-usage-model">{usage.model}</span>
+          <span className="personal-managed-usage-model">{displayModel}</span>
         </>
       ) : null}
-      <span aria-hidden="true">·</span>
-      <span className="personal-managed-usage-count">{contextLabel}</span>
-      <span aria-hidden="true">·</span>
-      <span>{usageAccuracyLabel(usage.usageAccuracy)}</span>
-      {usage.totalProcessedTokens !== null ? (
+      {reasoningEffort ? (
         <>
           <span aria-hidden="true">·</span>
-          <span className="personal-managed-usage-processed">
-            {compactTokenCount(usage.totalProcessedTokens)} processed
+          <span className="personal-managed-usage-reasoning">
+            {reasoningEffort}
           </span>
         </>
       ) : null}
-      {percentage !== null ? (
-        <span
-          aria-label={`${Math.round(percentage)}% of context window used`}
-          aria-valuemax={100}
-          aria-valuemin={0}
-          aria-valuenow={Math.round(percentage)}
-          className="personal-managed-usage-meter"
-          role="progressbar"
-        >
-          <span style={{ width: `${percentage}%` }} />
-        </span>
+      {usage?.usedTokens !== null && usage?.usedTokens !== undefined ? (
+        <>
+          <span aria-hidden="true">·</span>
+          <span>Context:</span>
+          <span className="personal-managed-usage-count">
+            {compactTokenCount(usage.usedTokens)}
+          </span>
+          {percentage !== null ? (
+            <span
+              aria-label={`${Math.round(percentage)}% of context window used`}
+              aria-valuemax={100}
+              aria-valuemin={0}
+              aria-valuenow={Math.round(percentage)}
+              className="personal-managed-usage-meter"
+              role="progressbar"
+            >
+              <span style={{ width: `${percentage}%` }} />
+            </span>
+          ) : null}
+          {usage.modelContextWindow ? (
+            <span className="personal-managed-usage-count">
+              {compactTokenCount(usage.modelContextWindow)}
+            </span>
+          ) : null}
+        </>
       ) : null}
     </div>
   );
@@ -2166,6 +2167,7 @@ function ManagedConversationComposer({
   startupMessage,
   startupStatus,
   onRetryStartup,
+  onStopControlChange,
   managedConversationRecoveryRevision,
   managedConversationUpdate,
   contextAttachments,
@@ -2183,6 +2185,7 @@ function ManagedConversationComposer({
   startupMessage: string;
   startupStatus: ManagedConversationDraft["status"] | null;
   onRetryStartup: (() => void) | null;
+  onStopControlChange: (control: ManagedConversationStopControl | null) => void;
   managedConversationRecoveryRevision: number;
   managedConversationUpdate: PersonalMemoryWorkspaceProps["managedConversationUpdate"];
   contextAttachments: Array<
@@ -2234,7 +2237,9 @@ function ManagedConversationComposer({
   const [transferMessage, setTransferMessage] = useState("");
   const [transferBusy, setTransferBusy] = useState(false);
   const [usage, setUsage] = useState<{
-    provider: "codex" | "claude" | "pi" | null;
+    provider: "codex" | "claude" | "pi";
+    model: string | null;
+    reasoningEffort: string | null;
     usage: ManagedConversationContextUsage | null;
   } | null>(null);
   const [runtime, setRuntime] =
@@ -2405,11 +2410,16 @@ function ManagedConversationComposer({
       .usage(executionId)
       .then((result) => {
         if (active) {
-          setUsage({ provider: result.provider, usage: result.usage });
+          setUsage({
+            provider: result.provider,
+            model: result.model,
+            reasoningEffort: result.reasoningEffort,
+            usage: result.usage
+          });
         }
       })
       .catch(() => {
-        if (active) setUsage({ provider: null, usage: null });
+        if (active) setUsage(null);
       });
     return () => {
       active = false;
@@ -2779,6 +2789,24 @@ function ManagedConversationComposer({
     [api, resolvedConversation.executionId, runtime, runtimeActionBusy]
   );
 
+  const stopDisabled =
+    !runtime ||
+    runtimeActionBusy ||
+    ["stopping", "stopped", "failed", "fenced"].includes(
+      runtime.executionState
+    );
+  useEffect(() => {
+    if (!runtime) {
+      onStopControlChange(null);
+      return;
+    }
+    onStopControlChange({
+      disabled: stopDisabled,
+      stop: () => controlRuntime("stop")
+    });
+    return () => onStopControlChange(null);
+  }, [controlRuntime, onStopControlChange, runtime, stopDisabled]);
+
   const inputDisabled =
     !ownerSendReady || !["ready", "starting", "sending"].includes(state.status);
   const sendDisabled =
@@ -2794,39 +2822,6 @@ function ManagedConversationComposer({
       aria-busy={state.status === "sending"}
       className={`personal-managed-composer state-${state.status}`}
     >
-      {resolvedConversation.executionId && usage ? (
-        <ManagedConversationUsage
-          provider={usage.provider}
-          usage={usage.usage}
-        />
-      ) : null}
-      {runtime ? (
-        <div className="personal-managed-runtime-controls">
-          <button
-            aria-label="Interrupt active turn"
-            disabled={runtimeActionBusy || runtime.executionState !== "running"}
-            onClick={() => controlRuntime("interrupt")}
-            title="Interrupt active turn"
-            type="button"
-          >
-            <Square aria-hidden="true" />
-          </button>
-          <button
-            aria-label="Stop managed Conversation"
-            disabled={
-              runtimeActionBusy ||
-              ["stopping", "stopped", "failed", "fenced"].includes(
-                runtime.executionState
-              )
-            }
-            onClick={() => controlRuntime("stop")}
-            title="Stop managed Conversation"
-            type="button"
-          >
-            <X aria-hidden="true" />
-          </button>
-        </div>
-      ) : null}
       {promptActive ? (
         <div className="personal-managed-working" role="status">
           <LoaderCircle aria-hidden="true" />
@@ -2942,152 +2937,174 @@ function ManagedConversationComposer({
           />
         </label>
         <button
-          aria-label="Send prompt"
-          disabled={sendDisabled}
-          onClick={() => void submit()}
+          aria-label={promptActive ? "Interrupt active turn" : "Send prompt"}
+          disabled={
+            promptActive
+              ? !runtime ||
+                runtimeActionBusy ||
+                runtime.executionState !== "running"
+              : sendDisabled
+          }
+          onClick={() =>
+            promptActive ? controlRuntime("interrupt") : void submit()
+          }
+          title={promptActive ? "Interrupt active turn" : "Send prompt"}
           type="button"
         >
-          {state.status === "sending" ? (
-            <LoaderCircle aria-hidden="true" />
+          {promptActive ? (
+            <Square aria-hidden="true" />
           ) : (
             <Send aria-hidden="true" />
           )}
         </button>
       </div>
+      {resolvedConversation.executionId && usage ? (
+        <div className="personal-managed-meta-row">
+          <ManagedConversationUsage
+            model={usage.model}
+            provider={usage.provider}
+            reasoningEffort={usage.reasoningEffort}
+            usage={usage.usage}
+          />
+          {state.status === "ready" && authorizeTransfer ? (
+            <details
+              className="personal-managed-transfer"
+              onToggle={(event) => {
+                if (!event.currentTarget.open || targetDevices.length) return;
+                setTransferMessage("Loading Personal Devices…");
+                void api
+                  .targets()
+                  .then((result) => {
+                    setTargetDevices(result.devices);
+                    setSelectedTarget(result.devices[0]?.deviceId ?? "");
+                    setTransferMessage(
+                      result.devices.length
+                        ? ""
+                        : "No other enrolled Personal Device is available."
+                    );
+                  })
+                  .catch((cause: unknown) => {
+                    setTransferMessage(
+                      cause instanceof Error ? cause.message : String(cause)
+                    );
+                  });
+              }}
+            >
+              <summary>
+                <MonitorSmartphone aria-hidden="true" />
+                Switch device
+              </summary>
+              <div>
+                <label>
+                  <span>Personal Device</span>
+                  <select
+                    disabled={transferBusy || !targetDevices.length}
+                    onChange={(event) =>
+                      setSelectedTarget(event.currentTarget.value)
+                    }
+                    value={selectedTarget}
+                  >
+                    {targetDevices.map((device) => (
+                      <option key={device.deviceId} value={device.deviceId}>
+                        {device.label ??
+                          `Device ${device.deviceId.slice(0, 8)}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  disabled={
+                    transferBusy || !selectedTarget || !ownerHandoffReady
+                  }
+                  onClick={() => {
+                    const operationId = crypto.randomUUID();
+                    setTransferBusy(true);
+                    setTransferMessage("Waiting for your approval…");
+                    void authorizeTransfer({
+                      operation: "handoff",
+                      executionId: resolvedConversation.executionId!,
+                      operationId,
+                      targetDeviceId: selectedTarget
+                    })
+                      .then((actionGrant) => {
+                        setTransferMessage("Preparing an exact handoff…");
+                        return api.handoff({
+                          actionGrantId: actionGrant.id,
+                          executionId: resolvedConversation.executionId!,
+                          operationId,
+                          targetDeviceId: selectedTarget
+                        });
+                      })
+                      .then(() => {
+                        setTransferMessage(
+                          "Handoff queued. This device will stop writing after the verified boundary."
+                        );
+                      })
+                      .catch((cause: unknown) => {
+                        setTransferMessage(
+                          cause instanceof Error ? cause.message : String(cause)
+                        );
+                      })
+                      .finally(() => setTransferBusy(false));
+                  }}
+                  type="button"
+                >
+                  <MonitorSmartphone aria-hidden="true" />
+                  Move
+                </button>
+                <button
+                  disabled={transferBusy || !selectedTarget || !ownerForkReady}
+                  onClick={() => {
+                    const operationId = crypto.randomUUID();
+                    setTransferBusy(true);
+                    setTransferMessage("Waiting for your approval…");
+                    void authorizeTransfer({
+                      operation: "fork",
+                      executionId: resolvedConversation.executionId!,
+                      operationId,
+                      targetDeviceId: selectedTarget,
+                      reason: "user_requested"
+                    })
+                      .then((actionGrant) => {
+                        setTransferMessage("Preparing an independent fork…");
+                        return api.fork({
+                          actionGrantId: actionGrant.id,
+                          executionId: resolvedConversation.executionId!,
+                          operationId,
+                          targetDeviceId: selectedTarget,
+                          reason: "user_requested"
+                        });
+                      })
+                      .then(() => {
+                        setTransferMessage(
+                          "Fork queued. The original Conversation remains on this device."
+                        );
+                      })
+                      .catch((cause: unknown) => {
+                        setTransferMessage(
+                          cause instanceof Error ? cause.message : String(cause)
+                        );
+                      })
+                      .finally(() => setTransferBusy(false));
+                  }}
+                  type="button"
+                >
+                  <GitFork aria-hidden="true" />
+                  Fork
+                </button>
+                {transferMessage ? (
+                  <p role="status">{transferMessage}</p>
+                ) : null}
+              </div>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
       {!ownerSendReady && state.status === "ready" ? (
         <p role="status">
           The owning AI Client is unavailable or its capabilities need
           refreshing.
         </p>
-      ) : null}
-      {state.status === "ready" &&
-      resolvedConversation.executionId &&
-      authorizeTransfer ? (
-        <details
-          className="personal-managed-transfer"
-          onToggle={(event) => {
-            if (!event.currentTarget.open || targetDevices.length) return;
-            setTransferMessage("Loading Personal Devices…");
-            void api
-              .targets()
-              .then((result) => {
-                setTargetDevices(result.devices);
-                setSelectedTarget(result.devices[0]?.deviceId ?? "");
-                setTransferMessage(
-                  result.devices.length
-                    ? ""
-                    : "No other enrolled Personal Device is available."
-                );
-              })
-              .catch((cause: unknown) => {
-                setTransferMessage(
-                  cause instanceof Error ? cause.message : String(cause)
-                );
-              });
-          }}
-        >
-          <summary>
-            <MonitorSmartphone aria-hidden="true" />
-            Continue on another device
-          </summary>
-          <div>
-            <label>
-              <span>Personal Device</span>
-              <select
-                disabled={transferBusy || !targetDevices.length}
-                onChange={(event) =>
-                  setSelectedTarget(event.currentTarget.value)
-                }
-                value={selectedTarget}
-              >
-                {targetDevices.map((device) => (
-                  <option key={device.deviceId} value={device.deviceId}>
-                    {device.label ?? `Device ${device.deviceId.slice(0, 8)}`}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              disabled={transferBusy || !selectedTarget || !ownerHandoffReady}
-              onClick={() => {
-                const operationId = crypto.randomUUID();
-                setTransferBusy(true);
-                setTransferMessage("Waiting for your approval…");
-                void authorizeTransfer({
-                  operation: "handoff",
-                  executionId: resolvedConversation.executionId!,
-                  operationId,
-                  targetDeviceId: selectedTarget
-                })
-                  .then((actionGrant) => {
-                    setTransferMessage("Preparing an exact handoff…");
-                    return api.handoff({
-                      actionGrantId: actionGrant.id,
-                      executionId: resolvedConversation.executionId!,
-                      operationId,
-                      targetDeviceId: selectedTarget
-                    });
-                  })
-                  .then(() => {
-                    setTransferMessage(
-                      "Handoff queued. This device will stop writing after the verified boundary."
-                    );
-                  })
-                  .catch((cause: unknown) => {
-                    setTransferMessage(
-                      cause instanceof Error ? cause.message : String(cause)
-                    );
-                  })
-                  .finally(() => setTransferBusy(false));
-              }}
-              type="button"
-            >
-              <MonitorSmartphone aria-hidden="true" />
-              Move
-            </button>
-            <button
-              disabled={transferBusy || !selectedTarget || !ownerForkReady}
-              onClick={() => {
-                const operationId = crypto.randomUUID();
-                setTransferBusy(true);
-                setTransferMessage("Waiting for your approval…");
-                void authorizeTransfer({
-                  operation: "fork",
-                  executionId: resolvedConversation.executionId!,
-                  operationId,
-                  targetDeviceId: selectedTarget,
-                  reason: "user_requested"
-                })
-                  .then((actionGrant) => {
-                    setTransferMessage("Preparing an independent fork…");
-                    return api.fork({
-                      actionGrantId: actionGrant.id,
-                      executionId: resolvedConversation.executionId!,
-                      operationId,
-                      targetDeviceId: selectedTarget,
-                      reason: "user_requested"
-                    });
-                  })
-                  .then(() => {
-                    setTransferMessage(
-                      "Fork queued. The original Conversation remains on this device."
-                    );
-                  })
-                  .catch((cause: unknown) => {
-                    setTransferMessage(
-                      cause instanceof Error ? cause.message : String(cause)
-                    );
-                  })
-                  .finally(() => setTransferBusy(false));
-              }}
-              type="button"
-            >
-              <GitFork aria-hidden="true" />
-              Fork
-            </button>
-            {transferMessage ? <p role="status">{transferMessage}</p> : null}
-          </div>
-        </details>
       ) : null}
       {draftError ? (
         <p className="personal-managed-error" role="status">
@@ -3337,6 +3354,8 @@ function SessionDetail({
   const [titleDraft, setTitleDraft] = useState(title);
   const [titleBusy, setTitleBusy] = useState(false);
   const [titleError, setTitleError] = useState<string | null>(null);
+  const [managedStopControl, setManagedStopControl] =
+    useState<ManagedConversationStopControl | null>(null);
 
   useEffect(() => {
     if (!editingTitle) setTitleDraft(title);
@@ -3481,6 +3500,18 @@ function SessionDetail({
             store={store}
             thread={thread}
           />
+          {managedStopControl ? (
+            <button
+              aria-label="Stop managed Conversation"
+              className="personal-session-stop-button"
+              disabled={managedStopControl.disabled}
+              onClick={managedStopControl.stop}
+              title="Stop managed Conversation"
+              type="button"
+            >
+              <X aria-hidden="true" />
+            </button>
+          ) : null}
         </div>
       </header>
       <div className="personal-conversation-host">
@@ -3500,6 +3531,7 @@ function SessionDetail({
           pendingCanonicalConversation={pendingCanonicalConversation}
           managedDraft={managedDraft}
           onRetryManagedConversation={onRetryManagedConversation}
+          onStopControlChange={setManagedStopControl}
           project={project}
           routeSessionId={routeSessionId}
           store={store}

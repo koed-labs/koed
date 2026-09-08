@@ -1554,7 +1554,9 @@ describe("managed Conversation routes", () => {
       requireRepository: () => ({
         getManagedConversationExecution: async () => ({
           id: executionId,
-          provider: "codex"
+          provider: "codex",
+          model: "gpt-5.6",
+          reasoningEffort: "high"
         }),
         getLatestManagedConversationTokenUsage: getUsage
       })
@@ -1572,6 +1574,8 @@ describe("managed Conversation routes", () => {
     expect(response.json()).toEqual({
       executionId,
       provider: "codex",
+      model: "gpt-5.6",
+      reasoningEffort: "high",
       usage: {
         model: "gpt-5.6",
         modelContextWindow: 258_000,

@@ -2927,6 +2927,8 @@ export const createKoedServerManager = ({
         operation: "usage",
         executionId: request.executionId,
         provider: payload.provider,
+        model: payload.model,
+        reasoningEffort: payload.reasoningEffort,
         usage: payload.usage
       });
     }

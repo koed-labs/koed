@@ -243,6 +243,8 @@ const managedApi = (
     operation: "usage",
     executionId,
     provider: "codex",
+    model: "gpt-test",
+    reasoningEffort: null,
     usage: null
   })),
   runtime: vi.fn<ManagedConversationDesktopApi["runtime"]>(
@@ -1231,7 +1233,17 @@ describe("PersonalMemoryWorkspace", () => {
       sendButton.click();
     });
     expect(send).toHaveBeenCalledOnce();
-    expect(sendButton.disabled).toBe(true);
+    const interruptButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Interrupt active turn"]'
+    )!;
+    expect(interruptButton.disabled).toBe(false);
+    await act(async () => interruptButton.click());
+    expect(managed.interrupt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionId: "execution-1",
+        executionGeneration: 1
+      })
+    );
     expect(container.textContent).not.toContain("Sending prompt to Codex");
     expect(container.textContent).toContain("First line\nSecond line");
     expect(textarea.value).toBe("");
@@ -1728,7 +1740,7 @@ describe("PersonalMemoryWorkspace", () => {
     await act(async () => finishLoad([event(1)]));
   });
 
-  it("labels estimated managed Conversation context usage and preserves provider attribution", async () => {
+  it("presents provider, model, reasoning, and compact context usage", async () => {
     const managed = managedApi({
       resume: vi.fn<ManagedConversationDesktopApi["resume"]>(
         async (conversation) => ({
@@ -1742,6 +1754,8 @@ describe("PersonalMemoryWorkspace", () => {
           operation: "usage",
           executionId,
           provider: "codex",
+          model: "gpt-5.6",
+          reasoningEffort: "high",
           usage: {
             model: "gpt-5.6",
             modelContextWindow: 258_000,
@@ -1775,13 +1789,24 @@ describe("PersonalMemoryWorkspace", () => {
       );
     });
     await vi.waitFor(() =>
-      expect(container.textContent).toContain("42k / 258k context")
+      expect(container.textContent).toContain("gpt-5.6·high·Context:42k258k")
     );
+    expect(
+      container.querySelector(
+        '.personal-managed-usage [role="img"][aria-label="Codex"]'
+      )
+    ).not.toBeNull();
 
-    expect(container.textContent).toContain("Codex");
-    expect(container.textContent).toContain("gpt-5.6");
-    expect(container.textContent).toContain("Estimated");
-    expect(container.textContent).toContain("125k processed");
+    expect(
+      container.querySelector(".personal-managed-usage")?.getAttribute("title")
+    ).toBe("Input 40k; Cached 30k; Output 2k; Reasoning output 500");
+    expect(
+      container.querySelector(
+        ".personal-managed-composer-field + .personal-managed-meta-row .personal-managed-usage"
+      )
+    ).not.toBeNull();
+    expect(container.textContent).not.toContain("Estimated");
+    expect(container.textContent).not.toContain("125k processed");
     expect(
       container
         .querySelector('[role="progressbar"]')
@@ -1789,13 +1814,23 @@ describe("PersonalMemoryWorkspace", () => {
     ).toBe("16");
   });
 
-  it("reports unavailable context honestly when the provider has no snapshot", async () => {
+  it("keeps session metadata but hides context when the provider has no snapshot", async () => {
     const managed = managedApi({
       resume: vi.fn<ManagedConversationDesktopApi["resume"]>(
         async (conversation) => ({
           operation: "resume",
           status: "ready",
           conversation: { ...conversation, executionId: "execution-usage" }
+        })
+      ),
+      usage: vi.fn<ManagedConversationDesktopApi["usage"]>(
+        async (executionId) => ({
+          operation: "usage",
+          executionId,
+          provider: "codex",
+          model: "gpt-5.6",
+          reasoningEffort: "low",
+          usage: null
         })
       )
     });
@@ -1809,6 +1844,9 @@ describe("PersonalMemoryWorkspace", () => {
     await act(async () => {
       root.render(
         <PersonalMemoryWorkspace
+          authorizeManagedConversationTransfer={vi.fn(async () => ({
+            id: "grant-1"
+          }))}
           managedConversations={managed}
           onNavigate={vi.fn()}
           route={{ kind: "session", projectId: "project-1", sessionId }}
@@ -1816,10 +1854,22 @@ describe("PersonalMemoryWorkspace", () => {
         />
       );
     });
-    await vi.waitFor(() =>
-      expect(container.textContent).toContain("Context usage unavailable")
-    );
+    await vi.waitFor(() => expect(managed.usage).toHaveBeenCalled());
+    expect(container.textContent).toContain("gpt-5.6·low");
+    expect(
+      container.querySelector(
+        '.personal-managed-usage [role="img"][aria-label="Codex"]'
+      )
+    ).not.toBeNull();
+    expect(container.textContent).not.toContain("Context usage unavailable");
+    expect(container.textContent).not.toContain("Context:");
     expect(container.querySelector('[role="progressbar"]')).toBeNull();
+    expect(container.textContent).toContain("Switch device");
+    expect(
+      container.querySelector(
+        ".personal-managed-meta-row > .personal-managed-transfer"
+      )
+    ).not.toBeNull();
   });
 
   it("presents transient output, durable input, controls, and indeterminate dispatch", async () => {
@@ -1829,14 +1879,6 @@ describe("PersonalMemoryWorkspace", () => {
         operation: "runtime_respond",
         accepted: true,
         itemId: input.itemId
-      })
-    );
-    const interrupt = vi.fn<ManagedConversationDesktopApi["interrupt"]>(
-      async (input) => ({
-        operation: "interrupt",
-        status: "queued",
-        executionId: input.executionId,
-        commandId: "interrupt-command"
       })
     );
     const managed = managedApi({
@@ -1945,8 +1987,7 @@ describe("PersonalMemoryWorkspace", () => {
           ]
         })
       ),
-      respond,
-      interrupt
+      respond
     });
     const store = new PersonalMemoryStore(
       api({
@@ -2000,14 +2041,15 @@ describe("PersonalMemoryWorkspace", () => {
       })
     );
 
-    await act(async () => {
-      container
-        .querySelector<HTMLButtonElement>(
-          'button[aria-label="Interrupt active turn"]'
-        )
-        ?.click();
-    });
-    expect(interrupt).toHaveBeenCalledWith(
+    const stopButton = container.querySelector<HTMLButtonElement>(
+      '.personal-session-header-actions button[aria-label="Stop managed Conversation"]'
+    );
+    expect(stopButton).not.toBeNull();
+    expect(
+      container.querySelector(".personal-managed-runtime-controls")
+    ).toBeNull();
+    await act(async () => stopButton?.click());
+    expect(managed.stop).toHaveBeenCalledWith(
       expect.objectContaining({
         executionId: "execution-runtime",
         executionGeneration: 2

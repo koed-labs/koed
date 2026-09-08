@@ -873,7 +873,8 @@ button.personal-new-conversation-owner-picker > svg {
   padding: 0.3rem;
 }
 
-.personal-session-manage-button {
+.personal-session-manage-button,
+.personal-session-stop-button {
   align-items: center;
   background: transparent;
   border: 1px solid var(--border);
@@ -894,10 +895,17 @@ button.personal-new-conversation-owner-picker > svg {
   color: var(--foreground);
 }
 
+.personal-session-stop-button:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--destructive) 10%, transparent);
+  border-color: color-mix(in oklab, var(--destructive) 45%, var(--border));
+  color: var(--destructive);
+}
+
 .personal-session-title-edit:focus-visible,
 .personal-session-title-editor button:focus-visible,
 .personal-session-title-editor input:focus-visible,
-.personal-session-manage-button:focus-visible {
+.personal-session-manage-button:focus-visible,
+.personal-session-stop-button:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
@@ -908,7 +916,8 @@ button.personal-new-conversation-owner-picker > svg {
   width: 0.9rem;
 }
 
-.personal-session-manage-button svg {
+.personal-session-manage-button svg,
+.personal-session-stop-button svg {
   height: 1.1rem;
   width: 1.1rem;
 }
@@ -1637,18 +1646,24 @@ button.personal-new-conversation-owner-picker > svg {
   line-height: 1.35;
   min-height: 20px;
   min-width: 0;
-  padding: 0 2px 6px;
+  padding: 0 2px;
 }
 
-.personal-managed-usage > svg {
-  flex: 0 0 14px;
-  height: 14px;
-  width: 14px;
+.personal-managed-meta-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-height: 26px;
+  padding-top: 6px;
+}
+
+.personal-managed-meta-row .personal-managed-usage {
+  flex: 1 1 auto;
 }
 
 .personal-managed-usage-model,
-.personal-managed-usage-count,
-.personal-managed-usage-processed {
+.personal-managed-usage-reasoning,
+.personal-managed-usage-count {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1658,6 +1673,19 @@ button.personal-new-conversation-owner-picker > svg {
   max-width: 13rem;
 }
 
+.personal-managed-usage .personal-ai-client-mark {
+  background: transparent;
+  color: inherit;
+  height: 14px;
+  width: 14px;
+}
+
+.personal-managed-usage .personal-ai-client-mark svg {
+  height: 13px;
+  width: 13px;
+}
+
+.personal-managed-usage-reasoning,
 .personal-managed-usage-count {
   color: var(--foreground);
   font-variant-numeric: tabular-nums;
@@ -1681,19 +1709,6 @@ button.personal-new-conversation-owner-picker > svg {
   transition: width 180ms ease-out;
 }
 
-.personal-managed-usage.is-unavailable {
-  color: var(--muted-foreground);
-}
-
-.personal-managed-runtime-controls {
-  display: flex;
-  gap: 4px;
-  justify-content: flex-end;
-  margin: -26px 0 4px auto;
-  width: max-content;
-}
-
-.personal-managed-runtime-controls button,
 .personal-managed-interaction button {
   align-items: center;
   background: transparent;
@@ -1707,19 +1722,11 @@ button.personal-new-conversation-owner-picker > svg {
   padding: 4px 8px;
 }
 
-.personal-managed-runtime-controls button {
-  height: 28px;
-  padding: 4px;
-  width: 28px;
-}
-
-.personal-managed-runtime-controls svg,
 .personal-managed-interaction button svg {
   height: 14px;
   width: 14px;
 }
 
-.personal-managed-runtime-controls button:disabled,
 .personal-managed-interaction button:disabled {
   opacity: 0.45;
 }
@@ -1799,13 +1806,6 @@ button.personal-new-conversation-owner-picker > svg {
   gap: 6px;
   justify-content: flex-end;
   margin-top: 7px;
-}
-
-@media (max-width: 720px) {
-  .personal-managed-usage-model,
-  .personal-managed-usage-processed {
-    display: none;
-  }
 }
 
 .personal-managed-composer-field {
@@ -1892,9 +1892,8 @@ button.personal-new-conversation-owner-picker > svg {
 }
 
 .personal-managed-transfer {
-  border-top: 1px solid var(--border);
-  margin-top: 0.35rem;
-  padding-top: 0.45rem;
+  flex: 0 0 auto;
+  position: relative;
 }
 
 .personal-managed-transfer summary {
@@ -1920,10 +1919,18 @@ button.personal-new-conversation-owner-picker > svg {
 
 .personal-managed-transfer > div {
   align-items: end;
+  background: var(--popover, var(--background));
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  bottom: calc(100% + 0.45rem);
   display: grid;
   gap: 0.5rem;
   grid-template-columns: minmax(10rem, 1fr) auto auto;
-  padding-top: 0.5rem;
+  padding: 0.65rem;
+  position: absolute;
+  right: 0;
+  width: min(32rem, calc(100vw - 3rem));
+  z-index: 20;
 }
 
 .personal-managed-transfer label {

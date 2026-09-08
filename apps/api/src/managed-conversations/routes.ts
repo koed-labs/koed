@@ -162,7 +162,21 @@ const managedUsageExecutionSchema = z
     execution: z
       .object({
         id: z.uuid(),
-        provider: z.enum(["codex", "claude", "pi"])
+        provider: z.enum(["codex", "claude", "pi"]),
+        model: z
+          .string()
+          .trim()
+          .min(1)
+          .max(256)
+          .nullish()
+          .transform((value) => value ?? null),
+        reasoningEffort: z
+          .string()
+          .trim()
+          .min(1)
+          .max(64)
+          .nullish()
+          .transform((value) => value ?? null)
       })
       .passthrough()
   })
@@ -1790,6 +1804,8 @@ export const registerManagedConversationRoutes = (
       return {
         executionId,
         provider: execution.provider,
+        model: execution.model,
+        reasoningEffort: execution.reasoningEffort,
         usage: publicManagedConversationUsage(usage)
       };
     }

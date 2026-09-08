@@ -197,6 +197,8 @@ describe("Managed Conversation preload bridge", () => {
       operation: "usage",
       executionId: request.executionId,
       provider: "codex",
+      model: "gpt-5.6",
+      reasoningEffort: "high",
       usage: {
         model: "gpt-5.6",
         modelContextWindow: 258_000,
@@ -214,11 +216,30 @@ describe("Managed Conversation preload bridge", () => {
 
     await expect(api.usage("execution-1")).resolves.toMatchObject({
       provider: "codex",
+      model: "gpt-5.6",
+      reasoningEffort: "high",
       usage: { usedTokens: 42_000, modelContextWindow: 258_000 }
     });
     expect(invoke).toHaveBeenCalledWith(managedConversationCommandChannel, {
       operation: "usage",
       executionId: "execution-1"
+    });
+  });
+
+  it("accepts usage from a runtime that predates stored reasoning effort", async () => {
+    const invoke = vi.fn(async (_channel, request: any) => ({
+      operation: "usage",
+      executionId: request.executionId,
+      provider: "codex",
+      usage: null
+    }));
+    const api = createManagedConversationPreloadApi(invoke);
+
+    await expect(api.usage("execution-1")).resolves.toMatchObject({
+      provider: "codex",
+      model: null,
+      reasoningEffort: null,
+      usage: null
     });
   });
 

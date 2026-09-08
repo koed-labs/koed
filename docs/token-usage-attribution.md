@@ -103,18 +103,20 @@ context visibility, but must not be summed as spend.
 The managed Conversation surface reads only the latest owning User's usage row
 through `GET /v1/managed-conversations/{executionId}/usage`. That response is a
 redacted presentation projection: it exposes provider, model, current context
-tokens, context-window capacity, bounded token breakdowns, accuracy, and
-observation time. It does not expose source metadata, provider paths, command
-payloads, account details, or another User's usage. A local edge presents usage
-reported by its local execution runner even when durable execution authority is
-remote.
+tokens, context-window capacity, configured reasoning effort, bounded token
+breakdowns, accuracy, and observation time. It does not expose source metadata,
+provider paths, command payloads, account details, or another User's usage. A
+local edge presents usage reported by its local execution runner even when
+durable execution authority is remote.
 
 Codex context consumption uses the provider's `last.totalTokens`; cumulative
 `total.totalTokens` is shown separately as processed usage and is never used as
 the context-window numerator. Claude uses the Agent SDK's reported model-usage
-snapshot. Missing provider data is displayed as unavailable. Partial, replayed,
-or locally estimated data remains explicitly labelled and is never presented
-as exact provider telemetry.
+snapshot. Partial, replayed, or locally estimated data retains its accuracy in
+the presentation projection and is never treated as exact provider telemetry.
+When provider context data is absent, the desktop keeps the AI Client, model,
+and configured reasoning effort visible, but omits the context label, counts,
+and meter. The Personal Device transfer control shares this metadata row.
 
 Rows with `usage_accuracy=local_estimate` must be labelled as estimates in
 responses and documentation. They are useful for diagnostics, optimization, and

@@ -369,6 +369,8 @@ export type ManagedConversationResult =
       operation: "usage";
       executionId: string;
       provider: "codex" | "claude" | "pi";
+      model: string | null;
+      reasoningEffort: string | null;
       usage: ManagedConversationContextUsage | null;
     }
   | {
@@ -1429,9 +1431,18 @@ export const parseManagedConversationResult = (
     };
   }
   if (result.operation === "usage") {
+    const hasModel = Object.hasOwn(result, "model");
+    const hasReasoningEffort = Object.hasOwn(result, "reasoningEffort");
     exactKeys(
       result,
-      ["operation", "executionId", "provider", "usage"],
+      [
+        "operation",
+        "executionId",
+        "provider",
+        ...(hasModel ? ["model"] : []),
+        ...(hasReasoningEffort ? ["reasoningEffort"] : []),
+        "usage"
+      ],
       "Managed Conversation usage result"
     );
     if (
@@ -1445,6 +1456,14 @@ export const parseManagedConversationResult = (
       operation: "usage",
       executionId: identifier(result.executionId, "Managed execution id"),
       provider: result.provider,
+      model:
+        result.model === null || result.model === undefined
+          ? null
+          : identifier(result.model, "Model"),
+      reasoningEffort:
+        result.reasoningEffort === null || result.reasoningEffort === undefined
+          ? null
+          : identifier(result.reasoningEffort, "Reasoning effort"),
       usage: result.usage === null ? null : parseContextUsage(result.usage)
     };
   }
