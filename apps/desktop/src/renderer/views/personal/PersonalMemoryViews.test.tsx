@@ -539,13 +539,19 @@ describe("PersonalMemoryWorkspace", () => {
       container.querySelector('[aria-label="Pinned Conversations"]')
         ?.textContent
     ).toContain(pinned.name);
+    const activeSection = container.querySelector<HTMLDetailsElement>(
+      '[aria-label="Active Conversations"]'
+    );
+    const inactiveSection = container.querySelector<HTMLDetailsElement>(
+      '[aria-label="Inactive Conversations"]'
+    );
+    expect(activeSection?.hasAttribute("open")).toBe(true);
+    expect(activeSection?.textContent).toContain("Active1");
+    expect(activeSection?.textContent).toContain("Manually active");
+    expect(inactiveSection?.hasAttribute("open")).toBe(false);
     expect(container.textContent).toContain("Inactive2");
-    expect(
-      container.querySelector(".personal-settled-sessions")?.textContent
-    ).toContain("Automatically settled");
-    expect(
-      container.querySelector(".personal-settled-sessions")?.textContent
-    ).toContain("Temporarily snoozed");
+    expect(inactiveSection?.textContent).toContain("Automatically settled");
+    expect(inactiveSection?.textContent).toContain("Temporarily snoozed");
 
     await act(async () => {
       container

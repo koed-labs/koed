@@ -1408,9 +1408,24 @@ function ProjectDetail({
                 {pinned.map((thread) => renderSessionTree(thread))}
               </section>
             ) : null}
-            {active.map((thread) => renderSessionTree(thread))}
+            {active.length ? (
+              <details
+                aria-label="Active Conversations"
+                className="personal-conversation-section"
+                open
+              >
+                <summary>
+                  <span>Active</span>
+                  <span>{active.length}</span>
+                </summary>
+                {active.map((thread) => renderSessionTree(thread))}
+              </details>
+            ) : null}
             {inactive.length ? (
-              <details className="personal-settled-sessions">
+              <details
+                aria-label="Inactive Conversations"
+                className="personal-conversation-section"
+              >
                 <summary>
                   <span>Inactive</span>
                   <span>{inactive.length}</span>

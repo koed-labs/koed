@@ -703,7 +703,7 @@ button.personal-new-conversation-owner-picker > svg {
   padding: 0.75rem 1rem 0.35rem;
 }
 
-.personal-settled-sessions > summary {
+.personal-conversation-section > summary {
   align-items: center;
   color: var(--muted-foreground);
   cursor: pointer;
@@ -715,11 +715,11 @@ button.personal-new-conversation-owner-picker > svg {
   padding: 0.75rem 1rem;
 }
 
-.personal-settled-sessions > summary::-webkit-details-marker {
+.personal-conversation-section > summary::-webkit-details-marker {
   display: none;
 }
 
-.personal-settled-sessions > summary:hover {
+.personal-conversation-section > summary:hover {
   background: var(--accent);
   color: var(--foreground);
 }
