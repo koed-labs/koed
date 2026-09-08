@@ -190,6 +190,28 @@ describe("ClaudeManagedConversationSession", () => {
     }
   );
 
+  it.each(["low", "high", "xhigh", "max", "none"])(
+    "passes the selected reasoning effort %s to the native SDK",
+    async (reasoningEffort) => {
+      const { config } = fixture();
+      sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+        queryFrom([successResult(options?.sessionId as string, "hello")])
+      );
+      const session = new ClaudeManagedConversationSession({
+        ...config,
+        reasoningEffort
+      });
+      try {
+        await session.start("Hello");
+        expect(queryOptions().effort).toBe(
+          reasoningEffort === "none" ? undefined : reasoningEffort
+        );
+      } finally {
+        await session.closeAndWait();
+      }
+    }
+  );
+
   it("uses the official SessionStore fork path and returns SDK-remapped JSONL", async () => {
     const { cwd } = fixture();
     const parentSessionId = randomUUID();

@@ -20,9 +20,26 @@ Desktop credentials include the distinct file, terminal, preview, and source-con
 operation families; none grants an AI Client permission or a remote mutation approval.
 
 The execution persists driver, instance, model, reasoning effort, permission
-mode, and runner identity. These choices are immutable for that execution.
-Runtime reuse requires the same execution generation and instance configuration
-hash. Capture and Local Synthesis assignments are independent of this owner.
+mode, and runner identity. The driver and instance remain fixed for that
+execution. Runner changes use the explicit handoff flow.
+
+Users can select model, reasoning effort, and permission changes between turns.
+Desktop submits these changes with the next prompt, including the expected
+previous settings. The repository locks the execution and admits the settings
+and prompt in one transaction. A conflicting selection or unfinished operation
+rejects the change. Each prompt retains an encrypted settings snapshot, and its
+idempotency digest includes the requested change. Retrying that request cannot
+change its settings or create another turn.
+
+Runtime reuse requires the same execution generation, instance configuration
+hash, and turn settings. The Worker closes an incompatible cached session and
+resumes the same Conversation with the selected settings. It checks current
+capability evidence before dispatch. A settings rejection before dispatch fails
+the command without placing the Conversation in an uncertain state. Checkpoint
+recovery retains the original turn settings and does not replay the prompt.
+Capture and Local Synthesis assignments are independent of this owner.
+
+See [Conversation settings](conversation-settings.md) for the Desktop behavior.
 
 ## Native adapters
 

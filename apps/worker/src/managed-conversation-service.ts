@@ -1,4 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import { assertManagedConversationTurnSettings } from "./managed-conversation-settings.js";
+import {
+  managedConversationSettingsKey,
+  parseManagedConversationSettings
+} from "@koed/shared/ai-client-contract";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -1640,6 +1645,9 @@ export const createManagedConversationService = (options: {
     return new ClaudeManagedConversationSession({
       cwd: override?.projectPath ?? binding.projectPath,
       model: execution.model,
+      ...(execution.reasoningEffort
+        ? { reasoningEffort: execution.reasoningEffort }
+        : {}),
       permissionMode: permission.permissionMode,
       onTextDelta: (delta, turnId) =>
         queueProviderText(execution, turnId, delta),
@@ -2280,6 +2288,7 @@ export const createManagedConversationService = (options: {
           await recoveredSession.start();
           runtimeSessions.set("pi", execution.id, {
             executionGeneration: execution.executionGeneration,
+            settingsKey: managedConversationSettingsKey(execution),
             aiClientInstanceId: execution.aiClientInstanceId,
             configIdentityHash: clientConfigurationForOwner(
               "pi",
@@ -2333,6 +2342,7 @@ export const createManagedConversationService = (options: {
           }
           runtimeSessions.set("claude", execution.id, {
             executionGeneration: execution.executionGeneration,
+            settingsKey: managedConversationSettingsKey(execution),
             aiClientInstanceId: execution.aiClientInstanceId,
             configIdentityHash: clientConfigurationForOwner(
               execution.provider,
@@ -2406,6 +2416,7 @@ export const createManagedConversationService = (options: {
         }
         runtimeSessions.set("codex", execution.id, {
           executionGeneration: execution.executionGeneration,
+          settingsKey: managedConversationSettingsKey(execution),
           aiClientInstanceId: execution.aiClientInstanceId,
           configIdentityHash: clientConfigurationForOwner(
             execution.provider,
@@ -3616,6 +3627,7 @@ export const createManagedConversationService = (options: {
     }
     const current = runtimeSessions.get("codex", execution.id, {
       executionGeneration: execution.executionGeneration,
+      settingsKey: managedConversationSettingsKey(execution),
       aiClientInstanceId: configuration.instanceId,
       configIdentityHash: configuration.configIdentityHash
     });
@@ -3641,6 +3653,7 @@ export const createManagedConversationService = (options: {
     const session = createSession(execution, binding);
     runtimeSessions.set("codex", execution.id, {
       executionGeneration: execution.executionGeneration,
+      settingsKey: managedConversationSettingsKey(execution),
       aiClientInstanceId: execution.aiClientInstanceId,
       configIdentityHash: clientConfigurationForOwner(
         execution.provider,
@@ -3670,6 +3683,7 @@ export const createManagedConversationService = (options: {
     }
     const current = runtimeSessions.get("claude", execution.id, {
       executionGeneration: execution.executionGeneration,
+      settingsKey: managedConversationSettingsKey(execution),
       aiClientInstanceId: configuration.instanceId,
       configIdentityHash: configuration.configIdentityHash
     });
@@ -3682,6 +3696,7 @@ export const createManagedConversationService = (options: {
     const session = createClaudeSession(execution, binding);
     runtimeSessions.set("claude", execution.id, {
       executionGeneration: execution.executionGeneration,
+      settingsKey: managedConversationSettingsKey(execution),
       aiClientInstanceId: execution.aiClientInstanceId,
       configIdentityHash: clientConfigurationForOwner(
         execution.provider,
@@ -3711,6 +3726,7 @@ export const createManagedConversationService = (options: {
     }
     const current = runtimeSessions.get("pi", execution.id, {
       executionGeneration: execution.executionGeneration,
+      settingsKey: managedConversationSettingsKey(execution),
       aiClientInstanceId: configuration.instanceId,
       configIdentityHash: configuration.configIdentityHash
     });
@@ -3727,6 +3743,7 @@ export const createManagedConversationService = (options: {
     await session.start();
     runtimeSessions.set("pi", execution.id, {
       executionGeneration: execution.executionGeneration,
+      settingsKey: managedConversationSettingsKey(execution),
       aiClientInstanceId: execution.aiClientInstanceId,
       configIdentityHash: configuration.configIdentityHash,
       session
@@ -4120,6 +4137,7 @@ export const createManagedConversationService = (options: {
             );
           runtimeSessions.set("pi", execution.id, {
             executionGeneration: execution.executionGeneration,
+            settingsKey: managedConversationSettingsKey(execution),
             aiClientInstanceId: execution.aiClientInstanceId,
             configIdentityHash: clientConfigurationForOwner(
               "pi",
@@ -4185,6 +4203,7 @@ export const createManagedConversationService = (options: {
           retainManagedClaudeHome(managedHome, process.env);
           runtimeSessions.set("claude", execution.id, {
             executionGeneration: execution.executionGeneration,
+            settingsKey: managedConversationSettingsKey(execution),
             aiClientInstanceId: execution.aiClientInstanceId,
             configIdentityHash: clientConfigurationForOwner(
               execution.provider,
@@ -4265,6 +4284,7 @@ export const createManagedConversationService = (options: {
             );
           runtimeSessions.set("codex", execution.id, {
             executionGeneration: execution.executionGeneration,
+            settingsKey: managedConversationSettingsKey(execution),
             aiClientInstanceId: execution.aiClientInstanceId,
             configIdentityHash: clientConfigurationForOwner(
               execution.provider,
@@ -4665,6 +4685,21 @@ export const createManagedConversationService = (options: {
   const runCommand = async (
     command: ClaimedManagedConversationCommand
   ): Promise<void> => {
+    // A queued turn owns its settings, including during checkpoint recovery.
+    if (command.commandKind === "prompt" && command.payload?.settings) {
+      command = {
+        ...command,
+        execution: {
+          ...command.execution,
+          ...parseManagedConversationSettings(command.payload.settings)
+        }
+      };
+      if (!pendingCheckpointFor(command))
+        await assertManagedConversationTurnSettings(
+          options.repository,
+          command.execution
+        );
+    }
     if (!command.leaseToken) throw new ManagedConversationLeaseLostError();
     if (command.execution.executionGeneration !== command.executionGeneration) {
       throw Object.assign(new Error("Managed Conversation command is stale"), {
@@ -4695,7 +4730,9 @@ export const createManagedConversationService = (options: {
       configuration &&
       (current.executionGeneration !== command.executionGeneration ||
         current.aiClientInstanceId !== configuration.instanceId ||
-        current.configIdentityHash !== configuration.configIdentityHash)
+        current.configIdentityHash !== configuration.configIdentityHash ||
+        current.settingsKey !==
+          managedConversationSettingsKey(command.execution))
     ) {
       await current.session.closeAndWait().catch(() => undefined);
       runtimeSessions.delete(provider, command.executionId);
@@ -4781,6 +4818,7 @@ export const createManagedConversationService = (options: {
             );
             runtimeSessions.set("pi", bound.id, {
               executionGeneration: bound.executionGeneration,
+              settingsKey: managedConversationSettingsKey(bound),
               aiClientInstanceId: bound.aiClientInstanceId,
               configIdentityHash: clientConfigurationForOwner(
                 "pi",
@@ -4890,6 +4928,7 @@ export const createManagedConversationService = (options: {
           managedHomeRetained = true;
           runtimeSessions.set("claude", bound.id, {
             executionGeneration: bound.executionGeneration,
+            settingsKey: managedConversationSettingsKey(bound),
             aiClientInstanceId: bound.aiClientInstanceId,
             configIdentityHash: clientConfigurationForOwner(
               bound.provider,
@@ -5925,6 +5964,7 @@ export const createManagedConversationService = (options: {
         if (piSession) {
           runtimeSessions.set("pi", command.executionId, {
             executionGeneration: command.executionGeneration,
+            settingsKey: managedConversationSettingsKey(command.execution),
             aiClientInstanceId: command.execution.aiClientInstanceId,
             configIdentityHash: clientConfigurationForOwner(
               "pi",
@@ -5935,6 +5975,7 @@ export const createManagedConversationService = (options: {
         } else if (claudeSession) {
           runtimeSessions.set("claude", command.executionId, {
             executionGeneration: command.executionGeneration,
+            settingsKey: managedConversationSettingsKey(command.execution),
             aiClientInstanceId: command.execution.aiClientInstanceId,
             configIdentityHash: clientConfigurationForOwner(
               command.execution.provider,
@@ -5945,6 +5986,7 @@ export const createManagedConversationService = (options: {
         } else if (codexSession) {
           runtimeSessions.set("codex", command.executionId, {
             executionGeneration: command.executionGeneration,
+            settingsKey: managedConversationSettingsKey(command.execution),
             aiClientInstanceId: command.execution.aiClientInstanceId,
             configIdentityHash: clientConfigurationForOwner(
               command.execution.provider,
@@ -6335,6 +6377,7 @@ export const createManagedConversationService = (options: {
         if (piSession) {
           runtimeSessions.set("pi", bound.id, {
             executionGeneration: bound.executionGeneration,
+            settingsKey: managedConversationSettingsKey(bound),
             aiClientInstanceId: bound.aiClientInstanceId,
             configIdentityHash: clientConfigurationForOwner(
               "pi",
@@ -6345,6 +6388,7 @@ export const createManagedConversationService = (options: {
         } else if (claudeSession) {
           runtimeSessions.set("claude", bound.id, {
             executionGeneration: bound.executionGeneration,
+            settingsKey: managedConversationSettingsKey(bound),
             aiClientInstanceId: bound.aiClientInstanceId,
             configIdentityHash: clientConfigurationForOwner(
               bound.provider,
@@ -6355,6 +6399,7 @@ export const createManagedConversationService = (options: {
         } else if (codexSession) {
           runtimeSessions.set("codex", bound.id, {
             executionGeneration: bound.executionGeneration,
+            settingsKey: managedConversationSettingsKey(bound),
             aiClientInstanceId: bound.aiClientInstanceId,
             configIdentityHash: clientConfigurationForOwner(
               bound.provider,
@@ -6983,6 +7028,9 @@ export const createManagedConversationService = (options: {
           }
         }
         const isPrompt = command.commandKind === "prompt";
+        const settingsRejected =
+          isPrompt &&
+          errorCode(error) === "ManagedConversationSettingsUnavailableError";
         const isForkCreate = command.commandKind === "fork_create";
         const isForkPrepare = command.commandKind === "fork_prepare";
         const isForkLifecycleCommand = isForkCreate || isForkPrepare;
@@ -7000,11 +7048,13 @@ export const createManagedConversationService = (options: {
             .failManagedConversationCommand({
               commandId: command.id,
               leaseToken: command.leaseToken,
-              state: isOneShot
-                ? "indeterminate"
-                : terminal
-                  ? "failed"
-                  : "queued",
+              state: settingsRejected
+                ? "failed"
+                : isOneShot
+                  ? "indeterminate"
+                  : terminal
+                    ? "failed"
+                    : "queued",
               errorCode: errorCode(error)
             })
             .catch(() => ({
@@ -7069,6 +7119,11 @@ export const createManagedConversationService = (options: {
           }
         }
         failed += 1;
+        if (settingsRejected) {
+          // No provider operation ran. Leave the Conversation writable so the
+          // User can refresh capabilities and explicitly submit another turn.
+          continue;
+        }
         if (terminal && !isCoordinationCommand) {
           const managedPi = runtimeSessions.get("pi", command.executionId);
           if (managedPi) {

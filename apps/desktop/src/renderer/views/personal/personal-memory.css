@@ -396,32 +396,7 @@
   min-width: 0;
 }
 
-.personal-new-conversation-group {
-  --personal-new-conversation-control-height: 2.5rem;
-  --personal-new-conversation-disabled-picker-width: 2.5rem;
-  --personal-new-conversation-control-width: 3.75rem;
-
-  align-items: stretch;
-  display: inline-flex;
-  flex: 0 0 auto;
-}
-
-.personal-new-conversation-group > .personal-new-conversation,
-.personal-new-conversation-group > .personal-new-conversation-owner-picker {
-  box-sizing: border-box;
-  flex: 0 0 var(--personal-new-conversation-control-width);
-  height: var(--personal-new-conversation-control-height);
-  width: var(--personal-new-conversation-control-width);
-}
-
-.personal-new-conversation-group
-  > button.personal-new-conversation-owner-picker {
-  flex-basis: var(--personal-new-conversation-disabled-picker-width);
-  width: var(--personal-new-conversation-disabled-picker-width);
-}
-
-.personal-new-conversation-group[data-starting="true"]
-  > .personal-new-conversation {
+.personal-new-conversation {
   flex-basis: auto;
   width: auto;
 }
@@ -457,162 +432,6 @@
 .personal-new-conversation:disabled svg,
 .personal-managed-composer.state-sending button svg {
   animation: personal-managed-spin 900ms linear infinite;
-}
-
-.personal-new-conversation-owner-picker {
-  position: relative;
-}
-
-.personal-new-conversation-owner-picker > summary,
-button.personal-new-conversation-owner-picker {
-  align-items: center;
-  background: var(--primary);
-  border: 1px solid var(--primary);
-  border-end-start-radius: 0;
-  border-end-end-radius: var(--radius);
-  border-inline-start: 1px solid
-    color-mix(in oklab, var(--primary-foreground) 30%, transparent);
-  border-start-start-radius: 0;
-  border-start-end-radius: var(--radius);
-  color: var(--primary-foreground);
-  box-sizing: border-box;
-  display: inline-flex;
-  gap: 0.3rem;
-  height: 100%;
-  justify-content: center;
-  list-style: none;
-  min-height: 2.25rem;
-  padding: 0.45rem 0.55rem;
-}
-
-.personal-new-conversation-owner-picker > summary {
-  cursor: pointer;
-  min-width: 100%;
-}
-
-.personal-new-conversation-owner-picker > summary::-webkit-details-marker {
-  display: none;
-}
-
-button.personal-new-conversation-owner-picker:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.personal-new-conversation-owner-picker .personal-ai-client-mark {
-  background: transparent;
-  color: inherit;
-  height: 1.1rem;
-  width: 1.1rem;
-}
-
-.personal-new-conversation-owner-picker > summary > svg,
-button.personal-new-conversation-owner-picker > svg {
-  flex: 0 0 auto;
-  height: 0.9rem;
-  transition: transform 150ms ease;
-  width: 0.9rem;
-}
-
-.personal-new-conversation-owner-picker[open] > summary > svg {
-  transform: rotate(180deg);
-}
-
-.personal-new-conversation-owner-picker > ul {
-  background: var(--popover);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 0.18);
-  list-style: none;
-  margin: 0.35rem 0 0;
-  padding: 0.3rem;
-  position: absolute;
-  right: 0;
-  top: 100%;
-  white-space: nowrap;
-  width: max-content;
-  z-index: 20;
-}
-
-.personal-new-conversation-owner-option {
-  align-items: center;
-  background: transparent;
-  border: none;
-  border-radius: calc(var(--radius) - 0.2rem);
-  color: var(--popover-foreground);
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.4rem 0.6rem;
-  text-align: left;
-  width: 100%;
-}
-
-.personal-new-conversation-owner-option:hover:not(:disabled),
-.personal-new-conversation-owner-option[aria-checked="true"] {
-  background: var(--accent);
-}
-
-.personal-new-conversation-owner-option:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-.personal-managed-launch {
-  align-items: end;
-  background: color-mix(in srgb, var(--muted) 35%, var(--background));
-  border-bottom: 1px solid var(--border);
-  border-top: 1px solid var(--border);
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
-  padding: 12px 16px;
-}
-
-.personal-managed-launch label {
-  display: grid;
-  font-size: 11px;
-  gap: 4px;
-  min-width: 0;
-}
-
-.personal-managed-launch label > span {
-  color: var(--muted-foreground);
-}
-
-.personal-managed-launch select {
-  background: var(--background);
-  border: 1px solid var(--input);
-  border-radius: 5px;
-  color: var(--foreground);
-  min-height: 34px;
-  min-width: 0;
-  padding: 4px 7px;
-  width: 100%;
-}
-
-.personal-managed-launch > button {
-  align-items: center;
-  background: var(--primary);
-  border: 1px solid var(--primary);
-  border-radius: 5px;
-  color: var(--primary-foreground);
-  display: inline-flex;
-  gap: 6px;
-  justify-content: center;
-  min-height: 34px;
-  padding: 5px 10px;
-  white-space: nowrap;
-}
-
-.personal-managed-launch > button svg {
-  height: 15px;
-  width: 15px;
-}
-
-@media (max-width: 1050px) {
-  .personal-managed-launch {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 .personal-managed-error {
@@ -975,21 +794,72 @@ button.personal-new-conversation-owner-picker > svg {
 
 .personal-cockpit-open {
   align-items: center;
-  align-self: start;
-  background: var(--background);
-  border: 1px solid var(--border);
-  border-radius: 5px 0 0 5px;
+  align-self: stretch;
+  background: var(--sidebar);
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
   color: var(--muted-foreground);
+  cursor: pointer;
   display: inline-flex;
-  height: 34px;
   justify-content: center;
-  margin-top: 12px;
-  width: 34px;
+  padding: 0;
+  width: 16px;
+}
+
+.personal-cockpit-open:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.personal-cockpit-open:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.personal-conversation-body,
+.personal-conversation-body * {
+  scrollbar-color: var(--border) transparent;
+  scrollbar-width: thin;
+}
+
+@supports selector(::-webkit-scrollbar) {
+  .personal-conversation-body,
+  .personal-conversation-body * {
+    scrollbar-color: auto;
+    scrollbar-width: auto;
+  }
+
+  .personal-conversation-body ::-webkit-scrollbar {
+    height: 10px;
+    width: 10px;
+  }
+
+  .personal-conversation-body ::-webkit-scrollbar-track,
+  .personal-conversation-body ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  .personal-conversation-body ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+    border-radius: 999px;
+    min-height: 32px;
+  }
+
+  .personal-conversation-body ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--muted-foreground);
+  }
+
+  .personal-conversation-body ::-webkit-scrollbar-button {
+    display: none;
+  }
 }
 
 .personal-cockpit-open svg {
-  height: 16px;
-  width: 16px;
+  height: 12px;
+  width: 12px;
 }
 
 .personal-cockpit {

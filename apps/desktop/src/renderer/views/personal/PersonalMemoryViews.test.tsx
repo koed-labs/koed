@@ -1191,6 +1191,13 @@ describe("PersonalMemoryWorkspace", () => {
         .find((button) => button.textContent === "New")
         ?.click();
     });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Start Conversation"]'
+        )
+        ?.click();
+    });
     await vi.waitFor(() =>
       expect(container.querySelector("textarea")?.value).toBe("Recovered draft")
     );
@@ -1563,6 +1570,13 @@ describe("PersonalMemoryWorkspace", () => {
         .find((button) => button.textContent === "New")
         ?.click();
     });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Start Conversation"]'
+        )
+        ?.click();
+    });
 
     await vi.waitFor(() =>
       expect(container.querySelector("textarea")?.disabled).toBe(false)
@@ -1659,41 +1673,43 @@ describe("PersonalMemoryWorkspace", () => {
       );
     });
     await vi.waitFor(() => expect(container.textContent).toContain("New"));
-    await act(async () => {
-      [...container.querySelectorAll<HTMLButtonElement>("button")]
-        .find(
-          (button) =>
-            button.getAttribute("aria-label") === "Conversation launch settings"
-        )
-        ?.click();
-    });
-    await vi.waitFor(() =>
-      expect(container.textContent).toContain("Start Conversation")
+    const click = async (element: Element | null | undefined) => {
+      expect(element).toBeTruthy();
+      await act(async () => {
+        (element as HTMLElement).click();
+      });
+    };
+    await click(
+      [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "New"
+      )
     );
-    const select = (label: string) =>
-      [...container.querySelectorAll<HTMLLabelElement>("label")]
-        .find((candidate) =>
-          candidate.querySelector("span")?.textContent?.includes(label)
-        )
-        ?.querySelector("select");
-    await act(async () => {
-      const model = select("Model")!;
-      model.value = "gpt-selected";
-      model.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await act(async () => {
-      const reasoning = select("Reasoning")!;
-      reasoning.value = "high";
-      reasoning.dispatchEvent(new Event("change", { bubbles: true }));
-      const permissions = select("Permissions")!;
-      permissions.value = "supervised";
-      permissions.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await act(async () => {
-      [...container.querySelectorAll<HTMLButtonElement>("button")]
-        .find((button) => button.textContent?.includes("Start Conversation"))
-        ?.click();
-    });
+    await click(
+      container.querySelector('button[aria-label^="Model and reasoning:"]')
+    );
+    await click(document.querySelector(".conversation-model-overview"));
+    await click(
+      [...document.querySelectorAll('[role="menuitemradio"]')].find((item) =>
+        item.textContent?.includes("GPT Selected")
+      )
+    );
+    await click(
+      container.querySelector('button[aria-label^="Model and reasoning:"]')
+    );
+    await click(
+      [...document.querySelectorAll('[role="menuitemradio"]')].find(
+        (item) => item.textContent === "High"
+      )
+    );
+    await click(container.querySelector('button[aria-label^="Permissions:"]'));
+    await click(
+      [...document.querySelectorAll('[role="menuitemradio"]')].find((item) =>
+        item.textContent?.startsWith("Supervised")
+      )
+    );
+    await click(
+      container.querySelector('button[aria-label="Start Conversation"]')
+    );
 
     expect(managed.start).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1804,17 +1820,17 @@ describe("PersonalMemoryWorkspace", () => {
       );
     });
     await vi.waitFor(() =>
-      expect(container.textContent).toContain("gpt-5.6·high·Context:42k258k")
+      expect(container.textContent).toContain("Context:42k258k")
     );
     expect(
-      container.querySelector(
-        '.personal-managed-usage [role="img"][aria-label="Codex"]'
-      )
+      container.querySelector('button[aria-label="AI Client: Codex"]')
     ).not.toBeNull();
 
     expect(
       container.querySelector(".personal-managed-usage")?.getAttribute("title")
-    ).toBe("Input 40k; Cached 30k; Output 2k; Reasoning output 500");
+    ).toBe(
+      "Codex · gpt-5.6 · Input 40k; Cached 30k; Output 2k; Reasoning output 500"
+    );
     expect(
       container.querySelector(
         ".personal-managed-composer-field + .personal-managed-meta-row .personal-managed-usage"
@@ -1827,6 +1843,207 @@ describe("PersonalMemoryWorkspace", () => {
         .querySelector('[role="progressbar"]')
         ?.getAttribute("aria-valuenow")
     ).toBe("16");
+  });
+
+  it.each([
+    ["queued", false],
+    ["rejected", false],
+    ["queued", true]
+  ] as const)(
+    "sends pending settings with the next prompt (%s; no reasoning override: %s)",
+    async (status, noReasoning) => {
+      const conversation = {
+        executionId: "execution-1",
+        projectId: "project-1",
+        capturedSessionId: sessionId,
+        threadId: "thread-1",
+        executionOwner: {
+          driverId: "codex" as const,
+          instanceId: "codex.default"
+        }
+      };
+      const managed = managedApi({
+        resume: vi.fn(async () => ({
+          operation: "resume" as const,
+          status: "ready" as const,
+          conversation
+        })),
+        usage: vi.fn(async (executionId) => ({
+          operation: "usage" as const,
+          executionId,
+          provider: "codex" as const,
+          model: "gpt-test",
+          reasoningEffort: "low",
+          permissionMode: "supervised" as const,
+          usage: null
+        })),
+        send: vi.fn(async (input) => ({
+          operation: "send" as const,
+          status,
+          conversation,
+          idempotencyKey: input.idempotencyKey,
+          clientUserMessageId: input.clientUserMessageId,
+          ...(status === "rejected"
+            ? {
+                message: "Settings changed elsewhere. The prompt was not sent."
+              }
+            : {})
+        }))
+      });
+      if (noReasoning) {
+        const launch = await managed.launchOptions();
+        launch.options.instances[0]!.models.push({
+          id: "model-without-effort",
+          displayName: "Model without effort",
+          supportedReasoningEfforts: []
+        });
+        vi.mocked(managed.launchOptions).mockResolvedValue(launch);
+      }
+      const store = new PersonalMemoryStore(
+        api({
+          listProjects: vi.fn(async () => [project([thread(1)])]),
+          loadEventPage: vi.fn(async () => [event(1)])
+        })
+      );
+      await act(async () =>
+        root.render(
+          <PersonalMemoryWorkspace
+            managedConversations={managed}
+            onNavigate={vi.fn()}
+            route={{ kind: "session", projectId: "project-1", sessionId }}
+            store={store}
+          />
+        )
+      );
+      await vi.waitFor(() =>
+        expect(
+          container.querySelector('button[aria-label^="Model and reasoning:"]')
+            ?.textContent
+        ).toContain("Low")
+      );
+      const triggers = [
+        ...container.querySelectorAll(".conversation-setting-trigger")
+      ];
+      expect(triggers.map((item) => item.getAttribute("aria-label"))).toEqual([
+        "Permissions: Supervised",
+        "AI Client: Codex",
+        "Model and reasoning: GPT Test, Low"
+      ]);
+      expect(
+        triggers[1]?.querySelector(
+          '.conversation-ai-client-logo[data-client="codex"]'
+        )
+      ).not.toBeNull();
+      expect(triggers[1]?.querySelector(".lucide-cpu")).toBeNull();
+      expect(triggers[2]?.querySelector(".lucide-zap")).toBeNull();
+      await act(async () => (triggers[2] as HTMLElement).click());
+      const popup = document.querySelector(".conversation-settings-popup")!;
+      expect(popup.textContent).not.toContain("How much effort");
+      expect(popup.textContent).not.toContain("AI Client");
+      const high = [...popup.querySelectorAll('[role="menuitemradio"]')].find(
+        (item) => item.textContent === "High"
+      ) as HTMLElement;
+      await act(async () => high.click());
+      if (noReasoning) {
+        await act(async () =>
+          popup
+            .querySelector<HTMLElement>(".conversation-model-overview")!
+            .click()
+        );
+        await act(async () =>
+          [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')]
+            .find((item) => item.textContent === "Model without effort")!
+            .click()
+        );
+        expect(
+          container
+            .querySelector('[aria-label^="Model and reasoning:"]')
+            ?.getAttribute("aria-label")
+        ).toBe("Model and reasoning: Model without effort");
+      }
+      expect(managed.send).not.toHaveBeenCalled();
+      expect(container.textContent).not.toContain("Changed for next message");
+      expect(container.textContent).not.toContain("Undo");
+      const textarea = container.querySelector("textarea")!;
+      await act(async () => changeTextarea(textarea, "Use high reasoning"));
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!
+          .click()
+      );
+      await vi.waitFor(() => expect(managed.send).toHaveBeenCalledOnce());
+      expect(managed.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: "Use high reasoning",
+          settingsChange: {
+            expected: {
+              model: "gpt-test",
+              reasoningEffort: "low",
+              permissionMode: "supervised"
+            },
+            next: {
+              model: noReasoning ? "model-without-effort" : "gpt-test",
+              reasoningEffort: noReasoning ? null : "high",
+              permissionMode: "supervised"
+            }
+          }
+        })
+      );
+      if (status === "rejected") {
+        expect(textarea.value).toBe("Use high reasoning");
+        expect(textarea.disabled).toBe(false);
+        expect(container.textContent).toContain("The prompt was not sent");
+      }
+    }
+  );
+
+  it("starts and submits the first message from the new Conversation composer", async () => {
+    const managed = managedApi();
+    const store = new PersonalMemoryStore(
+      api({ listProjects: vi.fn(async () => [project([])]) })
+    );
+    await act(async () =>
+      root.render(
+        <Harness initialRoute={{ kind: "project", projectId: "project-1" }}>
+          {({ route, onNavigate }) => (
+            <PersonalMemoryWorkspace
+              managedConversations={managed}
+              onNavigate={onNavigate}
+              route={route}
+              store={store}
+            />
+          )}
+        </Harness>
+      )
+    );
+    await vi.waitFor(() => expect(container.textContent).toContain("New"));
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "New")!
+        .click()
+    );
+    expect(managed.start).not.toHaveBeenCalled();
+    await act(async () =>
+      changeTextarea(
+        container.querySelector("textarea")!,
+        "Start with this message"
+      )
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Start Conversation"]'
+        )!
+        .click()
+    );
+    await vi.waitFor(() => expect(managed.send).toHaveBeenCalledOnce());
+    expect(managed.start).toHaveBeenCalledOnce();
+    expect(managed.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "Start with this message",
+        idempotencyKey: expect.stringMatching(/^desktop-prompt:/)
+      })
+    );
   });
 
   it("keeps session metadata but hides context when the provider has no snapshot", async () => {
@@ -1870,11 +2087,9 @@ describe("PersonalMemoryWorkspace", () => {
       );
     });
     await vi.waitFor(() => expect(managed.usage).toHaveBeenCalled());
-    expect(container.textContent).toContain("gpt-5.6·low");
+    expect(container.textContent).toContain("gpt-5.6 · Low");
     expect(
-      container.querySelector(
-        '.personal-managed-usage [role="img"][aria-label="Codex"]'
-      )
+      container.querySelector('button[aria-label="AI Client: Codex"]')
     ).not.toBeNull();
     expect(container.textContent).not.toContain("Context usage unavailable");
     expect(container.textContent).not.toContain("Context:");

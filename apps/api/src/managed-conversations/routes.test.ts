@@ -147,6 +147,111 @@ const managedCapabilityRepository = {
 };
 
 describe("managed Conversation capability admission", () => {
+  it("checks next-turn settings against the owning AI Client catalog before enqueue", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const enqueue = vi.fn(async (_actor, input) => ({
+      id: randomUUID(),
+      state: "queued",
+      executionId,
+      executionGeneration: 1,
+      clientUserMessageId: input.clientUserMessageId,
+      createdAt: "2026-09-08T00:00:00Z"
+    }));
+    const app = Fastify({ logger: false });
+    app.setErrorHandler((error, _request, reply) => {
+      const typedError = error as Error & { statusCode?: number };
+      reply
+        .status(
+          typedError.name === "ZodError" ? 400 : (typedError.statusCode ?? 500)
+        )
+        .send({ error: typedError.message });
+    });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: resolve(
+          mkdtempSync(resolve(tmpdir(), "koed-settings-route-")),
+          "upstreams.json"
+        ),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        ...launchRepository,
+        getManagedConversationExecution: async () => ({
+          id: executionId,
+          ...launchSelection
+        }),
+        enqueueManagedConversationPrompt: enqueue
+      })
+    } as unknown as ApiRouteContext);
+    const expected = {
+      model: "gpt-test",
+      reasoningEffort: "low",
+      permissionMode: "full_access"
+    };
+    const input = {
+      executionGeneration: 1,
+      idempotencyKey: "settings-request-1",
+      clientUserMessageId: randomUUID(),
+      prompt: "Hello",
+      settingsChange: {
+        expected,
+        next: {
+          ...expected,
+          reasoningEffort: "high",
+          permissionMode: "supervised"
+        }
+      }
+    };
+    try {
+      const accepted = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/prompts`,
+        payload: input
+      });
+      expect(accepted.statusCode).toBe(202);
+      expect(enqueue).toHaveBeenCalledWith(
+        { userId },
+        expect.objectContaining({ settingsChange: input.settingsChange })
+      );
+      const unsupported = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/prompts`,
+        payload: {
+          ...input,
+          settingsChange: {
+            expected,
+            next: { ...expected, model: "unreported" }
+          }
+        }
+      });
+      expect(unsupported.statusCode).toBe(409);
+      expect(enqueue).toHaveBeenCalledOnce();
+      const ownershipChange = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/prompts`,
+        payload: {
+          ...input,
+          settingsChange: {
+            expected,
+            next: { ...expected, provider: "claude" }
+          }
+        }
+      });
+      expect(ownershipChange.statusCode).toBe(400);
+      expect(enqueue).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
   it("reads remote diffs and queues remote restores through their scoped routes", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();
@@ -1556,7 +1661,8 @@ describe("managed Conversation routes", () => {
           id: executionId,
           provider: "codex",
           model: "gpt-5.6",
-          reasoningEffort: "high"
+          reasoningEffort: "high",
+          permissionMode: "supervised"
         }),
         getLatestManagedConversationTokenUsage: getUsage
       })
@@ -1576,6 +1682,7 @@ describe("managed Conversation routes", () => {
       provider: "codex",
       model: "gpt-5.6",
       reasoningEffort: "high",
+      permissionMode: "supervised",
       usage: {
         model: "gpt-5.6",
         modelContextWindow: 258_000,

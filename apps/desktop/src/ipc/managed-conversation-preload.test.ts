@@ -15,6 +15,48 @@ const identity = {
 };
 
 describe("Managed Conversation preload bridge", () => {
+  it("preserves a conditional settings change and rejects ownership fields", async () => {
+    const invoke = vi.fn(async (_channel, request: any) => ({
+      operation: "send",
+      status: "queued",
+      conversation: identity,
+      idempotencyKey: request.idempotencyKey,
+      clientUserMessageId: request.clientUserMessageId
+    }));
+    const api = createManagedConversationPreloadApi(invoke);
+    const settings = {
+      model: "gpt-test",
+      reasoningEffort: "low",
+      permissionMode: "supervised" as const
+    };
+    const input = {
+      executionId: "execution-1",
+      capturedSessionId: "captured-1",
+      threadId: "thread-1",
+      idempotencyKey: "settings-turn-1",
+      clientUserMessageId: "12345678-1234-4234-8234-123456789012",
+      prompt: "Hello",
+      settingsChange: {
+        expected: settings,
+        next: { ...settings, reasoningEffort: "high" }
+      }
+    };
+    await api.send(input);
+    expect(invoke).toHaveBeenCalledWith(
+      managedConversationCommandChannel,
+      expect.objectContaining({ settingsChange: input.settingsChange })
+    );
+    await expect(
+      api.send({
+        ...input,
+        settingsChange: {
+          ...input.settingsChange,
+          next: { ...settings, provider: "claude" }
+        }
+      } as never)
+    ).rejects.toThrow("settings are invalid");
+    expect(invoke).toHaveBeenCalledOnce();
+  });
   it("accepts unavailable registered AI Clients in launch options", async () => {
     const invoke = vi.fn(async () => ({
       operation: "launch_options",

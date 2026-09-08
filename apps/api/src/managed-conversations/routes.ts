@@ -77,6 +77,12 @@ const authorityStartSchema = startSchema
   })
   .strict();
 
+const conversationSettingsSchema = startSchema.pick({
+  model: true,
+  reasoningEffort: true,
+  permissionMode: true
+});
+
 const managedExecutionOwnerSchema = z
   .object({
     provider: z.enum(["codex", "claude", "pi"]),
@@ -163,6 +169,7 @@ const managedUsageExecutionSchema = z
       .object({
         id: z.uuid(),
         provider: z.enum(["codex", "claude", "pi"]),
+        permissionMode: startSchema.shape.permissionMode.optional(),
         model: z
           .string()
           .trim()
@@ -200,6 +207,13 @@ const promptSchema = z
     idempotencyKey: idempotencyKeySchema,
     clientUserMessageId: z.uuid(),
     prompt: z.string().trim().min(1).max(256_000),
+    settingsChange: z
+      .object({
+        expected: conversationSettingsSchema,
+        next: conversationSettingsSchema
+      })
+      .strict()
+      .optional(),
     fileMentionCommandIds: z.array(z.uuid()).max(16).optional(),
     terminalContextReferences: z
       .array(z.string().regex(/^mtc1_[A-Za-z0-9_-]{43}$/))
@@ -735,6 +749,21 @@ const assertLocalLaunchSelection = async (
     aiClientInstanceId: input.aiClientInstanceId,
     capability: aiClientCapabilityIds.managedConversationStart
   });
+  await assertLocalSettingsSelection(repository, userId, input);
+};
+
+const assertLocalSettingsSelection = async (
+  repository: MemorySourceRepository,
+  userId: string,
+  input: Pick<
+    z.infer<typeof startSchema>,
+    | "provider"
+    | "aiClientInstanceId"
+    | "model"
+    | "reasoningEffort"
+    | "permissionMode"
+  >
+) => {
   const instances = await launchInstances(repository, userId);
   const instance = instances.find(
     (candidate) => candidate.instanceId === input.aiClientInstanceId
@@ -759,6 +788,16 @@ const assertLocalLaunchSelection = async (
     throw Object.assign(
       new Error("Selected reasoning effort is unavailable for this model"),
       { statusCode: 409 }
+    );
+  }
+  if (
+    !instance.capabilities.permissionModes.some(
+      (mode) =>
+        mode.mode === input.permissionMode && mode.support === "supported"
+    )
+  ) {
+    throw managedCapabilityUnavailable(
+      "Selected permission mode is unavailable for this AI Client"
     );
   }
 };
@@ -883,16 +922,23 @@ export const registerManagedConversationRoutes = (
     userId: string;
     executionId: string;
     capability: string;
+    settings?: z.infer<typeof conversationSettingsSchema>;
   }): Promise<{ backendId: string | null }> => {
     const authority = remoteAuthority();
     const repository = context.requireRepository();
     if (!authority) {
-      await assertExecutionCapability(
+      const execution = await assertExecutionCapability(
         repository,
         input.userId,
         input.executionId,
         input.capability
       );
+      if (input.settings)
+        await assertLocalSettingsSelection(repository, input.userId, {
+          ...execution,
+          provider: execution.provider as "codex" | "claude" | "pi",
+          ...input.settings
+        });
       return { backendId: null };
     }
     const executionResponse = await proxyManaged(
@@ -915,6 +961,11 @@ export const registerManagedConversationRoutes = (
       aiClientInstanceId: execution.aiClientInstanceId,
       capability: input.capability
     });
+    if (input.settings)
+      await assertLocalSettingsSelection(repository, input.userId, {
+        ...execution,
+        ...input.settings
+      });
     return { backendId: authority.backend.id };
   };
 
@@ -1812,6 +1863,7 @@ export const registerManagedConversationRoutes = (
         provider: execution.provider,
         model: execution.model,
         reasoningEffort: execution.reasoningEffort,
+        permissionMode: execution.permissionMode ?? null,
         usage: publicManagedConversationUsage(usage)
       };
     }
@@ -2026,7 +2078,8 @@ export const registerManagedConversationRoutes = (
         ? await assertLocalEdgeSourceCapability({
             userId: user.id,
             executionId,
-            capability: aiClientCapabilityIds.managedConversationSend
+            capability: aiClientCapabilityIds.managedConversationSend,
+            settings: input.settingsChange?.next
           })
         : null;
       const proxied = await proxyManaged(
@@ -2091,7 +2144,8 @@ export const registerManagedConversationRoutes = (
             idempotencyKey: input.idempotencyKey,
             clientUserMessageId: input.clientUserMessageId,
             prompt,
-            fileMentionCommandIds: input.fileMentionCommandIds
+            fileMentionCommandIds: input.fileMentionCommandIds,
+            settingsChange: input.settingsChange
           }
         );
       return reply.status(202).send({

@@ -16,6 +16,7 @@ import {
   DialogTitle
 } from "@koed/ui";
 import {
+  ArrowUp,
   BookText,
   Brain,
   Check,
@@ -33,7 +34,6 @@ import {
   Pencil,
   Pin,
   RefreshCw,
-  Send,
   Settings,
   Square,
   X
@@ -82,6 +82,7 @@ import {
   type SessionProjectAssignment,
   type WorkspaceShareCandidate
 } from "./adapters.js";
+import { AiClientLogo } from "./AiClientLogo.js";
 import { usePersonalMemoryDetail } from "./use-personal-memory-detail.js";
 import type {
   ManagedConversationContextUsage,
@@ -94,6 +95,20 @@ import type { CollaborationRendererClient } from "../../../collaboration/rendere
 import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
 import { ManagedProjectCockpit } from "./ManagedProjectCockpit.js";
 import "./personal-memory.css";
+import {
+  NewConversationComposer,
+  type InitialConversationPrompt
+} from "./NewConversationComposer.js";
+import {
+  ConversationSettings,
+  selectionForInstance,
+  type ConversationSelection
+} from "./ConversationSettings.js";
+import {
+  managedConversationSettingsKey,
+  type ManagedConversationSettingsChange,
+  type AiClientPermissionMode
+} from "@koed/shared/ai-client-contract";
 
 export type PersonalMemoryRoute =
   | { kind: "projects" }
@@ -334,46 +349,6 @@ const sourceAiClientIdentity = (
   return null;
 };
 
-// Official brand mark, reproduced from simple-icons (CC0): claude.svg
-function ClaudeSourceLogo() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z" />
-    </svg>
-  );
-}
-
-// Official brand mark, reproduced from simple-icons (CC0): openai.svg — Codex is an OpenAI product.
-function CodexSourceLogo() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z" />
-    </svg>
-  );
-}
-
-// Pi's own logo mark, scaled from its 800x800 source viewBox to this
-// component's shared 24x24 badge viewBox (scale factor 0.03).
-function PiSourceLogo() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path
-        fillRule="evenodd"
-        d="M4.959 4.959H15.521V12H12V15.521H8.480V19.042H4.959Z
-           M8.480 8.480V12H12V8.480Z"
-      />
-      <path d="M15.521 12H19.042V19.042H15.521Z" />
-    </svg>
-  );
-}
-
-const aiClientSourceLogos: Record<"claude" | "codex" | "pi", () => ReactNode> =
-  {
-    claude: ClaudeSourceLogo,
-    codex: CodexSourceLogo,
-    pi: PiSourceLogo
-  };
-
 function AiClientMark({
   ariaLabel,
   id,
@@ -383,7 +358,6 @@ function AiClientMark({
   id: "claude" | "codex" | "pi";
   title: string;
 }) {
-  const Logo = aiClientSourceLogos[id];
   return (
     <span
       aria-label={ariaLabel}
@@ -392,7 +366,7 @@ function AiClientMark({
       role="img"
       title={title}
     >
-      <Logo />
+      <AiClientLogo id={id} />
     </span>
   );
 }
@@ -729,12 +703,7 @@ function SessionRow({
   );
 }
 
-type ManagedLaunchSelection = {
-  instanceId: string;
-  model: string;
-  reasoningEffort: string;
-  permissionMode: "" | "supervised" | "auto_edit" | "auto" | "full_access";
-};
+type ManagedLaunchSelection = ConversationSelection;
 type ManagedOwnerCapabilities = {
   resume: boolean;
   send: boolean;
@@ -768,134 +737,7 @@ const launchOwner = (
     )
 });
 
-function NewConversationButton({
-  disabled,
-  managedConversationOwner,
-  managedConversationOwners,
-  onManagedConversationOwnerChange,
-  onStart,
-  starting
-}: {
-  disabled: boolean;
-  managedConversationOwner?: ManagedConversationOwner;
-  managedConversationOwners?: ManagedConversationOwner[];
-  onManagedConversationOwnerChange?: (instanceId: string) => void;
-  onStart: () => void;
-  starting: boolean;
-}) {
-  const detailsRef = useRef<HTMLDetailsElement>(null);
-  const owners = managedConversationOwners ?? [];
-  const pickerDisabled = disabled || !owners.some((owner) => owner.ready);
-  return (
-    <div className="personal-new-conversation-group" data-starting={starting}>
-      <button
-        className="personal-new-conversation"
-        disabled={disabled || !managedConversationOwner?.ready || starting}
-        onClick={onStart}
-        type="button"
-      >
-        {starting ? <LoaderCircle aria-hidden="true" /> : null}
-        {starting ? "Starting Conversation…" : "New"}
-      </button>
-      {pickerDisabled ? (
-        <button
-          aria-label="No AI Client available for a new session"
-          className="personal-new-conversation-owner-picker"
-          disabled
-          type="button"
-        >
-          <ChevronDown aria-hidden="true" />
-        </button>
-      ) : (
-        <details
-          className="personal-new-conversation-owner-picker"
-          ref={detailsRef}
-        >
-          <summary
-            aria-label={
-              managedConversationOwner
-                ? `New session AI Client: ${managedConversationOwner.displayName}. Change AI Client.`
-                : "Choose the AI Client for new sessions"
-            }
-          >
-            {managedConversationOwner ? (
-              <AiClientMark
-                ariaLabel={managedConversationOwner.displayName}
-                id={managedConversationOwner.aiClientDriverId}
-                title={managedConversationOwner.displayName}
-              />
-            ) : null}
-            <ChevronDown aria-hidden="true" />
-          </summary>
-          <ul aria-label="Available AI Clients" role="menu">
-            {owners.map((owner) => (
-              <li key={owner.aiClientInstanceId} role="none">
-                <button
-                  aria-checked={
-                    owner.aiClientInstanceId ===
-                    managedConversationOwner?.aiClientInstanceId
-                  }
-                  className="personal-new-conversation-owner-option"
-                  disabled={!owner.ready}
-                  onClick={() => {
-                    onManagedConversationOwnerChange?.(
-                      owner.aiClientInstanceId
-                    );
-                    if (detailsRef.current) detailsRef.current.open = false;
-                  }}
-                  role="menuitemradio"
-                  type="button"
-                >
-                  <AiClientMark
-                    ariaLabel={
-                      owner.ready
-                        ? owner.displayName
-                        : `${owner.displayName} (unavailable)`
-                    }
-                    id={owner.aiClientDriverId}
-                    title={owner.displayName}
-                  />
-                  <span>{owner.displayName}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
-    </div>
-  );
-}
-
-const launchSelectionForInstance = (
-  options: ManagedConversationLaunchOptions,
-  instanceId: string
-) => {
-  const instance = options.instances.find(
-    (candidate) => candidate.instanceId === instanceId
-  );
-  const model =
-    instance?.models.find((candidate) => candidate.isDefault) ??
-    instance?.models[0];
-  const supportedModes =
-    instance?.capabilities.permissionModes.filter(
-      (mode) => mode.support === "supported"
-    ) ?? [];
-  const defaultMode: "" | "supervised" | "auto_edit" | "auto" | "full_access" =
-    supportedModes.some(
-      (mode) => mode.mode === instance?.capabilities.defaultPermissionMode
-    )
-      ? instance!.capabilities.defaultPermissionMode
-      : (supportedModes[0]?.mode ?? "");
-  return {
-    instanceId,
-    model: model?.id ?? "",
-    reasoningEffort:
-      model?.defaultReasoningEffort ??
-      model?.supportedReasoningEfforts[0] ??
-      "",
-    permissionMode: defaultMode
-  };
-};
+const launchSelectionForInstance = selectionForInstance;
 
 function ProjectDetail({
   error,
@@ -928,7 +770,8 @@ function ProjectDetail({
   onManagedConversationStarted: (
     conversation: ManagedConversationIdentity,
     status: "starting" | "ready",
-    launchInput: Parameters<ManagedConversationDesktopApi["start"]>[0]
+    launchInput: Parameters<ManagedConversationDesktopApi["start"]>[0],
+    initialPrompt?: InitialConversationPrompt
   ) => void;
   onOpenRepository?: (url: string) => void;
   onRevealLocalProject?: (localProjectId: string) => void;
@@ -1081,12 +924,6 @@ function ProjectDetail({
       !thread.presentation?.pinnedAt &&
       conversationPresentationStatus(thread, presentationNow) !== "active"
   );
-  const selectedInstance = launchOptions?.instances.find(
-    (instance) => instance.instanceId === launchSelection.instanceId
-  );
-  const selectedModel = selectedInstance?.models.find(
-    (model) => model.id === launchSelection.model
-  );
 
   const renderSession = (thread: PersonalDesktopProjectThread) => {
     const selectionId = sessionSelectionId(thread);
@@ -1148,58 +985,6 @@ function ProjectDetail({
       </div>
     );
   };
-  const startConversation = () => {
-    if (
-      !managedConversations ||
-      !selectedInstance ||
-      !selectedModel ||
-      !launchSelection.permissionMode
-    ) {
-      return;
-    }
-    setStartState({
-      status: "starting",
-      message: "",
-      executionId: null
-    });
-    const launchInput = {
-      projectId: project.id,
-      aiClientDriverId: selectedInstance.driverId,
-      aiClientInstanceId: selectedInstance.instanceId,
-      model: selectedModel.id,
-      reasoningEffort: launchSelection.reasoningEffort || null,
-      permissionMode: launchSelection.permissionMode,
-      runnerKind: "local_device",
-      idempotencyKey: `desktop-conversation:${crypto.randomUUID()}`
-    } satisfies Parameters<ManagedConversationDesktopApi["start"]>[0];
-    void managedConversations
-      .start(launchInput)
-      .then((result) => {
-        setLaunchOpen(false);
-        setStartState({
-          status: "idle",
-          message: "",
-          executionId: null
-        });
-        onManagedConversationStarted(
-          result.conversation ?? {
-            executionId: result.executionId,
-            projectId: project.id,
-            capturedSessionId: result.executionId,
-            threadId: result.executionId
-          },
-          result.status,
-          launchInput
-        );
-      })
-      .catch((cause: unknown) => {
-        setStartState({
-          status: "error",
-          message: cause instanceof Error ? cause.message : String(cause),
-          executionId: null
-        });
-      });
-  };
   return (
     <section className="personal-project-detail">
       <header>
@@ -1220,142 +1005,30 @@ function ProjectDetail({
             sessionCount={project.threads.length}
           />
         </div>
-        <NewConversationButton
-          disabled={!managedConversations || !project.path || !launchOptions}
-          managedConversationOwner={launchOptions?.instances
-            .map(launchOwner)
-            .find(
-              (owner) => owner.aiClientInstanceId === launchSelection.instanceId
-            )}
-          managedConversationOwners={launchOptions?.instances.map(launchOwner)}
-          onManagedConversationOwnerChange={(instanceId) => {
-            if (launchOptions)
-              setLaunchSelection(
-                launchSelectionForInstance(launchOptions, instanceId)
-              );
-          }}
-          onStart={startConversation}
-          starting={startState.status === "starting"}
-        />
         <button
-          aria-label="Conversation launch settings"
-          disabled={!launchOptions}
-          onClick={() => setLaunchOpen((open) => !open)}
+          className="personal-new-conversation personal-new-conversation-standalone"
           type="button"
+          disabled={!managedConversations || !project.path || !launchOptions}
+          aria-expanded={launchOpen}
+          onClick={() => setLaunchOpen((open) => !open)}
         >
-          <Settings aria-hidden="true" />
+          New
         </button>
       </header>
-      {launchOpen && launchOptions ? (
-        <form
-          className="personal-managed-launch"
-          onSubmit={(event) => {
-            event.preventDefault();
-            startConversation();
+      {launchOpen && launchOptions && managedConversations && (
+        <NewConversationComposer
+          key={project.id}
+          api={managedConversations}
+          projectId={project.id}
+          options={launchOptions}
+          selection={launchSelection}
+          onChange={setLaunchSelection}
+          onStarted={(...args) => {
+            setLaunchOpen(false);
+            onManagedConversationStarted(...args);
           }}
-        >
-          <label>
-            <span>Model</span>
-            <select
-              disabled={!selectedInstance}
-              onChange={(event) => {
-                const modelId = event.currentTarget.value;
-                const model = selectedInstance?.models.find(
-                  (candidate) => candidate.id === modelId
-                );
-                setLaunchSelection((current) => ({
-                  ...current,
-                  model: modelId,
-                  reasoningEffort:
-                    model?.defaultReasoningEffort ??
-                    model?.supportedReasoningEfforts[0] ??
-                    ""
-                }));
-              }}
-              value={launchSelection.model}
-            >
-              {selectedInstance?.models.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.displayName ?? model.id}
-                </option>
-              ))}
-            </select>
-          </label>
-          {selectedModel?.supportedReasoningEfforts.length ? (
-            <label>
-              <span>Reasoning</span>
-              <select
-                onChange={(event) => {
-                  const reasoningEffort = event.currentTarget.value;
-                  setLaunchSelection((current) => ({
-                    ...current,
-                    reasoningEffort
-                  }));
-                }}
-                value={launchSelection.reasoningEffort}
-              >
-                {selectedModel.supportedReasoningEfforts.map((effort) => (
-                  <option key={effort} value={effort}>
-                    {effort}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-          <label>
-            <span>Permissions</span>
-            <select
-              disabled={!selectedInstance}
-              onChange={(event) => {
-                const permissionMode = event.currentTarget
-                  .value as typeof launchSelection.permissionMode;
-                setLaunchSelection((current) => ({
-                  ...current,
-                  permissionMode
-                }));
-              }}
-              value={launchSelection.permissionMode}
-            >
-              {selectedInstance?.capabilities.permissionModes
-                .filter((mode) => mode.support === "supported")
-                .map((mode) => (
-                  <option key={mode.mode} value={mode.mode}>
-                    {
-                      {
-                        supervised: "Supervised",
-                        auto_edit: "Auto-accept edits",
-                        auto: "Auto",
-                        full_access: "Full access"
-                      }[mode.mode]
-                    }
-                  </option>
-                ))}
-            </select>
-          </label>
-          <label>
-            <span>Runner</span>
-            <select disabled value="local_device">
-              {launchOptions.runners.map((runner) => (
-                <option key={runner.deviceId} value={runner.kind}>
-                  {runner.displayName}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            disabled={
-              !selectedInstance ||
-              !selectedModel ||
-              !launchSelection.permissionMode ||
-              startState.status === "starting"
-            }
-            type="submit"
-          >
-            <CirclePlay aria-hidden="true" />
-            Start Conversation
-          </button>
-        </form>
-      ) : null}
+        />
+      )}
       {startState.message ? (
         <p
           className={
@@ -1470,7 +1143,28 @@ function StoreConversation({
       event: PersonalDesktopConversationEvent;
       clientUserMessageId: string;
     }>
-  >([]);
+  >(() =>
+    managedDraft?.initialPrompt &&
+    managedDraft.initialPrompt.status !== "rejected"
+      ? [
+          {
+            clientUserMessageId: managedDraft.initialPrompt.clientUserMessageId,
+            event: {
+              id: managedDraft.initialPrompt.clientUserMessageId,
+              actor: "user",
+              eventType: "user_message",
+              timestamp: new Date().toISOString(),
+              sourceEventTime: null,
+              sourceSequence: null,
+              content: managedDraft.initialPrompt.prompt,
+              contentPreview: managedDraft.initialPrompt.prompt,
+              invalidatedAt: null,
+              metadata: {}
+            }
+          }
+        ]
+      : []
+  );
   const [transientAssistantOutputs, setTransientAssistantOutputs] = useState<
     PersonalDesktopConversationEvent[]
   >([]);
@@ -1737,6 +1431,8 @@ function StoreConversation({
             }
           }
           draftScopeId={managedDraft?.conversation.executionId ?? null}
+          initialSelection={managedDraft?.launchInput}
+          initialPrompt={managedDraft?.initialPrompt}
           startupStatus={managedDraft?.status ?? null}
           startupMessage={managedDraft?.message ?? ""}
           onRetryStartup={onRetryManagedConversation}
@@ -1847,12 +1543,10 @@ const transferLifecycleMessage = (
 function ManagedConversationUsage({
   model,
   provider,
-  reasoningEffort,
   usage
 }: {
   model: string | null;
   provider: "codex" | "claude" | "pi";
-  reasoningEffort: string | null;
   usage: ManagedConversationContextUsage | null;
 }) {
   const displayModel = usage?.model ?? model;
@@ -1881,29 +1575,14 @@ function ManagedConversationUsage({
     .filter((value): value is string => value !== null)
     .join("; ");
   return (
-    <div className="personal-managed-usage" title={details || undefined}>
-      <AiClientMark
-        ariaLabel={managedProviderLabel(provider)}
-        id={provider}
-        title={managedProviderLabel(provider)}
-      />
-      {displayModel ? (
-        <>
-          <span aria-hidden="true">·</span>
-          <span className="personal-managed-usage-model">{displayModel}</span>
-        </>
-      ) : null}
-      {reasoningEffort ? (
-        <>
-          <span aria-hidden="true">·</span>
-          <span className="personal-managed-usage-reasoning">
-            {reasoningEffort}
-          </span>
-        </>
-      ) : null}
+    <div
+      className="personal-managed-usage"
+      title={[managedProviderLabel(provider), displayModel, details]
+        .filter(Boolean)
+        .join(" · ")}
+    >
       {usage?.usedTokens !== null && usage?.usedTokens !== undefined ? (
         <>
-          <span aria-hidden="true">·</span>
           <span>Context:</span>
           <span className="personal-managed-usage-count">
             {compactTokenCount(usage.usedTokens)}
@@ -2153,6 +1832,8 @@ function ManagedConversationComposer({
   authorizeTransfer,
   conversation,
   draftScopeId,
+  initialSelection,
+  initialPrompt,
   startupMessage,
   startupStatus,
   onRetryStartup,
@@ -2171,6 +1852,8 @@ function ManagedConversationComposer({
   authorizeTransfer?: PersonalMemoryWorkspaceProps["authorizeManagedConversationTransfer"];
   conversation: ManagedConversationIdentity;
   draftScopeId: string | null;
+  initialSelection?: Parameters<ManagedConversationDesktopApi["start"]>[0];
+  initialPrompt?: InitialConversationPrompt;
   startupMessage: string;
   startupStatus: ManagedConversationDraft["status"] | null;
   onRetryStartup: (() => void) | null;
@@ -2229,8 +1912,40 @@ function ManagedConversationComposer({
     provider: "codex" | "claude" | "pi";
     model: string | null;
     reasoningEffort: string | null;
+    permissionMode: AiClientPermissionMode | null;
     usage: ManagedConversationContextUsage | null;
   } | null>(null);
+  const [settingsOptions, setSettingsOptions] =
+    useState<ManagedConversationLaunchOptions | null>(null);
+  const [settingsChange, setSettingsChange] =
+    useState<ManagedConversationSettingsChange | null>(null);
+  const [settingsError, setSettingsError] = useState(
+    initialPrompt?.status === "rejected" ? initialPrompt.message : ""
+  );
+  const refreshSettingsOptions = useCallback(() => {
+    void api
+      .launchOptions()
+      .then((result) => setSettingsOptions(result.options))
+      .catch(() => setSettingsOptions(null));
+  }, [api]);
+  useEffect(() => {
+    refreshSettingsOptions();
+  }, [refreshSettingsOptions, resolvedConversation.executionId]);
+  const selectedSettings =
+    settingsChange?.next ??
+    (usage?.model && usage.permissionMode
+      ? {
+          model: usage.model,
+          reasoningEffort: usage.reasoningEffort,
+          permissionMode: usage.permissionMode
+        }
+      : initialSelection
+        ? {
+            model: initialSelection.model,
+            reasoningEffort: initialSelection.reasoningEffort || null,
+            permissionMode: initialSelection.permissionMode
+          }
+        : null);
   const [runtime, setRuntime] =
     useState<ManagedConversationRuntimeState | null>(null);
   const [runtimeActionBusy, setRuntimeActionBusy] = useState(false);
@@ -2244,12 +1959,27 @@ function ManagedConversationComposer({
     clientUserMessageId: string;
     fileMentionCommandIds: string[];
     terminalContextReferences: string[];
+    settingsChange?: ManagedConversationSettingsChange;
     contextAttachments: Array<
       | { kind: "file"; reference: string; label: string }
       | { kind: "terminal"; reference: string; label: string }
     >;
   } | null>(null);
   const submissionInFlightRef = useRef(false);
+  const lastSubmittedRef = useRef<NonNullable<
+    typeof submissionRef.current
+  > | null>(
+    initialPrompt && initialPrompt.status !== "rejected"
+      ? {
+          idempotencyKey: `desktop-prompt:${initialPrompt.clientUserMessageId}`,
+          clientUserMessageId: initialPrompt.clientUserMessageId,
+          prompt: initialPrompt.prompt,
+          fileMentionCommandIds: [],
+          terminalContextReferences: [],
+          contextAttachments: []
+        }
+      : null
+  );
   const composingRef = useRef(false);
   const draftRef = useRef("");
   const draftEditedRef = useRef(false);
@@ -2353,8 +2083,11 @@ function ManagedConversationComposer({
       .then((result) => {
         if (!active) return;
         if (!draftEditedRef.current) {
-          setDraft(result.value);
-          draftRef.current = result.value;
+          const restored =
+            result.value ||
+            (initialPrompt?.status === "rejected" ? initialPrompt.prompt : "");
+          setDraft(restored);
+          draftRef.current = restored;
         }
         persistedDraftRef.current = {
           scopeKey: draftScopeKey,
@@ -2370,7 +2103,7 @@ function ManagedConversationComposer({
     return () => {
       active = false;
     };
-  }, [api, draftScope, draftScopeKey]);
+  }, [api, draftScope, draftScopeKey, initialPrompt]);
 
   useEffect(() => {
     if (!draftReady) return;
@@ -2403,6 +2136,7 @@ function ManagedConversationComposer({
             provider: result.provider,
             model: result.model,
             reasoningEffort: result.reasoningEffort,
+            permissionMode: result.permissionMode ?? null,
             usage: result.usage
           });
         }
@@ -2546,6 +2280,12 @@ function ManagedConversationComposer({
         active = false;
       };
     }
+    if (initialPrompt?.status === "reconciling") {
+      setState({ status: "reconciling", message: initialPrompt.message });
+      return () => {
+        active = false;
+      };
+    }
     if (startupStatus === "failed") {
       setState({
         status: "error",
@@ -2598,7 +2338,8 @@ function ManagedConversationComposer({
     conversation.projectId,
     conversation.threadId,
     startupMessage,
-    startupStatus
+    startupStatus,
+    initialPrompt
   ]);
 
   const submit = useCallback(async () => {
@@ -2611,6 +2352,13 @@ function ManagedConversationComposer({
     ) {
       return;
     }
+    if (
+      runtimeRef.current?.latestCommand?.commandKind === "prompt" &&
+      ["queued", "blocked", "dispatching", "indeterminate"].includes(
+        runtimeRef.current.latestCommand.state
+      )
+    )
+      return;
     const fileMentionCommandIds = contextAttachments
       .filter((attachment) => attachment.kind === "file")
       .map((attachment) => attachment.reference);
@@ -2622,7 +2370,9 @@ function ManagedConversationComposer({
       JSON.stringify(submissionRef.current.fileMentionCommandIds) ===
         JSON.stringify(fileMentionCommandIds) &&
       JSON.stringify(submissionRef.current.terminalContextReferences) ===
-        JSON.stringify(terminalContextReferences)
+        JSON.stringify(terminalContextReferences) &&
+      JSON.stringify(submissionRef.current.settingsChange ?? null) ===
+        JSON.stringify(settingsChange)
         ? submissionRef.current
         : {
             idempotencyKey: `desktop-prompt:${crypto.randomUUID()}`,
@@ -2630,7 +2380,8 @@ function ManagedConversationComposer({
             prompt: draft,
             fileMentionCommandIds,
             terminalContextReferences,
-            contextAttachments
+            contextAttachments,
+            ...(settingsChange ? { settingsChange } : {})
           };
     submissionRef.current = submission;
     submissionInFlightRef.current = true;
@@ -2656,7 +2407,10 @@ function ManagedConversationComposer({
         clientUserMessageId: submission.clientUserMessageId,
         prompt: submission.prompt,
         fileMentionCommandIds: submission.fileMentionCommandIds,
-        terminalContextReferences: submission.terminalContextReferences
+        terminalContextReferences: submission.terminalContextReferences,
+        ...(submission.settingsChange
+          ? { settingsChange: submission.settingsChange }
+          : {})
       });
       setResolvedConversation(result.conversation);
       onConversationIdentityChanged(result.conversation);
@@ -2669,11 +2423,27 @@ function ManagedConversationComposer({
         submissionRef.current = null;
         submissionInFlightRef.current = false;
         setState({
-          status: "reconciling",
+          status: submission.settingsChange ? "ready" : "reconciling",
           message:
             result.message ??
             "This Conversation is not writable. The prompt was not sent."
         });
+        setSettingsError(
+          result.message ??
+            "The prompt was not sent. Review Conversation settings and try again."
+        );
+        setSettingsChange(null);
+        refreshSettingsOptions();
+        void refreshRuntimeSnapshot(resolvedConversation.executionId);
+        void api
+          .usage(resolvedConversation.executionId)
+          .then((result) =>
+            setUsage({
+              ...result,
+              permissionMode: result.permissionMode ?? null
+            })
+          )
+          .catch(() => undefined);
         return;
       }
       if (result.status === "reconciling") {
@@ -2687,6 +2457,15 @@ function ManagedConversationComposer({
       }
       submissionRef.current = null;
       submissionInFlightRef.current = false;
+      lastSubmittedRef.current = submission;
+      if (submission.settingsChange) {
+        setUsage((current) =>
+          current ? { ...current, ...submission.settingsChange!.next } : current
+        );
+      }
+      setSettingsChange(null);
+      setSettingsError("");
+      void refreshRuntimeSnapshot(resolvedConversation.executionId);
       void persistDraft("", false);
       setState(
         startupStatus === "starting"
@@ -2719,7 +2498,10 @@ function ManagedConversationComposer({
     ownerSendReady,
     startupMessage,
     startupStatus,
-    state.status
+    state.status,
+    settingsChange,
+    refreshSettingsOptions,
+    refreshRuntimeSnapshot
   ]);
 
   const respondToRuntimeItem = useCallback(
@@ -2785,6 +2567,34 @@ function ManagedConversationComposer({
       runtime.executionState
     );
   useEffect(() => {
+    const command = runtime?.latestCommand;
+    if (
+      command?.state !== "failed" ||
+      command.lastErrorCode !== "ManagedConversationSettingsUnavailableError"
+    )
+      return;
+    const submitted = lastSubmittedRef.current;
+    if (submitted?.clientUserMessageId === command.clientUserMessageId) {
+      lastSubmittedRef.current = null;
+      onRejectOptimisticPrompt(submitted.clientUserMessageId);
+      if (!draftRef.current) {
+        setDraft(submitted.prompt);
+        draftRef.current = submitted.prompt;
+        draftEditedRef.current = true;
+        onContextAttachmentsChanged(submitted.contextAttachments);
+      }
+    }
+    setSettingsError(
+      "The AI Client rejected these settings before receiving the prompt. Refresh its status or choose available settings, then send again."
+    );
+    refreshSettingsOptions();
+  }, [
+    runtime?.latestCommand,
+    onRejectOptimisticPrompt,
+    onContextAttachmentsChanged,
+    refreshSettingsOptions
+  ]);
+  useEffect(() => {
     if (!runtime) {
       onStopControlChange(null);
       return;
@@ -2822,7 +2632,9 @@ function ManagedConversationComposer({
           Koed cannot prove whether the last {runtime.latestCommand.commandKind}{" "}
           reached the AI Client. It will not retry automatically.
         </div>
-      ) : runtime?.latestCommand?.state === "failed" ||
+      ) : (runtime?.latestCommand?.state === "failed" &&
+          runtime.latestCommand.lastErrorCode !==
+            "ManagedConversationSettingsUnavailableError") ||
         runtime?.executionState === "failed" ? (
         <div className="personal-managed-runtime-error" role="alert">
           The managed Conversation stopped after a runtime failure.
@@ -2883,7 +2695,7 @@ function ManagedConversationComposer({
           Retry
         </button>
       ) : null}
-      <div className="personal-managed-composer-field">
+      <div className="personal-managed-composer-field conversation-input">
         <label>
           <span className="sr-only">Prompt selected AI Client</span>
           <textarea
@@ -2925,34 +2737,92 @@ function ManagedConversationComposer({
             value={draft}
           />
         </label>
-        <button
-          aria-label={promptActive ? "Interrupt active turn" : "Send prompt"}
-          disabled={
-            promptActive
-              ? !runtime ||
-                runtimeActionBusy ||
-                runtime.executionState !== "running"
-              : sendDisabled
-          }
-          onClick={() =>
-            promptActive ? controlRuntime("interrupt") : void submit()
-          }
-          title={promptActive ? "Interrupt active turn" : "Send prompt"}
-          type="button"
-        >
-          {promptActive ? (
-            <Square aria-hidden="true" />
-          ) : (
-            <Send aria-hidden="true" />
-          )}
-        </button>
+        <div className="conversation-input-footer">
+          <ConversationSettings
+            options={settingsOptions}
+            selection={{
+              instanceId:
+                resolvedConversation.executionOwner?.instanceId ??
+                initialSelection?.aiClientInstanceId ??
+                "",
+              model: selectedSettings?.model ?? usage?.model ?? "",
+              reasoningEffort: selectedSettings
+                ? (selectedSettings.reasoningEffort ?? "")
+                : (usage?.reasoningEffort ?? ""),
+              permissionMode: selectedSettings?.permissionMode ?? ""
+            }}
+            clientLabel={
+              usage ? managedProviderLabel(usage.provider) : undefined
+            }
+            clientProvider={usage?.provider}
+            clientLocked
+            disabledReason={
+              promptActive
+                ? "Settings are available when this turn finishes."
+                : state.status !== "ready" || transferBusy
+                  ? "Conversation settings are unavailable during this operation."
+                  : !selectedSettings
+                    ? "Loading Conversation settings…"
+                    : undefined
+            }
+            onOpen={refreshSettingsOptions}
+            onChange={(selection) => {
+              if (
+                !selectedSettings ||
+                !selection.permissionMode ||
+                promptActive ||
+                state.status !== "ready"
+              )
+                return;
+              const next = {
+                model: selection.model,
+                reasoningEffort: selection.reasoningEffort || null,
+                permissionMode: selection.permissionMode
+              };
+              const expected = settingsChange?.expected ?? selectedSettings;
+              setSettingsChange(
+                managedConversationSettingsKey(next) ===
+                  managedConversationSettingsKey(expected)
+                  ? null
+                  : { expected, next }
+              );
+              setSettingsError("");
+            }}
+          />
+          <button
+            className="conversation-send"
+            aria-label={promptActive ? "Interrupt active turn" : "Send prompt"}
+            disabled={
+              promptActive
+                ? !runtime ||
+                  runtimeActionBusy ||
+                  runtime.executionState !== "running"
+                : sendDisabled
+            }
+            onClick={() =>
+              promptActive ? controlRuntime("interrupt") : void submit()
+            }
+            title={promptActive ? "Interrupt active turn" : "Send prompt"}
+            type="button"
+          >
+            {promptActive ? (
+              <Square aria-hidden="true" />
+            ) : (
+              <ArrowUp aria-hidden="true" />
+            )}
+          </button>
+        </div>
       </div>
+      {settingsError && (
+        <p className="personal-managed-error" role="alert">
+          {settingsError}
+        </p>
+      )}
       {resolvedConversation.executionId && usage ? (
         <div className="personal-managed-meta-row">
           <ManagedConversationUsage
             model={usage.model}
             provider={usage.provider}
-            reasoningEffort={usage.reasoningEffort}
             usage={usage.usage}
           />
           {state.status === "ready" && authorizeTransfer ? (
@@ -3534,6 +3404,7 @@ function SessionDetail({
 type ManagedConversationDraft = {
   conversation: ManagedConversationIdentity;
   launchInput: Parameters<ManagedConversationDesktopApi["start"]>[0];
+  initialPrompt?: InitialConversationPrompt;
   status: "starting" | "ready" | "failed" | "reconciling";
   message: string;
   thread: PersonalDesktopProjectThread;
@@ -3934,7 +3805,8 @@ export function PersonalMemoryWorkspace({
               onManagedConversationStarted={(
                 conversation,
                 status,
-                launchInput
+                launchInput,
+                initialPrompt
               ) => {
                 if (!selectedProject) return;
                 const now = new Date().toISOString();
@@ -3968,6 +3840,7 @@ export function PersonalMemoryWorkspace({
                   next.set(routeId, {
                     conversation,
                     launchInput,
+                    initialPrompt,
                     status,
                     message:
                       status === "starting"

@@ -9,6 +9,7 @@ const DropdownMenu = MenuPrimitive.Root;
 const DropdownMenuTrigger = MenuPrimitive.Trigger;
 const DropdownMenuGroup = MenuPrimitive.Group;
 const DropdownMenuRadioGroup = MenuPrimitive.RadioGroup;
+const DropdownMenuRadioItem = MenuPrimitive.RadioItem;
 
 function DropdownMenuPopup({
   className,
@@ -113,6 +114,7 @@ export {
   DropdownMenuPopup,
   DropdownMenuPopup as DropdownMenuContent,
   DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger
 };

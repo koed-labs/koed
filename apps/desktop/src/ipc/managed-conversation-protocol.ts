@@ -1,5 +1,8 @@
 import {
   isSupportedAiClientDriverId,
+  parseManagedConversationSettings,
+  type AiClientPermissionMode,
+  type ManagedConversationSettingsChange,
   type SupportedAiClientDriverId
 } from "@koed/shared/ai-client-contract";
 
@@ -130,6 +133,7 @@ export type ManagedConversationSendRequest = {
   prompt: string;
   fileMentionCommandIds: string[];
   terminalContextReferences: string[];
+  settingsChange?: ManagedConversationSettingsChange;
 };
 
 export type ManagedConversationTargetsRequest = {
@@ -371,6 +375,7 @@ export type ManagedConversationResult =
       provider: "codex" | "claude" | "pi";
       model: string | null;
       reasoningEffort: string | null;
+      permissionMode?: AiClientPermissionMode | null;
       usage: ManagedConversationContextUsage | null;
     }
   | {
@@ -573,7 +578,8 @@ export const parseManagedConversationRequest = (
         "clientUserMessageId",
         "prompt",
         "fileMentionCommandIds",
-        "terminalContextReferences"
+        "terminalContextReferences",
+        ...(Object.hasOwn(input, "settingsChange") ? ["settingsChange"] : [])
       ],
       "Managed Conversation send"
     );
@@ -612,6 +618,25 @@ export const parseManagedConversationRequest = (
         "Client user message id"
       ),
       prompt: prompt(input.prompt),
+      ...(Object.hasOwn(input, "settingsChange")
+        ? {
+            settingsChange: (() => {
+              const change = record(
+                input.settingsChange,
+                "Conversation settings change"
+              );
+              exactKeys(
+                change,
+                ["expected", "next"],
+                "Conversation settings change"
+              );
+              return {
+                expected: parseManagedConversationSettings(change.expected),
+                next: parseManagedConversationSettings(change.next)
+              };
+            })()
+          }
+        : {}),
       fileMentionCommandIds: input.fileMentionCommandIds as string[],
       terminalContextReferences: input.terminalContextReferences as string[]
     };
@@ -1433,6 +1458,7 @@ export const parseManagedConversationResult = (
   if (result.operation === "usage") {
     const hasModel = Object.hasOwn(result, "model");
     const hasReasoningEffort = Object.hasOwn(result, "reasoningEffort");
+    const hasPermissionMode = Object.hasOwn(result, "permissionMode");
     exactKeys(
       result,
       [
@@ -1441,6 +1467,7 @@ export const parseManagedConversationResult = (
         "provider",
         ...(hasModel ? ["model"] : []),
         ...(hasReasoningEffort ? ["reasoningEffort"] : []),
+        ...(hasPermissionMode ? ["permissionMode"] : []),
         "usage"
       ],
       "Managed Conversation usage result"
@@ -1456,6 +1483,18 @@ export const parseManagedConversationResult = (
       operation: "usage",
       executionId: identifier(result.executionId, "Managed execution id"),
       provider: result.provider,
+      ...(hasPermissionMode
+        ? {
+            permissionMode:
+              result.permissionMode === null
+                ? null
+                : parseManagedConversationSettings({
+                    model: "validation",
+                    reasoningEffort: null,
+                    permissionMode: result.permissionMode
+                  }).permissionMode
+          }
+        : {}),
       model:
         result.model === null || result.model === undefined
           ? null

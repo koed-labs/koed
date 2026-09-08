@@ -17,6 +17,7 @@ export type RuntimeSessionEntry<P extends ManagedConversationProvider> = {
   executionGeneration: number;
   aiClientInstanceId: string;
   configIdentityHash: string;
+  settingsKey?: string;
   session: ProviderSession[P];
 };
 
@@ -35,6 +36,7 @@ export class ManagedConversationRuntimeRegistry {
       executionGeneration?: number;
       aiClientInstanceId?: string;
       configIdentityHash?: string;
+      settingsKey?: string;
     }
   ): RuntimeSessionEntry<P> | undefined {
     const entry = this.#sessions.get(executionId);
@@ -54,6 +56,12 @@ export class ManagedConversationRuntimeRegistry {
     if (
       expected?.configIdentityHash !== undefined &&
       entry.configIdentityHash !== expected.configIdentityHash
+    ) {
+      return undefined;
+    }
+    if (
+      expected?.settingsKey !== undefined &&
+      entry.settingsKey !== expected.settingsKey
     ) {
       return undefined;
     }

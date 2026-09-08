@@ -866,12 +866,13 @@ export function ManagedProjectCockpit({
     return (
       <button
         aria-label="Open Project"
+        aria-expanded={false}
         className="personal-cockpit-open"
         onClick={() => setOpen(true)}
         title="Open Project"
         type="button"
       >
-        <FileCode2 aria-hidden="true" />
+        <ChevronLeft aria-hidden="true" />
       </button>
     );
   }

@@ -27,6 +27,7 @@ import {
 
 import {
   claudeAgentSdkExecutableOptions,
+  claudeAgentSdkEffort,
   claudeAgentSdkProcessEnvironment,
   resolveClaudeCodeExecutable
 } from "./ai-client-runner.js";
@@ -38,6 +39,7 @@ type ManagedPermissionMode = PermissionMode;
 export interface ClaudeManagedConversationConfig {
   cwd: string;
   model: string;
+  reasoningEffort?: string;
   permissionMode: ManagedPermissionMode;
   env?: NodeJS.ProcessEnv;
   managedHome: string;
@@ -1051,6 +1053,9 @@ export class ClaudeManagedConversationSession {
           env: this.sdkEnvironment,
           ...claudeAgentSdkExecutableOptions(this.executablePath),
           model: this.model,
+          ...(this.config.reasoningEffort
+            ? { effort: claudeAgentSdkEffort(this.config.reasoningEffort) }
+            : {}),
           ...(this.config.permissionMode === "default"
             ? {}
             : { permissionMode: this.config.permissionMode }),

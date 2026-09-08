@@ -764,6 +764,90 @@ describe("Managed Conversation service lifecycle", () => {
     }
   });
 
+  it("rejects unavailable turn settings before opening a runtime and keeps the Conversation writable", async () => {
+    const ownerUserId = randomUUID();
+    const executionId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const execution = {
+      ...startingExecutionFixture({
+        ownerUserId,
+        executionId,
+        deploymentId,
+        deviceId
+      }),
+      state: "running"
+    };
+    const command = {
+      id: randomUUID(),
+      ownerUserId,
+      executionId,
+      executionGeneration: 1,
+      commandKind: "prompt",
+      attempts: 1,
+      leaseToken: randomUUID(),
+      payload: {
+        prompt: "Keep working",
+        settings: {
+          model: "retired-model",
+          reasoningEffort: "high",
+          permissionMode: "supervised"
+        }
+      },
+      execution
+    };
+    const repository = {
+      listManagedConversationExecutionsForRunner: vi.fn(async () => []),
+      listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
+        async () => []
+      ),
+      listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
+      reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
+      claimManagedConversationCommands: vi.fn(async () => [command]),
+      listAiClientInstances: vi.fn(async () => []),
+      listCurrentAiClientCapabilitySnapshots: vi.fn(async () => []),
+      getManagedConversationRuntimeBinding: vi.fn(),
+      setManagedConversationExecutionState: vi.fn(),
+      failManagedConversationCommand: vi.fn(async () => ({
+        updated: true,
+        reconciled: false,
+        requeued: false
+      }))
+    };
+    const service = createManagedConversationService({
+      repository: repository as unknown as MemorySourceRepository,
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token",
+      localOwnerUserId: ownerUserId,
+      appServerBinary: "must-not-start-provider",
+      deviceId,
+      deploymentId,
+      koedHome: "/tmp/koed-managed-conversation-settings-test",
+      envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never
+    });
+    try {
+      await expect(service.processOnce()).resolves.toEqual({
+        completed: 0,
+        failed: 1
+      });
+      expect(repository.failManagedConversationCommand).toHaveBeenCalledWith({
+        commandId: command.id,
+        leaseToken: command.leaseToken,
+        state: "failed",
+        errorCode: "ManagedConversationSettingsUnavailableError"
+      });
+      expect(
+        repository.getManagedConversationRuntimeBinding
+      ).not.toHaveBeenCalled();
+      expect(
+        repository.setManagedConversationExecutionState
+      ).not.toHaveBeenCalled();
+    } finally {
+      await service.stop();
+    }
+  });
+
   it("does not block command processing on unrelated startup recovery", async () => {
     let finishRecovery!: (value: []) => void;
     const recovery = new Promise<[]>((resolve) => {

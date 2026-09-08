@@ -2929,6 +2929,7 @@ export const createKoedServerManager = ({
         provider: payload.provider,
         model: payload.model,
         reasoningEffort: payload.reasoningEffort,
+        permissionMode: payload.permissionMode ?? null,
         usage: payload.usage
       });
     }
@@ -3182,27 +3183,49 @@ export const createKoedServerManager = ({
           "The managed Conversation is not writable. Koed will not submit this prompt automatically."
       });
     }
-    await authenticatedPersonalMemoryRequest(
-      ({ apiOrigin }) => ({
-        url: new URL(
-          `/v1/managed-conversations/${encodeURIComponent(execution.id)}/prompts`,
-          apiOrigin
-        ),
-        init: {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            executionGeneration: execution.executionGeneration,
-            idempotencyKey: request.idempotencyKey,
-            clientUserMessageId: request.clientUserMessageId,
-            prompt: request.prompt,
-            fileMentionCommandIds: request.fileMentionCommandIds,
-            terminalContextReferences: request.terminalContextReferences
-          })
-        }
-      }),
-      1 * 1_024 * 1_024
-    );
+    try {
+      await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL(
+            `/v1/managed-conversations/${encodeURIComponent(execution.id)}/prompts`,
+            apiOrigin
+          ),
+          init: {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              executionGeneration: execution.executionGeneration,
+              idempotencyKey: request.idempotencyKey,
+              clientUserMessageId: request.clientUserMessageId,
+              prompt: request.prompt,
+              fileMentionCommandIds: request.fileMentionCommandIds,
+              terminalContextReferences: request.terminalContextReferences,
+              ...(request.settingsChange
+                ? { settingsChange: request.settingsChange }
+                : {})
+            })
+          }
+        }),
+        1 * 1_024 * 1_024
+      );
+    } catch (error) {
+      if (
+        !(error instanceof PersonalMemoryBoundaryError) ||
+        error.retryable ||
+        error.code === "invalid_response"
+      )
+        throw error;
+      return parseManagedConversationResult({
+        operation: "send",
+        status: "rejected",
+        conversation,
+        idempotencyKey: request.idempotencyKey,
+        clientUserMessageId: request.clientUserMessageId,
+        message: request.settingsChange
+          ? "The prompt was not sent. Conversation settings or AI Client availability changed. Review the current settings and try again."
+          : "The prompt was not sent. The Conversation is unavailable or the request was rejected."
+      });
+    }
     return parseManagedConversationResult({
       operation: "send",
       status: "queued",

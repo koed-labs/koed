@@ -12,6 +12,12 @@ import {
   type ManagedConversationFileOperationResult
 } from "@koed/shared";
 import pg from "pg";
+import {
+  managedConversationSettingsKey,
+  parseManagedConversationSettings,
+  type ManagedConversationSettings,
+  type ManagedConversationSettingsChange
+} from "@koed/shared/ai-client-contract";
 
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
 import { managedConversationEventMutationId } from "./managed-conversation-event.js";
@@ -271,6 +277,7 @@ export interface ManagedConversationRepository {
       clientUserMessageId: string;
       prompt: string;
       fileMentionCommandIds?: string[];
+      settingsChange?: ManagedConversationSettingsChange;
     }
   ): Promise<ManagedConversationCommandRecord>;
   enqueueManagedConversationFileOperation(
@@ -1214,6 +1221,7 @@ export const createManagedConversationRepository = (
     commandId: string;
     prompt: string;
     fileMentions?: Array<Record<string, unknown>>;
+    settings: ManagedConversationSettings;
   }) =>
     encryptCommandPayload({
       ownerUserId: input.ownerUserId,
@@ -1222,6 +1230,7 @@ export const createManagedConversationRepository = (
       objectClass: "managed_conversation_prompt",
       value: {
         prompt: input.prompt,
+        settings: input.settings,
         ...(input.fileMentions?.length
           ? { fileMentions: input.fileMentions }
           : {})
@@ -1454,7 +1463,12 @@ export const createManagedConversationRepository = (
               ownerUserId: actor.userId,
               executionId,
               commandId,
-              prompt: input.initialPrompt
+              prompt: input.initialPrompt,
+              settings: {
+                model: input.model,
+                reasoningEffort: input.reasoningEffort ?? null,
+                permissionMode: input.permissionMode
+              }
             })
           : null;
         const commandResult = await client.query<CommandRow>(
@@ -1505,6 +1519,14 @@ export const createManagedConversationRepository = (
 
     async enqueueManagedConversationPrompt(actor, input) {
       const prompt = input.prompt.trim();
+      const settingsChange = input.settingsChange
+        ? {
+            expected: parseManagedConversationSettings(
+              input.settingsChange.expected
+            ),
+            next: parseManagedConversationSettings(input.settingsChange.next)
+          }
+        : undefined;
       const fileMentionCommandIds = input.fileMentionCommandIds ?? [];
       if (
         !prompt ||
@@ -1594,7 +1616,8 @@ export const createManagedConversationRepository = (
             executionGeneration: input.executionGeneration,
             clientUserMessageId: input.clientUserMessageId,
             prompt,
-            fileMentionCommandIds
+            fileMentionCommandIds,
+            ...(settingsChange ? { settingsChange } : {})
           })
         );
         const existing = await client.query<CommandRow>(
@@ -1617,6 +1640,55 @@ export const createManagedConversationRepository = (
             await decryptPayload(existing.rows[0])
           );
         }
+        const currentSettings: ManagedConversationSettings = {
+          model: current.model,
+          reasoningEffort: current.reasoning_effort,
+          permissionMode: current.permission_mode
+        };
+        const settings = settingsChange?.next ?? currentSettings;
+        if (settingsChange) {
+          if (
+            managedConversationSettingsKey(currentSettings) !==
+            managedConversationSettingsKey(settingsChange.expected)
+          ) {
+            throw statusError(
+              "Conversation settings changed. Refresh before sending.",
+              409
+            );
+          }
+          const activeCommands = await client.query(
+            `select id from managed_conversation_commands
+              where execution_id = $1 and execution_generation = $2
+                and state not in ('completed', 'failed', 'canceled')
+              limit 1`,
+            [input.executionId, input.executionGeneration]
+          );
+          if (current.state !== "running" || activeCommands.rows.length) {
+            throw statusError(
+              "Finish the current operation before changing Conversation settings.",
+              409
+            );
+          }
+          const updated = await client.query<ExecutionRow>(
+            `update managed_conversation_executions
+                set model = $3, reasoning_effort = $4, permission_mode = $5,
+                    state_version = state_version + 1, updated_at = now()
+              where owner_user_id = $1 and id = $2
+              returning ${EXECUTION_COLUMNS}`,
+            [
+              actor.userId,
+              input.executionId,
+              settings.model,
+              settings.reasoningEffort,
+              settings.permissionMode
+            ]
+          );
+          await appendManagedConversationEvent(client, {
+            ownerUserId: actor.userId,
+            executionId: input.executionId,
+            mutationId: `managed-conversation:${input.executionId}:state:${updated.rows[0]!.state_version}`
+          });
+        }
         const sequenceResult = await client.query<{ sequence: number }>(
           `select coalesce(max(sequence), -1) + 1 as sequence
              from managed_conversation_commands
@@ -1630,7 +1702,8 @@ export const createManagedConversationRepository = (
           executionId: input.executionId,
           commandId,
           prompt,
-          fileMentions
+          fileMentions,
+          settings
         });
         const result = await client.query<CommandRow>(
           `insert into managed_conversation_commands (
@@ -1655,6 +1728,7 @@ export const createManagedConversationRepository = (
         await client.query("commit");
         return mapCommand(result.rows[0]!, {
           prompt,
+          settings,
           ...(fileMentions.length > 0 ? { fileMentions } : {})
         });
       } catch (error) {

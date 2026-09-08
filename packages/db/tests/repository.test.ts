@@ -2398,6 +2398,148 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("admits settings atomically with an idle turn and preserves idempotency and ownership", async () => {
+    const settingsRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 45).toString("base64")
+      )
+    });
+    const owner = await settingsRepo.createUser({
+      email: `settings-${randomUUID()}@example.com`
+    });
+    const stranger = await settingsRepo.createUser({
+      email: `settings-stranger-${randomUUID()}@example.com`
+    });
+    const actor = { userId: owner.id };
+    const runner = {
+      runnerId: "settings-runner",
+      deploymentId: randomUUID(),
+      deviceId: randomUUID(),
+      leaseMs: 60_000,
+      ownerUserId: owner.id
+    };
+    const expected = {
+      model: "old-model",
+      reasoningEffort: "low",
+      permissionMode: "supervised" as const
+    };
+    const next = {
+      model: "new-model",
+      reasoningEffort: "high",
+      permissionMode: "full_access" as const
+    };
+    const created = await settingsRepo.createManagedConversation(actor, {
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      ...expected,
+      runnerKind: "local_device",
+      projectId: "settings-project",
+      runnerDeploymentId: runner.deploymentId,
+      runnerDeviceId: runner.deviceId,
+      idempotencyKey: randomUUID()
+    });
+    const request = {
+      executionId: created.execution.id,
+      executionGeneration: 1,
+      idempotencyKey: randomUUID(),
+      clientUserMessageId: randomUUID(),
+      prompt: "Use the new settings.",
+      settingsChange: { expected, next }
+    };
+    await expect(
+      settingsRepo.enqueueManagedConversationPrompt(actor, request)
+    ).rejects.toThrow("Finish the current operation");
+    const [start] = await settingsRepo.claimManagedConversationCommands(runner);
+    await settingsRepo.bindManagedConversationRuntime(actor, {
+      executionId: created.execution.id,
+      expectedStateVersion: start!.execution.stateVersion,
+      executionGeneration: 1,
+      runnerId: runner.runnerId,
+      logicalSessionId: randomUUID(),
+      providerThreadId: randomUUID(),
+      providerCliVersion: "test"
+    });
+    await settingsRepo.completeManagedConversationCommand({
+      commandId: start!.id,
+      leaseToken: start!.leaseToken!,
+      result: { started: true }
+    });
+    await expect(
+      settingsRepo.enqueueManagedConversationPrompt(
+        { userId: stranger.id },
+        request
+      )
+    ).rejects.toThrow("not writable");
+    const queued = await settingsRepo.enqueueManagedConversationPrompt(
+      actor,
+      request
+    );
+    expect(queued.payload).toMatchObject({
+      settings: next,
+      prompt: request.prompt
+    });
+    expect(
+      await settingsRepo.getManagedConversationExecution(
+        actor,
+        created.execution.id
+      )
+    ).toMatchObject(next);
+    expect(
+      (await settingsRepo.enqueueManagedConversationPrompt(actor, request)).id
+    ).toBe(queued.id);
+    await expect(
+      settingsRepo.enqueueManagedConversationPrompt(actor, {
+        ...request,
+        settingsChange: { expected, next: { ...next, model: "third-model" } }
+      })
+    ).rejects.toThrow("idempotency key was reused");
+    await expect(
+      settingsRepo.enqueueManagedConversationPrompt(actor, {
+        ...request,
+        idempotencyKey: randomUUID(),
+        clientUserMessageId: randomUUID()
+      })
+    ).rejects.toThrow("settings changed");
+    await expect(
+      settingsRepo.enqueueManagedConversationPrompt(actor, {
+        ...request,
+        idempotencyKey: randomUUID(),
+        clientUserMessageId: randomUUID(),
+        settingsChange: { expected: next, next: expected }
+      })
+    ).rejects.toThrow("Finish the current operation");
+    const [turn] = await settingsRepo.claimManagedConversationCommands(runner);
+    expect(turn).toMatchObject({
+      id: queued.id,
+      payload: { settings: next },
+      execution: next
+    });
+    await settingsRepo.completeManagedConversationCommand({
+      commandId: turn!.id,
+      leaseToken: turn!.leaseToken!
+    });
+    const attempts = await Promise.allSettled(
+      ["model-a", "model-b"].map((model) =>
+        settingsRepo.enqueueManagedConversationPrompt(actor, {
+          ...request,
+          idempotencyKey: randomUUID(),
+          clientUserMessageId: randomUUID(),
+          settingsChange: { expected: next, next: { ...next, model } }
+        })
+      )
+    );
+    expect(
+      attempts.filter((attempt) => attempt.status === "fulfilled")
+    ).toHaveLength(1);
+    expect(
+      attempts.filter((attempt) => attempt.status === "rejected")
+    ).toHaveLength(1);
+    expect(
+      (await settingsRepo.getManagedConversationCommand(actor, queued.id))
+        ?.payload
+    ).toMatchObject({ settings: next });
+  });
+
   it("stores durable execution checkpoints and owner-only encrypted diffs", async () => {
     const checkpointRepo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
