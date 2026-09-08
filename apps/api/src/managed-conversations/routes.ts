@@ -767,6 +767,12 @@ export const registerManagedConversationRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext
 ): void => {
+  // Managed Conversations are interactive. Keep their capacity independent
+  // from background Capture Hook and historical-import memory traffic.
+  const managedConversationReadRateLimit =
+    context.rateLimit.managedConversationRead ?? context.rateLimit.memoryRead;
+  const managedConversationWriteRateLimit =
+    context.rateLimit.managedConversationWrite ?? context.rateLimit.memoryWrite;
   const remoteAuthority = () => {
     if (!localExecutionProfiles.has(context.config.deploymentProfile)) {
       return null;
@@ -1356,7 +1362,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/launch-options",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
@@ -1550,7 +1556,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/target-devices",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
@@ -1571,7 +1577,7 @@ export const registerManagedConversationRoutes = (
 
   app.post(
     "/v1/managed-conversations",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request, reply) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
@@ -1722,7 +1728,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
@@ -1752,7 +1758,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/:executionId",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
@@ -1776,7 +1782,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/:executionId/usage",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
@@ -1813,7 +1819,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/:executionId/diff",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManagedFile(request);
@@ -1877,7 +1883,7 @@ export const registerManagedConversationRoutes = (
 
   app.post(
     "/v1/managed-conversations/:executionId/checkpoints/:checkpointId/restore",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request, reply) => {
       assertAvailable(context);
       const user = await authenticateManagedScope(
@@ -1915,7 +1921,7 @@ export const registerManagedConversationRoutes = (
 
   app.delete(
     "/v1/managed-conversations/:executionId/execution-checkout",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request, reply) => {
       assertAvailable(context);
       const user = await authenticateManagedScope(
@@ -2008,7 +2014,7 @@ export const registerManagedConversationRoutes = (
 
   app.post(
     "/v1/managed-conversations/:executionId/prompts",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request, reply) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
@@ -2103,7 +2109,7 @@ export const registerManagedConversationRoutes = (
 
   app.post(
     "/v1/managed-conversations/:executionId/files",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request, reply) => {
       assertAvailable(context);
       const user = await authenticateManagedFile(request);
@@ -2137,7 +2143,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/:executionId/files/:commandId",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManagedFile(request);
@@ -2191,7 +2197,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/:executionId/previews",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManagedPreview(request);
@@ -2210,7 +2216,7 @@ export const registerManagedConversationRoutes = (
 
   app.post(
     "/v1/managed-conversations/:executionId/previews",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManagedPreview(request);
@@ -2232,7 +2238,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/:executionId/previews/:previewId/access",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = authenticateDesktopPreview(request);
@@ -2255,7 +2261,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/:executionId/terminals/profiles",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManagedTerminal(request);
@@ -2273,7 +2279,7 @@ export const registerManagedConversationRoutes = (
 
   app.post(
     "/v1/managed-conversations/:executionId/terminals",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request, reply) => {
       assertAvailable(context);
       const user = await authenticateManagedTerminal(request);
@@ -2297,7 +2303,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/:executionId/terminals",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManagedTerminal(request);
@@ -2318,7 +2324,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/:executionId/terminals/:terminalId",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManagedTerminal(request);
@@ -2343,7 +2349,7 @@ export const registerManagedConversationRoutes = (
 
   app.post(
     "/v1/managed-conversations/:executionId/terminals/:terminalId/stop",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManagedTerminal(request);
@@ -2369,7 +2375,7 @@ export const registerManagedConversationRoutes = (
       {
         websocket: true,
         preValidation: async (request, reply) => {
-          await context.rateLimit.memoryRead(request, reply);
+          await managedConversationReadRateLimit(request, reply);
           const authorization = request.headers.authorization?.trim() ?? "";
           const isDevice = authorization
             .toLowerCase()
@@ -2521,7 +2527,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/:executionId/runtime",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
@@ -2586,7 +2592,7 @@ export const registerManagedConversationRoutes = (
 
   app.post(
     "/v1/managed-conversations/:executionId/runtime-items/:itemId/respond",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
@@ -2641,7 +2647,7 @@ export const registerManagedConversationRoutes = (
   for (const commandKind of ["interrupt", "stop"] as const) {
     app.post(
       `/v1/managed-conversations/:executionId/${commandKind}`,
-      { preHandler: context.rateLimit.memoryWrite },
+      { preHandler: managedConversationWriteRateLimit },
       async (request, reply) => {
         assertAvailable(context);
         const user = await authenticateManaged(request);
@@ -2674,7 +2680,7 @@ export const registerManagedConversationRoutes = (
 
   app.post(
     "/v1/managed-conversations/:executionId/handoffs",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request, reply) => {
       assertAvailable(context);
       const actor = await authenticateManagedTransfer(request);
@@ -2783,7 +2789,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/:executionId/handoffs/active",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
@@ -2807,7 +2813,7 @@ export const registerManagedConversationRoutes = (
 
   app.post(
     "/v1/managed-conversations/:executionId/forks",
-    { preHandler: context.rateLimit.memoryWrite },
+    { preHandler: managedConversationWriteRateLimit },
     async (request, reply) => {
       assertAvailable(context);
       const actor = await authenticateManagedTransfer(request);
@@ -2917,7 +2923,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/:executionId/forks/active",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);
@@ -2941,7 +2947,7 @@ export const registerManagedConversationRoutes = (
 
   app.get(
     "/v1/managed-conversations/:executionId/transfers/latest",
-    { preHandler: context.rateLimit.memoryRead },
+    { preHandler: managedConversationReadRateLimit },
     async (request) => {
       assertAvailable(context);
       const user = await authenticateManaged(request);

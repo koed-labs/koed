@@ -6,6 +6,8 @@ export type RateLimitName =
   | "memoryRead"
   | "memoryWrite"
   | "memoryRecall"
+  | "managedConversationRead"
+  | "managedConversationWrite"
   | "sourceJournal"
   | "projectionRebuild";
 
@@ -154,6 +156,8 @@ export const createRateLimitHandlers = (
     memoryRead: rateLimit("memoryRead"),
     memoryWrite: rateLimit("memoryWrite"),
     memoryRecall: rateLimit("memoryRecall"),
+    managedConversationRead: rateLimit("managedConversationRead"),
+    managedConversationWrite: rateLimit("managedConversationWrite"),
     sourceJournal: rateLimit("sourceJournal"),
     projectionRebuild: rateLimit("projectionRebuild")
   };

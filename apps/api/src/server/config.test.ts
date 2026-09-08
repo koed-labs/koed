@@ -26,6 +26,8 @@ describe("resolveApiServerConfig", () => {
           memoryRead: { windowMs: 60_000, max: 1000 },
           memoryWrite: { windowMs: 60_000, max: 1000 },
           memoryRecall: { windowMs: 60_000, max: 1000 },
+          managedConversationRead: { windowMs: 60_000, max: 1000 },
+          managedConversationWrite: { windowMs: 60_000, max: 300 },
           sourceJournal: { windowMs: 60_000, max: 10_000 }
         }
       },
@@ -142,6 +144,9 @@ describe("resolveApiServerConfig", () => {
       MEMORY_RATE_LIMIT_WINDOW_MS: "120000",
       MEMORY_RATE_LIMIT_MAX: "50",
       MEMORY_WRITE_RATE_LIMIT_MAX: "10",
+      MANAGED_CONVERSATION_RATE_LIMIT_WINDOW_MS: "30000",
+      MANAGED_CONVERSATION_READ_RATE_LIMIT_MAX: "80",
+      MANAGED_CONVERSATION_WRITE_RATE_LIMIT_MAX: "40",
       SOURCE_JOURNAL_RATE_LIMIT_WINDOW_MS: "30000",
       SOURCE_JOURNAL_RATE_LIMIT_MAX: "2000"
     });
@@ -155,6 +160,14 @@ describe("resolveApiServerConfig", () => {
     expect(config.rateLimit.policies.memoryWrite).toEqual({
       windowMs: 120_000,
       max: 10
+    });
+    expect(config.rateLimit.policies.managedConversationRead).toEqual({
+      windowMs: 30_000,
+      max: 80
+    });
+    expect(config.rateLimit.policies.managedConversationWrite).toEqual({
+      windowMs: 30_000,
+      max: 40
     });
     expect(config.rateLimit.policies.sourceJournal).toEqual({
       windowMs: 30_000,

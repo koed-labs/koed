@@ -314,6 +314,30 @@ export const resolveApiServerConfig = (
             memoryRateLimitMax
           )
         },
+        managedConversationRead: {
+          windowMs: positiveIntEnv(
+            environment,
+            "MANAGED_CONVERSATION_RATE_LIMIT_WINDOW_MS",
+            memoryRateLimitWindowMs
+          ),
+          max: positiveIntEnv(
+            environment,
+            "MANAGED_CONVERSATION_READ_RATE_LIMIT_MAX",
+            memoryRateLimitMax
+          )
+        },
+        managedConversationWrite: {
+          windowMs: positiveIntEnv(
+            environment,
+            "MANAGED_CONVERSATION_RATE_LIMIT_WINDOW_MS",
+            memoryRateLimitWindowMs
+          ),
+          max: positiveIntEnv(
+            environment,
+            "MANAGED_CONVERSATION_WRITE_RATE_LIMIT_MAX",
+            300
+          )
+        },
         sourceJournal: {
           windowMs: positiveIntEnv(
             environment,

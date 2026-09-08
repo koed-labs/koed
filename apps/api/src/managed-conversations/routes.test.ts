@@ -1816,6 +1816,8 @@ describe("managed Conversation routes", () => {
       })
     );
     const upsert = vi.fn();
+    const managedConversationRead = vi.fn(async () => undefined);
+    const managedConversationWrite = vi.fn(async () => undefined);
     const app = Fastify({ logger: false });
     registerManagedConversationRoutes(app, {
       config: { deploymentProfile: "local_personal", koedHome },
@@ -1836,8 +1838,19 @@ describe("managed Conversation routes", () => {
         })
       },
       rateLimit: {
-        memoryRead: async () => undefined,
-        memoryWrite: async () => undefined
+        memoryRead: async () => {
+          throw Object.assign(new Error("Background read capacity exhausted"), {
+            statusCode: 429
+          });
+        },
+        memoryWrite: async () => {
+          throw Object.assign(
+            new Error("Background write capacity exhausted"),
+            { statusCode: 429 }
+          );
+        },
+        managedConversationRead,
+        managedConversationWrite
       },
       localEdge: {
         upstreamBackendsPath: writeManagedUpstreamRegistry(),
@@ -1926,6 +1939,8 @@ describe("managed Conversation routes", () => {
     expect(options.body).not.toContain("executable");
     expect(options.body).not.toContain("configHome");
     expect(invalidModel.statusCode).toBe(409);
+    expect(managedConversationRead).toHaveBeenCalledTimes(1);
+    expect(managedConversationWrite).toHaveBeenCalledTimes(2);
     expect(upsert).toHaveBeenCalledWith(
       { userId },
       expect.objectContaining({
