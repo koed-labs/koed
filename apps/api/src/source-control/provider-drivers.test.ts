@@ -405,7 +405,10 @@ describe.each(cases)("$provider source-control driver", (fixture) => {
     await expect(
       driver.createComment({ ...input, number: 7, body: "Ship it" })
     ).resolves.toMatchObject({ body: "Ship it" });
-    if (fixture.provider !== "azure_devops") {
+    if (
+      fixture.provider !== "azure_devops" &&
+      fixture.provider !== "bitbucket"
+    ) {
       await expect(
         driver.createReview({
           ...input,
@@ -541,6 +544,24 @@ describe.each(cases)("$provider source-control driver", (fixture) => {
       ).toMatchObject({ commit_id: sha, event: "REQUEST_CHANGES" });
     }
   });
+
+  if (fixture.provider === "bitbucket")
+    it("rejects approvals without atomic revision binding", async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      await expect(
+        driver.createReview({
+          ...input,
+          fetch,
+          number: 7,
+          decision: "approve",
+          body: "",
+          expectedHeadObjectId: sha
+        })
+      ).rejects.toMatchObject({
+        code: "source_control_capability_unavailable"
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    });
 
   it("keeps credentials in the provider request boundary", async () => {
     await driver.inspect(input);

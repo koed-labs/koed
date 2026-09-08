@@ -22,7 +22,12 @@ const fixture = () => {
   const terminalId = randomUUID();
   let listener: ((signal: ManagedTerminalPreviewSignal) => void) | null = null;
   const verifyPreviewListener = vi.fn(async () => true);
+  const assertExecutionAuthority = vi.fn(async () => ({
+    id: executionId,
+    executionGeneration: 1
+  }));
   const terminalRuntime = {
+    assertExecutionAuthority,
     verifyPreviewListener,
     subscribePreviewSignals(
       next: (signal: ManagedTerminalPreviewSignal) => void
@@ -34,10 +39,7 @@ const fixture = () => {
     }
   } as unknown as ManagedTerminalRuntime;
   const repository = {
-    getManagedConversationExecution: vi.fn(async () => ({
-      id: executionId,
-      executionGeneration: 1
-    })),
+    getManagedConversationExecution: vi.fn(async () => null),
     getManagedConversationRuntimeBinding: vi.fn(async () => ({
       executionGeneration: 1,
       checkoutLifecycle: "ready"
@@ -62,6 +64,7 @@ const fixture = () => {
     ownerUserId,
     executionId,
     terminalId,
+    assertExecutionAuthority,
     verifyPreviewListener,
     fetch,
     changes,
@@ -74,6 +77,34 @@ const fixture = () => {
 };
 
 describe("managed development preview runtime", () => {
+  it("rechecks authoritative assignment before accessing a published preview", async () => {
+    const test = fixture();
+    try {
+      const preview = await test.runtime.nominate(
+        test.ownerUserId,
+        test.executionId,
+        {
+          executionGeneration: 1,
+          terminalId: test.terminalId,
+          scheme: "http",
+          port: 5173
+        }
+      );
+      test.assertExecutionAuthority.mockRejectedValueOnce(
+        Object.assign(new Error("Assignment changed"), { statusCode: 409 })
+      );
+      await expect(
+        test.runtime.access({
+          ownerUserId: test.ownerUserId,
+          executionId: test.executionId,
+          previewId: preview.id,
+          lifecycleGeneration: preview.lifecycleGeneration
+        })
+      ).rejects.toMatchObject({ statusCode: 409 });
+    } finally {
+      test.runtime.close();
+    }
+  });
   it("publishes only verified ready listeners and keeps navigation data private", async () => {
     const test = fixture();
     const preview = await test.runtime.nominate(

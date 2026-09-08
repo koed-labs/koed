@@ -843,13 +843,10 @@ const bitbucket: SourceControlProviderDriver = {
       );
     }
     if (input.decision === "approve") {
-      await request(
-        input,
-        "POST",
-        `${bitbucketRepo(input)}/pullrequests/${input.number}/approve`
+      throw Object.assign(
+        new Error("Revision-bound approvals are unavailable for this provider"),
+        { statusCode: 409, code: "source_control_capability_unavailable" }
       );
-      if (input.body) await this.createComment(input);
-      return;
     }
     await this.createComment(input);
   }

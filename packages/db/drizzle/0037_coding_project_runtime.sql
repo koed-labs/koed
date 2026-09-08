@@ -504,7 +504,7 @@ ALTER TABLE "managed_conversation_runtime_bindings" ADD CONSTRAINT "managed_conv
               and length(trim("managed_conversation_runtime_bindings"."local_git_directory")) > 0
               and "managed_conversation_runtime_bindings"."repository_identity_hash" is not null
               and "managed_conversation_runtime_bindings"."worktree_identity_hash" is not null
-              and "managed_conversation_runtime_bindings"."head_object_id" is not null
+              and ("managed_conversation_runtime_bindings"."head_object_id" is not null or "managed_conversation_runtime_bindings"."checkout_kind" = 'user_managed_checkout')
               and ("managed_conversation_runtime_bindings"."checkout_kind" <> 'koed_managed_worktree'
                 or ("managed_conversation_runtime_bindings"."base_ref" is not null
                   and "managed_conversation_runtime_bindings"."base_object_id" is not null

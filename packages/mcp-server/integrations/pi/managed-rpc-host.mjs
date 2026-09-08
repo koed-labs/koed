@@ -32,7 +32,7 @@ async function main() {
     sessionStartEvent
   }) => {
     if (fs.realpathSync(targetCwd) !== cwd)
-      throw new Error("Managed Pi workspace changed.");
+      throw new Error("Managed Pi Project changed.");
     const services = await sdk.createAgentSessionServices({
       cwd,
       agentDir,

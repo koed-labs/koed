@@ -4100,7 +4100,7 @@ export const managedConversationRuntimeBindings = pgTable(
               and length(trim(${table.localGitDirectory})) > 0
               and ${table.repositoryIdentityHash} is not null
               and ${table.worktreeIdentityHash} is not null
-              and ${table.headObjectId} is not null
+              and (${table.headObjectId} is not null or ${table.checkoutKind} = 'user_managed_checkout')
               and (${table.checkoutKind} <> 'koed_managed_worktree'
                 or (${table.baseRef} is not null
                   and ${table.baseObjectId} is not null

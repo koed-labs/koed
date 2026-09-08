@@ -252,57 +252,77 @@ describe("managed Conversation capability admission", () => {
       await app.close();
     }
   });
-  it("reads remote diffs and queues remote restores through their scoped routes", async () => {
-    const userId = randomUUID();
-    const executionId = randomUUID();
-    const checkpointId = randomUUID();
-    const commandId = randomUUID();
-    const fetch = vi.fn<typeof globalThis.fetch>(
-      async () =>
-        new Response(JSON.stringify({ origin: "authority" }), { status: 202 })
-    );
-    const requireRepository = vi.fn();
-    const app = Fastify({ logger: false });
-    registerManagedConversationRoutes(app, {
-      config: { deploymentProfile: "local_personal" },
-      encryption: { envelopeEncryptionProvider: {} },
-      auth: {
-        authenticateSessionOrDeviceCredential: async () => ({ id: userId })
-      },
-      rateLimit: {
-        memoryRead: async () => undefined,
-        memoryWrite: async () => undefined
-      },
-      localEdge: {
-        upstreamBackendsPath: writeManagedUpstreamRegistry(),
-        resolveUpstreamAuthorization: () => "Koed-Device fixture:secret",
-        fetch
-      },
-      requireRepository
-    } as unknown as ApiRouteContext);
-    try {
-      const diff = await app.inject({
-        method: "GET",
-        url: `/v1/managed-conversations/${executionId}/diff?scope=turn&commandId=${commandId}`
-      });
-      expect(diff.json()).toEqual({ origin: "authority" });
-      expect(
-        new URL(String(fetch.mock.calls[0]![0])).searchParams.get("commandId")
-      ).toBe(commandId);
-      const restored = await app.inject({
-        method: "POST",
-        url: `/v1/managed-conversations/${executionId}/checkpoints/${checkpointId}/restore`,
-        payload: { executionGeneration: 1, idempotencyKey: randomUUID() }
-      });
-      expect(restored.statusCode).toBe(202);
-      expect(new URL(String(fetch.mock.calls[1]![0])).pathname).toBe(
-        `/koed/v1/managed-conversations/${executionId}/checkpoints/${checkpointId}/restore`
+  it.each([true, false])(
+    "applies local remote-operation policy to diff and Restore (%s)",
+    async (allowed) => {
+      const userId = randomUUID();
+      const executionId = randomUUID();
+      const checkpointId = randomUUID();
+      const commandId = randomUUID();
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(JSON.stringify({ origin: "authority" }), { status: 202 })
       );
-      expect(requireRepository).not.toHaveBeenCalled();
-    } finally {
-      await app.close();
+      const requireRepository = vi.fn();
+      const resolveUpstreamAuthorization = vi.fn(
+        () => "Koed-Device fixture:secret"
+      );
+      const app = Fastify({ logger: false });
+      registerManagedConversationRoutes(app, {
+        config: { deploymentProfile: "local_personal" },
+        encryption: { envelopeEncryptionProvider: {} },
+        auth: {
+          authenticateSessionOrDeviceCredential: async () => ({ id: userId })
+        },
+        rateLimit: {
+          memoryRead: async () => undefined,
+          memoryWrite: async () => undefined
+        },
+        localEdge: {
+          upstreamBackendsPath: writeManagedUpstreamRegistry(),
+          remoteOperationsAllowed: () => allowed,
+          resolveUpstreamAuthorization,
+          fetch
+        },
+        requireRepository
+      } as unknown as ApiRouteContext);
+      try {
+        const diff = await app.inject({
+          method: "GET",
+          url: `/v1/managed-conversations/${executionId}/diff?scope=turn&commandId=${commandId}`
+        });
+        if (!allowed) {
+          expect(diff.statusCode).toBe(503);
+          const restored = await app.inject({
+            method: "POST",
+            url: `/v1/managed-conversations/${executionId}/checkpoints/${checkpointId}/restore`,
+            payload: { executionGeneration: 1, idempotencyKey: randomUUID() }
+          });
+          expect(restored.statusCode).toBe(503);
+          expect(fetch).not.toHaveBeenCalled();
+          expect(resolveUpstreamAuthorization).not.toHaveBeenCalled();
+          expect(requireRepository).not.toHaveBeenCalled();
+          return;
+        }
+        expect(diff.json()).toEqual({ origin: "authority" });
+        expect(
+          new URL(String(fetch.mock.calls[0]![0])).searchParams.get("commandId")
+        ).toBe(commandId);
+        const restored = await app.inject({
+          method: "POST",
+          url: `/v1/managed-conversations/${executionId}/checkpoints/${checkpointId}/restore`,
+          payload: { executionGeneration: 1, idempotencyKey: randomUUID() }
+        });
+        expect(restored.statusCode).toBe(202);
+        expect(new URL(String(fetch.mock.calls[1]![0])).pathname).toBe(
+          `/koed/v1/managed-conversations/${executionId}/checkpoints/${checkpointId}/restore`
+        );
+        expect(requireRepository).not.toHaveBeenCalled();
+      } finally {
+        await app.close();
+      }
     }
-  });
+  );
 
   it("refreshes terminal assignment from the upstream runner authority without falling back locally", async () => {
     const executionId = randomUUID();
@@ -1746,6 +1766,7 @@ describe("managed Conversation routes", () => {
       },
       localEdge: {
         upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        remoteOperationsAllowed: () => true,
         resolveUpstreamAuthorization: () =>
           "Koed-Device upstream-key:upstream-secret",
         fetch
@@ -1870,7 +1891,7 @@ describe("managed Conversation routes", () => {
     expect(blocked.statusCode).toBe(409);
     expect(blocked.json()).toMatchObject({
       statusCode: 409,
-      message: "Managed terminals must stop before workspace cleanup"
+      message: "Managed terminals must stop before checkout cleanup"
     });
     expect(response.statusCode).toBe(202);
     expect(hasLiveExecutionTerminal).toHaveBeenCalledWith({
@@ -1961,6 +1982,7 @@ describe("managed Conversation routes", () => {
       },
       localEdge: {
         upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        remoteOperationsAllowed: () => true,
         resolveUpstreamAuthorization: () =>
           "Koed-Device upstream-key:upstream-secret",
         fetch: vi.fn(async (input: URL | RequestInfo) => {
@@ -2100,6 +2122,7 @@ describe("managed Conversation routes", () => {
       },
       localEdge: {
         upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        remoteOperationsAllowed: () => true,
         resolveUpstreamAuthorization: () =>
           "Koed-Device upstream-key:upstream-secret",
         fetch: vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
@@ -2288,6 +2311,7 @@ describe("managed Conversation routes", () => {
       },
       localEdge: {
         upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        remoteOperationsAllowed: () => true,
         resolveUpstreamAuthorization: () =>
           "Koed-Device upstream-key:upstream-secret",
         fetch: vi.fn(
@@ -2344,6 +2368,7 @@ describe("managed Conversation routes", () => {
       },
       localEdge: {
         upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        remoteOperationsAllowed: () => true,
         resolveUpstreamAuthorization: () =>
           "Koed-Device upstream-key:upstream-secret",
         fetch: vi.fn(async (input: URL | RequestInfo) => {

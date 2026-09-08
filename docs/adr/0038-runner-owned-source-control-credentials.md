@@ -207,7 +207,7 @@ The implementation must prove:
 - local-only, multiple-remote, fork, changed-remote, linked-worktree, nested
   repository, SSH, and HTTP(S) identity behavior;
 - exact account/repository binding and denial for another User, Team,
-  Workspace, runner, execution generation, remote, host, or credential
+  Checkout, runner, execution generation, remote, host, or credential
   generation;
 - no token extraction or leakage through renderer IPC, AI Client environment,
   process arguments, Git config, URLs, logs, diagnostics, queues, or errors;

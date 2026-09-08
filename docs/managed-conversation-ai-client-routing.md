@@ -43,11 +43,11 @@ See [Conversation settings](conversation-settings.md) for the Desktop behavior.
 
 ## Native adapters
 
-| AI Client   | Managed runtime                             | Source and portability                                                                  |
-| ----------- | ------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Codex       | Native app-server protocol                  | Verified Codex transcript journal and native resume/fork                                |
-| Claude Code | Official Claude Agent SDK                   | Isolated managed Session Store, verified source boundary, and SDK fork                  |
-| Pi          | Installed public SDK with native RPC server | Pi v3 JSONL journal, explicit workspace-bound resume, and SDK `SessionManager.forkFrom` |
+| AI Client   | Managed runtime                             | Source and portability                                                                 |
+| ----------- | ------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Codex       | Native app-server protocol                  | Verified Codex transcript journal and native resume/fork                               |
+| Claude Code | Official Claude Agent SDK                   | Isolated managed Session Store, verified source boundary, and SDK fork                 |
+| Pi          | Installed public SDK with native RPC server | Pi v3 JSONL journal, explicit checkout-bound resume, and SDK `SessionManager.forkFrom` |
 
 All three adapters support start, resume, prompt submission, cancellation,
 approval interaction, streaming presentation, source identity, handoff, and
@@ -64,9 +64,9 @@ Provider text deltas enter bounded, generation-fenced transient presentation.
 They do not become Memory Events directly. Provider-specific Transcript Watchers
 admit the durable source and advance canonical capture. Prompts with uncertain
 delivery are not replayed automatically. Checkpoints capture the assigned local
-workspace before and after turns; restoring files does not rewind Conversation
+checkout before and after turns; restoring files does not rewind Conversation
 history or implicitly grant AI Client permissions. Restore retains a recovery
-checkpoint and publishes a completed workspace checkpoint and updated diff.
+checkpoint and publishes a completed checkout checkpoint and updated diff.
 File browsing selects the completed checkpoint for the latest command.
 
 ## Permissions
@@ -96,3 +96,9 @@ header remains unchanged during handoff. Native fork creates a new identity
 and target-workspace header, and the adapter verifies its parent reference and
 that parent bytes were not modified. Ordinary Pi capture and background
 Local Synthesis continue to use their separate integration paths.
+
+Pi resume reads the verified transcript once from an opened regular file, then
+starts the provider against an exclusively created copy in a private managed
+session directory. That copy becomes the active transcript; provider migration
+and append operations preserve the original transcript, including hard-linked
+sources.

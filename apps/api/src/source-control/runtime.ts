@@ -11,7 +11,10 @@ import {
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import type { MemorySourceRepository } from "@koed/db";
+import type {
+  ManagedTerminalExecutionAuthority,
+  MemorySourceRepository
+} from "@koed/db";
 import {
   sourceControlConnectionSchema,
   sourceControlOperationSchema,
@@ -121,7 +124,11 @@ const providerForHost = (host: string): SourceControlProvider | null => {
   if (host === "github.com") return "github";
   if (host === "gitlab.com") return "gitlab";
   if (host === "bitbucket.org") return "bitbucket";
-  if (host === "dev.azure.com" || host.endsWith(".visualstudio.com")) {
+  if (
+    host === "dev.azure.com" ||
+    host === "ssh.dev.azure.com" ||
+    host.endsWith(".visualstudio.com")
+  ) {
     return "azure_devops";
   }
   return null;
@@ -164,6 +171,14 @@ const locatorFor = (
   const path = rawPath.replace(/\.git$/i, "");
   const segments = path.split("/").filter(Boolean).map(decodeURIComponent);
   if (provider === "azure_devops") {
+    if (host === "ssh.dev.azure.com") {
+      if (segments.length !== 4 || segments[0] !== "v3") return null;
+      return {
+        namespace: segments[1]!,
+        project: segments[2]!,
+        repository: segments[3]!
+      };
+    }
     if (host === "dev.azure.com") {
       const marker = segments.indexOf("_git");
       if (marker !== 2 || !segments[0] || !segments[1] || !segments[3]) {
@@ -286,6 +301,10 @@ export const createSourceControlRuntime = (options: {
   requireRepository(): MemorySourceRepository;
   fetch: typeof fetch;
   resolveCredential?: (reference: string) => Promise<string | null>;
+  assertExecutionAuthority(
+    ownerUserId: string,
+    executionId: string
+  ): Promise<ManagedTerminalExecutionAuthority>;
 }): SourceControlRuntime => {
   const connectionsPath = resolve(
     options.koedHome,
@@ -343,10 +362,7 @@ export const createSourceControlRuntime = (options: {
   ) => {
     const repository = options.requireRepository();
     const [execution, binding] = await Promise.all([
-      repository.getManagedConversationExecution(
-        { userId: ownerUserId },
-        operation.executionId
-      ),
+      options.assertExecutionAuthority(ownerUserId, operation.executionId),
       repository.getManagedConversationRuntimeBinding(
         { userId: ownerUserId },
         operation.executionId
@@ -410,7 +426,11 @@ export const createSourceControlRuntime = (options: {
         const normalized = safeRemoteUrl(raw);
         if (!normalized) return null;
         const configuredForHost = configured.filter(
-          (connection) => connection.host === normalized.host
+          (connection) =>
+            connection.host ===
+            (normalized.host === "ssh.dev.azure.com"
+              ? "dev.azure.com"
+              : normalized.host)
         );
         const configuredProviders = [
           ...new Set(configuredForHost.map((connection) => connection.provider))
@@ -944,10 +964,13 @@ export const createSourceControlRuntime = (options: {
       if (!("idempotencyKey" in operation)) {
         return await executeBound(ownerUserId, operation);
       }
-      const digest = sha256(JSON.stringify(operation));
+      const journalKey = sha256(
+        JSON.stringify([ownerUserId, operation.idempotencyKey])
+      );
+      const digest = sha256(JSON.stringify([ownerUserId, operation]));
       return await journal(async () => {
         const operations = await readJournal();
-        const existing = operations[operation.idempotencyKey];
+        const existing = operations[journalKey];
         if (existing) {
           if (existing.digest !== digest) {
             throw sourceControlError(
@@ -957,6 +980,7 @@ export const createSourceControlRuntime = (options: {
             );
           }
           if (existing.state === "completed" && existing.result) {
+            await executionContext(ownerUserId, operation);
             return existing.result;
           }
           throw sourceControlError(
@@ -969,7 +993,7 @@ export const createSourceControlRuntime = (options: {
         const result = await executeBound(ownerUserId, operation, async () => {
           if (dispatched) return;
           dispatched = true;
-          operations[operation.idempotencyKey] = {
+          operations[journalKey] = {
             digest,
             state: "dispatching"
           };
@@ -982,7 +1006,7 @@ export const createSourceControlRuntime = (options: {
             "source_control_dispatch_missing"
           );
         }
-        operations[operation.idempotencyKey] = {
+        operations[journalKey] = {
           digest,
           state: "completed",
           result

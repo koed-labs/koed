@@ -622,7 +622,12 @@ export interface ManagedConversationRepository {
   ): Promise<ManagedConversationRuntimeBindingRecord | null>;
   clearManagedConversationRuntimeBinding(
     actor: ActorContext,
-    executionId: string
+    executionId: string,
+    pendingAssignment?: {
+      executionGeneration: number;
+      deploymentId: string;
+      deviceId: string;
+    }
   ): Promise<boolean>;
   listManagedConversationExecutionCheckpoints(
     actor: ActorContext,
@@ -4122,14 +4127,15 @@ export const createManagedConversationRepository = (
       const result = await pool.query<RuntimeBindingRow>(
         `select binding.*
            from managed_conversation_runtime_bindings binding
-           join managed_conversation_executions execution
+           left join managed_conversation_executions execution
              on execution.id = binding.execution_id
-            and execution.owner_user_id = binding.owner_user_id
-            and execution.execution_generation = binding.execution_generation
           where binding.deployment_id = $1
             and binding.device_id = $2
             and binding.checkout_lifecycle = 'pending'
-            and execution.state = 'starting'
+            and (execution.id is null or (
+              execution.owner_user_id = binding.owner_user_id
+              and execution.execution_generation = binding.execution_generation
+              and execution.state = 'starting'))
             and ($3::uuid is null or binding.owner_user_id = $3)
           order by binding.created_at, binding.execution_id
           limit $4`,
@@ -4744,11 +4750,25 @@ export const createManagedConversationRepository = (
       return result.rows[0] ? hydrateDiff(result.rows[0]) : null;
     },
 
-    async clearManagedConversationRuntimeBinding(actor, executionId) {
+    async clearManagedConversationRuntimeBinding(
+      actor,
+      executionId,
+      pendingAssignment
+    ) {
       const result = await pool.query(
         `delete from managed_conversation_runtime_bindings
-          where owner_user_id = $1 and execution_id = $2`,
-        [actor.userId, executionId]
+          where owner_user_id = $1 and execution_id = $2
+            and ($3::bigint is null or (
+              checkout_lifecycle = 'pending'
+              and execution_generation = $3
+              and deployment_id = $4 and device_id = $5))`,
+        [
+          actor.userId,
+          executionId,
+          pendingAssignment?.executionGeneration ?? null,
+          pendingAssignment?.deploymentId ?? null,
+          pendingAssignment?.deviceId ?? null
+        ]
       );
       return (result.rowCount ?? 0) === 1;
     }

@@ -1620,6 +1620,7 @@ interface ConversationProjectionInput {
   visibility?: Visibility;
   workClass?: "live_capture_projection" | "historical_import_backfill";
   presentationOnly?: boolean;
+  expectedPresentationPolicyRevision?: number;
 }
 
 export type SemanticMemoryRebuildInput = {

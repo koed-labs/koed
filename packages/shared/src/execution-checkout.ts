@@ -142,14 +142,30 @@ const gitIdentity = async (path: string) => {
     "--path-format=absolute",
     "--git-dir"
   ]);
-  const headObjectId = await git(path, ["rev-parse", "HEAD^{commit}"]);
-  if (!topLevel || !commonDirectory || !gitDirectory || !headObjectId) {
+  const headObjectId = await git(
+    path,
+    ["rev-parse", "--verify", "HEAD^{commit}"],
+    { allowFailure: true }
+  );
+  // A symbolic HEAD with no corresponding ref is an initialized, unborn branch.
+  if (!headObjectId) {
+    const branch = await git(path, ["symbolic-ref", "-q", "HEAD"], {
+      allowFailure: true
+    });
+    const ref = branch
+      ? await git(path, ["show-ref", "--verify", branch], {
+          allowFailure: true
+        })
+      : null;
+    if (!branch || ref) throw new Error("ExecutionCheckoutGitIdentityError");
+  }
+  if (!topLevel || !commonDirectory || !gitDirectory) {
     throw new Error("ExecutionCheckoutGitIdentityError");
   }
   const canonicalPath = await canonicalDirectory(topLevel);
   const canonicalCommonDirectory = await realpath(commonDirectory);
   const canonicalGitDirectory = await realpath(gitDirectory);
-  if (!objectIdPattern.test(headObjectId)) {
+  if (headObjectId && !objectIdPattern.test(headObjectId)) {
     throw new Error("ExecutionCheckoutGitIdentityError");
   }
   return {
@@ -506,7 +522,7 @@ export const createGitExecutionCheckoutDriver = async (input: {
           "update-ref",
           branchRef,
           baseObjectId,
-          "0000000000000000000000000000000000000000"
+          "0".repeat(baseObjectId.length)
         ]);
         createdBranch = true;
       }

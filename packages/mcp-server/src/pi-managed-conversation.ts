@@ -98,15 +98,36 @@ export class PiManagedConversationSession {
           "Pi transcript is outside its managed session directory."
         );
       }
-      if (!fs.statSync(transcriptPath).isFile())
-        throw new Error("Pi transcript is not a regular file.");
-      if (
-        !this.config.expectedSessionId ||
-        piSessionIdentity(transcriptPath).id !== this.config.expectedSessionId
-      ) {
-        throw new Error("Pi resume requires an exact session identity.");
+      const sourceFd = fs.openSync(
+        transcriptPath,
+        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW
+      );
+      let privateDirectory: string | undefined;
+      try {
+        if (!fs.fstatSync(sourceFd).isFile())
+          throw new Error("Pi transcript is not a regular file.");
+        // Read once from the opened file and resume a private managed copy.
+        // Pi may migrate or append to it without mutating the original inode.
+        const bytes = fs.readFileSync(sourceFd);
+        privateDirectory = fs.mkdtempSync(
+          path.join(sessionDirectory, ".resume-")
+        );
+        fs.chmodSync(privateDirectory, 0o700);
+        const privatePath = path.join(privateDirectory, "session.jsonl");
+        fs.writeFileSync(privatePath, bytes, { flag: "wx", mode: 0o600 });
+        if (
+          !this.config.expectedSessionId ||
+          piSessionIdentity(privatePath).id !== this.config.expectedSessionId
+        )
+          throw new Error("Pi resume requires an exact session identity.");
+        this.resumeSessionPath = privatePath;
+      } catch (error) {
+        if (privateDirectory)
+          fs.rmSync(privateDirectory, { recursive: true, force: true });
+        throw error;
+      } finally {
+        fs.closeSync(sourceFd);
       }
-      this.resumeSessionPath = transcriptPath;
     }
     // Locate the configured installation, including packaged dist/bundle launchers.
     let packageRoot = path.dirname(executable);

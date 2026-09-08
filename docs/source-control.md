@@ -1,6 +1,6 @@
 # Managed Source Control
 
-Koed exposes source control only for the exact Git workspace assigned to a
+Koed exposes source control only for the exact Git checkout assigned to a
 Managed Conversation. The API and Desktop use one provider-neutral contract;
 GitHub, GitLab, Bitbucket, and Azure DevOps behavior stays behind server-side
 drivers.
@@ -24,7 +24,8 @@ or database row.
 
 Desktop local mutations require native confirmation. Browser mutations require
 a fresh session. Personal API Tokens cannot mutate source control. Every
-operation re-verifies the User, execution generation, workspace identity,
+operation re-verifies the User, current runner assignment at the execution's
+local or upstream authority, execution generation, checkout identity,
 remote identity, credential generation, required capability, and expected
 revision.
 
@@ -35,7 +36,7 @@ checks, and comments. Mutations include fetch, explicit fast-forward, push of
 the current execution `HEAD`, review-request creation, comments, approvals, and
 change requests.
 
-Koed never runs `git pull`. Updating a workspace is two reviewed steps:
+Koed never runs `git pull`. Updating a checkout is two reviewed steps:
 
 1. fetch the selected remote with hooks and interactive credential prompts
    disabled;
@@ -51,7 +52,7 @@ Managed Conversation. Another enrolled device receives source through the
 encrypted handoff/fork restoration protocol rather than a renderer-directed
 clone. Hosted-runner cloning remains unavailable until the backend can select
 and fence the credential, destination root, source revision, and resulting
-workspace identity; it must not introduce a second credential path.
+checkout identity; it must not introduce a second credential path.
 
 ## Provider behavior
 
@@ -62,18 +63,28 @@ disabled redirects, bounded bodies and timeouts, and Koed's DNS-pinned secure
 upstream fetch. Shared UI branches on advertised capabilities rather than a
 provider name.
 
+Desktop follows provider continuations for later review requests and comments.
+Push resolves a branch beyond the first page before choosing the expected remote
+revision. Standard Azure DevOps SSH remotes map to the configured public Azure
+API connection.
+
+Bitbucket approvals remain unavailable because the provider approval operation
+cannot bind the reviewed commit atomically. Unsupported formal review decisions
+return a capability error without submitting a substitute comment.
+
 Azure DevOps review voting remains unavailable until an exact reviewer identity
 binding is present; the driver reports the unsupported capability instead of
 guessing a vote identity.
 
 ## Recovery and replay
 
-Mutations are durably journaled by idempotency key. Local validation failures do
+Mutations are durably journaled by User and idempotency key. Cached results
+require current execution authority before replay. Local validation failures do
 not enter the journal. Koed writes `dispatching` immediately before an external
 or local side effect and writes the bounded result after completion. A crash in
 between returns an indeterminate outcome for review rather than silently
 replaying a possibly completed write.
 
 Credential rotation or revocation invalidates queued operations through the
-credential generation. A changed remote, execution handoff, workspace change,
+credential generation. A changed remote, execution handoff, checkout change,
 or revision change fails closed and requires a fresh operation.

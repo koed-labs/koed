@@ -93,7 +93,8 @@ export const registerRawConversationRoutes = (
               offset + 1_000
             ),
             limit: 1_000,
-            presentationOnly: true
+            presentationOnly: true,
+            expectedPresentationPolicyRevision: reset.presentationPolicyRevision
           }
         );
         for (const key of [
