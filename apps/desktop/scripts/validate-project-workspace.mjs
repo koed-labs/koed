@@ -36,7 +36,7 @@ const inspectWorkspace = async (window) =>
       previewTextOverflow: preview && getComputedStyle(preview).textOverflow,
       sourceAiClient: row?.textContent.includes('Codex CLI') ?? false,
       pinnedHeadingVisible: document.body.textContent.includes('Pinned'),
-      settledToggleVisible: document.body.textContent.includes('Settled & snoozed'),
+      inactiveToggleVisible: document.body.textContent.includes('Inactive'),
       presentationActionCount: document.querySelectorAll('.personal-session-actions').length,
       sessionListOverflow: Boolean(list && list.scrollWidth > list.clientWidth),
       rawMetadataExposed: document.body.textContent.includes('untrusted metadata'),
@@ -313,7 +313,7 @@ const run = async () => {
     assert.equal(wide.previewTextOverflow, "clip");
     assert.equal(wide.sourceAiClient, false);
     assert.equal(wide.pinnedHeadingVisible, true);
-    assert.equal(wide.settledToggleVisible, true);
+    assert.equal(wide.inactiveToggleVisible, true);
     assert.equal(wide.presentationActionCount, 4);
     const actionMenuState = await window.webContents.executeJavaScript(`(() => {
       const summaries = [...document.querySelectorAll('.personal-session-actions > summary')];

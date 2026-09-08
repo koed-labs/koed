@@ -1422,7 +1422,7 @@ function ProjectDetail({
             {inactive.length ? (
               <details className="personal-settled-sessions">
                 <summary>
-                  <span>Settled &amp; snoozed</span>
+                  <span>Inactive</span>
                   <span>{inactive.length}</span>
                 </summary>
                 {inactive.map((thread) => renderSessionTree(thread))}

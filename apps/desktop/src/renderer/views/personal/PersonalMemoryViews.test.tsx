@@ -537,7 +537,7 @@ describe("PersonalMemoryWorkspace", () => {
       container.querySelector('[aria-label="Pinned Conversations"]')
         ?.textContent
     ).toContain(pinned.name);
-    expect(container.textContent).toContain("Settled & snoozed2");
+    expect(container.textContent).toContain("Inactive2");
     expect(
       container.querySelector(".personal-settled-sessions")?.textContent
     ).toContain("Automatically settled");
