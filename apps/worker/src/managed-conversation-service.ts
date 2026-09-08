@@ -1781,8 +1781,11 @@ export const createManagedConversationService = (options: {
   const createPiSession = (
     execution: ManagedConversationExecutionRecord,
     binding: ManagedConversationRuntimeBindingRecord,
-    fork?: { sourcePath: string; parentSessionId: string }
+    preparation?:
+      | { kind: "fork"; sourcePath: string; parentSessionId: string }
+      | { kind: "restore" }
   ): PiManagedConversationSession => {
+    const fork = preparation?.kind === "fork" ? preparation : undefined;
     if (
       execution.provider !== "pi" ||
       execution.runnerKind !== "local_device"
@@ -1821,6 +1824,9 @@ export const createManagedConversationService = (options: {
             ? { sessionId: binding.providerThreadId }
             : {}),
       onResumeIdentity: async (identity) => {
+        // Restore adopts the identity after validating its source lineage and
+        // restoration lease, before publishing the process to runtimeSessions.
+        if (preparation?.kind === "restore") return;
         if (
           !binding.localSessionId ||
           identity.sessionId !== binding.providerThreadId ||
@@ -4126,15 +4132,22 @@ export const createManagedConversationService = (options: {
           relativePath: input.providerArtifactRelativePath,
           bytes: transcript.bytes
         });
-        const resumed = createPiSession(execution, {
-          ...binding,
-          managedHome,
-          transcriptPath,
-          providerThreadId: source.threadId
-        });
+        const resumed = createPiSession(
+          execution,
+          {
+            ...binding,
+            managedHome,
+            transcriptPath,
+            providerThreadId: source.threadId
+          },
+          { kind: "restore" }
+        );
         try {
-          await withProviderLease(command, "pi", resumed, (owned) =>
-            owned.start()
+          const identity = await withProviderLease(
+            command,
+            "pi",
+            resumed,
+            (owned) => owned.start()
           );
           execution = await options.repository.bindManagedConversationRuntime(
             { userId: command.ownerUserId },
@@ -4159,7 +4172,7 @@ export const createManagedConversationService = (options: {
                 executionGeneration: execution.executionGeneration,
                 localSessionId: source.sessionId,
                 providerThreadId: source.threadId,
-                transcriptPath,
+                transcriptPath: identity.transcriptPath,
                 managedHome,
                 providerCliVersion: input.providerCliVersion,
                 sourceGenerationId: fork.parentNextSourceGenerationId
@@ -5868,13 +5881,17 @@ export const createManagedConversationService = (options: {
         }
         const started = isPiRestore
           ? await (async () => {
-              piSession = createPiSession(command.execution, {
-                ...runtimeBinding,
-                projectPath: target.path,
-                managedHome,
-                transcriptPath,
-                providerThreadId: certificate.manifest.providerThreadId
-              });
+              piSession = createPiSession(
+                command.execution,
+                {
+                  ...runtimeBinding,
+                  projectPath: target.path,
+                  managedHome,
+                  transcriptPath,
+                  providerThreadId: certificate.manifest.providerThreadId
+                },
+                { kind: "restore" }
+              );
               const identity = await withProviderLease(
                 command,
                 "pi",
@@ -5885,7 +5902,7 @@ export const createManagedConversationService = (options: {
                 localSessionId: target.transcript.sourceSessionId,
                 providerThreadId: identity.sessionId,
                 providerCliVersion: certificate.manifest.providerCliVersion,
-                transcriptPath,
+                transcriptPath: identity.transcriptPath,
                 managedHome
               };
             })()
@@ -6182,6 +6199,7 @@ export const createManagedConversationService = (options: {
               providerThreadId: target.manifest.providerThreadId
             },
             {
+              kind: "fork",
               sourcePath: sourceTranscriptPath,
               parentSessionId: target.manifest.providerThreadId
             }

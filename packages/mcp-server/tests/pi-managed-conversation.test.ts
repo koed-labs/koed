@@ -232,6 +232,53 @@ describe("Pi managed RPC conversation", () => {
     expect(fs.readFileSync(source, "utf8")).toBe(original);
   });
 
+  it.each([false, true])(
+    "waits for durable resume identity adoption (failure: %s)",
+    async (failure) => {
+      const f = fixture();
+      fs.mkdirSync(f.config.sessionDirectory);
+      const source = path.join(f.config.sessionDirectory, "original.jsonl");
+      const sessionId = "11111111-1111-4111-8111-111111111111";
+      const original =
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: sessionId,
+          cwd: f.root
+        }) + "\n";
+      fs.writeFileSync(source, original);
+      let finish: (() => void) | undefined;
+      const onResumeIdentity = vi.fn(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            finish = () =>
+              failure
+                ? reject(new Error("Identity adoption failed"))
+                : resolve();
+          })
+      );
+      const session = new PiManagedConversationSession({
+        ...f.config,
+        resumeSessionPath: source,
+        expectedSessionId: sessionId,
+        onResumeIdentity
+      });
+      let settled = false;
+      const started = session.start().finally(() => {
+        settled = true;
+      });
+      const result = failure
+        ? expect(started).rejects.toThrow("Identity adoption failed")
+        : expect(started).resolves.toMatchObject({ sessionId });
+      await vi.waitFor(() => expect(onResumeIdentity).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+      finish!();
+      await result;
+      expect(fs.readFileSync(source, "utf8")).toBe(original);
+      await session.closeAndWait();
+    }
+  );
+
   it("resolves the public SDK for a bundled native launcher", async () => {
     const { session } = fixture(0, true);
     await expect(session.start()).resolves.toMatchObject({
