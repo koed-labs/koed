@@ -82,7 +82,7 @@ import {
   diffExecutionCheckpoints,
   removeExecutionCheckpointRefs,
   restoreExecutionCheckpoint,
-  workspaceMatchesExecutionCheckpoint,
+  checkoutMatchesExecutionCheckpoint,
   type ExecutionCheckpointCapture
 } from "./execution-checkpoint.js";
 import {
@@ -90,10 +90,10 @@ import {
   resolveCheckpointFileMention
 } from "./execution-file-authority.js";
 import {
-  createGitExecutionWorkspaceDriver,
-  type ExecutionWorkspaceIdentity,
-  type GitExecutionWorkspaceDriver
-} from "@koed/shared/execution-workspace";
+  createGitExecutionCheckoutDriver,
+  type ExecutionCheckoutIdentity,
+  type GitExecutionCheckoutDriver
+} from "@koed/shared/execution-checkout";
 import {
   ManagedConversationRuntimeRegistry,
   runWithManagedConversationLease,
@@ -360,7 +360,7 @@ export const managedCodexRuntimeEnvironment = (input: {
 };
 
 const managedConversationErrorCodePattern =
-  /^(?:ManagedConversation|ExecutionCheckpoint|ExecutionWorkspace|ExecutionFile)[A-Za-z0-9_.-]{0,100}$/;
+  /^(?:ManagedConversation|ExecutionCheckpoint|ExecutionCheckout|ExecutionFile)[A-Za-z0-9_.-]{0,100}$/;
 
 export const managedConversationFailureCode = (error: unknown): string => {
   const seen = new Set<unknown>();
@@ -431,30 +431,30 @@ export const assertManagedConversationExecutionOwner = (input: {
   }
 };
 
-const terminalExecutionWorkspacePreparationErrors = new Set([
-  "ExecutionWorkspaceActivePathConflictError",
-  "ExecutionWorkspaceBaseRefError",
-  "ExecutionWorkspaceBranchCollisionError",
-  "ExecutionWorkspaceCreationVerificationError",
-  "ExecutionWorkspaceDirectoryError",
-  "ExecutionWorkspaceGitIdentityError",
-  "ExecutionWorkspaceGitUnavailableError",
-  "ExecutionWorkspaceIdentityChangedError",
-  "ExecutionWorkspacePathCollisionError",
-  "ExecutionWorkspaceReleaseConflictError",
-  "ExecutionWorkspaceRootBoundaryError",
-  "ExecutionWorkspaceSelectionIdentityError",
-  "ExecutionWorkspaceSelectionOwnershipError",
-  "ExecutionWorkspaceSourceDirtyError"
+const terminalExecutionCheckoutPreparationErrors = new Set([
+  "ExecutionCheckoutActivePathConflictError",
+  "ExecutionCheckoutBaseRefError",
+  "ExecutionCheckoutBranchCollisionError",
+  "ExecutionCheckoutCreationVerificationError",
+  "ExecutionCheckoutDirectoryError",
+  "ExecutionCheckoutGitIdentityError",
+  "ExecutionCheckoutGitUnavailableError",
+  "ExecutionCheckoutIdentityChangedError",
+  "ExecutionCheckoutPathCollisionError",
+  "ExecutionCheckoutReleaseConflictError",
+  "ExecutionCheckoutRootBoundaryError",
+  "ExecutionCheckoutSelectionIdentityError",
+  "ExecutionCheckoutSelectionOwnershipError",
+  "ExecutionCheckoutSourceDirtyError"
 ]);
 
-const terminalExecutionWorkspaceCleanupErrors = new Set([
+const terminalExecutionCheckoutCleanupErrors = new Set([
   "ExecutionCheckpointRefIdentityChangedError",
-  "ExecutionWorkspaceCleanupChangedError",
-  "ExecutionWorkspaceCleanupDirtyError",
-  "ExecutionWorkspaceCleanupIdentityError",
-  "ExecutionWorkspaceCleanupOwnershipError",
-  "ExecutionWorkspaceIdentityChangedError"
+  "ExecutionCheckoutCleanupChangedError",
+  "ExecutionCheckoutCleanupDirtyError",
+  "ExecutionCheckoutCleanupIdentityError",
+  "ExecutionCheckoutCleanupOwnershipError",
+  "ExecutionCheckoutIdentityChangedError"
 ]);
 
 export const managedConversationOriginSourceGeneration = (
@@ -553,7 +553,7 @@ export const createManagedConversationService = (options: {
     fetch?: typeof fetch;
   };
   turnTimeoutMs?: number;
-  executionWorkspaceDriver?: GitExecutionWorkspaceDriver;
+  executionCheckoutDriver?: GitExecutionCheckoutDriver;
   logger: Logger;
 }): ManagedConversationService => {
   const runnerId = randomUUID();
@@ -589,8 +589,8 @@ export const createManagedConversationService = (options: {
   let runnerHeartbeat: ReturnType<typeof setInterval> | null = null;
   let runtimeRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
   let runtimeRecoveryRetryAttempt = 0;
-  let executionWorkspaceRetryTimer: ReturnType<typeof setTimeout> | null = null;
-  let executionWorkspaceRetryAttempt = 0;
+  let executionCheckoutRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let executionCheckoutRetryAttempt = 0;
   let runtimeWakeVersion = 0;
   const runtimeWakeWaiters = new Set<() => void>();
   const transientOutputs = new Map<
@@ -611,25 +611,21 @@ export const createManagedConversationService = (options: {
     apiToken: options.apiToken,
     requestTimeoutMs: 60_000
   });
-  const executionWorkspaceDriver = options.executionWorkspaceDriver
-    ? Promise.resolve(options.executionWorkspaceDriver)
-    : createGitExecutionWorkspaceDriver({
-        managedRoot: resolve(
-          options.koedHome,
-          "managed-workspaces",
-          "worktrees"
-        )
+  const executionCheckoutDriver = options.executionCheckoutDriver
+    ? Promise.resolve(options.executionCheckoutDriver)
+    : createGitExecutionCheckoutDriver({
+        managedRoot: resolve(options.koedHome, "managed-checkouts", "worktrees")
       });
 
-  const scheduleExecutionWorkspaceRetry = (): void => {
-    if (stopped || executionWorkspaceRetryTimer) return;
-    const delayMs = Math.min(250 * 2 ** executionWorkspaceRetryAttempt, 10_000);
-    executionWorkspaceRetryAttempt += 1;
-    executionWorkspaceRetryTimer = setTimeout(() => {
-      executionWorkspaceRetryTimer = null;
+  const scheduleExecutionCheckoutRetry = (): void => {
+    if (stopped || executionCheckoutRetryTimer) return;
+    const delayMs = Math.min(250 * 2 ** executionCheckoutRetryAttempt, 10_000);
+    executionCheckoutRetryAttempt += 1;
+    executionCheckoutRetryTimer = setTimeout(() => {
+      executionCheckoutRetryTimer = null;
       requestProcessing();
     }, delayMs);
-    executionWorkspaceRetryTimer.unref?.();
+    executionCheckoutRetryTimer.unref?.();
   };
 
   const workspaceOperationId = (
@@ -637,7 +633,7 @@ export const createManagedConversationService = (options: {
     executionGeneration: number
   ): string => {
     const bytes = createHash("sha256")
-      .update("koed-execution-workspace-v1\0")
+      .update("koed-execution-checkout-v1\0")
       .update(executionId)
       .update("\0")
       .update(String(executionGeneration))
@@ -665,20 +661,20 @@ export const createManagedConversationService = (options: {
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   };
 
-  const workspaceFromBinding = (
+  const checkoutFromBinding = (
     binding: ManagedConversationRuntimeBindingRecord
-  ): ExecutionWorkspaceIdentity => {
+  ): ExecutionCheckoutIdentity => {
     if (
-      !binding.workspaceId ||
-      binding.workspaceKind === "pending" ||
+      !binding.checkoutId ||
+      binding.checkoutKind === "pending" ||
       !binding.creationOperationId
     ) {
-      throw new Error("ManagedConversationExecutionWorkspacePendingError");
+      throw new Error("ManagedConversationExecutionCheckoutPendingError");
     }
     return {
-      workspaceId: binding.workspaceId,
+      checkoutId: binding.checkoutId,
       vcsDriver: binding.vcsDriver,
-      ownership: binding.workspaceKind,
+      ownership: binding.checkoutKind,
       canonicalPath: binding.projectPath,
       localRepositoryCommonDirectory: binding.localRepositoryCommonDirectory,
       localGitDirectory: binding.localGitDirectory,
@@ -860,7 +856,7 @@ export const createManagedConversationService = (options: {
     });
     try {
       const capture = await captureExecutionCheckpoint({
-        workspace: workspaceFromBinding(binding),
+        checkout: checkoutFromBinding(binding),
         executionId: command.executionId,
         executionGeneration: command.executionGeneration,
         sequence: command.sequence,
@@ -924,7 +920,7 @@ export const createManagedConversationService = (options: {
     if (!baseline || !firstBaseline) {
       throw new Error("ManagedConversationBaselineCheckpointMissingError");
     }
-    const workspace = workspaceFromBinding(input.binding);
+    const checkout = checkoutFromBinding(input.binding);
     await recordCheckpointPending({
       command: input.command,
       checkpointKind: "terminal",
@@ -934,7 +930,7 @@ export const createManagedConversationService = (options: {
     let capture: ExecutionCheckpointCapture;
     try {
       capture = await captureExecutionCheckpoint({
-        workspace,
+        checkout,
         executionId: input.command.executionId,
         executionGeneration: input.command.executionGeneration,
         sequence: input.command.sequence,
@@ -958,12 +954,12 @@ export const createManagedConversationService = (options: {
       "terminal"
     );
     const turnDiff = await diffExecutionCheckpoints({
-      workspace,
+      checkout,
       from: captureFromRecord(baseline),
       to: capture
     });
     const fullDiff = await diffExecutionCheckpoints({
-      workspace,
+      checkout,
       from: captureFromRecord(firstBaseline),
       to: capture
     });
@@ -1069,27 +1065,27 @@ export const createManagedConversationService = (options: {
     };
   };
 
-  const bindExecutionWorkspace = async (
+  const bindExecutionCheckout = async (
     execution: ManagedConversationExecutionRecord,
     binding: ManagedConversationRuntimeBindingRecord
   ): Promise<ManagedConversationRuntimeBindingRecord> => {
-    const driver = await executionWorkspaceDriver;
-    if (binding.workspaceLifecycle === "ready") {
-      await driver.verify(workspaceFromBinding(binding));
+    const driver = await executionCheckoutDriver;
+    if (binding.checkoutLifecycle === "ready") {
+      await driver.verify(checkoutFromBinding(binding));
       return binding;
     }
-    if (binding.workspaceLifecycle !== "pending") {
-      throw new Error("ManagedConversationExecutionWorkspaceUnavailableError");
+    if (binding.checkoutLifecycle !== "pending") {
+      throw new Error("ManagedConversationExecutionCheckoutUnavailableError");
     }
     const operationId = workspaceOperationId(
       execution.id,
       execution.executionGeneration
     );
-    const workspace = await driver.select({
+    const checkout = await driver.select({
       operationId,
       path: binding.sourceProjectPath
     });
-    return options.repository.bindManagedConversationExecutionWorkspace(
+    return options.repository.bindManagedConversationExecutionCheckout(
       { userId: execution.ownerUserId },
       {
         executionId: execution.id,
@@ -1097,32 +1093,32 @@ export const createManagedConversationService = (options: {
         deviceId: options.deviceId,
         executionGeneration: execution.executionGeneration,
         sourceProjectPath: binding.sourceProjectPath,
-        projectPath: workspace.canonicalPath,
-        workspaceId: workspace.workspaceId,
-        workspaceKind: workspace.ownership,
-        vcsDriver: workspace.vcsDriver,
-        ...(workspace.localRepositoryCommonDirectory
+        projectPath: checkout.canonicalPath,
+        checkoutId: checkout.checkoutId,
+        checkoutKind: checkout.ownership,
+        vcsDriver: checkout.vcsDriver,
+        ...(checkout.localRepositoryCommonDirectory
           ? {
               localRepositoryCommonDirectory:
-                workspace.localRepositoryCommonDirectory
+                checkout.localRepositoryCommonDirectory
             }
           : {}),
-        ...(workspace.localGitDirectory
-          ? { localGitDirectory: workspace.localGitDirectory }
+        ...(checkout.localGitDirectory
+          ? { localGitDirectory: checkout.localGitDirectory }
           : {}),
-        ...(workspace.repositoryIdentityHash
-          ? { repositoryIdentityHash: workspace.repositoryIdentityHash }
+        ...(checkout.repositoryIdentityHash
+          ? { repositoryIdentityHash: checkout.repositoryIdentityHash }
           : {}),
-        ...(workspace.worktreeIdentityHash
-          ? { worktreeIdentityHash: workspace.worktreeIdentityHash }
+        ...(checkout.worktreeIdentityHash
+          ? { worktreeIdentityHash: checkout.worktreeIdentityHash }
           : {}),
-        ...(workspace.baseRef ? { baseRef: workspace.baseRef } : {}),
-        ...(workspace.baseObjectId
-          ? { baseObjectId: workspace.baseObjectId }
+        ...(checkout.baseRef ? { baseRef: checkout.baseRef } : {}),
+        ...(checkout.baseObjectId
+          ? { baseObjectId: checkout.baseObjectId }
           : {}),
-        ...(workspace.branchRef ? { branchRef: workspace.branchRef } : {}),
-        ...(workspace.headObjectId
-          ? { headObjectId: workspace.headObjectId }
+        ...(checkout.branchRef ? { branchRef: checkout.branchRef } : {}),
+        ...(checkout.headObjectId
+          ? { headObjectId: checkout.headObjectId }
           : {}),
         creationOperationId: operationId
       }
@@ -1959,7 +1955,7 @@ export const createManagedConversationService = (options: {
       current.executionGeneration === execution.executionGeneration &&
       (!projectPathOverride || current.projectPath === projectPathOverride)
     ) {
-      return bindExecutionWorkspace(execution, current);
+      return bindExecutionCheckout(execution, current);
     }
     let projectPath = projectPathOverride?.trim();
     if (!projectPath) {
@@ -1984,7 +1980,7 @@ export const createManagedConversationService = (options: {
         executionGeneration: execution.executionGeneration,
         projectPath
       });
-    return bindExecutionWorkspace(execution, binding);
+    return bindExecutionCheckout(execution, binding);
   };
 
   const promptWithFileMentions = async (
@@ -2006,7 +2002,7 @@ export const createManagedConversationService = (options: {
     let aggregateBytes = 0;
     for (const mention of mentions) {
       const resolved = await resolveCheckpointFileMention({
-        workspace: workspaceFromBinding(binding),
+        checkout: checkoutFromBinding(binding),
         checkpoints,
         operation: mention.operation,
         result: mention.result
@@ -2040,7 +2036,7 @@ export const createManagedConversationService = (options: {
     currentBinding: ManagedConversationRuntimeBindingRecord | null
   ): Promise<ManagedConversationRuntimeBindingRecord> => {
     if (
-      currentBinding?.workspaceLifecycle === "ready" &&
+      currentBinding?.checkoutLifecycle === "ready" &&
       currentBinding?.localSessionId &&
       currentBinding.providerThreadId &&
       currentBinding.transcriptPath &&
@@ -2055,9 +2051,9 @@ export const createManagedConversationService = (options: {
     ) {
       return runtimeBindingFor(execution, execution.ownerUserId);
     }
-    if (currentBinding?.workspaceLifecycle !== "ready") {
+    if (currentBinding?.checkoutLifecycle !== "ready") {
       throw managedConversationError(
-        "ManagedConversationExecutionWorkspaceAssignmentError"
+        "ManagedConversationExecutionCheckoutAssignmentError"
       );
     }
     const discovered = await discoverManagedConversationRuntime({
@@ -2512,15 +2508,15 @@ export const createManagedConversationService = (options: {
   ): string =>
     resolve(
       options.koedHome,
-      "managed-workspaces",
+      "managed-checkouts",
       executionId,
       `generation-${generation}`
     );
 
   const forkWorkspacePath = (forkId: string): string =>
-    resolve(options.koedHome, "managed-workspaces", "forks", forkId);
+    resolve(options.koedHome, "managed-checkouts", "forks", forkId);
 
-  const managedWorkspaceRoot = resolve(options.koedHome, "managed-workspaces");
+  const managedProjectRoot = resolve(options.koedHome, "managed-checkouts");
 
   const verifyTargetProviderEnvironment = async (
     projectPath: string,
@@ -3386,7 +3382,7 @@ export const createManagedConversationService = (options: {
     return path;
   };
 
-  const workspaceForTarget = async (
+  const checkoutForTarget = async (
     command: ClaimedManagedConversationCommand
   ) => {
     if (!options.deviceId || !options.deploymentId) {
@@ -3458,7 +3454,7 @@ export const createManagedConversationService = (options: {
       verified = await materializeDevelopmentWorkspaceSnapshot(
         snapshot,
         path,
-        managedWorkspaceRoot
+        managedProjectRoot
       );
     } catch (error) {
       if (
@@ -3501,7 +3497,7 @@ export const createManagedConversationService = (options: {
     };
   };
 
-  const workspaceForForkTarget = async (
+  const checkoutForForkTarget = async (
     command: ClaimedManagedConversationCommand
   ) => {
     if (!options.deviceId || !options.deploymentId) {
@@ -3567,7 +3563,7 @@ export const createManagedConversationService = (options: {
       verified = await materializeDevelopmentWorkspaceSnapshot(
         snapshot,
         path,
-        managedWorkspaceRoot
+        managedProjectRoot
       );
     } catch (error) {
       if (
@@ -5380,7 +5376,7 @@ export const createManagedConversationService = (options: {
           "ManagedConversationCheckpointUnavailableError"
         );
       }
-      const workspace = workspaceFromBinding(binding);
+      const checkout = checkoutFromBinding(binding);
       const existingRecovery = checkpoints.find(
         (checkpoint) =>
           checkpoint.commandId === command.id &&
@@ -5396,8 +5392,8 @@ export const createManagedConversationService = (options: {
         });
       if (existingRecovery) {
         if (
-          await workspaceMatchesExecutionCheckpoint({
-            workspace,
+          await checkoutMatchesExecutionCheckpoint({
+            checkout,
             checkpoint: captureFromRecord(target)
           })
         ) {
@@ -5414,7 +5410,7 @@ export const createManagedConversationService = (options: {
           return;
         }
         await restoreExecutionCheckpoint({
-          workspace,
+          checkout,
           target: captureFromRecord(target),
           recovery: captureFromRecord(existingRecovery)
         });
@@ -5440,7 +5436,7 @@ export const createManagedConversationService = (options: {
       let recoveryPersisted = false;
       try {
         recoveryCapture = await captureExecutionCheckpoint({
-          workspace,
+          checkout,
           executionId: command.executionId,
           executionGeneration: command.executionGeneration,
           sequence: command.sequence,
@@ -5460,7 +5456,7 @@ export const createManagedConversationService = (options: {
         });
         recoveryPersisted = true;
         await restoreExecutionCheckpoint({
-          workspace,
+          checkout,
           target: captureFromRecord(target),
           recovery: captureFromRecord(recovery)
         });
@@ -5477,7 +5473,7 @@ export const createManagedConversationService = (options: {
         if (!recoveryPersisted) {
           if (recoveryCapture?.status === "ready") {
             await removeExecutionCheckpointRefs({
-              workspace,
+              checkout,
               checkpoints: [recoveryCapture]
             }).catch(() => undefined);
           }
@@ -5514,7 +5510,7 @@ export const createManagedConversationService = (options: {
             handoff.targetReadinessEvidence
           )
         ) {
-          const target = await workspaceForTarget(command);
+          const target = await checkoutForTarget(command);
           handoff =
             await options.repository.verifyManagedConversationHandoffTarget(
               { userId: command.ownerUserId },
@@ -5639,7 +5635,7 @@ export const createManagedConversationService = (options: {
         });
         return;
       }
-      const target = await workspaceForTarget(command);
+      const target = await checkoutForTarget(command);
       const certificate = target.material.handoff.certificate;
       if (
         !certificate ||
@@ -5987,9 +5983,7 @@ export const createManagedConversationService = (options: {
       let piForkIdentity:
         | Awaited<ReturnType<PiManagedConversationSession["start"]>>
         | undefined;
-      let target:
-        | Awaited<ReturnType<typeof workspaceForForkTarget>>
-        | undefined;
+      let target: Awaited<ReturnType<typeof checkoutForForkTarget>> | undefined;
       let prepared:
         | Awaited<
             ReturnType<
@@ -6004,7 +5998,7 @@ export const createManagedConversationService = (options: {
         | Awaited<ReturnType<typeof forkClaudeTranscript>>
         | undefined;
       try {
-        target = await workspaceForForkTarget(command);
+        target = await checkoutForForkTarget(command);
         prepared = await options.repository.prepareManagedConversationForkChild(
           { userId: command.ownerUserId },
           {
@@ -6709,7 +6703,7 @@ export const createManagedConversationService = (options: {
     let completed = 0;
     let failed = 0;
     const cleanupRequests =
-      await options.repository.listManagedConversationExecutionWorkspaceCleanupRequests(
+      await options.repository.listManagedConversationExecutionCheckoutCleanupRequests(
         {
           deploymentId: options.deploymentId,
           deviceId: options.deviceId,
@@ -6734,11 +6728,11 @@ export const createManagedConversationService = (options: {
           runtimeSessions.has(binding.executionId)
         ) {
           throw managedConversationError(
-            "ManagedConversationExecutionWorkspaceCleanupActiveError"
+            "ManagedConversationExecutionCheckoutCleanupActiveError"
           );
         }
-        const driver = await executionWorkspaceDriver;
-        const workspace = workspaceFromBinding(binding);
+        const driver = await executionCheckoutDriver;
+        const checkout = checkoutFromBinding(binding);
         const checkpoints =
           await options.repository.listManagedConversationExecutionCheckpoints(
             { userId: binding.ownerUserId },
@@ -6747,64 +6741,64 @@ export const createManagedConversationService = (options: {
               executionGeneration: binding.executionGeneration
             }
           );
-        await driver.remove(workspace);
+        await driver.remove(checkout);
         await removeExecutionCheckpointRefs({
-          workspace,
+          checkout,
           checkpoints: checkpoints.map(captureFromRecord)
         });
         const persisted =
-          await options.repository.completeManagedConversationExecutionWorkspaceCleanup(
+          await options.repository.completeManagedConversationExecutionCheckoutCleanup(
             {
               ownerUserId: binding.ownerUserId,
               executionId: binding.executionId,
               executionGeneration: binding.executionGeneration,
               deploymentId: options.deploymentId,
               deviceId: options.deviceId,
-              workspaceId: binding.workspaceId!
+              checkoutId: binding.checkoutId!
             }
           );
         if (!persisted) {
           throw managedConversationError(
-            "ManagedConversationExecutionWorkspaceCleanupConflictError"
+            "ManagedConversationExecutionCheckoutCleanupConflictError"
           );
         }
-        executionWorkspaceRetryAttempt = 0;
+        executionCheckoutRetryAttempt = 0;
       } catch (error) {
         const name = errorCode(error);
         let terminallyRecorded = false;
-        if (terminalExecutionWorkspaceCleanupErrors.has(name)) {
+        if (terminalExecutionCheckoutCleanupErrors.has(name)) {
           const lifecycle = [
-            "ExecutionWorkspaceIdentityChangedError",
-            "ExecutionWorkspaceCleanupIdentityError"
+            "ExecutionCheckoutIdentityChangedError",
+            "ExecutionCheckoutCleanupIdentityError"
           ].includes(name)
             ? ("orphaned" as const)
             : ("cleanup_failed" as const);
           terminallyRecorded = await options.repository
-            .failManagedConversationExecutionWorkspaceCleanup({
+            .failManagedConversationExecutionCheckoutCleanup({
               ownerUserId: binding.ownerUserId,
               executionId: binding.executionId,
               executionGeneration: binding.executionGeneration,
               deploymentId: options.deploymentId,
               deviceId: options.deviceId,
-              workspaceId: binding.workspaceId!,
+              checkoutId: binding.checkoutId!,
               lifecycle
             })
             .catch(() => false);
         }
         if (terminallyRecorded) {
-          executionWorkspaceRetryAttempt = 0;
+          executionCheckoutRetryAttempt = 0;
         } else {
-          scheduleExecutionWorkspaceRetry();
+          scheduleExecutionCheckoutRetry();
         }
         options.logger.warn(
           {
             event: {
-              name: "worker.managed_conversation.execution_workspace_cleanup_failed",
+              name: "worker.managed_conversation.execution_checkout_cleanup_failed",
               category: "managed_conversation"
             },
             error_name: name
           },
-          "managed Conversation execution workspace cleanup failed"
+          "managed Conversation execution checkout cleanup failed"
         );
       }
     }
@@ -6829,10 +6823,10 @@ export const createManagedConversationService = (options: {
           execution.runnerDeviceId !== options.deviceId
         ) {
           throw managedConversationError(
-            "ManagedConversationExecutionWorkspaceAssignmentError"
+            "ManagedConversationExecutionCheckoutAssignmentError"
           );
         }
-        await bindExecutionWorkspace(execution, binding);
+        await bindExecutionCheckout(execution, binding);
         const released =
           await options.repository.releaseManagedConversationStartForRuntimeBinding(
             {
@@ -6845,13 +6839,13 @@ export const createManagedConversationService = (options: {
           );
         if (!released) {
           throw managedConversationError(
-            "ExecutionWorkspaceReleaseConflictError"
+            "ExecutionCheckoutReleaseConflictError"
           );
         }
-        executionWorkspaceRetryAttempt = 0;
+        executionCheckoutRetryAttempt = 0;
       } catch (error) {
         const name = errorCode(error);
-        if (terminalExecutionWorkspacePreparationErrors.has(name)) {
+        if (terminalExecutionCheckoutPreparationErrors.has(name)) {
           const failed = await options.repository
             .failManagedConversationStartForRuntimeBinding({
               ownerUserId: binding.ownerUserId,
@@ -6863,30 +6857,30 @@ export const createManagedConversationService = (options: {
             })
             .catch(() => false);
           if (failed) {
-            executionWorkspaceRetryAttempt = 0;
+            executionCheckoutRetryAttempt = 0;
             options.logger.warn(
               {
                 event: {
-                  name: "worker.managed_conversation.execution_workspace_rejected",
+                  name: "worker.managed_conversation.execution_checkout_rejected",
                   category: "managed_conversation"
                 },
                 error_name: name
               },
-              "managed Conversation execution workspace was rejected"
+              "managed Conversation execution checkout was rejected"
             );
             continue;
           }
         }
-        scheduleExecutionWorkspaceRetry();
+        scheduleExecutionCheckoutRetry();
         options.logger.warn(
           {
             event: {
-              name: "worker.managed_conversation.execution_workspace_failed",
+              name: "worker.managed_conversation.execution_checkout_failed",
               category: "managed_conversation"
             },
             error_name: name
           },
-          "managed Conversation execution workspace preparation failed"
+          "managed Conversation execution checkout preparation failed"
         );
       }
     }
@@ -7326,10 +7320,47 @@ export const createManagedConversationService = (options: {
                 executionGeneration: command.executionGeneration
               }
             );
+          let continuation: Parameters<
+            typeof executeCheckpointFileOperation
+          >[0]["continuation"];
+          if (operation.kind === "search" && operation.offset > 0) {
+            const previous = operation.continuationCommandId
+              ? await options.repository.getManagedConversationCommand(
+                  { userId: command.ownerUserId },
+                  operation.continuationCommandId
+                )
+              : null;
+            const priorOperation =
+              managedConversationFileOperationSchema.safeParse(
+                previous?.payload?.operation
+              );
+            const priorResult =
+              managedConversationFileOperationResultSchema.safeParse(
+                previous?.payload?.result
+              );
+            if (
+              !previous ||
+              previous.executionId !== command.executionId ||
+              previous.executionGeneration !== command.executionGeneration ||
+              previous.state !== "completed" ||
+              previous.commandKind !== "file_search" ||
+              !priorOperation.success ||
+              priorOperation.data.kind !== "search" ||
+              !priorResult.success ||
+              priorResult.data.kind !== "search"
+            ) {
+              throw new Error("ExecutionFileSearchContinuationError");
+            }
+            continuation = {
+              operation: priorOperation.data,
+              result: priorResult.data
+            };
+          }
           const result = await executeCheckpointFileOperation({
-            workspace: workspaceFromBinding(binding),
+            checkout: checkoutFromBinding(binding),
             checkpoints,
-            operation
+            operation,
+            continuation
           });
           const completed =
             await options.repository.completeManagedConversationFileOperation({
@@ -7714,10 +7745,10 @@ export const createManagedConversationService = (options: {
       runnerHeartbeat = null;
       if (runtimeRecoveryTimer) clearTimeout(runtimeRecoveryTimer);
       runtimeRecoveryTimer = null;
-      if (executionWorkspaceRetryTimer) {
-        clearTimeout(executionWorkspaceRetryTimer);
+      if (executionCheckoutRetryTimer) {
+        clearTimeout(executionCheckoutRetryTimer);
       }
-      executionWorkspaceRetryTimer = null;
+      executionCheckoutRetryTimer = null;
       await Promise.all([
         startupRecovery?.catch(() => undefined),
         drainPromise?.catch(() => undefined),

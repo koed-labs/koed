@@ -1989,13 +1989,13 @@ describeDb("memory repository visibility", () => {
     expect(pendingBinding).toMatchObject({
       sourceProjectPath,
       projectPath: sourceProjectPath,
-      workspaceKind: "pending",
-      workspaceLifecycle: "pending",
-      workspaceId: null
+      checkoutKind: "pending",
+      checkoutLifecycle: "pending",
+      checkoutId: null
     });
     const operationId = randomUUID();
-    const workspaceId = randomUUID();
-    const readyBinding = await repo.bindManagedConversationExecutionWorkspace(
+    const checkoutId = randomUUID();
+    const readyBinding = await repo.bindManagedConversationExecutionCheckout(
       { userId: owner.id },
       {
         executionId: managed.execution.id,
@@ -2004,20 +2004,20 @@ describeDb("memory repository visibility", () => {
         executionGeneration: 1,
         sourceProjectPath,
         projectPath: sourceProjectPath,
-        workspaceId,
-        workspaceKind: "non_vcs_directory",
+        checkoutId,
+        checkoutKind: "non_vcs_directory",
         vcsDriver: null,
         creationOperationId: operationId
       }
     );
     expect(readyBinding).toMatchObject({
-      workspaceId,
-      workspaceKind: "non_vcs_directory",
-      workspaceLifecycle: "ready",
+      checkoutId,
+      checkoutKind: "non_vcs_directory",
+      checkoutLifecycle: "ready",
       creationOperationId: operationId
     });
     await expect(
-      repo.bindManagedConversationExecutionWorkspace(
+      repo.bindManagedConversationExecutionCheckout(
         { userId: owner.id },
         {
           executionId: managed.execution.id,
@@ -2026,15 +2026,15 @@ describeDb("memory repository visibility", () => {
           executionGeneration: 1,
           sourceProjectPath,
           projectPath: sourceProjectPath,
-          workspaceId,
-          workspaceKind: "non_vcs_directory",
+          checkoutId,
+          checkoutKind: "non_vcs_directory",
           vcsDriver: null,
           creationOperationId: operationId
         }
       )
-    ).resolves.toMatchObject({ workspaceId, workspaceLifecycle: "ready" });
+    ).resolves.toMatchObject({ checkoutId, checkoutLifecycle: "ready" });
     await expect(
-      repo.bindManagedConversationExecutionWorkspace(
+      repo.bindManagedConversationExecutionCheckout(
         { userId: owner.id },
         {
           executionId: managed.execution.id,
@@ -2043,15 +2043,15 @@ describeDb("memory repository visibility", () => {
           executionGeneration: 1,
           sourceProjectPath,
           projectPath: "/work/substituted-workspace",
-          workspaceId: randomUUID(),
-          workspaceKind: "non_vcs_directory",
+          checkoutId: randomUUID(),
+          checkoutKind: "non_vcs_directory",
           vcsDriver: null,
           creationOperationId: operationId
         }
       )
     ).rejects.toMatchObject({ statusCode: 409 });
     await expect(
-      repo.requestManagedConversationExecutionWorkspaceCleanup(
+      repo.requestManagedConversationExecutionCheckoutCleanup(
         { userId: owner.id },
         {
           executionId: managed.execution.id,
@@ -2073,8 +2073,8 @@ describeDb("memory repository visibility", () => {
         }
       )
     ).resolves.toMatchObject({
-      workspaceId,
-      workspaceLifecycle: "ready"
+      checkoutId,
+      checkoutLifecycle: "ready"
     });
     await expect(
       repo.releaseManagedConversationStartForRuntimeBinding({
@@ -2128,7 +2128,7 @@ describeDb("memory repository visibility", () => {
 
   it("does not retry pending workspaces after their execution becomes terminal", async () => {
     const owner = await repo.createUser({
-      email: `managed-workspace-terminal-${randomUUID()}@example.com`
+      email: `managed-project-terminal-${randomUUID()}@example.com`
     });
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
@@ -2140,7 +2140,7 @@ describeDb("memory repository visibility", () => {
         model: "gpt-test",
         permissionMode: "supervised",
         runnerKind: "local_device",
-        projectId: "managed-workspace-terminal-project",
+        projectId: "managed-project-terminal-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
         idempotencyKey: randomUUID(),
@@ -2174,7 +2174,7 @@ describeDb("memory repository visibility", () => {
         executionGeneration: 1,
         deploymentId,
         deviceId,
-        errorCode: "ExecutionWorkspaceSourceDirtyError"
+        errorCode: "ExecutionCheckoutSourceDirtyError"
       })
     ).resolves.toBe(true);
     await expect(
@@ -2186,9 +2186,9 @@ describeDb("memory repository visibility", () => {
     ).resolves.toEqual([]);
   });
 
-  it("fences explicit cleanup to the exact Koed-managed workspace", async () => {
+  it("fences explicit cleanup to the exact Koed-managed Project", async () => {
     const owner = await repo.createUser({
-      email: `managed-workspace-cleanup-${randomUUID()}@example.com`
+      email: `managed-project-cleanup-${randomUUID()}@example.com`
     });
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
@@ -2200,7 +2200,7 @@ describeDb("memory repository visibility", () => {
         model: "gpt-test",
         permissionMode: "supervised",
         runnerKind: "local_device",
-        projectId: "managed-workspace-cleanup-project",
+        projectId: "managed-project-cleanup-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
         idempotencyKey: randomUUID(),
@@ -2218,10 +2218,10 @@ describeDb("memory repository visibility", () => {
         projectPath: sourceProjectPath
       }
     );
-    const workspaceId = randomUUID();
+    const checkoutId = randomUUID();
     const operationId = randomUUID();
     const headObjectId = "a".repeat(40);
-    await repo.bindManagedConversationExecutionWorkspace(
+    await repo.bindManagedConversationExecutionCheckout(
       { userId: owner.id },
       {
         executionId: managed.execution.id,
@@ -2230,8 +2230,8 @@ describeDb("memory repository visibility", () => {
         executionGeneration: 1,
         sourceProjectPath,
         projectPath: "/work/managed-cleanup-worktree",
-        workspaceId,
-        workspaceKind: "koed_managed_worktree",
+        checkoutId,
+        checkoutKind: "koed_managed_worktree",
         vcsDriver: "git",
         localRepositoryCommonDirectory: "/work/source/.git",
         localGitDirectory: "/work/source/.git/worktrees/managed",
@@ -2246,7 +2246,7 @@ describeDb("memory repository visibility", () => {
     );
 
     await expect(
-      repo.requestManagedConversationExecutionWorkspaceCleanup(
+      repo.requestManagedConversationExecutionCheckoutCleanup(
         { userId: owner.id },
         {
           executionId: managed.execution.id,
@@ -2257,7 +2257,7 @@ describeDb("memory repository visibility", () => {
       )
     ).rejects.toMatchObject({ statusCode: 409 });
     const requested =
-      await repo.requestManagedConversationExecutionWorkspaceCleanup(
+      await repo.requestManagedConversationExecutionCheckoutCleanup(
         { userId: owner.id },
         {
           executionId: managed.execution.id,
@@ -2267,39 +2267,39 @@ describeDb("memory repository visibility", () => {
         }
       );
     expect(requested).toMatchObject({
-      workspaceId,
-      workspaceLifecycle: "cleanup_requested",
+      checkoutId,
+      checkoutLifecycle: "cleanup_requested",
       cleanupState: "requested"
     });
     await expect(
-      repo.listManagedConversationExecutionWorkspaceCleanupRequests({
+      repo.listManagedConversationExecutionCheckoutCleanupRequests({
         deploymentId,
         deviceId
       })
     ).resolves.toEqual([
       expect.objectContaining({
         executionId: managed.execution.id,
-        workspaceId
+        checkoutId
       })
     ]);
     await expect(
-      repo.completeManagedConversationExecutionWorkspaceCleanup({
+      repo.completeManagedConversationExecutionCheckoutCleanup({
         ownerUserId: owner.id,
         executionId: managed.execution.id,
         executionGeneration: 1,
         deploymentId,
         deviceId,
-        workspaceId: randomUUID()
+        checkoutId: randomUUID()
       })
     ).resolves.toBe(false);
     await expect(
-      repo.completeManagedConversationExecutionWorkspaceCleanup({
+      repo.completeManagedConversationExecutionCheckoutCleanup({
         ownerUserId: owner.id,
         executionId: managed.execution.id,
         executionGeneration: 1,
         deploymentId,
         deviceId,
-        workspaceId
+        checkoutId
       })
     ).resolves.toBe(true);
     await expect(
@@ -2308,7 +2308,7 @@ describeDb("memory repository visibility", () => {
         managed.execution.id
       )
     ).resolves.toMatchObject({
-      workspaceLifecycle: "removed",
+      checkoutLifecycle: "removed",
       cleanupState: "completed"
     });
   });
@@ -2704,7 +2704,7 @@ describeDb("memory repository visibility", () => {
 
   it("allows concurrent executions to use the same selected directory", async () => {
     const owner = await repo.createUser({
-      email: `managed-workspace-exclusive-${randomUUID()}@example.com`
+      email: `managed-project-exclusive-${randomUUID()}@example.com`
     });
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
@@ -2739,7 +2739,7 @@ describeDb("memory repository visibility", () => {
         }
       );
     }
-    await repo.bindManagedConversationExecutionWorkspace(
+    await repo.bindManagedConversationExecutionCheckout(
       { userId: owner.id },
       {
         executionId: first.execution.id,
@@ -2748,14 +2748,14 @@ describeDb("memory repository visibility", () => {
         executionGeneration: 1,
         sourceProjectPath: projectPath,
         projectPath,
-        workspaceId: randomUUID(),
-        workspaceKind: "non_vcs_directory",
+        checkoutId: randomUUID(),
+        checkoutKind: "non_vcs_directory",
         vcsDriver: null,
         creationOperationId: randomUUID()
       }
     );
 
-    await repo.bindManagedConversationExecutionWorkspace(
+    await repo.bindManagedConversationExecutionCheckout(
       { userId: owner.id },
       {
         executionId: second.execution.id,
@@ -2764,8 +2764,8 @@ describeDb("memory repository visibility", () => {
         executionGeneration: 1,
         sourceProjectPath: projectPath,
         projectPath,
-        workspaceId: randomUUID(),
-        workspaceKind: "non_vcs_directory",
+        checkoutId: randomUUID(),
+        checkoutKind: "non_vcs_directory",
         vcsDriver: null,
         creationOperationId: randomUUID()
       }
@@ -2776,14 +2776,14 @@ describeDb("memory repository visibility", () => {
         second.execution.id
       )
     ).resolves.toMatchObject({
-      workspaceLifecycle: "ready",
+      checkoutLifecycle: "ready",
       projectPath
     });
   });
 
   it("fails a deferred start atomically when its assigned workspace is rejected", async () => {
     const owner = await repo.createUser({
-      email: `managed-workspace-rejected-${randomUUID()}@example.com`
+      email: `managed-project-rejected-${randomUUID()}@example.com`
     });
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
@@ -2795,7 +2795,7 @@ describeDb("memory repository visibility", () => {
         model: "gpt-test",
         permissionMode: "supervised",
         runnerKind: "local_device",
-        projectId: "managed-workspace-rejected-project",
+        projectId: "managed-project-rejected-project",
         runnerDeploymentId: deploymentId,
         runnerDeviceId: deviceId,
         idempotencyKey: randomUUID(),
@@ -2808,7 +2808,7 @@ describeDb("memory repository visibility", () => {
       executionGeneration: 1,
       deploymentId,
       deviceId,
-      errorCode: "ExecutionWorkspaceSourceDirtyError"
+      errorCode: "ExecutionCheckoutSourceDirtyError"
     };
 
     await expect(
@@ -4232,6 +4232,86 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("stores runner-owned terminals for an upstream execution without a local execution row", async () => {
+    const owner = await repo.createUser({
+      email: `terminal-runner-${randomUUID()}@example.test`
+    });
+    const executionId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const projectPath = `/tmp/terminal-runner-${randomUUID()}`;
+    await repo.upsertManagedConversationRuntimeBinding(
+      { userId: owner.id },
+      {
+        executionId,
+        deploymentId,
+        deviceId,
+        executionGeneration: 1,
+        projectPath
+      }
+    );
+    await repo.bindManagedConversationExecutionCheckout(
+      { userId: owner.id },
+      {
+        executionId,
+        deploymentId,
+        deviceId,
+        executionGeneration: 1,
+        projectPath,
+        sourceProjectPath: projectPath,
+        checkoutId: randomUUID(),
+        checkoutKind: "non_vcs_directory",
+        vcsDriver: null,
+        creationOperationId: randomUUID()
+      }
+    );
+    const input = {
+      executionId,
+      executionGeneration: 1,
+      idempotencyKey: randomUUID(),
+      shellProfileId: "system_default" as const,
+      columns: 80,
+      rows: 24
+    };
+    const authority = {
+      id: executionId,
+      executionGeneration: 1,
+      runnerDeploymentId: deploymentId,
+      runnerDeviceId: deviceId,
+      state: "running"
+    };
+    expect(
+      await repo.getManagedConversationExecution(
+        { userId: owner.id },
+        executionId
+      )
+    ).toBeNull();
+    const terminal = await repo.createManagedTerminal(
+      { userId: owner.id },
+      input,
+      authority
+    );
+    expect(
+      await repo.getManagedTerminal(
+        { userId: owner.id },
+        { executionId, terminalId: terminal.id }
+      )
+    ).toMatchObject({ id: terminal.id, state: "creating" });
+    await expect(
+      repo.createManagedTerminal(
+        { userId: owner.id },
+        { ...input, idempotencyKey: randomUUID() },
+        { ...authority, runnerDeviceId: randomUUID() }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    const other = await repo.createUser({
+      email: `terminal-other-${randomUUID()}@example.test`
+    });
+    await expect(
+      repo.createManagedTerminal({ userId: other.id }, input, authority)
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
   it("fences managed terminal lifecycle metadata to the exact owner, runner, generation, and workspace", async () => {
     const owner = await repo.createUser({
       email: `managed-terminal-owner-${randomUUID()}@example.com`
@@ -4268,8 +4348,8 @@ describeDb("memory repository visibility", () => {
         projectPath
       }
     );
-    const workspaceId = randomUUID();
-    await repo.bindManagedConversationExecutionWorkspace(
+    const checkoutId = randomUUID();
+    await repo.bindManagedConversationExecutionCheckout(
       { userId: owner.id },
       {
         executionId: managed.execution.id,
@@ -4278,8 +4358,8 @@ describeDb("memory repository visibility", () => {
         executionGeneration: 1,
         sourceProjectPath: projectPath,
         projectPath,
-        workspaceId,
-        workspaceKind: "non_vcs_directory",
+        checkoutId,
+        checkoutKind: "non_vcs_directory",
         vcsDriver: null,
         creationOperationId: randomUUID()
       }
@@ -4299,7 +4379,7 @@ describeDb("memory repository visibility", () => {
     expect(terminal).toMatchObject({
       executionId: managed.execution.id,
       executionGeneration: 1,
-      workspaceId,
+      checkoutId,
       runnerDeploymentId: deploymentId,
       runnerDeviceId: deviceId,
       state: "creating"

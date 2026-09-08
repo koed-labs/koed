@@ -628,7 +628,7 @@ workspace, and only then releases the authority's blocked start command. Local
 paths and Git administration never cross the authority boundary. Cleanup is a
 separate authenticated request after execution becomes terminal and removes
 only an unchanged, clean Koed-owned worktree and its exact branch.
-Desktop composes the coding workspace around the existing Conversation timeline
+Desktop composes the Project around the existing Conversation timeline
 through strict main-process IPC. Recorded diffs and changed-file summaries come
 from runner checkpoints. Rooted browse, read, search, and file mentions remain
 queued runner work and settle from durable realtime revisions rather than UI

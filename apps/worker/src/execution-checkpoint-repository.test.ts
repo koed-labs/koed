@@ -18,7 +18,7 @@ import {
   restoreExecutionCheckpoint,
   type ExecutionCheckpointCapture
 } from "./execution-checkpoint.js";
-import { createGitExecutionWorkspaceDriver } from "@koed/shared/execution-workspace";
+import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDb = databaseUrl ? describe : describe.skip;
@@ -68,8 +68,8 @@ describeDb("execution checkpoint repository integration", () => {
     await writeFile(resolve(source, "feature.ts"), "export const value = 1;\n");
     git(source, "add", ".");
     git(source, "commit", "-m", "base");
-    const workspace = await (
-      await createGitExecutionWorkspaceDriver({
+    const checkout = await (
+      await createGitExecutionCheckoutDriver({
         managedRoot: resolve(root, "managed")
       })
     ).select({ operationId: randomUUID(), path: source });
@@ -141,7 +141,7 @@ describeDb("execution checkpoint repository integration", () => {
     );
 
     const initial = await captureExecutionCheckpoint({
-      workspace,
+      checkout,
       executionId: running.id,
       executionGeneration: 1,
       sequence: prompt.sequence,
@@ -149,14 +149,14 @@ describeDb("execution checkpoint repository integration", () => {
     });
     await writeFile(resolve(source, "feature.ts"), "export const value = 2;\n");
     const terminal = await captureExecutionCheckpoint({
-      workspace,
+      checkout,
       executionId: running.id,
       executionGeneration: 1,
       sequence: prompt.sequence,
       checkpointKind: "terminal"
     });
     const diff = await diffExecutionCheckpoints({
-      workspace,
+      checkout,
       from: initial,
       to: terminal
     });
@@ -291,7 +291,7 @@ describeDb("execution checkpoint repository integration", () => {
     });
     expect(restoreCommand?.id).toBe(restore.id);
     const recovery = await captureExecutionCheckpoint({
-      workspace,
+      checkout,
       executionId: running.id,
       executionGeneration: 1,
       sequence: restore.sequence,
@@ -311,12 +311,12 @@ describeDb("execution checkpoint repository integration", () => {
         })
       }
     );
-    await restoreExecutionCheckpoint({ workspace, target: initial, recovery });
+    await restoreExecutionCheckpoint({ checkout, target: initial, recovery });
     expect(await readFile(resolve(source, "feature.ts"), "utf8")).toBe(
       "export const value = 1;\n"
     );
     const restored = await captureExecutionCheckpoint({
-      workspace,
+      checkout,
       executionId: running.id,
       executionGeneration: 1,
       sequence: restore.sequence,
@@ -324,12 +324,12 @@ describeDb("execution checkpoint repository integration", () => {
     });
     const restoredId = randomUUID();
     const full = (await diffExecutionCheckpoints({
-      workspace,
+      checkout,
       from: initial,
       to: restored
     }))!;
     const restoreDiff = (await diffExecutionCheckpoints({
-      workspace,
+      checkout,
       from: recovery,
       to: restored
     }))!;

@@ -214,7 +214,8 @@ export {
 } from "./managed-conversation-repository.js";
 export {
   createManagedTerminalRepository,
-  type ManagedTerminalRepository
+  type ManagedTerminalRepository,
+  type ManagedTerminalExecutionAuthority
 } from "./managed-terminal-repository.js";
 export {
   createManagedConversationTransferRepository,

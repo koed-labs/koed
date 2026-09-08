@@ -12757,6 +12757,63 @@ describe("account and access flows", () => {
     ).toMatchObject({ presentation: { memoryEventsCreated: 0 } });
   });
 
+  it("rebuilds every presentation item across the projector's batch limit", async () => {
+    const repository = createFakeRepository();
+    const sourceIds = Array.from({ length: 2_501 }, () => randomUUID());
+    repository.resetConversationPresentation = async () => ({
+      conversationItemIds: sourceIds,
+      invalidatedMessageIds: [],
+      invalidatedToolEventIds: [],
+      presentationPolicyRevision: 2
+    });
+    const displayed = new Set<string>();
+    repository.projectPendingConversationItems = async (_actor, input) => {
+      expect(input?.presentationOnly).toBe(true);
+      const ids =
+        input?.conversationItemIds?.slice(
+          0,
+          Math.min(input.limit ?? 100, 1_000)
+        ) ?? [];
+      for (const id of ids) displayed.add(id);
+      return {
+        rawItemsScanned: ids.length,
+        rawItemsProjected: ids.length,
+        rawItemsWaitingForAgentSeal: 0,
+        messagesCreated: ids.length,
+        toolEventsCreated: 0,
+        memoryEventsCreated: 0,
+        tokenUsageRowsCreated: 0,
+        memoryEventIds: [],
+        memoryEventScopes: []
+      };
+    };
+    const app = await buildServer({ repository });
+    const client = await registerApiClientForTest(
+      app,
+      "presentation-batches@example.test"
+    );
+    const session = await createCapturedSessionForTest(
+      app,
+      client.authorization
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items/presentation/rebuild",
+      headers: browserSessionHeaders(client.cookie),
+      payload: { sessionId: session.id }
+    });
+    await app.close();
+    expect(response.statusCode).toBe(200);
+    expect([...displayed]).toEqual(sourceIds);
+    expect(
+      jsonBody<{
+        presentation: { messagesCreated: number; memoryEventsCreated: number };
+      }>(response)
+    ).toMatchObject({
+      presentation: { messagesCreated: 2_501, memoryEventsCreated: 0 }
+    });
+  });
+
   it("fails an oversized Projection rebuild before projecting any raw items", async () => {
     const repository = createFakeRepository();
     let resetCalls = 0;

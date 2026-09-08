@@ -16,7 +16,7 @@ Related decisions:
 Koed needs file browsing, inspection, search, and structured file mentions for
 managed coding Conversations. A Project path, repository remote, branch name,
 renderer-selected path, or Team-visible Conversation does not grant filesystem
-authority. Local and hosted executions also place the authoritative workspace
+authority. Local and hosted executions also place the authoritative checkout
 on different runners, while a remote coordinator must not learn a local
 absolute path or gain ambient access to the owning device.
 
@@ -28,13 +28,13 @@ invoke unsafe renderer behavior when treated as HTML. A stale file mention can
 also make the AI Client act on content different from what the User selected.
 
 Koed therefore needs one file-authority boundary before adding product file
-surfaces. That boundary must build on the execution workspace and checkpoint
-decisions rather than create a second notion of workspace ownership.
+surfaces. That boundary must build on the execution checkout and checkpoint
+decisions rather than create a second notion of checkout ownership.
 
 ## Decision
 
-The execution runner that owns a verified execution-workspace binding is the
-sole authority for workspace file operations. The initial capability is
+The execution runner that owns a verified execution-checkout binding is the
+sole authority for checkout file operations. The initial capability is
 read-only and consists of bounded browse, text read, text search, and structured
 file mentions. Desktop, Explorer, renderers, remote coordinators, provider
 adapters, and Team backends do not receive ambient filesystem access.
@@ -45,8 +45,8 @@ Every operation is authorized against all of:
 - an authenticated browser session or enrolled device credential with the
   explicit managed-execution file-read operation family;
 - the managed execution id and current fencing generation;
-- the exact execution-workspace binding and runner;
-- the workspace lifecycle and cleanup state; and
+- the exact execution-checkout binding and runner;
+- the checkout lifecycle and cleanup state; and
 - the requested operation and deployment limits.
 
 Personal API Tokens remain Memory-only and cannot use this capability. Team
@@ -64,7 +64,7 @@ enrolled device credential or browser session.
 
 ### Rooted Namespace
 
-The runner assigns one immutable logical root to an execution-workspace binding.
+The runner assigns one immutable logical root to an execution-checkout binding.
 Its canonical device path remains runner-local. File APIs accept only normalized
 root-relative paths or opaque server-issued entry identities; they never accept
 absolute paths, URI schemes, Git object expressions, shell fragments, or a
@@ -115,7 +115,7 @@ Each request enforces versioned protocol ceilings and the lower deployment
 limits for directory entries, depth, path length, individual bytes, aggregate
 bytes, search candidates, matches, line length, response bytes, duration, and
 concurrency. Pagination and continuation tokens are server-issued, scoped to
-the same principal, execution generation, workspace binding, operation, and
+the same principal, execution generation, checkout binding, operation, and
 revision, and have a short expiry. They are not offsets into an unbounded live
 walk.
 
@@ -145,9 +145,9 @@ Koed supports two explicit read classes:
 1. **Checkpoint reads** resolve an immutable, server-selected execution
    checkpoint and its captured object id under ADR 0033. They are used for
    recorded historical inspection and diff-adjacent views.
-2. **Live reads** resolve the current workspace through the assigned runner and
-   return an opaque workspace observation plus per-entry content identity. The
-   runner verifies the execution generation, workspace identity, and observed
+2. **Live reads** resolve the current checkout through the assigned runner and
+   return an opaque checkout observation plus per-entry content identity. The
+   runner verifies the execution generation, checkout identity, and observed
    filesystem state before and after the bounded operation.
 
 A directory continuation, later range read, search continuation, or file
@@ -158,7 +158,7 @@ The UI may refresh explicitly; it may not splice pages from different revisions
 into one apparently coherent view.
 
 Revision tokens are opaque, short-lived capabilities. They contain or bind a
-digest of the principal, execution, fencing generation, workspace binding,
+digest of the principal, execution, fencing generation, checkout binding,
 operation class, checkpoint or observation, and expiry. Clients cannot
 construct arbitrary Git refs, commits, filesystem generations, or paths from
 them.
@@ -169,7 +169,7 @@ A file mention is a structured server-issued reference, not interpolated text
 such as `@/absolute/path` and not renderer-provided file bytes. It binds:
 
 - execution and fencing generation;
-- workspace binding and runner;
+- checkout binding and runner;
 - normalized relative path or opaque entry id;
 - checkpoint or live observation;
 - exact content identity;
@@ -209,15 +209,15 @@ version.
 ### Cache And Lifecycle
 
 Server and client caches are bounded by principal, execution generation,
-workspace binding, revision, content-policy version, and authorization floor.
-They are invalidated by execution handoff, generation change, workspace
+checkout binding, revision, content-policy version, and authorization floor.
+They are invalidated by execution handoff, generation change, checkout
 cleanup, device revocation, access suspension, policy change, or expiry.
 Remote decrypted file content is memory-only unless a later explicit offline
 file-cache decision provides encryption, revocation, and purge semantics.
 
 Settling, snoozing, or hiding a Conversation does not revoke file authority.
 Stopping an execution may preserve checkpoint reads while disabling live reads.
-Workspace cleanup, orphaning, ownership mismatch, or deletion disables both
+Checkout cleanup, orphaning, ownership mismatch, or deletion disables both
 classes except any separately retained Personal Development Workspace Snapshot
 that has its own authority.
 
@@ -227,20 +227,20 @@ The read capability cannot be widened into writes by adding an HTTP method or
 operation enum. Future file mutation requires a separate accepted decision and
 capability with, at minimum:
 
-- explicit execution and workspace ownership;
+- explicit execution and checkout ownership;
 - an expected revision and content digest;
 - current fencing and provider-quiescence checks;
 - bounded atomic replacement without symlink following;
 - file mode, newline, encoding, rename, deletion, and conflict semantics;
 - pre-write recovery checkpoint and post-write verification;
-- different policy for Koed-managed and User-managed workspaces;
+- different policy for Koed-managed and User-managed Projects;
 - idempotency, audit, rollback, and crash recovery; and
 - separate Team collaboration and remote-runner authorization.
 
 Source-control operations, patch application, provider tool writes, terminal
 commands, preview automation, Development Workspace Snapshot materialization,
 and file writes remain distinct authorities even when they affect the same
-workspace.
+checkout.
 
 ## Required Evidence
 

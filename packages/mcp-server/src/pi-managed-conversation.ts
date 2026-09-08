@@ -62,6 +62,7 @@ export class PiManagedConversationSession {
   private buffer = Buffer.alloc(0);
   private readonly requests = new Map<string, PendingRequest>();
   private identity: PiManagedConversationIdentity | undefined;
+  private resumeSessionPath: string | undefined;
   private active:
     | {
         resolve: () => void;
@@ -79,8 +80,34 @@ export class PiManagedConversationSession {
     if (this.child) throw new Error("Pi managed session is already started.");
     if (this.closing) throw new Error("Pi managed session is closed.");
     const executable = resolvePiExecutable(this.config.env);
-    const sessionDirectory = path.resolve(this.config.sessionDirectory);
-    fs.mkdirSync(sessionDirectory, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(this.config.sessionDirectory, {
+      recursive: true,
+      mode: 0o700
+    });
+    const sessionDirectory = fs.realpathSync(this.config.sessionDirectory);
+    if (this.config.resumeSessionPath) {
+      const transcriptPath = fs.realpathSync(this.config.resumeSessionPath);
+      const relative = path.relative(sessionDirectory, transcriptPath);
+      if (
+        !relative ||
+        relative === ".." ||
+        relative.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relative)
+      ) {
+        throw new Error(
+          "Pi transcript is outside its managed session directory."
+        );
+      }
+      if (!fs.statSync(transcriptPath).isFile())
+        throw new Error("Pi transcript is not a regular file.");
+      if (
+        !this.config.expectedSessionId ||
+        piSessionIdentity(transcriptPath).id !== this.config.expectedSessionId
+      ) {
+        throw new Error("Pi resume requires an exact session identity.");
+      }
+      this.resumeSessionPath = transcriptPath;
+    }
     // Locate the configured installation, including packaged dist/bundle launchers.
     let packageRoot = path.dirname(executable);
     for (let depth = 0; depth < 8; depth += 1) {
@@ -113,13 +140,6 @@ export class PiManagedConversationSession {
         "Managed Pi SDK must belong to the configured installation."
       );
     }
-    if (this.config.resumeSessionPath) {
-      const transcriptPath = fs.realpathSync(this.config.resumeSessionPath);
-      if (!fs.statSync(transcriptPath).isFile())
-        throw new Error("Pi transcript is not a regular file.");
-      if (!this.config.expectedSessionId)
-        throw new Error("Pi resume requires an exact session identity.");
-    }
     const forkSource = this.config.forkSourcePath;
     if (
       forkSource &&
@@ -146,7 +166,7 @@ export class PiManagedConversationSession {
           model: this.config.model,
           sessionDirectory,
           sessionId: this.config.sessionId,
-          resumeSessionPath: this.config.resumeSessionPath,
+          resumeSessionPath: this.resumeSessionPath,
           forkSourcePath: forkSource,
           reasoningEffort: this.config.reasoningEffort
         })
@@ -227,7 +247,7 @@ export class PiManagedConversationSession {
       this.config.sessionId;
     if (expected && expected !== sessionId)
       throw new Error("Pi managed session identity changed.");
-    const transcriptPath =
+    let transcriptPath =
       typeof state.sessionFile === "string"
         ? path.resolve(state.sessionFile)
         : null;
@@ -250,13 +270,12 @@ export class PiManagedConversationSession {
           "Pi transcript is outside its managed session directory."
         );
       }
+      transcriptPath = canonical;
     }
     if (
-      (this.identity?.transcriptPath ?? this.config.resumeSessionPath) &&
+      (this.identity?.transcriptPath ?? this.resumeSessionPath) &&
       transcriptPath !==
-        path.resolve(
-          this.identity?.transcriptPath ?? this.config.resumeSessionPath!
-        )
+        path.resolve(this.identity?.transcriptPath ?? this.resumeSessionPath!)
     ) {
       throw new Error("Pi resumed a different transcript.");
     }

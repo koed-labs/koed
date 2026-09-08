@@ -74,7 +74,7 @@ sends only the opaque Project id when requesting hosted coordination. The
 hosted authority may accept that id from a scoped Personal Device credential
 and persist a deferred execution, but the initial command remains blocked. The
 API persists only a pending local source locator and wakes the selected runner.
-The runner creates or selects the execution workspace, verifies its filesystem
+The runner creates or selects the execution checkout, verifies its filesystem
 and VCS identity, persists the immutable workspace binding, and only then
 acknowledges the matching execution generation so the authority can release
 that command.
@@ -139,7 +139,7 @@ configuration, replacing other MCP entries, or placing API credentials on the
 command line. Claude's strict SDK MCP configuration uses the same connection.
 
 Multiple managed Conversations may use the same Codex home concurrently. Koed
-fences commands and writable execution workspaces, not the User's provider
+fences commands and writable execution checkouts, not the User's provider
 configuration directory. Stopping or cleaning up an execution must never
 remove or rewrite that Codex home.
 

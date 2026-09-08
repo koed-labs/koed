@@ -23,7 +23,7 @@ type TerminalRow = {
   owner_user_id: string;
   execution_id: string;
   execution_generation: number;
-  workspace_id: string;
+  checkout_id: string;
   runner_deployment_id: string;
   runner_device_id: string;
   lifecycle_generation: number;
@@ -44,7 +44,7 @@ type TerminalRow = {
 };
 
 const terminalColumns = `
-  id, owner_user_id, execution_id, execution_generation, workspace_id,
+  id, owner_user_id, execution_id, execution_generation, checkout_id,
   runner_deployment_id, runner_device_id, lifecycle_generation,
   shell_profile_id, state, columns, rows, idempotency_key, request_digest,
   exit_code, exit_signal, failure_code, created_at, started_at, detached_at,
@@ -59,7 +59,7 @@ const mapTerminal = (row: TerminalRow): ManagedTerminalRecord => ({
   id: row.id,
   executionId: row.execution_id,
   executionGeneration: row.execution_generation,
-  workspaceId: row.workspace_id,
+  checkoutId: row.checkout_id,
   runnerDeploymentId: row.runner_deployment_id,
   runnerDeviceId: row.runner_device_id,
   lifecycleGeneration: row.lifecycle_generation,
@@ -92,10 +92,19 @@ const requestDigestFor = (input: CreateManagedTerminalInput): string =>
     )
     .digest("hex");
 
+export interface ManagedTerminalExecutionAuthority {
+  id: string;
+  executionGeneration: number;
+  runnerDeploymentId: string;
+  runnerDeviceId: string;
+  state: string;
+}
+
 export interface ManagedTerminalRepository {
   createManagedTerminal(
     actor: ActorContext,
-    input: CreateManagedTerminalInput & { executionId: string }
+    input: CreateManagedTerminalInput & { executionId: string },
+    authority?: ManagedTerminalExecutionAuthority
   ): Promise<ManagedTerminalRecord>;
   listManagedTerminals(
     actor: ActorContext,
@@ -130,7 +139,7 @@ export interface ManagedTerminalRepository {
 export const createManagedTerminalRepository = (
   pool: pg.Pool
 ): ManagedTerminalRepository => ({
-  async createManagedTerminal(actor, input) {
+  async createManagedTerminal(actor, input, authority) {
     const { executionId, ...terminalInput } = input;
     const validated = createManagedTerminalInputSchema.parse(terminalInput);
     const digest = requestDigestFor(validated);
@@ -156,36 +165,39 @@ export const createManagedTerminalRepository = (
         await client.query("commit");
         return mapTerminal(existing.rows[0]);
       }
+      const execution =
+        authority ??
+        (
+          await client.query<ManagedTerminalExecutionAuthority>(
+            `select id, execution_generation as "executionGeneration", runner_deployment_id as "runnerDeploymentId",
+          runner_device_id as "runnerDeviceId", state from managed_conversation_executions
+          where id=$1 and owner_user_id=$2 for update`,
+            [executionId, actor.userId]
+          )
+        ).rows[0];
+      if (!execution || execution.id !== executionId)
+        throw statusError("Managed Conversation was not found", 404);
       const binding = await client.query<{
-        execution_generation: number;
-        runner_deployment_id: string;
-        runner_device_id: string;
-        execution_state: string;
         binding_deployment_id: string;
         binding_device_id: string;
         binding_generation: number;
-        workspace_id: string | null;
-        workspace_lifecycle: string;
+        checkout_id: string | null;
+        checkout_lifecycle: string;
       }>(
-        `select execution.execution_generation,
-                execution.runner_deployment_id,
-                execution.runner_device_id,
-                execution.state as execution_state,
-                binding.deployment_id as binding_deployment_id,
-                binding.device_id as binding_device_id,
-                binding.execution_generation as binding_generation,
-                binding.workspace_id,
-                binding.workspace_lifecycle
-           from managed_conversation_executions execution
-           join managed_conversation_runtime_bindings binding
-             on binding.execution_id = execution.id
-            and binding.owner_user_id = execution.owner_user_id
-          where execution.id = $1 and execution.owner_user_id = $2
-          for update of execution, binding`,
+        `select deployment_id as binding_deployment_id, device_id as binding_device_id,
+          execution_generation as binding_generation, checkout_id, checkout_lifecycle
+          from managed_conversation_runtime_bindings where execution_id=$1 and owner_user_id=$2 for update`,
         [executionId, actor.userId]
       );
-      const row = binding.rows[0];
-      if (!row) throw statusError("Managed Conversation was not found", 404);
+      if (!binding.rows[0])
+        throw statusError("Managed Conversation was not found", 404);
+      const row = {
+        ...binding.rows[0],
+        execution_generation: execution.executionGeneration,
+        runner_deployment_id: execution.runnerDeploymentId,
+        runner_device_id: execution.runnerDeviceId,
+        execution_state: execution.state
+      };
       if (
         row.execution_generation !== validated.executionGeneration ||
         row.binding_generation !== validated.executionGeneration ||
@@ -195,8 +207,8 @@ export const createManagedTerminalRepository = (
         throw statusError("Terminal execution authority is stale", 409);
       }
       if (
-        row.workspace_lifecycle !== "ready" ||
-        !row.workspace_id ||
+        row.checkout_lifecycle !== "ready" ||
+        !row.checkout_id ||
         !["starting", "running", "reconciling", "quiesced"].includes(
           row.execution_state
         )
@@ -215,7 +227,7 @@ export const createManagedTerminalRepository = (
       }
       const created = await client.query<TerminalRow>(
         `insert into managed_conversation_terminals (
-           id, owner_user_id, execution_id, execution_generation, workspace_id,
+           id, owner_user_id, execution_id, execution_generation, checkout_id,
            runner_deployment_id, runner_device_id, shell_profile_id, state,
            columns, rows, idempotency_key, request_digest
          ) values ($1, $2, $3, $4, $5, $6, $7, $8, 'creating', $9, $10, $11, $12)
@@ -225,7 +237,7 @@ export const createManagedTerminalRepository = (
           actor.userId,
           executionId,
           validated.executionGeneration,
-          row.workspace_id,
+          row.checkout_id,
           row.runner_deployment_id,
           row.runner_device_id,
           validated.shellProfileId,

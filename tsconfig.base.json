@@ -39,8 +39,8 @@
       "@koed/shared/durable-realtime": [
         "packages/shared/src/durable-realtime.ts"
       ],
-      "@koed/shared/execution-workspace": [
-        "packages/shared/src/execution-workspace.ts"
+      "@koed/shared/execution-checkout": [
+        "packages/shared/src/execution-checkout.ts"
       ],
       "@koed/shared/personal-desktop": [
         "packages/shared/src/personal-desktop-contract.ts"

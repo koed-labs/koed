@@ -440,11 +440,35 @@ describe("start supervisor", () => {
     expect(stored?.operationFamilies).toEqual([
       "personal_collaboration_read",
       "personal_collaboration_write",
+      "managed_execution",
       "managed_file_read",
       "managed_terminal",
       "managed_preview",
       "managed_source_control"
     ]);
+  });
+
+  it("upgrades the prior default Desktop scope and rotates its credential", () => {
+    const root = tempDir();
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root
+    });
+    const ownerUserId = "22222222-2222-4222-8222-222222222222";
+    const previous = storeDesktopLocalCredential(root, {
+      ownerUserId,
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    provisionDesktopLocalCredential(paths, ownerUserId);
+    const current = readDesktopLocalCredentialAuthorization(root)!;
+    expect(current.operationFamilies).toContain("managed_execution");
+    expect(current.operationFamilies).toContain("managed_terminal");
+    expect(current.credentialKeyId).not.toBe(previous.credentialKeyId);
+    expect(current.authorization).not.toBe(previous.authorization);
+    expect(current.ownerUserId).toBe(ownerUserId);
   });
 
   it("reuses the Desktop Local Credential only for the same owner and families", () => {
@@ -1539,6 +1563,7 @@ describe("start supervisor", () => {
     expect(desktopCredential?.operationFamilies).toEqual([
       "personal_collaboration_read",
       "personal_collaboration_write",
+      "managed_execution",
       "managed_file_read",
       "managed_terminal",
       "managed_preview",

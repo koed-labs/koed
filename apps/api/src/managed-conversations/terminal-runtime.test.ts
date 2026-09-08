@@ -70,14 +70,14 @@ describe("managed terminal runtime", () => {
     ).toEqual(["http://localhost:5173/app?test=1"]);
   });
 
-  it("runs in the exact workspace, keeps secrets out of the shell, replays output, and fences input", async () => {
+  it("runs in the exact checkout, keeps secrets out of the shell, replays output, and fences input", async () => {
     const root = await mkdtemp(resolve(tmpdir(), "koed-terminal-runtime-"));
     roots.push(root);
     const projectPath = resolve(root, "project");
     await mkdir(projectPath);
     const ownerUserId = randomUUID();
     const executionId = randomUUID();
-    const workspaceId = randomUUID();
+    const checkoutId = randomUUID();
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
     const terminalId = randomUUID();
@@ -85,7 +85,7 @@ describe("managed terminal runtime", () => {
       id: terminalId,
       executionId,
       executionGeneration: 1,
-      workspaceId,
+      checkoutId,
       runnerDeploymentId: deploymentId,
       runnerDeviceId: deviceId,
       lifecycleGeneration: 1,
@@ -138,7 +138,10 @@ describe("managed terminal runtime", () => {
       transitionManagedTerminal: transition,
       getManagedConversationExecution: vi.fn(async () => ({
         id: executionId,
-        executionGeneration: 1
+        executionGeneration: 1,
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        state: "running"
       })),
       getManagedConversationRuntimeBinding: vi.fn(async () => ({
         executionId,
@@ -148,9 +151,9 @@ describe("managed terminal runtime", () => {
         executionGeneration: 1,
         sourceProjectPath: projectPath,
         projectPath,
-        workspaceId,
-        workspaceKind: "non_vcs_directory",
-        workspaceLifecycle: "ready",
+        checkoutId,
+        checkoutKind: "non_vcs_directory",
+        checkoutLifecycle: "ready",
         cleanupState: "not_requested",
         vcsDriver: null,
         localRepositoryCommonDirectory: null,

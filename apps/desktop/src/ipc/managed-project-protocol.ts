@@ -20,8 +20,8 @@ import {
 } from "@koed/shared/source-control";
 import { z } from "zod";
 
-export const managedWorkspaceCommandChannel = "koed:managed-workspace:command";
-export const managedWorkspaceEventChannel = "koed:managed-workspace:event";
+export const managedProjectCommandChannel = "koed:managed-project:command";
+export const managedProjectEventChannel = "koed:managed-project:event";
 
 const requestBase = {
   requestId: z.uuid(),
@@ -37,7 +37,7 @@ const previewBoundsSchema = z
   })
   .strict();
 
-export const managedWorkspaceRequestSchema = z.union([
+export const managedProjectRequestSchema = z.union([
   z
     .object({
       ...requestBase,
@@ -203,7 +203,7 @@ const responseBase = {
   executionId: z.uuid()
 } as const;
 
-export const managedWorkspaceResultSchema = z.discriminatedUnion("operation", [
+export const managedProjectResultSchema = z.discriminatedUnion("operation", [
   z
     .object({
       ...responseBase,
@@ -321,7 +321,7 @@ export const managedWorkspaceResultSchema = z.discriminatedUnion("operation", [
     .strict()
 ]);
 
-export const managedWorkspaceEventSchema = z.union([
+export const managedProjectEventSchema = z.union([
   z
     .object({
       kind: z.literal("terminal"),
@@ -341,15 +341,11 @@ export const managedWorkspaceEventSchema = z.union([
     .strict()
 ]);
 
-export type ManagedWorkspaceRequest = z.infer<
-  typeof managedWorkspaceRequestSchema
->;
-export type ManagedWorkspaceResult = z.infer<
-  typeof managedWorkspaceResultSchema
->;
-export type ManagedWorkspaceEvent = z.infer<typeof managedWorkspaceEventSchema>;
+export type ManagedProjectRequest = z.infer<typeof managedProjectRequestSchema>;
+export type ManagedProjectResult = z.infer<typeof managedProjectResultSchema>;
+export type ManagedProjectEvent = z.infer<typeof managedProjectEventSchema>;
 
-export interface ManagedWorkspaceDesktopApi {
-  command(request: ManagedWorkspaceRequest): Promise<ManagedWorkspaceResult>;
-  subscribe(listener: (event: ManagedWorkspaceEvent) => void): () => void;
+export interface ManagedProjectDesktopApi {
+  command(request: ManagedProjectRequest): Promise<ManagedProjectResult>;
+  subscribe(listener: (event: ManagedProjectEvent) => void): () => void;
 }

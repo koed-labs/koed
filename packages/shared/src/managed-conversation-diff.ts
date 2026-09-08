@@ -27,7 +27,8 @@ export const managedConversationDiffPayloadSchema = z
               .string()
               .max(512 * 1_024)
               .nullable(),
-            patchTruncated: z.boolean()
+            patchTruncated: z.boolean(),
+            contentExcluded: z.literal(true).optional()
           })
           .strict()
       )

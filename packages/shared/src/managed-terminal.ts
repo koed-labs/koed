@@ -56,7 +56,7 @@ export const managedTerminalRecordSchema = z
     id: z.uuid(),
     executionId: z.uuid(),
     executionGeneration: z.number().int().safe().positive(),
-    workspaceId: z.uuid(),
+    checkoutId: z.uuid(),
     runnerDeploymentId: z.string().trim().min(1).max(160),
     runnerDeviceId: z.string().trim().min(1).max(160),
     lifecycleGeneration: z.number().int().safe().positive(),

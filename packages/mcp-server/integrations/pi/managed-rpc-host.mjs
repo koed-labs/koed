@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL, URL } from "node:url";
 
 // Use the configured installation's public SDK and its native RPC server.
 // The explicit cwd override preserves exact transferred source bytes while
-// binding tools and project discovery to the receiving execution workspace.
+// binding tools and project discovery to the receiving execution checkout.
 async function main() {
   const config = JSON.parse(process.argv[2]);
   const sdk = await import(pathToFileURL(config.sdkEntry).href);

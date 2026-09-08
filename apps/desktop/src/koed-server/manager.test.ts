@@ -3960,7 +3960,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     }
   });
 
-  it("uses the encrypted Desktop credential for bounded managed workspace reads", async () => {
+  it("uses the encrypted Desktop credential for bounded managed Project reads", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-workspace-"));
     const ownerUserId = "11111111-1111-4111-8111-111111111111";
     const executionId = "22222222-2222-4222-8222-222222222222";
@@ -4030,7 +4030,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
 
     try {
       await expect(
-        manager.managedWorkspace({
+        manager.managedProject({
           requestId: "33333333-3333-4333-8333-333333333333",
           executionId,
           operation: "diff_read",
@@ -4047,21 +4047,20 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     }
   });
 
-  it("uses the owner API Token for a managed checkpoint restore", async () => {
+  it("uses the scoped encrypted Desktop credential for a managed checkpoint restore", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-restore-"));
     const executionId = "22222222-2222-4222-8222-222222222222";
     const checkpointId = "33333333-3333-4333-8333-333333333333";
-    mkdirSync(resolve(koedHome, "config"), { recursive: true });
-    writeFileSync(
-      resolve(koedHome, "config/local-app-credential.json"),
-      JSON.stringify({ apiToken: "personal_token" })
-    );
+    const stored = storeDesktopLocalCredential(koedHome, {
+      ownerUserId: "11111111-1111-4111-8111-111111111111",
+      operationFamilies: ["managed_execution"]
+    });
     const personalMemoryFetch = vi.fn<typeof fetch>(async (input, init) => {
       expect(new URL(String(input)).pathname).toBe(
         `/v1/managed-conversations/${executionId}/checkpoints/${checkpointId}/restore`
       );
       expect(new Headers(init?.headers).get("authorization")).toBe(
-        "Bearer personal_token"
+        stored.authorization
       );
       return new Response(
         JSON.stringify({
@@ -4107,7 +4106,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
 
     try {
       await expect(
-        manager.managedWorkspace({
+        manager.managedProject({
           requestId: "11111111-1111-4111-8111-111111111111",
           executionId,
           operation: "checkpoint_restore",
@@ -4204,13 +4203,13 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     };
 
     try {
-      const listed = await manager.managedWorkspace({
+      const listed = await manager.managedProject({
         requestId: "66666666-6666-4666-8666-666666666666",
         executionId,
         operation: "preview_list"
       });
       expect(JSON.stringify(listed)).not.toContain("5173");
-      const attached = await manager.managedWorkspace(
+      const attached = await manager.managedProject(
         {
           requestId: "77777777-7777-4777-8777-777777777777",
           executionId,
@@ -4321,9 +4320,9 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     };
 
     try {
-      await expect(manager.managedWorkspace(request)).rejects.toThrow();
+      await expect(manager.managedProject(request)).rejects.toThrow();
       expect(personalMemoryFetch).not.toHaveBeenCalled();
-      await expect(manager.managedWorkspace(request)).resolves.toMatchObject({
+      await expect(manager.managedProject(request)).resolves.toMatchObject({
         operation: "source_control",
         result: { kind: "comment_create", status: "completed" }
       });

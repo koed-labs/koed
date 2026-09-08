@@ -261,7 +261,7 @@ const runtimeBindingFailedSchema = runtimeBindingReadySchema
       .trim()
       .min(1)
       .max(120)
-      .regex(/^ExecutionWorkspace[A-Za-z0-9_.-]*$/)
+      .regex(/^ExecutionCheckout[A-Za-z0-9_.-]*$/)
   })
   .strict();
 

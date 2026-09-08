@@ -399,6 +399,13 @@ export const assertUpstreamOperationPathAllowed = (
 
   if (operationFamily === "managed_execution") {
     if (
+      method === "POST" &&
+      /^\/v1\/managed-conversations\/[^/]+\/checkpoints\/[^/]+\/restore$/.test(
+        pathname
+      )
+    )
+      return;
+    if (
       pathname === "/v1/managed-conversation-runner/commands/claim" ||
       pathname === "/v1/managed-conversation-runner/commands/claim-controls" ||
       pathname === "/v1/managed-conversation-runner/runtime-items" ||
@@ -444,6 +451,11 @@ export const assertUpstreamOperationPathAllowed = (
   }
 
   if (operationFamily === "managed_file_read") {
+    if (
+      method === "GET" &&
+      /^\/v1\/managed-conversations\/[^/]+\/diff$/.test(pathname)
+    )
+      return;
     if (
       /^\/v1\/managed-conversations\/[^/]+\/files(?:\/[^/]+)?$/.test(
         pathname

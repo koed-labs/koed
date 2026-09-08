@@ -1,4 +1,4 @@
-export const workspaceContentLimits = {
+export const sourceContentLimits = {
   maxFileBytes: 32 * 1024 * 1024,
   maxAggregateBytes: 256 * 1024 * 1024,
   maxFiles: 25_000
@@ -15,31 +15,30 @@ const secretContentPatterns = [
   /\bgh[opusr]_[A-Za-z0-9]{30,}\b/
 ] as const;
 
-export type WorkspaceContentExclusionReason =
+export type SourceContentExclusionReason =
   | "secret_path"
   | "secret_content"
   | "git_lfs_pointer";
 
-export const classifyWorkspaceContent = (
+export const classifySourceContent = (
   path: string,
   bytes: Uint8Array
-): WorkspaceContentExclusionReason | null => {
+): SourceContentExclusionReason | null => {
   if (
     secretPathPattern.test(path) &&
     !environmentTemplatePathPattern.test(path)
   ) {
     return "secret_path";
   }
-  const content = Buffer.from(bytes);
+  const decoder = new TextDecoder();
   if (
-    content
-      .subarray(0, 128)
-      .toString("utf8")
+    decoder
+      .decode(bytes.subarray(0, 128))
       .startsWith("version https://git-lfs.github.com/spec/v1\n")
   ) {
     return "git_lfs_pointer";
   }
-  const text = content.toString("utf8");
+  const text = decoder.decode(bytes);
   return secretContentPatterns.some((pattern) => pattern.test(text))
     ? "secret_content"
     : null;

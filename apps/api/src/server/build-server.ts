@@ -1,3 +1,4 @@
+import { resolveTerminalExecutionAuthority } from "../managed-conversations/terminal-execution-authority.js";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import websocket from "@fastify/websocket";
@@ -1306,6 +1307,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       }));
   managedTerminalRuntime = createManagedTerminalRuntime({
     requireRepository,
+    resolveExecutionAuthority: (ownerUserId, executionId) =>
+      resolveTerminalExecutionAuthority(routeContext, ownerUserId, executionId),
     inspectIdentity: inspectDeploymentIdentity,
     koedHome: config.koedHome,
     detachedTtlMs: config.managedTerminal.detachedTtlMs,

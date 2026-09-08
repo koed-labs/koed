@@ -6,7 +6,7 @@ import {
   personalDesktopResultSchema
 } from "@koed/shared";
 import type {
-  ManagedWorkspaceDesktopHandler,
+  ManagedProjectDesktopHandler,
   PersonalMemoryDesktopHandler
 } from "../koed-server/manager.js";
 import { describe, expect, it, vi } from "vitest";
@@ -20,7 +20,7 @@ import {
   launchAtStartupSetChannel,
   isDesktopCommandName,
   managedConversationCommandChannel,
-  managedWorkspaceCommandChannel,
+  managedProjectCommandChannel,
   personalDevicePairingLinkConsumeChannel,
   personalDevicePairingProgressChannel,
   personalMemoryCommandChannel,
@@ -105,8 +105,8 @@ describe("desktop IPC command registry", () => {
       }
       throw new Error("Unexpected Managed Conversation request.");
     });
-    const managedWorkspace = vi.fn<ManagedWorkspaceDesktopHandler>(async () => {
-      throw new Error("Unexpected managed workspace request.");
+    const managedProject = vi.fn<ManagedProjectDesktopHandler>(async () => {
+      throw new Error("Unexpected managed Project request.");
     });
     const setupInspect = vi.fn(async () => ({ state: "ready" }));
     const setupRun = vi.fn(async (_args, context) => {
@@ -208,7 +208,7 @@ describe("desktop IPC command registry", () => {
         allowedRendererOrigins: new Set(["koed://app"]),
         personalMemory,
         managedConversation: managedConversation as never,
-        managedWorkspace: managedWorkspace as never,
+        managedProject: managedProject as never,
         managedPreview: {
           attach: vi.fn(),
           setBounds: vi.fn(),
@@ -231,7 +231,7 @@ describe("desktop IPC command registry", () => {
       registered,
       collaboration,
       managedConversation,
-      managedWorkspace,
+      managedProject,
       personalMemory,
       setupInspect,
       setupRun,
@@ -460,16 +460,16 @@ describe("desktop IPC command registry", () => {
     await expect(failedStart).rejects.not.toThrow("/private/managed");
   });
 
-  it("validates and correlates managed workspace IPC for trusted renderers", async () => {
-    const { registered, managedWorkspace } = register();
-    const invoke = registered.get(managedWorkspaceCommandChannel)!;
+  it("validates and correlates managed Project IPC for trusted renderers", async () => {
+    const { registered, managedProject } = register();
+    const invoke = registered.get(managedProjectCommandChannel)!;
     const executionId = "768ae5ae-fcbe-4e17-9d83-14a97d5f92a6";
     const request = {
       requestId: "5a1f3c7c-72f2-49c1-9c83-d8e81e5c57ec",
       executionId,
       operation: "terminal_list" as const
     };
-    managedWorkspace.mockResolvedValueOnce({
+    managedProject.mockResolvedValueOnce({
       ...request,
       terminals: []
     });
@@ -478,7 +478,7 @@ describe("desktop IPC command registry", () => {
       ...request,
       terminals: []
     });
-    expect(managedWorkspace).toHaveBeenCalledWith(
+    expect(managedProject).toHaveBeenCalledWith(
       request,
       expect.objectContaining({ ownerId: "7", signal: expect.any(AbortSignal) })
     );
@@ -489,13 +489,13 @@ describe("desktop IPC command registry", () => {
       invoke(renderer(), { ...request, authorization: "Koed-Desktop secret" })
     ).rejects.toThrow();
 
-    managedWorkspace.mockResolvedValueOnce({
+    managedProject.mockResolvedValueOnce({
       ...request,
       requestId: "11111111-1111-4111-8111-111111111111",
       terminals: []
     });
     await expect(invoke(renderer(), request)).rejects.toThrow(
-      "Invalid managed workspace operation correlation"
+      "Invalid managed Project operation correlation"
     );
   });
 

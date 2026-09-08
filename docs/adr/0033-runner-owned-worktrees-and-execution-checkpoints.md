@@ -1,4 +1,4 @@
-# ADR 0033: Runner-Owned Workspaces And Local Execution Checkpoints
+# ADR 0033: Runner-Owned Checkouts And Local Execution Checkpoints
 
 - Status: Accepted
 - Date: 2026-08-18
@@ -26,16 +26,16 @@ Project contains many files.
 
 ## Decision
 
-The assigned runner owns all execution-workspace and checkpoint operations.
+The assigned runner owns all execution-checkout and checkpoint operations.
 Git is the first supported checkpoint driver. Non-Git Projects can run managed
 Conversations, but View changes and Restore are unavailable.
 
-### Execution Workspace Binding
+### Execution Checkout Binding
 
-Each execution generation binds an immutable local workspace identity:
+Each execution generation binds an immutable local checkout identity:
 
 - Personal User, managed execution, deployment, and device;
-- Project and opaque workspace id;
+- Project and opaque checkout id;
 - canonical path retained by the runner;
 - repository common-directory and worktree identity where Git is available;
 - base object, branch or detached state, ownership class, and lifecycle state.
@@ -66,7 +66,7 @@ commands:
 2. load `HEAD`, or an empty tree for an unborn repository, into the temporary
    index;
 3. run `git add -A` against the selected Project;
-4. reject concurrent workspace or repository mutation;
+4. reject concurrent checkout or repository mutation;
 5. write one tree and one synthetic commit;
 6. publish the commit under its exact hidden ref.
 
@@ -102,7 +102,7 @@ refspec can copy arbitrary local refs; Koed does not claim otherwise.
 A turn diff compares that prompt's baseline and terminal commits. A full
 Conversation diff compares the first baseline with the latest terminal.
 Results are bounded, encrypted durable records derived by the runner. The
-renderer cannot submit Git refs, object ids, absolute paths, or workspace roots.
+renderer cannot submit Git refs, object ids, absolute paths, or checkout roots.
 
 The same ready commits back rooted browse, read, search, and file-mention
 operations. Content authorization for those explicit reads remains a separate
@@ -120,12 +120,12 @@ The runner:
 1. requires the execution generation to be running and idle;
 2. resolves a ready target checkpoint owned by that execution;
 3. captures and durably records a recovery checkpoint of the current contents;
-4. proves the workspace still matches that recovery checkpoint;
+4. proves the checkout still matches that recovery checkpoint;
 5. materializes the target through an isolated temporary index;
 6. removes only non-ignored paths present in recovery but absent from target;
 7. verifies the resulting content tree and preserves the active Git index.
 
-If the workspace changes after recovery capture, Restore fails rather than
+If the checkout changes after recovery capture, Restore fails rather than
 discarding the newer work. A retry reconciles a completed Restore from the
 target tree or resumes from its durable recovery checkpoint. Recovery refs are
 retained for a later explicit recovery action. Restore records a terminal
@@ -136,7 +136,7 @@ at their own baseline checkpoint.
 ### Lifecycle And Portability
 
 Hiding, settling, archiving, or deleting a Conversation does not delete its
-workspace or checkpoints. Cleanup is a separate runner-owned operation with
+checkout or checkpoints. Cleanup is a separate runner-owned operation with
 identity, lease, ownership, and dirty-state checks.
 
 Checkpoints are not synchronized or transferred between devices. Execution
@@ -165,7 +165,7 @@ leaves its device.
   replay;
 - capture uses a bounded number of Git processes on large Projects;
 - capture preserves the active index and working state;
-- concurrent branch, `HEAD`, or workspace mutation fails closed;
+- concurrent branch, `HEAD`, or checkout mutation fails closed;
 - hidden refs are created, verified, cleaned, and omitted by ordinary pushes;
 - turn/full diffs and rooted file operations resolve only recorded checkpoints;
 - Restore keeps a recovery checkpoint, preserves ignored files and the active

@@ -40,9 +40,9 @@ import {
 } from "./managed-conversation-service.js";
 import { captureExecutionCheckpoint } from "./execution-checkpoint.js";
 import {
-  createGitExecutionWorkspaceDriver,
-  type GitExecutionWorkspaceDriver
-} from "@koed/shared/execution-workspace";
+  createGitExecutionCheckoutDriver,
+  type GitExecutionCheckoutDriver
+} from "@koed/shared/execution-checkout";
 
 describe("Managed Conversation token usage", () => {
   it("records the current provider context and cumulative processed count once per command", () => {
@@ -307,9 +307,9 @@ const pendingBindingFixture = (input: {
     executionGeneration: 1,
     sourceProjectPath: input.sourceProjectPath,
     projectPath: input.sourceProjectPath,
-    workspaceId: null,
-    workspaceKind: "pending",
-    workspaceLifecycle: "pending",
+    checkoutId: null,
+    checkoutKind: "pending",
+    checkoutLifecycle: "pending",
     cleanupState: "not_requested",
     vcsDriver: null,
     localRepositoryCommonDirectory: null,
@@ -337,7 +337,7 @@ const cleanupBindingFixture = (input: {
   executionId: string;
   deploymentId: string;
   deviceId: string;
-  workspaceId: string;
+  checkoutId: string;
 }): ManagedConversationRuntimeBindingRecord => {
   const now = new Date().toISOString();
   return {
@@ -348,9 +348,9 @@ const cleanupBindingFixture = (input: {
     executionGeneration: 1,
     sourceProjectPath: "/source",
     projectPath: "/managed/worktree",
-    workspaceId: input.workspaceId,
-    workspaceKind: "koed_managed_worktree",
-    workspaceLifecycle: "cleanup_requested",
+    checkoutId: input.checkoutId,
+    checkoutKind: "koed_managed_worktree",
+    checkoutLifecycle: "cleanup_requested",
     cleanupState: "requested",
     vcsDriver: "git",
     localRepositoryCommonDirectory: "/source/.git",
@@ -359,9 +359,9 @@ const cleanupBindingFixture = (input: {
     worktreeIdentityHash: "b".repeat(64),
     baseRef: "HEAD",
     baseObjectId: "c".repeat(40),
-    branchRef: `refs/heads/koed/${input.executionId}/1/${input.workspaceId}`,
+    branchRef: `refs/heads/koed/${input.executionId}/1/${input.checkoutId}`,
     headObjectId: "c".repeat(40),
-    creationOperationId: input.workspaceId,
+    creationOperationId: input.checkoutId,
     localSessionId: null,
     providerThreadId: null,
     transcriptPath: null,
@@ -391,10 +391,10 @@ describe("Managed Conversation service lifecycle", () => {
       const executionId = randomUUID();
       const deploymentId = randomUUID();
       const deviceId = randomUUID();
-      const workspaceDriver = await createGitExecutionWorkspaceDriver({
+      const checkoutDriver = await createGitExecutionCheckoutDriver({
         managedRoot: resolve(root, ".managed")
       });
-      const workspace = await workspaceDriver.select({
+      const checkout = await checkoutDriver.select({
         operationId: randomUUID(),
         path: root
       });
@@ -411,22 +411,21 @@ describe("Managed Conversation service lifecycle", () => {
         deploymentId,
         deviceId,
         executionGeneration: 1,
-        sourceProjectPath: workspace.canonicalPath,
-        projectPath: workspace.canonicalPath,
-        workspaceId: workspace.workspaceId,
-        workspaceKind: workspace.ownership,
-        workspaceLifecycle: "ready",
+        sourceProjectPath: checkout.canonicalPath,
+        projectPath: checkout.canonicalPath,
+        checkoutId: checkout.checkoutId,
+        checkoutKind: checkout.ownership,
+        checkoutLifecycle: "ready",
         cleanupState: "not_requested",
-        vcsDriver: workspace.vcsDriver,
-        localRepositoryCommonDirectory:
-          workspace.localRepositoryCommonDirectory,
-        localGitDirectory: workspace.localGitDirectory,
-        repositoryIdentityHash: workspace.repositoryIdentityHash,
-        worktreeIdentityHash: workspace.worktreeIdentityHash,
-        baseRef: workspace.baseRef,
-        baseObjectId: workspace.baseObjectId,
-        branchRef: workspace.branchRef,
-        headObjectId: workspace.headObjectId,
+        vcsDriver: checkout.vcsDriver,
+        localRepositoryCommonDirectory: checkout.localRepositoryCommonDirectory,
+        localGitDirectory: checkout.localGitDirectory,
+        repositoryIdentityHash: checkout.repositoryIdentityHash,
+        worktreeIdentityHash: checkout.worktreeIdentityHash,
+        baseRef: checkout.baseRef,
+        baseObjectId: checkout.baseObjectId,
+        branchRef: checkout.branchRef,
+        headObjectId: checkout.headObjectId,
         creationOperationId: randomUUID(),
         localSessionId: null,
         providerThreadId: null,
@@ -438,7 +437,7 @@ describe("Managed Conversation service lifecycle", () => {
         updatedAt: now
       };
       const capture = await captureExecutionCheckpoint({
-        workspace,
+        checkout,
         executionId,
         executionGeneration: 1,
         sequence: 0,
@@ -506,7 +505,7 @@ describe("Managed Conversation service lifecycle", () => {
         deploymentId,
         koedHome: resolve(root, "koed-home"),
         envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
-        executionWorkspaceDriver: workspaceDriver,
+        executionCheckoutDriver: checkoutDriver,
         logger: {
           info: vi.fn(),
           warn: vi.fn(),
@@ -551,10 +550,10 @@ describe("Managed Conversation service lifecycle", () => {
       const executionId = randomUUID();
       const deploymentId = randomUUID();
       const deviceId = randomUUID();
-      const workspaceDriver = await createGitExecutionWorkspaceDriver({
+      const checkoutDriver = await createGitExecutionCheckoutDriver({
         managedRoot: resolve(root, ".managed")
       });
-      const workspace = await workspaceDriver.select({
+      const checkout = await checkoutDriver.select({
         operationId: randomUUID(),
         path: projectPath
       });
@@ -575,22 +574,21 @@ describe("Managed Conversation service lifecycle", () => {
         deploymentId,
         deviceId,
         executionGeneration: 1,
-        sourceProjectPath: workspace.canonicalPath,
-        projectPath: workspace.canonicalPath,
-        workspaceId: workspace.workspaceId,
-        workspaceKind: workspace.ownership,
-        workspaceLifecycle: "ready",
+        sourceProjectPath: checkout.canonicalPath,
+        projectPath: checkout.canonicalPath,
+        checkoutId: checkout.checkoutId,
+        checkoutKind: checkout.ownership,
+        checkoutLifecycle: "ready",
         cleanupState: "not_requested",
-        vcsDriver: workspace.vcsDriver,
-        localRepositoryCommonDirectory:
-          workspace.localRepositoryCommonDirectory,
-        localGitDirectory: workspace.localGitDirectory,
-        repositoryIdentityHash: workspace.repositoryIdentityHash,
-        worktreeIdentityHash: workspace.worktreeIdentityHash,
-        baseRef: workspace.baseRef,
-        baseObjectId: workspace.baseObjectId,
-        branchRef: workspace.branchRef,
-        headObjectId: workspace.headObjectId,
+        vcsDriver: checkout.vcsDriver,
+        localRepositoryCommonDirectory: checkout.localRepositoryCommonDirectory,
+        localGitDirectory: checkout.localGitDirectory,
+        repositoryIdentityHash: checkout.repositoryIdentityHash,
+        worktreeIdentityHash: checkout.worktreeIdentityHash,
+        baseRef: checkout.baseRef,
+        baseObjectId: checkout.baseObjectId,
+        branchRef: checkout.branchRef,
+        headObjectId: checkout.headObjectId,
         creationOperationId: randomUUID(),
         localSessionId: null,
         providerThreadId: null,
@@ -602,7 +600,7 @@ describe("Managed Conversation service lifecycle", () => {
         updatedAt: now
       };
       const targetCapture = await captureExecutionCheckpoint({
-        workspace,
+        checkout,
         executionId,
         executionGeneration: 1,
         sequence: 1,
@@ -667,7 +665,7 @@ describe("Managed Conversation service lifecycle", () => {
       }));
       const repository = {
         listManagedConversationExecutionsForRunner: vi.fn(async () => []),
-        listManagedConversationExecutionWorkspaceCleanupRequests: vi.fn(
+        listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
           async () => []
         ),
         listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
@@ -695,7 +693,7 @@ describe("Managed Conversation service lifecycle", () => {
         deploymentId,
         koedHome: resolve(root, "koed-home"),
         envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
-        executionWorkspaceDriver: workspaceDriver,
+        executionCheckoutDriver: checkoutDriver,
         logger: {
           info: vi.fn(),
           warn: vi.fn(),
@@ -773,7 +771,7 @@ describe("Managed Conversation service lifecycle", () => {
     });
     const repository = {
       listManagedConversationExecutionsForRunner: vi.fn(() => recovery),
-      listManagedConversationExecutionWorkspaceCleanupRequests: vi.fn(
+      listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
         async () => []
       ),
       listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
@@ -842,7 +840,7 @@ describe("Managed Conversation service lifecycle", () => {
         getManagedConversationRuntimeBinding: vi.fn(async () => {
           throw new Error("transient local runtime state");
         }),
-        listManagedConversationExecutionWorkspaceCleanupRequests: vi.fn(
+        listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
           async () => []
         ),
         listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
@@ -877,7 +875,7 @@ describe("Managed Conversation service lifecycle", () => {
   });
 
   it("releases a start against the selected dirty checkout without creating a worktree", async () => {
-    const root = await mkdtemp(resolve(tmpdir(), "koed-workspace-prepare-"));
+    const root = await mkdtemp(resolve(tmpdir(), "koed-checkout-prepare-"));
     try {
       const ownerUserId = randomUUID();
       const executionId = randomUUID();
@@ -916,7 +914,7 @@ describe("Managed Conversation service lifecycle", () => {
       const bindWorkspace = vi.fn(async (_actor, input) => ({
         ...binding,
         ...input,
-        workspaceLifecycle: "ready" as const,
+        checkoutLifecycle: "ready" as const,
         cleanupState: "not_requested" as const,
         createdAt: binding.createdAt,
         updatedAt: binding.updatedAt
@@ -924,14 +922,14 @@ describe("Managed Conversation service lifecycle", () => {
       const releaseStart = vi.fn(async () => true);
       const repository = {
         listManagedConversationExecutionsForRunner: vi.fn(async () => []),
-        listManagedConversationExecutionWorkspaceCleanupRequests: vi.fn(
+        listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
           async () => []
         ),
         listPendingManagedConversationRuntimeBindings: vi.fn(async () => [
           binding
         ]),
         getManagedConversationExecution: vi.fn(async () => execution),
-        bindManagedConversationExecutionWorkspace: bindWorkspace,
+        bindManagedConversationExecutionCheckout: bindWorkspace,
         releaseManagedConversationStartForRuntimeBinding: releaseStart,
         reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
         claimManagedConversationCommands: vi.fn(async () => [])
@@ -964,7 +962,7 @@ describe("Managed Conversation service lifecycle", () => {
           executionId,
           sourceProjectPath,
           projectPath: canonicalProjectPath,
-          workspaceKind: "user_managed_checkout",
+          checkoutKind: "user_managed_checkout",
           vcsDriver: "git"
         })
       );
@@ -1004,7 +1002,7 @@ describe("Managed Conversation service lifecycle", () => {
     const failStart = vi.fn(async () => true);
     const repository = {
       listManagedConversationExecutionsForRunner: vi.fn(async () => []),
-      listManagedConversationExecutionWorkspaceCleanupRequests: vi.fn(
+      listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
         async () => []
       ),
       listPendingManagedConversationRuntimeBindings: vi.fn(async () => [
@@ -1025,11 +1023,11 @@ describe("Managed Conversation service lifecycle", () => {
       deploymentId,
       koedHome: "/unused",
       envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
-      executionWorkspaceDriver: {
+      executionCheckoutDriver: {
         select: vi.fn(async () => {
-          throw new Error("ExecutionWorkspaceDirectoryError");
+          throw new Error("ExecutionCheckoutDirectoryError");
         })
-      } as unknown as GitExecutionWorkspaceDriver,
+      } as unknown as GitExecutionCheckoutDriver,
       logger: {
         info: vi.fn(),
         warn: vi.fn(),
@@ -1045,12 +1043,12 @@ describe("Managed Conversation service lifecycle", () => {
       executionGeneration: 1,
       deploymentId,
       deviceId,
-      errorCode: "ExecutionWorkspaceDirectoryError"
+      errorCode: "ExecutionCheckoutDirectoryError"
     });
   });
 
-  it("retries transient workspace preparation without failing the execution", async () => {
-    const root = await mkdtemp(resolve(tmpdir(), "koed-workspace-retry-"));
+  it("retries transient checkout preparation without failing the execution", async () => {
+    const root = await mkdtemp(resolve(tmpdir(), "koed-checkout-retry-"));
     const ownerUserId = randomUUID();
     const executionId = randomUUID();
     const deploymentId = randomUUID();
@@ -1072,9 +1070,9 @@ describe("Managed Conversation service lifecycle", () => {
     });
     const select = vi
       .fn()
-      .mockRejectedValueOnce(new Error("ExecutionWorkspaceGitCommandError"))
+      .mockRejectedValueOnce(new Error("ExecutionCheckoutGitCommandError"))
       .mockResolvedValue({
-        workspaceId: randomUUID(),
+        checkoutId: randomUUID(),
         vcsDriver: null,
         ownership: "non_vcs_directory" as const,
         canonicalPath: sourceProjectPath,
@@ -1090,7 +1088,7 @@ describe("Managed Conversation service lifecycle", () => {
     const bindWorkspace = vi.fn(async (_actor, input) => ({
       ...binding,
       ...input,
-      workspaceLifecycle: "ready" as const,
+      checkoutLifecycle: "ready" as const,
       cleanupState: "not_requested" as const,
       createdAt: binding.createdAt,
       updatedAt: binding.updatedAt
@@ -1099,14 +1097,14 @@ describe("Managed Conversation service lifecycle", () => {
     const failStart = vi.fn(async () => true);
     const repository = {
       listManagedConversationExecutionsForRunner: vi.fn(async () => []),
-      listManagedConversationExecutionWorkspaceCleanupRequests: vi.fn(
+      listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
         async () => []
       ),
       listPendingManagedConversationRuntimeBindings: vi.fn(async () => [
         binding
       ]),
       getManagedConversationExecution: vi.fn(async () => execution),
-      bindManagedConversationExecutionWorkspace: bindWorkspace,
+      bindManagedConversationExecutionCheckout: bindWorkspace,
       releaseManagedConversationStartForRuntimeBinding: releaseStart,
       failManagedConversationStartForRuntimeBinding: failStart,
       reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
@@ -1122,9 +1120,9 @@ describe("Managed Conversation service lifecycle", () => {
       deploymentId,
       koedHome: resolve(root, "koed-home"),
       envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
-      executionWorkspaceDriver: {
+      executionCheckoutDriver: {
         select
-      } as unknown as GitExecutionWorkspaceDriver,
+      } as unknown as GitExecutionCheckoutDriver,
       logger: {
         info: vi.fn(),
         warn: vi.fn(),
@@ -1146,12 +1144,12 @@ describe("Managed Conversation service lifecycle", () => {
     }
   });
 
-  it("removes an explicitly requested clean workspace only after execution is terminal", async () => {
+  it("removes an explicitly requested clean checkout only after execution is terminal", async () => {
     const ownerUserId = randomUUID();
     const executionId = randomUUID();
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
-    const workspaceId = randomUUID();
+    const checkoutId = randomUUID();
     const execution = terminalExecutionFixture({
       ownerUserId,
       executionId,
@@ -1163,20 +1161,20 @@ describe("Managed Conversation service lifecycle", () => {
       executionId,
       deploymentId,
       deviceId,
-      workspaceId
+      checkoutId
     });
     const remove = vi.fn(async () => undefined);
     const completeCleanup = vi.fn(async () => true);
     const repository = {
       listManagedConversationExecutionsForRunner: vi.fn(async () => []),
-      listManagedConversationExecutionWorkspaceCleanupRequests: vi.fn(
+      listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
         async () => [binding]
       ),
       listManagedConversationExecutionCheckpoints: vi.fn(async () => []),
       listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
       getManagedConversationExecution: vi.fn(async () => execution),
-      completeManagedConversationExecutionWorkspaceCleanup: completeCleanup,
-      failManagedConversationExecutionWorkspaceCleanup: vi.fn(async () => true),
+      completeManagedConversationExecutionCheckoutCleanup: completeCleanup,
+      failManagedConversationExecutionCheckoutCleanup: vi.fn(async () => true),
       reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
       claimManagedConversationCommands: vi.fn(async () => [])
     } as unknown as MemorySourceRepository;
@@ -1190,9 +1188,9 @@ describe("Managed Conversation service lifecycle", () => {
       deploymentId,
       koedHome: "/unused",
       envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
-      executionWorkspaceDriver: {
+      executionCheckoutDriver: {
         remove
-      } as unknown as GitExecutionWorkspaceDriver,
+      } as unknown as GitExecutionCheckoutDriver,
       logger: {
         info: vi.fn(),
         warn: vi.fn(),
@@ -1204,7 +1202,7 @@ describe("Managed Conversation service lifecycle", () => {
 
     expect(remove).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspaceId,
+        checkoutId,
         canonicalPath: binding.projectPath
       })
     );
@@ -1214,19 +1212,19 @@ describe("Managed Conversation service lifecycle", () => {
       executionGeneration: 1,
       deploymentId,
       deviceId,
-      workspaceId
+      checkoutId
     });
     expect(remove.mock.invocationCallOrder[0]).toBeLessThan(
       completeCleanup.mock.invocationCallOrder[0]!
     );
   });
 
-  it("records a refused dirty cleanup without deleting or retrying the workspace", async () => {
+  it("records a refused dirty cleanup without deleting or retrying the checkout", async () => {
     const ownerUserId = randomUUID();
     const executionId = randomUUID();
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
-    const workspaceId = randomUUID();
+    const checkoutId = randomUUID();
     const execution = terminalExecutionFixture({
       ownerUserId,
       executionId,
@@ -1238,20 +1236,20 @@ describe("Managed Conversation service lifecycle", () => {
       executionId,
       deploymentId,
       deviceId,
-      workspaceId
+      checkoutId
     });
     const failCleanup = vi.fn(async () => true);
     const completeCleanup = vi.fn(async () => true);
     const repository = {
       listManagedConversationExecutionsForRunner: vi.fn(async () => []),
-      listManagedConversationExecutionWorkspaceCleanupRequests: vi.fn(
+      listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
         async () => [binding]
       ),
       listManagedConversationExecutionCheckpoints: vi.fn(async () => []),
       listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
       getManagedConversationExecution: vi.fn(async () => execution),
-      completeManagedConversationExecutionWorkspaceCleanup: completeCleanup,
-      failManagedConversationExecutionWorkspaceCleanup: failCleanup,
+      completeManagedConversationExecutionCheckoutCleanup: completeCleanup,
+      failManagedConversationExecutionCheckoutCleanup: failCleanup,
       reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
       claimManagedConversationCommands: vi.fn(async () => [])
     } as unknown as MemorySourceRepository;
@@ -1265,11 +1263,11 @@ describe("Managed Conversation service lifecycle", () => {
       deploymentId,
       koedHome: "/unused",
       envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
-      executionWorkspaceDriver: {
+      executionCheckoutDriver: {
         remove: vi.fn(async () => {
-          throw new Error("ExecutionWorkspaceCleanupDirtyError");
+          throw new Error("ExecutionCheckoutCleanupDirtyError");
         })
-      } as unknown as GitExecutionWorkspaceDriver,
+      } as unknown as GitExecutionCheckoutDriver,
       logger: {
         info: vi.fn(),
         warn: vi.fn(),
@@ -1286,7 +1284,7 @@ describe("Managed Conversation service lifecycle", () => {
       executionGeneration: 1,
       deploymentId,
       deviceId,
-      workspaceId,
+      checkoutId,
       lifecycle: "cleanup_failed"
     });
   });
@@ -1296,7 +1294,7 @@ describe("Managed Conversation service lifecycle", () => {
     const executionId = randomUUID();
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
-    const workspaceId = randomUUID();
+    const checkoutId = randomUUID();
     const execution = terminalExecutionFixture({
       ownerUserId,
       executionId,
@@ -1308,7 +1306,7 @@ describe("Managed Conversation service lifecycle", () => {
       executionId,
       deploymentId,
       deviceId,
-      workspaceId
+      checkoutId
     });
     const remove = vi.fn(async () => undefined);
     const completeCleanup = vi
@@ -1318,14 +1316,14 @@ describe("Managed Conversation service lifecycle", () => {
     const failCleanup = vi.fn(async () => true);
     const repository = {
       listManagedConversationExecutionsForRunner: vi.fn(async () => []),
-      listManagedConversationExecutionWorkspaceCleanupRequests: vi.fn(
+      listManagedConversationExecutionCheckoutCleanupRequests: vi.fn(
         async () => [binding]
       ),
       listManagedConversationExecutionCheckpoints: vi.fn(async () => []),
       listPendingManagedConversationRuntimeBindings: vi.fn(async () => []),
       getManagedConversationExecution: vi.fn(async () => execution),
-      completeManagedConversationExecutionWorkspaceCleanup: completeCleanup,
-      failManagedConversationExecutionWorkspaceCleanup: failCleanup,
+      completeManagedConversationExecutionCheckoutCleanup: completeCleanup,
+      failManagedConversationExecutionCheckoutCleanup: failCleanup,
       reconcileAbandonedManagedConversationCommands: vi.fn(async () => 0),
       claimManagedConversationCommands: vi.fn(async () => [])
     } as unknown as MemorySourceRepository;
@@ -1339,9 +1337,9 @@ describe("Managed Conversation service lifecycle", () => {
       deploymentId,
       koedHome: "/unused",
       envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
-      executionWorkspaceDriver: {
+      executionCheckoutDriver: {
         remove
-      } as unknown as GitExecutionWorkspaceDriver,
+      } as unknown as GitExecutionCheckoutDriver,
       logger: {
         info: vi.fn(),
         warn: vi.fn(),

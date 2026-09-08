@@ -15,9 +15,9 @@ Long-running Personal Projects accumulate many Conversations. Recent work needs
 to remain easy to reach, while inactive work should stop dominating navigation.
 Pinning, settling, and snoozing are presentation choices, not evidence that a
 Conversation is archived, deleted, no longer captured, no longer recallable,
-or eligible for workspace cleanup.
+or eligible for checkout cleanup.
 
-Using source, Capture, Memory, retention, Share Grant, or execution-workspace
+Using source, Capture, Memory, retention, Share Grant, or execution-checkout
 state for navigation would couple unrelated lifecycles. Storing only local UI
 state would also make a User's choices disagree across their Koed clients.
 

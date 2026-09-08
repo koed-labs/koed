@@ -7,6 +7,7 @@ export {
   readDesktopLocalCredentialAuthorization,
   readUpstreamCredentialAuthorization,
   rotateDesktopLocalCredential,
+  upgradeDesktopLocalCredential,
   storeDesktopLocalCredential,
   storeEnrollmentCredentialCustody,
   storeUpstreamCredentialSecret,

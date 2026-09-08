@@ -589,6 +589,15 @@ export const readBoundedSse = async (
   const reader = options.body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let buffer = "";
+  let previousChunkEndedWithCr = false;
+  const appendDecoded = (text: string) => {
+    if (!text) return;
+    if (previousChunkEndedWithCr && text.startsWith("\n")) {
+      text = text.slice(1);
+    }
+    previousChunkEndedWithCr = text.endsWith("\r");
+    buffer += text.replace(/\r\n|\r/g, "\n");
+  };
 
   const consumeFrame = async (
     frame: string
@@ -619,9 +628,7 @@ export const readBoundedSse = async (
       if (options.signal.aborted) return "terminal";
       const chunk = await reader.read();
       if (chunk.done) break;
-      buffer += decoder
-        .decode(chunk.value, { stream: true })
-        .replace(/\r\n/g, "\n");
+      appendDecoded(decoder.decode(chunk.value, { stream: true }));
       for (;;) {
         const boundary = buffer.indexOf("\n\n");
         if (boundary < 0) break;
@@ -633,7 +640,7 @@ export const readBoundedSse = async (
         throw new Error("SSE frame exceeded its byte limit");
       }
     }
-    buffer += decoder.decode();
+    appendDecoded(decoder.decode());
     if (buffer.trim() && (await consumeFrame(buffer)) === "terminal") {
       return "terminal";
     }

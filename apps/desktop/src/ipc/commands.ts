@@ -24,8 +24,8 @@ import {
   desktopRendererOrigin,
   isDesktopCommandName,
   managedConversationCommandChannel,
-  managedWorkspaceCommandChannel,
-  managedWorkspaceEventChannel,
+  managedProjectCommandChannel,
+  managedProjectEventChannel,
   personalDevicePairingProgressChannel,
   personalDevicePairingLinkConsumeChannel,
   personalMemoryCommandChannel,
@@ -54,12 +54,12 @@ import {
   localAiClientResponseSchema
 } from "./local-ai-client-protocol.js";
 import {
-  managedWorkspaceEventSchema,
-  managedWorkspaceRequestSchema,
-  managedWorkspaceResultSchema,
-  type ManagedWorkspaceRequest,
-  type ManagedWorkspaceResult
-} from "./managed-workspace-protocol.js";
+  managedProjectEventSchema,
+  managedProjectRequestSchema,
+  managedProjectResultSchema,
+  type ManagedProjectRequest,
+  type ManagedProjectResult
+} from "./managed-project-protocol.js";
 
 export const invokeChannel = "koed:invoke";
 
@@ -118,10 +118,10 @@ const contextForSender = (sender: WebContents): DesktopCommandContext => {
         sender.send(setupProgressEventChannel, snapshot);
       }
     },
-    emitManagedWorkspaceEvent: (value) => {
-      const event = managedWorkspaceEventSchema.parse(value);
+    emitManagedProjectEvent: (value) => {
+      const event = managedProjectEventSchema.parse(value);
       if (!sender.isDestroyed()) {
-        sender.send(managedWorkspaceEventChannel, event);
+        sender.send(managedProjectEventChannel, event);
       }
     }
   };
@@ -143,10 +143,10 @@ export const registerDesktopCommandHandlers = (
     managedConversation: (
       request: ManagedConversationRequest
     ) => Promise<ManagedConversationResult>;
-    managedWorkspace: (
-      request: ManagedWorkspaceRequest,
+    managedProject: (
+      request: ManagedProjectRequest,
       context?: DesktopCommandContext
-    ) => Promise<ManagedWorkspaceResult>;
+    ) => Promise<ManagedProjectResult>;
     managedPreview: ManagedPreviewController;
     consumePendingPersonalDevicePairingLink: (
       expectedLink?: string
@@ -399,14 +399,14 @@ export const registerDesktopCommandHandlers = (
     }
   );
 
-  ipcMain.handle(managedWorkspaceCommandChannel, async (event, value) => {
+  ipcMain.handle(managedProjectCommandChannel, async (event, value) => {
     if (!trustedSender(event, options.allowedRendererOrigins)) {
       throw new Error("Untrusted Desktop IPC sender.");
     }
-    const request = managedWorkspaceRequestSchema.parse(value);
+    const request = managedProjectRequestSchema.parse(value);
     const context = contextForSender(event.sender);
-    const result = managedWorkspaceResultSchema.parse(
-      await options.managedWorkspace(request, {
+    const result = managedProjectResultSchema.parse(
+      await options.managedProject(request, {
         ...context,
         managedPreview: {
           attach: (input) =>
@@ -414,7 +414,7 @@ export const registerDesktopCommandHandlers = (
               event.sender,
               input,
               (workspaceEvent) =>
-                context.emitManagedWorkspaceEvent?.(workspaceEvent)
+                context.emitManagedProjectEvent?.(workspaceEvent)
             ),
           setBounds: (input) =>
             options.managedPreview.setBounds(
@@ -434,7 +434,7 @@ export const registerDesktopCommandHandlers = (
       result.executionId !== request.executionId ||
       result.operation !== request.operation
     ) {
-      throw new Error("Invalid managed workspace operation correlation.");
+      throw new Error("Invalid managed Project operation correlation.");
     }
     return result;
   });

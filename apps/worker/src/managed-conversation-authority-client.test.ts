@@ -333,7 +333,7 @@ describe("Managed Conversation authority client", () => {
     await expect(
       client.failManagedConversationStartForRuntimeBinding({
         ...binding,
-        errorCode: "ExecutionWorkspaceSourceDirtyError"
+        errorCode: "ExecutionCheckoutSourceDirtyError"
       })
     ).resolves.toBe(true);
 
@@ -348,7 +348,7 @@ describe("Managed Conversation authority client", () => {
     );
     expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toEqual({
       executionGeneration: 2,
-      errorCode: "ExecutionWorkspaceSourceDirtyError"
+      errorCode: "ExecutionCheckoutSourceDirtyError"
     });
   });
 

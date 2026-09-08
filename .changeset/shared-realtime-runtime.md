@@ -2,7 +2,7 @@
 "@koed/koed": minor
 ---
 
-Add managed coding workspaces for Codex, Claude Code, and Pi with model and
+Add managed Projects for Codex, Claude Code, and Pi with model and
 permission controls, streaming, approvals, protected drafts, native resume,
 handoff, and fork. Full access is the launch default; Pi approval modes use
 Koed tool gates rather than an OS sandbox.
@@ -19,4 +19,8 @@ Personal Device Sync with encrypted delivery and durable relay fallback.
 Verify native completion before managed Projection, fix capture and Restore
 consistency, and reconcile streaming output and optimistic prompts across all
 three clients. Preserve current Desktop startup and Shared Memory behavior,
-add the combined workspace migration, and isolate native container builds.
+add the combined coding Project migration, and isolate native container builds.
+
+Harden checkpoint and terminal content handling, authenticated Git transport,
+and scoped checkout actions. Preserve prior presentation choices during upgrade;
+legacy managed executions require an explicit reset before migration.

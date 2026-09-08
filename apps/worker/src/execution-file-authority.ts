@@ -6,14 +6,15 @@ import { promisify } from "node:util";
 import type { ManagedConversationExecutionCheckpointRecord } from "@koed/db";
 import {
   MANAGED_CONVERSATION_FILE_MAX_READ_BYTES,
+  MANAGED_CONVERSATION_FILE_MAX_SEARCH_MATCHES,
   MANAGED_CONVERSATION_FILE_PROTOCOL_VERSION,
   managedConversationFileOperationResultSchema,
   type ManagedConversationFileOperation,
   type ManagedConversationFileOperationResult
 } from "@koed/shared";
 
-import type { ExecutionWorkspaceIdentity } from "@koed/shared/execution-workspace";
-import { classifyWorkspaceContent } from "./workspace-content-policy.js";
+import type { ExecutionCheckoutIdentity } from "@koed/shared/execution-checkout";
+import { classifySourceContent } from "@koed/shared";
 
 const execFileAsync = promisify(execFile);
 const objectIdPattern = /^[0-9a-f]{40,64}$/;
@@ -51,6 +52,8 @@ const gitEnvironment = (): NodeJS.ProcessEnv => ({
   ),
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_GLOBAL: devNull,
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_LITERAL_PATHSPECS: "1",
   GIT_TERMINAL_PROMPT: "0",
   GIT_ASKPASS: devNull,
   SSH_ASKPASS: devNull,
@@ -137,7 +140,7 @@ const parseTree = (bytes: Buffer): TreeEntry[] => {
 };
 
 const selectCheckpoint = (
-  workspace: ExecutionWorkspaceIdentity,
+  checkout: ExecutionCheckoutIdentity,
   checkpoints: ManagedConversationExecutionCheckpointRecord[],
   request: ManagedConversationFileOperation
 ): FileCheckpoint => {
@@ -163,8 +166,8 @@ const selectCheckpoint = (
     !selected.commitObjectId ||
     !selected.repositoryIdentityHash ||
     !selected.worktreeIdentityHash ||
-    selected.repositoryIdentityHash !== workspace.repositoryIdentityHash ||
-    selected.worktreeIdentityHash !== workspace.worktreeIdentityHash ||
+    selected.repositoryIdentityHash !== checkout.repositoryIdentityHash ||
+    selected.worktreeIdentityHash !== checkout.worktreeIdentityHash ||
     selected.executionGeneration < 1
   ) {
     throw new Error("ExecutionFileRevisionUnavailableError");
@@ -175,7 +178,7 @@ const selectCheckpoint = (
       selected.ownerUserId,
       selected.executionId,
       selected.executionGeneration,
-      workspace.workspaceId,
+      checkout.checkoutId,
       selected.id,
       selected.commitObjectId
     ].join("\0")
@@ -187,7 +190,7 @@ const selectCheckpoint = (
 };
 
 const revisionFor = (
-  workspace: ExecutionWorkspaceIdentity,
+  checkout: ExecutionCheckoutIdentity,
   checkpoint: FileCheckpoint
 ) => ({
   checkpointId: checkpoint.id,
@@ -197,7 +200,7 @@ const revisionFor = (
       checkpoint.ownerUserId,
       checkpoint.executionId,
       checkpoint.executionGeneration,
-      workspace.workspaceId,
+      checkout.checkoutId,
       checkpoint.id,
       checkpoint.commitObjectId
     ].join("\0")
@@ -205,13 +208,13 @@ const revisionFor = (
 });
 
 const baseResult = (
-  workspace: ExecutionWorkspaceIdentity,
+  checkout: ExecutionCheckoutIdentity,
   checkpoint: FileCheckpoint
 ) => ({
   protocolVersion: MANAGED_CONVERSATION_FILE_PROTOCOL_VERSION,
   checkpointId: checkpoint.id,
   checkpointSequence: checkpoint.sequence,
-  revision: revisionFor(workspace, checkpoint)
+  revision: revisionFor(checkout, checkpoint)
 });
 
 const treeish = (checkpoint: FileCheckpoint, path: string): string =>
@@ -220,13 +223,13 @@ const treeish = (checkpoint: FileCheckpoint, path: string): string =>
     : checkpoint.commitObjectId;
 
 const listTree = async (
-  workspace: ExecutionWorkspaceIdentity,
+  checkout: ExecutionCheckoutIdentity,
   checkpoint: FileCheckpoint,
   path: string,
   recursive: boolean
 ): Promise<TreeEntry[]> =>
   parseTree(
-    await git(workspace.canonicalPath, [
+    await git(checkout.canonicalPath, [
       "ls-tree",
       "-z",
       "-l",
@@ -236,7 +239,7 @@ const listTree = async (
   );
 
 const readBlob = async (
-  workspace: ExecutionWorkspaceIdentity,
+  checkout: ExecutionCheckoutIdentity,
   checkpoint: FileCheckpoint,
   path: string
 ): Promise<{ bytes: Buffer; text: string; digest: string }> => {
@@ -244,7 +247,7 @@ const readBlob = async (
   if (!normalized) throw new Error("ExecutionFilePathError");
   const object = treeish(checkpoint, normalized);
   const sizeText = (
-    await git(workspace.canonicalPath, ["cat-file", "-s", object])
+    await git(checkout.canonicalPath, ["cat-file", "-s", object])
   )
     .toString("utf8")
     .trim();
@@ -256,12 +259,12 @@ const readBlob = async (
     throw new Error("ExecutionFileCapacityError");
   }
   const bytes = await git(
-    workspace.canonicalPath,
+    checkout.canonicalPath,
     ["cat-file", "blob", object],
     Math.max(size + 1_024, 1_024 * 1_024)
   );
   if (bytes.byteLength !== size) throw new Error("ExecutionFileBlobError");
-  if (classifyWorkspaceContent(normalized, bytes)) {
+  if (classifySourceContent(normalized, bytes)) {
     throw new Error("ExecutionFileContentDeniedError");
   }
   let text: string;
@@ -316,20 +319,24 @@ const decodeRange = (
 };
 
 export const executeCheckpointFileOperation = async (input: {
-  workspace: ExecutionWorkspaceIdentity;
+  checkout: ExecutionCheckoutIdentity;
   checkpoints: ManagedConversationExecutionCheckpointRecord[];
   operation: ManagedConversationFileOperation;
+  continuation?: {
+    operation: Extract<ManagedConversationFileOperation, { kind: "search" }>;
+    result: Extract<ManagedConversationFileOperationResult, { kind: "search" }>;
+  };
 }): Promise<ManagedConversationFileOperationResult> => {
   const checkpoint = selectCheckpoint(
-    input.workspace,
+    input.checkout,
     input.checkpoints,
     input.operation
   );
-  const common = baseResult(input.workspace, checkpoint);
+  const common = baseResult(input.checkout, checkpoint);
   const operation = input.operation;
   if (operation.kind === "browse") {
     const entries = await listTree(
-      input.workspace,
+      input.checkout,
       checkpoint,
       operation.path,
       false
@@ -357,7 +364,7 @@ export const executeCheckpointFileOperation = async (input: {
     });
   }
   if (operation.kind === "read") {
-    const file = await readBlob(input.workspace, checkpoint, operation.path);
+    const file = await readBlob(input.checkout, checkpoint, operation.path);
     const requestedEnd = Math.min(
       file.bytes.byteLength,
       operation.offset + operation.limit
@@ -380,7 +387,7 @@ export const executeCheckpointFileOperation = async (input: {
     });
   }
   if (operation.kind === "mention") {
-    const file = await readBlob(input.workspace, checkpoint, operation.path);
+    const file = await readBlob(input.checkout, checkpoint, operation.path);
     const selected = lineSelection(
       file.text,
       operation.startLine,
@@ -403,8 +410,31 @@ export const executeCheckpointFileOperation = async (input: {
     });
   }
 
+  if (
+    !Number.isSafeInteger(operation.offset) ||
+    operation.offset < 0 ||
+    operation.offset >= MANAGED_CONVERSATION_FILE_MAX_SEARCH_MATCHES
+  ) {
+    throw new Error("ExecutionFileCapacityError");
+  }
+  if (operation.offset > 0) {
+    const previous = input.continuation;
+    if (
+      !previous ||
+      !operation.continuationCommandId ||
+      previous.result.nextOffset !== operation.offset ||
+      previous.result.revision.checkpointId !== common.revision.checkpointId ||
+      previous.result.revision.revisionDigest !==
+        common.revision.revisionDigest ||
+      previous.operation.path !== operation.path ||
+      previous.operation.query !== operation.query ||
+      previous.operation.caseSensitive !== operation.caseSensitive
+    ) {
+      throw new Error("ExecutionFileSearchContinuationError");
+    }
+  }
   const entries = await listTree(
-    input.workspace,
+    input.checkout,
     checkpoint,
     operation.path,
     true
@@ -421,6 +451,7 @@ export const executeCheckpointFileOperation = async (input: {
   }> = [];
   let scannedFiles = 0;
   let scannedBytes = 0;
+  let totalMatches = 0;
   let truncated = false;
   for (const entry of entries) {
     if (entry.type !== "blob") continue;
@@ -438,7 +469,7 @@ export const executeCheckpointFileOperation = async (input: {
       : entry.path;
     let file: Awaited<ReturnType<typeof readBlob>>;
     try {
-      file = await readBlob(input.workspace, checkpoint, fullPath);
+      file = await readBlob(input.checkout, checkpoint, fullPath);
     } catch (error) {
       if (
         error instanceof Error &&
@@ -462,37 +493,38 @@ export const executeCheckpointFileOperation = async (input: {
       while (from <= haystack.length) {
         const found = haystack.indexOf(query, from);
         if (found < 0) break;
-        matches.push({
-          path: fullPath,
-          line: lineIndex + 1,
-          column: found + 1,
-          preview: line.slice(0, 4_096),
-          contentDigest: file.digest
-        });
+        if (
+          totalMatches >= operation.offset &&
+          matches.length < operation.limit
+        )
+          matches.push({
+            path: fullPath,
+            line: lineIndex + 1,
+            column: found + 1,
+            preview: line.slice(0, 4_096),
+            contentDigest: file.digest
+          });
+        totalMatches += 1;
         from = found + Math.max(query.length, 1);
-        if (matches.length > operation.offset + operation.limit + 10_000) {
+        if (totalMatches >= MANAGED_CONVERSATION_FILE_MAX_SEARCH_MATCHES) {
           truncated = true;
           break;
         }
       }
-      if (truncated && matches.length > operation.offset + operation.limit)
-        break;
+      if (totalMatches >= MANAGED_CONVERSATION_FILE_MAX_SEARCH_MATCHES) break;
     }
-    if (truncated && matches.length > operation.offset + operation.limit) break;
+    if (totalMatches >= MANAGED_CONVERSATION_FILE_MAX_SEARCH_MATCHES) break;
   }
-  const page = matches.slice(
-    operation.offset,
-    operation.offset + operation.limit
-  );
+  const page = matches;
   return managedConversationFileOperationResultSchema.parse({
     ...common,
     kind: "search",
     path: operation.path,
     query: operation.query,
     matches: page,
-    totalMatches: matches.length,
+    totalMatches,
     nextOffset:
-      operation.offset + page.length < matches.length
+      operation.offset + page.length < totalMatches
         ? operation.offset + page.length
         : null,
     scannedFiles,
@@ -502,7 +534,7 @@ export const executeCheckpointFileOperation = async (input: {
 };
 
 export const resolveCheckpointFileMention = async (input: {
-  workspace: ExecutionWorkspaceIdentity;
+  checkout: ExecutionCheckoutIdentity;
   checkpoints: ManagedConversationExecutionCheckpointRecord[];
   operation: Extract<ManagedConversationFileOperation, { kind: "mention" }>;
   result: Extract<ManagedConversationFileOperationResult, { kind: "mention" }>;
@@ -516,7 +548,7 @@ export const resolveCheckpointFileMention = async (input: {
     throw new Error("ExecutionFileMentionExpiredError");
   }
   const reparsed = await executeCheckpointFileOperation({
-    workspace: input.workspace,
+    checkout: input.checkout,
     checkpoints: input.checkpoints,
     operation: { ...input.operation, revision: input.result.revision }
   });
@@ -528,15 +560,11 @@ export const resolveCheckpointFileMention = async (input: {
   ) {
     throw new Error("ExecutionFileMentionChangedError");
   }
-  const checkpoint = selectCheckpoint(input.workspace, input.checkpoints, {
+  const checkpoint = selectCheckpoint(input.checkout, input.checkpoints, {
     ...input.operation,
     revision: input.result.revision
   });
-  const file = await readBlob(
-    input.workspace,
-    checkpoint,
-    input.operation.path
-  );
+  const file = await readBlob(input.checkout, checkpoint, input.operation.path);
   const selected = lineSelection(
     file.text,
     input.result.startLine,

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MemorySourceRepository } from "@koed/db";
-import { createGitExecutionWorkspaceDriver } from "@koed/shared/execution-workspace";
+import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
 
 import { createSourceControlRuntime } from "./runtime.js";
 
@@ -62,11 +62,11 @@ const fixture = async (options?: {
     ],
     { cwd: repositoryPath }
   );
-  const managedRoot = resolve(koedHome, "managed-workspaces", "worktrees");
-  const workspaceDriver = await createGitExecutionWorkspaceDriver({
+  const managedRoot = resolve(koedHome, "managed-checkouts", "worktrees");
+  const checkoutDriver = await createGitExecutionCheckoutDriver({
     managedRoot
   });
-  const identity = await workspaceDriver.inspect(repositoryPath);
+  const identity = await checkoutDriver.inspect(repositoryPath);
   const headObjectId = execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: repositoryPath,
     encoding: "utf8"
@@ -107,9 +107,9 @@ const fixture = async (options?: {
     executionGeneration: 2,
     sourceProjectPath: repositoryPath,
     projectPath: repositoryPath,
-    workspaceId: identity.workspaceId,
-    workspaceKind: "user_managed_checkout",
-    workspaceLifecycle: "ready",
+    checkoutId: identity.checkoutId,
+    checkoutKind: "user_managed_checkout",
+    checkoutLifecycle: "ready",
     cleanupState: "not_requested",
     vcsDriver: "git",
     localRepositoryCommonDirectory: identity.localRepositoryCommonDirectory,
@@ -354,7 +354,7 @@ describe("source-control runtime", () => {
         executionGeneration: 3,
         kind: "remotes"
       })
-    ).rejects.toMatchObject({ code: "source_control_workspace_stale" });
+    ).rejects.toMatchObject({ code: "source_control_checkout_stale" });
 
     const remotes = await runtime.execute(userId, {
       contractVersion: 1,

@@ -121,6 +121,42 @@ describe("readFirstBoundedDurableRealtimeFrame", () => {
 });
 
 describe("readBoundedSse", () => {
+  it.each(["\n", "\r\n", "\r"])(
+    "preserves SSE frames with %j line endings across every byte boundary",
+    async (newline) => {
+      const input = [
+        "event: update",
+        "data: café",
+        "data: 第二行",
+        "",
+        "data: last",
+        "",
+        ""
+      ].join(newline);
+      const bytes = new TextEncoder().encode(input);
+      const frames: Array<{ event: string; data: string }> = [];
+      await expect(
+        readBoundedSse({
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
+              controller.close();
+            }
+          }),
+          signal: new AbortController().signal,
+          maxFrameBytes: 128,
+          onFrame(frame) {
+            frames.push(frame);
+            return "continue";
+          }
+        })
+      ).resolves.toBe("ended");
+      expect(frames).toEqual([
+        { event: "update", data: "café\n第二行" },
+        { event: "message", data: "last" }
+      ]);
+    }
+  );
   it("parses split, commented, and multi-line SSE frames", async () => {
     const frames: Array<{ event: string; data: string }> = [];
     const outcome = await readBoundedSse({

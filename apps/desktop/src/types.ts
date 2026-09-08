@@ -13,7 +13,7 @@ import type {
   LocalAiClientResponse
 } from "./ipc/local-ai-client-protocol.js";
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
-import type { ManagedWorkspaceDesktopApi } from "./ipc/managed-workspace-protocol.js";
+import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 
 export type ComponentState =
   | "not_configured"
@@ -177,7 +177,7 @@ export interface DesktopApi {
     ) => Promise<LocalAiClientResponse>;
     reset: (flowKey: LocalAiClientFlowKey) => Promise<LocalAiClientResponse>;
   };
-  managedWorkspace?: ManagedWorkspaceDesktopApi;
+  managedProject?: ManagedProjectDesktopApi;
   clipboard?: {
     writeText: (value: string) => Promise<void>;
   };

@@ -14,10 +14,10 @@ Related decisions:
 
 ## Context
 
-A coding workspace needs an interactive terminal for build, test, development
+A Project needs an interactive terminal for build, test, development
 server, source-control, and diagnostic work that does not belong inside an AI
 Client turn. A terminal is materially more powerful than file inspection. It
-can read credentials, mutate the workspace, start listeners, access the
+can read credentials, mutate the checkout, start listeners, access the
 network, and leave descendant processes running after its visible shell exits.
 
 This terminal is also distinct from commands an AI Client executes through its
@@ -25,7 +25,7 @@ own provider runtime. Provider tool calls continue to use the selected AI
 Client's permission and approval bridge. A terminal does not intercept,
 duplicate, or become an alternate audit path for those tool calls.
 
-Desktop, Explorer, and remote coordinators do not own the execution workspace
+Desktop, Explorer, and remote coordinators do not own the execution checkout
 or its process namespace. A renderer-provided working directory, command,
 environment, process id, or open stream cannot become authority. Connection
 liveness also cannot prove that a process is alive or that a User remains
@@ -39,8 +39,8 @@ couple terminal backpressure to canonical product state.
 
 ## Decision
 
-The runner that owns a verified managed execution-workspace binding is the
-sole authority for terminal processes in that workspace. Koed provides a
+The runner that owns a verified managed execution-checkout binding is the
+sole authority for terminal processes in that checkout. Koed provides a
 bounded terminal service, not a generic remote command endpoint. Desktop and
 Explorer use typed Koed APIs and negotiated realtime streams; they never spawn
 or signal operating-system processes directly.
@@ -57,7 +57,7 @@ Every terminal operation is bound to:
 - an authenticated browser session or enrolled device credential with the
   separate `managed_terminal` operation family;
 - one managed execution id and current fencing generation;
-- the exact execution-workspace binding and assigned runner;
+- the exact execution-checkout binding and assigned runner;
 - one opaque terminal id and lifecycle generation; and
 - the requested action, stream attachment, and protocol limits.
 
@@ -73,7 +73,7 @@ Team, remote-device, or generic process authority.
 ### Terminal And Process Ownership
 
 A managed execution may own a bounded number of terminals. Each terminal has
-one server-derived opaque id, one runner, one workspace binding, one process
+one server-derived opaque id, one runner, one checkout binding, one process
 group, and one lifecycle generation. Terminal records persist only bounded
 lifecycle metadata: owner, execution, runner, generation, shell profile id,
 dimensions, state, exit classification, timestamps, and redacted failure code.
@@ -81,15 +81,15 @@ They do not contain commands, environment values, terminal bytes, local paths,
 or process ids visible outside the runner.
 
 The runner creates the pseudoterminal and the entire descendant process group.
-It verifies the current execution lease and workspace binding immediately
-before spawn. The child starts in the verified workspace root. A caller cannot
+It verifies the current execution lease and checkout binding immediately
+before spawn. The child starts in the verified checkout root. A caller cannot
 select another directory, executable, user, container, namespace, or process
 to attach.
 
 Execution handoff does not migrate a live terminal. The source runner must
 quiesce and terminate its terminal process groups before handoff can attest
 exclusive execution release. The target may create new terminals only after
-the new execution generation and workspace binding are authoritative. A fork
+the new execution generation and checkout binding are authoritative. A fork
 never copies a live process or terminal byte stream.
 
 ### Shell And Environment
@@ -105,7 +105,7 @@ shells inside their isolated runtime. Unsupported, missing, changed, or
 unverified profiles fail closed rather than falling back to another shell.
 
 Koed constructs the environment at spawn time. It begins with a runner-owned
-platform baseline, adds the execution workspace and explicitly configured
+platform baseline, adds the execution checkout and explicitly configured
 toolchain values, and supplies only secret references resolved inside the
 runner boundary. Renderer, prompt, Project metadata, Team data, and remote
 coordinator payloads cannot add arbitrary environment variables. Control
@@ -137,7 +137,7 @@ same request returns the same terminal; a changed request fails. A terminal is
 matching lifecycle generation.
 
 Attach, input, resize, interrupt, and stop reauthorize the current User,
-credential scope, execution generation, workspace, runner, and terminal
+credential scope, execution generation, checkout, runner, and terminal
 generation. Resize accepts bounded positive rows and columns. Input accepts
 bounded binary frames, not shell command strings or server-side interpolation.
 No endpoint accepts an arbitrary signal number or operating-system process id.
@@ -146,12 +146,12 @@ Interrupt sends the platform's terminal interrupt semantics to the owned
 foreground process group. Stop closes input, requests graceful process-group
 termination, waits for a bounded deadline, and escalates through the
 platform-specific hard-stop mechanism. The runner reaps descendants and
-records one terminal exit classification. Conversation stop, workspace
+records one terminal exit classification. Conversation stop, checkout
 cleanup, execution handoff, runner shutdown, credential revocation, or lost
 ownership invokes the same idempotent process-group cleanup path.
 
 Settling, snoozing, hiding, or archiving a Conversation does not stop its
-terminal. Workspace cleanup cannot begin while any terminal is non-terminal.
+terminal. Checkout cleanup cannot begin while any terminal is non-terminal.
 An unexpected runner loss marks terminal state `unknown` until bounded
 reconciliation proves exit; Koed never claims that a remote process stopped
 from lease expiry alone.
@@ -171,7 +171,7 @@ attach frame. Electron main may instead open the local WebSocket compatibility
 adapter with its loopback-only Desktop Local Credential; the API validates that
 credential before attach and periodically for the stream lifetime.
 The attach frame binds principal, device or browser session, backend, client,
-execution generation, workspace, runner, terminal generation, and requested
+execution generation, checkout, runner, terminal generation, and requested
 direction. Transport admission grants no terminal authority; the runner and
 authority recheck authorization on attach and periodically while attached.
 
@@ -205,7 +205,7 @@ and terminal states without exposing bytes or local process identity.
 
 Reattach requires fresh authorization and the same authoritative execution and
 terminal generations. Revoked credentials, access suspension, execution
-handoff, workspace mismatch, terminal expiry, runner mismatch, or stale
+handoff, checkout mismatch, terminal expiry, runner mismatch, or stale
 generation fails closed. A process that cannot be proved alive is not silently
 recreated. Starting a replacement terminal is a new explicit operation and id.
 
@@ -257,11 +257,11 @@ Implementation must prove:
 - owning-User create, attach, resize, input, interrupt, stop, and reattach;
 - denial for another User, Team viewer, Personal API Token, wrong operation
   family, revoked device, stale execution or terminal generation, wrong runner,
-  cleaned workspace, and suspended access;
+  cleaned checkout, and suspended access;
 - no caller-selected cwd, executable, environment, process id, signal, or
   terminal id substitution;
 - process-group cleanup for shell exit, descendants, Conversation stop,
-  handoff, workspace cleanup, runner crash/restart, and graceful-stop timeout;
+  handoff, checkout cleanup, runner crash/restart, and graceful-stop timeout;
 - ordered input acknowledgement and deduplication, no ambiguous reconnect
   replay, output replay within bounds, explicit output gaps, resize ordering,
   flow control, and slow-consumer isolation;
@@ -283,7 +283,7 @@ Implementation must prove:
 - A disconnected terminal can survive briefly, but output older than the
   bounded replay ring is honestly reported as a gap.
 - Live terminals cannot migrate across execution handoff; portability remains
-  source and workspace based rather than process based.
+  source and checkout based rather than process based.
 - Team terminal collaboration, terminal recording, automatic Memory capture,
   arbitrary command APIs, and shell-profile customization require separate
   decisions.

@@ -370,12 +370,16 @@ describe.each(cases)("$provider source-control driver", (fixture) => {
       defaultBranch: "main",
       headObjectId: sha
     });
-    await expect(driver.branches(input)).resolves.toMatchObject([
-      { name: "main", objectId: sha }
-    ]);
+    await expect(driver.branches(input)).resolves.toMatchObject({
+      items: [{ name: "main", objectId: sha }],
+      nextCursor: null
+    });
     await expect(
       driver.reviewRequests({ ...input, state: "open" })
-    ).resolves.toMatchObject([{ number: 7, headObjectId: sha }]);
+    ).resolves.toMatchObject({
+      items: [{ number: 7, headObjectId: sha }],
+      nextCursor: null
+    });
     await expect(
       driver.reviewRequest({ ...input, number: 7 })
     ).resolves.toMatchObject({ number: 7, headObjectId: sha });
@@ -384,7 +388,10 @@ describe.each(cases)("$provider source-control driver", (fixture) => {
     expect(checks[0]?.name).toBeTruthy();
     await expect(
       driver.comments({ ...input, number: 7 })
-    ).resolves.toMatchObject([{ author: "reviewer", body: "Looks good" }]);
+    ).resolves.toMatchObject({
+      items: [{ author: "reviewer", body: "Looks good" }],
+      nextCursor: null
+    });
     await expect(
       driver.createReviewRequest({
         ...input,
@@ -408,6 +415,130 @@ describe.each(cases)("$provider source-control driver", (fixture) => {
           expectedHeadObjectId: sha
         })
       ).resolves.toBeUndefined();
+    }
+  });
+
+  it.each(["branches", "reviewRequests", "comments"] as const)(
+    "continues %s beyond 100 results",
+    async (operation) => {
+      const calls: URL[] = [];
+      const pageFetch: typeof fetch = async (url, init) => {
+        const response = await fixture.fetch(url, init);
+        const payload = await response.json();
+        const parsed = new URL(String(url));
+        const baseItems = Array.isArray(payload)
+          ? payload
+          : (payload.values ?? payload.value);
+        if (!baseItems) return new Response(JSON.stringify(payload));
+        calls.push(parsed);
+        const isThreads = parsed.pathname.endsWith("/threads");
+        const parameter =
+          fixture.provider === "azure_devops"
+            ? operation === "branches"
+              ? "continuationToken"
+              : "$skip"
+            : "page";
+        const second = parsed.searchParams.has(parameter);
+        const count = isThreads ? 101 : second ? 1 : 100;
+        const items = Array.from({ length: count }, (_, index) => ({
+          ...baseItems[0],
+          id: (second ? 100 : 0) + index + 1
+        }));
+        const next = new URL(parsed);
+        next.searchParams.set(
+          parameter,
+          fixture.provider === "azure_devops"
+            ? operation === "branches"
+              ? "next-token"
+              : "100"
+            : "2"
+        );
+        const headers = new Headers();
+        if (!second && fixture.provider === "github")
+          headers.set("link", `<${next}>; rel="next"`);
+        if (!second && fixture.provider === "gitlab")
+          headers.set("x-next-page", "2");
+        if (
+          !second &&
+          fixture.provider === "azure_devops" &&
+          operation === "branches"
+        )
+          headers.set("x-ms-continuationtoken", "next-token");
+        const body =
+          fixture.provider === "bitbucket"
+            ? { values: items, ...(!second ? { next: next.toString() } : {}) }
+            : fixture.provider === "azure_devops"
+              ? { value: items }
+              : items;
+        return new Response(JSON.stringify(body), { headers });
+      };
+      const pageInput = {
+        ...input,
+        fetch: pageFetch,
+        number: 7,
+        state: "open" as const
+      };
+      const first = await driver[operation](pageInput);
+      expect(first.items).toHaveLength(100);
+      expect(first.nextCursor).toEqual(expect.any(String));
+      const second = await driver[operation]({
+        ...pageInput,
+        cursor: first.nextCursor
+      });
+      expect(second.items).toHaveLength(1);
+      expect(second.nextCursor).toBeNull();
+      if (fixture.provider !== "azure_devops" || operation !== "comments") {
+        expect(calls.at(-1)!.searchParams.toString()).not.toBe(
+          calls[0]!.searchParams.toString()
+        );
+      }
+      await expect(
+        driver[operation]({
+          ...pageInput,
+          repository: { ...input.repository, repository: "different" },
+          cursor: first.nextCursor
+        })
+      ).rejects.toMatchObject({ code: "source_control_cursor_invalid" });
+    }
+  );
+
+  it("rejects an API origin outside the configured host before sending credentials", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    await expect(
+      driver.inspect({
+        ...input,
+        fetch,
+        connection: {
+          ...input.connection,
+          apiOrigin: "https://unrelated.example.test"
+        }
+      })
+    ).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("reports formal review support accurately", async () => {
+    const reviewInput = {
+      ...input,
+      number: 7,
+      decision: "request_changes" as const,
+      body: "Please revise",
+      expectedHeadObjectId: sha
+    };
+    if (fixture.provider === "gitlab" || fixture.provider === "bitbucket") {
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      await expect(
+        driver.createReview({ ...reviewInput, fetch })
+      ).rejects.toMatchObject({
+        code: "source_control_capability_unavailable"
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    } else if (fixture.provider === "github") {
+      const fetch = vi.fn<typeof globalThis.fetch>(fixture.fetch);
+      await driver.createReview({ ...reviewInput, fetch });
+      expect(
+        JSON.parse(String(fetch.mock.calls.at(-1)![1]!.body))
+      ).toMatchObject({ commit_id: sha, event: "REQUEST_CHANGES" });
     }
   });
 

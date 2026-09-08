@@ -384,7 +384,7 @@ describe("managed Conversation runner routes", () => {
       headers: runnerHeaders,
       payload: {
         executionGeneration: 2,
-        errorCode: "ExecutionWorkspaceSourceDirtyError"
+        errorCode: "ExecutionCheckoutSourceDirtyError"
       }
     });
 
@@ -396,7 +396,7 @@ describe("managed Conversation runner routes", () => {
       executionGeneration: 2,
       deploymentId: ids.deployment,
       deviceId: ids.device,
-      errorCode: "ExecutionWorkspaceSourceDirtyError"
+      errorCode: "ExecutionCheckoutSourceDirtyError"
     });
     await fixture.app.close();
   });

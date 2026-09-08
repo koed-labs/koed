@@ -45,9 +45,9 @@ import {
   useState
 } from "react";
 
-import type { ManagedWorkspaceDesktopApi } from "../../../ipc/managed-workspace-protocol.js";
+import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
 
-type WorkspaceIdentity = {
+type CheckoutIdentity = {
   executionId: string;
   executionGeneration: number;
 };
@@ -83,15 +83,15 @@ const pathParent = (path: string): string => {
 
 const pathName = (path: string): string => path.split("/").at(-1) ?? path;
 
-export function ManagedWorkspaceCockpit({
+export function ManagedProjectCockpit({
   api,
   identity,
   revision,
   onAttachFile,
   onAttachTerminal
 }: {
-  api: ManagedWorkspaceDesktopApi;
-  identity: WorkspaceIdentity;
+  api: ManagedProjectDesktopApi;
+  identity: CheckoutIdentity;
   revision: number;
   onAttachFile: (attachment: { commandId: string; label: string }) => void;
   onAttachTerminal: (attachment: {
@@ -708,7 +708,7 @@ export function ManagedWorkspaceCockpit({
     fitRef.current = fit;
     const connectionId = connectionIdRef.current;
     const sendFrame = (
-      frame: Parameters<ManagedWorkspaceDesktopApi["command"]>[0]
+      frame: Parameters<ManagedProjectDesktopApi["command"]>[0]
     ) =>
       api
         .command(frame)
@@ -865,10 +865,10 @@ export function ManagedWorkspaceCockpit({
   if (!open) {
     return (
       <button
-        aria-label="Open coding workspace"
+        aria-label="Open Project"
         className="personal-cockpit-open"
         onClick={() => setOpen(true)}
-        title="Open coding workspace"
+        title="Open Project"
         type="button"
       >
         <FileCode2 aria-hidden="true" />
@@ -877,9 +877,9 @@ export function ManagedWorkspaceCockpit({
   }
 
   return (
-    <aside className="personal-cockpit" aria-label="Coding workspace">
+    <aside className="personal-cockpit" aria-label="Project">
       <div className="personal-cockpit-toolbar">
-        <div role="tablist" aria-label="Coding workspace views">
+        <div role="tablist" aria-label="Project views">
           <button
             aria-label="Changes"
             aria-selected={tab === "changes"}
@@ -932,7 +932,7 @@ export function ManagedWorkspaceCockpit({
           </button>
         </div>
         <button
-          aria-label="Close coding workspace"
+          aria-label="Close Project"
           onClick={() => setOpen(false)}
           type="button"
         >
@@ -985,9 +985,11 @@ export function ManagedWorkspaceCockpit({
                 <header>{selectedDiff.path}</header>
                 <pre>
                   <code>
-                    {selectedDiff.binary
-                      ? "Binary file changed"
-                      : (selectedDiff.patch ?? "Patch unavailable")}
+                    {selectedDiff.contentExcluded
+                      ? "Content withheld by the source content policy"
+                      : selectedDiff.binary
+                        ? "Binary file changed"
+                        : (selectedDiff.patch ?? "Patch unavailable")}
                   </code>
                 </pre>
               </>
@@ -1019,7 +1021,7 @@ export function ManagedWorkspaceCockpit({
           >
             <Search aria-hidden="true" />
             <input
-              aria-label="Search workspace files"
+              aria-label="Search Project files"
               onChange={(event) => setSearchQuery(event.currentTarget.value)}
               placeholder="Search files"
               value={searchQuery}

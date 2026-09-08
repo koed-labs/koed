@@ -117,11 +117,11 @@ import {
   type PersonalDevicePairingProgress
 } from "../ipc/personal-device-pairing-protocol.js";
 import {
-  managedWorkspaceResultSchema,
-  type ManagedWorkspaceEvent,
-  type ManagedWorkspaceRequest,
-  type ManagedWorkspaceResult
-} from "../ipc/managed-workspace-protocol.js";
+  managedProjectResultSchema,
+  type ManagedProjectEvent,
+  type ManagedProjectRequest,
+  type ManagedProjectResult
+} from "../ipc/managed-project-protocol.js";
 import { buildPersonalToolDisplay } from "./personal-tool-display.js";
 
 export interface DesktopCommandContext {
@@ -132,7 +132,7 @@ export interface DesktopCommandContext {
     progress: PersonalDevicePairingProgress
   ) => void;
   emitSetupProgress?: (snapshot: DesktopSetupSnapshot) => void;
-  emitManagedWorkspaceEvent?: (event: ManagedWorkspaceEvent) => void;
+  emitManagedProjectEvent?: (event: ManagedProjectEvent) => void;
   managedPreview?: {
     attach(input: {
       surfaceId: string;
@@ -165,10 +165,10 @@ export type ManagedConversationDesktopHandler = (
   request: ManagedConversationRequest
 ) => Promise<ManagedConversationResult>;
 
-export type ManagedWorkspaceDesktopHandler = (
-  request: ManagedWorkspaceRequest,
+export type ManagedProjectDesktopHandler = (
+  request: ManagedProjectRequest,
   context?: DesktopCommandContext
-) => Promise<ManagedWorkspaceResult>;
+) => Promise<ManagedProjectResult>;
 
 export interface KoedServerManagerOptions {
   repoRoot: string;
@@ -234,7 +234,7 @@ export interface KoedServerManager {
     set: (enabled: boolean) => Promise<HardwareAccelerationState>;
   };
   managedConversation: ManagedConversationDesktopHandler;
-  managedWorkspace: ManagedWorkspaceDesktopHandler;
+  managedProject: ManagedProjectDesktopHandler;
   subscribePersonalMemory: (
     listener: (change: PersonalDesktopChange) => void,
     signal: AbortSignal
@@ -3210,7 +3210,7 @@ export const createKoedServerManager = ({
     });
   };
 
-  const managedWorkspaceAccess = async () => {
+  const managedProjectAccess = async () => {
     const current = retainedPersonalApiOrigin
       ? null
       : await runJson(["status"], statusCommandTimeoutMs);
@@ -3227,12 +3227,12 @@ export const createKoedServerManager = ({
     return { apiOrigin, authorization: credential.authorization };
   };
 
-  const managedWorkspaceJson = async (
+  const managedProjectJson = async (
     path: string,
     init: RequestInit,
     maximumResponseBytes: number
   ): Promise<Record<string, unknown>> => {
-    const access = await managedWorkspaceAccess();
+    const access = await managedProjectAccess();
     const remote = await fetchBoundedJsonObject(
       personalMemoryFetch,
       new URL(path, access.apiOrigin),
@@ -3262,20 +3262,20 @@ export const createKoedServerManager = ({
     connectionId: string
   ): string => `${ownerId}:${connectionId}`;
 
-  const managedWorkspace: ManagedWorkspaceDesktopHandler = async (
+  const managedProject: ManagedProjectDesktopHandler = async (
     request,
     context
   ) => {
     const basePath = `/v1/managed-conversations/${encodeURIComponent(
       request.executionId
     )}`;
-    type UncorrelatedResult = ManagedWorkspaceResult extends infer Result
+    type UncorrelatedResult = ManagedProjectResult extends infer Result
       ? Result extends { requestId: string }
         ? Omit<Result, "requestId">
         : never
       : never;
     const correlated = (value: UncorrelatedResult) =>
-      managedWorkspaceResultSchema.parse({
+      managedProjectResultSchema.parse({
         ...value,
         requestId: request.requestId
       });
@@ -3283,7 +3283,7 @@ export const createKoedServerManager = ({
     if (request.operation === "diff_read") {
       const query = new URLSearchParams({ scope: request.scope });
       if (request.scope === "turn") query.set("commandId", request.commandId);
-      const payload = await managedWorkspaceJson(
+      const payload = await managedProjectJson(
         `${basePath}/diff?${query.toString()}`,
         { method: "GET" },
         18 * 1_024 * 1_024
@@ -3296,23 +3296,16 @@ export const createKoedServerManager = ({
     }
 
     if (request.operation === "checkpoint_restore") {
-      const payload = await authenticatedPersonalMemoryRequest(
-        ({ apiOrigin }) => ({
-          url: new URL(
-            `${basePath}/checkpoints/${encodeURIComponent(
-              request.checkpointId
-            )}/restore`,
-            apiOrigin
-          ),
-          init: {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              executionGeneration: request.executionGeneration,
-              idempotencyKey: request.idempotencyKey
-            })
-          }
-        }),
+      const payload = await managedProjectJson(
+        `${basePath}/checkpoints/${encodeURIComponent(request.checkpointId)}/restore`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            executionGeneration: request.executionGeneration,
+            idempotencyKey: request.idempotencyKey
+          })
+        },
         1 * 1_024 * 1_024
       );
       return correlated({
@@ -3323,7 +3316,7 @@ export const createKoedServerManager = ({
     }
 
     if (request.operation === "file_start") {
-      const payload = await managedWorkspaceJson(
+      const payload = await managedProjectJson(
         `${basePath}/files`,
         {
           method: "POST",
@@ -3344,7 +3337,7 @@ export const createKoedServerManager = ({
     }
 
     if (request.operation === "file_result") {
-      const payload = await managedWorkspaceJson(
+      const payload = await managedProjectJson(
         `${basePath}/files/${encodeURIComponent(request.commandId)}`,
         { method: "GET" },
         8 * 1_024 * 1_024
@@ -3358,7 +3351,7 @@ export const createKoedServerManager = ({
     }
 
     if (request.operation === "terminal_profiles") {
-      const payload = await managedWorkspaceJson(
+      const payload = await managedProjectJson(
         `${basePath}/terminals/profiles`,
         { method: "GET" },
         64 * 1_024
@@ -3371,7 +3364,7 @@ export const createKoedServerManager = ({
     }
 
     if (request.operation === "terminal_list") {
-      const payload = await managedWorkspaceJson(
+      const payload = await managedProjectJson(
         `${basePath}/terminals`,
         { method: "GET" },
         512 * 1_024
@@ -3384,7 +3377,7 @@ export const createKoedServerManager = ({
     }
 
     if (request.operation === "terminal_create") {
-      const payload = await managedWorkspaceJson(
+      const payload = await managedProjectJson(
         `${basePath}/terminals`,
         {
           method: "POST",
@@ -3401,7 +3394,7 @@ export const createKoedServerManager = ({
     }
 
     if (request.operation === "terminal_stop") {
-      const payload = await managedWorkspaceJson(
+      const payload = await managedProjectJson(
         `${basePath}/terminals/${encodeURIComponent(request.terminalId)}/stop`,
         {
           method: "POST",
@@ -3418,7 +3411,7 @@ export const createKoedServerManager = ({
     }
 
     if (request.operation === "preview_list") {
-      const payload = await managedWorkspaceJson(
+      const payload = await managedProjectJson(
         `${basePath}/previews`,
         { method: "GET" },
         256 * 1_024
@@ -3431,7 +3424,7 @@ export const createKoedServerManager = ({
     }
 
     if (request.operation === "preview_nominate") {
-      const payload = await managedWorkspaceJson(
+      const payload = await managedProjectJson(
         `${basePath}/previews`,
         {
           method: "POST",
@@ -3457,7 +3450,7 @@ export const createKoedServerManager = ({
       ) {
         throw new PersonalMemoryBoundaryError("request_failed", false);
       }
-      const payload = await managedWorkspaceJson(
+      const payload = await managedProjectJson(
         `${basePath}/source-control`,
         {
           method: "POST",
@@ -3492,7 +3485,7 @@ export const createKoedServerManager = ({
           lifecycleGeneration: String(request.lifecycleGeneration)
         });
         const payload = managedDevelopmentPreviewAccessSchema.parse(
-          await managedWorkspaceJson(
+          await managedProjectJson(
             `${basePath}/previews/${encodeURIComponent(request.previewId)}/access?${query.toString()}`,
             { method: "GET" },
             256 * 1_024
@@ -3521,7 +3514,7 @@ export const createKoedServerManager = ({
       });
     }
 
-    if (!context?.emitManagedWorkspaceEvent) {
+    if (!context?.emitManagedProjectEvent) {
       throw new PersonalMemoryBoundaryError("not_ready", false);
     }
     const key = managedTerminalConnectionKey(
@@ -3535,7 +3528,7 @@ export const createKoedServerManager = ({
         previous.socket.close(1000, "Reattached");
         managedTerminalConnections.delete(key);
       }
-      const access = await managedWorkspaceAccess();
+      const access = await managedProjectAccess();
       const url = new URL(
         `${basePath}/terminals/${encodeURIComponent(
           request.terminalId
@@ -3573,7 +3566,7 @@ export const createKoedServerManager = ({
             frame.terminalId === connection.terminalId &&
             frame.lifecycleGeneration === connection.lifecycleGeneration
           ) {
-            context.emitManagedWorkspaceEvent?.({
+            context.emitManagedProjectEvent?.({
               kind: "terminal",
               connectionId: request.connectionId,
               frame
@@ -3588,7 +3581,7 @@ export const createKoedServerManager = ({
           managedTerminalConnections.delete(key);
         }
         if (!connection.intentionalClose && !context.signal.aborted) {
-          context.emitManagedWorkspaceEvent?.({
+          context.emitManagedProjectEvent?.({
             kind: "terminal",
             connectionId: request.connectionId,
             frame: managedTerminalServerFrameSchema.parse({
@@ -4796,7 +4789,7 @@ export const createKoedServerManager = ({
       set: setHardwareAcceleration
     },
     managedConversation,
-    managedWorkspace,
+    managedProject,
     subscribePersonalMemory,
     resume,
     handlers: {

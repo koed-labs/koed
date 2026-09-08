@@ -379,7 +379,7 @@ const bootstrap = async () => {
     localAiClients: server.localAiClients,
     personalMemory: server.personalMemory,
     managedConversation: server.managedConversation,
-    managedWorkspace: server.managedWorkspace,
+    managedProject: server.managedProject,
     managedPreview: managedPreviewController,
     consumePendingPersonalDevicePairingLink: (expectedLink) =>
       pairingLinkInbox.consume(expectedLink),

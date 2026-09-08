@@ -335,7 +335,14 @@ export const sourceControlConnectionSchema = z
     host: hostnameSchema,
     apiOrigin: z.url().refine((value) => {
       const url = new URL(value);
-      return url.protocol === "https:" && !url.username && !url.password;
+      return (
+        url.protocol === "https:" &&
+        !url.username &&
+        !url.password &&
+        !url.port &&
+        !url.search &&
+        !url.hash
+      );
     }),
     accountLabel: boundedText(512),
     credentialReference: z
@@ -345,7 +352,45 @@ export const sourceControlConnectionSchema = z
     state: z.enum(["active", "revoked"]),
     capabilities: z.array(sourceControlCapabilitySchema).max(32)
   })
-  .strict();
+  .strict()
+  .refine((connection) => {
+    const url = new URL(connection.apiOrigin);
+    const path = url.pathname.replace(/\/$/, "");
+    const publicHosts = [
+      "github.com",
+      "gitlab.com",
+      "bitbucket.org",
+      "dev.azure.com"
+    ];
+    const azureHost =
+      connection.host === "dev.azure.com" ||
+      connection.host.endsWith(".visualstudio.com");
+    if (connection.provider === "github" && connection.host === "github.com")
+      return url.hostname === "api.github.com" && path === "";
+    if (connection.provider === "gitlab" && connection.host === "gitlab.com")
+      return url.hostname === "gitlab.com" && path === "/api/v4";
+    if (
+      connection.provider === "bitbucket" &&
+      connection.host === "bitbucket.org"
+    )
+      return url.hostname === "api.bitbucket.org" && path === "/2.0";
+    if (connection.provider === "azure_devops" && azureHost)
+      return url.hostname === "dev.azure.com" && path === "";
+    if (
+      publicHosts.includes(connection.host) ||
+      azureHost ||
+      url.hostname !== connection.host
+    )
+      return false;
+    // Enterprise credentials may reach only the explicitly configured host.
+    return connection.provider === "github"
+      ? path === "/api/v3"
+      : connection.provider === "gitlab"
+        ? path === "/api/v4"
+        : connection.provider === "bitbucket"
+          ? path === "/2.0"
+          : /^(?:\/[A-Za-z0-9_-]+)*$/.test(path);
+  }, "API origin must match the configured source-control provider and host");
 export type SourceControlConnection = z.infer<
   typeof sourceControlConnectionSchema
 >;

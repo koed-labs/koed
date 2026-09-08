@@ -149,7 +149,7 @@ drain the source consumer before checkpoint completion. Uncertain prompts are
 not automatically resubmitted.
 
 Handoff preserves exact source bytes and session identity while binding SDK
-tools to the receiving execution workspace. Fork uses native
+tools to the receiving execution checkout. Fork uses native
 `SessionManager.forkFrom` and verifies a distinct identity, parent provenance,
 and unchanged parent bytes. Both operations use Koed's signed source-boundary,
 workspace, and execution-generation checks. Provider credentials remain local.

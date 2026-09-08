@@ -67,6 +67,11 @@ export const createManagedTerminalWebTransportHandler =
     else signal.addEventListener("abort", abortFromParent, { once: true });
     const assertAuthority = async () => {
       const current = await reauthenticate();
+      await runtime.assertExecutionAuthority(
+        principal.user.id,
+        attach.executionId,
+        attach.resourceId
+      );
       if (
         current.user.id !== principal.user.id ||
         (current.operationFamilies !== null &&

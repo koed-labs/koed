@@ -12,7 +12,7 @@ import {
   executeCheckpointFileOperation,
   resolveCheckpointFileMention
 } from "./execution-file-authority.js";
-import { createGitExecutionWorkspaceDriver } from "@koed/shared/execution-workspace";
+import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", args, {
@@ -29,7 +29,7 @@ afterEach(async () => {
   );
 });
 
-const fixture = async () => {
+const fixture = async (searchText?: string) => {
   const root = await mkdtemp(resolve(tmpdir(), "koed-file-authority-"));
   roots.push(root);
   await mkdir(resolve(root, "src"));
@@ -42,13 +42,14 @@ const fixture = async () => {
   await writeFile(resolve(root, "binary.dat"), Buffer.from([0, 1, 2, 3]));
   await writeFile(resolve(root, ".env"), "API_KEY=do-not-expose\n");
   await symlink("README.md", resolve(root, "linked-readme"));
+  if (searchText) await writeFile(resolve(root, "repeated.txt"), searchText);
   git(root, "init", "--initial-branch=main");
   git(root, "config", "user.name", "Koed Test");
   git(root, "config", "user.email", "test@example.invalid");
   git(root, "add", ".");
   git(root, "commit", "-m", "base");
-  const workspace = await (
-    await createGitExecutionWorkspaceDriver({
+  const checkout = await (
+    await createGitExecutionCheckoutDriver({
       managedRoot: resolve(root, ".managed")
     })
   ).select({ operationId: randomUUID(), path: root });
@@ -56,7 +57,7 @@ const fixture = async () => {
   const executionId = randomUUID();
   const commandId = randomUUID();
   const capture = await captureExecutionCheckpoint({
-    workspace,
+    checkout,
     executionId,
     executionGeneration: 1,
     sequence: 0,
@@ -83,19 +84,110 @@ const fixture = async () => {
     createdAt: capture.capturedAt!,
     updatedAt: capture.capturedAt!
   };
-  return { root, workspace, checkpoint };
+  return { root, checkout, checkpoint };
 };
 
 describe("execution file authority", () => {
-  it("uses the completed workspace revision when a command has multiple checkpoints", async () => {
-    const { workspace, checkpoint } = await fixture();
+  it("caps match work and permits only a continuation of the same search revision", async () => {
+    const { checkout, checkpoint } = await fixture("a".repeat(20_000));
+    const operation = {
+      kind: "search" as const,
+      path: "",
+      query: "a",
+      caseSensitive: true,
+      revision: null,
+      offset: 0,
+      limit: 200
+    };
+    const first = await executeCheckpointFileOperation({
+      checkout,
+      checkpoints: [checkpoint],
+      operation
+    });
+    if (first.kind !== "search") throw new Error("unexpected search result");
+    expect(first.matches).toHaveLength(200);
+    expect(first.totalMatches).toBe(10_000);
+    expect(first.truncated).toBe(true);
+    expect(first.nextOffset).toBe(200);
+    const next = {
+      ...operation,
+      revision: first.revision,
+      offset: 200,
+      continuationCommandId: randomUUID()
+    };
+    await expect(
+      executeCheckpointFileOperation({
+        checkout,
+        checkpoints: [checkpoint],
+        operation: next
+      })
+    ).rejects.toThrow("ExecutionFileSearchContinuationError");
+    const second = await executeCheckpointFileOperation({
+      checkout,
+      checkpoints: [checkpoint],
+      operation: next,
+      continuation: { operation, result: first }
+    });
+    expect(second).toMatchObject({
+      kind: "search",
+      totalMatches: 10_000,
+      nextOffset: 400,
+      truncated: true
+    });
+    if (second.kind !== "search") throw new Error("unexpected search result");
+    expect(second.matches).toHaveLength(200);
+    expect(second.matches[0]).not.toEqual(first.matches[0]);
+    await expect(
+      executeCheckpointFileOperation({
+        checkout,
+        checkpoints: [checkpoint],
+        operation: { ...next, query: "different" },
+        continuation: { operation, result: first }
+      })
+    ).rejects.toThrow("ExecutionFileSearchContinuationError");
+    await expect(
+      executeCheckpointFileOperation({
+        checkout,
+        checkpoints: [checkpoint],
+        operation: { ...operation, offset: Number.MAX_SAFE_INTEGER }
+      })
+    ).rejects.toThrow("ExecutionFileCapacityError");
+  });
+
+  it("reads the recorded checkpoint object with repository replacement refs present", async () => {
+    const { root, checkout, checkpoint } = await fixture();
+    await writeFile(resolve(root, "README.md"), "Later checkout content\n");
+    git(root, "add", "README.md");
+    git(root, "commit", "-m", "Later revision");
+    git(
+      root,
+      "replace",
+      checkpoint.commitObjectId!,
+      git(root, "rev-parse", "HEAD")
+    );
+    const result = await executeCheckpointFileOperation({
+      checkout,
+      checkpoints: [checkpoint],
+      operation: {
+        kind: "read",
+        path: "README.md",
+        revision: null,
+        offset: 0,
+        limit: 100
+      }
+    });
+    expect(result).toMatchObject({ kind: "read", content: "# Example\n" });
+  });
+
+  it("uses the completed checkout revision when a command has multiple checkpoints", async () => {
+    const { checkout, checkpoint } = await fixture();
     const terminal = {
       ...checkpoint,
       id: randomUUID(),
       checkpointKind: "terminal" as const
     };
     const result = await executeCheckpointFileOperation({
-      workspace,
+      checkout,
       checkpoints: [checkpoint, terminal],
       operation: {
         kind: "browse",
@@ -109,9 +201,9 @@ describe("execution file authority", () => {
   });
 
   it("browses, reads, searches, and resolves a checkpoint mention", async () => {
-    const { workspace, checkpoint } = await fixture();
+    const { checkout, checkpoint } = await fixture();
     const root = await executeCheckpointFileOperation({
-      workspace,
+      checkout,
       checkpoints: [checkpoint],
       operation: {
         kind: "browse",
@@ -132,7 +224,7 @@ describe("execution file authority", () => {
       "unicode.txt"
     ]);
     const read = await executeCheckpointFileOperation({
-      workspace,
+      checkout,
       checkpoints: [checkpoint],
       operation: {
         kind: "read",
@@ -149,7 +241,7 @@ describe("execution file authority", () => {
     });
 
     const firstUnicodePage = await executeCheckpointFileOperation({
-      workspace,
+      checkout,
       checkpoints: [checkpoint],
       operation: {
         kind: "read",
@@ -172,7 +264,7 @@ describe("execution file authority", () => {
     }
     await expect(
       executeCheckpointFileOperation({
-        workspace,
+        checkout,
         checkpoints: [checkpoint],
         operation: {
           kind: "read",
@@ -185,7 +277,7 @@ describe("execution file authority", () => {
     ).resolves.toMatchObject({ kind: "read", content: "😀" });
     await expect(
       executeCheckpointFileOperation({
-        workspace,
+        checkout,
         checkpoints: [checkpoint],
         operation: {
           kind: "read",
@@ -198,7 +290,7 @@ describe("execution file authority", () => {
     ).rejects.toThrow("ExecutionFileRangeBoundaryError");
 
     const search = await executeCheckpointFileOperation({
-      workspace,
+      checkout,
       checkpoints: [checkpoint],
       operation: {
         kind: "search",
@@ -217,7 +309,7 @@ describe("execution file authority", () => {
     });
 
     const mention = await executeCheckpointFileOperation({
-      workspace,
+      checkout,
       checkpoints: [checkpoint],
       operation: {
         kind: "mention",
@@ -230,7 +322,7 @@ describe("execution file authority", () => {
     if (mention.kind !== "mention") throw new Error("unexpected result");
     await expect(
       resolveCheckpointFileMention({
-        workspace,
+        checkout,
         checkpoints: [checkpoint],
         operation: {
           kind: "mention",
@@ -249,7 +341,7 @@ describe("execution file authority", () => {
     });
     await expect(
       resolveCheckpointFileMention({
-        workspace,
+        checkout,
         checkpoints: [checkpoint],
         operation: {
           kind: "mention",
@@ -264,7 +356,7 @@ describe("execution file authority", () => {
   });
 
   it("fails closed for forged revisions, denied files, and binary content", async () => {
-    const { workspace, checkpoint } = await fixture();
+    const { checkout, checkpoint } = await fixture();
     const operation = {
       kind: "read" as const,
       path: "README.md",
@@ -277,21 +369,21 @@ describe("execution file authority", () => {
     };
     await expect(
       executeCheckpointFileOperation({
-        workspace,
+        checkout,
         checkpoints: [checkpoint],
         operation
       })
     ).rejects.toThrow("ExecutionFileStaleRevisionError");
     await expect(
       executeCheckpointFileOperation({
-        workspace,
+        checkout,
         checkpoints: [checkpoint],
         operation: { ...operation, path: ".env", revision: null }
       })
     ).rejects.toThrow("ExecutionFileContentDeniedError");
     await expect(
       executeCheckpointFileOperation({
-        workspace,
+        checkout,
         checkpoints: [checkpoint],
         operation: { ...operation, path: "binary.dat", revision: null }
       })

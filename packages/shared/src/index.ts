@@ -211,6 +211,7 @@ export {
 } from "./ai-client-contract.js";
 export {
   MANAGED_CONVERSATION_FILE_MAX_READ_BYTES,
+  MANAGED_CONVERSATION_FILE_MAX_SEARCH_MATCHES,
   MANAGED_CONVERSATION_FILE_PROTOCOL_VERSION,
   managedConversationFileOperationResultSchema,
   managedConversationFileOperationSchema,
@@ -822,6 +823,7 @@ export {
   readDesktopLocalCredentialAuthorization,
   readUpstreamCredentialAuthorization,
   rotateDesktopLocalCredential,
+  upgradeDesktopLocalCredential,
   storeDesktopLocalCredential,
   storeEnrollmentCredentialCustody,
   storeUpstreamCredentialSecret,
@@ -1783,3 +1785,9 @@ export {
   type SourceControlResult,
   type SourceControlReviewRequest
 } from "./source-control.js";
+
+export {
+  classifySourceContent,
+  sourceContentLimits,
+  type SourceContentExclusionReason
+} from "./source-content-policy.js";

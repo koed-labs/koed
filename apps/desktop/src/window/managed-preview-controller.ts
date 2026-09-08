@@ -10,7 +10,7 @@ import {
   type ManagedDevelopmentPreviewAccess
 } from "@koed/shared";
 
-import type { ManagedWorkspaceEvent } from "../ipc/managed-workspace-protocol.js";
+import type { ManagedProjectEvent } from "../ipc/managed-project-protocol.js";
 
 type PreviewSurface = {
   sender: WebContents;
@@ -18,7 +18,7 @@ type PreviewSurface = {
   previewId: string;
   lifecycleGeneration: number;
   targetOrigin: string;
-  emit(event: ManagedWorkspaceEvent): void;
+  emit(event: ManagedProjectEvent): void;
 };
 
 export interface ManagedPreviewController {
@@ -29,7 +29,7 @@ export interface ManagedPreviewController {
       access: ManagedDevelopmentPreviewAccess;
       bounds: Rectangle;
     },
-    emit: (event: ManagedWorkspaceEvent) => void
+    emit: (event: ManagedProjectEvent) => void
   ): Promise<void>;
   setBounds(sender: WebContents, surfaceId: string, bounds: Rectangle): void;
   reload(sender: WebContents, surfaceId: string): void;

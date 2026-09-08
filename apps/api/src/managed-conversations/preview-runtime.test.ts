@@ -40,7 +40,7 @@ const fixture = () => {
     })),
     getManagedConversationRuntimeBinding: vi.fn(async () => ({
       executionGeneration: 1,
-      workspaceLifecycle: "ready"
+      checkoutLifecycle: "ready"
     }))
   } as unknown as MemorySourceRepository;
   const fetch = vi.fn(

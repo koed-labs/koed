@@ -1,3 +1,5 @@
+import { resolveTerminalExecutionAuthority } from "./terminal-execution-authority.js";
+import { createAuthHelpers } from "../auth/session.js";
 import {
   mkdirSync,
   mkdtempSync,
@@ -145,6 +147,136 @@ const managedCapabilityRepository = {
 };
 
 describe("managed Conversation capability admission", () => {
+  it("reads remote diffs and queues remote restores through their scoped routes", async () => {
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const checkpointId = randomUUID();
+    const commandId = randomUUID();
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(JSON.stringify({ origin: "authority" }), { status: 202 })
+    );
+    const requireRepository = vi.fn();
+    const app = Fastify({ logger: false });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal" },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => ({ id: userId })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        resolveUpstreamAuthorization: () => "Koed-Device fixture:secret",
+        fetch
+      },
+      requireRepository
+    } as unknown as ApiRouteContext);
+    try {
+      const diff = await app.inject({
+        method: "GET",
+        url: `/v1/managed-conversations/${executionId}/diff?scope=turn&commandId=${commandId}`
+      });
+      expect(diff.json()).toEqual({ origin: "authority" });
+      expect(
+        new URL(String(fetch.mock.calls[0]![0])).searchParams.get("commandId")
+      ).toBe(commandId);
+      const restored = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/checkpoints/${checkpointId}/restore`,
+        payload: { executionGeneration: 1, idempotencyKey: randomUUID() }
+      });
+      expect(restored.statusCode).toBe(202);
+      expect(new URL(String(fetch.mock.calls[1]![0])).pathname).toBe(
+        `/koed/v1/managed-conversations/${executionId}/checkpoints/${checkpointId}/restore`
+      );
+      expect(requireRepository).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("refreshes terminal assignment from the upstream runner authority without falling back locally", async () => {
+    const executionId = randomUUID();
+    const execution = {
+      id: executionId,
+      executionGeneration: 3,
+      runnerDeploymentId: randomUUID(),
+      runnerDeviceId: randomUUID(),
+      state: "running"
+    };
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ execution })))
+      .mockResolvedValueOnce(new Response("", { status: 403 }));
+    const requireRepository = vi.fn();
+    const context = {
+      config: { deploymentProfile: "local_personal" },
+      localEdge: {
+        upstreamBackendsPath: writeManagedUpstreamRegistry(),
+        remoteOperationsAllowed: () => true,
+        resolveUpstreamAuthorization: () => "Koed-Device fixture:secret",
+        fetch
+      },
+      requireRepository
+    } as unknown as ApiRouteContext;
+    await expect(
+      resolveTerminalExecutionAuthority(context, randomUUID(), executionId)
+    ).resolves.toEqual(execution);
+    expect(new URL(String(fetch.mock.calls[0]![0])).pathname).toBe(
+      `/koed/v1/managed-conversation-runner/executions/${executionId}`
+    );
+    await expect(
+      resolveTerminalExecutionAuthority(context, randomUUID(), executionId)
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(requireRepository).not.toHaveBeenCalled();
+  });
+
+  it.each(["developer", "local_personal"])(
+    "requires scoped authority for destructive checkout actions in %s",
+    async (deploymentProfile) => {
+      const app = Fastify({ logger: false });
+      const repository = {
+        getApiTokenUser: vi.fn(async () => ({ id: randomUUID() }))
+      };
+      const auth = createAuthHelpers(() => repository as never, {
+        hashSecret: (value) => value,
+        cookieSecure: false
+      });
+      registerManagedConversationRoutes(app, {
+        config: { deploymentProfile },
+        encryption: { envelopeEncryptionProvider: {} },
+        auth,
+        rateLimit: {
+          memoryRead: async () => undefined,
+          memoryWrite: async () => undefined
+        },
+        requireRepository: () => repository
+      } as unknown as ApiRouteContext);
+      const executionId = randomUUID();
+      try {
+        for (const [method, path] of [
+          ["POST", `checkpoints/${randomUUID()}/restore`],
+          ["DELETE", "execution-checkout"]
+        ] as const) {
+          const response = await app.inject({
+            method,
+            url: `/v1/managed-conversations/${executionId}/${path}`,
+            headers: { authorization: "Bearer fixture-token" },
+            payload: { executionGeneration: 1, idempotencyKey: randomUUID() }
+          });
+          expect(response.statusCode).toBe(403);
+        }
+        expect(repository.getApiTokenUser).not.toHaveBeenCalled();
+      } finally {
+        await app.close();
+      }
+    }
+  );
+
   it("rejects unsupported, stale, and unavailable owners", async () => {
     await expect(
       assertManagedCapability(
@@ -543,6 +675,7 @@ describe("managed Conversation routes", () => {
       },
       managedConversations: {
         terminalRuntime: {
+          assertExecutionAuthority: async () => ({}),
           shellProfiles: async () => [
             { id: "system_default", label: "System shell", available: true }
           ]
@@ -887,112 +1020,118 @@ describe("managed Conversation routes", () => {
     ).toBe(true);
   });
 
-  it("uses separate terminal authority and exposes no terminal content in lifecycle routes", async () => {
-    const userId = randomUUID();
-    const executionId = randomUUID();
-    const terminalId = randomUUID();
-    const deploymentId = randomUUID();
-    const deviceId = randomUUID();
-    const now = new Date().toISOString();
-    const terminal = {
-      id: terminalId,
-      executionId,
-      executionGeneration: 2,
-      workspaceId: randomUUID(),
-      runnerDeploymentId: deploymentId,
-      runnerDeviceId: deviceId,
-      lifecycleGeneration: 1,
-      shellProfileId: "system_default" as const,
-      state: "running" as const,
-      columns: 120,
-      rows: 40,
-      exitCode: null,
-      exitSignal: null,
-      failureCode: null,
-      createdAt: now,
-      startedAt: now,
-      detachedAt: null,
-      stoppedAt: null,
-      updatedAt: now
-    };
-    const authenticate = vi.fn(
-      async (request: unknown, operationFamily: string) => {
-        void request;
-        void operationFamily;
-        return {
-          id: userId,
-          email: "terminal-owner@example.invalid",
-          displayName: "Terminal Owner",
-          passwordHash: null
-        };
-      }
-    );
-    const create = vi.fn(async () => terminal);
-    const app = Fastify({ logger: false });
-    registerManagedConversationRoutes(app, {
-      config: { deploymentProfile: "local_personal" },
-      encryption: { envelopeEncryptionProvider: {} },
-      auth: { authenticateSessionOrDeviceCredential: authenticate },
-      rateLimit: {
-        memoryRead: async () => undefined,
-        memoryWrite: async () => undefined
-      },
-      localEdge: {
-        upstreamBackendsPath: resolve(
-          mkdtempSync(resolve(tmpdir(), "koed-managed-terminal-")),
-          "upstream-backends.json"
-        ),
-        resolveUpstreamAuthorization: () => null,
-        fetch: vi.fn()
-      },
-      managedConversations: {
-        terminalRuntime: {
-          shellProfiles: async () => [
-            { id: "system_default", label: "System shell", available: true }
-          ],
-          create,
-          stop: async () => ({ ...terminal, state: "stopping" })
-        }
-      },
-      requireRepository: () => ({
-        listManagedTerminals: async () => [terminal],
-        getManagedTerminal: async () => terminal
-      })
-    } as unknown as ApiRouteContext);
-    await app.ready();
-    const created = await app.inject({
-      method: "POST",
-      url: `/v1/managed-conversations/${executionId}/terminals`,
-      payload: {
+  it.each([false, true])(
+    "uses local terminal authority with upstream enabled=%s",
+    async (upstreamEnabled) => {
+      const userId = randomUUID();
+      const executionId = randomUUID();
+      const terminalId = randomUUID();
+      const deploymentId = randomUUID();
+      const deviceId = randomUUID();
+      const now = new Date().toISOString();
+      const terminal = {
+        id: terminalId,
+        executionId,
         executionGeneration: 2,
-        idempotencyKey: "terminal-route-test-0001",
-        shellProfileId: "system_default",
+        checkoutId: randomUUID(),
+        runnerDeploymentId: deploymentId,
+        runnerDeviceId: deviceId,
+        lifecycleGeneration: 1,
+        shellProfileId: "system_default" as const,
+        state: "running" as const,
         columns: 120,
-        rows: 40
-      }
-    });
-    const listed = await app.inject({
-      method: "GET",
-      url: `/v1/managed-conversations/${executionId}/terminals`
-    });
-    await app.close();
-    expect(created.statusCode).toBe(201);
-    expect(created.json()).toMatchObject({ terminal: { id: terminalId } });
-    expect(listed.statusCode).toBe(200);
-    expect(listed.body).not.toContain("command");
-    expect(listed.body).not.toContain("output");
-    expect(create).toHaveBeenCalledWith(
-      userId,
-      executionId,
-      expect.objectContaining({ executionGeneration: 2, columns: 120 })
-    );
-    expect(authenticate).toHaveBeenCalledTimes(2);
-    expect(
-      authenticate.mock.calls.every(
-        ([, operationFamily]) => operationFamily === "managed_terminal"
-      )
-    ).toBe(true);
-  });
+        rows: 40,
+        exitCode: null,
+        exitSignal: null,
+        failureCode: null,
+        createdAt: now,
+        startedAt: now,
+        detachedAt: null,
+        stoppedAt: null,
+        updatedAt: now
+      };
+      const authenticate = vi.fn(
+        async (request: unknown, operationFamily: string) => {
+          void request;
+          void operationFamily;
+          return {
+            id: userId,
+            email: "terminal-owner@example.invalid",
+            displayName: "Terminal Owner",
+            passwordHash: null
+          };
+        }
+      );
+      const create = vi.fn(async () => terminal);
+      const app = Fastify({ logger: false });
+      registerManagedConversationRoutes(app, {
+        config: { deploymentProfile: "local_personal" },
+        encryption: { envelopeEncryptionProvider: {} },
+        auth: { authenticateSessionOrDeviceCredential: authenticate },
+        rateLimit: {
+          memoryRead: async () => undefined,
+          memoryWrite: async () => undefined
+        },
+        localEdge: {
+          upstreamBackendsPath: upstreamEnabled
+            ? writeManagedUpstreamRegistry()
+            : resolve(
+                mkdtempSync(resolve(tmpdir(), "koed-managed-terminal-")),
+                "upstream-backends.json"
+              ),
+          resolveUpstreamAuthorization: () => null,
+          fetch: vi.fn()
+        },
+        managedConversations: {
+          terminalRuntime: {
+            assertExecutionAuthority: async () => ({}),
+            shellProfiles: async () => [
+              { id: "system_default", label: "System shell", available: true }
+            ],
+            create,
+            stop: async () => ({ ...terminal, state: "stopping" })
+          }
+        },
+        requireRepository: () => ({
+          listManagedTerminals: async () => [terminal],
+          getManagedTerminal: async () => terminal
+        })
+      } as unknown as ApiRouteContext);
+      await app.ready();
+      const created = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${executionId}/terminals`,
+        payload: {
+          executionGeneration: 2,
+          idempotencyKey: "terminal-route-test-0001",
+          shellProfileId: "system_default",
+          columns: 120,
+          rows: 40
+        }
+      });
+      const listed = await app.inject({
+        method: "GET",
+        url: `/v1/managed-conversations/${executionId}/terminals`
+      });
+      await app.close();
+      expect(created.statusCode).toBe(201);
+      expect(created.json()).toMatchObject({ terminal: { id: terminalId } });
+      expect(listed.statusCode).toBe(200);
+      expect(listed.body).not.toContain("command");
+      expect(listed.body).not.toContain("output");
+      expect(create).toHaveBeenCalledWith(
+        userId,
+        executionId,
+        expect.objectContaining({ executionGeneration: 2, columns: 120 })
+      );
+      expect(authenticate).toHaveBeenCalledTimes(2);
+      expect(
+        authenticate.mock.calls.every(
+          ([, operationFamily]) => operationFamily === "managed_terminal"
+        )
+      ).toBe(true);
+    }
+  );
 
   it("adds only owner-bound explicit terminal context to a managed prompt", async () => {
     const userId = randomUUID();
@@ -1139,6 +1278,7 @@ describe("managed Conversation routes", () => {
       },
       managedConversations: {
         terminalRuntime: {
+          assertExecutionAuthority: async () => ({}),
           attach: async () => ({
             initialFrames: [
               {
@@ -1453,11 +1593,11 @@ describe("managed Conversation routes", () => {
     const executionId = randomUUID();
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
-    const workspaceId = randomUUID();
+    const checkoutId = randomUUID();
     const requestCleanup = vi.fn(async () => ({
-      workspaceId,
-      workspaceKind: "koed_managed_worktree",
-      workspaceLifecycle: "cleanup_requested",
+      checkoutId,
+      checkoutKind: "koed_managed_worktree",
+      checkoutLifecycle: "cleanup_requested",
       cleanupState: "requested",
       vcsDriver: "git"
     }));
@@ -1482,7 +1622,7 @@ describe("managed Conversation routes", () => {
       config: { deploymentProfile: "local_personal" },
       encryption: { envelopeEncryptionProvider: {} },
       auth: {
-        authenticate: async () => ({
+        authenticateSessionOrDeviceCredential: async () => ({
           id: userId,
           email: "alice@example.invalid",
           displayName: "Alice",
@@ -1509,14 +1649,14 @@ describe("managed Conversation routes", () => {
           executionGeneration: 4
         }),
         getManagedConversationExecution: vi.fn(),
-        requestManagedConversationExecutionWorkspaceCleanup: requestCleanup
+        requestManagedConversationExecutionCheckoutCleanup: requestCleanup
       })
     } as unknown as ApiRouteContext);
     await app.ready();
 
     const response = await app.inject({
       method: "DELETE",
-      url: `/v1/managed-conversations/${executionId}/execution-workspace`
+      url: `/v1/managed-conversations/${executionId}/execution-checkout`
     });
     await app.close();
 
@@ -1532,8 +1672,8 @@ describe("managed Conversation routes", () => {
       }
     );
     expect(response.json()).toEqual({
-      executionWorkspace: {
-        id: workspaceId,
+      executionCheckout: {
+        id: checkoutId,
         kind: "koed_managed_worktree",
         lifecycle: "cleanup_requested",
         cleanupState: "requested",
@@ -1547,11 +1687,11 @@ describe("managed Conversation routes", () => {
     const executionId = randomUUID();
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
-    const workspaceId = randomUUID();
+    const checkoutId = randomUUID();
     const requestCleanup = vi.fn(async () => ({
-      workspaceId,
-      workspaceKind: "koed_managed_worktree",
-      workspaceLifecycle: "cleanup_requested",
+      checkoutId,
+      checkoutKind: "koed_managed_worktree",
+      checkoutLifecycle: "cleanup_requested",
       cleanupState: "requested",
       vcsDriver: "git",
       projectPath: "/must-not-leak/worktree",
@@ -1566,7 +1706,7 @@ describe("managed Conversation routes", () => {
       config: { deploymentProfile: "local_personal" },
       encryption: { envelopeEncryptionProvider: {} },
       auth: {
-        authenticate: async () => ({
+        authenticateSessionOrDeviceCredential: async () => ({
           id: userId,
           email: "alice@example.invalid",
           displayName: "Alice",
@@ -1601,18 +1741,18 @@ describe("managed Conversation routes", () => {
           runnerDeploymentId: deploymentId,
           runnerDeviceId: deviceId
         }),
-        requestManagedConversationExecutionWorkspaceCleanup: requestCleanup
+        requestManagedConversationExecutionCheckoutCleanup: requestCleanup
       })
     } as unknown as ApiRouteContext);
     await app.ready();
 
     const blocked = await app.inject({
       method: "DELETE",
-      url: `/v1/managed-conversations/${executionId}/execution-workspace`
+      url: `/v1/managed-conversations/${executionId}/execution-checkout`
     });
     const response = await app.inject({
       method: "DELETE",
-      url: `/v1/managed-conversations/${executionId}/execution-workspace`
+      url: `/v1/managed-conversations/${executionId}/execution-checkout`
     });
     await app.close();
 
@@ -1637,8 +1777,8 @@ describe("managed Conversation routes", () => {
       }
     );
     expect(response.json()).toEqual({
-      executionWorkspace: {
-        id: workspaceId,
+      executionCheckout: {
+        id: checkoutId,
         kind: "koed_managed_worktree",
         lifecycle: "cleanup_requested",
         cleanupState: "requested",
@@ -1912,7 +2052,7 @@ describe("managed Conversation routes", () => {
     expect(upstreamCalls[1]?.body).toEqual(upstreamCalls[0]?.body);
   });
 
-  it("blocks a local start until the worker verifies its execution workspace", async () => {
+  it("blocks a local start until the worker verifies its execution checkout", async () => {
     const userId = randomUUID();
     const executionId = randomUUID();
     const commandId = randomUUID();

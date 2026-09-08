@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createGitExecutionWorkspaceDriver } from "@koed/shared/execution-workspace";
+import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
 
 const temporaryDirectories: string[] = [];
 
@@ -38,7 +38,7 @@ const gitMaybe = (cwd: string, ...args: string[]): string | null => {
 };
 
 const repository = (): string => {
-  const path = temporaryDirectory("koed-workspace-repository-");
+  const path = temporaryDirectory("koed-checkout-repository-");
   git(path, "init", "--initial-branch=main");
   git(path, "config", "user.name", "Koed Test");
   git(path, "config", "user.email", "koed@example.test");
@@ -54,11 +54,11 @@ afterEach(() => {
   }
 });
 
-describe("runner-owned execution workspaces", () => {
+describe("runner-owned execution checkouts", () => {
   it("reports a non-Git directory without inventing VCS capabilities", async () => {
     const root = temporaryDirectory("koed-managed-root-");
     const project = temporaryDirectory("koed-non-git-project-");
-    const driver = await createGitExecutionWorkspaceDriver({
+    const driver = await createGitExecutionCheckoutDriver({
       managedRoot: root
     });
 
@@ -76,7 +76,7 @@ describe("runner-owned execution workspaces", () => {
   it("creates, lists, verifies, retries, and removes one opaque managed worktree", async () => {
     const source = repository();
     const managedRoot = temporaryDirectory("koed-managed-root-");
-    const driver = await createGitExecutionWorkspaceDriver({ managedRoot });
+    const driver = await createGitExecutionCheckoutDriver({ managedRoot });
     const creation = {
       executionId: randomUUID(),
       executionGeneration: 1,
@@ -86,7 +86,7 @@ describe("runner-owned execution workspaces", () => {
 
     const created = await driver.create(creation);
     expect(created).toMatchObject({
-      workspaceId: creation.operationId,
+      checkoutId: creation.operationId,
       vcsDriver: "git",
       ownership: "koed_managed_worktree",
       baseRef: "HEAD",
@@ -98,7 +98,7 @@ describe("runner-owned execution workspaces", () => {
     );
     expect(created.canonicalPath).toContain(managedRoot);
     expect(await driver.create(creation)).toMatchObject({
-      workspaceId: created.workspaceId,
+      checkoutId: created.checkoutId,
       worktreeIdentityHash: created.worktreeIdentityHash
     });
     expect(await driver.verify(created)).toMatchObject({
@@ -107,7 +107,7 @@ describe("runner-owned execution workspaces", () => {
     });
     expect(await driver.list(source)).toContainEqual(
       expect.objectContaining({
-        workspaceId: created.workspaceId,
+        checkoutId: created.checkoutId,
         ownership: "koed_managed_worktree",
         canonicalPath: created.canonicalPath,
         branchRef: created.branchRef
@@ -115,12 +115,12 @@ describe("runner-owned execution workspaces", () => {
     );
     await expect(
       driver.select({
-        operationId: created.workspaceId,
+        operationId: created.checkoutId,
         path: created.canonicalPath,
         expectedRepositoryIdentityHash: created.repositoryIdentityHash!
       })
     ).resolves.toMatchObject({
-      workspaceId: created.workspaceId,
+      checkoutId: created.checkoutId,
       ownership: "koed_managed_worktree",
       branchRef: created.branchRef
     });
@@ -130,7 +130,7 @@ describe("runner-owned execution workspaces", () => {
         path: created.canonicalPath,
         expectedRepositoryIdentityHash: created.repositoryIdentityHash!
       })
-    ).rejects.toThrow("ExecutionWorkspaceSelectionOwnershipError");
+    ).rejects.toThrow("ExecutionCheckoutSelectionOwnershipError");
 
     await driver.remove(created);
     expect(
@@ -138,7 +138,7 @@ describe("runner-owned execution workspaces", () => {
     ).toBeNull();
     expect(
       (await driver.list(source)).some(
-        (workspace) => workspace.canonicalPath === created.canonicalPath
+        (checkout) => checkout.canonicalPath === created.canonicalPath
       )
     ).toBe(false);
   });
@@ -146,7 +146,7 @@ describe("runner-owned execution workspaces", () => {
   it("recovers exact branch reservation and completed filesystem cleanup after process interruption", async () => {
     const source = repository();
     const managedRoot = temporaryDirectory("koed-managed-root-");
-    const driver = await createGitExecutionWorkspaceDriver({ managedRoot });
+    const driver = await createGitExecutionCheckoutDriver({ managedRoot });
     const creation = {
       executionId: randomUUID(),
       executionGeneration: 1,
@@ -180,7 +180,7 @@ describe("runner-owned execution workspaces", () => {
     const linked = temporaryDirectory("koed-source-linked-");
     rmSync(linked, { recursive: true, force: true });
     git(source, "worktree", "add", "--detach", linked, "HEAD");
-    const driver = await createGitExecutionWorkspaceDriver({
+    const driver = await createGitExecutionCheckoutDriver({
       managedRoot: temporaryDirectory("koed-managed-root-")
     });
 
@@ -202,7 +202,7 @@ describe("runner-owned execution workspaces", () => {
   it("refuses dirty sources, dirty cleanup, and symlinked roots", async () => {
     const source = repository();
     const managedRoot = temporaryDirectory("koed-managed-root-");
-    const driver = await createGitExecutionWorkspaceDriver({ managedRoot });
+    const driver = await createGitExecutionCheckoutDriver({ managedRoot });
     writeFileSync(join(source, "README.md"), "dirty\n");
     await expect(
       driver.create({
@@ -211,7 +211,7 @@ describe("runner-owned execution workspaces", () => {
         operationId: randomUUID(),
         sourcePath: source
       })
-    ).rejects.toThrow("ExecutionWorkspaceSourceDirtyError");
+    ).rejects.toThrow("ExecutionCheckoutSourceDirtyError");
     git(source, "restore", "README.md");
 
     const created = await driver.create({
@@ -222,7 +222,7 @@ describe("runner-owned execution workspaces", () => {
     });
     writeFileSync(join(created.canonicalPath, "untracked.txt"), "retain me\n");
     await expect(driver.remove(created)).rejects.toThrow(
-      "ExecutionWorkspaceCleanupDirtyError"
+      "ExecutionCheckoutCleanupDirtyError"
     );
     rmSync(join(created.canonicalPath, "untracked.txt"));
     writeFileSync(join(source, ".git", "info", "exclude"), "ignored.log\n");
@@ -231,14 +231,14 @@ describe("runner-owned execution workspaces", () => {
       "retain me too\n"
     );
     await expect(driver.remove(created)).rejects.toThrow(
-      "ExecutionWorkspaceCleanupDirtyError"
+      "ExecutionCheckoutCleanupDirtyError"
     );
 
     const symlinkParent = temporaryDirectory("koed-symlink-parent-");
     const symlink = join(symlinkParent, "project");
     symlinkSync(source, symlink, "dir");
     await expect(driver.inspect(symlink)).rejects.toThrow(
-      "ExecutionWorkspaceDirectoryError"
+      "ExecutionCheckoutDirectoryError"
     );
 
     const escaped = temporaryDirectory("koed-managed-escaped-");
@@ -251,13 +251,13 @@ describe("runner-owned execution workspaces", () => {
         operationId: randomUUID(),
         sourcePath: source
       })
-    ).rejects.toThrow("ExecutionWorkspaceRootBoundaryError");
+    ).rejects.toThrow("ExecutionCheckoutRootBoundaryError");
   });
 
   it("selects an existing dirty checkout only when its repository identity matches", async () => {
     const source = repository();
     const other = repository();
-    const driver = await createGitExecutionWorkspaceDriver({
+    const driver = await createGitExecutionCheckoutDriver({
       managedRoot: temporaryDirectory("koed-managed-root-")
     });
     writeFileSync(join(source, "README.md"), "intentional local state\n");
@@ -280,13 +280,13 @@ describe("runner-owned execution workspaces", () => {
         path: other,
         expectedRepositoryIdentityHash: sourceIdentity.repositoryIdentityHash!
       })
-    ).rejects.toThrow("ExecutionWorkspaceSelectionIdentityError");
+    ).rejects.toThrow("ExecutionCheckoutSelectionIdentityError");
   });
 
   it("does not adopt a colliding operation-owned path", async () => {
     const source = repository();
     const managedRoot = temporaryDirectory("koed-managed-root-");
-    const driver = await createGitExecutionWorkspaceDriver({ managedRoot });
+    const driver = await createGitExecutionCheckoutDriver({ managedRoot });
     const executionId = randomUUID();
     const operationId = randomUUID();
     mkdirSync(join(managedRoot, executionId, "1", operationId), {
@@ -300,7 +300,7 @@ describe("runner-owned execution workspaces", () => {
         operationId,
         sourcePath: source
       })
-    ).rejects.toThrow("ExecutionWorkspacePathCollisionError");
+    ).rejects.toThrow("ExecutionCheckoutPathCollisionError");
     expect(
       gitMaybe(
         source,
@@ -314,7 +314,7 @@ describe("runner-owned execution workspaces", () => {
   it("accepts a detached source but refuses an occupied opaque branch", async () => {
     const source = repository();
     const managedRoot = temporaryDirectory("koed-managed-root-");
-    const driver = await createGitExecutionWorkspaceDriver({ managedRoot });
+    const driver = await createGitExecutionCheckoutDriver({ managedRoot });
     git(source, "checkout", "--detach");
     await expect(driver.inspect(source)).resolves.toMatchObject({
       branchRef: null,
@@ -342,7 +342,7 @@ describe("runner-owned execution workspaces", () => {
         operationId,
         sourcePath: source
       })
-    ).rejects.toThrow("ExecutionWorkspaceBranchCollisionError");
+    ).rejects.toThrow("ExecutionCheckoutBranchCollisionError");
     expect(git(source, "show-ref", "--verify", branchRef)).toContain(
       previousObjectId
     );
@@ -350,7 +350,7 @@ describe("runner-owned execution workspaces", () => {
 
   it("refuses to remove a clean managed worktree whose HEAD advanced", async () => {
     const source = repository();
-    const driver = await createGitExecutionWorkspaceDriver({
+    const driver = await createGitExecutionCheckoutDriver({
       managedRoot: temporaryDirectory("koed-managed-root-")
     });
     const created = await driver.create({
@@ -373,7 +373,7 @@ describe("runner-owned execution workspaces", () => {
     );
 
     await expect(driver.remove(created)).rejects.toThrow(
-      "ExecutionWorkspaceCleanupChangedError"
+      "ExecutionCheckoutCleanupChangedError"
     );
   });
 });

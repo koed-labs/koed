@@ -118,12 +118,12 @@ export const createManagedDevelopmentPreviewRuntime = (options: {
       !binding ||
       execution.executionGeneration !== executionGeneration ||
       binding.executionGeneration !== executionGeneration ||
-      binding.workspaceLifecycle !== "ready"
+      binding.checkoutLifecycle !== "ready"
     ) {
       throw previewError(
         "Development preview workspace authority is stale",
         409,
-        "preview_workspace_stale"
+        "preview_checkout_stale"
       );
     }
   };

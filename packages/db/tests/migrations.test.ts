@@ -334,7 +334,7 @@ describe("Personal Note Share Grant migrations", () => {
 describe("Conversation presentation migration", () => {
   it("keeps presentation state owner-scoped and separate from session lifecycle", async () => {
     const migrationSql = await readDrizzleFile(
-      "0037_coding_workspace_runtime.sql"
+      "0037_coding_project_runtime.sql"
     );
 
     expect(migrationSql).toContain(
@@ -350,7 +350,7 @@ describe("Conversation presentation migration", () => {
 
   it("wakes projection workers only when watched values change", async () => {
     const migrationSql = await readDrizzleFile(
-      "0037_coding_workspace_runtime.sql"
+      "0037_coding_project_runtime.sql"
     );
 
     expect(migrationSql).toContain(
@@ -380,7 +380,7 @@ describe("Conversation presentation migration", () => {
 describe("Managed Conversation launch configuration migration", () => {
   it("persists immutable AI Client, model, permission, and runner selections", async () => {
     const migrationSql = await readDrizzleFile(
-      "0037_coding_workspace_runtime.sql"
+      "0037_coding_project_runtime.sql"
     );
 
     for (const column of [

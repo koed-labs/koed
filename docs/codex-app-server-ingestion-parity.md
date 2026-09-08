@@ -159,7 +159,7 @@ before advancing its cursor, so the same replay also recovers a crash in that
 window.
 
 Multiple app-server processes may use the same Codex home. Koed fences each
-managed execution and writable execution workspace instead of locking provider
+managed execution and writable execution checkout instead of locking provider
 configuration. Shutdown and workspace cleanup never remove or rewrite the
 User's Codex home.
 

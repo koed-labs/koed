@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import {
   fetchBoundedJson,
+  sourceControlConnectionSchema,
   sourceControlBranchSchema,
   sourceControlCheckSchema,
   sourceControlCommentSchema,
@@ -22,16 +24,23 @@ export interface SourceControlProviderRepository {
   project: string | null;
 }
 
+export interface SourceControlPage<T> {
+  items: T[];
+  nextCursor: string | null;
+}
+
 export interface SourceControlProviderDriver {
   readonly provider: SourceControlProvider;
   inspect(input: ProviderInput): Promise<{
     defaultBranch: string;
     headObjectId: string;
   }>;
-  branches(input: ProviderInput): Promise<SourceControlBranch[]>;
+  branches(
+    input: ProviderInput
+  ): Promise<SourceControlPage<SourceControlBranch>>;
   reviewRequests(
     input: ProviderInput & { state: "open" | "closed" | "all" }
-  ): Promise<SourceControlReviewRequest[]>;
+  ): Promise<SourceControlPage<SourceControlReviewRequest>>;
   reviewRequest(
     input: ProviderInput & { number: number }
   ): Promise<SourceControlReviewRequest>;
@@ -40,7 +49,7 @@ export interface SourceControlProviderDriver {
   ): Promise<SourceControlCheck[]>;
   comments(
     input: ProviderInput & { number: number }
-  ): Promise<SourceControlComment[]>;
+  ): Promise<SourceControlPage<SourceControlComment>>;
   createReviewRequest(
     input: ProviderInput & {
       title: string;
@@ -64,6 +73,7 @@ export interface SourceControlProviderDriver {
 }
 
 export interface ProviderInput {
+  cursor?: string | null;
   connection: SourceControlConnection;
   credential: SourceControlCredential;
   repository: SourceControlProviderRepository;
@@ -95,13 +105,14 @@ const authHeader = (credential: SourceControlCredential): string =>
         "utf8"
       ).toString("base64")}`;
 
-const request = async (
+const requestResponse = async (
   input: ProviderInput,
   method: "GET" | "POST",
   path: string,
   body?: Record<string, unknown>,
   accept = "application/json"
-): Promise<unknown> => {
+) => {
+  sourceControlConnectionSchema.parse(input.connection);
   const base = new URL(input.connection.apiOrigin);
   const basePath = base.pathname.replace(/\/+$/, "");
   const parsedPath = new URL(path, "https://koed.invalid");
@@ -125,7 +136,156 @@ const request = async (
     { timeoutMs: 15_000, maxBytes: 4 * 1024 * 1024, readErrorBody: false }
   );
   if (!response.ok) providerError(response.status);
-  return payload;
+  return { response, payload, url: base };
+};
+
+const request = async (
+  ...args: Parameters<typeof requestResponse>
+): Promise<unknown> => (await requestResponse(...args)).payload;
+
+const invalidCursor = (): never => {
+  throw Object.assign(
+    new Error("Source-control pagination cursor is invalid"),
+    {
+      statusCode: 400,
+      code: "source_control_cursor_invalid"
+    }
+  );
+};
+const cursorScope = (input: ProviderInput, path: string): string =>
+  createHash("sha256")
+    .update(
+      JSON.stringify([
+        input.connection.provider,
+        input.connection.id,
+        input.connection.apiOrigin,
+        path
+      ])
+    )
+    .digest("hex");
+const decodeCursor = (input: ProviderInput, path: string): string | null => {
+  if (!input.cursor) return null;
+  try {
+    if (input.cursor.length > 2048) return invalidCursor();
+    const value = record(
+      JSON.parse(
+        Buffer.from(input.cursor, "base64url").toString("utf8")
+      ) as unknown
+    );
+    if (
+      value.scope !== cursorScope(input, path) ||
+      typeof value.position !== "string" ||
+      value.position.length > 1024
+    )
+      return invalidCursor();
+    return value.position;
+  } catch {
+    return invalidCursor();
+  }
+};
+const encodeCursor = (
+  input: ProviderInput,
+  path: string,
+  position: string
+): string => {
+  if (position.length > 1024) return invalidCursor();
+  return Buffer.from(
+    JSON.stringify({ scope: cursorScope(input, path), position })
+  ).toString("base64url");
+};
+const cursorNumber = (value: string | null, fallback: number): number => {
+  if (value === null) return fallback;
+  if (!/^\d{1,9}$/.test(value)) return invalidCursor();
+  return Number(value);
+};
+const mapPage = <T>(
+  page: SourceControlPage<unknown>,
+  map: (value: unknown) => T
+): SourceControlPage<T> => ({
+  items: page.items.map(map),
+  nextCursor: page.nextCursor
+});
+const requestPage = async (
+  input: ProviderInput,
+  path: string
+): Promise<SourceControlPage<unknown>> => {
+  const provider = input.connection.provider;
+  const position = decodeCursor(input, path);
+  const url = new URL(path, "https://koed.invalid");
+  const azureRefs =
+    provider === "azure_devops" && url.pathname.endsWith("/refs");
+  const parameter = azureRefs
+    ? "continuationToken"
+    : provider === "azure_devops"
+      ? "$skip"
+      : "page";
+  if (provider === "azure_devops") url.searchParams.set("$top", "100");
+  if (position !== null) {
+    if (!azureRefs) cursorNumber(position, 0);
+    url.searchParams.set(parameter, position);
+  }
+  const {
+    response,
+    payload,
+    url: requested
+  } = await requestResponse(input, "GET", url.pathname + url.search);
+  const items = array(
+    provider === "bitbucket"
+      ? record(payload).values
+      : provider === "azure_devops"
+        ? record(payload).value
+        : payload
+  );
+  // Each endpoint has its own continuation representation; never request a
+  // provider-supplied URL with credentials. Rebuild only its paging parameter.
+  let next: string | null = null;
+  let nextUrl: string | null = null;
+  if (provider === "github") {
+    const link = response.headers.get("link") ?? "";
+    nextUrl =
+      link
+        .split(",")
+        .map((value) => value.trim())
+        .find((value) => /;\s*rel="next"/.test(value))
+        ?.match(/^<([^>]+)>/)?.[1] ?? null;
+  } else if (provider === "gitlab") {
+    next = response.headers.get("x-next-page") || null;
+  } else if (provider === "bitbucket") {
+    const value = record(payload).next;
+    if (value !== undefined && value !== null && typeof value !== "string")
+      return invalidCursor();
+    nextUrl = typeof value === "string" ? value : null;
+  } else if (azureRefs) {
+    next = response.headers.get("x-ms-continuationtoken") || null;
+  } else if (items.length === 100) {
+    next = String(cursorNumber(position, 0) + 100);
+  }
+  if (nextUrl) {
+    const candidate = new URL(nextUrl, requested);
+    if (
+      candidate.origin !== requested.origin ||
+      candidate.pathname !== requested.pathname ||
+      candidate.username ||
+      candidate.password ||
+      candidate.hash
+    )
+      return invalidCursor();
+    next = candidate.searchParams.get(parameter);
+    if (!next) return invalidCursor();
+  }
+  if (
+    next !== null &&
+    !azureRefs &&
+    cursorNumber(next, 0) <=
+      cursorNumber(position, provider === "azure_devops" ? 0 : 1)
+  )
+    return invalidCursor();
+  if (items.length > 100)
+    throw new Error("Source-control provider exceeded the requested page size");
+  return {
+    items,
+    nextCursor: next === null ? null : encodeCursor(input, path, next)
+  };
 };
 
 const record = (value: unknown): Record<string, unknown> => {
@@ -138,7 +298,7 @@ const array = (value: unknown): unknown[] => {
   if (!Array.isArray(value)) {
     throw new Error("Source-control provider returned an invalid list");
   }
-  return value.slice(0, 100);
+  return value;
 };
 const text = (value: unknown, fallback = "unknown"): string =>
   typeof value === "string" && value.trim() ? value : fallback;
@@ -201,27 +361,28 @@ const github: SourceControlProviderDriver = {
     return { defaultBranch, headObjectId: text(record(branch.commit).sha) };
   },
   async branches(input) {
-    return array(
-      await request(input, "GET", `${githubRepo(input)}/branches?per_page=100`)
-    ).map((value) => {
-      const item = record(value);
-      return sourceControlBranchSchema.parse({
-        name: text(item.name),
-        objectId: text(record(item.commit).sha),
-        default: false,
-        protected: item.protected === true
-      });
-    });
+    return mapPage(
+      await requestPage(input, `${githubRepo(input)}/branches?per_page=100`),
+      (value) => {
+        const item = record(value);
+        return sourceControlBranchSchema.parse({
+          name: text(item.name),
+          objectId: text(record(item.commit).sha),
+          default: false,
+          protected: item.protected === true
+        });
+      }
+    );
   },
   async reviewRequests(input) {
     const state = input.state === "all" ? "all" : input.state;
-    return array(
-      await request(
+    return mapPage(
+      await requestPage(
         input,
-        "GET",
         `${githubRepo(input)}/pulls?state=${state}&per_page=100`
-      )
-    ).map(githubReview);
+      ),
+      githubReview
+    );
   },
   async reviewRequest(input) {
     return githubReview(
@@ -255,22 +416,22 @@ const github: SourceControlProviderDriver = {
     });
   },
   async comments(input) {
-    return array(
-      await request(
+    return mapPage(
+      await requestPage(
         input,
-        "GET",
         `${githubRepo(input)}/issues/${input.number}/comments?per_page=100`
-      )
-    ).map((value) => {
-      const item = record(value);
-      return sourceControlCommentSchema.parse({
-        id: String(item.id),
-        author: text(record(item.user).login),
-        body: typeof item.body === "string" ? item.body : "",
-        createdAt: iso(item.created_at),
-        webUrl: typeof item.html_url === "string" ? item.html_url : null
-      });
-    });
+      ),
+      (value) => {
+        const item = record(value);
+        return sourceControlCommentSchema.parse({
+          id: String(item.id),
+          author: text(record(item.user).login),
+          body: typeof item.body === "string" ? item.body : "",
+          createdAt: iso(item.created_at),
+          webUrl: typeof item.html_url === "string" ? item.html_url : null
+        });
+      }
+    );
   },
   async createReviewRequest(input) {
     return githubReview(
@@ -306,6 +467,7 @@ const github: SourceControlProviderDriver = {
       "POST",
       `${githubRepo(input)}/pulls/${input.number}/reviews`,
       {
+        commit_id: input.expectedHeadObjectId,
         body: input.body,
         event:
           input.decision === "approve"
@@ -366,21 +528,21 @@ const gitlab: SourceControlProviderDriver = {
     const repository = record(
       await request(input, "GET", gitlabProject(input))
     );
-    return array(
-      await request(
+    return mapPage(
+      await requestPage(
         input,
-        "GET",
         `${gitlabProject(input)}/repository/branches?per_page=100`
-      )
-    ).map((value) => {
-      const item = record(value);
-      return sourceControlBranchSchema.parse({
-        name: text(item.name),
-        objectId: text(record(item.commit).id),
-        default: item.name === repository.default_branch,
-        protected: item.protected === true
-      });
-    });
+      ),
+      (value) => {
+        const item = record(value);
+        return sourceControlBranchSchema.parse({
+          name: text(item.name),
+          objectId: text(record(item.commit).id),
+          default: item.name === repository.default_branch,
+          protected: item.protected === true
+        });
+      }
+    );
   },
   async reviewRequests(input) {
     const state =
@@ -389,13 +551,13 @@ const gitlab: SourceControlProviderDriver = {
         : input.state === "open"
           ? "opened"
           : "closed";
-    return array(
-      await request(
+    return mapPage(
+      await requestPage(
         input,
-        "GET",
         `${gitlabProject(input)}/merge_requests?state=${state}&per_page=100`
-      )
-    ).map(gitlabReview);
+      ),
+      gitlabReview
+    );
   },
   async reviewRequest(input) {
     return gitlabReview(
@@ -444,22 +606,22 @@ const gitlab: SourceControlProviderDriver = {
     });
   },
   async comments(input) {
-    return array(
-      await request(
+    return mapPage(
+      await requestPage(
         input,
-        "GET",
         `${gitlabProject(input)}/merge_requests/${input.number}/notes?per_page=100`
-      )
-    ).map((value) => {
-      const item = record(value);
-      return sourceControlCommentSchema.parse({
-        id: String(item.id),
-        author: text(record(item.author).username),
-        body: typeof item.body === "string" ? item.body : "",
-        createdAt: iso(item.created_at),
-        webUrl: null
-      });
-    });
+      ),
+      (value) => {
+        const item = record(value);
+        return sourceControlCommentSchema.parse({
+          id: String(item.id),
+          author: text(record(item.author).username),
+          body: typeof item.body === "string" ? item.body : "",
+          createdAt: iso(item.created_at),
+          webUrl: null
+        });
+      }
+    );
   },
   async createReviewRequest(input) {
     return gitlabReview(
@@ -489,6 +651,12 @@ const gitlab: SourceControlProviderDriver = {
     });
   },
   async createReview(input) {
+    if (input.decision === "request_changes") {
+      throw Object.assign(
+        new Error("Formal change requests are unavailable for this provider"),
+        { statusCode: 409, code: "source_control_capability_unavailable" }
+      );
+    }
     if (input.decision === "approve") {
       await request(
         input,
@@ -558,34 +726,34 @@ const bitbucket: SourceControlProviderDriver = {
       await request(input, "GET", bitbucketRepo(input))
     );
     const defaultBranch = text(record(repository.mainbranch).name);
-    return bitbucketList(
-      await request(
+    return mapPage(
+      await requestPage(
         input,
-        "GET",
         `${bitbucketRepo(input)}/refs/branches?pagelen=100`
-      )
-    ).map((value) => {
-      const item = record(value);
-      return sourceControlBranchSchema.parse({
-        name: text(item.name),
-        objectId: text(record(item.target).hash),
-        default: item.name === defaultBranch,
-        protected: null
-      });
-    });
+      ),
+      (value) => {
+        const item = record(value);
+        return sourceControlBranchSchema.parse({
+          name: text(item.name),
+          objectId: text(record(item.target).hash),
+          default: item.name === defaultBranch,
+          protected: null
+        });
+      }
+    );
   },
   async reviewRequests(input) {
     const state =
       input.state === "all"
         ? ""
         : `&state=${input.state === "open" ? "OPEN" : "DECLINED"}`;
-    return bitbucketList(
-      await request(
+    return mapPage(
+      await requestPage(
         input,
-        "GET",
         `${bitbucketRepo(input)}/pullrequests?pagelen=100${state}`
-      )
-    ).map(bitbucketReview);
+      ),
+      bitbucketReview
+    );
   },
   async reviewRequest(input) {
     return bitbucketReview(
@@ -621,22 +789,22 @@ const bitbucket: SourceControlProviderDriver = {
     });
   },
   async comments(input) {
-    return bitbucketList(
-      await request(
+    return mapPage(
+      await requestPage(
         input,
-        "GET",
         `${bitbucketRepo(input)}/pullrequests/${input.number}/comments?pagelen=100`
-      )
-    ).map((value) => {
-      const item = record(value);
-      return sourceControlCommentSchema.parse({
-        id: String(item.id),
-        author: text(record(item.user).nickname),
-        body: text(record(item.content).raw, ""),
-        createdAt: iso(item.created_on),
-        webUrl: null
-      });
-    });
+      ),
+      (value) => {
+        const item = record(value);
+        return sourceControlCommentSchema.parse({
+          id: String(item.id),
+          author: text(record(item.user).nickname),
+          body: text(record(item.content).raw, ""),
+          createdAt: iso(item.created_on),
+          webUrl: null
+        });
+      }
+    );
   },
   async createReviewRequest(input) {
     return bitbucketReview(
@@ -668,6 +836,12 @@ const bitbucket: SourceControlProviderDriver = {
     });
   },
   async createReview(input) {
+    if (input.decision === "request_changes") {
+      throw Object.assign(
+        new Error("Formal change requests are unavailable for this provider"),
+        { statusCode: 409, code: "source_control_capability_unavailable" }
+      );
+    }
     if (input.decision === "approve") {
       await request(
         input,
@@ -743,21 +917,21 @@ const azure: SourceControlProviderDriver = {
     };
   },
   async branches(input) {
-    return azureList(
-      await request(
+    return mapPage(
+      await requestPage(
         input,
-        "GET",
         `${azureRepo(input)}/refs?filter=heads/&api-version=7.1`
-      )
-    ).map((value) => {
-      const item = record(value);
-      return sourceControlBranchSchema.parse({
-        name: text(item.name).replace(/^refs\/heads\//u, ""),
-        objectId: text(item.objectId),
-        default: false,
-        protected: null
-      });
-    });
+      ),
+      (value) => {
+        const item = record(value);
+        return sourceControlBranchSchema.parse({
+          name: text(item.name).replace(/^refs\/heads\//u, ""),
+          objectId: text(item.objectId),
+          default: false,
+          protected: null
+        });
+      }
+    );
   },
   async reviewRequests(input) {
     const status =
@@ -766,13 +940,13 @@ const azure: SourceControlProviderDriver = {
         : input.state === "open"
           ? "active"
           : "completed";
-    return azureList(
-      await request(
+    return mapPage(
+      await requestPage(
         input,
-        "GET",
         `${azureRepo(input)}/pullrequests?searchCriteria.status=${status}&$top=100&api-version=7.1`
-      )
-    ).map(azureReview);
+      ),
+      azureReview
+    );
   },
   async reviewRequest(input) {
     return azureReview(
@@ -820,18 +994,14 @@ const azure: SourceControlProviderDriver = {
     });
   },
   async comments(input) {
-    const threads = azureList(
-      await request(
-        input,
-        "GET",
-        `${azureRepo(input)}/pullrequests/${input.number}/threads?api-version=7.1`
-      )
-    );
-    return threads.flatMap((value) =>
+    const path = `${azureRepo(input)}/pullrequests/${input.number}/threads?api-version=7.1`;
+    const offset = cursorNumber(decodeCursor(input, path), 0);
+    const threads = azureList(await request(input, "GET", path));
+    const comments = threads.flatMap((value) =>
       array(record(value).comments).map((comment) => {
         const item = record(comment);
         return sourceControlCommentSchema.parse({
-          id: String(item.id),
+          id: `${record(value).id}:${item.id}`,
           author: text(record(item.author).displayName),
           body: typeof item.content === "string" ? item.content : "",
           createdAt: iso(item.publishedDate),
@@ -839,6 +1009,13 @@ const azure: SourceControlProviderDriver = {
         });
       })
     );
+    return {
+      items: comments.slice(offset, offset + 100),
+      nextCursor:
+        offset + 100 < comments.length
+          ? encodeCursor(input, path, String(offset + 100))
+          : null
+    };
   },
   async createReviewRequest(input) {
     return azureReview(

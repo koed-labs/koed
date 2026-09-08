@@ -129,13 +129,13 @@ export interface ManagedConversationRuntimeBindingRecord {
   executionGeneration: number;
   sourceProjectPath: string;
   projectPath: string;
-  workspaceId: string | null;
-  workspaceKind:
+  checkoutId: string | null;
+  checkoutKind:
     | "pending"
     | "koed_managed_worktree"
     | "user_managed_checkout"
     | "non_vcs_directory";
-  workspaceLifecycle:
+  checkoutLifecycle:
     | "pending"
     | "ready"
     | "cleanup_requested"
@@ -537,7 +537,7 @@ export interface ManagedConversationRepository {
     deviceId: string;
     limit?: number;
   }): Promise<ManagedConversationRuntimeBindingRecord[]>;
-  bindManagedConversationExecutionWorkspace(
+  bindManagedConversationExecutionCheckout(
     actor: ActorContext,
     input: {
       executionId: string;
@@ -546,8 +546,8 @@ export interface ManagedConversationRepository {
       executionGeneration: number;
       sourceProjectPath: string;
       projectPath: string;
-      workspaceId: string;
-      workspaceKind:
+      checkoutId: string;
+      checkoutKind:
         | "koed_managed_worktree"
         | "user_managed_checkout"
         | "non_vcs_directory";
@@ -563,7 +563,7 @@ export interface ManagedConversationRepository {
       creationOperationId: string;
     }
   ): Promise<ManagedConversationRuntimeBindingRecord>;
-  requestManagedConversationExecutionWorkspaceCleanup(
+  requestManagedConversationExecutionCheckoutCleanup(
     actor: ActorContext,
     input: {
       executionId: string;
@@ -572,26 +572,26 @@ export interface ManagedConversationRepository {
       deviceId: string;
     }
   ): Promise<ManagedConversationRuntimeBindingRecord>;
-  listManagedConversationExecutionWorkspaceCleanupRequests(input: {
+  listManagedConversationExecutionCheckoutCleanupRequests(input: {
     deploymentId: string;
     deviceId: string;
     limit?: number;
   }): Promise<ManagedConversationRuntimeBindingRecord[]>;
-  completeManagedConversationExecutionWorkspaceCleanup(input: {
+  completeManagedConversationExecutionCheckoutCleanup(input: {
     ownerUserId: string;
     executionId: string;
     executionGeneration: number;
     deploymentId: string;
     deviceId: string;
-    workspaceId: string;
+    checkoutId: string;
   }): Promise<boolean>;
-  failManagedConversationExecutionWorkspaceCleanup(input: {
+  failManagedConversationExecutionCheckoutCleanup(input: {
     ownerUserId: string;
     executionId: string;
     executionGeneration: number;
     deploymentId: string;
     deviceId: string;
-    workspaceId: string;
+    checkoutId: string;
     lifecycle: "cleanup_failed" | "orphaned";
   }): Promise<boolean>;
   bindManagedConversationLocalRuntime(
@@ -690,9 +690,9 @@ type RuntimeBindingRow = {
   execution_generation: number;
   source_project_path: string;
   project_path: string;
-  workspace_id: string | null;
-  workspace_kind: ManagedConversationRuntimeBindingRecord["workspaceKind"];
-  workspace_lifecycle: ManagedConversationRuntimeBindingRecord["workspaceLifecycle"];
+  checkout_id: string | null;
+  checkout_kind: ManagedConversationRuntimeBindingRecord["checkoutKind"];
+  checkout_lifecycle: ManagedConversationRuntimeBindingRecord["checkoutLifecycle"];
   cleanup_state: ManagedConversationRuntimeBindingRecord["cleanupState"];
   vcs_driver: "git" | null;
   local_repository_common_directory: string | null;
@@ -819,8 +819,8 @@ const EXECUTION_COLUMNS = `
 
 const RUNTIME_BINDING_COLUMNS = `
   execution_id, owner_user_id, deployment_id, device_id, execution_generation,
-  source_project_path, project_path, workspace_id, workspace_kind,
-  workspace_lifecycle, cleanup_state, vcs_driver,
+  source_project_path, project_path, checkout_id, checkout_kind,
+  checkout_lifecycle, cleanup_state, vcs_driver,
   local_repository_common_directory, local_git_directory,
   repository_identity_hash, worktree_identity_hash, base_ref, base_object_id,
   branch_ref, head_object_id, creation_operation_id, local_session_id,
@@ -904,9 +904,9 @@ const mapRuntimeBinding = (
   executionGeneration: row.execution_generation,
   sourceProjectPath: row.source_project_path,
   projectPath: row.project_path,
-  workspaceId: row.workspace_id,
-  workspaceKind: row.workspace_kind,
-  workspaceLifecycle: row.workspace_lifecycle,
+  checkoutId: row.checkout_id,
+  checkoutKind: row.checkout_kind,
+  checkoutLifecycle: row.checkout_lifecycle,
   cleanupState: row.cleanup_state,
   vcsDriver: row.vcs_driver,
   localRepositoryCommonDirectory: row.local_repository_common_directory,
@@ -3928,18 +3928,18 @@ export const createManagedConversationRepository = (
                  when managed_conversation_runtime_bindings.execution_generation = excluded.execution_generation
                    and managed_conversation_runtime_bindings.source_project_path = excluded.source_project_path
                  then managed_conversation_runtime_bindings.project_path else excluded.project_path end,
-               workspace_id = case
+               checkout_id = case
                  when managed_conversation_runtime_bindings.execution_generation = excluded.execution_generation
                    and managed_conversation_runtime_bindings.source_project_path = excluded.source_project_path
-                 then managed_conversation_runtime_bindings.workspace_id else null end,
-               workspace_kind = case
+                 then managed_conversation_runtime_bindings.checkout_id else null end,
+               checkout_kind = case
                  when managed_conversation_runtime_bindings.execution_generation = excluded.execution_generation
                    and managed_conversation_runtime_bindings.source_project_path = excluded.source_project_path
-                 then managed_conversation_runtime_bindings.workspace_kind else 'pending' end,
-               workspace_lifecycle = case
+                 then managed_conversation_runtime_bindings.checkout_kind else 'pending' end,
+               checkout_lifecycle = case
                  when managed_conversation_runtime_bindings.execution_generation = excluded.execution_generation
                    and managed_conversation_runtime_bindings.source_project_path = excluded.source_project_path
-                 then managed_conversation_runtime_bindings.workspace_lifecycle else 'pending' end,
+                 then managed_conversation_runtime_bindings.checkout_lifecycle else 'pending' end,
                cleanup_state = case
                  when managed_conversation_runtime_bindings.execution_generation = excluded.execution_generation
                    and managed_conversation_runtime_bindings.source_project_path = excluded.source_project_path
@@ -4011,7 +4011,7 @@ export const createManagedConversationRepository = (
                excluded.owner_user_id
            and managed_conversation_runtime_bindings.device_id =
                excluded.device_id
-           and (managed_conversation_runtime_bindings.workspace_lifecycle = 'pending'
+           and (managed_conversation_runtime_bindings.checkout_lifecycle = 'pending'
              or (managed_conversation_runtime_bindings.execution_generation = excluded.execution_generation
                and managed_conversation_runtime_bindings.source_project_path = excluded.source_project_path))
          returning ${RUNTIME_BINDING_COLUMNS}`,
@@ -4030,7 +4030,7 @@ export const createManagedConversationRepository = (
             409
           );
         }
-        if (result.rows[0].workspace_lifecycle === "pending") {
+        if (result.rows[0].checkout_lifecycle === "pending") {
           await notifyManagedConversationCommand(client, input.executionId);
         }
         await client.query("commit");
@@ -4054,7 +4054,7 @@ export const createManagedConversationRepository = (
             and execution.execution_generation = binding.execution_generation
           where binding.deployment_id = $1
             and binding.device_id = $2
-            and binding.workspace_lifecycle = 'pending'
+            and binding.checkout_lifecycle = 'pending'
             and execution.state = 'starting'
             and ($3::uuid is null or binding.owner_user_id = $3)
           order by binding.created_at, binding.execution_id
@@ -4064,16 +4064,16 @@ export const createManagedConversationRepository = (
       return result.rows.map(mapRuntimeBinding);
     },
 
-    async bindManagedConversationExecutionWorkspace(actor, input) {
+    async bindManagedConversationExecutionCheckout(actor, input) {
       let result: pg.QueryResult<RuntimeBindingRow>;
       try {
         result = await pool.query<RuntimeBindingRow>(
           `update managed_conversation_runtime_bindings
             set source_project_path = $6,
                 project_path = $7,
-                workspace_id = $8,
-                workspace_kind = $9,
-                workspace_lifecycle = 'ready',
+                checkout_id = $8,
+                checkout_kind = $9,
+                checkout_lifecycle = 'ready',
                 cleanup_state = 'not_requested',
                 vcs_driver = $10,
                 local_repository_common_directory = $11,
@@ -4092,13 +4092,13 @@ export const createManagedConversationRepository = (
             and device_id = $4
             and execution_generation = $5
             and (
-              workspace_lifecycle = 'pending'
+              checkout_lifecycle = 'pending'
               or (
-                workspace_lifecycle = 'ready'
+                checkout_lifecycle = 'ready'
                 and source_project_path = $6
                 and project_path = $7
-                and workspace_id = $8
-                and workspace_kind = $9
+                and checkout_id = $8
+                and checkout_kind = $9
                 and vcs_driver is not distinct from $10
                 and local_repository_common_directory is not distinct from $11
                 and local_git_directory is not distinct from $12
@@ -4120,8 +4120,8 @@ export const createManagedConversationRepository = (
             input.executionGeneration,
             input.sourceProjectPath,
             input.projectPath,
-            input.workspaceId,
-            input.workspaceKind,
+            input.checkoutId,
+            input.checkoutKind,
             input.vcsDriver,
             input.localRepositoryCommonDirectory ?? null,
             input.localGitDirectory ?? null,
@@ -4145,9 +4145,9 @@ export const createManagedConversationRepository = (
             "managed_conversation_runtime_binding_active_path_unique"
         ) {
           throw Object.assign(
-            new Error("ExecutionWorkspaceActivePathConflictError"),
+            new Error("ExecutionCheckoutActivePathConflictError"),
             {
-              name: "ExecutionWorkspaceActivePathConflictError",
+              name: "ExecutionCheckoutActivePathConflictError",
               statusCode: 409
             }
           );
@@ -4156,20 +4156,20 @@ export const createManagedConversationRepository = (
       }
       if (!result.rows[0]) {
         throw statusError(
-          "Managed Conversation execution workspace conflicted",
+          "Managed Conversation execution checkout conflicted",
           409
         );
       }
       return mapRuntimeBinding(result.rows[0]);
     },
 
-    async requestManagedConversationExecutionWorkspaceCleanup(actor, input) {
+    async requestManagedConversationExecutionCheckoutCleanup(actor, input) {
       const client = await pool.connect();
       try {
         await client.query("begin");
         const result = await client.query<RuntimeBindingRow>(
           `update managed_conversation_runtime_bindings
-            set workspace_lifecycle = 'cleanup_requested',
+            set checkout_lifecycle = 'cleanup_requested',
                 cleanup_state = 'requested',
                 updated_at = now()
           where execution_id = $1
@@ -4177,8 +4177,8 @@ export const createManagedConversationRepository = (
             and execution_generation = $3
             and deployment_id = $4
             and device_id = $5
-            and workspace_kind = 'koed_managed_worktree'
-            and workspace_lifecycle in ('ready', 'cleanup_requested')
+            and checkout_kind = 'koed_managed_worktree'
+            and checkout_lifecycle in ('ready', 'cleanup_requested')
             and cleanup_state in ('not_requested', 'requested')
         returning ${RUNTIME_BINDING_COLUMNS}`,
           [
@@ -4191,7 +4191,7 @@ export const createManagedConversationRepository = (
         );
         if (!result.rows[0]) {
           throw statusError(
-            "Managed Conversation execution workspace cannot be cleaned up",
+            "Managed Conversation execution checkout cannot be cleaned up",
             409
           );
         }
@@ -4206,15 +4206,15 @@ export const createManagedConversationRepository = (
       }
     },
 
-    async listManagedConversationExecutionWorkspaceCleanupRequests(input) {
+    async listManagedConversationExecutionCheckoutCleanupRequests(input) {
       const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
       const result = await pool.query<RuntimeBindingRow>(
         `select ${RUNTIME_BINDING_COLUMNS}
            from managed_conversation_runtime_bindings
           where deployment_id = $1
             and device_id = $2
-            and workspace_kind = 'koed_managed_worktree'
-            and workspace_lifecycle = 'cleanup_requested'
+            and checkout_kind = 'koed_managed_worktree'
+            and checkout_lifecycle = 'cleanup_requested'
             and cleanup_state = 'requested'
           order by updated_at, execution_id
           limit $3`,
@@ -4223,10 +4223,10 @@ export const createManagedConversationRepository = (
       return result.rows.map(mapRuntimeBinding);
     },
 
-    async completeManagedConversationExecutionWorkspaceCleanup(input) {
+    async completeManagedConversationExecutionCheckoutCleanup(input) {
       const result = await pool.query(
         `update managed_conversation_runtime_bindings
-            set workspace_lifecycle = 'removed',
+            set checkout_lifecycle = 'removed',
                 cleanup_state = 'completed',
                 updated_at = now()
           where execution_id = $1
@@ -4234,9 +4234,9 @@ export const createManagedConversationRepository = (
             and execution_generation = $3
             and deployment_id = $4
             and device_id = $5
-            and workspace_id = $6
-            and workspace_kind = 'koed_managed_worktree'
-            and workspace_lifecycle = 'cleanup_requested'
+            and checkout_id = $6
+            and checkout_kind = 'koed_managed_worktree'
+            and checkout_lifecycle = 'cleanup_requested'
             and cleanup_state = 'requested'`,
         [
           input.executionId,
@@ -4244,16 +4244,16 @@ export const createManagedConversationRepository = (
           input.executionGeneration,
           input.deploymentId,
           input.deviceId,
-          input.workspaceId
+          input.checkoutId
         ]
       );
       return (result.rowCount ?? 0) === 1;
     },
 
-    async failManagedConversationExecutionWorkspaceCleanup(input) {
+    async failManagedConversationExecutionCheckoutCleanup(input) {
       const result = await pool.query(
         `update managed_conversation_runtime_bindings
-            set workspace_lifecycle = $7,
+            set checkout_lifecycle = $7,
                 cleanup_state = 'failed',
                 updated_at = now()
           where execution_id = $1
@@ -4261,9 +4261,9 @@ export const createManagedConversationRepository = (
             and execution_generation = $3
             and deployment_id = $4
             and device_id = $5
-            and workspace_id = $6
-            and workspace_kind = 'koed_managed_worktree'
-            and workspace_lifecycle = 'cleanup_requested'
+            and checkout_id = $6
+            and checkout_kind = 'koed_managed_worktree'
+            and checkout_lifecycle = 'cleanup_requested'
             and cleanup_state = 'requested'`,
         [
           input.executionId,
@@ -4271,7 +4271,7 @@ export const createManagedConversationRepository = (
           input.executionGeneration,
           input.deploymentId,
           input.deviceId,
-          input.workspaceId,
+          input.checkoutId,
           input.lifecycle
         ]
       );

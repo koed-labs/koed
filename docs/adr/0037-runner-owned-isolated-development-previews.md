@@ -15,7 +15,7 @@ Related decisions:
 ## Context
 
 A managed coding Conversation needs to show a development server running in its
-execution workspace. A renderer-provided URL, an open TCP port, terminal text,
+execution checkout. A renderer-provided URL, an open TCP port, terminal text,
 or a Project path is not sufficient authority to expose a service. Local
 machines commonly run databases, control planes, cloud metadata emulators,
 debuggers, and services carrying credentials. Blind port scanning or navigating
@@ -36,7 +36,7 @@ access to a live application, its cookies, or browser automation.
 
 ## Decision
 
-The runner that owns the current managed execution and execution-workspace
+The runner that owns the current managed execution and execution-checkout
 binding is the sole authority for development-server discovery and preview
 publication. Koed exposes only verified, opaque preview identities. It does not
 offer a general URL browser, port scanner, reverse proxy, or Chrome DevTools
@@ -51,7 +51,7 @@ Every preview binds:
 
 - the owning Personal User;
 - the managed execution id and current fencing generation;
-- the exact execution-workspace binding and assigned runner;
+- the exact execution-checkout binding and assigned runner;
 - a runner-verified process group and listener identity;
 - one normalized loopback HTTP or HTTPS origin;
 - a lifecycle generation, creation source, and expiry; and
@@ -74,7 +74,7 @@ Before publication, the runner must prove that:
   metadata, or public address;
 - the listener belongs to the current execution's process group or a verified
   descendant;
-- the process and workspace generations still match;
+- the process and checkout generations still match;
 - the port and scheme satisfy deployment policy; and
 - a bounded HTTP readiness probe returns a valid response without following a
   redirect outside the candidate origin.
@@ -195,16 +195,16 @@ session.
 ### Lifecycle, Recovery, And Telemetry
 
 A preview is unavailable when its listener, process ownership, runner lease,
-execution generation, workspace binding, or authorization cannot be verified.
+execution generation, checkout binding, or authorization cannot be verified.
 It is invalidated by execution handoff, runner disconnect beyond the bounded
-reconnect window, workspace cleanup, device revocation, access suspension,
+reconnect window, checkout cleanup, device revocation, access suspension,
 process exit, port reuse, or policy change. Reusing the same port creates a new
 preview generation and browser partition.
 
 Detaching the UI does not stop the development server. Stopping a terminal
 follows ADR 0036 process-group policy and may stop its preview. Workspace
 cleanup remains blocked while an active preview or development-server process
-owns the workspace.
+owns the checkout.
 
 Logs, metrics, traces, audits, diagnostics, and durable events contain only
 opaque ids, lifecycle state, reason codes, byte/connection/duration buckets,

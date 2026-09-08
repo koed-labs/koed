@@ -3,15 +3,12 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
   lstat,
-  mkdtemp,
   mkdir,
   readFile,
-  rm,
   rename,
   writeFile
 } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 
 import type { MemorySourceRepository } from "@koed/db";
@@ -27,8 +24,10 @@ import {
   type SourceControlRemote,
   type SourceControlResult
 } from "@koed/shared";
-import { createGitExecutionWorkspaceDriver } from "@koed/shared/execution-workspace";
+import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
 import { z } from "zod";
+
+import { withAuthenticatedGitRepository } from "./authenticated-git.js";
 
 import { resolveCommandSecret } from "../secrets/command-secret-provider.js";
 import {
@@ -93,6 +92,7 @@ const safeRemoteUrl = (
         !["https:", "ssh:"].includes(url.protocol) ||
         (url.username && url.protocol === "https:") ||
         url.password ||
+        url.port ||
         url.search ||
         url.hash
       ) {
@@ -191,19 +191,19 @@ const locatorFor = (
   };
 };
 
-const workspaceFor = (
+const checkoutFor = (
   binding: NonNullable<
     Awaited<
       ReturnType<MemorySourceRepository["getManagedConversationRuntimeBinding"]>
     >
   >
 ) => ({
-  workspaceId: binding.workspaceId!,
+  checkoutId: binding.checkoutId!,
   vcsDriver: binding.vcsDriver,
   ownership:
-    binding.workspaceKind === "pending"
+    binding.checkoutKind === "pending"
       ? ("non_vcs_directory" as const)
-      : binding.workspaceKind,
+      : binding.checkoutKind,
   canonicalPath: binding.projectPath,
   localRepositoryCommonDirectory: binding.localRepositoryCommonDirectory,
   localGitDirectory: binding.localGitDirectory,
@@ -223,6 +223,8 @@ const gitEnvironment = (): NodeJS.ProcessEnv => ({
   LANG: process.env.LANG,
   LC_ALL: process.env.LC_ALL,
   GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+  GIT_NO_REPLACE_OBJECTS: "1",
   GIT_TERMINAL_PROMPT: "0",
   GIT_OPTIONAL_LOCKS: "0"
 });
@@ -230,9 +232,10 @@ const gitEnvironment = (): NodeJS.ProcessEnv => ({
 const git = async (
   cwd: string,
   args: string[],
-  environment: NodeJS.ProcessEnv = {}
+  environment: NodeJS.ProcessEnv = {},
+  stdin?: string
 ): Promise<string> => {
-  const result = await execFileAsync("git", args, {
+  const running = execFileAsync("git", args, {
     cwd,
     env: { ...gitEnvironment(), ...environment },
     encoding: "utf8",
@@ -240,32 +243,8 @@ const git = async (
     maxBuffer: 4 * 1024 * 1024,
     windowsHide: true
   });
-  return result.stdout.trim();
-};
-
-const withGitCredential = async <T>(
-  credential: SourceControlCredential,
-  operation: (environment: NodeJS.ProcessEnv) => Promise<T>
-): Promise<T> => {
-  const directory = await mkdtemp(resolve(tmpdir(), "koed-git-askpass-"));
-  const windows = process.platform === "win32";
-  const helper = resolve(directory, windows ? "askpass.cmd" : "askpass.sh");
-  const contents = windows
-    ? "@echo off\r\nset prompt=%~1\r\necho %prompt% | findstr /I username >nul && (echo %KOED_GIT_USERNAME%) || (echo %KOED_GIT_TOKEN%)\r\n"
-    : '#!/bin/sh\ncase "$1" in *[Uu]sername*) printf "%s\\n" "$KOED_GIT_USERNAME" ;; *) printf "%s\\n" "$KOED_GIT_TOKEN" ;; esac\n';
-  await writeFile(helper, contents, { mode: 0o700 });
-  if (!windows) await chmod(helper, 0o700);
-  try {
-    return await operation({
-      GIT_ASKPASS: helper,
-      GIT_ASKPASS_REQUIRE: "force",
-      KOED_GIT_USERNAME:
-        credential.scheme === "basic" ? credential.username : "x-access-token",
-      KOED_GIT_TOKEN: credential.token
-    });
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+  running.child.stdin?.end(stdin);
+  return (await running).stdout.trim();
 };
 
 const credentialSchema = z.discriminatedUnion("scheme", [
@@ -318,12 +297,12 @@ export const createSourceControlRuntime = (options: {
     "state",
     "source-control-operations.json"
   );
-  let workspaceDriver: ReturnType<
-    typeof createGitExecutionWorkspaceDriver
+  let checkoutDriver: ReturnType<
+    typeof createGitExecutionCheckoutDriver
   > | null = null;
-  const requireWorkspaceDriver = () =>
-    (workspaceDriver ??= createGitExecutionWorkspaceDriver({
-      managedRoot: resolve(options.koedHome, "managed-workspaces", "worktrees")
+  const requireCheckoutDriver = () =>
+    (checkoutDriver ??= createGitExecutionCheckoutDriver({
+      managedRoot: resolve(options.koedHome, "managed-checkouts", "worktrees")
     }));
   let journalSerial = Promise.resolve();
 
@@ -378,17 +357,17 @@ export const createSourceControlRuntime = (options: {
       !binding ||
       execution.executionGeneration !== operation.executionGeneration ||
       binding.executionGeneration !== operation.executionGeneration ||
-      binding.workspaceLifecycle !== "ready" ||
+      binding.checkoutLifecycle !== "ready" ||
       binding.vcsDriver !== "git" ||
-      !binding.workspaceId
+      !binding.checkoutId
     ) {
       throw sourceControlError(
-        "Source-control workspace authority is stale",
+        "Source-control checkout authority is stale",
         409,
-        "source_control_workspace_stale"
+        "source_control_checkout_stale"
       );
     }
-    await (await requireWorkspaceDriver()).verify(workspaceFor(binding));
+    await (await requireCheckoutDriver()).verify(checkoutFor(binding));
     const headObjectId = await git(binding.projectPath, [
       "rev-parse",
       "--verify",
@@ -396,7 +375,7 @@ export const createSourceControlRuntime = (options: {
     ]);
     if (!objectIdPattern.test(headObjectId)) {
       throw sourceControlError(
-        "Source-control workspace revision is unavailable",
+        "Source-control checkout revision is unavailable",
         409,
         "source_control_revision_unavailable"
       );
@@ -407,7 +386,12 @@ export const createSourceControlRuntime = (options: {
   const remotesFor = async (
     cwd: string
   ): Promise<
-    Array<SourceControlRemote & { repository: SourceControlProviderRepository }>
+    Array<
+      SourceControlRemote & {
+        repository: SourceControlProviderRepository;
+        transportUrl: string;
+      }
+    >
   > => {
     const names = (await git(cwd, ["remote"]))
       .split("\n")
@@ -480,7 +464,8 @@ export const createSourceControlRuntime = (options: {
                     : "connection_required",
             capabilities: connected ? connection.capabilities : []
           }),
-          repository
+          repository,
+          transportUrl: raw
         };
       })
     );
@@ -493,6 +478,7 @@ export const createSourceControlRuntime = (options: {
   ): SourceControlRemote => {
     const remote: Record<string, unknown> = { ...value };
     delete remote.repository;
+    delete remote.transportUrl;
     return sourceControlRemoteSchema.parse(remote);
   };
 
@@ -608,20 +594,26 @@ export const createSourceControlRuntime = (options: {
       });
     }
     if (operation.kind === "branches") {
+      const page = await driver.branches({
+        ...providerInput,
+        cursor: operation.cursor
+      });
       return sourceControlResultSchema.parse({
         kind: "branches",
-        branches: await driver.branches(providerInput),
-        nextCursor: null
+        branches: page.items,
+        nextCursor: page.nextCursor
       });
     }
     if (operation.kind === "review_requests") {
+      const page = await driver.reviewRequests({
+        ...providerInput,
+        state: operation.state,
+        cursor: operation.cursor
+      });
       return sourceControlResultSchema.parse({
         kind: "review_requests",
-        reviewRequests: await driver.reviewRequests({
-          ...providerInput,
-          state: operation.state
-        }),
-        nextCursor: null
+        reviewRequests: page.items,
+        nextCursor: page.nextCursor
       });
     }
     if (operation.kind === "review_request") {
@@ -643,13 +635,15 @@ export const createSourceControlRuntime = (options: {
       });
     }
     if (operation.kind === "comments") {
+      const page = await driver.comments({
+        ...providerInput,
+        number: operation.number,
+        cursor: operation.cursor
+      });
       return sourceControlResultSchema.parse({
         kind: "comments",
-        comments: await driver.comments({
-          ...providerInput,
-          number: operation.number
-        }),
-        nextCursor: null
+        comments: page.items,
+        nextCursor: page.nextCursor
       });
     }
     if (
@@ -680,22 +674,67 @@ export const createSourceControlRuntime = (options: {
         );
       }
       await markDispatching?.();
-      await withGitCredential(credential, (environment) =>
-        git(
-          binding.projectPath,
-          [
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "credential.helper=",
+      const prefix = `refs/remotes/${selected.remoteName}/`;
+      const before = await git(binding.projectPath, [
+        "for-each-ref",
+        "--format=%(refname) %(objectname)",
+        prefix
+      ]);
+      const fetched = await withAuthenticatedGitRepository(
+        {
+          credential,
+          commonDirectory: binding.localRepositoryCommonDirectory!,
+          objectFormat: headObjectId.length === 64 ? "sha256" : "sha1"
+        },
+        async (run) => {
+          await run([
             "fetch",
             "--no-tags",
-            "--prune",
             "--",
-            operation.remoteName
-          ],
-          environment
-        )
+            selected.transportUrl,
+            "+refs/heads/*:refs/heads/*"
+          ]);
+          return run([
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/heads/"
+          ]);
+        }
+      );
+      const oldRefs = new Map(
+        before
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => line.split(" ") as [string, string])
+      );
+      const newRefs = new Map(
+        fetched
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            const [ref, objectId] = line.split(" ");
+            return [
+              prefix + ref!.slice("refs/heads/".length),
+              objectId!
+            ] as const;
+          })
+      );
+      // One transaction keeps tracking refs consistent if a concurrent update conflicts.
+      const updates = ["start"];
+      for (const [ref, objectId] of newRefs) {
+        updates.push(
+          `update ${ref} ${objectId} ${oldRefs.get(ref) ?? "0".repeat(headObjectId.length)}`
+        );
+      }
+      for (const [ref, objectId] of oldRefs) {
+        if (!newRefs.has(ref)) updates.push(`delete ${ref} ${objectId}`);
+      }
+      updates.push("prepare", "commit", "");
+      await git(
+        binding.projectPath,
+        ["update-ref", "--stdin"],
+        {},
+        updates.join("\n")
       );
       return sourceControlResultSchema.parse({
         kind: "fetch",
@@ -724,47 +763,59 @@ export const createSourceControlRuntime = (options: {
       }
       await validateBranch(operation.targetBranch);
       const targetRef = `refs/heads/${operation.targetBranch}`;
-      if (operation.expectedRemoteObjectId) {
-        const remote = await withGitCredential(credential, (environment) =>
-          git(
-            binding.projectPath,
-            [
-              "-c",
-              "credential.helper=",
-              "ls-remote",
-              "--refs",
-              operation.remoteName,
+      await withAuthenticatedGitRepository(
+        {
+          credential,
+          commonDirectory: binding.localRepositoryCommonDirectory!,
+          objectFormat: headObjectId.length === 64 ? "sha256" : "sha1"
+        },
+        async (run) => {
+          const advertised = await run([
+            "ls-remote",
+            "--refs",
+            "--",
+            selected.transportUrl,
+            targetRef
+          ]);
+          const current = advertised.split(/\s+/u)[0] || null;
+          if (current !== operation.expectedRemoteObjectId) {
+            throw sourceControlError(
+              "Source-control remote revision is stale",
+              409,
+              "source_control_remote_revision_stale"
+            );
+          }
+          if (current) {
+            await run([
+              "fetch",
+              "--no-tags",
+              "--",
+              selected.transportUrl,
               targetRef
-            ],
-            environment
-          )
-        );
-        const current = remote.split(/\s+/u)[0] ?? "";
-        if (current !== operation.expectedRemoteObjectId) {
-          throw sourceControlError(
-            "Source-control remote revision is stale",
-            409,
-            "source_control_remote_revision_stale"
-          );
-        }
-      }
-      await markDispatching?.();
-      await withGitCredential(credential, (environment) =>
-        git(
-          binding.projectPath,
-          [
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "credential.helper=",
+            ]);
+            await run([
+              "merge-base",
+              "--is-ancestor",
+              current,
+              headObjectId
+            ]).catch(() => {
+              throw sourceControlError(
+                "Source-control push must be a fast-forward",
+                409,
+                "source_control_non_fast_forward"
+              );
+            });
+          }
+          await markDispatching?.();
+          await run([
             "push",
             "--porcelain",
+            `--force-with-lease=${targetRef}:${current ?? ""}`,
             "--",
-            operation.remoteName,
-            `HEAD:${targetRef}`
-          ],
-          environment
-        )
+            selected.transportUrl,
+            `${headObjectId}:${targetRef}`
+          ]);
+        }
       );
       return sourceControlResultSchema.parse({
         kind: "push",

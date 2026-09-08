@@ -40,7 +40,8 @@ export interface AuthHelpers {
     passwordHash?: string | null;
   } | null>;
   resolveDeviceCredentialContext(
-    request: FastifyRequest
+    request: FastifyRequest,
+    options?: { fresh?: boolean }
   ): Promise<DeviceCredentialAuthContext | null>;
   setSessionCookie(reply: FastifyReply, secret: string): void;
   authenticate(request: FastifyRequest): Promise<{
@@ -65,7 +66,8 @@ export interface AuthHelpers {
     passwordHash?: string | null;
   }>;
   authenticateDeviceCredential(
-    request: FastifyRequest
+    request: FastifyRequest,
+    options?: { fresh?: boolean }
   ): Promise<DeviceCredentialAuthContext>;
   authenticateSessionOrDeviceCredential(
     request: FastifyRequest,
@@ -84,7 +86,7 @@ export interface AuthHelpers {
       | "managed_preview"
       | "managed_source_control"
       | "admin",
-    options?: { apiTokenError?: string }
+    options?: { apiTokenError?: string; freshDeviceCredential?: boolean }
   ): Promise<{
     id: string;
     email: string;
@@ -179,9 +181,12 @@ export const createAuthHelpers = (
     return credentialKeyId && secret ? { credentialKeyId, secret } : null;
   };
 
-  const resolveDeviceCredentialContext = (request: FastifyRequest) => {
+  const resolveDeviceCredentialContext = (
+    request: FastifyRequest,
+    options: { fresh?: boolean } = {}
+  ) => {
     const cached = deviceCredentialContexts.get(request);
-    if (cached) {
+    if (cached && !options.fresh) {
       return cached;
     }
     const credential = readDeviceCredential(request);
@@ -262,13 +267,16 @@ export const createAuthHelpers = (
     return user;
   };
 
-  const authenticateDeviceCredential = async (request: FastifyRequest) => {
+  const authenticateDeviceCredential = async (
+    request: FastifyRequest,
+    options: { fresh?: boolean } = {}
+  ) => {
     if (!readDeviceCredential(request)) {
       throw Object.assign(new Error("Device credential required"), {
         statusCode: 401
       });
     }
-    const context = await resolveDeviceCredentialContext(request);
+    const context = await resolveDeviceCredentialContext(request, options);
     if (!context) {
       throw Object.assign(new Error("Invalid device credential"), {
         statusCode: 401
@@ -295,7 +303,7 @@ export const createAuthHelpers = (
       | "managed_preview"
       | "managed_source_control"
       | "admin",
-    options: { apiTokenError?: string } = {}
+    options: { apiTokenError?: string; freshDeviceCredential?: boolean } = {}
   ) => {
     const authHeader = request.headers.authorization?.trim();
     const separatorIndex = authHeader?.indexOf(" ") ?? -1;
@@ -313,7 +321,9 @@ export const createAuthHelpers = (
       );
     }
     if (authScheme === "koed-device") {
-      const context = await authenticateDeviceCredential(request);
+      const context = await authenticateDeviceCredential(request, {
+        fresh: options.freshDeviceCredential
+      });
       if (!context.credential.operationFamilies.includes(operationFamily)) {
         throw Object.assign(
           new Error("Device credential is not allowed for this operation"),

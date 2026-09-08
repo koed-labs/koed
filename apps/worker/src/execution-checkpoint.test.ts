@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  writeFile
+} from "node:fs/promises";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -12,7 +19,7 @@ import {
   removeExecutionCheckpointRefs,
   restoreExecutionCheckpoint
 } from "./execution-checkpoint.js";
-import { createGitExecutionWorkspaceDriver } from "@koed/shared/execution-workspace";
+import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
 
 const roots: string[] = [];
 const executionId = "b900056f-3845-4cab-b555-44b8fc1c9a16";
@@ -36,24 +43,24 @@ const fixture = async () => {
   await writeFile(resolve(source, ".gitignore"), "ignored.txt\n");
   git(source, "add", ".");
   git(source, "commit", "-m", "base");
-  const driver = await createGitExecutionWorkspaceDriver({
+  const driver = await createGitExecutionCheckoutDriver({
     managedRoot: resolve(root, "managed")
   });
-  const workspace = await driver.select({
+  const checkout = await driver.select({
     operationId: "0f42d55a-f40e-46a9-ba54-454869ace13e",
     path: source
   });
-  return { root, source, workspace };
+  return { root, source, checkout };
 };
 
 const capture = (
-  workspace: Awaited<ReturnType<typeof fixture>>["workspace"],
+  checkout: Awaited<ReturnType<typeof fixture>>["checkout"],
   sequence: number,
   checkpointKind: "baseline" | "terminal" | "recovery",
   onGitCommand?: (args: readonly string[]) => void
 ) =>
   captureExecutionCheckpoint({
-    workspace,
+    checkout,
     executionId,
     executionGeneration: 1,
     sequence,
@@ -68,8 +75,128 @@ afterEach(async () => {
 });
 
 describe("execution checkpoints", () => {
+  it("withholds denied content from both sides of patches, including renamed files", async () => {
+    const { source, checkout } = await fixture();
+    const privateMaterial = ["-----BEGIN", "PRIVATE KEY-----"].join(" ");
+    await writeFile(resolve(source, ".env"), "LOCAL_SETTING=private-before\n");
+    await writeFile(resolve(source, "old.txt"), `${privateMaterial}\n`);
+    await writeFile(
+      resolve(source, "moved.txt"),
+      `${privateMaterial}\nunchanged\n`
+    );
+    const baseline = await capture(checkout, 1, "baseline");
+    await writeFile(resolve(source, ".env"), "LOCAL_SETTING=private-after\n");
+    await writeFile(resolve(source, "old.txt"), "public now\n");
+    await rm(resolve(source, "moved.txt"));
+    await writeFile(
+      resolve(source, "renamed.txt"),
+      `${privateMaterial}\nunchanged\n`
+    );
+    await writeFile(resolve(source, "new.txt"), `${privateMaterial}\n`);
+    await writeFile(resolve(source, "tracked.txt"), "visible change\n");
+    const terminal = await capture(checkout, 1, "terminal");
+    const diff = await diffExecutionCheckpoints({
+      checkout,
+      from: baseline,
+      to: terminal
+    });
+    expect(
+      diff?.files.find((file) => file.path === "tracked.txt")?.patch
+    ).toContain("visible change");
+    for (const file of diff!.files.filter(
+      (file) => file.path !== "tracked.txt"
+    )) {
+      expect(file).toMatchObject({
+        patch: null,
+        patchTruncated: false,
+        contentExcluded: true
+      });
+    }
+    expect(
+      diff!.files.find((file) => file.path === "renamed.txt")
+    ).toMatchObject({ previousPath: "moved.txt" });
+    expect(JSON.stringify(diff)).not.toContain(privateMaterial);
+    expect(JSON.stringify(diff)).not.toContain("private-before");
+    expect(JSON.stringify(diff)).not.toContain("private-after");
+  });
+
+  it("restores file/directory transitions in both directions", async () => {
+    const { source, checkout } = await fixture();
+    await writeFile(resolve(source, "item"), "original file\n");
+    const target = await capture(checkout, 1, "baseline");
+    await rm(resolve(source, "item"));
+    await mkdir(resolve(source, "item/nested"), { recursive: true });
+    await writeFile(resolve(source, "item/nested/child"), "nested file\n");
+    const recovery = await capture(checkout, 2, "recovery");
+    await restoreExecutionCheckpoint({ checkout, target, recovery });
+    expect(await readFile(resolve(source, "item"), "utf8")).toBe(
+      "original file\n"
+    );
+    const restored = await capture(checkout, 3, "recovery");
+    await restoreExecutionCheckpoint({
+      checkout,
+      target: recovery,
+      recovery: restored
+    });
+    expect(await readFile(resolve(source, "item/nested/child"), "utf8")).toBe(
+      "nested file\n"
+    );
+  });
+
+  it("preserves ignored content when it prevents a directory-to-file restore", async () => {
+    const { source, checkout } = await fixture();
+    await writeFile(resolve(source, ".gitignore"), "ignored.txt\n");
+    await writeFile(resolve(source, "item"), "original file\n");
+    const target = await capture(checkout, 1, "baseline");
+    await rm(resolve(source, "item"));
+    await mkdir(resolve(source, "item"));
+    await writeFile(resolve(source, "item/child"), "tracked child\n");
+    await writeFile(
+      resolve(source, "item/ignored.txt"),
+      "retained local content\n"
+    );
+    const recovery = await capture(checkout, 2, "recovery");
+    await expect(
+      restoreExecutionCheckpoint({ checkout, target, recovery })
+    ).rejects.toThrow("CheckoutChanged");
+    expect(await readFile(resolve(source, "item/child"), "utf8")).toBe(
+      "tracked child\n"
+    );
+    expect(await readFile(resolve(source, "item/ignored.txt"), "utf8")).toBe(
+      "retained local content\n"
+    );
+  });
+
+  it("uses the checkpoint's original objects when local replacement refs exist", async () => {
+    const { source, checkout } = await fixture();
+    const baseline = await capture(checkout, 1, "baseline");
+    await writeFile(resolve(source, "tracked.txt"), "updated\n");
+    const terminal = await capture(checkout, 1, "terminal");
+    git(
+      source,
+      "update-ref",
+      `refs/replace/${baseline.commitObjectId}`,
+      terminal.commitObjectId!
+    );
+    const diff = await diffExecutionCheckpoints({
+      checkout,
+      from: baseline,
+      to: terminal
+    });
+    expect(
+      diff!.files.find((file) => file.path === "tracked.txt")?.patch
+    ).toContain("-base");
+    await restoreExecutionCheckpoint({
+      checkout,
+      target: baseline,
+      recovery: terminal
+    });
+    expect(await readFile(resolve(source, "tracked.txt"), "utf8")).toBe(
+      "base\n"
+    );
+  });
   it("captures a large Project with a bounded number of Git processes", async () => {
-    const { source, workspace } = await fixture();
+    const { source, checkout } = await fixture();
     const directory = resolve(source, "many-files");
     await mkdir(directory);
     await Promise.all(
@@ -81,7 +208,7 @@ describe("execution checkpoints", () => {
     git(source, "commit", "-m", "many tracked files");
     const commands: readonly string[][] = [];
 
-    const checkpoint = await capture(workspace, 1, "baseline", (args) =>
+    const checkpoint = await capture(checkout, 1, "baseline", (args) =>
       (commands as string[][]).push([...args])
     );
 
@@ -93,8 +220,8 @@ describe("execution checkpoints", () => {
   });
 
   it("captures staged, unstaged, untracked, deleted, renamed, binary, and mode changes without mutating Git state", async () => {
-    const { source, workspace } = await fixture();
-    const baseline = await capture(workspace, 1, "baseline");
+    const { source, checkout } = await fixture();
+    const baseline = await capture(checkout, 1, "baseline");
 
     await writeFile(resolve(source, "tracked.txt"), "staged\n");
     git(source, "add", "tracked.txt");
@@ -109,9 +236,9 @@ describe("execution checkpoints", () => {
     await chmod(resolve(source, "executable.sh"), 0o755);
     const expectedStatus = git(source, "status", "--porcelain=v2", "-z");
 
-    const terminal = await capture(workspace, 1, "terminal");
+    const terminal = await capture(checkout, 1, "terminal");
     const diff = await diffExecutionCheckpoints({
-      workspace,
+      checkout,
       from: baseline,
       to: terminal
     });
@@ -139,13 +266,13 @@ describe("execution checkpoints", () => {
   });
 
   it("uses normal Git ignore semantics", async () => {
-    const { source, workspace } = await fixture();
-    const baseline = await capture(workspace, 1, "baseline");
+    const { source, checkout } = await fixture();
+    const baseline = await capture(checkout, 1, "baseline");
     await writeFile(resolve(source, "ignored.txt"), "local only\n");
     await writeFile(resolve(source, "included.txt"), "included\n");
-    const terminal = await capture(workspace, 1, "terminal");
+    const terminal = await capture(checkout, 1, "terminal");
     const diff = await diffExecutionCheckpoints({
-      workspace,
+      checkout,
       from: baseline,
       to: terminal
     });
@@ -154,11 +281,11 @@ describe("execution checkpoints", () => {
     expect(diff?.files.map((file) => file.path)).not.toContain("ignored.txt");
   });
 
-  it("fails when the workspace mutates during capture", async () => {
-    const { source, workspace } = await fixture();
+  it("fails when the checkout mutates during capture", async () => {
+    const { source, checkout } = await fixture();
     let changed = false;
     await expect(
-      capture(workspace, 1, "baseline", (args) => {
+      capture(checkout, 1, "baseline", (args) => {
         if (!changed && args[0] === "diff-files") {
           changed = true;
           writeFileSync(
@@ -170,22 +297,22 @@ describe("execution checkpoints", () => {
     ).rejects.toThrow("ExecutionCheckpointConcurrentMutationError");
   });
 
-  it("rejects a branch change from the bound execution workspace", async () => {
-    const { source, workspace } = await fixture();
+  it("rejects a branch change from the bound execution checkout", async () => {
+    const { source, checkout } = await fixture();
     git(source, "switch", "-c", "unexpected-branch");
-    await expect(capture(workspace, 1, "baseline")).rejects.toThrow(
-      "ExecutionCheckpointWorkspaceChangedError"
+    await expect(capture(checkout, 1, "baseline")).rejects.toThrow(
+      "ExecutionCheckpointCheckoutChangedError"
     );
   });
 
   it("replays an identical ref idempotently and rejects a collision", async () => {
-    const { source, workspace } = await fixture();
-    const first = await capture(workspace, 1, "baseline");
-    expect(await capture(workspace, 1, "baseline")).toEqual(
+    const { source, checkout } = await fixture();
+    const first = await capture(checkout, 1, "baseline");
+    expect(await capture(checkout, 1, "baseline")).toEqual(
       expect.objectContaining({ commitObjectId: first.commitObjectId })
     );
     git(source, "update-ref", first.checkpointRef!, "HEAD");
-    await expect(capture(workspace, 1, "baseline")).rejects.toThrow(
+    await expect(capture(checkout, 1, "baseline")).rejects.toThrow(
       "ExecutionCheckpointRefCollisionError"
     );
   });
@@ -194,8 +321,8 @@ describe("execution checkpoints", () => {
     const root = await mkdtemp(resolve(tmpdir(), "koed-checkpoint-non-git-"));
     roots.push(root);
     const checkpoint = await captureExecutionCheckpoint({
-      workspace: {
-        workspaceId: "non-git",
+      checkout: {
+        checkoutId: "non-git",
         vcsDriver: null,
         ownership: "non_vcs_directory",
         canonicalPath: root,
@@ -225,15 +352,15 @@ describe("execution checkpoints", () => {
   });
 
   it("restores content while preserving ignored files", async () => {
-    const { source, workspace } = await fixture();
-    const baseline = await capture(workspace, 1, "baseline");
+    const { source, checkout } = await fixture();
+    const baseline = await capture(checkout, 1, "baseline");
     await writeFile(resolve(source, "tracked.txt"), "agent change\n");
     await writeFile(resolve(source, "new.txt"), "new\n");
     await writeFile(resolve(source, "ignored.txt"), "keep me\n");
     git(source, "add", "tracked.txt");
     const indexBefore = git(source, "write-tree");
-    const recovery = await capture(workspace, 2, "recovery");
-    await restoreExecutionCheckpoint({ workspace, target: baseline, recovery });
+    const recovery = await capture(checkout, 2, "recovery");
+    await restoreExecutionCheckpoint({ checkout, target: baseline, recovery });
 
     expect(git(source, "show", `${baseline.commitObjectId}:tracked.txt`)).toBe(
       "base"
@@ -243,42 +370,42 @@ describe("execution checkpoints", () => {
     expect(git(source, "write-tree")).toBe(indexBefore);
   });
 
-  it("refuses Restore when the workspace changed after its recovery checkpoint", async () => {
-    const { source, workspace } = await fixture();
-    const baseline = await capture(workspace, 1, "baseline");
+  it("refuses Restore when the checkout changed after its recovery checkpoint", async () => {
+    const { source, checkout } = await fixture();
+    const baseline = await capture(checkout, 1, "baseline");
     await writeFile(resolve(source, "tracked.txt"), "recoverable\n");
-    const recovery = await capture(workspace, 2, "recovery");
+    const recovery = await capture(checkout, 2, "recovery");
     await writeFile(resolve(source, "tracked.txt"), "later manual change\n");
 
     await expect(
-      restoreExecutionCheckpoint({ workspace, target: baseline, recovery })
-    ).rejects.toThrow("ExecutionCheckpointRestoreWorkspaceChangedError");
+      restoreExecutionCheckpoint({ checkout, target: baseline, recovery })
+    ).rejects.toThrow("ExecutionCheckpointRestoreCheckoutChangedError");
     expect(git(source, "diff", "--", "tracked.txt")).toContain(
       "later manual change"
     );
   });
 
   it("removes only refs that still match their recorded commit", async () => {
-    const { source, workspace } = await fixture();
-    const checkpoint = await capture(workspace, 1, "baseline");
+    const { source, checkout } = await fixture();
+    const checkpoint = await capture(checkout, 1, "baseline");
     await removeExecutionCheckpointRefs({
-      workspace,
+      checkout,
       checkpoints: [checkpoint]
     });
     expect(() =>
       git(source, "show-ref", "--verify", "--quiet", checkpoint.checkpointRef!)
     ).toThrow();
 
-    const replacement = await capture(workspace, 2, "baseline");
+    const replacement = await capture(checkout, 2, "baseline");
     git(source, "update-ref", replacement.checkpointRef!, "HEAD");
     await expect(
-      removeExecutionCheckpointRefs({ workspace, checkpoints: [replacement] })
+      removeExecutionCheckpointRefs({ checkout, checkpoints: [replacement] })
     ).rejects.toThrow("ExecutionCheckpointRefIdentityChangedError");
   });
 
   it("does not include hidden Koed refs in an ordinary push", async () => {
-    const { root, source, workspace } = await fixture();
-    await capture(workspace, 1, "baseline");
+    const { root, source, checkout } = await fixture();
+    await capture(checkout, 1, "baseline");
     const remote = resolve(root, "remote.git");
     git(root, "init", "--bare", remote);
     git(source, "remote", "add", "origin", remote);

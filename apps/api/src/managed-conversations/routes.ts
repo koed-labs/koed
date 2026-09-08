@@ -364,21 +364,21 @@ const protocolDeploymentId = (
     : null;
 };
 
-const publicExecutionWorkspace = (
+const publicExecutionCheckout = (
   binding: Pick<
     ManagedConversationRuntimeBindingRecord,
-    | "workspaceId"
-    | "workspaceKind"
-    | "workspaceLifecycle"
+    | "checkoutId"
+    | "checkoutKind"
+    | "checkoutLifecycle"
     | "cleanupState"
     | "vcsDriver"
   > | null
 ) =>
   binding
     ? {
-        id: binding.workspaceId,
-        kind: binding.workspaceKind,
-        lifecycle: binding.workspaceLifecycle,
+        id: binding.checkoutId,
+        kind: binding.checkoutKind,
+        lifecycle: binding.checkoutLifecycle,
         cleanupState: binding.cleanupState,
         vcsDriver: binding.vcsDriver
       }
@@ -410,9 +410,9 @@ const publicExecution = (
   binding: Pick<
     ManagedConversationRuntimeBindingRecord,
     | "localSessionId"
-    | "workspaceId"
-    | "workspaceKind"
-    | "workspaceLifecycle"
+    | "checkoutId"
+    | "checkoutKind"
+    | "checkoutLifecycle"
     | "cleanupState"
     | "vcsDriver"
   > | null = null
@@ -429,7 +429,7 @@ const publicExecution = (
   stateVersion: execution.stateVersion,
   executionGeneration: execution.executionGeneration,
   sessionId: binding?.localSessionId ?? null,
-  executionWorkspace: publicExecutionWorkspace(binding),
+  executionCheckout: publicExecutionCheckout(binding),
   logicalSessionId: execution.logicalSessionId,
   providerThreadId: execution.providerThreadId,
   providerCliVersion: execution.providerCliVersion,
@@ -964,7 +964,7 @@ export const registerManagedConversationRoutes = (
               sessionId: binding.localSessionId,
               providerThreadId:
                 binding.providerThreadId ?? execution.providerThreadId,
-              executionWorkspace: publicExecutionWorkspace(binding)
+              executionCheckout: publicExecutionCheckout(binding)
             }
           : execution;
       })
@@ -991,10 +991,12 @@ export const registerManagedConversationRoutes = (
   const authenticateManagedScope = async (
     request: FastifyRequest,
     operationFamily:
+      | "managed_execution"
       | "managed_file_read"
       | "managed_terminal"
       | "managed_preview",
-    apiTokenError: string
+    apiTokenError: string,
+    freshDeviceCredential = false
   ) => {
     const authorization = request.headers.authorization?.trim();
     if (
@@ -1027,7 +1029,7 @@ export const registerManagedConversationRoutes = (
     return await context.auth.authenticateSessionOrDeviceCredential(
       request,
       operationFamily,
-      { apiTokenError }
+      { apiTokenError, freshDeviceCredential }
     );
   };
 
@@ -1038,11 +1040,15 @@ export const registerManagedConversationRoutes = (
       "Session cookie or scoped device credential required for managed file inspection"
     );
 
-  const authenticateManagedTerminal = (request: FastifyRequest) =>
+  const authenticateManagedTerminal = (
+    request: FastifyRequest,
+    fresh = false
+  ) =>
     authenticateManagedScope(
       request,
       "managed_terminal",
-      "Session cookie or scoped device credential required for managed terminal access"
+      "Session cookie or scoped device credential required for managed terminal access",
+      fresh
     );
   const authenticateManagedPreview = (request: FastifyRequest) =>
     authenticateManagedScope(
@@ -1797,6 +1803,20 @@ export const registerManagedConversationRoutes = (
       const user = await authenticateManagedFile(request);
       const { executionId } = executionParamsSchema.parse(request.params);
       const query = executionDiffQuerySchema.parse(request.query);
+      const proxied = await proxyManaged(
+        "GET",
+        `/v1/managed-conversations/${encodeURIComponent(executionId)}/diff`,
+        undefined,
+        {
+          operationFamily: "managed_file_read",
+          maxBytes: 18 * 1024 * 1024,
+          query: new URLSearchParams({
+            scope: query.scope,
+            ...(query.commandId ? { commandId: query.commandId } : {})
+          })
+        }
+      );
+      if (proxied) return proxied.payload;
       const repository = context.requireRepository();
       const binding = await repository.getManagedConversationRuntimeBinding(
         { userId: user.id },
@@ -1844,7 +1864,11 @@ export const registerManagedConversationRoutes = (
     { preHandler: context.rateLimit.memoryWrite },
     async (request, reply) => {
       assertAvailable(context);
-      const user = await authenticateManaged(request);
+      const user = await authenticateManagedScope(
+        request,
+        "managed_execution",
+        "Session or scoped device credential required for checkpoint Restore"
+      );
       const { executionId, checkpointId } = checkpointRestoreParamsSchema.parse(
         request.params
       );
@@ -1874,11 +1898,15 @@ export const registerManagedConversationRoutes = (
   );
 
   app.delete(
-    "/v1/managed-conversations/:executionId/execution-workspace",
+    "/v1/managed-conversations/:executionId/execution-checkout",
     { preHandler: context.rateLimit.memoryWrite },
     async (request, reply) => {
       assertAvailable(context);
-      const user = await authenticateManaged(request);
+      const user = await authenticateManagedScope(
+        request,
+        "managed_execution",
+        "Session or scoped device credential required for checkout cleanup"
+      );
       const { executionId } = executionParamsSchema.parse(request.params);
       const repository = context.requireRepository();
       const binding = await repository.getManagedConversationRuntimeBinding(
@@ -1922,7 +1950,7 @@ export const registerManagedConversationRoutes = (
       }
       if (binding.executionGeneration !== execution.executionGeneration) {
         throw Object.assign(
-          new Error("Managed Conversation execution workspace is stale"),
+          new Error("Managed Conversation execution checkout is stale"),
           { statusCode: 409 }
         );
       }
@@ -1947,7 +1975,7 @@ export const registerManagedConversationRoutes = (
         );
       }
       const requestedBinding =
-        await repository.requestManagedConversationExecutionWorkspaceCleanup(
+        await repository.requestManagedConversationExecutionCheckoutCleanup(
           { userId: user.id },
           {
             executionId,
@@ -1957,7 +1985,7 @@ export const registerManagedConversationRoutes = (
           }
         );
       return reply.status(202).send({
-        executionWorkspace: publicExecutionWorkspace(requestedBinding)
+        executionCheckout: publicExecutionCheckout(requestedBinding)
       });
     }
   );
@@ -2214,15 +2242,12 @@ export const registerManagedConversationRoutes = (
     { preHandler: context.rateLimit.memoryRead },
     async (request) => {
       assertAvailable(context);
-      await authenticateManagedTerminal(request);
+      const user = await authenticateManagedTerminal(request);
       const { executionId } = executionParamsSchema.parse(request.params);
-      const path = `/v1/managed-conversations/${encodeURIComponent(
+      await context.managedConversations.terminalRuntime.assertExecutionAuthority(
+        user.id,
         executionId
-      )}/terminals/profiles`;
-      const proxied = await proxyManaged("GET", path, undefined, {
-        operationFamily: "managed_terminal"
-      });
-      if (proxied) return proxied.payload;
+      );
       return {
         profiles:
           await context.managedConversations.terminalRuntime.shellProfiles()
@@ -2238,13 +2263,10 @@ export const registerManagedConversationRoutes = (
       const user = await authenticateManagedTerminal(request);
       const { executionId } = executionParamsSchema.parse(request.params);
       const input = createManagedTerminalInputSchema.parse(request.body);
-      const path = `/v1/managed-conversations/${encodeURIComponent(
+      await context.managedConversations.terminalRuntime.assertExecutionAuthority(
+        user.id,
         executionId
-      )}/terminals`;
-      const proxied = await proxyManaged("POST", path, input, {
-        operationFamily: "managed_terminal"
-      });
-      if (proxied) return reply.status(proxied.status).send(proxied.payload);
+      );
       const terminal =
         await context.managedConversations.terminalRuntime.create(
           user.id,
@@ -2264,13 +2286,10 @@ export const registerManagedConversationRoutes = (
       assertAvailable(context);
       const user = await authenticateManagedTerminal(request);
       const { executionId } = executionParamsSchema.parse(request.params);
-      const path = `/v1/managed-conversations/${encodeURIComponent(
+      await context.managedConversations.terminalRuntime.assertExecutionAuthority(
+        user.id,
         executionId
-      )}/terminals`;
-      const proxied = await proxyManaged("GET", path, undefined, {
-        operationFamily: "managed_terminal"
-      });
-      if (proxied) return proxied.payload;
+      );
       return {
         terminals: (
           await context
@@ -2290,13 +2309,10 @@ export const registerManagedConversationRoutes = (
       const { executionId, terminalId } = terminalParamsSchema.parse(
         request.params
       );
-      const path = `/v1/managed-conversations/${encodeURIComponent(
+      await context.managedConversations.terminalRuntime.assertExecutionAuthority(
+        user.id,
         executionId
-      )}/terminals/${encodeURIComponent(terminalId)}`;
-      const proxied = await proxyManaged("GET", path, undefined, {
-        operationFamily: "managed_terminal"
-      });
-      if (proxied) return proxied.payload;
+      );
       const terminal = await context
         .requireRepository()
         .getManagedTerminal({ userId: user.id }, { executionId, terminalId });
@@ -2318,18 +2334,10 @@ export const registerManagedConversationRoutes = (
       const { executionId, terminalId } = terminalParamsSchema.parse(
         request.params
       );
-      const path = `/v1/managed-conversations/${encodeURIComponent(
+      await context.managedConversations.terminalRuntime.assertExecutionAuthority(
+        user.id,
         executionId
-      )}/terminals/${encodeURIComponent(terminalId)}/stop`;
-      const proxied = await proxyManaged(
-        "POST",
-        path,
-        {},
-        {
-          operationFamily: "managed_terminal"
-        }
       );
-      if (proxied) return proxied.payload;
       const terminal = await context.managedConversations.terminalRuntime.stop({
         ownerUserId: user.id,
         executionId,
@@ -2385,14 +2393,6 @@ export const registerManagedConversationRoutes = (
           const user = terminalWebsocketUsers.get(request);
           if (!user)
             throw new Error("Managed terminal admission is unavailable");
-          if (remoteAuthority()) {
-            throw Object.assign(
-              new Error(
-                "Interactive terminal transport belongs to the assigned runner"
-              ),
-              { statusCode: 409 }
-            );
-          }
           const attachment =
             await context.managedConversations.terminalRuntime.attach({
               ownerUserId: user.id,
@@ -2427,11 +2427,15 @@ export const registerManagedConversationRoutes = (
             socket.ping();
             if (reauthorizing) return;
             reauthorizing = true;
-            void authenticateManagedTerminal(request)
-              .then((current) => {
-                if (current.id !== user.id) {
-                  socket.close(1008, "Terminal authority changed");
-                }
+            void authenticateManagedTerminal(request, true)
+              .then(async (current) => {
+                if (current.id !== user.id)
+                  throw new Error("Terminal authority changed");
+                await context.managedConversations.terminalRuntime.assertExecutionAuthority(
+                  user.id,
+                  executionId,
+                  terminalId
+                );
               })
               .catch(() => socket.close(1008, "Terminal authority revoked"))
               .finally(() => {

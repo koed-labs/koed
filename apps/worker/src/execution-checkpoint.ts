@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readdir, rm, rmdir } from "node:fs/promises";
 import { devNull } from "node:os";
 import { resolve } from "node:path";
 
-import type { ExecutionWorkspaceIdentity } from "@koed/shared/execution-workspace";
+import type { ExecutionCheckoutIdentity } from "@koed/shared/execution-checkout";
+import { classifySourceContent, sourceContentLimits } from "@koed/shared";
 
 const objectIdPattern = /^[0-9a-f]{40,64}$/;
 const uuidPattern =
@@ -41,6 +42,7 @@ export interface ExecutionCheckpointDiffFile {
   binary: boolean;
   patch: string | null;
   patchTruncated: boolean;
+  contentExcluded?: true;
 }
 
 export interface ExecutionCheckpointDiff {
@@ -73,6 +75,8 @@ const gitEnvironment = (indexFile?: string): NodeJS.ProcessEnv => ({
   ),
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_GLOBAL: devNull,
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_LITERAL_PATHSPECS: "1",
   GIT_TERMINAL_PROMPT: "0",
   GIT_ASKPASS: devNull,
   SSH_ASKPASS: devNull,
@@ -300,7 +304,7 @@ const nameStatus = async (root: string, from: string, to: string) => {
 };
 
 export const captureExecutionCheckpoint = async (input: {
-  workspace: ExecutionWorkspaceIdentity;
+  checkout: ExecutionCheckoutIdentity;
   executionId: string;
   executionGeneration: number;
   sequence: number;
@@ -308,7 +312,7 @@ export const captureExecutionCheckpoint = async (input: {
   onGitCommand?: (args: readonly string[]) => void;
 }): Promise<ExecutionCheckpointCapture> => {
   assertIdentity(input);
-  if (input.workspace.vcsDriver !== "git") {
+  if (input.checkout.vcsDriver !== "git") {
     return {
       status: "unsupported",
       vcsDriver: null,
@@ -320,20 +324,20 @@ export const captureExecutionCheckpoint = async (input: {
     };
   }
 
-  const root = input.workspace.canonicalPath;
-  if (!input.workspace.localGitDirectory) {
+  const root = input.checkout.canonicalPath;
+  if (!input.checkout.localGitDirectory) {
     throw new Error("ExecutionCheckpointIdentityError");
   }
   const temporary = await mkdtemp(
-    resolve(input.workspace.localGitDirectory, "koed-index-")
+    resolve(input.checkout.localGitDirectory, "koed-index-")
   );
   const indexFile = resolve(temporary, "index");
   const checkpointRef = checkpointRefFor(input);
   try {
     const beforeHead = await resolveHead(root, input.onGitCommand);
     const beforeBranch = await resolveBranch(root, input.onGitCommand);
-    if (beforeBranch !== input.workspace.branchRef) {
-      throw new Error("ExecutionCheckpointWorkspaceChangedError");
+    if (beforeBranch !== input.checkout.branchRef) {
+      throw new Error("ExecutionCheckpointCheckoutChangedError");
     }
 
     await runGit(
@@ -407,8 +411,8 @@ export const captureExecutionCheckpoint = async (input: {
     return {
       status: "ready",
       vcsDriver: "git",
-      repositoryIdentityHash: input.workspace.repositoryIdentityHash,
-      worktreeIdentityHash: input.workspace.worktreeIdentityHash,
+      repositoryIdentityHash: input.checkout.repositoryIdentityHash,
+      worktreeIdentityHash: input.checkout.worktreeIdentityHash,
       checkpointRef,
       commitObjectId,
       capturedAt: new Date().toISOString()
@@ -419,12 +423,12 @@ export const captureExecutionCheckpoint = async (input: {
 };
 
 export const diffExecutionCheckpoints = async (input: {
-  workspace: ExecutionWorkspaceIdentity;
+  checkout: ExecutionCheckoutIdentity;
   from: ExecutionCheckpointCapture;
   to: ExecutionCheckpointCapture;
 }): Promise<ExecutionCheckpointDiff | null> => {
   if (
-    input.workspace.vcsDriver !== "git" ||
+    input.checkout.vcsDriver !== "git" ||
     input.from.status !== "ready" ||
     input.to.status !== "ready" ||
     !input.from.commitObjectId ||
@@ -432,7 +436,7 @@ export const diffExecutionCheckpoints = async (input: {
   ) {
     return null;
   }
-  const root = input.workspace.canonicalPath;
+  const root = input.checkout.canonicalPath;
   const changed = await nameStatus(
     root,
     input.from.commitObjectId,
@@ -442,6 +446,56 @@ export const diffExecutionCheckpoints = async (input: {
     `${input.from.commitObjectId}\0${input.to.commitObjectId}`
   );
   const files: ExecutionCheckpointDiffFile[] = [];
+  const classifiedBlobs = new Map<string, boolean>();
+  const permitsPatch = async (
+    commit: string,
+    paths: string[]
+  ): Promise<boolean> => {
+    const entries = nulFields(
+      await gitText(root, [
+        "ls-tree",
+        "-r",
+        "-l",
+        "-z",
+        "--full-tree",
+        commit,
+        "--",
+        ...paths
+      ])
+    );
+    for (const entry of entries) {
+      const tab = entry.indexOf("\t");
+      const [, type, objectId, sizeText] = entry
+        .slice(0, tab)
+        .trim()
+        .split(/\s+/);
+      const path = safeRelativePath(entry.slice(tab + 1));
+      if (type !== "blob") return false;
+      const size = Number(sizeText);
+      if (
+        !objectId ||
+        !objectIdPattern.test(objectId) ||
+        !Number.isSafeInteger(size) ||
+        size < 0 ||
+        size > sourceContentLimits.maxFileBytes
+      )
+        return false;
+      const key = `${path}\0${objectId}`;
+      let permitted = classifiedBlobs.get(key);
+      if (permitted === undefined) {
+        if (classifySourceContent(path, new Uint8Array())) return false;
+        const blob = await runGit(root, ["cat-file", "blob", objectId], {
+          maxBuffer: Math.max(size + 1, 1024)
+        });
+        permitted =
+          blob.stdout.length === size &&
+          !classifySourceContent(path, blob.stdout);
+        classifiedBlobs.set(key, permitted);
+      }
+      if (!permitted) return false;
+    }
+    return true;
+  };
   let byteCount = 0;
   let truncated = false;
   for (const entry of changed) {
@@ -452,6 +506,21 @@ export const diffExecutionCheckpoints = async (input: {
         )
       )
     ];
+    if (
+      !(await permitsPatch(input.from.commitObjectId, paths)) ||
+      !(await permitsPatch(input.to.commitObjectId, paths))
+    ) {
+      files.push({
+        path: entry.path,
+        ...(entry.previousPath ? { previousPath: entry.previousPath } : {}),
+        status: changedStatus(entry.code),
+        binary: false,
+        patch: null,
+        patchTruncated: false,
+        contentExcluded: true
+      });
+      continue;
+    }
     const result = await runGit(
       root,
       [
@@ -505,41 +574,40 @@ export const diffExecutionCheckpoints = async (input: {
 };
 
 export const restoreExecutionCheckpoint = async (input: {
-  workspace: ExecutionWorkspaceIdentity;
+  checkout: ExecutionCheckoutIdentity;
   target: ExecutionCheckpointCapture;
   recovery: ExecutionCheckpointCapture;
 }): Promise<void> => {
   if (
-    input.workspace.vcsDriver !== "git" ||
+    input.checkout.vcsDriver !== "git" ||
     input.target.status !== "ready" ||
     input.recovery.status !== "ready" ||
     !input.target.commitObjectId ||
     !input.recovery.commitObjectId ||
     input.target.repositoryIdentityHash !==
-      input.workspace.repositoryIdentityHash ||
-    input.target.worktreeIdentityHash !==
-      input.workspace.worktreeIdentityHash ||
+      input.checkout.repositoryIdentityHash ||
+    input.target.worktreeIdentityHash !== input.checkout.worktreeIdentityHash ||
     input.recovery.repositoryIdentityHash !==
-      input.workspace.repositoryIdentityHash ||
+      input.checkout.repositoryIdentityHash ||
     input.recovery.worktreeIdentityHash !==
-      input.workspace.worktreeIdentityHash ||
-    !input.workspace.localGitDirectory
+      input.checkout.worktreeIdentityHash ||
+    !input.checkout.localGitDirectory
   ) {
     throw new Error("ExecutionCheckpointRestoreUnavailableError");
   }
-  const root = input.workspace.canonicalPath;
+  const root = input.checkout.canonicalPath;
   const temporary = await mkdtemp(
-    resolve(input.workspace.localGitDirectory, "koed-restore-index-")
+    resolve(input.checkout.localGitDirectory, "koed-restore-index-")
   );
   const indexFile = resolve(temporary, "index");
   try {
     if (
-      !(await workspaceMatchesExecutionCheckpoint({
-        workspace: input.workspace,
+      !(await checkoutMatchesExecutionCheckpoint({
+        checkout: input.checkout,
         checkpoint: input.recovery
       }))
     ) {
-      throw new Error("ExecutionCheckpointRestoreWorkspaceChangedError");
+      throw new Error("ExecutionCheckpointRestoreCheckoutChangedError");
     }
 
     const removedPaths = nulFields(
@@ -547,14 +615,50 @@ export const restoreExecutionCheckpoint = async (input: {
         "diff",
         "--name-only",
         "--diff-filter=D",
+        "--no-renames",
         "-z",
         input.recovery.commitObjectId,
         input.target.commitObjectId
       ])
     ).map(safeRelativePath);
-    for (const path of removedPaths) {
-      await rm(resolve(root, path), { recursive: true, force: true });
+    const removed = new Set(removedPaths);
+    const conflictingDirectories: string[] = [];
+    const inspectDirectory = async (path: string): Promise<void> => {
+      for (const entry of await readdir(resolve(root, path), {
+        withFileTypes: true
+      })) {
+        const child = `${path}/${entry.name}`;
+        if (entry.isDirectory()) await inspectDirectory(child);
+        else if (!removed.has(child))
+          throw new Error("ExecutionCheckpointRestoreCheckoutChangedError");
+      }
+      conflictingDirectories.push(path);
+    };
+    const targetPaths = nulFields(
+      await gitText(root, [
+        "ls-tree",
+        "-r",
+        "--name-only",
+        "-z",
+        input.target.commitObjectId
+      ])
+    ).map(safeRelativePath);
+    for (const path of targetPaths) {
+      // A removed file/symlink ancestor is cleared before checkout creates this path.
+      if (removedPaths.some((ancestor) => path.startsWith(`${ancestor}/`)))
+        continue;
+      const stat = await lstat(resolve(root, path)).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+          throw error;
+        }
+      );
+      if (stat?.isDirectory()) await inspectDirectory(path);
     }
+    for (const path of removedPaths) {
+      await rm(resolve(root, path), { force: true });
+    }
+    for (const path of conflictingDirectories) await rmdir(resolve(root, path));
 
     await runGit(root, ["read-tree", input.target.commitObjectId], {
       indexFile
@@ -580,25 +684,25 @@ export const restoreExecutionCheckpoint = async (input: {
   }
 };
 
-export const workspaceMatchesExecutionCheckpoint = async (input: {
-  workspace: ExecutionWorkspaceIdentity;
+export const checkoutMatchesExecutionCheckpoint = async (input: {
+  checkout: ExecutionCheckoutIdentity;
   checkpoint: ExecutionCheckpointCapture;
 }): Promise<boolean> => {
   if (
-    input.workspace.vcsDriver !== "git" ||
+    input.checkout.vcsDriver !== "git" ||
     input.checkpoint.status !== "ready" ||
     !input.checkpoint.commitObjectId ||
     input.checkpoint.repositoryIdentityHash !==
-      input.workspace.repositoryIdentityHash ||
+      input.checkout.repositoryIdentityHash ||
     input.checkpoint.worktreeIdentityHash !==
-      input.workspace.worktreeIdentityHash ||
-    !input.workspace.localGitDirectory
+      input.checkout.worktreeIdentityHash ||
+    !input.checkout.localGitDirectory
   ) {
     return false;
   }
-  const root = input.workspace.canonicalPath;
+  const root = input.checkout.canonicalPath;
   const temporary = await mkdtemp(
-    resolve(input.workspace.localGitDirectory, "koed-match-index-")
+    resolve(input.checkout.localGitDirectory, "koed-match-index-")
   );
   const indexFile = resolve(temporary, "index");
   try {
@@ -622,13 +726,13 @@ export const workspaceMatchesExecutionCheckpoint = async (input: {
 };
 
 export const removeExecutionCheckpointRefs = async (input: {
-  workspace: ExecutionWorkspaceIdentity;
+  checkout: ExecutionCheckoutIdentity;
   checkpoints: Array<
     Pick<ExecutionCheckpointCapture, "checkpointRef" | "commitObjectId">
   >;
 }): Promise<void> => {
-  if (input.workspace.vcsDriver !== "git") return;
-  const commonDirectory = input.workspace.localRepositoryCommonDirectory;
+  if (input.checkout.vcsDriver !== "git") return;
+  const commonDirectory = input.checkout.localRepositoryCommonDirectory;
   if (!commonDirectory) throw new Error("ExecutionCheckpointIdentityError");
   const removals: Array<{ ref: string; expected: string }> = [];
   for (const checkpoint of [...input.checkpoints].reverse()) {

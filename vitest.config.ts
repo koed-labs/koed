@@ -23,8 +23,8 @@ export default defineConfig({
         replacement: `${root}packages/shared/src/durable-realtime.ts`
       },
       {
-        find: "@koed/shared/execution-workspace",
-        replacement: `${root}packages/shared/src/execution-workspace.ts`
+        find: "@koed/shared/execution-checkout",
+        replacement: `${root}packages/shared/src/execution-checkout.ts`
       },
       {
         find: "@koed/shared/personal-desktop",

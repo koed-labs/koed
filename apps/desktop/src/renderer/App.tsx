@@ -57,7 +57,7 @@ import { PersonalMemoryStore } from "./state/personal-memory.js";
 import type { ManagedConversationRealtimeUpdate } from "./state/managed-conversation-runtime.js";
 import { sessionSelectionId } from "../project-memory-ui.js";
 import type { ManagedConversationDesktopApi } from "../ipc/managed-conversation-protocol.js";
-import type { ManagedWorkspaceDesktopApi } from "../ipc/managed-workspace-protocol.js";
+import type { ManagedProjectDesktopApi } from "../ipc/managed-project-protocol.js";
 import { ThemeStore } from "./state/theme.js";
 import { useDesktopStatus } from "./state/use-status.js";
 import {
@@ -521,7 +521,7 @@ export type AppProps = {
   initialCollaborationSelection?: CollaborationSelection;
   onboardingComplete?: boolean;
   managedConversations?: ManagedConversationDesktopApi | null;
-  managedWorkspace?: ManagedWorkspaceDesktopApi | null;
+  managedProject?: ManagedProjectDesktopApi | null;
   personalMemoryApi?: PersonalDesktopApi | null;
   statusReadyOverride?: boolean;
   statusStoreOverride?: DesktopStatusStore;
@@ -534,7 +534,7 @@ export function App({
   initialCollaborationSelection,
   onboardingComplete = false,
   managedConversations = window.koedDesktop?.managedConversations ?? null,
-  managedWorkspace = window.koedDesktop?.managedWorkspace ?? null,
+  managedProject = window.koedDesktop?.managedProject ?? null,
   personalMemoryApi = window.koedDesktop?.personalMemory ?? null,
   statusReadyOverride,
   statusStoreOverride,
@@ -1559,7 +1559,7 @@ export function App({
             }
             managedConversationUpdate={managedConversationUpdate}
             managedConversations={managedConversations}
-            managedWorkspace={managedWorkspace}
+            managedProject={managedProject}
             markdownAdapters={collaboration.markdownAdapters}
             openExternal={platform.openExternal}
             revealLocalProject={platform.revealLocalProject}

@@ -43,9 +43,9 @@
       "types": "./dist/ai-client-contract.d.ts",
       "import": "./dist/ai-client-contract.js"
     },
-    "./execution-workspace": {
-      "types": "./dist/execution-workspace.d.ts",
-      "import": "./dist/execution-workspace.js"
+    "./execution-checkout": {
+      "types": "./dist/execution-checkout.d.ts",
+      "import": "./dist/execution-checkout.js"
     },
     "./managed-conversation-diff": {
       "types": "./dist/managed-conversation-diff.d.ts",

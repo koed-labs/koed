@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const MANAGED_CONVERSATION_FILE_PROTOCOL_VERSION = 1 as const;
 export const MANAGED_CONVERSATION_FILE_MAX_READ_BYTES = 1024 * 1024;
+export const MANAGED_CONVERSATION_FILE_MAX_SEARCH_MATCHES = 10_000;
 
 const utf8Encoder = new TextEncoder();
 const windowsDeviceName = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
@@ -56,9 +57,8 @@ const revisionInput = managedConversationFileRevisionSchema
   .nullable()
   .default(null);
 
-export const managedConversationFileOperationSchema = z.discriminatedUnion(
-  "kind",
-  [
+export const managedConversationFileOperationSchema = z
+  .discriminatedUnion("kind", [
     z
       .object({
         kind: z.literal("browse"),
@@ -90,7 +90,14 @@ export const managedConversationFileOperationSchema = z.discriminatedUnion(
         revision: revisionInput,
         query: z.string().min(1).max(1_024),
         caseSensitive: z.boolean().default(false),
-        offset: z.number().int().safe().nonnegative().default(0),
+        offset: z
+          .number()
+          .int()
+          .safe()
+          .nonnegative()
+          .max(MANAGED_CONVERSATION_FILE_MAX_SEARCH_MATCHES - 1)
+          .default(0),
+        continuationCommandId: z.uuid().optional(),
         limit: z.number().int().safe().min(1).max(200).default(100)
       })
       .strict(),
@@ -112,8 +119,19 @@ export const managedConversationFileOperationSchema = z.discriminatedUnion(
             value.endLine - value.startLine < 10_000),
         "Mention line range is invalid"
       )
-  ]
-);
+  ])
+  .superRefine((operation, context) => {
+    if (
+      operation.kind === "search" &&
+      operation.offset > 0 &&
+      (!operation.continuationCommandId || !operation.revision)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Search continuation requires its prior command and revision"
+      });
+    }
+  });
 
 const resultBase = {
   protocolVersion: z.literal(MANAGED_CONVERSATION_FILE_PROTOCOL_VERSION),

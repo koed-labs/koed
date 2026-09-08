@@ -4,6 +4,7 @@ import {
   DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES,
   LOCAL_PERSONAL_USER_EMAIL,
   readDesktopLocalCredentialAuthorization,
+  upgradeDesktopLocalCredential,
   storeDesktopLocalCredential
 } from "@koed/shared";
 import {
@@ -101,6 +102,7 @@ export const provisionDesktopLocalCredential = (
       existing.operationFamilies.includes(family)
     )
   ) {
+    if (upgradeDesktopLocalCredential(paths.koedHome, ownerUserId)) return;
     throw new Error(
       "Stored Desktop Local Credential does not have the required Personal operation families."
     );

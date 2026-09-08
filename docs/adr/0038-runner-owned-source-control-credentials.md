@@ -42,7 +42,7 @@ Every operation binds:
 - the owning User and current authenticated principal;
 - the exact managed execution and fencing generation;
 - the assigned runner deployment and device;
-- the verified execution-workspace and repository identities;
+- the verified execution-checkout and repository identities;
 - one normalized remote id, provider, host, account binding, and repository
   locator;
 - an explicit capability such as repository read, fetch, push, pull-request
@@ -106,7 +106,7 @@ after each bounded operation.
 
 Hosted runners use provider-application or installation credentials where the
 provider supports them. GitHub App, GitLab OAuth/application, Bitbucket OAuth
-consumer/workspace, and Azure DevOps application identities are preferred over
+consumer/checkout, and Azure DevOps application identities are preferred over
 long-lived Personal Access Tokens. Installation and refresh material is
 envelope encrypted under the deployment's configured key provider; decrypted
 credentials exist only in the source-control service process for the bounded
@@ -251,3 +251,15 @@ The implementation must prove:
   throughout shared UI.
 - Automatically pulling, rebasing, force-pushing, merging, or rewriting remote
   history to resolve stale state.
+
+Provider list cursors are bound to the connection, repository endpoint, and
+filters. GitHub, GitLab, Bitbucket, and Azure continuations are reconstructed
+against the configured API origin; provider URLs are never followed with
+credentials. GitHub reviews include the reviewed commit id. Unsupported formal
+change requests return a capability error.
+
+Authenticated Git transport uses a temporary bare Git directory with an empty
+template and isolated configuration, sharing only the verified object store.
+Fetch and push use the validated HTTPS URL; redirects, external helpers, and
+other protocols are disabled. Push uses the captured commit, a checked
+fast-forward relationship, and an exact remote lease.

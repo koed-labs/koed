@@ -41,7 +41,7 @@ generic HTTP proxy or compatibility credential command exists.
 
 Managed coding uses separate strict bridges rather than expanding the Personal
 Memory bridge. Managed Conversation IPC handles launch, resume, prompts,
-runtime actions, usage, transfer, and encrypted drafts. Managed Workspace IPC
+runtime actions, usage, transfer, and encrypted drafts. Managed Project IPC
 handles exact diffs, queued rooted file reads, terminal lifecycle, terminal
 frames, and opaque development-preview lifecycle. Each request is correlated
 to one execution and operation; terminal events are correlated to one

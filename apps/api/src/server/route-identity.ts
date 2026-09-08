@@ -354,7 +354,7 @@ const managedConversationRunnerRoutes = [
   [
     "POST",
     "/v1/managed-conversation-runner/executions/{executionId}/runtime-binding-failed",
-    "Fail a deferred start after its assigned Personal Device rejects the execution workspace."
+    "Fail a deferred start after its assigned Personal Device rejects the execution checkout."
   ],
   [
     "POST",
@@ -2289,10 +2289,10 @@ export const routeIdentityContracts = [
   ),
   route(
     "DELETE",
-    "/v1/managed-conversations/{executionId}/execution-workspace",
+    "/v1/managed-conversations/{executionId}/execution-checkout",
     "session_or_api_token",
     "personal_memory",
-    "Request cleanup of the exact terminal Koed-managed execution workspace.",
+    "Request cleanup of the exact terminal Koed-managed execution checkout.",
     "none",
     "implemented",
     localEdgeDeploymentModes
@@ -2319,7 +2319,7 @@ export const routeIdentityContracts = [
     "/v1/managed-conversations/{executionId}/source-control",
     "session_or_device_credential",
     "personal_memory",
-    "Run a provider-neutral, revision-bound source-control operation in the exact managed execution workspace.",
+    "Run a provider-neutral, revision-bound source-control operation in the exact managed execution checkout.",
     "none",
     "implemented",
     localEdgeDeploymentModes
@@ -2343,7 +2343,7 @@ export const routeIdentityContracts = [
     "/v1/managed-conversations/{executionId}/terminals",
     "session_or_device_credential",
     "personal_memory",
-    "Create an idempotent terminal in the exact execution workspace."
+    "Create an idempotent terminal in the exact execution checkout."
   ),
   route(
     "GET",

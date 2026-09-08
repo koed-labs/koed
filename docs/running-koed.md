@@ -445,6 +445,13 @@ arbitrary local path or fall back to opening a `file://` URL.
 
 ### Managed Conversation permissions
 
+Migration `0037` requires an explicit alpha reset if managed execution records
+or runner bindings remain. Back up the database, stop runners, and export any
+needed execution history before resetting those records. The migration stops
+before changing data; it cannot infer immutable launch settings from encrypted
+legacy commands. Preserve captured Conversations and Project files. Existing
+hidden and disabled Conversation presentation choices are carried forward.
+
 New managed Conversations default to **Full access**. Choose a permission mode
 in the Conversation launch settings before starting:
 
@@ -468,13 +475,13 @@ For a new local managed Conversation, the runner uses the selected Project
 checkout directly, whether or not it is a Git repository or has uncommitted
 changes. The API records a pending source locator and wakes the runner; it does
 not declare the execution ready. The runner verifies the canonical path and
-execution generation, records the workspace as User-managed, and only then
+execution generation, records the checkout as User-managed, and only then
 releases the start command. Koed never removes or resets this checkout.
 Multiple Conversations may use the same selected checkout; Koed reserves path
 exclusivity only for linked worktrees that Koed creates and owns.
 
 A User may explicitly select a dedicated linked worktree under
-`KOED_HOME/managed-workspaces/worktrees`. In that mode the runner additionally
+`KOED_HOME/managed-checkouts/worktrees`. In that mode the runner additionally
 verifies the Git common directory, worktree administration, opaque Koed branch,
 immutable base object, and cleanup ownership. A dirty source checkout is not
 silently copied or discarded when isolated worktree creation is requested.
@@ -485,12 +492,12 @@ Hooks, skills, settings, and session history remain available. The selected
 Project checkout or explicit worktree is the app-server and thread working
 directory. Koed does not create or delete per-Conversation Codex homes.
 
-Execution responses expose only the opaque workspace id, ownership class, VCS
+Execution responses expose only the opaque checkout id, ownership class, VCS
 driver, lifecycle, and cleanup state. Absolute paths and Git administration
 remain local to the assigned runner. Stopping, settling, hiding, or archiving a
-Conversation does not remove its workspace. An owning User may explicitly
+Conversation does not remove its checkout. An owning User may explicitly
 request cleanup with `DELETE
-/v1/managed-conversations/{executionId}/execution-workspace` after the
+/v1/managed-conversations/{executionId}/execution-checkout` after the
 execution is terminal. Cleanup succeeds only for the exact clean Koed-owned
 worktree with unchanged identity and `HEAD`; User-managed checkouts, dirty or
 ignored state, advanced branches, identity mismatches, and partial Git cleanup
@@ -521,9 +528,11 @@ GET /v1/managed-conversations/{executionId}/diff?scope=full
 The API derives checkpoint generation, refs, and object ids server-side. It
 does not accept caller-selected Git refs or paths. Patches are bounded and
 encrypted in Postgres; API responses omit hidden refs, local paths, and Git
-administration. The route remains local to the execution runner because the
-runner owns the repository objects. Remote runner authority carries only the
-durable checkpoint-pending command phase and checkpoint metadata.
+administration. The runner generates patches from verified checkpoint objects;
+checkpoint records and encrypted diffs are retained at the execution authority.
+A connected local edge proxies diff reads to that authority under
+`managed_file_read`. Denied file content is withheld before patches are generated
+or persisted. Checkpoint and file operations ignore Git replacement refs.
 
 An owning User can queue guarded content-only Restore with:
 
@@ -531,8 +540,9 @@ An owning User can queue guarded content-only Restore with:
 POST /v1/managed-conversations/{executionId}/checkpoints/{checkpointId}/restore
 ```
 
-Restore requires an idle execution generation. The runner first records a
-recovery checkpoint, proves the workspace still matches it, materializes the
+Restore requires an idle execution generation and a session or scoped Desktop/device
+credential; Personal API Tokens cannot restore or remove checkouts. The runner first records a
+recovery checkpoint, proves the checkout still matches it, materializes the
 target through a temporary index, preserves ignored files and the active Git
 index, and verifies the resulting content tree. Conversation source, provider
 history, Memory, branch, `HEAD`, and staged state are not rewound.
@@ -549,8 +559,10 @@ The POST body selects `browse`, `read`, `search`, or `mention` and supplies
 only a normalized root-relative path. The assigned runner resolves the latest
 checkpoint or the exact revision returned by an earlier operation. It never
 accepts an absolute path, URI, caller-selected Git object, shell expression, or
-workspace root. Operations are durable and encrypted; callers read their
-bounded result by command id and receive realtime invalidation when it changes.
+checkout root. Operations are durable and encrypted; callers read their
+bounded result by command id and receive realtime invalidation when it changes. Search retains at most 200 results per page and stops after 10,000
+matches. A continuation supplies the previous completed command id, its next
+offset, and the same query and checkpoint revision.
 
 Checkpoint file inspection is Git-backed. It serves
 regular UTF-8 text, excludes recognized secret paths, ignored content,
@@ -575,7 +587,7 @@ capability. See
 ## Managed terminals
 
 The assigned managed-execution runner owns bounded pseudoterminals in the exact
-verified execution workspace. The initial shell profile is the platform's
+verified execution checkout. The initial shell profile is the platform's
 verified system shell; callers cannot provide an executable, working directory,
 environment map, process id, or arbitrary signal. Koed passes a narrow
 platform/toolchain environment and deliberately excludes API, database,
@@ -583,7 +595,9 @@ encryption, provider, and deployment credentials.
 
 Terminal lifecycle metadata is durable, but input, output, process ids, local
 paths, environment values, and captured context bytes remain in runner memory.
-Create, list, inspect, and stop use finite HTTPS routes. Interactive input,
+Create, list, inspect, and stop use finite HTTPS routes on the assigned runner.
+With an upstream coordinator, terminal records reference the local runner binding;
+current execution assignment is checked upstream at admission and reauthorization. Interactive input,
 resize, interrupt, output, replay, and explicit context capture use a dedicated
 reliable WebTransport stream where available and the same bounded protocol over
 WebSocket as fallback. Both transports periodically reauthorize the attached
@@ -602,7 +616,10 @@ the separate `managed_terminal` operation family. Personal API Tokens, Team
 visibility, Workspace Access, and Share Grants do not grant it. Output reaches
 an AI Client only when the owning User explicitly captures a bounded replay
 range and supplies its short-lived, execution-bound reference with a prompt.
-The prompt marks the resolved bytes as untrusted context. See
+The shared source-content policy checks captured text before issuing a reference.
+Context caches expire proactively and are bounded per User (16 entries, 1 MiB)
+and per runner (128 entries, 8 MiB). The prompt marks resolved bytes as untrusted
+context. See
 [ADR 0036](./adr/0036-runner-owned-scoped-terminal-authority.md).
 
 Captured Sessions adopt one unambiguous detected Personal Project immediately.

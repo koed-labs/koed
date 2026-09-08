@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createManagedWorkspacePreloadApi } from "./managed-workspace-preload.js";
+import { createManagedProjectPreloadApi } from "./managed-project-preload.js";
 import {
-  managedWorkspaceCommandChannel,
-  managedWorkspaceEventChannel
-} from "./managed-workspace-protocol.js";
+  managedProjectCommandChannel,
+  managedProjectEventChannel
+} from "./managed-project-protocol.js";
 
 const executionId = "11111111-1111-4111-8111-111111111111";
 const requestId = "22222222-2222-4222-8222-222222222222";
 
-describe("managed workspace preload bridge", () => {
+describe("managed Project preload bridge", () => {
   it("validates exact requests, results, and correlation", async () => {
     const invoke = vi.fn(async () => ({
       requestId,
@@ -21,7 +21,7 @@ describe("managed workspace preload bridge", () => {
       on: vi.fn(),
       removeListener: vi.fn()
     };
-    const api = createManagedWorkspacePreloadApi(invoke, events);
+    const api = createManagedProjectPreloadApi(invoke, events);
     const request = {
       requestId,
       executionId,
@@ -32,10 +32,7 @@ describe("managed workspace preload bridge", () => {
       ...request,
       terminals: []
     });
-    expect(invoke).toHaveBeenCalledWith(
-      managedWorkspaceCommandChannel,
-      request
-    );
+    expect(invoke).toHaveBeenCalledWith(managedProjectCommandChannel, request);
     await expect(
       api.command({ ...request, authorization: "Bearer secret" } as never)
     ).rejects.toThrow();
@@ -46,7 +43,7 @@ describe("managed workspace preload bridge", () => {
       terminals: []
     });
     await expect(api.command(request)).rejects.toThrow(
-      "Invalid managed workspace command correlation"
+      "Invalid managed Project command correlation"
     );
   });
 
@@ -58,7 +55,7 @@ describe("managed workspace preload bridge", () => {
       }),
       removeListener: vi.fn()
     };
-    const api = createManagedWorkspacePreloadApi(vi.fn(), events);
+    const api = createManagedProjectPreloadApi(vi.fn(), events);
     const listener = vi.fn();
     const unsubscribe = api.subscribe(listener);
     const value = {
@@ -78,14 +75,14 @@ describe("managed workspace preload bridge", () => {
     registered?.({}, value);
     expect(listener).toHaveBeenCalledWith(value);
     expect(events.on).toHaveBeenCalledWith(
-      managedWorkspaceEventChannel,
+      managedProjectEventChannel,
       expect.any(Function)
     );
     unsubscribe();
     registered?.({}, value);
     expect(listener).toHaveBeenCalledOnce();
     expect(events.removeListener).toHaveBeenCalledWith(
-      managedWorkspaceEventChannel,
+      managedProjectEventChannel,
       registered
     );
   });
@@ -98,7 +95,7 @@ describe("managed workspace preload bridge", () => {
       }),
       removeListener: vi.fn()
     };
-    const api = createManagedWorkspacePreloadApi(vi.fn(), events);
+    const api = createManagedProjectPreloadApi(vi.fn(), events);
     const listener = vi.fn();
     api.subscribe(listener);
     const event = {

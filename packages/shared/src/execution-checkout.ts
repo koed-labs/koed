@@ -4,22 +4,22 @@ import { lstat, mkdir, realpath } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
-// This driver is shared by every server-side capability that acts on an execution workspace.
+// This driver is shared by every server-side capability that acts on an execution checkout.
 
 const execFileAsync = promisify(execFile);
 const objectIdPattern = /^[0-9a-f]{40,64}$/;
 const opaqueIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type ExecutionWorkspaceOwnership =
+export type ExecutionCheckoutOwnership =
   | "koed_managed_worktree"
   | "user_managed_checkout"
   | "non_vcs_directory";
 
-export interface ExecutionWorkspaceIdentity {
-  workspaceId: string;
+export interface ExecutionCheckoutIdentity {
+  checkoutId: string;
   vcsDriver: "git" | null;
-  ownership: ExecutionWorkspaceOwnership;
+  ownership: ExecutionCheckoutOwnership;
   canonicalPath: string;
   localRepositoryCommonDirectory: string | null;
   localGitDirectory: string | null;
@@ -31,25 +31,25 @@ export interface ExecutionWorkspaceIdentity {
   headObjectId: string | null;
 }
 
-export interface GitExecutionWorkspaceDriver {
-  inspect(path: string): Promise<ExecutionWorkspaceIdentity>;
-  list(repositoryPath: string): Promise<ExecutionWorkspaceIdentity[]>;
+export interface GitExecutionCheckoutDriver {
+  inspect(path: string): Promise<ExecutionCheckoutIdentity>;
+  list(repositoryPath: string): Promise<ExecutionCheckoutIdentity[]>;
   select(input: {
     operationId: string;
     path: string;
     expectedRepositoryIdentityHash?: string;
-  }): Promise<ExecutionWorkspaceIdentity>;
+  }): Promise<ExecutionCheckoutIdentity>;
   create(input: {
     executionId: string;
     executionGeneration: number;
     operationId: string;
     sourcePath: string;
     baseRef?: string;
-  }): Promise<ExecutionWorkspaceIdentity>;
+  }): Promise<ExecutionCheckoutIdentity>;
   verify(
-    workspace: ExecutionWorkspaceIdentity
-  ): Promise<ExecutionWorkspaceIdentity>;
-  remove(workspace: ExecutionWorkspaceIdentity): Promise<void>;
+    checkout: ExecutionCheckoutIdentity
+  ): Promise<ExecutionCheckoutIdentity>;
+  remove(checkout: ExecutionCheckoutIdentity): Promise<void>;
 }
 
 const sha256 = (value: string): string =>
@@ -95,8 +95,8 @@ const git = async (
     return result.stdout.trim();
   } catch (error) {
     if (options.allowFailure) return null;
-    throw Object.assign(new Error("ExecutionWorkspaceGitCommandError"), {
-      name: "ExecutionWorkspaceGitCommandError",
+    throw Object.assign(new Error("ExecutionCheckoutGitCommandError"), {
+      name: "ExecutionCheckoutGitCommandError",
       cause: error
     });
   }
@@ -105,23 +105,23 @@ const git = async (
 const canonicalDirectory = async (path: string): Promise<string> => {
   const requested = resolve(path);
   const requestedMetadata = await lstat(requested).catch((error: unknown) => {
-    throw Object.assign(new Error("ExecutionWorkspaceDirectoryError"), {
-      name: "ExecutionWorkspaceDirectoryError",
+    throw Object.assign(new Error("ExecutionCheckoutDirectoryError"), {
+      name: "ExecutionCheckoutDirectoryError",
       cause: error
     });
   });
   if (requestedMetadata.isSymbolicLink()) {
-    throw new Error("ExecutionWorkspaceDirectoryError");
+    throw new Error("ExecutionCheckoutDirectoryError");
   }
   const canonical = await realpath(requested).catch((error: unknown) => {
-    throw Object.assign(new Error("ExecutionWorkspaceDirectoryError"), {
-      name: "ExecutionWorkspaceDirectoryError",
+    throw Object.assign(new Error("ExecutionCheckoutDirectoryError"), {
+      name: "ExecutionCheckoutDirectoryError",
       cause: error
     });
   });
   const metadata = await lstat(canonical);
   if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-    throw new Error("ExecutionWorkspaceDirectoryError");
+    throw new Error("ExecutionCheckoutDirectoryError");
   }
   return canonical;
 };
@@ -144,13 +144,13 @@ const gitIdentity = async (path: string) => {
   ]);
   const headObjectId = await git(path, ["rev-parse", "HEAD^{commit}"]);
   if (!topLevel || !commonDirectory || !gitDirectory || !headObjectId) {
-    throw new Error("ExecutionWorkspaceGitIdentityError");
+    throw new Error("ExecutionCheckoutGitIdentityError");
   }
   const canonicalPath = await canonicalDirectory(topLevel);
   const canonicalCommonDirectory = await realpath(commonDirectory);
   const canonicalGitDirectory = await realpath(gitDirectory);
   if (!objectIdPattern.test(headObjectId)) {
-    throw new Error("ExecutionWorkspaceGitIdentityError");
+    throw new Error("ExecutionCheckoutGitIdentityError");
   }
   return {
     canonicalPath,
@@ -215,7 +215,7 @@ const ensureManagedDirectoryChain = async (
 ): Promise<void> => {
   const path = relative(managedRoot, directory);
   if (!path || path.startsWith(`..${sep}`) || path === "..") {
-    throw new Error("ExecutionWorkspaceRootBoundaryError");
+    throw new Error("ExecutionCheckoutRootBoundaryError");
   }
   let current = managedRoot;
   for (const component of path.split(sep)) {
@@ -232,24 +232,24 @@ const ensureManagedDirectoryChain = async (
     });
     const metadata = await lstat(current);
     if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-      throw new Error("ExecutionWorkspaceRootBoundaryError");
+      throw new Error("ExecutionCheckoutRootBoundaryError");
     }
     if ((await realpath(current)) !== current) {
-      throw new Error("ExecutionWorkspaceRootBoundaryError");
+      throw new Error("ExecutionCheckoutRootBoundaryError");
     }
   }
 };
 
 const inspectGit = async (
   path: string,
-  ownership: Exclude<ExecutionWorkspaceOwnership, "non_vcs_directory">,
-  workspaceId: string = randomUUID(),
+  ownership: Exclude<ExecutionCheckoutOwnership, "non_vcs_directory">,
+  checkoutId: string = randomUUID(),
   baseRef: string | null = null,
   baseObjectId: string | null = null
-): Promise<ExecutionWorkspaceIdentity> => {
+): Promise<ExecutionCheckoutIdentity> => {
   const identity = await gitIdentity(path);
   return {
-    workspaceId,
+    checkoutId,
     vcsDriver: "git",
     ownership,
     canonicalPath: identity.canonicalPath,
@@ -264,16 +264,16 @@ const inspectGit = async (
   };
 };
 
-export const createGitExecutionWorkspaceDriver = async (input: {
+export const createGitExecutionCheckoutDriver = async (input: {
   managedRoot: string;
-}): Promise<GitExecutionWorkspaceDriver> => {
+}): Promise<GitExecutionCheckoutDriver> => {
   await mkdir(resolve(input.managedRoot), { recursive: true, mode: 0o700 });
   const managedRoot = await canonicalDirectory(input.managedRoot);
 
   const managedCoordinates = (
     canonicalPath: string
   ): {
-    workspaceId: string;
+    checkoutId: string;
     branchRef: string;
   } | null => {
     if (!inside(managedRoot, canonicalPath)) return null;
@@ -284,21 +284,21 @@ export const createGitExecutionWorkspaceDriver = async (input: {
       !/^[1-9][0-9]*$/.test(components[1]!) ||
       !opaqueIdPattern.test(components[2]!)
     ) {
-      throw new Error("ExecutionWorkspaceIdentityChangedError");
+      throw new Error("ExecutionCheckoutIdentityChangedError");
     }
     const executionId = components[0]!.toLowerCase();
     const generation = Number(components[1]);
-    const workspaceId = components[2]!.toLowerCase();
+    const checkoutId = components[2]!.toLowerCase();
     if (!Number.isSafeInteger(generation)) {
-      throw new Error("ExecutionWorkspaceIdentityChangedError");
+      throw new Error("ExecutionCheckoutIdentityChangedError");
     }
     return {
-      workspaceId,
-      branchRef: `refs/heads/koed/${executionId}/${generation}/${workspaceId}`
+      checkoutId,
+      branchRef: `refs/heads/koed/${executionId}/${generation}/${checkoutId}`
     };
   };
 
-  const inspect = async (path: string): Promise<ExecutionWorkspaceIdentity> => {
+  const inspect = async (path: string): Promise<ExecutionCheckoutIdentity> => {
     const canonicalPath = await canonicalDirectory(path);
     const isGit = await git(
       canonicalPath,
@@ -309,7 +309,7 @@ export const createGitExecutionWorkspaceDriver = async (input: {
     );
     if (isGit !== "true") {
       return {
-        workspaceId: randomUUID(),
+        checkoutId: randomUUID(),
         vcsDriver: null,
         ownership: "non_vcs_directory",
         canonicalPath,
@@ -327,48 +327,48 @@ export const createGitExecutionWorkspaceDriver = async (input: {
     if (!managed) {
       return inspectGit(canonicalPath, "user_managed_checkout");
     }
-    const workspace = await inspectGit(
+    const checkout = await inspectGit(
       canonicalPath,
       "koed_managed_worktree",
-      managed.workspaceId
+      managed.checkoutId
     );
-    if (workspace.branchRef !== managed.branchRef) {
-      throw new Error("ExecutionWorkspaceIdentityChangedError");
+    if (checkout.branchRef !== managed.branchRef) {
+      throw new Error("ExecutionCheckoutIdentityChangedError");
     }
-    return workspace;
+    return checkout;
   };
 
   const verify = async (
-    workspace: ExecutionWorkspaceIdentity
-  ): Promise<ExecutionWorkspaceIdentity> => {
-    if (workspace.vcsDriver !== "git") {
-      const current = await inspect(workspace.canonicalPath);
+    checkout: ExecutionCheckoutIdentity
+  ): Promise<ExecutionCheckoutIdentity> => {
+    if (checkout.vcsDriver !== "git") {
+      const current = await inspect(checkout.canonicalPath);
       if (
         current.vcsDriver !== null ||
-        current.canonicalPath !== workspace.canonicalPath ||
-        workspace.ownership !== "non_vcs_directory"
+        current.canonicalPath !== checkout.canonicalPath ||
+        checkout.ownership !== "non_vcs_directory"
       ) {
-        throw new Error("ExecutionWorkspaceIdentityChangedError");
+        throw new Error("ExecutionCheckoutIdentityChangedError");
       }
-      return { ...current, workspaceId: workspace.workspaceId };
+      return { ...current, checkoutId: checkout.checkoutId };
     }
     const current = await inspectGit(
-      workspace.canonicalPath,
-      workspace.ownership === "koed_managed_worktree"
+      checkout.canonicalPath,
+      checkout.ownership === "koed_managed_worktree"
         ? "koed_managed_worktree"
         : "user_managed_checkout",
-      workspace.workspaceId,
-      workspace.baseRef,
-      workspace.baseObjectId
+      checkout.checkoutId,
+      checkout.baseRef,
+      checkout.baseObjectId
     );
     if (
-      current.repositoryIdentityHash !== workspace.repositoryIdentityHash ||
-      current.worktreeIdentityHash !== workspace.worktreeIdentityHash ||
-      current.branchRef !== workspace.branchRef ||
-      (workspace.ownership === "koed_managed_worktree" &&
+      current.repositoryIdentityHash !== checkout.repositoryIdentityHash ||
+      current.worktreeIdentityHash !== checkout.worktreeIdentityHash ||
+      current.branchRef !== checkout.branchRef ||
+      (checkout.ownership === "koed_managed_worktree" &&
         !inside(managedRoot, current.canonicalPath))
     ) {
-      throw new Error("ExecutionWorkspaceIdentityChangedError");
+      throw new Error("ExecutionCheckoutIdentityChangedError");
     }
     return current;
   };
@@ -389,7 +389,7 @@ export const createGitExecutionWorkspaceDriver = async (input: {
         .split("\0")
         .filter((entry) => entry.startsWith("worktree "))
         .map((entry) => entry.slice("worktree ".length));
-      const worktrees: ExecutionWorkspaceIdentity[] = [];
+      const worktrees: ExecutionCheckoutIdentity[] = [];
       for (const path of paths) {
         const candidate = await inspect(path);
         if (
@@ -402,9 +402,9 @@ export const createGitExecutionWorkspaceDriver = async (input: {
     },
 
     async select(selectInput) {
-      const workspaceId = requireOpaqueId(
+      const checkoutId = requireOpaqueId(
         selectInput.operationId,
-        "Workspace operation id"
+        "Checkout operation id"
       );
       const selected = await inspect(selectInput.path);
       if (
@@ -412,15 +412,15 @@ export const createGitExecutionWorkspaceDriver = async (input: {
         selected.repositoryIdentityHash !==
           selectInput.expectedRepositoryIdentityHash
       ) {
-        throw new Error("ExecutionWorkspaceSelectionIdentityError");
+        throw new Error("ExecutionCheckoutSelectionIdentityError");
       }
       if (
         selected.ownership === "koed_managed_worktree" &&
-        selected.workspaceId !== workspaceId
+        selected.checkoutId !== checkoutId
       ) {
-        throw new Error("ExecutionWorkspaceSelectionOwnershipError");
+        throw new Error("ExecutionCheckoutSelectionOwnershipError");
       }
-      return { ...selected, workspaceId };
+      return { ...selected, checkoutId };
     },
 
     async create(createInput) {
@@ -429,16 +429,16 @@ export const createGitExecutionWorkspaceDriver = async (input: {
         "Execution id"
       );
       const generation = requireGeneration(createInput.executionGeneration);
-      const workspaceId = requireOpaqueId(
+      const checkoutId = requireOpaqueId(
         createInput.operationId,
-        "Workspace operation id"
+        "Checkout operation id"
       );
       const source = await inspect(createInput.sourcePath);
       if (source.vcsDriver !== "git") {
-        throw new Error("ExecutionWorkspaceGitUnavailableError");
+        throw new Error("ExecutionCheckoutGitUnavailableError");
       }
       if (await dirty(source.canonicalPath)) {
-        throw new Error("ExecutionWorkspaceSourceDirtyError");
+        throw new Error("ExecutionCheckoutSourceDirtyError");
       }
       const baseRef = createInput.baseRef?.trim() || "HEAD";
       const baseObjectId = await git(source.canonicalPath, [
@@ -447,29 +447,29 @@ export const createGitExecutionWorkspaceDriver = async (input: {
         `${baseRef}^{commit}`
       ]);
       if (!baseObjectId || !objectIdPattern.test(baseObjectId)) {
-        throw new Error("ExecutionWorkspaceBaseRefError");
+        throw new Error("ExecutionCheckoutBaseRefError");
       }
-      const branchName = `koed/${executionId}/${generation}/${workspaceId}`;
+      const branchName = `koed/${executionId}/${generation}/${checkoutId}`;
       const branchRef = `refs/heads/${branchName}`;
-      const workspacePath = resolve(
+      const checkoutPath = resolve(
         managedRoot,
         executionId,
         String(generation),
-        workspaceId
+        checkoutId
       );
-      if (!inside(managedRoot, workspacePath)) {
-        throw new Error("ExecutionWorkspaceRootBoundaryError");
+      if (!inside(managedRoot, checkoutPath)) {
+        throw new Error("ExecutionCheckoutRootBoundaryError");
       }
-      await ensureManagedDirectoryChain(managedRoot, dirname(workspacePath));
+      await ensureManagedDirectoryChain(managedRoot, dirname(checkoutPath));
       if (
-        await lstat(workspacePath)
+        await lstat(checkoutPath)
           .then(() => true)
           .catch(() => false)
       ) {
         const existing = await inspectGit(
-          workspacePath,
+          checkoutPath,
           "koed_managed_worktree",
-          workspaceId,
+          checkoutId,
           baseRef,
           baseObjectId
         ).catch(() => null);
@@ -480,7 +480,7 @@ export const createGitExecutionWorkspaceDriver = async (input: {
         ) {
           return existing;
         }
-        throw new Error("ExecutionWorkspacePathCollisionError");
+        throw new Error("ExecutionCheckoutPathCollisionError");
       }
       const existingBranchObjectId = await git(
         source.canonicalPath,
@@ -488,7 +488,7 @@ export const createGitExecutionWorkspaceDriver = async (input: {
         { allowFailure: true }
       );
       if (existingBranchObjectId && existingBranchObjectId !== baseObjectId) {
-        throw new Error("ExecutionWorkspaceBranchCollisionError");
+        throw new Error("ExecutionCheckoutBranchCollisionError");
       }
       const attachedPath = existingBranchObjectId
         ? await worktreePathForBranch(
@@ -498,7 +498,7 @@ export const createGitExecutionWorkspaceDriver = async (input: {
           )
         : null;
       if (attachedPath) {
-        throw new Error("ExecutionWorkspaceBranchCollisionError");
+        throw new Error("ExecutionCheckoutBranchCollisionError");
       }
       let createdBranch = false;
       if (!existingBranchObjectId) {
@@ -515,13 +515,13 @@ export const createGitExecutionWorkspaceDriver = async (input: {
           "worktree",
           "add",
           "--no-guess-remote",
-          workspacePath,
+          checkoutPath,
           branchName
         ]);
         const created = await inspectGit(
-          workspacePath,
+          checkoutPath,
           "koed_managed_worktree",
-          workspaceId,
+          checkoutId,
           baseRef,
           baseObjectId
         );
@@ -531,14 +531,14 @@ export const createGitExecutionWorkspaceDriver = async (input: {
           created.headObjectId !== baseObjectId ||
           !inside(managedRoot, created.canonicalPath)
         ) {
-          throw new Error("ExecutionWorkspaceCreationVerificationError");
+          throw new Error("ExecutionCheckoutCreationVerificationError");
         }
         return created;
       } catch (error) {
         if (createdBranch) {
           await git(
             source.canonicalPath,
-            ["worktree", "remove", workspacePath],
+            ["worktree", "remove", checkoutPath],
             { allowFailure: true }
           );
           await git(
@@ -553,36 +553,36 @@ export const createGitExecutionWorkspaceDriver = async (input: {
 
     verify,
 
-    async remove(workspace) {
+    async remove(checkout) {
       if (
-        workspace.vcsDriver !== "git" ||
-        workspace.ownership !== "koed_managed_worktree" ||
-        !workspace.branchRef ||
-        !workspace.headObjectId ||
-        !workspace.localRepositoryCommonDirectory
+        checkout.vcsDriver !== "git" ||
+        checkout.ownership !== "koed_managed_worktree" ||
+        !checkout.branchRef ||
+        !checkout.headObjectId ||
+        !checkout.localRepositoryCommonDirectory
       ) {
-        throw new Error("ExecutionWorkspaceCleanupOwnershipError");
+        throw new Error("ExecutionCheckoutCleanupOwnershipError");
       }
       const commonDirectory = await realpath(
-        workspace.localRepositoryCommonDirectory
+        checkout.localRepositoryCommonDirectory
       );
       if (
         sha256(`git-common-directory\0${commonDirectory}`) !==
-        workspace.repositoryIdentityHash
+        checkout.repositoryIdentityHash
       ) {
-        throw new Error("ExecutionWorkspaceCleanupIdentityError");
+        throw new Error("ExecutionCheckoutCleanupIdentityError");
       }
-      const pathExists = await lstat(workspace.canonicalPath)
+      const pathExists = await lstat(checkout.canonicalPath)
         .then(() => true)
         .catch(() => false);
       if (!pathExists) {
         const attachedPath = await worktreePathForBranch(
           managedRoot,
           commonDirectory,
-          workspace.branchRef
+          checkout.branchRef
         );
         if (attachedPath) {
-          throw new Error("ExecutionWorkspaceCleanupIdentityError");
+          throw new Error("ExecutionCheckoutCleanupIdentityError");
         }
         const branchObjectId = await git(
           managedRoot,
@@ -591,12 +591,12 @@ export const createGitExecutionWorkspaceDriver = async (input: {
             commonDirectory,
             "rev-parse",
             "--verify",
-            `${workspace.branchRef}^{commit}`
+            `${checkout.branchRef}^{commit}`
           ],
           { allowFailure: true }
         );
-        if (branchObjectId && branchObjectId !== workspace.headObjectId) {
-          throw new Error("ExecutionWorkspaceCleanupChangedError");
+        if (branchObjectId && branchObjectId !== checkout.headObjectId) {
+          throw new Error("ExecutionCheckoutCleanupChangedError");
         }
         if (branchObjectId) {
           await git(managedRoot, [
@@ -604,18 +604,18 @@ export const createGitExecutionWorkspaceDriver = async (input: {
             commonDirectory,
             "update-ref",
             "-d",
-            workspace.branchRef,
-            workspace.headObjectId
+            checkout.branchRef,
+            checkout.headObjectId
           ]);
         }
         return;
       }
-      const verified = await verify(workspace);
-      if (verified.headObjectId !== workspace.headObjectId) {
-        throw new Error("ExecutionWorkspaceCleanupChangedError");
+      const verified = await verify(checkout);
+      if (verified.headObjectId !== checkout.headObjectId) {
+        throw new Error("ExecutionCheckoutCleanupChangedError");
       }
       if (await dirty(verified.canonicalPath, true)) {
-        throw new Error("ExecutionWorkspaceCleanupDirtyError");
+        throw new Error("ExecutionCheckoutCleanupDirtyError");
       }
       await git(managedRoot, [
         "--git-dir",
@@ -629,8 +629,8 @@ export const createGitExecutionWorkspaceDriver = async (input: {
         commonDirectory,
         "update-ref",
         "-d",
-        workspace.branchRef,
-        workspace.headObjectId
+        checkout.branchRef,
+        checkout.headObjectId
       ]);
     }
   };

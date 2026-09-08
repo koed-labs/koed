@@ -10,7 +10,10 @@ vi.mock("node:child_process", async (original) => ({
   ...(await original<typeof import("node:child_process")>()),
   spawn: mocks.spawn
 }));
-import { PiManagedConversationSession } from "../src/pi-managed-conversation.js";
+import {
+  PiManagedConversationSession,
+  type PiManagedConversationConfig
+} from "../src/pi-managed-conversation.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -81,7 +84,7 @@ function fixture(startupDelayMs = 0, bundled = false) {
   });
   const onTextDelta = vi.fn();
   const onUiRequest = vi.fn().mockResolvedValue({ value: "Approve" });
-  const session = new PiManagedConversationSession({
+  const config: PiManagedConversationConfig = {
     cwd: root,
     sessionDirectory: path.join(root, "sessions"),
     model: "test/model",
@@ -90,8 +93,11 @@ function fixture(startupDelayMs = 0, bundled = false) {
     onTextDelta,
     onUiRequest,
     ...(startupDelayMs ? { requestTimeoutMs: 50, startupTimeoutMs: 500 } : {})
-  });
+  };
+  const session = new PiManagedConversationSession(config);
   return {
+    root,
+    config,
     session,
     emit,
     child,
@@ -105,6 +111,61 @@ function fixture(startupDelayMs = 0, bundled = false) {
 }
 
 describe("Pi managed RPC conversation", () => {
+  it.each(["outside", "symlink"])(
+    "requires a contained resume transcript before launching (%s)",
+    async (kind) => {
+      const f = fixture();
+      fs.mkdirSync(f.config.sessionDirectory);
+      const outside = path.join(f.root, "unmanaged.jsonl");
+      fs.writeFileSync(outside, "");
+      const link = path.join(f.config.sessionDirectory, "session.jsonl");
+      if (kind === "symlink") fs.symlinkSync(outside, link);
+      const session = new PiManagedConversationSession({
+        ...f.config,
+        resumeSessionPath: kind === "outside" ? outside : link,
+        expectedSessionId: "11111111-1111-4111-8111-111111111111"
+      });
+      await expect(session.start()).rejects.toThrow(
+        "outside its managed session directory"
+      );
+      expect(mocks.spawn).not.toHaveBeenCalled();
+      expect(fs.readFileSync(outside, "utf8")).toBe("");
+    }
+  );
+
+  it("passes canonical contained resume paths to the provider", async () => {
+    const f = fixture();
+    fs.mkdirSync(f.config.sessionDirectory);
+    const transcriptPath = path.join(
+      f.config.sessionDirectory,
+      "session.jsonl"
+    );
+    fs.writeFileSync(
+      transcriptPath,
+      JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "11111111-1111-4111-8111-111111111111",
+        cwd: f.root
+      }) + "\n"
+    );
+    const directoryAlias = path.join(f.root, "sessions-alias");
+    fs.symlinkSync(f.config.sessionDirectory, directoryAlias, "dir");
+    const session = new PiManagedConversationSession({
+      ...f.config,
+      sessionDirectory: directoryAlias,
+      resumeSessionPath: path.join(directoryAlias, "session.jsonl"),
+      expectedSessionId: "11111111-1111-4111-8111-111111111111"
+    });
+    await expect(session.start()).resolves.toMatchObject({ transcriptPath });
+    const args = mocks.spawn.mock.calls[0]?.[1] as string[];
+    const passedConfig = JSON.parse(args.at(-1)!) as Record<string, unknown>;
+    expect(passedConfig).toMatchObject({
+      sessionDirectory: f.config.sessionDirectory,
+      resumeSessionPath: transcriptPath
+    });
+    await session.closeAndWait();
+  });
   it("resolves the public SDK for a bundled native launcher", async () => {
     const { session } = fixture(0, true);
     await expect(session.start()).resolves.toMatchObject({

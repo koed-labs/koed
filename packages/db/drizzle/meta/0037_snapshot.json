@@ -15997,21 +15997,21 @@
           "primaryKey": false,
           "notNull": true
         },
-        "workspace_id": {
-          "name": "workspace_id",
+        "checkout_id": {
+          "name": "checkout_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
-        "workspace_kind": {
-          "name": "workspace_kind",
+        "checkout_kind": {
+          "name": "checkout_kind",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
           "default": "'pending'"
         },
-        "workspace_lifecycle": {
-          "name": "workspace_lifecycle",
+        "checkout_lifecycle": {
+          "name": "checkout_lifecycle",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -16179,7 +16179,7 @@
               "nulls": "last"
             },
             {
-              "expression": "workspace_lifecycle",
+              "expression": "checkout_lifecycle",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -16212,7 +16212,7 @@
               "nulls": "last"
             },
             {
-              "expression": "workspace_lifecycle",
+              "expression": "checkout_lifecycle",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -16246,7 +16246,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"managed_conversation_runtime_bindings\".\"workspace_kind\" = 'koed_managed_worktree'\n          and \"managed_conversation_runtime_bindings\".\"workspace_lifecycle\" in ('ready', 'cleanup_requested')",
+          "where": "\"managed_conversation_runtime_bindings\".\"checkout_kind\" = 'koed_managed_worktree'\n          and \"managed_conversation_runtime_bindings\".\"checkout_lifecycle\" in ('ready', 'cleanup_requested')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -16286,9 +16286,9 @@
           "name": "managed_conversation_runtime_binding_generation_check",
           "value": "\"managed_conversation_runtime_bindings\".\"execution_generation\" > 0"
         },
-        "managed_conversation_runtime_binding_workspace_check": {
-          "name": "managed_conversation_runtime_binding_workspace_check",
-          "value": "((\"managed_conversation_runtime_bindings\".\"workspace_lifecycle\" = 'pending'\n          and \"managed_conversation_runtime_bindings\".\"workspace_id\" is null\n          and \"managed_conversation_runtime_bindings\".\"workspace_kind\" = 'pending'\n          and \"managed_conversation_runtime_bindings\".\"creation_operation_id\" is null\n          and \"managed_conversation_runtime_bindings\".\"vcs_driver\" is null\n          and \"managed_conversation_runtime_bindings\".\"local_repository_common_directory\" is null\n          and \"managed_conversation_runtime_bindings\".\"local_git_directory\" is null\n          and \"managed_conversation_runtime_bindings\".\"repository_identity_hash\" is null\n          and \"managed_conversation_runtime_bindings\".\"worktree_identity_hash\" is null\n          and \"managed_conversation_runtime_bindings\".\"base_ref\" is null\n          and \"managed_conversation_runtime_bindings\".\"base_object_id\" is null\n          and \"managed_conversation_runtime_bindings\".\"branch_ref\" is null\n          and \"managed_conversation_runtime_bindings\".\"head_object_id\" is null)\n        or (\"managed_conversation_runtime_bindings\".\"workspace_lifecycle\" in ('ready', 'cleanup_requested', 'removed', 'cleanup_failed', 'orphaned')\n          and \"managed_conversation_runtime_bindings\".\"workspace_id\" is not null\n          and \"managed_conversation_runtime_bindings\".\"workspace_kind\" in ('koed_managed_worktree', 'user_managed_checkout', 'non_vcs_directory')\n          and \"managed_conversation_runtime_bindings\".\"creation_operation_id\" is not null\n          and ((\"managed_conversation_runtime_bindings\".\"workspace_kind\" = 'non_vcs_directory'\n              and \"managed_conversation_runtime_bindings\".\"vcs_driver\" is null\n              and \"managed_conversation_runtime_bindings\".\"local_repository_common_directory\" is null\n              and \"managed_conversation_runtime_bindings\".\"local_git_directory\" is null\n              and \"managed_conversation_runtime_bindings\".\"repository_identity_hash\" is null\n              and \"managed_conversation_runtime_bindings\".\"worktree_identity_hash\" is null\n              and \"managed_conversation_runtime_bindings\".\"base_ref\" is null\n              and \"managed_conversation_runtime_bindings\".\"base_object_id\" is null\n              and \"managed_conversation_runtime_bindings\".\"branch_ref\" is null\n              and \"managed_conversation_runtime_bindings\".\"head_object_id\" is null)\n            or (\"managed_conversation_runtime_bindings\".\"workspace_kind\" in ('koed_managed_worktree', 'user_managed_checkout')\n              and \"managed_conversation_runtime_bindings\".\"vcs_driver\" = 'git'\n              and length(trim(\"managed_conversation_runtime_bindings\".\"local_repository_common_directory\")) > 0\n              and length(trim(\"managed_conversation_runtime_bindings\".\"local_git_directory\")) > 0\n              and \"managed_conversation_runtime_bindings\".\"repository_identity_hash\" is not null\n              and \"managed_conversation_runtime_bindings\".\"worktree_identity_hash\" is not null\n              and \"managed_conversation_runtime_bindings\".\"head_object_id\" is not null\n              and (\"managed_conversation_runtime_bindings\".\"workspace_kind\" <> 'koed_managed_worktree'\n                or (\"managed_conversation_runtime_bindings\".\"base_ref\" is not null\n                  and \"managed_conversation_runtime_bindings\".\"base_object_id\" is not null\n                  and \"managed_conversation_runtime_bindings\".\"branch_ref\" is not null))))))\n        and ((\"managed_conversation_runtime_bindings\".\"workspace_lifecycle\" in ('pending', 'ready')\n            and \"managed_conversation_runtime_bindings\".\"cleanup_state\" = 'not_requested')\n          or (\"managed_conversation_runtime_bindings\".\"workspace_lifecycle\" = 'cleanup_requested'\n            and \"managed_conversation_runtime_bindings\".\"cleanup_state\" = 'requested')\n          or (\"managed_conversation_runtime_bindings\".\"workspace_lifecycle\" = 'removed'\n            and \"managed_conversation_runtime_bindings\".\"cleanup_state\" = 'completed')\n          or (\"managed_conversation_runtime_bindings\".\"workspace_lifecycle\" in ('cleanup_failed', 'orphaned')\n            and \"managed_conversation_runtime_bindings\".\"cleanup_state\" = 'failed'))\n        and length(trim(\"managed_conversation_runtime_bindings\".\"source_project_path\")) > 0\n        and length(trim(\"managed_conversation_runtime_bindings\".\"project_path\")) > 0\n        and (\"managed_conversation_runtime_bindings\".\"repository_identity_hash\" is null or \"managed_conversation_runtime_bindings\".\"repository_identity_hash\" ~ '^[0-9a-f]{64}$')\n        and (\"managed_conversation_runtime_bindings\".\"worktree_identity_hash\" is null or \"managed_conversation_runtime_bindings\".\"worktree_identity_hash\" ~ '^[0-9a-f]{64}$')\n        and (\"managed_conversation_runtime_bindings\".\"base_object_id\" is null or \"managed_conversation_runtime_bindings\".\"base_object_id\" ~ '^[0-9a-f]{40,64}$')\n        and (\"managed_conversation_runtime_bindings\".\"head_object_id\" is null or \"managed_conversation_runtime_bindings\".\"head_object_id\" ~ '^[0-9a-f]{40,64}$')"
+        "managed_conversation_runtime_binding_checkout_check": {
+          "name": "managed_conversation_runtime_binding_checkout_check",
+          "value": "((\"managed_conversation_runtime_bindings\".\"checkout_lifecycle\" = 'pending'\n          and \"managed_conversation_runtime_bindings\".\"checkout_id\" is null\n          and \"managed_conversation_runtime_bindings\".\"checkout_kind\" = 'pending'\n          and \"managed_conversation_runtime_bindings\".\"creation_operation_id\" is null\n          and \"managed_conversation_runtime_bindings\".\"vcs_driver\" is null\n          and \"managed_conversation_runtime_bindings\".\"local_repository_common_directory\" is null\n          and \"managed_conversation_runtime_bindings\".\"local_git_directory\" is null\n          and \"managed_conversation_runtime_bindings\".\"repository_identity_hash\" is null\n          and \"managed_conversation_runtime_bindings\".\"worktree_identity_hash\" is null\n          and \"managed_conversation_runtime_bindings\".\"base_ref\" is null\n          and \"managed_conversation_runtime_bindings\".\"base_object_id\" is null\n          and \"managed_conversation_runtime_bindings\".\"branch_ref\" is null\n          and \"managed_conversation_runtime_bindings\".\"head_object_id\" is null)\n        or (\"managed_conversation_runtime_bindings\".\"checkout_lifecycle\" in ('ready', 'cleanup_requested', 'removed', 'cleanup_failed', 'orphaned')\n          and \"managed_conversation_runtime_bindings\".\"checkout_id\" is not null\n          and \"managed_conversation_runtime_bindings\".\"checkout_kind\" in ('koed_managed_worktree', 'user_managed_checkout', 'non_vcs_directory')\n          and \"managed_conversation_runtime_bindings\".\"creation_operation_id\" is not null\n          and ((\"managed_conversation_runtime_bindings\".\"checkout_kind\" = 'non_vcs_directory'\n              and \"managed_conversation_runtime_bindings\".\"vcs_driver\" is null\n              and \"managed_conversation_runtime_bindings\".\"local_repository_common_directory\" is null\n              and \"managed_conversation_runtime_bindings\".\"local_git_directory\" is null\n              and \"managed_conversation_runtime_bindings\".\"repository_identity_hash\" is null\n              and \"managed_conversation_runtime_bindings\".\"worktree_identity_hash\" is null\n              and \"managed_conversation_runtime_bindings\".\"base_ref\" is null\n              and \"managed_conversation_runtime_bindings\".\"base_object_id\" is null\n              and \"managed_conversation_runtime_bindings\".\"branch_ref\" is null\n              and \"managed_conversation_runtime_bindings\".\"head_object_id\" is null)\n            or (\"managed_conversation_runtime_bindings\".\"checkout_kind\" in ('koed_managed_worktree', 'user_managed_checkout')\n              and \"managed_conversation_runtime_bindings\".\"vcs_driver\" = 'git'\n              and length(trim(\"managed_conversation_runtime_bindings\".\"local_repository_common_directory\")) > 0\n              and length(trim(\"managed_conversation_runtime_bindings\".\"local_git_directory\")) > 0\n              and \"managed_conversation_runtime_bindings\".\"repository_identity_hash\" is not null\n              and \"managed_conversation_runtime_bindings\".\"worktree_identity_hash\" is not null\n              and \"managed_conversation_runtime_bindings\".\"head_object_id\" is not null\n              and (\"managed_conversation_runtime_bindings\".\"checkout_kind\" <> 'koed_managed_worktree'\n                or (\"managed_conversation_runtime_bindings\".\"base_ref\" is not null\n                  and \"managed_conversation_runtime_bindings\".\"base_object_id\" is not null\n                  and \"managed_conversation_runtime_bindings\".\"branch_ref\" is not null))))))\n        and ((\"managed_conversation_runtime_bindings\".\"checkout_lifecycle\" in ('pending', 'ready')\n            and \"managed_conversation_runtime_bindings\".\"cleanup_state\" = 'not_requested')\n          or (\"managed_conversation_runtime_bindings\".\"checkout_lifecycle\" = 'cleanup_requested'\n            and \"managed_conversation_runtime_bindings\".\"cleanup_state\" = 'requested')\n          or (\"managed_conversation_runtime_bindings\".\"checkout_lifecycle\" = 'removed'\n            and \"managed_conversation_runtime_bindings\".\"cleanup_state\" = 'completed')\n          or (\"managed_conversation_runtime_bindings\".\"checkout_lifecycle\" in ('cleanup_failed', 'orphaned')\n            and \"managed_conversation_runtime_bindings\".\"cleanup_state\" = 'failed'))\n        and length(trim(\"managed_conversation_runtime_bindings\".\"source_project_path\")) > 0\n        and length(trim(\"managed_conversation_runtime_bindings\".\"project_path\")) > 0\n        and (\"managed_conversation_runtime_bindings\".\"repository_identity_hash\" is null or \"managed_conversation_runtime_bindings\".\"repository_identity_hash\" ~ '^[0-9a-f]{64}$')\n        and (\"managed_conversation_runtime_bindings\".\"worktree_identity_hash\" is null or \"managed_conversation_runtime_bindings\".\"worktree_identity_hash\" ~ '^[0-9a-f]{64}$')\n        and (\"managed_conversation_runtime_bindings\".\"base_object_id\" is null or \"managed_conversation_runtime_bindings\".\"base_object_id\" ~ '^[0-9a-f]{40,64}$')\n        and (\"managed_conversation_runtime_bindings\".\"head_object_id\" is null or \"managed_conversation_runtime_bindings\".\"head_object_id\" ~ '^[0-9a-f]{40,64}$')"
         },
         "managed_conversation_runtime_binding_identity_check": {
           "name": "managed_conversation_runtime_binding_identity_check",
@@ -16529,8 +16529,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "workspace_id": {
-          "name": "workspace_id",
+        "checkout_id": {
+          "name": "checkout_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -16714,12 +16714,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "managed_conversation_terminals_execution_id_managed_conversation_executions_id_fk": {
-          "name": "managed_conversation_terminals_execution_id_managed_conversation_executions_id_fk",
+        "managed_conversation_terminals_execution_id_managed_conversation_runtime_bindings_execution_id_fk": {
+          "name": "managed_conversation_terminals_execution_id_managed_conversation_runtime_bindings_execution_id_fk",
           "tableFrom": "managed_conversation_terminals",
-          "tableTo": "managed_conversation_executions",
+          "tableTo": "managed_conversation_runtime_bindings",
           "columnsFrom": ["execution_id"],
-          "columnsTo": ["id"],
+          "columnsTo": ["execution_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }

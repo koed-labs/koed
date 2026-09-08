@@ -6,8 +6,12 @@ import { platform } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 
-import type { MemorySourceRepository } from "@koed/db";
+import type {
+  MemorySourceRepository,
+  ManagedTerminalExecutionAuthority
+} from "@koed/db";
 import {
+  classifySourceContent,
   managedTerminalClientFrameSchema,
   MANAGED_TERMINAL_CONTEXT_TTL_SECONDS,
   MANAGED_TERMINAL_MAX_CONTEXT_BYTES,
@@ -20,15 +24,19 @@ import {
   type ManagedTerminalServerFrame
 } from "@koed/shared";
 import {
-  createGitExecutionWorkspaceDriver,
-  type ExecutionWorkspaceIdentity
-} from "@koed/shared/execution-workspace";
+  createGitExecutionCheckoutDriver,
+  type ExecutionCheckoutIdentity
+} from "@koed/shared/execution-checkout";
 import * as nodePty from "node-pty";
 
 import { verifyLoopbackListenerOwnership } from "./listener-ownership.js";
 
 const maximumRuntimeTerminals = 32;
 const maximumReplayBytes = 1024 * 1024;
+const maximumContextEntries = 128;
+const maximumContextBytes = 8 * 1024 * 1024;
+const maximumOwnerContextEntries = 16;
+const maximumOwnerContextBytes = 1024 * 1024;
 const stopGraceMs = 3_000;
 const execFileAsync = promisify(execFile);
 
@@ -73,6 +81,7 @@ type ContextEntry = ManagedTerminalContextReference & {
   ownerUserId: string;
   executionId: string;
   content: string;
+  byteCount: number;
 };
 
 export interface ManagedTerminalAttachment {
@@ -84,6 +93,11 @@ export interface ManagedTerminalAttachment {
 
 export interface ManagedTerminalRuntime {
   initialize(): Promise<void>;
+  assertExecutionAuthority(
+    ownerUserId: string,
+    executionId: string,
+    terminalId?: string
+  ): Promise<ManagedTerminalExecutionAuthority>;
   shellProfiles(): Promise<
     Array<{ id: "system_default"; label: string; available: boolean }>
   >;
@@ -130,19 +144,19 @@ export interface ManagedTerminalRuntime {
 const terminalError = (message: string, statusCode: number, code: string) =>
   Object.assign(new Error(message), { statusCode, code });
 
-const workspaceIdentityFor = (
+const checkoutIdentityFor = (
   binding: NonNullable<
     Awaited<
       ReturnType<MemorySourceRepository["getManagedConversationRuntimeBinding"]>
     >
   >
-): ExecutionWorkspaceIdentity => ({
-  workspaceId: binding.workspaceId!,
+): ExecutionCheckoutIdentity => ({
+  checkoutId: binding.checkoutId!,
   vcsDriver: binding.vcsDriver,
   ownership:
-    binding.workspaceKind === "pending"
+    binding.checkoutKind === "pending"
       ? "non_vcs_directory"
-      : binding.workspaceKind,
+      : binding.checkoutKind,
   canonicalPath: binding.projectPath,
   localRepositoryCommonDirectory: binding.localRepositoryCommonDirectory,
   localGitDirectory: binding.localGitDirectory,
@@ -227,14 +241,14 @@ const terminalEnvironment = (shell: string): Record<string, string> => {
 const splitOutput = (value: string): Buffer[] => {
   const data = Buffer.from(value, "utf8");
   const chunks: Buffer[] = [];
-  for (
-    let offset = 0;
-    offset < data.byteLength;
-    offset += MANAGED_TERMINAL_MAX_DATA_BYTES
-  ) {
-    chunks.push(
-      data.subarray(offset, offset + MANAGED_TERMINAL_MAX_DATA_BYTES)
+  for (let offset = 0; offset < data.byteLength; ) {
+    let end = Math.min(
+      offset + MANAGED_TERMINAL_MAX_DATA_BYTES,
+      data.byteLength
     );
+    while (end < data.byteLength && (data[end]! & 0xc0) === 0x80) end -= 1;
+    chunks.push(data.subarray(offset, end));
+    offset = end;
   }
   return chunks;
 };
@@ -272,6 +286,10 @@ export const terminalPreviewUrls = (value: string): string[] => {
 
 export const createManagedTerminalRuntime = (options: {
   requireRepository(): MemorySourceRepository;
+  resolveExecutionAuthority?(
+    ownerUserId: string,
+    executionId: string
+  ): Promise<ManagedTerminalExecutionAuthority | null>;
   inspectIdentity(): DeviceIdentityInspection;
   koedHome: string;
   detachedTtlMs?: number;
@@ -279,19 +297,39 @@ export const createManagedTerminalRuntime = (options: {
   onError?: (error: unknown, code: string) => void;
 }): ManagedTerminalRuntime => {
   const terminals = new Map<string, RuntimeTerminal>();
+  const starting = new Map<string, Promise<ManagedTerminalRecord>>();
   const contexts = new Map<string, ContextEntry>();
+  let contextExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+  const pruneContexts = () => {
+    if (contextExpiryTimer) clearTimeout(contextExpiryTimer);
+    contextExpiryTimer = null;
+    const now = Date.now();
+    let nextExpiry = Infinity;
+    for (const [reference, context] of contexts) {
+      const expires = Date.parse(context.expiresAt);
+      if (expires <= now) contexts.delete(reference);
+      else nextExpiry = Math.min(nextExpiry, expires);
+    }
+    if (nextExpiry !== Infinity) {
+      contextExpiryTimer = setTimeout(
+        pruneContexts,
+        Math.max(1, nextExpiry - now)
+      );
+      contextExpiryTimer.unref?.();
+    }
+  };
   const previewSignalListeners = new Set<
     (signal: ManagedTerminalPreviewSignal) => void
   >();
   let initialized = false;
   let initialization: Promise<void> | null = null;
   let closed = false;
-  let workspaceDriver: ReturnType<
-    typeof createGitExecutionWorkspaceDriver
+  let checkoutDriver: ReturnType<
+    typeof createGitExecutionCheckoutDriver
   > | null = null;
-  const requireWorkspaceDriver = () =>
-    (workspaceDriver ??= createGitExecutionWorkspaceDriver({
-      managedRoot: resolve(options.koedHome, "managed-workspaces", "worktrees")
+  const requireCheckoutDriver = () =>
+    (checkoutDriver ??= createGitExecutionCheckoutDriver({
+      managedRoot: resolve(options.koedHome, "managed-checkouts", "worktrees")
     }));
   const detachedTtlMs = options.detachedTtlMs ?? 30 * 60 * 1_000;
   const verifyPreviewListenerOwnership =
@@ -435,7 +473,68 @@ export const createManagedTerminalRuntime = (options: {
     failureCode: runtime.record.failureCode
   });
 
-  const start = async (
+  const assertExecutionAuthority = async (
+    ownerUserId: string,
+    executionId: string,
+    terminalId?: string
+  ): Promise<ManagedTerminalExecutionAuthority> => {
+    const repository = options.requireRepository();
+    const [execution, binding] = await Promise.all([
+      options.resolveExecutionAuthority
+        ? options.resolveExecutionAuthority(ownerUserId, executionId)
+        : repository.getManagedConversationExecution(
+            { userId: ownerUserId },
+            executionId
+          ),
+      repository.getManagedConversationRuntimeBinding(
+        { userId: ownerUserId },
+        executionId
+      )
+    ]);
+    const runner = identity();
+    if (!execution || !binding)
+      throw terminalError(
+        "Terminal execution was not found",
+        404,
+        "execution_missing"
+      );
+    if (
+      execution.id !== executionId ||
+      execution.executionGeneration !== binding.executionGeneration ||
+      execution.runnerDeploymentId !== runner.deploymentId ||
+      execution.runnerDeviceId !== runner.deviceId ||
+      binding.deploymentId !== runner.deploymentId ||
+      binding.deviceId !== runner.deviceId ||
+      binding.checkoutLifecycle !== "ready"
+    ) {
+      throw terminalError(
+        "Terminal execution authority is stale",
+        409,
+        "execution_stale"
+      );
+    }
+    if (terminalId) {
+      const terminal = terminals.get(terminalId);
+      if (
+        !terminal ||
+        terminal.ownerUserId !== ownerUserId ||
+        terminal.executionId !== executionId ||
+        terminal.record.executionGeneration !== execution.executionGeneration ||
+        !["starting", "running", "reconciling", "quiesced"].includes(
+          execution.state
+        )
+      ) {
+        throw terminalError(
+          "Terminal generation is stale",
+          409,
+          "terminal_fenced"
+        );
+      }
+    }
+    return execution;
+  };
+
+  const startOnce = async (
     ownerUserId: string,
     executionId: string,
     record: ManagedTerminalRecord
@@ -445,13 +544,6 @@ export const createManagedTerminalRuntime = (options: {
     const existing = terminals.get(record.id);
     if (existing) return existing.record;
     if (record.state !== "creating") return record;
-    if (terminals.size >= maximumRuntimeTerminals) {
-      throw terminalError(
-        "Terminal runtime limit reached",
-        503,
-        "runtime_limit"
-      );
-    }
     const runner = identity();
     if (
       record.runnerDeploymentId !== runner.deploymentId ||
@@ -465,10 +557,7 @@ export const createManagedTerminalRuntime = (options: {
     }
     const repository = options.requireRepository();
     const [execution, binding, shell] = await Promise.all([
-      repository.getManagedConversationExecution(
-        { userId: ownerUserId },
-        executionId
-      ),
+      assertExecutionAuthority(ownerUserId, executionId),
       repository.getManagedConversationRuntimeBinding(
         { userId: ownerUserId },
         executionId
@@ -483,17 +572,20 @@ export const createManagedTerminalRuntime = (options: {
       );
     }
     if (
+      !["starting", "running", "reconciling", "quiesced"].includes(
+        execution.state
+      ) ||
       execution.executionGeneration !== record.executionGeneration ||
       binding.executionGeneration !== record.executionGeneration ||
-      binding.workspaceLifecycle !== "ready" ||
-      binding.workspaceId !== record.workspaceId ||
+      binding.checkoutLifecycle !== "ready" ||
+      binding.checkoutId !== record.checkoutId ||
       binding.deploymentId !== runner.deploymentId ||
       binding.deviceId !== runner.deviceId
     ) {
       throw terminalError(
-        "Terminal workspace authority is stale",
+        "Terminal checkout authority is stale",
         409,
-        "workspace_stale"
+        "checkout_stale"
       );
     }
     if (!shell) {
@@ -504,19 +596,21 @@ export const createManagedTerminalRuntime = (options: {
       );
     }
     const verified = await (
-      await requireWorkspaceDriver()
-    ).verify(workspaceIdentityFor(binding));
+      await requireCheckoutDriver()
+    ).verify(checkoutIdentityFor(binding));
     if (
-      verified.workspaceId !== record.workspaceId ||
+      verified.checkoutId !== record.checkoutId ||
       verified.canonicalPath !== binding.projectPath
     ) {
       throw terminalError(
-        "Terminal workspace identity changed",
+        "Terminal checkout identity changed",
         409,
-        "workspace_changed"
+        "checkout_changed"
       );
     }
     let pty: nodePty.IPty;
+    if (closed)
+      throw terminalError("Terminal runtime is closed", 503, "runtime_closed");
     try {
       pty = nodePty.spawn(shell.executable, shell.args, {
         name: "xterm-256color",
@@ -637,12 +731,15 @@ export const createManagedTerminalRuntime = (options: {
         )
         .then(() => emit(runtime, exitFrame(runtime)))
         .catch((error) => options.onError?.(error, "terminal_exit_transition"))
-        .finally(() => terminals.delete(runtime.record.id));
+        .finally(() => {
+          if (terminals.get(runtime.record.id) === runtime)
+            terminals.delete(runtime.record.id);
+        });
     });
     try {
       return await activation;
     } catch (error) {
-      terminals.delete(record.id);
+      if (terminals.get(record.id) === runtime) terminals.delete(record.id);
       try {
         pty.kill(platform() === "win32" ? undefined : "SIGKILL");
       } catch (killError) {
@@ -650,6 +747,33 @@ export const createManagedTerminalRuntime = (options: {
       }
       throw error;
     }
+  };
+
+  const start = (
+    ownerUserId: string,
+    executionId: string,
+    record: ManagedTerminalRecord
+  ): Promise<ManagedTerminalRecord> => {
+    const pending = starting.get(record.id);
+    if (pending) return pending;
+    const existing = terminals.get(record.id);
+    if (existing) return Promise.resolve(existing.record);
+    if (record.state !== "creating") return Promise.resolve(record);
+    if (
+      new Set([...terminals.keys(), ...starting.keys()]).size >=
+      maximumRuntimeTerminals
+    ) {
+      return Promise.reject(
+        terminalError("Terminal runtime limit reached", 503, "runtime_limit")
+      );
+    }
+    const startup = Promise.resolve()
+      .then(() => startOnce(ownerUserId, executionId, record))
+      .finally(() => {
+        if (starting.get(record.id) === startup) starting.delete(record.id);
+      });
+    starting.set(record.id, startup);
+    return startup;
   };
 
   const stopRuntime = async (runtime: RuntimeTerminal) => {
@@ -674,6 +798,7 @@ export const createManagedTerminalRuntime = (options: {
 
   return {
     initialize,
+    assertExecutionAuthority,
 
     async shellProfiles() {
       return [
@@ -687,17 +812,33 @@ export const createManagedTerminalRuntime = (options: {
 
     async create(ownerUserId, executionId, input) {
       await initialize();
+      const authority = await assertExecutionAuthority(
+        ownerUserId,
+        executionId
+      );
+      if (authority.executionGeneration !== input.executionGeneration) {
+        throw terminalError(
+          "Terminal generation is stale",
+          409,
+          "terminal_fenced"
+        );
+      }
       const record = await options
         .requireRepository()
         .createManagedTerminal(
           { userId: ownerUserId },
-          { executionId, ...input }
+          { executionId, ...input },
+          authority
         );
       return start(ownerUserId, executionId, record);
     },
 
     async attach(input) {
       await initialize();
+      const authority = await assertExecutionAuthority(
+        input.ownerUserId,
+        input.executionId
+      );
       const record = await options
         .requireRepository()
         .getManagedTerminal(
@@ -706,7 +847,13 @@ export const createManagedTerminalRuntime = (options: {
         );
       if (!record)
         throw terminalError("Terminal was not found", 404, "terminal_missing");
-      if (record.lifecycleGeneration !== input.lifecycleGeneration) {
+      if (
+        !["starting", "running", "reconciling", "quiesced"].includes(
+          authority.state
+        ) ||
+        record.lifecycleGeneration !== input.lifecycleGeneration ||
+        record.executionGeneration !== authority.executionGeneration
+      ) {
         throw terminalError(
           "Terminal lifecycle is stale",
           409,
@@ -876,8 +1023,44 @@ export const createManagedTerminalRuntime = (options: {
               "context_too_large"
             );
           }
-          const contextReference = `mtc1_${randomBytes(32).toString("base64url")}`;
           const content = contentBytes.toString("utf8");
+          if (
+            classifySourceContent("terminal-context.txt", contentBytes) ||
+            classifySourceContent(
+              "terminal-context.txt",
+              Buffer.from(content.replace(ansiEscapePattern, ""))
+            )
+          ) {
+            throw terminalError(
+              "Terminal context is excluded by the source content policy",
+              403,
+              "context_content_denied"
+            );
+          }
+          pruneContexts();
+          let totalBytes = 0;
+          let ownerBytes = 0;
+          let ownerEntries = 0;
+          for (const existing of contexts.values()) {
+            totalBytes += existing.byteCount;
+            if (existing.ownerUserId === input.ownerUserId) {
+              ownerBytes += existing.byteCount;
+              ownerEntries += 1;
+            }
+          }
+          if (
+            contexts.size >= maximumContextEntries ||
+            totalBytes + contentBytes.byteLength > maximumContextBytes ||
+            ownerEntries >= maximumOwnerContextEntries ||
+            ownerBytes + contentBytes.byteLength > maximumOwnerContextBytes
+          ) {
+            throw terminalError(
+              "Terminal context capacity reached",
+              429,
+              "context_capacity"
+            );
+          }
+          const contextReference = `mtc1_${randomBytes(32).toString("base64url")}`;
           const context: ContextEntry = {
             contextReference,
             terminalId: record.id,
@@ -892,9 +1075,11 @@ export const createManagedTerminalRuntime = (options: {
             ).toISOString(),
             ownerUserId: input.ownerUserId,
             executionId: input.executionId,
-            content
+            content,
+            byteCount: contentBytes.byteLength
           };
           contexts.set(contextReference, context);
+          pruneContexts();
           return [
             {
               protocolVersion: MANAGED_TERMINAL_PROTOCOL_VERSION,
@@ -935,6 +1120,7 @@ export const createManagedTerminalRuntime = (options: {
     },
 
     async stop(input) {
+      await assertExecutionAuthority(input.ownerUserId, input.executionId);
       await initialize();
       const record = await options
         .requireRepository()
@@ -950,6 +1136,7 @@ export const createManagedTerminalRuntime = (options: {
     },
 
     resolveContext(input) {
+      pruneContexts();
       const context = contexts.get(input.contextReference);
       if (
         !context ||
@@ -957,11 +1144,23 @@ export const createManagedTerminalRuntime = (options: {
         context.executionId !== input.executionId ||
         Date.parse(context.expiresAt) <= Date.now()
       ) {
-        contexts.delete(input.contextReference);
         throw terminalError(
           "Terminal context is unavailable",
           409,
           "context_unavailable"
+        );
+      }
+      if (
+        classifySourceContent(
+          "terminal-context.txt",
+          Buffer.from(context.content.replace(ansiEscapePattern, ""))
+        )
+      ) {
+        contexts.delete(input.contextReference);
+        throw terminalError(
+          "Terminal context is excluded by the source content policy",
+          403,
+          "context_content_denied"
         );
       }
       return context;
@@ -1003,6 +1202,7 @@ export const createManagedTerminalRuntime = (options: {
     async close() {
       if (closed) return;
       closed = true;
+      await Promise.allSettled(starting.values());
       const active = [...terminals.values()];
       await Promise.all(
         active.map(async (runtime) => {
@@ -1026,6 +1226,8 @@ export const createManagedTerminalRuntime = (options: {
         }
       }
       contexts.clear();
+      if (contextExpiryTimer) clearTimeout(contextExpiryTimer);
+      contextExpiryTimer = null;
       previewSignalListeners.clear();
     }
   };

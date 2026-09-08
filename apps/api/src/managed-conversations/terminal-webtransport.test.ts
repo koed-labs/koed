@@ -65,6 +65,7 @@ const fixture = () => {
     }
   ]);
   const runtime = {
+    assertExecutionAuthority: vi.fn(async () => ({})),
     attach: vi.fn(async () => ({
       initialFrames: [
         {

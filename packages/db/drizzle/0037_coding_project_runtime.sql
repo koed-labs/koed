@@ -1,3 +1,15 @@
+-- Launch choices and checkout ownership cannot be inferred from legacy encrypted
+-- commands or from a runner binding to a User-owned working directory.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM "managed_conversation_executions")
+    OR EXISTS (SELECT 1 FROM "managed_conversation_runtime_bindings") THEN
+    RAISE EXCEPTION 'Migration 0037 requires an explicit alpha managed Conversation reset'
+      USING HINT = 'Back up the database and stop runners. Retained managed executions and runtime bindings lack immutable launch configuration and checkout ownership. Export any needed history, then explicitly reset those execution records before retrying; captured Conversations and Project files must be preserved.';
+  END IF;
+END;
+$$;
+--> statement-breakpoint
 CREATE TYPE "public"."conversation_presentation_mode" AS ENUM('automatic', 'active', 'settled');--> statement-breakpoint
 CREATE TABLE "conversation_presentation_policy_rules" (
 	"source_kind" text NOT NULL,
@@ -193,7 +205,7 @@ CREATE TABLE "managed_conversation_terminals" (
 	"owner_user_id" uuid NOT NULL,
 	"execution_id" uuid NOT NULL,
 	"execution_generation" integer NOT NULL,
-	"workspace_id" uuid NOT NULL,
+	"checkout_id" uuid NOT NULL,
 	"runner_deployment_id" uuid NOT NULL,
 	"runner_device_id" uuid NOT NULL,
 	"lifecycle_generation" integer DEFAULT 1 NOT NULL,
@@ -328,9 +340,9 @@ ALTER TABLE "managed_conversation_executions" ADD COLUMN "reasoning_effort" text
 ALTER TABLE "managed_conversation_executions" ADD COLUMN "permission_mode" text NOT NULL;--> statement-breakpoint
 ALTER TABLE "managed_conversation_executions" ADD COLUMN "runner_kind" text NOT NULL;--> statement-breakpoint
 ALTER TABLE "managed_conversation_runtime_bindings" ADD COLUMN "source_project_path" text NOT NULL;--> statement-breakpoint
-ALTER TABLE "managed_conversation_runtime_bindings" ADD COLUMN "workspace_id" uuid;--> statement-breakpoint
-ALTER TABLE "managed_conversation_runtime_bindings" ADD COLUMN "workspace_kind" text DEFAULT 'pending' NOT NULL;--> statement-breakpoint
-ALTER TABLE "managed_conversation_runtime_bindings" ADD COLUMN "workspace_lifecycle" text DEFAULT 'pending' NOT NULL;--> statement-breakpoint
+ALTER TABLE "managed_conversation_runtime_bindings" ADD COLUMN "checkout_id" uuid;--> statement-breakpoint
+ALTER TABLE "managed_conversation_runtime_bindings" ADD COLUMN "checkout_kind" text DEFAULT 'pending' NOT NULL;--> statement-breakpoint
+ALTER TABLE "managed_conversation_runtime_bindings" ADD COLUMN "checkout_lifecycle" text DEFAULT 'pending' NOT NULL;--> statement-breakpoint
 ALTER TABLE "managed_conversation_runtime_bindings" ADD COLUMN "cleanup_state" text DEFAULT 'not_requested' NOT NULL;--> statement-breakpoint
 ALTER TABLE "managed_conversation_runtime_bindings" ADD COLUMN "vcs_driver" text;--> statement-breakpoint
 ALTER TABLE "managed_conversation_runtime_bindings" ADD COLUMN "local_repository_common_directory" text;--> statement-breakpoint
@@ -362,7 +374,7 @@ ALTER TABLE "managed_conversation_execution_diffs" ADD CONSTRAINT "managed_conve
 ALTER TABLE "managed_conversation_runtime_items" ADD CONSTRAINT "managed_conversation_runtime_items_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "managed_conversation_runtime_items" ADD CONSTRAINT "managed_conversation_runtime_items_execution_id_managed_conversation_executions_id_fk" FOREIGN KEY ("execution_id") REFERENCES "public"."managed_conversation_executions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "managed_conversation_terminals" ADD CONSTRAINT "managed_conversation_terminals_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "managed_conversation_terminals" ADD CONSTRAINT "managed_conversation_terminals_execution_id_managed_conversation_executions_id_fk" FOREIGN KEY ("execution_id") REFERENCES "public"."managed_conversation_executions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "managed_conversation_terminals" ADD CONSTRAINT "managed_conversation_terminals_execution_id_managed_conversation_runtime_bindings_execution_id_fk" FOREIGN KEY ("execution_id") REFERENCES "public"."managed_conversation_runtime_bindings"("execution_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "realtime_transport_tickets" ADD CONSTRAINT "realtime_transport_tickets_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_sessions" ADD CONSTRAINT "user_sessions_id_user_unique" UNIQUE("id","user_id");--> statement-breakpoint
 ALTER TABLE "realtime_transport_tickets" ADD CONSTRAINT "realtime_transport_tickets_session_owner_fk" FOREIGN KEY ("user_session_id","owner_user_id") REFERENCES "public"."user_sessions"("id","user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -380,13 +392,10 @@ CREATE INDEX "realtime_transport_tickets_expiry_idx" ON "realtime_transport_tick
 CREATE INDEX "realtime_transport_tickets_session_idx" ON "realtime_transport_tickets" USING btree ("user_session_id");--> statement-breakpoint
 CREATE INDEX "realtime_transport_tickets_device_idx" ON "realtime_transport_tickets" USING btree ("device_credential_id");--> statement-breakpoint
 CREATE INDEX "pds_peer_route_expiry_idx" ON "pds_peer_routes" USING btree ("group_id","expires_at");--> statement-breakpoint
-CREATE INDEX "managed_conversation_runtime_binding_preparation_idx" ON "managed_conversation_runtime_bindings" USING btree ("deployment_id","device_id","workspace_lifecycle","created_at");--> statement-breakpoint
-CREATE INDEX "managed_conversation_runtime_binding_cleanup_idx" ON "managed_conversation_runtime_bindings" USING btree ("deployment_id","device_id","workspace_lifecycle","cleanup_state","updated_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "managed_conversation_runtime_binding_active_path_unique" ON "managed_conversation_runtime_bindings" USING btree ("project_path") WHERE "managed_conversation_runtime_bindings"."workspace_kind" = 'koed_managed_worktree'
-          and "managed_conversation_runtime_bindings"."workspace_lifecycle" in ('ready', 'cleanup_requested');--> statement-breakpoint
-ALTER TABLE "projection_policy_rules" DROP COLUMN "project_to_ui";--> statement-breakpoint
-ALTER TABLE "projection_policy_rules" DROP COLUMN "create_message";--> statement-breakpoint
-ALTER TABLE "projection_policy_rules" DROP COLUMN "create_tool_event";--> statement-breakpoint
+CREATE INDEX "managed_conversation_runtime_binding_preparation_idx" ON "managed_conversation_runtime_bindings" USING btree ("deployment_id","device_id","checkout_lifecycle","created_at");--> statement-breakpoint
+CREATE INDEX "managed_conversation_runtime_binding_cleanup_idx" ON "managed_conversation_runtime_bindings" USING btree ("deployment_id","device_id","checkout_lifecycle","cleanup_state","updated_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "managed_conversation_runtime_binding_active_path_unique" ON "managed_conversation_runtime_bindings" USING btree ("project_path") WHERE "managed_conversation_runtime_bindings"."checkout_kind" = 'koed_managed_worktree'
+          and "managed_conversation_runtime_bindings"."checkout_lifecycle" in ('ready', 'cleanup_requested');--> statement-breakpoint
 ALTER TABLE "managed_conversation_commands" ADD CONSTRAINT "managed_conversation_commands_checkpoint_pending_check" CHECK (("managed_conversation_commands"."result"->>'phase') is distinct from 'checkpoint_pending'
         or (
           "managed_conversation_commands"."command_kind" = 'prompt'
@@ -462,9 +471,9 @@ ALTER TABLE "managed_conversation_executions" ADD CONSTRAINT "managed_conversati
         and ("managed_conversation_executions"."reasoning_effort" is null or length(trim("managed_conversation_executions"."reasoning_effort")) between 1 and 64)
         and "managed_conversation_executions"."permission_mode" in ('supervised', 'auto_edit', 'auto', 'full_access')
         and "managed_conversation_executions"."runner_kind" = 'local_device');--> statement-breakpoint
-ALTER TABLE "managed_conversation_runtime_bindings" ADD CONSTRAINT "managed_conversation_runtime_binding_workspace_check" CHECK ((("managed_conversation_runtime_bindings"."workspace_lifecycle" = 'pending'
-          and "managed_conversation_runtime_bindings"."workspace_id" is null
-          and "managed_conversation_runtime_bindings"."workspace_kind" = 'pending'
+ALTER TABLE "managed_conversation_runtime_bindings" ADD CONSTRAINT "managed_conversation_runtime_binding_checkout_check" CHECK ((("managed_conversation_runtime_bindings"."checkout_lifecycle" = 'pending'
+          and "managed_conversation_runtime_bindings"."checkout_id" is null
+          and "managed_conversation_runtime_bindings"."checkout_kind" = 'pending'
           and "managed_conversation_runtime_bindings"."creation_operation_id" is null
           and "managed_conversation_runtime_bindings"."vcs_driver" is null
           and "managed_conversation_runtime_bindings"."local_repository_common_directory" is null
@@ -475,11 +484,11 @@ ALTER TABLE "managed_conversation_runtime_bindings" ADD CONSTRAINT "managed_conv
           and "managed_conversation_runtime_bindings"."base_object_id" is null
           and "managed_conversation_runtime_bindings"."branch_ref" is null
           and "managed_conversation_runtime_bindings"."head_object_id" is null)
-        or ("managed_conversation_runtime_bindings"."workspace_lifecycle" in ('ready', 'cleanup_requested', 'removed', 'cleanup_failed', 'orphaned')
-          and "managed_conversation_runtime_bindings"."workspace_id" is not null
-          and "managed_conversation_runtime_bindings"."workspace_kind" in ('koed_managed_worktree', 'user_managed_checkout', 'non_vcs_directory')
+        or ("managed_conversation_runtime_bindings"."checkout_lifecycle" in ('ready', 'cleanup_requested', 'removed', 'cleanup_failed', 'orphaned')
+          and "managed_conversation_runtime_bindings"."checkout_id" is not null
+          and "managed_conversation_runtime_bindings"."checkout_kind" in ('koed_managed_worktree', 'user_managed_checkout', 'non_vcs_directory')
           and "managed_conversation_runtime_bindings"."creation_operation_id" is not null
-          and (("managed_conversation_runtime_bindings"."workspace_kind" = 'non_vcs_directory'
+          and (("managed_conversation_runtime_bindings"."checkout_kind" = 'non_vcs_directory'
               and "managed_conversation_runtime_bindings"."vcs_driver" is null
               and "managed_conversation_runtime_bindings"."local_repository_common_directory" is null
               and "managed_conversation_runtime_bindings"."local_git_directory" is null
@@ -489,24 +498,24 @@ ALTER TABLE "managed_conversation_runtime_bindings" ADD CONSTRAINT "managed_conv
               and "managed_conversation_runtime_bindings"."base_object_id" is null
               and "managed_conversation_runtime_bindings"."branch_ref" is null
               and "managed_conversation_runtime_bindings"."head_object_id" is null)
-            or ("managed_conversation_runtime_bindings"."workspace_kind" in ('koed_managed_worktree', 'user_managed_checkout')
+            or ("managed_conversation_runtime_bindings"."checkout_kind" in ('koed_managed_worktree', 'user_managed_checkout')
               and "managed_conversation_runtime_bindings"."vcs_driver" = 'git'
               and length(trim("managed_conversation_runtime_bindings"."local_repository_common_directory")) > 0
               and length(trim("managed_conversation_runtime_bindings"."local_git_directory")) > 0
               and "managed_conversation_runtime_bindings"."repository_identity_hash" is not null
               and "managed_conversation_runtime_bindings"."worktree_identity_hash" is not null
               and "managed_conversation_runtime_bindings"."head_object_id" is not null
-              and ("managed_conversation_runtime_bindings"."workspace_kind" <> 'koed_managed_worktree'
+              and ("managed_conversation_runtime_bindings"."checkout_kind" <> 'koed_managed_worktree'
                 or ("managed_conversation_runtime_bindings"."base_ref" is not null
                   and "managed_conversation_runtime_bindings"."base_object_id" is not null
                   and "managed_conversation_runtime_bindings"."branch_ref" is not null))))))
-        and (("managed_conversation_runtime_bindings"."workspace_lifecycle" in ('pending', 'ready')
+        and (("managed_conversation_runtime_bindings"."checkout_lifecycle" in ('pending', 'ready')
             and "managed_conversation_runtime_bindings"."cleanup_state" = 'not_requested')
-          or ("managed_conversation_runtime_bindings"."workspace_lifecycle" = 'cleanup_requested'
+          or ("managed_conversation_runtime_bindings"."checkout_lifecycle" = 'cleanup_requested'
             and "managed_conversation_runtime_bindings"."cleanup_state" = 'requested')
-          or ("managed_conversation_runtime_bindings"."workspace_lifecycle" = 'removed'
+          or ("managed_conversation_runtime_bindings"."checkout_lifecycle" = 'removed'
             and "managed_conversation_runtime_bindings"."cleanup_state" = 'completed')
-          or ("managed_conversation_runtime_bindings"."workspace_lifecycle" in ('cleanup_failed', 'orphaned')
+          or ("managed_conversation_runtime_bindings"."checkout_lifecycle" in ('cleanup_failed', 'orphaned')
             and "managed_conversation_runtime_bindings"."cleanup_state" = 'failed'))
         and length(trim("managed_conversation_runtime_bindings"."source_project_path")) > 0
         and length(trim("managed_conversation_runtime_bindings"."project_path")) > 0
@@ -523,12 +532,24 @@ INSERT INTO "conversation_presentation_policy_state" ("id", "revision") VALUES (
 --> statement-breakpoint
 INSERT INTO "conversation_presentation_policy_rules" (
 	"source_kind", "source_adapter_version", "item_type", "description",
-	"presentation_mode", "renderer_kind"
+	"presentation_mode", "renderer_kind", "enabled"
 )
 SELECT
 	"source_kind", "source_adapter_version", "transcript_type",
 	'Owned Conversation presentation for ' || "transcript_type" || '.',
 	CASE
+		WHEN NOT "enabled" OR NOT "project_to_ui" THEN 'hidden'
+		WHEN "transcript_type" IN (
+			'user_message','assistant_message','agent_message','subagent_message',
+			'message','codex_transcript_user','codex_transcript_agent',
+			'codex_transcript_subagent','reasoning_summary','summary_reasoning',
+			'thought_summary','summary_thought','reasoning','thought'
+		) AND NOT "create_message" THEN 'hidden'
+		WHEN "transcript_type" IN (
+			'function_call','function_call_output','custom_tool_call',
+			'custom_tool_call_output','tool_call','tool_result',
+			'codex_tool_result','codex_transcript_tool','bash_execution'
+		) AND NOT "create_tool_event" THEN 'hidden'
 		WHEN "transcript_type" IN (
 			'user_message','assistant_message','agent_message','subagent_message',
 			'message','codex_transcript_user','codex_transcript_agent',
@@ -544,6 +565,18 @@ SELECT
 		ELSE 'hidden'
 	END,
 	CASE
+		WHEN NOT "enabled" OR NOT "project_to_ui" THEN 'generic'
+		WHEN "transcript_type" IN (
+			'user_message','assistant_message','agent_message','subagent_message',
+			'message','codex_transcript_user','codex_transcript_agent',
+			'codex_transcript_subagent','reasoning_summary','summary_reasoning',
+			'thought_summary','summary_thought','reasoning','thought'
+		) AND NOT "create_message" THEN 'generic'
+		WHEN "transcript_type" IN (
+			'function_call','function_call_output','custom_tool_call',
+			'custom_tool_call_output','tool_call','tool_result',
+			'codex_tool_result','codex_transcript_tool','bash_execution'
+		) AND NOT "create_tool_event" THEN 'generic'
 		WHEN "transcript_type" IN (
 			'user_message','assistant_message','agent_message','subagent_message',
 			'message','codex_transcript_user','codex_transcript_agent',
@@ -562,8 +595,13 @@ SELECT
 			'summary_thought','reasoning','thought'
 		) THEN 'reasoning_summary'
 		ELSE 'generic'
-	END
+	END, "enabled"
 FROM "projection_policy_rules";
+--> statement-breakpoint
+ALTER TABLE "projection_policy_rules" DROP COLUMN "project_to_ui";--> statement-breakpoint
+ALTER TABLE "projection_policy_rules" DROP COLUMN "create_message";--> statement-breakpoint
+ALTER TABLE "projection_policy_rules" DROP COLUMN "create_tool_event";--> statement-breakpoint
+
 --> statement-breakpoint
 INSERT INTO "conversation_presentation_policy_rules" (
 	"source_kind", "source_adapter_version", "item_type", "description",

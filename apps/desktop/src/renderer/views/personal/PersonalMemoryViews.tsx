@@ -92,8 +92,8 @@ import type {
   ManagedConversationRuntimeItem
 } from "../../../ipc/managed-conversation-protocol.js";
 import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
-import type { ManagedWorkspaceDesktopApi } from "../../../ipc/managed-workspace-protocol.js";
-import { ManagedWorkspaceCockpit } from "./ManagedWorkspaceCockpit.js";
+import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
+import { ManagedProjectCockpit } from "./ManagedProjectCockpit.js";
 import "./personal-memory.css";
 
 export type PersonalMemoryRoute =
@@ -119,7 +119,7 @@ export type PersonalMemoryWorkspaceProps = {
   } | null;
   managedConversations?: ManagedConversationDesktopApi | null;
   localAiClients?: DesktopApi["localAiClients"];
-  managedWorkspace?: ManagedWorkspaceDesktopApi | null;
+  managedProject?: ManagedProjectDesktopApi | null;
   markdownAdapters?: MarkdownPlatformAdapters;
   onInspectEvent?: (selection: PersonalMemoryInspectorEvent) => void;
   onNavigate: (route: PersonalMemoryRoute) => void;
@@ -1429,7 +1429,7 @@ function StoreConversation({
   managedConversationRecoveryRevision,
   managedConversationUpdate,
   managedConversations,
-  managedWorkspace,
+  managedProject,
   markdownAdapters,
   pendingCanonicalConversation,
   managedDraft,
@@ -1445,7 +1445,7 @@ function StoreConversation({
   managedConversationRecoveryRevision: number;
   managedConversationUpdate: PersonalMemoryWorkspaceProps["managedConversationUpdate"];
   managedConversations?: ManagedConversationDesktopApi | null;
-  managedWorkspace?: ManagedWorkspaceDesktopApi | null;
+  managedProject?: ManagedProjectDesktopApi | null;
   markdownAdapters?: MarkdownPlatformAdapters;
   pendingCanonicalConversation: boolean;
   managedDraft: ManagedConversationDraft | null;
@@ -1473,7 +1473,7 @@ function StoreConversation({
   const [transientAssistantOutputs, setTransientAssistantOutputs] = useState<
     PersonalDesktopConversationEvent[]
   >([]);
-  const [workspaceIdentity, setWorkspaceIdentity] = useState<{
+  const [checkoutIdentity, setCheckoutIdentity] = useState<{
     executionId: string;
     executionGeneration: number;
   } | null>(null);
@@ -1665,6 +1665,7 @@ function StoreConversation({
   useEffect(() => {
     setOptimisticPrompts([]);
     setTransientAssistantOutputs([]);
+    setContextAttachments([]);
   }, [routeSessionId]);
   const overlayEvents = [
     ...unreconciledOptimisticPrompts.map(({ event }) => event),
@@ -1712,10 +1713,10 @@ function StoreConversation({
             thread={thread}
           />
         </div>
-        {managedWorkspace && workspaceIdentity ? (
-          <ManagedWorkspaceCockpit
-            api={managedWorkspace}
-            identity={workspaceIdentity}
+        {managedProject && checkoutIdentity ? (
+          <ManagedProjectCockpit
+            api={managedProject}
+            identity={checkoutIdentity}
             onAttachFile={attachFileContext}
             onAttachTerminal={attachTerminalContext}
             revision={managedConversationRevision}
@@ -1781,7 +1782,7 @@ function StoreConversation({
           }}
           onTransientOutputs={mergeTransientOutputs}
           onConversationIdentityChanged={setCanonicalConversation}
-          onWorkspaceIdentityChanged={setWorkspaceIdentity}
+          onCheckoutIdentityChanged={setCheckoutIdentity}
         />
       ) : null}
     </div>
@@ -2153,7 +2154,7 @@ function ManagedConversationComposer({
   onRejectOptimisticPrompt,
   onTransientOutputs,
   onConversationIdentityChanged,
-  onWorkspaceIdentityChanged
+  onCheckoutIdentityChanged
 }: {
   api: ManagedConversationDesktopApi;
   authorizeTransfer?: PersonalMemoryWorkspaceProps["authorizeManagedConversationTransfer"];
@@ -2186,7 +2187,7 @@ function ManagedConversationComposer({
   onConversationIdentityChanged: (
     conversation: ManagedConversationIdentity
   ) => void;
-  onWorkspaceIdentityChanged: (
+  onCheckoutIdentityChanged: (
     value: { executionId: string; executionGeneration: number } | null
   ) => void;
 }) {
@@ -2410,7 +2411,7 @@ function ManagedConversationComposer({
   }, [onTransientOutputs, runtime]);
 
   useEffect(() => {
-    onWorkspaceIdentityChanged(
+    onCheckoutIdentityChanged(
       resolvedConversation.executionId && runtime
         ? {
             executionId: resolvedConversation.executionId,
@@ -2418,8 +2419,8 @@ function ManagedConversationComposer({
           }
         : null
     );
-    return () => onWorkspaceIdentityChanged(null);
-  }, [onWorkspaceIdentityChanged, resolvedConversation.executionId, runtime]);
+    return () => onCheckoutIdentityChanged(null);
+  }, [onCheckoutIdentityChanged, resolvedConversation.executionId, runtime]);
 
   useEffect(() => {
     const executionId = resolvedConversation.executionId;
@@ -3270,7 +3271,7 @@ function SessionDetail({
   managedConversationRecoveryRevision,
   managedConversationUpdate,
   managedConversations,
-  managedWorkspace,
+  managedProject,
   markdownAdapters,
   onAssigned,
   onInspectEvent,
@@ -3294,7 +3295,7 @@ function SessionDetail({
   managedConversationRecoveryRevision: number;
   managedConversationUpdate: PersonalMemoryWorkspaceProps["managedConversationUpdate"];
   managedConversations?: ManagedConversationDesktopApi | null;
-  managedWorkspace?: ManagedWorkspaceDesktopApi | null;
+  managedProject?: ManagedProjectDesktopApi | null;
   markdownAdapters?: MarkdownPlatformAdapters;
   onAssigned?: PersonalMemoryWorkspaceProps["onSessionProjectAssigned"];
   onInspectEvent?: PersonalMemoryWorkspaceProps["onInspectEvent"];
@@ -3473,7 +3474,7 @@ function SessionDetail({
           }
           managedConversationUpdate={managedConversationUpdate}
           managedConversations={managedConversations}
-          managedWorkspace={managedWorkspace}
+          managedProject={managedProject}
           markdownAdapters={markdownAdapters}
           onInspectEvent={onInspectEvent}
           pendingCanonicalConversation={pendingCanonicalConversation}
@@ -3506,7 +3507,7 @@ export function PersonalMemoryWorkspace({
   managedConversationUpdate = null,
   managedConversations,
   localAiClients,
-  managedWorkspace,
+  managedProject,
   markdownAdapters,
   onInspectEvent,
   onNavigate,
@@ -3840,7 +3841,7 @@ export function PersonalMemoryWorkspace({
               }
               managedConversationUpdate={managedConversationUpdate}
               managedConversations={managedConversations}
-              managedWorkspace={managedWorkspace}
+              managedProject={managedProject}
               markdownAdapters={markdownAdapters}
               onAssigned={onSessionProjectAssigned}
               onInspectEvent={onInspectEvent}

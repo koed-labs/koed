@@ -73,6 +73,7 @@ export interface EnrollmentCredentialCustodyResult {
 export const DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES = [
   "personal_collaboration_read",
   "personal_collaboration_write",
+  "managed_execution",
   "managed_file_read",
   "managed_terminal",
   "managed_preview",
@@ -1289,6 +1290,78 @@ export const rotateDesktopLocalCredential = (
         ...generateDesktopCredentialMaterial(resolvedDeps),
         ownerUserId: current.ownerUserId,
         operationFamilies: current.operationFamilies,
+        createdAt: current.createdAt,
+        updatedAt: now
+      };
+      store.secrets[desktopLocalCredentialReference] = encryptSecret(
+        key,
+        JSON.stringify(payload),
+        now,
+        resolvedDeps,
+        previous
+      );
+      store.updatedAt = now;
+      return {
+        result: desktopLocalCredentialAuthorization(payload),
+        changed: true
+      };
+    }
+  );
+};
+
+/** Upgrade known product defaults only, rotating the old credential atomically. */
+export const upgradeDesktopLocalCredential = (
+  koedHome: string,
+  ownerUserId: string,
+  deps: UpstreamCredentialSecretStoreDeps = {}
+): DesktopLocalCredentialAuthorization | null => {
+  const resolvedDeps = depsWithDefaults(deps);
+  return mutateStore(
+    koedHome,
+    resolvedDeps,
+    ["desktop_credential"],
+    (store) => {
+      const key = readStoreKey(koedHome, resolvedDeps);
+      const previous = store.secrets[desktopLocalCredentialReference];
+      if (!key || !previous) return { result: null, changed: false };
+      let current: DesktopLocalCredentialPayload | null;
+      try {
+        current = parseDesktopLocalCredentialPayload(
+          decryptSecret(key, previous)
+        );
+      } catch {
+        return { result: null, changed: false };
+      }
+      if (
+        !current ||
+        current.ownerUserId !== validateDesktopOwnerUserId(ownerUserId)
+      )
+        return { result: null, changed: false };
+      const legacyDefaults = [
+        ["personal_collaboration_read", "personal_collaboration_write"],
+        DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES.filter(
+          (family) => family !== "managed_execution"
+        )
+      ];
+      if (
+        !legacyDefaults.some(
+          (families) =>
+            families.length === current.operationFamilies.length &&
+            families.every((family) =>
+              current.operationFamilies.includes(
+                family as DesktopLocalCredentialOperationFamily
+              )
+            )
+        )
+      ) {
+        return { result: null, changed: false };
+      }
+      const now = resolvedDeps.now().toISOString();
+      const payload: DesktopLocalCredentialPayload = {
+        version: 1,
+        ...generateDesktopCredentialMaterial(resolvedDeps),
+        ownerUserId: current.ownerUserId,
+        operationFamilies: [...DESKTOP_LOCAL_CREDENTIAL_OPERATION_FAMILIES],
         createdAt: current.createdAt,
         updatedAt: now
       };

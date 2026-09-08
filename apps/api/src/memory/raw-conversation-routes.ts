@@ -66,15 +66,50 @@ export const registerRawConversationRoutes = (
         { userId: user.id },
         input
       );
-      const presentation = await repo.projectPendingConversationItems(
-        { userId: user.id },
-        {
-          visibility: "personal",
-          conversationItemIds: reset.conversationItemIds,
-          limit: Math.max(reset.conversationItemIds.length, 1),
-          presentationOnly: true
+      const presentation: Awaited<
+        ReturnType<typeof repo.projectPendingConversationItems>
+      > = {
+        rawItemsScanned: 0,
+        rawItemsProjected: 0,
+        rawItemsWaitingForAgentSeal: 0,
+        messagesCreated: 0,
+        toolEventsCreated: 0,
+        memoryEventsCreated: 0,
+        tokenUsageRowsCreated: 0,
+        memoryEventIds: [],
+        memoryEventScopes: []
+      };
+      for (
+        let offset = 0;
+        offset < reset.conversationItemIds.length;
+        offset += 1_000
+      ) {
+        const batch = await repo.projectPendingConversationItems(
+          { userId: user.id },
+          {
+            visibility: "personal",
+            conversationItemIds: reset.conversationItemIds.slice(
+              offset,
+              offset + 1_000
+            ),
+            limit: 1_000,
+            presentationOnly: true
+          }
+        );
+        for (const key of [
+          "rawItemsScanned",
+          "rawItemsProjected",
+          "rawItemsWaitingForAgentSeal",
+          "messagesCreated",
+          "toolEventsCreated",
+          "memoryEventsCreated",
+          "tokenUsageRowsCreated"
+        ] as const) {
+          presentation[key] += batch[key];
         }
-      );
+        presentation.memoryEventIds.push(...batch.memoryEventIds);
+        presentation.memoryEventScopes.push(...batch.memoryEventScopes);
+      }
       return { reset, presentation };
     }
   );

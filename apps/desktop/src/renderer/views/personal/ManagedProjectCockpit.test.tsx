@@ -1,15 +1,15 @@
 // @vitest-environment happy-dom
 
 import type {
-  ManagedWorkspaceDesktopApi,
-  ManagedWorkspaceRequest,
-  ManagedWorkspaceResult
-} from "../../../ipc/managed-workspace-protocol.js";
+  ManagedProjectDesktopApi,
+  ManagedProjectRequest,
+  ManagedProjectResult
+} from "../../../ipc/managed-project-protocol.js";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ManagedWorkspaceCockpit } from "./ManagedWorkspaceCockpit.js";
+import { ManagedProjectCockpit } from "./ManagedProjectCockpit.js";
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -35,7 +35,7 @@ vi.mock("@xterm/addon-fit", () => ({
 const executionId = "11111111-1111-4111-8111-111111111111";
 const now = "2026-08-19T00:00:00.000Z";
 
-const diffResult = (requestId: string): ManagedWorkspaceResult => ({
+const diffResult = (requestId: string): ManagedProjectResult => ({
   requestId,
   executionId,
   operation: "diff_read",
@@ -74,7 +74,7 @@ const diffResult = (requestId: string): ManagedWorkspaceResult => ({
   }
 });
 
-describe("ManagedWorkspaceCockpit", () => {
+describe("ManagedProjectCockpit", () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -91,10 +91,10 @@ describe("ManagedWorkspaceCockpit", () => {
     vi.unstubAllGlobals();
   });
 
-  const render = async (api: ManagedWorkspaceDesktopApi, revision: number) => {
+  const render = async (api: ManagedProjectDesktopApi, revision: number) => {
     await act(async () => {
       root.render(
-        <ManagedWorkspaceCockpit
+        <ManagedProjectCockpit
           api={api}
           identity={{ executionId, executionGeneration: 1 }}
           onAttachFile={vi.fn()}
@@ -107,9 +107,7 @@ describe("ManagedWorkspaceCockpit", () => {
 
   it("renders exact diffs and does not refresh terminals for unrelated revisions", async () => {
     const command = vi.fn(
-      async (
-        request: ManagedWorkspaceRequest
-      ): Promise<ManagedWorkspaceResult> => {
+      async (request: ManagedProjectRequest): Promise<ManagedProjectResult> => {
         if (request.operation === "diff_read")
           return diffResult(request.requestId);
         if (request.operation === "terminal_list") {
@@ -126,16 +124,14 @@ describe("ManagedWorkspaceCockpit", () => {
         throw new Error(`Unexpected operation ${request.operation}`);
       }
     );
-    const api: ManagedWorkspaceDesktopApi = {
+    const api: ManagedProjectDesktopApi = {
       command,
       subscribe: () => () => undefined
     };
     await render(api, 1);
     await act(async () => {
       container
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="Open coding workspace"]'
-        )
+        .querySelector<HTMLButtonElement>('[aria-label="Open Project"]')
         ?.click();
     });
     await vi.waitFor(() =>
@@ -170,9 +166,7 @@ describe("ManagedWorkspaceCockpit", () => {
       vi.fn(() => true)
     );
     const command = vi.fn(
-      async (
-        request: ManagedWorkspaceRequest
-      ): Promise<ManagedWorkspaceResult> => {
+      async (request: ManagedProjectRequest): Promise<ManagedProjectResult> => {
         if (request.operation === "diff_read") {
           return diffResult(request.requestId);
         }
@@ -194,7 +188,7 @@ describe("ManagedWorkspaceCockpit", () => {
         throw new Error(`Unexpected operation ${request.operation}`);
       }
     );
-    const api: ManagedWorkspaceDesktopApi = {
+    const api: ManagedProjectDesktopApi = {
       command,
       subscribe: () => () => undefined
     };
@@ -202,9 +196,7 @@ describe("ManagedWorkspaceCockpit", () => {
     await render(api, 1);
     await act(async () => {
       container
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="Open coding workspace"]'
-        )
+        .querySelector<HTMLButtonElement>('[aria-label="Open Project"]')
         ?.click();
     });
     await vi.waitFor(() => expect(container.textContent).toContain("Restore"));
@@ -231,9 +223,7 @@ describe("ManagedWorkspaceCockpit", () => {
     const commandId = "22222222-2222-4222-8222-222222222222";
     let completed = false;
     const command = vi.fn(
-      async (
-        request: ManagedWorkspaceRequest
-      ): Promise<ManagedWorkspaceResult> => {
+      async (request: ManagedProjectRequest): Promise<ManagedProjectResult> => {
         if (request.operation === "diff_read")
           return diffResult(request.requestId);
         if (request.operation === "file_start") {
@@ -293,16 +283,14 @@ describe("ManagedWorkspaceCockpit", () => {
         throw new Error(`Unexpected operation ${request.operation}`);
       }
     );
-    const api: ManagedWorkspaceDesktopApi = {
+    const api: ManagedProjectDesktopApi = {
       command,
       subscribe: () => () => undefined
     };
     await render(api, 1);
     await act(async () => {
       container
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="Open coding workspace"]'
-        )
+        .querySelector<HTMLButtonElement>('[aria-label="Open Project"]')
         ?.click();
     });
     await act(async () => {
@@ -332,12 +320,10 @@ describe("ManagedWorkspaceCockpit", () => {
     const previewId = "66666666-6666-4666-8666-666666666666";
     const terminalId = "77777777-7777-4777-8777-777777777777";
     let subscribed:
-      | Parameters<ManagedWorkspaceDesktopApi["subscribe"]>[0]
+      | Parameters<ManagedProjectDesktopApi["subscribe"]>[0]
       | undefined;
     const command = vi.fn(
-      async (
-        request: ManagedWorkspaceRequest
-      ): Promise<ManagedWorkspaceResult> => {
+      async (request: ManagedProjectRequest): Promise<ManagedProjectResult> => {
         if (request.operation === "diff_read")
           return diffResult(request.requestId);
         if (request.operation === "preview_list") {
@@ -374,7 +360,7 @@ describe("ManagedWorkspaceCockpit", () => {
         throw new Error(`Unexpected operation ${request.operation}`);
       }
     );
-    const api: ManagedWorkspaceDesktopApi = {
+    const api: ManagedProjectDesktopApi = {
       command,
       subscribe: (listener) => {
         subscribed = listener;
@@ -384,9 +370,7 @@ describe("ManagedWorkspaceCockpit", () => {
     await render(api, 1);
     await act(async () => {
       container
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="Open coding workspace"]'
-        )
+        .querySelector<HTMLButtonElement>('[aria-label="Open Project"]')
         ?.click();
     });
     await act(async () => {
@@ -411,7 +395,7 @@ describe("ManagedWorkspaceCockpit", () => {
           command.mock.calls.find(
             ([request]) => request.operation === "preview_attach"
           )?.[0] as Extract<
-            ManagedWorkspaceRequest,
+            ManagedProjectRequest,
             { operation: "preview_attach" }
           >
         ).surfaceId,
@@ -428,9 +412,7 @@ describe("ManagedWorkspaceCockpit", () => {
     const headObjectId = "a".repeat(40);
     const remoteObjectId = "c".repeat(40);
     const command = vi.fn(
-      async (
-        request: ManagedWorkspaceRequest
-      ): Promise<ManagedWorkspaceResult> => {
+      async (request: ManagedProjectRequest): Promise<ManagedProjectResult> => {
         if (request.operation === "diff_read")
           return diffResult(request.requestId);
         if (request.operation !== "source_control") {
@@ -526,19 +508,17 @@ describe("ManagedWorkspaceCockpit", () => {
           executionId,
           operation: "source_control",
           result
-        } as ManagedWorkspaceResult;
+        } as ManagedProjectResult;
       }
     );
-    const api: ManagedWorkspaceDesktopApi = {
+    const api: ManagedProjectDesktopApi = {
       command,
       subscribe: () => () => undefined
     };
     await render(api, 1);
     await act(async () => {
       container
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="Open coding workspace"]'
-        )
+        .querySelector<HTMLButtonElement>('[aria-label="Open Project"]')
         ?.click();
     });
     await act(async () => {

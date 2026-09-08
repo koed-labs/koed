@@ -16,16 +16,13 @@ import { devNull } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
-import {
-  classifyWorkspaceContent,
-  workspaceContentLimits
-} from "./workspace-content-policy.js";
+import { classifySourceContent, sourceContentLimits } from "@koed/shared";
 
 const execFileAsync = promisify(execFile);
 const protocol = "koed-development-workspace-snapshot-v1" as const;
-const maxFileBytes = workspaceContentLimits.maxFileBytes;
-const maxPackageBytes = workspaceContentLimits.maxAggregateBytes;
-const maxFiles = workspaceContentLimits.maxFiles;
+const maxFileBytes = sourceContentLimits.maxFileBytes;
+const maxPackageBytes = sourceContentLimits.maxAggregateBytes;
+const maxFiles = sourceContentLimits.maxFiles;
 
 type GitResult = { stdout: string; stderr: string };
 type GitBufferResult = { stdout: Buffer; stderr: Buffer };
@@ -287,7 +284,7 @@ const writeExclusiveFile = async (
 };
 
 const assertNoSecrets = (path: string, bytes: Uint8Array): void => {
-  const reason = classifyWorkspaceContent(path, bytes);
+  const reason = classifySourceContent(path, bytes);
   if (reason === "secret_path") {
     throw new Error("WorkspaceSnapshotSecretPathError");
   }

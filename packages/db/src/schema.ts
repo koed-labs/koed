@@ -4007,11 +4007,9 @@ export const managedConversationRuntimeBindings = pgTable(
     executionGeneration: integer("execution_generation").notNull(),
     sourceProjectPath: text("source_project_path").notNull(),
     projectPath: text("project_path").notNull(),
-    workspaceId: uuid("workspace_id"),
-    workspaceKind: text("workspace_kind").notNull().default("pending"),
-    workspaceLifecycle: text("workspace_lifecycle")
-      .notNull()
-      .default("pending"),
+    checkoutId: uuid("checkout_id"),
+    checkoutKind: text("checkout_kind").notNull().default("pending"),
+    checkoutLifecycle: text("checkout_lifecycle").notNull().default("pending"),
     cleanupState: text("cleanup_state").notNull().default("not_requested"),
     vcsDriver: text("vcs_driver"),
     localRepositoryCommonDirectory: text("local_repository_common_directory"),
@@ -4047,31 +4045,31 @@ export const managedConversationRuntimeBindings = pgTable(
     index("managed_conversation_runtime_binding_preparation_idx").on(
       table.deploymentId,
       table.deviceId,
-      table.workspaceLifecycle,
+      table.checkoutLifecycle,
       table.createdAt
     ),
     index("managed_conversation_runtime_binding_cleanup_idx").on(
       table.deploymentId,
       table.deviceId,
-      table.workspaceLifecycle,
+      table.checkoutLifecycle,
       table.cleanupState,
       table.updatedAt
     ),
     uniqueIndex("managed_conversation_runtime_binding_active_path_unique")
       .on(table.projectPath)
       .where(
-        sql`${table.workspaceKind} = 'koed_managed_worktree'
-          and ${table.workspaceLifecycle} in ('ready', 'cleanup_requested')`
+        sql`${table.checkoutKind} = 'koed_managed_worktree'
+          and ${table.checkoutLifecycle} in ('ready', 'cleanup_requested')`
       ),
     check(
       "managed_conversation_runtime_binding_generation_check",
       sql`${table.executionGeneration} > 0`
     ),
     check(
-      "managed_conversation_runtime_binding_workspace_check",
-      sql`((${table.workspaceLifecycle} = 'pending'
-          and ${table.workspaceId} is null
-          and ${table.workspaceKind} = 'pending'
+      "managed_conversation_runtime_binding_checkout_check",
+      sql`((${table.checkoutLifecycle} = 'pending'
+          and ${table.checkoutId} is null
+          and ${table.checkoutKind} = 'pending'
           and ${table.creationOperationId} is null
           and ${table.vcsDriver} is null
           and ${table.localRepositoryCommonDirectory} is null
@@ -4082,11 +4080,11 @@ export const managedConversationRuntimeBindings = pgTable(
           and ${table.baseObjectId} is null
           and ${table.branchRef} is null
           and ${table.headObjectId} is null)
-        or (${table.workspaceLifecycle} in ('ready', 'cleanup_requested', 'removed', 'cleanup_failed', 'orphaned')
-          and ${table.workspaceId} is not null
-          and ${table.workspaceKind} in ('koed_managed_worktree', 'user_managed_checkout', 'non_vcs_directory')
+        or (${table.checkoutLifecycle} in ('ready', 'cleanup_requested', 'removed', 'cleanup_failed', 'orphaned')
+          and ${table.checkoutId} is not null
+          and ${table.checkoutKind} in ('koed_managed_worktree', 'user_managed_checkout', 'non_vcs_directory')
           and ${table.creationOperationId} is not null
-          and ((${table.workspaceKind} = 'non_vcs_directory'
+          and ((${table.checkoutKind} = 'non_vcs_directory'
               and ${table.vcsDriver} is null
               and ${table.localRepositoryCommonDirectory} is null
               and ${table.localGitDirectory} is null
@@ -4096,24 +4094,24 @@ export const managedConversationRuntimeBindings = pgTable(
               and ${table.baseObjectId} is null
               and ${table.branchRef} is null
               and ${table.headObjectId} is null)
-            or (${table.workspaceKind} in ('koed_managed_worktree', 'user_managed_checkout')
+            or (${table.checkoutKind} in ('koed_managed_worktree', 'user_managed_checkout')
               and ${table.vcsDriver} = 'git'
               and length(trim(${table.localRepositoryCommonDirectory})) > 0
               and length(trim(${table.localGitDirectory})) > 0
               and ${table.repositoryIdentityHash} is not null
               and ${table.worktreeIdentityHash} is not null
               and ${table.headObjectId} is not null
-              and (${table.workspaceKind} <> 'koed_managed_worktree'
+              and (${table.checkoutKind} <> 'koed_managed_worktree'
                 or (${table.baseRef} is not null
                   and ${table.baseObjectId} is not null
                   and ${table.branchRef} is not null))))))
-        and ((${table.workspaceLifecycle} in ('pending', 'ready')
+        and ((${table.checkoutLifecycle} in ('pending', 'ready')
             and ${table.cleanupState} = 'not_requested')
-          or (${table.workspaceLifecycle} = 'cleanup_requested'
+          or (${table.checkoutLifecycle} = 'cleanup_requested'
             and ${table.cleanupState} = 'requested')
-          or (${table.workspaceLifecycle} = 'removed'
+          or (${table.checkoutLifecycle} = 'removed'
             and ${table.cleanupState} = 'completed')
-          or (${table.workspaceLifecycle} in ('cleanup_failed', 'orphaned')
+          or (${table.checkoutLifecycle} in ('cleanup_failed', 'orphaned')
             and ${table.cleanupState} = 'failed'))
         and length(trim(${table.sourceProjectPath})) > 0
         and length(trim(${table.projectPath})) > 0
@@ -4148,11 +4146,11 @@ export const managedConversationTerminals = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     executionId: uuid("execution_id")
       .notNull()
-      .references(() => managedConversationExecutions.id, {
+      .references(() => managedConversationRuntimeBindings.executionId, {
         onDelete: "cascade"
       }),
     executionGeneration: integer("execution_generation").notNull(),
-    workspaceId: uuid("workspace_id").notNull(),
+    checkoutId: uuid("checkout_id").notNull(),
     runnerDeploymentId: uuid("runner_deployment_id").notNull(),
     runnerDeviceId: uuid("runner_device_id").notNull(),
     lifecycleGeneration: integer("lifecycle_generation").notNull().default(1),

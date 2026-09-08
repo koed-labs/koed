@@ -70,7 +70,7 @@ const expectedPreSelectivePiiTag = "0033_fixed_scarlet_witch";
 const expectedSelectivePiiTag = "0034_young_silvermane";
 const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
-const expectedLatestMigrationTag = "0037_coding_workspace_runtime";
+const expectedLatestMigrationTag = "0037_coding_project_runtime";
 const preMultiComponentSourceIndex = 29;
 const expectedLatestMigrationIndex = 37;
 const expectedPre0020Fingerprint =
@@ -1205,6 +1205,167 @@ try {
     prePrivacyManifestFolder,
     journal.entries.slice(0, privacyManifestIndex)
   );
+
+  const preCodingFolder = await createMigrationSlice(journal, 36);
+  temporaryFolders.add(preCodingFolder);
+  const preCodingRecords = await migrationRecords(
+    preCodingFolder,
+    journal.entries.slice(0, 37)
+  );
+
+  await runScenario(
+    "managed-launch-requires-explicit-alpha-reset",
+    async () => {
+      const target = await createDisposableDatabase("managed_reset");
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: preCodingFolder });
+        const owner = randomUUID();
+        const execution = randomUUID();
+        await pool.query("insert into users (id,email) values ($1,$2)", [
+          owner,
+          `${owner}@example.test`
+        ]);
+        await pool.query(
+          `insert into managed_conversation_executions
+        (id,owner_user_id,project_id,provider,ai_client_instance_id,fencing_token_hash,runner_deployment_id,runner_device_id)
+        values ($1,$2,'migration-fixture','codex','codex.default',$3,$4,$5)`,
+          [execution, owner, "a".repeat(64), randomUUID(), randomUUID()]
+        );
+        const before = await schemaFingerprint(pool);
+        const failure = await runDbMigrations(pool).then(
+          () => null,
+          (error) => error
+        );
+        if (
+          !errorMessages(failure).includes(
+            "Migration 0037 requires an explicit alpha managed Conversation reset"
+          )
+        ) {
+          throw new Error(
+            `Expected managed execution reset diagnostic: ${errorMessages(failure)}`
+          );
+        }
+        await assertMigrationLedger(pool, preCodingRecords);
+        if ((await schemaFingerprint(pool)) !== before)
+          throw new Error("Rejected upgrade changed schema");
+        const retained = await pool.query(
+          "select id from managed_conversation_executions where id=$1",
+          [execution]
+        );
+        if (retained.rowCount !== 1)
+          throw new Error("Rejected upgrade changed execution history");
+        // A remote runner can retain a binding without a local execution record.
+        await pool.query(
+          "delete from managed_conversation_executions where id=$1",
+          [execution]
+        );
+        await pool.query(
+          `insert into managed_conversation_runtime_bindings
+        (execution_id,owner_user_id,deployment_id,device_id,execution_generation,project_path)
+        values ($1,$2,$3,$4,1,'/migration-fixture')`,
+          [execution, owner, randomUUID(), randomUUID()]
+        );
+        const bindingFailure = await runDbMigrations(pool).then(
+          () => null,
+          (error) => error
+        );
+        if (
+          !errorMessages(bindingFailure).includes(
+            "Migration 0037 requires an explicit alpha managed Conversation reset"
+          )
+        ) {
+          throw new Error("Expected retained runner binding reset diagnostic");
+        }
+        await assertMigrationLedger(pool, preCodingRecords);
+      });
+    }
+  );
+
+  await runScenario("presentation-upgrade-preserves-visibility", async () => {
+    const target = await createDisposableDatabase("presentation");
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: preCodingFolder });
+      const cases = [
+        [
+          "visible-message",
+          "user_message",
+          true,
+          true,
+          true,
+          true,
+          "expanded",
+          "message"
+        ],
+        [
+          "disabled",
+          "user_message",
+          false,
+          true,
+          true,
+          true,
+          "hidden",
+          "generic"
+        ],
+        [
+          "hidden-message",
+          "user_message",
+          true,
+          false,
+          false,
+          false,
+          "hidden",
+          "generic"
+        ],
+        [
+          "no-message",
+          "user_message",
+          true,
+          true,
+          false,
+          true,
+          "hidden",
+          "generic"
+        ],
+        [
+          "visible-tool",
+          "tool_call",
+          true,
+          true,
+          true,
+          true,
+          "collapsed",
+          "tool_call"
+        ],
+        ["no-tool", "tool_call", true, true, true, false, "hidden", "generic"]
+      ];
+      for (const [adapter, type, enabled, ui, message, tool] of cases) {
+        await pool.query(
+          `insert into projection_policy_rules
+          (source_kind,source_adapter_version,transcript_type,enabled,project_to_ui,create_message,create_tool_event)
+          values ('migration-fixture',$1,$2,$3,$4,$5,$6)`,
+          [adapter, type, enabled, ui, message, tool]
+        );
+      }
+      await runDbMigrations(pool);
+      for (const [adapter, , enabled, , , , mode, renderer] of cases) {
+        const result = await pool.query(
+          `select enabled,presentation_mode,renderer_kind
+          from conversation_presentation_policy_rules where source_kind='migration-fixture' and source_adapter_version=$1`,
+          [adapter]
+        );
+        if (
+          !isDeepStrictEqual(result.rows, [
+            { enabled, presentation_mode: mode, renderer_kind: renderer }
+          ])
+        ) {
+          throw new Error(
+            `Presentation visibility changed for ${adapter}: ${JSON.stringify(result.rows)}`
+          );
+        }
+      }
+      await assertMigrationLedger(pool, fullRecords);
+    });
+  });
 
   await runScenario("clean-full-migration", async () => {
     const target = await createDisposableDatabase("clean_full");

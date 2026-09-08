@@ -634,6 +634,7 @@ describe("desktop local credential store", () => {
       operationFamilies: [
         "personal_collaboration_read",
         "personal_collaboration_write",
+        "managed_execution",
         "managed_file_read",
         "managed_terminal",
         "managed_preview",

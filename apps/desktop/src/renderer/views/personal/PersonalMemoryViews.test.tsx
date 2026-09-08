@@ -21,6 +21,25 @@ import {
   type PersonalMemoryRoute
 } from "./PersonalMemoryViews.js";
 
+vi.mock("./ManagedProjectCockpit.js", () => ({
+  ManagedProjectCockpit: ({
+    onAttachFile
+  }: {
+    onAttachFile: (value: { commandId: string; label: string }) => void;
+  }) => (
+    <button
+      onClick={() =>
+        onAttachFile({
+          commandId: "file-reference",
+          label: "selected-context.ts"
+        })
+      }
+    >
+      Attach fixture file
+    </button>
+  )
+}));
+
 vi.mock("../../../NativeConversationSurface.js", () => ({
   NativeConversationSurface: ({
     model,
@@ -331,6 +350,46 @@ describe("PersonalMemoryWorkspace", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("clears execution context attachments when navigating to another Conversation", async () => {
+    const otherSession = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [
+          project([thread(1), thread(2, { sessionId: otherSession })])
+        ]),
+        loadEventPage: vi.fn(async () => [event(1)])
+      })
+    );
+    const managed = managedApi();
+    const render = (currentSession: string) => (
+      <PersonalMemoryWorkspace
+        managedConversations={managed}
+        managedProject={{ command: vi.fn(), subscribe: () => () => undefined }}
+        onNavigate={vi.fn()}
+        route={{
+          kind: "session",
+          projectId: "project-1",
+          sessionId: currentSession
+        }}
+        store={store}
+      />
+    );
+    await act(async () => root.render(render(sessionId)));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Attach fixture file")
+    );
+    const button = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Attach fixture file"
+    )!;
+    await act(async () => button.click());
+    expect(container.textContent).toContain("selected-context.ts");
+    await act(async () => root.render(render(otherSession)));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Attach fixture file")
+    );
+    expect(container.textContent).not.toContain("selected-context.ts");
   });
 
   it("loads the normalized Project index and restores focus through drilldown", async () => {

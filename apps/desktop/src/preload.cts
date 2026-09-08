@@ -12,7 +12,7 @@ import {
 import { createPersonalMemoryPreloadApi } from "./ipc/personal-memory-preload.js";
 import { createManagedConversationPreloadApi } from "./ipc/managed-conversation-preload.js";
 import { createLocalAiClientPreloadApi } from "./ipc/local-ai-client-preload.js";
-import { createManagedWorkspacePreloadApi } from "./ipc/managed-workspace-preload.js";
+import { createManagedProjectPreloadApi } from "./ipc/managed-project-preload.js";
 import { createPersonalDevicePairingPreloadApi } from "./ipc/personal-device-pairing-preload.js";
 import { desktopFeatureFlagsFromEnvironment } from "./ipc/desktop-feature-flags.js";
 import {
@@ -55,7 +55,7 @@ contextBridge.exposeInMainWorld("koedDesktop", {
   localAiClients: createLocalAiClientPreloadApi((channel, value) =>
     ipcRenderer.invoke(channel, value)
   ),
-  managedWorkspace: createManagedWorkspacePreloadApi(
+  managedProject: createManagedProjectPreloadApi(
     (channel, value) => ipcRenderer.invoke(channel, value),
     {
       on: (channel, listener) => ipcRenderer.on(channel, listener),
