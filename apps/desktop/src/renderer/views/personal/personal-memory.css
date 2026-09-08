@@ -631,6 +631,10 @@ button.personal-new-conversation-owner-picker > svg {
   z-index: 4;
 }
 
+.personal-session-actions[open] {
+  z-index: 5;
+}
+
 .personal-session-actions > summary {
   align-items: center;
   border-radius: var(--radius);

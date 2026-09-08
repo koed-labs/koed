@@ -315,6 +315,26 @@ const run = async () => {
     assert.equal(wide.pinnedHeadingVisible, true);
     assert.equal(wide.settledToggleVisible, true);
     assert.equal(wide.presentationActionCount, 4);
+    const actionMenuState = await window.webContents.executeJavaScript(`(() => {
+      const summaries = [...document.querySelectorAll('.personal-session-actions > summary')];
+      summaries[0]?.click();
+      summaries[1]?.click();
+      const menus = [...document.querySelectorAll('.personal-session-actions')];
+      const openMenu = menus.find((menu) => menu.open);
+      const closedMenu = menus.find((menu) => !menu.open);
+      const result = {
+        openCount: menus.filter((menu) => menu.open).length,
+        openZIndex: openMenu ? Number(getComputedStyle(openMenu).zIndex) : null,
+        closedZIndex: closedMenu ? Number(getComputedStyle(closedMenu).zIndex) : null
+      };
+      openMenu?.querySelector('summary')?.click();
+      return result;
+    })()`);
+    assert.equal(actionMenuState.openCount, 1, JSON.stringify(actionMenuState));
+    assert.ok(
+      actionMenuState.openZIndex > actionMenuState.closedZIndex,
+      JSON.stringify(actionMenuState)
+    );
     assert.equal(wide.sessionListOverflow, false);
     assert.equal(wide.rawMetadataExposed, false);
     assert.ok(

@@ -562,7 +562,9 @@ function ProjectsPane({
 }
 
 function SessionRow({
+  actionsOpen,
   busy,
+  onActionsOpenChange,
   onChangePresentation,
   presentationStatus,
   localProjectId,
@@ -573,7 +575,9 @@ function SessionRow({
   remoteDisplay,
   thread
 }: {
+  actionsOpen: boolean;
   busy: boolean;
+  onActionsOpenChange: (open: boolean) => void;
   presentationStatus: ConversationPresentationStatus;
   onChangePresentation: (
     input: Omit<
@@ -682,7 +686,13 @@ function SessionRow({
         </span>
       ) : null}
       {thread.sessionId ? (
-        <details className="personal-session-actions" ref={actionsRef}>
+        <details
+          className="personal-session-actions"
+          name="personal-session-actions"
+          onToggle={(event) => onActionsOpenChange(event.currentTarget.open)}
+          open={actionsOpen}
+          ref={actionsRef}
+        >
           <summary
             aria-label={`Conversation actions for ${thread.name}`}
             title="Conversation actions"
@@ -973,6 +983,9 @@ function ProjectDetail({
     new Set()
   );
   const [presentationError, setPresentationError] = useState("");
+  const [openSessionActionsId, setOpenSessionActionsId] = useState<
+    string | null
+  >(null);
   const threads = [...(project?.threads ?? [])].sort(
     (left, right) => Date.parse(right.latestAt) - Date.parse(left.latestAt)
   );
@@ -993,6 +1006,7 @@ function ProjectDetail({
     setPresentationNow(Date.now());
     setLaunchOpen(false);
     setLaunchOptions(null);
+    setOpenSessionActionsId(null);
   }, [project?.id]);
   useEffect(() => {
     if (!managedConversations || !project?.id) return;
@@ -1112,8 +1126,14 @@ function ProjectDetail({
     const selectionId = sessionSelectionId(thread);
     return (
       <SessionRow
+        actionsOpen={openSessionActionsId === selectionId}
         busy={presentationBusy.has(selectionId)}
         key={selectionId}
+        onActionsOpenChange={(open) =>
+          setOpenSessionActionsId((current) =>
+            open ? selectionId : current === selectionId ? null : current
+          )
+        }
         onChangePresentation={(input) => {
           setPresentationError("");
           setPresentationBusy((current) => new Set(current).add(selectionId));

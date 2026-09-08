@@ -552,6 +552,24 @@ describe("PersonalMemoryWorkspace", () => {
         )
         ?.click();
     });
+    const activeActions = container
+      .querySelector('[aria-label="Conversation actions for Manually active"]')
+      ?.closest("details");
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>(
+          '[aria-label="Conversation actions for Captured Session 1"]'
+        )
+        ?.click();
+    });
+    expect(activeActions?.hasAttribute("open")).toBe(false);
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>(
+          '[aria-label="Conversation actions for Manually active"]'
+        )
+        ?.click();
+    });
     const activeShell = container
       .querySelector('[data-session-id="00000000-0000-4000-8000-000000000004"]')
       ?.closest(".personal-session-row");
