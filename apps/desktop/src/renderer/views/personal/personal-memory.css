@@ -923,9 +923,6 @@ button.personal-new-conversation-owner-picker > svg {
   font-weight: 600;
   letter-spacing: normal;
   line-height: 1.5rem;
-  font-size: 1.5rem;
-  font-weight: 600;
-  line-height: 1.2;
   max-width: min(32rem, 60vw);
   min-width: min(18rem, 50vw);
   padding: 0.25rem 0.45rem;

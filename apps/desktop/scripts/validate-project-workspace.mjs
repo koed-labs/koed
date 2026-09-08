@@ -358,6 +358,41 @@ const run = async () => {
       JSON.stringify(narrowConversation)
     );
     await setEmulatedViewport(window, 1440, 900);
+    const titleTypography = await window.webContents.executeJavaScript(`(() => {
+      const title = document.querySelector('.personal-session-title-row h2');
+      if (!title) return null;
+      const style = getComputedStyle(title);
+      return {
+        fontSize: style.fontSize,
+        fontWeight: style.fontWeight,
+        letterSpacing: style.letterSpacing,
+        lineHeight: style.lineHeight
+      };
+    })()`);
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="Rename Captured Session"]')?.click()`
+    );
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('#personal-session-title'))`,
+      "Captured Session title editor"
+    );
+    const titleEditorTypography = await window.webContents
+      .executeJavaScript(`(() => {
+      const input = document.querySelector('#personal-session-title');
+      if (!input) return null;
+      const style = getComputedStyle(input);
+      return {
+        fontSize: style.fontSize,
+        fontWeight: style.fontWeight,
+        letterSpacing: style.letterSpacing,
+        lineHeight: style.lineHeight
+      };
+    })()`);
+    assert.deepEqual(titleEditorTypography, titleTypography);
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="Cancel Captured Session rename"]')?.click()`
+    );
     if (process.env.KOED_PROJECT_NARROW_ONLY === "1") return;
     await waitFor(
       window,
