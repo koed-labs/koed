@@ -588,6 +588,20 @@
   height: 100%;
 }
 
+.personal-new-conversation-detail {
+  overflow: hidden;
+}
+
+.personal-new-conversation-content {
+  flex: 1;
+  min-height: 0;
+}
+
+.personal-new-conversation-detail > header,
+.personal-new-conversation-detail > form {
+  flex-shrink: 0;
+}
+
 .personal-session-detail > header {
   border-bottom: 1px solid var(--border);
 }

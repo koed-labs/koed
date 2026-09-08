@@ -2023,6 +2023,30 @@ describe("PersonalMemoryWorkspace", () => {
         .click()
     );
     expect(managed.start).not.toHaveBeenCalled();
+    expect(container.querySelector(".personal-project-detail")).toBeNull();
+    expect(container.querySelector(".personal-sessions")).toBeNull();
+    expect(
+      container.querySelector(
+        ".personal-session-detail > .personal-new-conversation-composer"
+      )
+    ).not.toBeNull();
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find(
+          (button) => button.getAttribute("aria-label") === "Back to Project"
+        )!
+        .click()
+    );
+    expect(container.querySelector(".personal-sessions")).not.toBeNull();
+    expect(
+      container.querySelector(".personal-new-conversation-detail")
+    ).toBeNull();
+    expect(managed.start).not.toHaveBeenCalled();
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "New")!
+        .click()
+    );
     await act(async () =>
       changeTextarea(
         container.querySelector("textarea")!,
@@ -2037,6 +2061,11 @@ describe("PersonalMemoryWorkspace", () => {
         .click()
     );
     await vi.waitFor(() => expect(managed.send).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector(".personal-conversation-timeline")?.textContent
+      ).toContain("Start with this message")
+    );
     expect(managed.start).toHaveBeenCalledOnce();
     expect(managed.send).toHaveBeenCalledWith(
       expect.objectContaining({

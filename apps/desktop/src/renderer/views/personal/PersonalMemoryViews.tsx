@@ -985,6 +985,60 @@ function ProjectDetail({
       </div>
     );
   };
+  if (launchOpen && launchOptions && managedConversations) {
+    return (
+      <section
+        className="personal-session-detail personal-new-conversation-detail"
+        aria-label="New Conversation"
+      >
+        <header>
+          <div className="personal-session-header-copy">
+            <small>{project.name} · Private to you</small>
+            <div className="personal-session-title-row">
+              <h2>New Conversation</h2>
+            </div>
+            {project.remoteDisplay ? (
+              <ProjectRepo
+                onOpenRepository={onOpenRepository}
+                remoteDisplay={project.remoteDisplay}
+              />
+            ) : null}
+            <p
+              aria-label={countLabel(0, "Memory Event")}
+              className="personal-memory-event-count"
+            >
+              0
+              <Brain aria-hidden="true" />
+            </p>
+          </div>
+          <div className="personal-session-header-actions">
+            <button
+              aria-label="Back to Project"
+              title="Back to Project"
+              className="personal-session-manage-button"
+              type="button"
+              onClick={() => setLaunchOpen(false)}
+            >
+              <X aria-hidden="true" />
+            </button>
+          </div>
+        </header>
+        <div className="personal-new-conversation-content" />
+        <NewConversationComposer
+          key={project.id}
+          api={managedConversations}
+          projectId={project.id}
+          options={launchOptions}
+          selection={launchSelection}
+          onChange={setLaunchSelection}
+          onStarted={(...args) => {
+            setLaunchOpen(false);
+            onManagedConversationStarted(...args);
+          }}
+        />
+      </section>
+    );
+  }
   return (
     <section className="personal-project-detail">
       <header>
@@ -1015,20 +1069,6 @@ function ProjectDetail({
           New
         </button>
       </header>
-      {launchOpen && launchOptions && managedConversations && (
-        <NewConversationComposer
-          key={project.id}
-          api={managedConversations}
-          projectId={project.id}
-          options={launchOptions}
-          selection={launchSelection}
-          onChange={setLaunchSelection}
-          onStarted={(...args) => {
-            setLaunchOpen(false);
-            onManagedConversationStarted(...args);
-          }}
-        />
-      )}
       {startState.message ? (
         <p
           className={
@@ -1357,7 +1397,10 @@ function StoreConversation({
       return;
     setOptimisticPrompts(unreconciledOptimisticPrompts);
   }, [optimisticPrompts.length, unreconciledOptimisticPrompts]);
+  const previousRouteSessionId = useRef(routeSessionId);
   useEffect(() => {
+    if (previousRouteSessionId.current === routeSessionId) return;
+    previousRouteSessionId.current = routeSessionId;
     setOptimisticPrompts([]);
     setTransientAssistantOutputs([]);
     setContextAttachments([]);
