@@ -1581,7 +1581,7 @@ describe("PersonalMemoryWorkspace", () => {
     await vi.waitFor(() =>
       expect(container.querySelector("textarea")?.disabled).toBe(false)
     );
-    expect(container.textContent).toContain(
+    expect(container.textContent).not.toContain(
       "Starting the AI Client in this Project"
     );
     expect(managed.resume).not.toHaveBeenCalled();

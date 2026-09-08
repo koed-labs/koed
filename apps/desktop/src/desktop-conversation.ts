@@ -4,7 +4,9 @@ import {
 } from "@koed/shared/personal-desktop";
 import { parseSourcePatch, type SourcePatchDetails } from "@koed/memory-ui";
 
-export type DesktopConversationEvent = PersonalDesktopConversationEvent;
+export type DesktopConversationEvent = PersonalDesktopConversationEvent & {
+  responseStreaming?: boolean;
+};
 
 export type DesktopToolDisplay = NonNullable<
   DesktopConversationEvent["toolDisplay"]

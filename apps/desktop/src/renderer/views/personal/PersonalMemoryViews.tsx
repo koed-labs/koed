@@ -1205,6 +1205,8 @@ function StoreConversation({
         ]
       : []
   );
+  const [responseActive, setResponseActive] = useState(false);
+  const [responseTimestamp] = useState(() => new Date().toISOString());
   const [transientAssistantOutputs, setTransientAssistantOutputs] = useState<
     PersonalDesktopConversationEvent[]
   >([]);
@@ -1405,9 +1407,47 @@ function StoreConversation({
     setTransientAssistantOutputs([]);
     setContextAttachments([]);
   }, [routeSessionId]);
+  const latestPromptTime = Math.max(
+    0,
+    ...canonicalEvents
+      .filter((event) => event.actor === "user")
+      .map((event) => Date.parse(event.timestamp) || 0),
+    ...unreconciledOptimisticPrompts.map(
+      ({ event }) => Date.parse(event.timestamp) || 0
+    )
+  );
+  const streamingOutput = [...unreconciledTransientOutputs]
+    .reverse()
+    .find((event) => Date.parse(event.timestamp) >= latestPromptTime);
   const overlayEvents = [
     ...unreconciledOptimisticPrompts.map(({ event }) => event),
-    ...unreconciledTransientOutputs
+    ...unreconciledTransientOutputs.map((event) =>
+      responseActive && event === streamingOutput
+        ? {
+            ...event,
+            responseStreaming: true
+          }
+        : event
+    ),
+    ...(responseActive && !streamingOutput
+      ? [
+          {
+            id: `pending-response:${routeSessionId}`,
+            actor: "assistant",
+            eventType: "agent_message",
+            timestamp: latestPromptTime
+              ? new Date(latestPromptTime + 1).toISOString()
+              : responseTimestamp,
+            sourceEventTime: null,
+            sourceSequence: null,
+            content: "",
+            contentPreview: "",
+            invalidatedAt: null,
+            metadata: {},
+            responseStreaming: true
+          }
+        ]
+      : [])
   ];
   const hasVisibleEvents =
     overlayEvents.length > 0 || (detail?.events.length ?? 0) > 0;
@@ -1521,6 +1561,7 @@ function StoreConversation({
               )
             );
           }}
+          onResponseActiveChange={setResponseActive}
           onTransientOutputs={mergeTransientOutputs}
           onConversationIdentityChanged={setCanonicalConversation}
           onCheckoutIdentityChanged={setCheckoutIdentity}
@@ -1888,6 +1929,7 @@ function ManagedConversationComposer({
   onOptimisticPrompt,
   onRejectOptimisticPrompt,
   onTransientOutputs,
+  onResponseActiveChange,
   onConversationIdentityChanged,
   onCheckoutIdentityChanged
 }: {
@@ -1918,6 +1960,7 @@ function ManagedConversationComposer({
     prompt: string;
   }) => void;
   onRejectOptimisticPrompt: (clientUserMessageId: string) => void;
+  onResponseActiveChange: (active: boolean) => void;
   onTransientOutputs: (
     items: ManagedConversationRuntimeItem[],
     command: ManagedConversationRuntimeState["latestCommand"]
@@ -2655,21 +2698,22 @@ function ManagedConversationComposer({
     inputDisabled || state.status === "sending" || !draft.trim();
   const promptActive =
     state.status === "sending" ||
+    (["attaching", "starting", "ready"].includes(state.status) &&
+      initialPrompt?.status === "queued" &&
+      !runtime?.latestCommand &&
+      runtime?.executionState !== "failed") ||
     (runtime?.latestCommand?.commandKind === "prompt" &&
       ["queued", "blocked", "dispatching"].includes(
         runtime.latestCommand.state
       ));
+  useEffect(() => {
+    onResponseActiveChange(Boolean(promptActive));
+  }, [onResponseActiveChange, promptActive]);
   return (
     <div
       aria-busy={state.status === "sending"}
       className={`personal-managed-composer state-${state.status}`}
     >
-      {promptActive ? (
-        <div className="personal-managed-working" role="status">
-          <LoaderCircle aria-hidden="true" />
-          <span>The AI Client is working</span>
-        </div>
-      ) : null}
       {runtime?.latestCommand?.state === "indeterminate" ? (
         <div className="personal-managed-runtime-error" role="alert">
           Koed cannot prove whether the last {runtime.latestCommand.commandKind}{" "}
@@ -2719,8 +2763,7 @@ function ManagedConversationComposer({
           ))}
         </div>
       ) : null}
-      {state.status === "starting" ||
-      state.status === "error" ||
+      {state.status === "error" ||
       (state.status === "reconciling" && startupStatus === "reconciling") ? (
         <p
           className="personal-managed-status"

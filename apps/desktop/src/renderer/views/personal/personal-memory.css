@@ -2893,3 +2893,24 @@
     animation: none;
   }
 }
+
+.native-response-cursor {
+  display: inline-block;
+  width: 1px;
+  height: 1em;
+  background: var(--muted-foreground);
+  vertical-align: text-bottom;
+  animation: native-response-blink 1s step-end infinite;
+}
+
+@keyframes native-response-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .native-response-cursor {
+    animation: none;
+  }
+}

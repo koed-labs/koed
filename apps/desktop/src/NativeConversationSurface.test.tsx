@@ -218,6 +218,35 @@ describe("NativeConversationSurface", () => {
     expect(recordMemoryEventFrameRender).toHaveBeenCalledTimes(1);
   });
 
+  it("shows a response cursor before output, during streaming, and removes it on completion", async () => {
+    const render = (content: string, responseStreaming: boolean) => (
+      <NativeConversationSurface
+        markdownAdapters={markdownAdapters}
+        model={{
+          error: "",
+          events: [{ ...event("response", content), responseStreaming }],
+          hasOlderEvents: false,
+          status: "ready"
+        }}
+        onLoadOlder={vi.fn()}
+        onRetry={vi.fn()}
+        thread={thread}
+      />
+    );
+    await act(async () => root.render(render("", true)));
+    expect(
+      container.querySelector('[aria-label="AI Client responding"]')
+    ).not.toBeNull();
+    await act(async () => root.render(render("Here is the answer", true)));
+    expect(container.textContent).toContain("Here is the answer");
+    expect(container.querySelectorAll(".native-response-cursor")).toHaveLength(
+      1
+    );
+    await act(async () => root.render(render("Here is the answer", false)));
+    expect(container.querySelector(".native-response-cursor")).toBeNull();
+    expect(container.textContent).toContain("Here is the answer");
+  });
+
   it("renders rich Markdown and copies fenced code through the Desktop adapter", async () => {
     const source = `# Captured decision
 

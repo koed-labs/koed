@@ -138,7 +138,7 @@ const ConversationEventRow = memo(function ConversationEventRow({
   scope: MemoryPresentationScope;
 }) {
   const text = conversationEventText(event);
-  if (!text && event.actor !== "tool") return null;
+  if (!text && event.actor !== "tool" && !event.responseStreaming) return null;
   const actor = eventActorLabel(event);
   const tone =
     event.actor === "user" ? "user" : event.actor === "tool" ? "tool" : "agent";
@@ -308,7 +308,7 @@ const ConversationEventRow = memo(function ConversationEventRow({
     >
       <MemoryEventFrame
         actions={<EventActions event={event} onInspectEvent={onInspectEvent} />}
-        className={`native-conversation-event ${tone}`}
+        className={`native-conversation-event ${tone}${event.responseStreaming ? " native-response-streaming" : ""}`}
         contentType={event.eventType || "message"}
         header={
           <>
@@ -330,6 +330,13 @@ const ConversationEventRow = memo(function ConversationEventRow({
         ) : (
           <div className="native-event-content">{text}</div>
         )}
+        {event.responseStreaming ? (
+          <span
+            className="native-response-cursor"
+            role="status"
+            aria-label="AI Client responding"
+          />
+        ) : null}
       </MemoryEventFrame>
     </div>
   );
@@ -412,7 +419,9 @@ export function ConversationRows({
   const timelineItems = groupConversationEvents(
     expandConversationDisplayEvents(events).filter(
       (event) =>
-        event.actor === "tool" || conversationEventText(event).length > 0
+        event.responseStreaming ||
+        event.actor === "tool" ||
+        conversationEventText(event).length > 0
     )
   );
   return (
@@ -467,7 +476,9 @@ export function ConversationTimeline({
     () =>
       expandConversationDisplayEvents(events).filter(
         (event) =>
-          event.actor === "tool" || conversationEventText(event).length > 0
+          event.responseStreaming ||
+          event.actor === "tool" ||
+          conversationEventText(event).length > 0
       ),
     [events]
   );
@@ -548,7 +559,9 @@ function ConversationPresentation({
     () =>
       expandConversationDisplayEvents(model.events).filter(
         (event) =>
-          event.actor === "tool" || conversationEventText(event).length > 0
+          event.responseStreaming ||
+          event.actor === "tool" ||
+          conversationEventText(event).length > 0
       ),
     [model.events]
   );
