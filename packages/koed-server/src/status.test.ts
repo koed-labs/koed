@@ -1615,7 +1615,11 @@ describe("Pi integration status", () => {
         args[0] === "--version"
           ? spawnResult("0.85.1\n")
           : {
-              ...spawnResult(""),
+              stdout: "",
+              stderr: "",
+              signal: "SIGTERM",
+              pid: 1,
+              output: [],
               status: null,
               error: Object.assign(new Error("spawnSync ETIMEDOUT"), {
                 code: "ETIMEDOUT"
