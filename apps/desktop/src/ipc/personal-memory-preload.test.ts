@@ -40,6 +40,7 @@ describe("Personal Memory preload bridge", () => {
       "listNotes",
       "listProjectMetadata",
       "listProjects",
+      "listRecentConversations",
       "loadAskThread",
       "loadEventPage",
       "loadNote",
@@ -54,6 +55,33 @@ describe("Personal Memory preload bridge", () => {
       contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       operation: "personal.projects.list",
       input: {}
+    });
+  });
+
+  it("requests bounded recent Conversations without renderer transport authority", async () => {
+    const conversation = {
+      id: "session-1",
+      title: "Release planning",
+      projectId: "project-1",
+      projectName: "Koed",
+      sessionId: "session-1",
+      latestAt: "2026-08-20T12:00:00.000Z"
+    };
+    const invoke = vi.fn().mockResolvedValue(
+      success("personal.conversations.recent.list", {
+        conversations: [conversation],
+        nextCursor: "50"
+      })
+    );
+    const api = createPersonalMemoryPreloadApi(invoke, events());
+
+    await expect(api.listRecentConversations?.({ limit: 50 })).resolves.toEqual(
+      { conversations: [conversation], nextCursor: "50" }
+    );
+    expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.conversations.recent.list",
+      input: { limit: 50 }
     });
   });
 

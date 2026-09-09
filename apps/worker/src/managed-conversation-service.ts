@@ -390,6 +390,15 @@ export const managedConversationFailureCode = (error: unknown): string => {
     ) {
       return payload.error;
     }
+    if (
+      current instanceof MemoryApiError &&
+      typeof current.status === "number" &&
+      Number.isInteger(current.status) &&
+      current.status >= 400 &&
+      current.status <= 599
+    ) {
+      return `ManagedConversationMemoryApi${current.status}Error`;
+    }
     if (current instanceof Error) {
       if (managedConversationErrorCodePattern.test(current.name)) {
         return current.name;
@@ -614,7 +623,8 @@ export const createManagedConversationService = (options: {
   const memoryClient = new MemoryApiClient({
     apiUrl: options.apiUrl,
     apiToken: options.apiToken,
-    requestTimeoutMs: 60_000
+    requestTimeoutMs: 60_000,
+    requestClass: "managed-conversation"
   });
   const executionCheckoutDriver = options.executionCheckoutDriver
     ? Promise.resolve(options.executionCheckoutDriver)

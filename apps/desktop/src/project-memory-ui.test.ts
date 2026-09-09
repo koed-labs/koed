@@ -64,6 +64,27 @@ const graphProject = (
 });
 
 describe("repoUrlFromRemoteDisplay", () => {
+  it("presents standalone conversations as one Chats project while preserving their identity", () => {
+    const standaloneMetadata = metadata({
+      displayName: "Independent",
+      localProjectId: "lp_chats",
+      path: { cwd: "/tmp/koed/projects/Independent", projectRoot: null }
+    });
+    const standalone = graphProject({
+      id: "lp_chats",
+      name: "Independent",
+      path: standaloneMetadata.path.cwd
+    });
+    const projects = mergeProjectSources([standalone], [standaloneMetadata]);
+    expect(projects).toHaveLength(1);
+    expect(projects[0]).toMatchObject({
+      id: "lp_chats",
+      name: "Chats",
+      contextKind: "independent",
+      threads: standalone.threads
+    });
+  });
+
   it("prefixes a normalized remote display with https://", () => {
     expect(repoUrlFromRemoteDisplay("github.com/koed-labs/koed")).toBe(
       "https://github.com/koed-labs/koed"

@@ -404,7 +404,24 @@ const bootstrap = async () => {
     setHardwareAcceleration: (enabled) =>
       server.hardwareAcceleration.set(enabled),
     getLaunchAtStartup: () => launchAtStartup.get(),
-    setLaunchAtStartup: (enabled) => launchAtStartup.set(enabled)
+    setLaunchAtStartup: (enabled) => launchAtStartup.set(enabled),
+    selectProjectDirectory: async () => {
+      const options = {
+        buttonLabel: "Open",
+        properties: ["openDirectory", "createDirectory"] as Array<
+          "openDirectory" | "createDirectory"
+        >,
+        title: "Open a Project"
+      };
+      const selected = mainWindow
+        ? await dialog.showOpenDialog(mainWindow, options)
+        : await dialog.showOpenDialog(options);
+      if (selected.canceled || !selected.filePaths[0]) {
+        return { canceled: true };
+      }
+      const result = await server.discoverProject(selected.filePaths[0]);
+      return { canceled: false, result };
+    }
   });
   if (menuBarIconPath && existsSync(menuBarIconPath)) {
     const menuBarIcon = nativeImage.createFromPath(menuBarIconPath);

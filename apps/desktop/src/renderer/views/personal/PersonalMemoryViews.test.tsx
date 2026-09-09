@@ -2178,6 +2178,50 @@ describe("PersonalMemoryWorkspace", () => {
     ).not.toBeNull();
   });
 
+  it("ends response loading and disables input after a terminal runtime failure", async () => {
+    const managed = managedApi();
+    const runtime = await managed.runtime("execution-1");
+    vi.mocked(managed.runtime).mockResolvedValue({
+      ...runtime,
+      executionState: "failed",
+      executionLastErrorCode: "ManagedConversationFailure",
+      latestCommand: {
+        id: "queued-prompt",
+        sequence: 1,
+        executionGeneration: 1,
+        commandKind: "prompt",
+        state: "queued",
+        clientUserMessageId: null,
+        lastErrorCode: null,
+        updatedAt: "2026-09-09T15:11:00.000Z"
+      }
+    });
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [project([thread(1)])]),
+        loadEventPage: vi.fn(async () => [event(1)])
+      })
+    );
+    await act(async () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          managedConversations={managed}
+          onNavigate={vi.fn()}
+          route={{ kind: "session", projectId: "project-1", sessionId }}
+          store={store}
+        />
+      )
+    );
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(
+        "This Conversation stopped after a runtime failure"
+      )
+    );
+    expect(container.querySelector("textarea")?.disabled).toBe(true);
+    expect(container.querySelector(".personal-managed-retry")).toBeNull();
+    expect(container.querySelector('[aria-label="Stop response"]')).toBeNull();
+  });
+
   it("presents transient output, durable input, controls, and indeterminate dispatch", async () => {
     const now = "2026-08-18T05:00:00.000Z";
     const respond = vi.fn<ManagedConversationDesktopApi["respond"]>(

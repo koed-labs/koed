@@ -4,6 +4,7 @@ import {
   personalDesktopAskListInputSchema,
   personalDesktopAskSubmitInputSchema,
   personalDesktopAskThreadInputSchema,
+  personalDesktopConversationRecentListInputSchema,
   personalDesktopEventPageInputSchema,
   personalDesktopNoteCreateInputSchema,
   personalDesktopNoteListInputSchema,
@@ -58,6 +59,25 @@ export const createPersonalMemoryPreloadApi = (
   events: { on: On; removeListener: RemoveListener }
 ): PersonalDesktopApi =>
   Object.freeze({
+    listRecentConversations: async (
+      value: Parameters<
+        NonNullable<PersonalDesktopApi["listRecentConversations"]>
+      >[0]
+    ) => {
+      const input =
+        personalDesktopConversationRecentListInputSchema.parse(value);
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.conversations.recent.list",
+          input
+        })
+      );
+      if (result.operation !== "personal.conversations.recent.list") {
+        throw new Error("Invalid recent Conversations result.");
+      }
+      return result.data;
+    },
     listAskThreads: async (
       value: Parameters<NonNullable<PersonalDesktopApi["listAskThreads"]>>[0]
     ) => {

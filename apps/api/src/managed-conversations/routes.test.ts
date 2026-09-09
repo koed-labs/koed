@@ -2183,6 +2183,7 @@ describe("managed Conversation routes", () => {
     expect(upstreamCalls).toHaveLength(2);
     expect(upstreamCalls[0]?.body).toEqual({
       projectId,
+      contextKind: "project",
       ...launchSelection,
       idempotencyKey: "phase7-start-binding",
       deferUntilRuntimeBinding: true
@@ -2281,6 +2282,157 @@ describe("managed Conversation routes", () => {
         deferUntilRuntimeBinding: true
       })
     );
+  });
+
+  it("binds each Independent execution to its own Koed-owned directory", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-independent-"));
+    const userId = randomUUID();
+    const executionId = randomUUID();
+    const secondExecutionId = randomUUID();
+    const commandId = randomUUID();
+    const deploymentId = randomUUID();
+    const deviceId = randomUUID();
+    const projectId = "lp_independent";
+    const projectPath = resolve(koedHome, "projects", "Independent");
+    mkdirSync(projectPath, { recursive: true });
+    const upsertManagedConversationRuntimeBinding = vi.fn(async () => ({}));
+    const createManagedConversation = vi
+      .fn()
+      .mockImplementationOnce(async () => ({
+        execution: {
+          id: executionId,
+          ownerUserId: userId,
+          projectId,
+          provider: "codex",
+          state: "starting",
+          executionGeneration: 1
+        },
+        command: { id: commandId, state: "blocked" },
+        fencingToken: ""
+      }))
+      .mockImplementationOnce(async () => ({
+        execution: {
+          id: secondExecutionId,
+          ownerUserId: userId,
+          projectId,
+          provider: "codex",
+          state: "starting",
+          executionGeneration: 1
+        },
+        command: { id: commandId, state: "blocked" },
+        fencingToken: ""
+      }));
+    const app = Fastify({ logger: false });
+    registerManagedConversationRoutes(app, {
+      config: { deploymentProfile: "local_personal", koedHome },
+      encryption: { envelopeEncryptionProvider: {} },
+      auth: {
+        authenticate: async () => ({
+          id: userId,
+          email: "alice@example.invalid",
+          displayName: "Alice",
+          passwordHash: null
+        })
+      },
+      deploymentIdentity: {
+        inspect: () => ({
+          health: "healthy",
+          deploymentId,
+          deviceInstanceId: deviceId
+        })
+      },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      },
+      localEdge: {
+        upstreamBackendsPath: resolve(koedHome, "no-upstream.json"),
+        resolveUpstreamAuthorization: () => null,
+        fetch: vi.fn()
+      },
+      requireRepository: () => ({
+        ...launchRepository,
+        listLcmGraphThreads: async () => [{ id: projectId, path: projectPath }],
+        createManagedConversation,
+        upsertManagedConversationRuntimeBinding,
+        getManagedConversationRuntimeBinding: vi.fn(async () => null)
+      })
+    } as unknown as ApiRouteContext);
+    await app.ready();
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations",
+        payload: {
+          projectId,
+          contextKind: "independent",
+          ...launchSelection,
+          idempotencyKey: "independent-local-start"
+        }
+      });
+      const secondResponse = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations",
+        payload: {
+          projectId,
+          contextKind: "independent",
+          ...launchSelection,
+          idempotencyKey: "independent-second-start"
+        }
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(secondResponse.statusCode).toBe(202);
+      expect(JSON.parse(response.body).execution.id).toBe(executionId);
+      expect(JSON.parse(secondResponse.body).execution.id).toBe(
+        secondExecutionId
+      );
+      const executionPath = resolve(
+        koedHome,
+        "managed-conversations",
+        "independent",
+        executionId
+      );
+      expect(realpathSync(executionPath)).toBe(
+        resolve(
+          realpathSync(koedHome),
+          "managed-conversations",
+          "independent",
+          executionId
+        )
+      );
+      expect(executionPath).not.toBe(projectPath);
+      const secondExecutionPath = resolve(
+        koedHome,
+        "managed-conversations",
+        "independent",
+        secondExecutionId
+      );
+      expect(realpathSync(secondExecutionPath)).toBe(
+        resolve(
+          realpathSync(koedHome),
+          "managed-conversations",
+          "independent",
+          secondExecutionId
+        )
+      );
+      expect(secondExecutionPath).not.toBe(executionPath);
+      expect(upsertManagedConversationRuntimeBinding).toHaveBeenCalledWith(
+        { userId },
+        expect.objectContaining({ executionId, projectPath: executionPath })
+      );
+      expect(upsertManagedConversationRuntimeBinding).toHaveBeenCalledWith(
+        { userId },
+        expect.objectContaining({
+          executionId: secondExecutionId,
+          projectPath: secondExecutionPath
+        })
+      );
+    } finally {
+      await app.close();
+      rmSync(koedHome, { recursive: true, force: true });
+    }
   });
 
   it("rejects malformed proxied starts before persisting a local binding", async () => {

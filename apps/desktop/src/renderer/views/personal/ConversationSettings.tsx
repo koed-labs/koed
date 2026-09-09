@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { LocalAiClientAssignment } from "../../../ipc/local-ai-client-protocol.js";
 import {
   Check,
   ChevronDown,
@@ -84,6 +85,30 @@ export const selectionForInstance = (
   };
 };
 
+export const selectionForAssignment = (
+  options: ManagedConversationLaunchOptions,
+  assignment: LocalAiClientAssignment
+): ConversationSelection => {
+  const selection = selectionForInstance(
+    options,
+    assignment.ai_client_instance_id
+  );
+  const model = options.instances
+    .find(
+      (instance) => instance.instanceId === assignment.ai_client_instance_id
+    )
+    ?.models.find((candidate) => candidate.id === assignment.model);
+  return {
+    ...selection,
+    model: model?.id ?? assignment.model,
+    reasoningEffort:
+      assignment.reasoning_effort === "none" &&
+      model?.supportedReasoningEfforts.length === 0
+        ? ""
+        : assignment.reasoning_effort
+  };
+};
+
 export function ConversationSettings({
   options,
   selection,
@@ -120,7 +145,9 @@ export function ConversationSettings({
   const permissions = instance?.capabilities.permissionModes ?? [];
   const currentPermission = selection.permissionMode
     ? permissionLabels[selection.permissionMode]
-    : "Permissions unavailable";
+    : options
+      ? "Permissions unavailable"
+      : "Permissions";
   const modelLabel = (model?.displayName ?? selection.model) || "Select model";
   const provider = instance?.driverId ?? clientProvider;
   const open = (value: boolean) => {

@@ -117,6 +117,9 @@ describe("desktop IPC command registry", () => {
     const consumePendingPersonalDevicePairingLink = vi
       .fn()
       .mockReturnValue(pairingLink);
+    const selectProjectDirectory = vi.fn(async () => ({
+      localProjectId: "project-1"
+    }));
     let themePreference: "light" | "dark" | "system" = "system";
     const getThemePreference = vi.fn(() => themePreference);
     const setThemePreference = vi.fn(
@@ -224,7 +227,8 @@ describe("desktop IPC command registry", () => {
         getHardwareAcceleration,
         setHardwareAcceleration,
         getLaunchAtStartup,
-        setLaunchAtStartup
+        setLaunchAtStartup,
+        selectProjectDirectory
       }
     );
     return {
@@ -243,10 +247,27 @@ describe("desktop IPC command registry", () => {
       setHardwareAcceleration,
       getLaunchAtStartup,
       setLaunchAtStartup,
+      selectProjectDirectory,
       mutatingHandlers,
       checkHandlers
     };
   };
+
+  it("opens Project selection without accepting renderer filesystem authority", async () => {
+    const { registered, selectProjectDirectory } = register();
+    const invoke = registered.get(invokeChannel)!;
+
+    await expect(
+      invoke(renderer(), "select_project_directory")
+    ).resolves.toEqual({ localProjectId: "project-1" });
+    expect(selectProjectDirectory).toHaveBeenCalledOnce();
+    await expect(
+      invoke(renderer(), "select_project_directory", { path: "/tmp/unsafe" })
+    ).rejects.toThrow("takes no arguments");
+    await expect(
+      invoke(renderer("https://attacker.example/"), "select_project_directory")
+    ).rejects.toThrow("Untrusted Desktop IPC sender");
+  });
 
   it("consumes retained pairing links only for the trusted main frame", async () => {
     const { registered, consumePendingPersonalDevicePairingLink } = register();
@@ -407,6 +428,7 @@ describe("desktop IPC command registry", () => {
     expect(managedConversation).toHaveBeenCalledWith({
       operation: "start",
       projectId: "project-1",
+      contextKind: "project",
       aiClientDriverId: "codex",
       aiClientInstanceId: "codex.default",
       model: "gpt-test",

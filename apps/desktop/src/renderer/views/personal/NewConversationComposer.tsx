@@ -1,14 +1,12 @@
 import { useRef, useState } from "react";
-import { ArrowUp, LoaderCircle, MonitorSmartphone } from "lucide-react";
+import { MonitorSmartphone } from "lucide-react";
 import type {
   ManagedConversationDesktopApi,
   ManagedConversationIdentity,
   ManagedConversationLaunchOptions
 } from "../../../ipc/managed-conversation-protocol.js";
-import {
-  ConversationSettings,
-  type ConversationSelection
-} from "./ConversationSettings.js";
+import type { ConversationSelection } from "./ConversationSettings.js";
+import { ConversationInput } from "./ConversationInput.js";
 
 export type InitialConversationPrompt = {
   clientUserMessageId: string;
@@ -19,15 +17,21 @@ export type InitialConversationPrompt = {
 
 export function NewConversationComposer({
   api,
+  contextKind = "project",
+  requirePrompt = false,
+  showContextHelp = true,
   projectId,
   options,
   selection,
   onChange,
   onStarted
 }: {
-  api: ManagedConversationDesktopApi;
-  projectId: string;
-  options: ManagedConversationLaunchOptions;
+  api: ManagedConversationDesktopApi | null;
+  contextKind?: "project" | "independent";
+  requirePrompt?: boolean;
+  showContextHelp?: boolean;
+  projectId: string | null;
+  options: ManagedConversationLaunchOptions | null;
   selection: ConversationSelection;
   onChange: (value: ConversationSelection) => void;
   onStarted: (
@@ -46,18 +50,24 @@ export function NewConversationComposer({
   const launchRef = useRef<
     Parameters<ManagedConversationDesktopApi["start"]>[0] | null
   >(null);
-  const instance = options.instances.find(
+  const initialPromptRef = useRef<InitialConversationPrompt | null>(null);
+  const instance = options?.instances.find(
     (item) => item.instanceId === selection.instanceId
   );
   const available =
+    api &&
+    projectId &&
     instance?.ready &&
     instance.models.some((model) => model.id === selection.model) &&
     selection.permissionMode;
   const start = async () => {
     if (
       inFlight.current ||
+      !api ||
+      !projectId ||
       !instance ||
       !available ||
+      (requirePrompt && !prompt.trim()) ||
       !selection.permissionMode
     )
       return;
@@ -66,6 +76,7 @@ export function NewConversationComposer({
     setError("");
     const launch = launchRef.current ?? {
       projectId,
+      contextKind,
       aiClientDriverId: instance.driverId,
       aiClientInstanceId: instance.instanceId,
       model: selection.model,
@@ -89,12 +100,15 @@ export function NewConversationComposer({
       };
       let initialPrompt: InitialConversationPrompt | undefined;
       if (prompt.trim()) {
-        initialPrompt = {
-          clientUserMessageId: crypto.randomUUID(),
-          prompt,
-          status: "rejected",
-          message: "The prompt was not sent. Your draft is available below."
-        };
+        initialPrompt =
+          initialPromptRef.current ??
+          ({
+            clientUserMessageId: crypto.randomUUID(),
+            prompt,
+            status: "rejected",
+            message: "The prompt was not sent. Your draft is available below."
+          } satisfies InitialConversationPrompt);
+        initialPromptRef.current = initialPrompt;
         const draftScope = {
           projectId,
           capturedSessionId: result.executionId,
@@ -127,7 +141,14 @@ export function NewConversationComposer({
             "Koed could not confirm whether the first prompt was accepted. It will not submit the prompt again automatically.";
         }
       }
-      onStarted(conversation, result.status, launch, initialPrompt);
+      if (!initialPrompt || initialPrompt.status === "queued") {
+        onStarted(conversation, result.status, launch, initialPrompt);
+      } else {
+        setError(
+          initialPrompt?.message ??
+            "The first message was not accepted. Your draft is available."
+        );
+      }
     } catch (cause) {
       setError(
         cause instanceof Error
@@ -143,72 +164,54 @@ export function NewConversationComposer({
     <form
       className="personal-managed-composer personal-new-conversation-composer"
       aria-label="New Conversation"
+      aria-busy={!api || !projectId || !options || busy}
       onSubmit={(event) => {
         event.preventDefault();
         void start();
       }}
     >
-      <div className="personal-managed-composer-field conversation-input">
-        <label>
-          <span className="sr-only">First message</span>
-          <textarea
-            autoFocus
-            rows={2}
-            value={prompt}
-            disabled={busy}
-            onChange={(event) => setPrompt(event.target.value)}
-            placeholder="Ask the selected AI Client to work in this Project"
-            onKeyDown={(event) => {
-              if (
-                event.key === "Enter" &&
-                !event.shiftKey &&
-                !event.nativeEvent.isComposing
-              ) {
-                event.preventDefault();
-                void start();
-              }
-            }}
-          />
-        </label>
-        <div className="conversation-input-footer">
-          <ConversationSettings
-            options={options}
-            selection={selection}
-            disabledReason={
-              busy
-                ? "Starting the Conversation…"
-                : launchRef.current
-                  ? "Retry the pending start before changing settings."
-                  : undefined
-            }
-            onChange={onChange}
-          />
-          <button
-            className="conversation-send"
-            type="submit"
-            disabled={busy || !available}
-            aria-label={busy ? "Starting Conversation" : "Start Conversation"}
-            title="Start Conversation"
-          >
-            {busy ? (
-              <LoaderCircle aria-hidden="true" />
-            ) : (
-              <ArrowUp aria-hidden="true" />
-            )}
-          </button>
+      <ConversationInput
+        action={{
+          kind: busy ? "busy" : "send",
+          label: busy ? "Starting Conversation" : "Start Conversation",
+          disabled: busy || !available || (requirePrompt && !prompt.trim())
+        }}
+        autoFocus
+        disabled={busy}
+        label="First message"
+        onChange={setPrompt}
+        onSubmit={() => void start()}
+        placeholder="Tell the selected AI Client what to do"
+        rows={2}
+        settings={{
+          options,
+          selection,
+          disabledReason: busy
+            ? "Starting the Conversation…"
+            : launchRef.current
+              ? "Retry the pending start before changing settings."
+              : undefined,
+          onChange
+        }}
+        value={prompt}
+      />
+      {showContextHelp ? (
+        <div className="personal-managed-meta-row">
+          <span className="conversation-settings-status">
+            {busy
+              ? "Starting the AI Client…"
+              : "Send your first message to start the Conversation."}
+          </span>
+          <span className="conversation-new-device">
+            <MonitorSmartphone aria-hidden="true" />
+            {options?.runners[0]?.displayName ?? "This device"}
+          </span>
         </div>
-      </div>
-      <div className="personal-managed-meta-row">
-        <span className="conversation-settings-status">
-          {busy
-            ? "Starting the AI Client…"
-            : "Send your first message to start the Conversation."}
-        </span>
-        <span className="conversation-new-device">
-          <MonitorSmartphone aria-hidden="true" />
-          {options.runners[0]?.displayName ?? "This device"}
-        </span>
-      </div>
+      ) : busy ? (
+        <p className="conversation-settings-status" role="status">
+          Starting the AI Client…
+        </p>
+      ) : null}
       {error && (
         <p role="alert" className="personal-managed-error">
           {error}

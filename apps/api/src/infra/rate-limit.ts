@@ -129,7 +129,14 @@ export const createRateLimitHandlers = (
       const keyMaterial = authenticatedUserId
         ? `user:${hashKey(authenticatedUserId)}`
         : `ip:${request.ip}`;
-      const key = `${name}:${keyMaterial}`;
+      // Managed Conversation capture has a bounded budget separate from
+      // background ingestion. Selecting the class never bypasses rate limits.
+      const bucketName =
+        ["memoryRead", "memoryWrite", "sourceJournal"].includes(name) &&
+        request.headers["x-koed-request-class"] === "managed-conversation"
+          ? `${name}:managedConversation`
+          : name;
+      const key = `${bucketName}:${keyMaterial}`;
       const bucket = await rateLimitStore.increment(key, policy.windowMs);
       reply.header("x-ratelimit-limit", String(policy.max));
       reply.header(

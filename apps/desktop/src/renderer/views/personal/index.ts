@@ -1,5 +1,6 @@
 export {
   PersonalMemoryWorkspace,
+  type ManagedConversationDraft,
   type PersonalMemoryInspectorEvent,
   type PersonalMemoryRoute,
   type PersonalMemoryWorkspaceProps

@@ -7,6 +7,30 @@ healthy, authenticated, fresh, identity-matched capability snapshot. Hosted
 authority delegates deferred local execution readiness to the assigned Worker.
 Missing or unavailable owners never fall back to another AI Client.
 
+The managed Conversation worker marks its API traffic with the fixed
+`x-koed-request-class: managed-conversation` header. Memory reads, memory writes,
+and source-journal requests use separate buckets from background ingestion.
+Each bucket retains its configured limit and authenticated User identity.
+The header selects a bounded traffic class. It does not bypass authentication
+or rate limits. Background ingestion cannot exhaust these Conversation budgets.
+The Memory API client retries registration at most twice after HTTP 429 when
+an idempotency key is present. Each retry retains the original request and
+waits for Retry-After, with a maximum delay of 60 seconds per retry.
+Other registration errors are returned without retry.
+
+Ask and Projects use the same managed launch controller and Conversation input.
+Desktop opens the Project Conversation detail after the first prompt enters the
+managed queue. It retains stable launch and message identities during uncertain
+responses, so recovery does not create a second execution or prompt. After the
+first message is accepted, Desktop stores a bounded recovery record in its
+encrypted, owner-scoped secret store. A restart can restore the provisional
+Conversation before capture has supplied its canonical session identity.
+
+An Independent launch uses an owner-local Independent Project for navigation.
+The API creates a separate Koed-owned working directory for each execution. A
+later resume uses the persisted runtime binding for that directory. Repository
+features remain subject to their capability checks.
+
 After API readiness, the supervisor resolves the active local API Token and
 passes the same credential to the Worker and Local AI Runtime. This includes
 credentials already stored under `KOED_HOME`, not only process-environment or

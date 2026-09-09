@@ -1,5 +1,10 @@
 # Conversation settings
 
+Ask, Project launches, and active managed Conversations use the same agent
+input surface. The surrounding controller supplies the draft, capabilities,
+and submission action. The input supplies the text field, settings controls,
+keyboard behavior, and Send or Interrupt action.
+
 The compact composer uses the selected prototype A design.
 Permissions appear on the left. The AI Client selector sits immediately before
 the model and reasoning selector. Device handoff remains a separate action.
@@ -12,7 +17,8 @@ no leading icon.
 
 ## New Conversations
 
-**New** opens the composer with the current launch settings. Users can select
+Ask and **New** use the saved **Conversations** assignment from Agent Configuration.
+The assignment supplies the AI Client, model, and reasoning effort. Users can select
 an available AI Client, model, reasoning level, and permission mode before
 they start. Sending the first message starts the Conversation and queues that
 message behind runtime startup. Starting without a message remains available.
@@ -80,5 +86,10 @@ pnpm --filter @koed/desktop dev --port 5199
 The fixture URL is
 `http://127.0.0.1:5199/browser-validation.html?view=conversation-settings`.
 
-The throwaway variants and switcher are removed. The User requested no changeset
-for this implementation.
+The throwaway variants and switcher are removed.
+
+## Existing development databases
+
+Migration `0039_conversation_start_ack` repairs databases that applied an earlier
+version of migration `0037`. It adds the missing runtime-binding acknowledgement
+column. It preserves existing values and Conversation records.

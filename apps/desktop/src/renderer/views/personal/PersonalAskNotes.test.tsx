@@ -8,6 +8,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PersonalAskView } from "./PersonalAskView.js";
 import { PersonalNotesView } from "./PersonalNotesView.js";
+import type { ManagedConversationDesktopApi } from "../../../ipc/managed-conversation-protocol.js";
+import {
+  localAiClientFlowKeys,
+  type LocalAiClientResponse
+} from "../../../ipc/local-ai-client-protocol.js";
+import type { DesktopProject } from "../../../project-memory-ui.js";
 
 const adapters = { openExternal: vi.fn(), writeClipboard: vi.fn() };
 (
@@ -26,6 +32,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 const click = async (element: Element | null) => {
@@ -44,18 +51,7 @@ const enterText = async (element: HTMLTextAreaElement, value: string) => {
 };
 
 describe("Personal Ask", () => {
-  it("shows the focused welcome state, pending state, and final answer", async () => {
-    let finish!: (
-      value: Awaited<ReturnType<NonNullable<PersonalDesktopApi["submitAsk"]>>>
-    ) => void;
-    const submitAsk = vi.fn(
-      async () =>
-        await new Promise<
-          Awaited<ReturnType<NonNullable<PersonalDesktopApi["submitAsk"]>>>
-        >((resolve) => {
-          finish = resolve;
-        })
-    );
+  it("starts a managed Project Conversation through the approved Ask layout", async () => {
     const api: PersonalDesktopApi = {
       assignSessionProject: vi.fn(async () => ({ projectId: null })),
       updateSessionPresentation: vi.fn(async () => {
@@ -65,106 +61,309 @@ describe("Personal Ask", () => {
       loadEventPage: vi.fn(async () => []),
       updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
       subscribe: vi.fn(() => () => undefined),
-      listAskThreads: vi.fn(async () => ({
-        threads: [
+      loadAskThread: vi.fn(async () => [])
+    };
+    const project = {
+      id: "project-research",
+      name: "Research",
+      path: "/tmp/research",
+      eventCount: 0,
+      threads: [],
+      catalogued: true,
+      discoveredAt: "2026-08-17T12:00:00.000Z",
+      lastSeenAt: "2026-08-17T12:00:00.000Z",
+      localProjectId: "project-research",
+      branch: null,
+      remoteDisplay: null,
+      isWorktree: false
+    } satisfies DesktopProject;
+    const independent = {
+      ...project,
+      id: "project-independent",
+      name: "Independent",
+      path: "/tmp/koed/Independent",
+      localProjectId: "project-independent"
+    } satisfies DesktopProject;
+    const start = vi.fn(async () => ({
+      operation: "start" as const,
+      status: "starting" as const,
+      executionId: "11111111-1111-4111-8111-111111111111"
+    }));
+    const send = vi.fn(async () => ({
+      operation: "send" as const,
+      status: "queued" as const,
+      conversation: {
+        executionId: "11111111-1111-4111-8111-111111111111",
+        projectId: project.id,
+        capturedSessionId: "11111111-1111-4111-8111-111111111111",
+        threadId: "11111111-1111-4111-8111-111111111111"
+      },
+      idempotencyKey: "desktop-prompt:test",
+      clientUserMessageId: "22222222-2222-4222-8222-222222222222"
+    }));
+    const managedConversations = {
+      launchOptions: vi.fn(async () => ({
+        operation: "launch_options" as const,
+        options: {
+          runners: [
+            {
+              kind: "local_device" as const,
+              deploymentId: "local",
+              deviceId: "device",
+              displayName: "This device"
+            }
+          ],
+          instances: [
+            {
+              instanceId: "codex-default",
+              driverId: "codex" as const,
+              displayName: "Codex",
+              ready: true,
+              readiness: "ready",
+              models: [
+                {
+                  id: "gpt-test",
+                  supportedReasoningEfforts: ["medium"],
+                  defaultReasoningEffort: "medium",
+                  isDefault: true
+                }
+              ],
+              capabilities: {
+                defaultPermissionMode: "supervised" as const,
+                permissionModes: [
+                  { mode: "supervised" as const, support: "supported" as const }
+                ]
+              }
+            }
+          ]
+        }
+      })),
+      start,
+      send,
+      writeDraft: vi.fn(async () => ({
+        operation: "draft_write" as const,
+        ok: true as const
+      })),
+      deleteDraft: vi.fn(async () => ({
+        operation: "draft_delete" as const,
+        ok: true as const
+      }))
+    } as unknown as ManagedConversationDesktopApi;
+    vi.useFakeTimers();
+    const loadedOptions = await managedConversations.launchOptions();
+    loadedOptions.options.instances.push({
+      ...loadedOptions.options.instances[0]!,
+      instanceId: "codex-preferred",
+      displayName: "Preferred Codex",
+      models: [
+        {
+          id: "preferred-model",
+          supportedReasoningEfforts: ["low", "high"],
+          defaultReasoningEffort: "low"
+        }
+      ]
+    });
+    const defaultAssignment = {
+      provider: "codex" as const,
+      ai_client_instance_id: "codex-default",
+      model: "gpt-test",
+      reasoning_effort: "medium",
+      timeout_ms: 120000,
+      max_attempts: 2
+    };
+    const settings: LocalAiClientResponse = {
+      operation: "list",
+      readModel: {
+        instances: [],
+        capabilitySnapshots: [],
+        settings: [
           {
-            askThreadId: "22222222-2222-4222-8222-222222222222",
-            firstQuestion: "Earlier question",
-            latestStatus: "answered" as const,
-            turnCount: 1,
-            updatedAt: "2026-08-17T12:00:00.000Z"
+            flowKey: "conversations",
+            provider: "codex",
+            aiClientInstanceId: "codex-preferred",
+            model: "preferred-model",
+            reasoningEffort: "high",
+            timeoutMs: 120000,
+            maxAttempts: 2,
+            createdAt: "2026-09-09T10:00:00.000Z",
+            updatedAt: "2026-09-09T10:00:00.000Z"
           }
         ],
-        nextCursor: null
-      })),
-      loadAskThread: vi.fn(async () => []),
-      submitAsk
+        defaults: Object.fromEntries(
+          localAiClientFlowKeys.map((key) => [
+            key,
+            {
+              source: "code",
+              available: true,
+              assignment: defaultAssignment,
+              reason: null
+            }
+          ])
+        ) as LocalAiClientResponse["readModel"]["defaults"]
+      }
     };
-    const onSelectThread = vi.fn();
+    const localAiClients = {
+      list: vi.fn(async () => settings),
+      refresh: vi.fn(async () => settings),
+      set: vi.fn(async () => settings),
+      reset: vi.fn(async () => settings)
+    };
+
+    let resolveOptions!: (value: typeof loadedOptions) => void;
+    managedConversations.launchOptions = vi
+      .fn(
+        () =>
+          new Promise<typeof loadedOptions>((resolve) => {
+            resolveOptions = resolve;
+          })
+      )
+      .mockRejectedValueOnce(new Error("API starting"));
+    let resolveProject!: (value: DesktopProject) => void;
+    const pendingProject = new Promise<DesktopProject>((resolve) => {
+      resolveProject = resolve;
+    });
+    const onConversationStarted = vi.fn();
+    const onOpenProject = vi.fn(async () => {
+      throw new Error("The selected folder is not accessible.");
+    });
     await act(async () => {
       root.render(
         <PersonalAskView
           api={api}
+          managedConversations={managedConversations}
+          localAiClients={localAiClients}
           markdownAdapters={adapters}
+          onConversationStarted={onConversationStarted}
           onNew={vi.fn()}
-          onSelectThread={onSelectThread}
+          onOpenProject={onOpenProject}
+          onResolveIndependent={vi
+            .fn(() => pendingProject)
+            .mockRejectedValueOnce(new Error("Projects starting"))}
+          projects={[project]}
         />
       );
     });
-    expect(container.textContent).toContain("What would you like to know?");
-    expect(
-      container.querySelector(".personal-ask-main")?.getAttribute("data-view")
-    ).toBe("welcome");
-    expect(container.textContent).not.toContain("Earlier question");
-    expect(container.textContent).not.toContain("Catch me up");
-    expect(container.textContent).not.toContain(
-      "Koed searches only Personal Memory available to you."
-    );
-    expect(container.querySelector(".personal-ask-recents")).toBeNull();
-    expect(
-      container.querySelector(".personal-ask-composer-footer span")
-    ).toBeNull();
-    expect(
-      container.querySelector(".personal-ask-composer-footer .lucide-sparkles")
-    ).toBeNull();
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(500));
 
-    const submitButton = container.querySelector(
-      'button[aria-label="Submit question"]'
-    );
-    expect(submitButton?.querySelector(".lucide-arrow-up")).not.toBeNull();
-    expect(submitButton?.querySelector(".personal-ask-spinner")).toBeNull();
+    expect(container.textContent).toContain("Where shall we start?");
+    expect(container.textContent).toContain("Chat");
+    expect(container.textContent).not.toContain("Send your first message");
+    expect(container.querySelector(".conversation-new-device")).toBeNull();
+    expect(container.textContent).toContain("Research");
+    expect(container.textContent).toContain("Open a project");
+    expect(container.textContent).not.toContain("CHOOSE YOUR CONTEXT");
+    expect(container.textContent).not.toContain("Working in");
 
-    const textarea = container.querySelector(
-      'textarea[aria-label="Ask Personal Memory"]'
-    ) as HTMLTextAreaElement;
-    await enterText(textarea, "What did I decide?");
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    await enterText(textarea, "Investigate the generic task");
+    const submit = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Start Conversation"]'
+    )!;
+    expect(textarea.disabled).toBe(false);
+    expect(submit.disabled).toBe(true);
+    await act(async () => {
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true })
+      );
+    });
+    expect(start).not.toHaveBeenCalled();
+    await act(async () => resolveOptions(loadedOptions));
+    expect(submit.disabled).toBe(true);
+    await act(async () => resolveProject(independent));
+    expect(container.querySelector("textarea")).toBe(textarea);
+    expect(textarea.value).toBe("Investigate the generic task");
+    expect(submit.disabled).toBe(false);
+    vi.useRealTimers();
+
     await click(
-      container.querySelector('button[aria-label="Submit question"]')
+      [...container.querySelectorAll("button")].find((button) =>
+        button.textContent?.includes("Open a project")
+      ) ?? null
     );
-    expect(container.textContent).toContain("Searching...");
-    expect(container.textContent).not.toContain("Searching Personal Memory");
-    expect(
-      container
-        .querySelector('button[aria-label="Submit question"]')
-        ?.querySelector(".personal-ask-spinner")
-    ).not.toBeNull();
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(
+        "The selected folder is not accessible."
+      )
+    );
+    expect(textarea.value).toBe("Investigate the generic task");
+    await click(
+      [...container.querySelectorAll("button")].find((button) =>
+        button.textContent?.includes("Research")
+      ) ?? null
+    );
+    expect(textarea.value).toBe("Investigate the generic task");
+    await click(
+      container.querySelector('button[aria-label="Start Conversation"]')
+    );
+    await vi.waitFor(() =>
+      expect(onConversationStarted).toHaveBeenCalledTimes(1)
+    );
+    expect(start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: project.id,
+        contextKind: "project",
+        aiClientInstanceId: "codex-preferred",
+        model: "preferred-model",
+        reasoningEffort: "high"
+      })
+    );
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: "Investigate the generic task" })
+    );
+  });
+
+  it("keeps the empty start page understandable when AI Clients are unavailable", async () => {
+    const independent = {
+      id: "project-independent",
+      name: "Independent",
+      path: "/tmp/koed/Independent",
+      eventCount: 0,
+      threads: [],
+      catalogued: true,
+      discoveredAt: "2026-08-17T12:00:00.000Z",
+      lastSeenAt: "2026-08-17T12:00:00.000Z",
+      localProjectId: "project-independent",
+      branch: null,
+      remoteDisplay: null,
+      isWorktree: false
+    } satisfies DesktopProject;
+    const managedConversations = {
+      launchOptions: vi.fn(async () => {
+        throw new Error("offline");
+      })
+    } as unknown as ManagedConversationDesktopApi;
 
     await act(async () => {
-      finish({
-        id: "11111111-1111-4111-8111-111111111111",
-        askThreadId: "33333333-3333-4333-8333-333333333333",
-        askTurnIndex: 0,
-        query: "What did I decide?",
-        answerMarkdown: "You chose the **Ask welcome page**.",
-        errorMessage: null,
-        status: "answered",
-        createdAt: "2026-08-17T12:00:00.000Z",
-        updatedAt: "2026-08-17T12:00:01.000Z",
-        answeredAt: "2026-08-17T12:00:01.000Z"
-      });
-      await Promise.resolve();
+      root.render(
+        <PersonalAskView
+          api={
+            {
+              loadAskThread: vi.fn(async () => [])
+            } as unknown as PersonalDesktopApi
+          }
+          managedConversations={managedConversations}
+          markdownAdapters={adapters}
+          onNew={vi.fn()}
+          onResolveIndependent={vi.fn(async () => independent)}
+          projects={[]}
+        />
+      );
     });
-    expect(container.textContent).toContain("You chose the Ask welcome page.");
-    expect(container.querySelector(".personal-ask-answer")).not.toBeNull();
-    expect(
-      container.querySelector(".personal-ask-main")?.getAttribute("data-view")
-    ).toBe("conversation");
-    expect(
-      container
-        .querySelector(".personal-ask-conversation-heading")
-        ?.getAttribute("aria-label")
-    ).toBe("Conversation actions");
-    expect(
-      container.querySelector(".personal-ask-conversation-title")
-    ).toBeNull();
-    expect(onSelectThread).toHaveBeenCalledWith(
-      "33333333-3333-4333-8333-333333333333"
+
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector("form")?.getAttribute("aria-busy")).toBe(
+      "true"
     );
+    expect(container.textContent).toContain("Where shall we start?");
+    expect(container.textContent).toContain("Start without a Project");
+    expect(container.querySelector("textarea")).not.toBeNull();
     expect(
-      [...container.querySelectorAll("button")].find(
-        (button) => button.textContent?.trim() === "New"
-      )?.classList
-    ).toContain("personal-new-conversation-standalone");
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Start Conversation"]'
+      )?.disabled
+    ).toBe(true);
   });
 
   it("clears a stale thread-load error and presents AI Client failures clearly", async () => {
@@ -218,7 +417,7 @@ describe("Personal Ask", () => {
     await render("22222222-2222-4222-8222-222222222222");
     await vi.waitFor(() =>
       expect(container.textContent).toContain(
-        "This Ask thread could not be opened."
+        "This historical Ask thread could not be opened."
       )
     );
 
@@ -229,7 +428,7 @@ describe("Personal Ask", () => {
       )
     );
     expect(container.textContent).not.toContain(
-      "This Ask thread could not be opened."
+      "This historical Ask thread could not be opened."
     );
     expect(container.textContent).not.toContain("codex_failed");
   });

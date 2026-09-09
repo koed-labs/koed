@@ -1629,6 +1629,17 @@ describe("Managed Conversation failure codes", () => {
     ).toBe("ManagedConversationSourceReleaseError");
   });
 
+  it("retains API failure status without exposing private response details", () => {
+    expect(
+      managedConversationFailureCode(
+        new MemoryApiError("private response", {
+          status: 429,
+          payload: { error: "private response" }
+        })
+      )
+    ).toBe("ManagedConversationMemoryApi429Error");
+  });
+
   it("normalizes Codex runtime failures without exposing their details", () => {
     expect(
       managedConversationFailureCode(

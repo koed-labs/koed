@@ -48,6 +48,7 @@ export type DesktopProjectMetadata = {
 
 export type DesktopProject = Omit<DesktopProjectGroup, "threads"> & {
   threads: PersonalDesktopProjectThread[];
+  contextKind?: "project" | "independent";
   catalogued: boolean;
   discoveredAt: string | null;
   lastSeenAt: string | null;
@@ -161,7 +162,14 @@ const enrichProject = (
 ): DesktopProject => ({
   ...project,
   threads: project.threads as PersonalDesktopProjectThread[],
-  name: metadata?.displayName || project.name,
+  name:
+    (metadata?.displayName || project.name) === "Independent"
+      ? "Chats"
+      : metadata?.displayName || project.name,
+  contextKind:
+    (metadata?.displayName || project.name) === "Independent"
+      ? "independent"
+      : "project",
   path:
     project.path ?? metadata?.path.projectRoot ?? metadata?.path.cwd ?? null,
   catalogued: Boolean(metadata),

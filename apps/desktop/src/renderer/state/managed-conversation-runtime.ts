@@ -20,6 +20,7 @@ export type ManagedConversationRuntimeState = {
   executionStateVersion: number;
   executionState: string;
   executionLastErrorCode: string | null;
+  vcsDriver: "git" | null;
   latestCommand: ManagedConversationRuntimeSnapshot["latestCommand"];
   items: ManagedConversationRuntimeItem[];
   itemRevisions: ReadonlyMap<string, number>;
@@ -37,6 +38,7 @@ export const managedConversationRuntimeStateFromSnapshot = (
   executionStateVersion: snapshot.executionStateVersion,
   executionState: snapshot.executionState,
   executionLastErrorCode: snapshot.executionLastErrorCode,
+  vcsDriver: snapshot.vcsDriver ?? null,
   latestCommand: snapshot.latestCommand,
   items: snapshot.items,
   itemRevisions: new Map(snapshot.items.map((item) => [item.id, item.revision]))
@@ -89,6 +91,7 @@ export const reduceManagedConversationRuntime = (
         executionStateVersion: update.execution.stateVersion,
         executionState: update.execution.state,
         executionLastErrorCode: update.execution.lastErrorCode,
+        vcsDriver: current.vcsDriver,
         latestCommand: null,
         items: [],
         itemRevisions: new Map()

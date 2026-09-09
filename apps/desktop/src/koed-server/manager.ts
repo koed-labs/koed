@@ -23,6 +23,7 @@ import {
   personalDesktopAskSubmitDataSchema,
   personalDesktopAskThreadDataSchema,
   personalDesktopAskThreadsDataSchema,
+  personalDesktopConversationRecentsDataSchema,
   personalDesktopEventsDataSchema,
   personalDesktopNoteDataSchema,
   personalDesktopNoteRenameDataSchema,
@@ -235,6 +236,7 @@ export interface KoedServerManager {
   };
   managedConversation: ManagedConversationDesktopHandler;
   managedProject: ManagedProjectDesktopHandler;
+  discoverProject: (cwd: string) => Promise<unknown>;
   subscribePersonalMemory: (
     listener: (change: PersonalDesktopChange) => void,
     signal: AbortSignal
@@ -2573,6 +2575,63 @@ export const createKoedServerManager = ({
     return projects;
   };
 
+  const listRecentPersonalConversations = async (input: {
+    cursor?: string;
+    limit: 50;
+  }) => {
+    const offset = Number(input.cursor ?? "0");
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    }
+    const remoteLimit = input.limit + 1;
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => {
+        const url = new URL("/v1/memory/graph/threads", apiOrigin);
+        url.search = new URLSearchParams({
+          limit: String(remoteLimit),
+          offset: String(offset),
+          includeInvalidated: "false"
+        }).toString();
+        return { url, init: { method: "GET" } };
+      },
+      2 * 1_024 * 1_024
+    );
+    const rawThreadCount = Array.isArray(payload.projects)
+      ? payload.projects.reduce((count, projectValue) => {
+          const project = objectValue(projectValue);
+          return (
+            count +
+            (Array.isArray(project?.threads) ? project.threads.length : 0)
+          );
+        }, 0)
+      : 0;
+    const projects = personalProjectsData(payload).projects;
+    const conversations = projects
+      .flatMap((project) =>
+        project.threads
+          .filter((thread) => thread.threadKind !== "subagent")
+          .map((thread) => ({
+            id: thread.sessionId ?? thread.id,
+            title: thread.name || "Conversation",
+            projectId: project.id,
+            projectName: project.name,
+            sessionId: thread.sessionId ?? thread.id,
+            latestAt: thread.latestAt
+          }))
+      )
+      .sort(
+        (left, right) =>
+          Date.parse(right.latestAt) - Date.parse(left.latestAt) ||
+          right.id.localeCompare(left.id)
+      )
+      .slice(0, input.limit);
+    return personalDesktopConversationRecentsDataSchema.parse({
+      conversations,
+      nextCursor:
+        rawThreadCount > input.limit ? String(offset + input.limit) : null
+    });
+  };
+
   const reconcileLocalProjectMetadata = async (
     projects: Array<{ path: string | null }>
   ): Promise<void> => {
@@ -2746,6 +2805,59 @@ export const createKoedServerManager = ({
     }
 
     if (
+      request.operation === "recovery_read" ||
+      request.operation === "recovery_write" ||
+      request.operation === "recovery_delete"
+    ) {
+      if (!managedConversationDraftStore) {
+        throw new PersonalMemoryBoundaryError("not_ready", false);
+      }
+      const [access, identity] = await Promise.all([
+        personalMemoryAccess(),
+        authenticatedPersonalMemoryRequest(
+          ({ apiOrigin }) => ({
+            url: new URL("/v1/access/check", apiOrigin),
+            init: { method: "GET" }
+          }),
+          64 * 1_024
+        )
+      ]);
+      const user = objectValue(identity.user);
+      if (typeof user?.id !== "string") {
+        throw new PersonalMemoryBoundaryError("invalid_response", false);
+      }
+      if (user.id !== request.ownerId) {
+        throw new PersonalMemoryBoundaryError("not_found", false);
+      }
+      const reference = `managed-recovery-${createHash("sha256")
+        .update(
+          JSON.stringify({
+            backend: access.apiOrigin,
+            ownerUserId: user.id
+          })
+        )
+        .digest("hex")}`;
+      if (request.operation === "recovery_read") {
+        return parseManagedConversationResult({
+          operation: "recovery_read",
+          value: (await managedConversationDraftStore.get(reference)) ?? ""
+        });
+      }
+      if (request.operation === "recovery_write") {
+        await managedConversationDraftStore.put(reference, request.value);
+        return parseManagedConversationResult({
+          operation: "recovery_write",
+          ok: true
+        });
+      }
+      await managedConversationDraftStore.delete(reference);
+      return parseManagedConversationResult({
+        operation: "recovery_delete",
+        ok: true
+      });
+    }
+
+    if (
       request.operation === "draft_read" ||
       request.operation === "draft_write" ||
       request.operation === "draft_delete"
@@ -2807,6 +2919,7 @@ export const createKoedServerManager = ({
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               projectId: request.projectId,
+              contextKind: request.contextKind ?? "project",
               provider: request.aiClientDriverId,
               aiClientInstanceId: request.aiClientInstanceId,
               model: request.model,
@@ -2948,6 +3061,7 @@ export const createKoedServerManager = ({
         2 * 1_024 * 1_024
       );
       const execution = objectValue(payload.execution);
+      const executionCheckout = objectValue(execution?.executionCheckout);
       const latestCommand =
         payload.latestCommand === null
           ? null
@@ -2960,6 +3074,10 @@ export const createKoedServerManager = ({
         typeof execution.state !== "string" ||
         (execution.lastErrorCode !== null &&
           typeof execution.lastErrorCode !== "string") ||
+        (execution.executionCheckout !== null &&
+          (!executionCheckout ||
+            (executionCheckout.vcsDriver !== null &&
+              executionCheckout.vcsDriver !== "git"))) ||
         (latestCommand !== null &&
           (typeof latestCommand.id !== "string" ||
             typeof latestCommand.sequence !== "number" ||
@@ -2982,6 +3100,7 @@ export const createKoedServerManager = ({
         executionStateVersion: execution.stateVersion,
         executionState: execution.state,
         executionLastErrorCode: execution.lastErrorCode ?? null,
+        vcsDriver: executionCheckout?.vcsDriver === "git" ? "git" : null,
         latestCommand,
         items: payload.items
       });
@@ -4216,23 +4335,29 @@ export const createKoedServerManager = ({
                         : request.operation === "personal.projects.list"
                           ? await listPersonalProjects()
                           : request.operation ===
-                              "personal.projects.metadata.list"
-                            ? localProjectMetadataData(environment)
-                            : request.operation === "personal.events.load_page"
-                              ? await loadPersonalEventPage(request.input)
+                              "personal.conversations.recent.list"
+                            ? await listRecentPersonalConversations(
+                                request.input
+                              )
+                            : request.operation ===
+                                "personal.projects.metadata.list"
+                              ? localProjectMetadataData(environment)
                               : request.operation ===
-                                  "personal.sessions.assign_project"
-                                ? await assignPersonalSessionProject(
-                                    request.input
-                                  )
+                                  "personal.events.load_page"
+                                ? await loadPersonalEventPage(request.input)
                                 : request.operation ===
-                                    "personal.sessions.update_presentation"
-                                  ? await updatePersonalSessionPresentation(
+                                    "personal.sessions.assign_project"
+                                  ? await assignPersonalSessionProject(
                                       request.input
                                     )
-                                  : await updatePersonalSessionTitle(
-                                      request.input
-                                    );
+                                  : request.operation ===
+                                      "personal.sessions.update_presentation"
+                                    ? await updatePersonalSessionPresentation(
+                                        request.input
+                                      )
+                                    : await updatePersonalSessionTitle(
+                                        request.input
+                                      );
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,
@@ -4815,6 +4940,8 @@ export const createKoedServerManager = ({
     },
     managedConversation,
     managedProject,
+    discoverProject: (cwd) =>
+      runJson(["project", "discover", "--cwd", cwd], 30_000),
     subscribePersonalMemory,
     resume,
     handlers: {
@@ -4850,6 +4977,20 @@ export const createKoedServerManager = ({
       package_status: () => runPackageStatusJson(),
       package_install: (args) => runPackageInstallJson(args),
       project_list: () => runJson(["project", "list"], 10_000),
+      ensure_independent_project: async () => {
+        const independentRoot = resolve(
+          resolveKoedHome(environment),
+          "projects",
+          "Independent"
+        );
+        mkdirSync(independentRoot, { mode: 0o700, recursive: true });
+        return discoverProjectMetadata(resolveKoedServerPaths(environment), {
+          cwd: independentRoot
+        });
+      },
+      select_project_directory: () => {
+        throw new Error("Project directory selection requires Desktop.");
+      },
       personal_sync_status: async () => {
         const status = await personalSyncStatusWithLanRelay();
         return personalDevicePairingServerError

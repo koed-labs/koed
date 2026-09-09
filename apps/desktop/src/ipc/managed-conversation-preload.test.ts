@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createManagedConversationPreloadApi } from "./managed-conversation-preload.js";
+import {
+  createManagedConversationPreloadApi,
+  type ManagedConversationIpcInvoke
+} from "./managed-conversation-preload.js";
 import { managedConversationCommandChannel } from "./managed-conversation-protocol.js";
 
 const identity = {
@@ -130,12 +133,14 @@ describe("Managed Conversation preload bridge", () => {
     });
     expect(Object.keys(api).sort()).toEqual([
       "deleteDraft",
+      "deleteRecovery",
       "fork",
       "handoff",
       "inspect",
       "interrupt",
       "launchOptions",
       "readDraft",
+      "readRecovery",
       "respond",
       "resume",
       "runtime",
@@ -145,11 +150,13 @@ describe("Managed Conversation preload bridge", () => {
       "targets",
       "transferStatus",
       "usage",
-      "writeDraft"
+      "writeDraft",
+      "writeRecovery"
     ]);
     expect(invoke).toHaveBeenCalledWith(managedConversationCommandChannel, {
       operation: "start",
       projectId: "project-1",
+      contextKind: "project",
       aiClientDriverId: "codex",
       aiClientInstanceId: "codex.default",
       model: "gpt-test",
@@ -157,6 +164,33 @@ describe("Managed Conversation preload bridge", () => {
       permissionMode: "full_access",
       runnerKind: "local_device",
       idempotencyKey: "start-request-1"
+    });
+  });
+
+  it("round-trips the bounded encrypted recovery payload through strict IPC", async () => {
+    const value = JSON.stringify({ schemaVersion: 1, drafts: [] });
+    const ownerId = "11111111-1111-4111-8111-111111111111";
+    const invoke = vi.fn<ManagedConversationIpcInvoke>(
+      async (_channel, payload) => {
+        const request = payload as { operation: string };
+        return request.operation === "recovery_read"
+          ? { operation: "recovery_read", value }
+          : { operation: request.operation, ok: true };
+      }
+    );
+    const api = createManagedConversationPreloadApi(invoke);
+
+    await expect(api.writeRecovery?.(ownerId, value)).resolves.toEqual({
+      operation: "recovery_write",
+      ok: true
+    });
+    await expect(api.readRecovery?.(ownerId)).resolves.toEqual({
+      operation: "recovery_read",
+      value
+    });
+    await expect(api.deleteRecovery?.(ownerId)).resolves.toEqual({
+      operation: "recovery_delete",
+      ok: true
     });
   });
 

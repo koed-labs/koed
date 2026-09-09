@@ -15,8 +15,12 @@ import {
   Sparkles,
   UsersRound
 } from "lucide-react";
-import type { PersonalDesktopAskThread } from "@koed/shared/personal-desktop";
+import type {
+  PersonalDesktopAskThread,
+  PersonalDesktopConversationRecent
+} from "@koed/shared/personal-desktop";
 import { useState, type ReactNode } from "react";
+import { relativeTime } from "../../project-memory-ui.js";
 
 export type ContextNavItem = {
   archived?: boolean;
@@ -36,6 +40,8 @@ export type WorkspaceNavItem = {
   sharedMemorySelected: boolean;
   sharedMemoryUnreadCount?: number;
 };
+
+export type PersonalConversationRecent = PersonalDesktopConversationRecent;
 
 function SidebarHeader({
   action,
@@ -171,7 +177,50 @@ function AskRecentItem({
       >
         {icon}
       </span>
-      <span className="desktop-sidebar-nav-label">{thread.firstQuestion}</span>
+      <span className="desktop-sidebar-recent-copy">
+        <span className="desktop-sidebar-nav-label">
+          {thread.firstQuestion}
+        </span>
+        <small>
+          Ask ·{" "}
+          <time dateTime={thread.updatedAt}>
+            {relativeTime(thread.updatedAt)}
+          </time>
+        </small>
+      </span>
+    </button>
+  );
+}
+
+function ConversationRecentItem({
+  item,
+  onSelect,
+  selected
+}: {
+  item: PersonalConversationRecent;
+  onSelect: (item: PersonalConversationRecent) => void;
+  selected: boolean;
+}) {
+  return (
+    <button
+      aria-current={selected ? "page" : undefined}
+      className="desktop-sidebar-nav-item desktop-sidebar-conversation-recent"
+      data-selected={selected || undefined}
+      onClick={() => onSelect(item)}
+      type="button"
+    >
+      <span className="desktop-sidebar-nav-icon">
+        <MessageCircle aria-hidden="true" />
+      </span>
+      <span className="desktop-sidebar-recent-copy">
+        <span className="desktop-sidebar-nav-label">{item.title}</span>
+        <small>
+          {["Independent", "Chats"].includes(item.projectName)
+            ? "Chat"
+            : item.projectName}{" "}
+          · <time dateTime={item.latestAt}>{relativeTime(item.latestAt)}</time>
+        </small>
+      </span>
     </button>
   );
 }
@@ -194,17 +243,19 @@ export function LockedFeatureRow({
 export function PersonalContextNavigation({
   askRecents = [],
   askRecentsError,
-  askRecentsNextCursor = null,
   askSelected = false,
+  conversationRecents = [],
   notesSelected,
-  onLoadOlderAskThreads,
   onOpenAsk = () => undefined,
   onOpenNotes,
   onOpenProjects,
   onOpenShares,
+  onRetryRecents,
   onSelectAskThread,
+  onSelectConversation,
   projectsSelected,
   selectedAskThreadId,
+  selectedConversationId,
   sharesSelected,
   sharesUnavailable = false,
   teamCollaborationEnabled = true
@@ -213,15 +264,21 @@ export function PersonalContextNavigation({
   askRecentsError?: string | null;
   askRecentsNextCursor?: string | null;
   askSelected?: boolean;
+  conversationRecents?: readonly PersonalConversationRecent[];
+  conversationRecentsNextCursor?: string | null;
   notesSelected: boolean;
   onLoadOlderAskThreads?: () => void;
+  onLoadOlderConversations?: () => void;
   onOpenAsk?: () => void;
   onOpenNotes: () => void;
   onOpenProjects: () => void;
   onOpenShares: () => void;
+  onRetryRecents?: () => void;
   onSelectAskThread?: (askThreadId: string) => void;
+  onSelectConversation?: (item: PersonalConversationRecent) => void;
   projectsSelected: boolean;
   selectedAskThreadId?: string;
+  selectedConversationId?: string;
   sharesSelected: boolean;
   sharesUnavailable?: boolean;
   teamCollaborationEnabled?: boolean;
@@ -267,27 +324,55 @@ export function PersonalContextNavigation({
         ) : null}
       </Section>
       <Section className="desktop-sidebar-recents-section" title="Recents">
-        {askRecents.map((thread) => (
-          <AskRecentItem
-            key={thread.askThreadId}
-            onSelect={onSelectAskThread ?? (() => undefined)}
-            selected={thread.askThreadId === selectedAskThreadId}
-            thread={thread}
-          />
-        ))}
-        {askRecentsNextCursor && onLoadOlderAskThreads ? (
-          <button
-            className="desktop-sidebar-load-more"
-            onClick={onLoadOlderAskThreads}
-            type="button"
-          >
-            Load older
-          </button>
-        ) : null}
+        {[
+          ...conversationRecents.map((item) => ({
+            kind: "conversation" as const,
+            id: item.id,
+            latestAt: item.latestAt,
+            item
+          })),
+          ...askRecents.map((thread) => ({
+            kind: "ask" as const,
+            id: thread.askThreadId,
+            latestAt: thread.updatedAt,
+            thread
+          }))
+        ]
+          .sort(
+            (left, right) =>
+              Date.parse(right.latestAt) - Date.parse(left.latestAt) ||
+              left.id.localeCompare(right.id)
+          )
+          .slice(0, 10)
+          .map((recent) =>
+            recent.kind === "conversation" ? (
+              <ConversationRecentItem
+                item={recent.item}
+                key={`conversation:${recent.id}`}
+                onSelect={onSelectConversation ?? (() => undefined)}
+                selected={
+                  recent.id === selectedConversationId ||
+                  recent.item.sessionId === selectedConversationId
+                }
+              />
+            ) : (
+              <AskRecentItem
+                key={`ask:${recent.id}`}
+                onSelect={onSelectAskThread ?? (() => undefined)}
+                selected={recent.id === selectedAskThreadId}
+                thread={recent.thread}
+              />
+            )
+          )}
         {askRecentsError ? (
-          <p className="desktop-sidebar-section-state" role="status">
-            {askRecentsError}
-          </p>
+          <div className="desktop-sidebar-section-state" role="status">
+            <span>{askRecentsError}</span>
+            {onRetryRecents ? (
+              <button onClick={onRetryRecents} type="button">
+                Retry
+              </button>
+            ) : null}
+          </div>
         ) : null}
       </Section>
     </div>

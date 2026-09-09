@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { readFile, realpath } from "node:fs/promises";
+import { mkdir, readFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import type {
   DeviceCredentialAuthContext,
@@ -56,6 +56,7 @@ const idempotencyKeySchema = z
 const startSchema = z
   .object({
     projectId: z.string().trim().min(1).max(2_048),
+    contextKind: z.enum(["project", "independent"]).default("project"),
     provider: z.enum(["codex", "claude", "pi"]),
     aiClientInstanceId: z
       .string()
@@ -1731,6 +1732,18 @@ export const registerManagedConversationRoutes = (
             { statusCode: 502 }
           );
         }
+        const executionProjectPath =
+          input.contextKind === "independent" && localExecution
+            ? resolve(
+                context.config.koedHome,
+                "managed-conversations",
+                "independent",
+                parsed.data.execution.id
+              )
+            : projectPath;
+        if (input.contextKind === "independent" && localExecution) {
+          await mkdir(executionProjectPath, { mode: 0o700, recursive: true });
+        }
         await repository.upsertManagedConversationRuntimeBinding(
           { userId: user.id },
           {
@@ -1738,7 +1751,7 @@ export const registerManagedConversationRoutes = (
             deploymentId: runner.deploymentId,
             deviceId: runner.deviceId,
             executionGeneration: parsed.data.execution.executionGeneration,
-            projectPath
+            projectPath: executionProjectPath
           }
         );
         return reply
@@ -1761,7 +1774,19 @@ export const registerManagedConversationRoutes = (
           deferUntilRuntimeBinding: true
         }
       );
-      if (projectPath) {
+      const executionProjectPath =
+        input.contextKind === "independent" && localExecution
+          ? resolve(
+              context.config.koedHome,
+              "managed-conversations",
+              "independent",
+              created.execution.id
+            )
+          : projectPath;
+      if (input.contextKind === "independent" && localExecution) {
+        await mkdir(executionProjectPath!, { mode: 0o700, recursive: true });
+      }
+      if (executionProjectPath) {
         await repository.upsertManagedConversationRuntimeBinding(
           { userId: user.id },
           {
@@ -1769,7 +1794,7 @@ export const registerManagedConversationRoutes = (
             deploymentId: runner.deploymentId,
             deviceId: runner.deviceId,
             executionGeneration: created.execution.executionGeneration,
-            projectPath
+            projectPath: executionProjectPath
           }
         );
       }

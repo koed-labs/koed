@@ -24,7 +24,7 @@ export const flows: readonly Flow[] = [
     key: "conversations",
     label: "Conversations",
     description:
-      "Sets the default agent, model, and reasoning effort for new Conversations within Projects."
+      "Sets the default agent, model, and reasoning effort for new Conversations in Ask and Projects."
   },
   {
     key: "mcp_memory_answer",

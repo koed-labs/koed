@@ -49,6 +49,23 @@ describe("rate limiting", () => {
         headers: { authorization }
       }) as unknown as FastifyRequest;
 
+    const interactiveRequest = {
+      ...request("Bearer attacker-one"),
+      headers: { "x-koed-request-class": "managed-conversation" }
+    } as FastifyRequest;
+    for (const kind of ["memoryWrite", "sourceJournal"] as const) {
+      await handlers[kind](request("Bearer attacker-one"), reply);
+      await expect(
+        handlers[kind](request("Bearer attacker-one"), reply)
+      ).rejects.toMatchObject({ statusCode: 429 });
+      await expect(
+        handlers[kind](interactiveRequest, reply)
+      ).resolves.toBeUndefined();
+      await expect(
+        handlers[kind](interactiveRequest, reply)
+      ).rejects.toMatchObject({ statusCode: 429 });
+    }
+
     await handlers.memoryRead(request("Bearer attacker-one"), reply);
     await expect(
       handlers.memoryRead(request("Bearer attacker-two"), reply)
