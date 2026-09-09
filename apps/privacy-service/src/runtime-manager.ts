@@ -90,13 +90,14 @@ const CALIBRATION_TEXT =
     40
   );
 
-type ParityBaseline = Array<{ maskedText: string; spans: string }>;
+export type ParityBaseline = Array<{ maskedText: string; spans: string }>;
 
 const parityOutput = async (
-  runtime: PrivacyRuntimeAdapter
+  runtime: PrivacyRuntimeAdapter,
+  corpus: readonly string[] = PARITY_CORPUS
 ): Promise<ParityBaseline> => {
   const output: ParityBaseline = [];
-  for (const text of PARITY_CORPUS) {
+  for (const text of corpus) {
     const masked = maskClassification(text, await runtime.classify(text));
     output.push({
       maskedText: masked.maskedText,
@@ -162,7 +163,27 @@ const loadCandidate = async (
   }
 };
 
+export interface PrivacyValidationCache {
+  read(runtime: PrivacyRuntimeAdapter): Promise<
+    | {
+        baseline: ParityBaseline;
+        providers: PrivacyRuntimeProvider[];
+        calibrations: PrivacyProviderCalibration[];
+      }
+    | undefined
+  >;
+  write(
+    runtime: PrivacyRuntimeAdapter,
+    value: {
+      baseline: ParityBaseline;
+      providers: PrivacyRuntimeProvider[];
+      calibrations: PrivacyProviderCalibration[];
+    }
+  ): Promise<void>;
+}
+
 export interface PrivacyRuntimeManagerOptions {
+  validationCache?: PrivacyValidationCache;
   preference: PrivacyRuntimePreference;
   factory: PrivacyRuntimeFactory;
   candidateProviders?: PrivacyRuntimeProvider[];
@@ -210,7 +231,10 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
         | "setTimeout"
         | "clearTimeout"
       >
-    > & { preference: PrivacyRuntimePreference }
+    > & {
+      preference: PrivacyRuntimePreference;
+      validationCache?: PrivacyValidationCache;
+    }
   ) {
     this.active = {
       runtime,
@@ -241,9 +265,30 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
       clearTimeout: options.clearTimeout ?? globalThis.clearTimeout
     };
     const cpu = await loadCandidate(resolved.factory, "cpu");
-    const parityBaseline = await parityOutput(cpu);
+    const cached = await options.validationCache
+      ?.read(cpu)
+      .catch(() => undefined);
+    let parityBaseline: ParityBaseline;
+    let cacheMatches = false;
+    try {
+      if (cached) {
+        const smoke = await parityOutput(cpu, PARITY_CORPUS.slice(0, 1));
+        cacheMatches =
+          JSON.stringify(smoke[0]) === JSON.stringify(cached.baseline[0]);
+      }
+      parityBaseline =
+        cacheMatches && cached ? cached.baseline : await parityOutput(cpu);
+    } catch (error) {
+      await cpu.dispose?.();
+      throw error;
+    }
     const manager = new PrivacyRuntimeManager(cpu, parityBaseline, resolved);
-    manager.calibrations.set("cpu", await calibrate(cpu, resolved.now));
+    if (cacheMatches && cached) {
+      for (const provider of cached.providers) manager.verified.add(provider);
+      for (const calibration of cached.calibrations)
+        manager.calibrations.set(calibration.provider, calibration);
+    }
+    await manager.saveValidation();
     if (resolved.candidateProviders.includes("cuda")) {
       manager.sharedAccelerator = await resolved.observeCuda();
     }
@@ -389,6 +434,13 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
       const targetCalibration = this.calibrations.get(target);
       const cpuCalibration = this.calibrations.get("cpu");
       if (
+        initial &&
+        target !== "cpu" &&
+        (!targetCalibration || !cpuCalibration)
+      ) {
+        target = "cpu";
+      }
+      if (
         target !== "cpu" &&
         targetCalibration &&
         cpuCalibration &&
@@ -399,6 +451,32 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
         target = "cpu";
         this.fallbackReason = "insufficient_measured_benefit";
       }
+    }
+    if (!initial && preference === "auto" && !this.calibrations.has("cpu")) {
+      const cpu =
+        this.provider === "cpu"
+          ? this.active.runtime
+          : await loadCandidate(this.options.factory, "cpu");
+      try {
+        this.calibrations.set("cpu", await calibrate(cpu, this.options.now));
+      } finally {
+        if (cpu !== this.active.runtime) await cpu.dispose?.();
+      }
+    }
+    // An explicit control request may measure providers; startup never does.
+    if (
+      !initial &&
+      preference === "auto" &&
+      target === this.provider &&
+      target !== "cpu" &&
+      !this.calibrations.has(target)
+    ) {
+      this.calibrations.set(
+        target,
+        await calibrate(this.active.runtime, this.options.now)
+      );
+      await this.saveValidation();
+      return this.performSwitch(preference, false);
     }
     if (target === this.provider) return this.status();
     if (!this.options.candidateProviders.includes(target)) {
@@ -427,15 +505,26 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
       candidate.classifierHash !== this.classifierHash
     ) {
       await candidate.dispose?.();
+      this.verified.delete(target);
+      this.calibrations.delete(target);
+      await this.saveValidation();
       this.recordFailure(target, "provider_parity_failed");
       throw new PrivacyProviderSwitchError("provider_parity_failed", target);
     }
-    const parityMatches = await equivalentMasking(
-      this.parityBaseline,
-      candidate
+    const parityMatches = await (
+      this.verified.has(target)
+        ? parityOutput(candidate, PARITY_CORPUS.slice(0, 1)).then(
+            (output) =>
+              JSON.stringify(output[0]) ===
+              JSON.stringify(this.parityBaseline[0])
+          )
+        : equivalentMasking(this.parityBaseline, candidate)
     ).catch(() => false);
     if (!parityMatches) {
       await candidate.dispose?.();
+      this.verified.delete(target);
+      this.calibrations.delete(target);
+      await this.saveValidation();
       this.recordFailure(target, "provider_parity_failed");
       if (preference === "auto" && initial) {
         this.fallbackReason = "provider_parity_failed";
@@ -444,14 +533,19 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
       throw new PrivacyProviderSwitchError("provider_parity_failed", target);
     }
 
-    const calibration = await calibrate(candidate, this.options.now);
-    this.calibrations.set(target, calibration);
+    const calibration =
+      initial || preference !== "auto"
+        ? this.calibrations.get(target)
+        : await calibrate(candidate, this.options.now);
+    if (calibration) this.calibrations.set(target, calibration);
     this.verified.add(target);
+    await this.saveValidation();
     if (preference === "auto") {
       const cpuCalibration = this.calibrations.get("cpu");
       if (
         target !== "cpu" &&
         cpuCalibration &&
+        calibration &&
         calibration.warmTokensPerSecond <
           cpuCalibration.warmTokensPerSecond *
             this.options.minimumAutoSpeedupRatio
@@ -475,6 +569,16 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
     this.retired.add(previous);
     if (previous.inFlight === 0) await this.disposeSlot(previous);
     return this.status();
+  }
+
+  private async saveValidation(): Promise<void> {
+    await this.options.validationCache
+      ?.write(this, {
+        baseline: this.parityBaseline,
+        providers: [...this.verified],
+        calibrations: [...this.calibrations.values()]
+      })
+      .catch(() => undefined);
   }
 
   private async disposeSlot(slot: RuntimeSlot): Promise<void> {

@@ -1,3 +1,4 @@
+import { createValidationCache } from "./validation-cache.js";
 import { resolveConfig } from "./config.js";
 import { PrivacyRuntimeManager } from "./runtime-manager.js";
 import { HuggingFacePrivacyRuntime } from "./runtime.js";
@@ -17,6 +18,7 @@ if (!config.controlToken) {
 
 const runtime = await PrivacyRuntimeManager.create({
   preference: config.runtimeProvider,
+  validationCache: await createValidationCache(config.transformersCache),
   acceleratorIdleUnloadSeconds: config.gpuIdleUnloadSeconds,
   factory: (provider) =>
     new HuggingFacePrivacyRuntime(
