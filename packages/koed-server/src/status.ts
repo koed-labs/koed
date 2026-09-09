@@ -29,7 +29,6 @@ import {
   isSupportedPiVersion,
   MINIMUM_PI_VERSION,
   piSetupInvocation,
-  parsePiModelListOutput,
   piPackageIsListed,
   piSetupEnvironment,
   resolvePiSetupExecutable
@@ -189,7 +188,7 @@ export const inspectPi = (
   deps: Required<KoedServerStatusDependencies>,
   refreshed?: {
     snapshot: SelectedCapabilitySnapshot | null;
-    refreshedSince: string;
+    refreshedSince?: string;
     now: string;
   }
 ): KoedServerStatus["pi"] => {
@@ -298,49 +297,40 @@ export const inspectPi = (
     };
   }
   const snapshot = refreshed?.snapshot;
-  const reuseDiscovery =
+  const currentSnapshot =
     snapshot &&
     !snapshot.stale &&
     snapshot.instanceId === "pi.default" &&
     snapshot.clientVersion === versionText &&
-    Date.parse(snapshot.observedAt) >= Date.parse(refreshed.refreshedSince) &&
+    (!refreshed.refreshedSince ||
+      Date.parse(snapshot.observedAt) >=
+        Date.parse(refreshed.refreshedSince)) &&
     Date.parse(snapshot.observedAt) <= Date.parse(refreshed.now) &&
     Date.parse(snapshot.expiresAt) > Date.parse(refreshed.now);
-  const listedModels = reuseDiscovery
-    ? null
-    : runPi(["--list-models"], 15_000, 4 * 1024 * 1024);
-  const snapshotModelIds =
-    snapshot?.models.map((model) =>
-      model !== null &&
-      typeof model === "object" &&
-      "id" in model &&
-      typeof model.id === "string" &&
-      model.id.trim()
-        ? model.id
-        : null
-    ) ?? [];
-  const parsedModels = reuseDiscovery
-    ? {
-        valid:
-          snapshot.authenticationState === "unauthenticated" ||
-          (snapshot.authenticationState === "authenticated" &&
-            snapshot.healthState === "healthy" &&
-            snapshotModelIds.every((id) => id !== null)),
-        models:
-          snapshot.authenticationState === "unauthenticated"
-            ? []
-            : snapshotModelIds.filter((id): id is string => id !== null)
-      }
-    : parsePiModelListOutput(listedModels?.stdout ?? "");
+  const models =
+    currentSnapshot && snapshot.authenticationState === "authenticated"
+      ? snapshot.models.flatMap((model) =>
+          model !== null &&
+          typeof model === "object" &&
+          "id" in model &&
+          typeof model.id === "string" &&
+          model.id.trim()
+            ? [model.id]
+            : []
+        )
+      : [];
   if (
-    listedModels?.error ||
-    (listedModels && listedModels.status !== 0) ||
-    !parsedModels.valid
+    !currentSnapshot ||
+    snapshot.authenticationState === "unknown" ||
+    (snapshot.authenticationState === "authenticated" &&
+      (snapshot.healthState !== "healthy" || models.length === 0))
   ) {
     return {
       ...needsAttention(
-        "Pi's Koed package is registered, but model authentication could not be inspected.",
-        "Fix Pi model discovery, then refresh status.",
+        !snapshot
+          ? "Koed is waiting for Pi's available models."
+          : "Koed could not confirm Pi's available models.",
+        "Click Check again to retry. If no models become available, open Pi and use /model to check its available models.",
         {
           executable,
           version: versionText,
@@ -350,16 +340,16 @@ export const inspectPi = (
           modelCount: 0
         }
       ),
+      ...(!snapshot ? { state: "starting" as const } : {}),
       configured: true,
       detected: true
     };
   }
-  const models = parsedModels.models;
   if (models.length === 0) {
     return {
       ...needsAttention(
         "Pi's Koed package is registered, but Pi has no authenticated models.",
-        "Authenticate at least one Pi model, then refresh status.",
+        "Open Pi and run /login to connect a provider, then click Check again.",
         {
           executable,
           version: versionText,
@@ -2589,23 +2579,16 @@ export const collectKoedServerStatus = async (
   const pi = inspectSafely(
     "Pi",
     () =>
-      inspectPi(
-        runtimeEnvironment,
-        paths,
-        deps,
-        options.capabilitiesRefreshedSince
-          ? {
-              snapshot: snapshotFor(
-                capabilityReadModel,
-                "pi",
-                deps.now().toISOString(),
-                "pi.default"
-              ),
-              refreshedSince: options.capabilitiesRefreshedSince,
-              now: deps.now().toISOString()
-            }
-          : undefined
-      ),
+      inspectPi(runtimeEnvironment, paths, deps, {
+        snapshot: snapshotFor(
+          capabilityReadModel,
+          "pi",
+          deps.now().toISOString(),
+          "pi.default"
+        ),
+        refreshedSince: options.capabilitiesRefreshedSince,
+        now: deps.now().toISOString()
+      }),
     { state: "needs_attention", configured: false, detected: false }
   );
   const captureHook = inspectSafely(

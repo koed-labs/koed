@@ -170,9 +170,13 @@ AI Runtime.
    check's collected status with `--include-status` and reuses it, avoiding a second
    full CLI inspection. After successful capability refresh, Desktop also passes
    `--capabilities-refreshed-since` with the refresh start time. Pi status reuses
-   model discovery only from a non-expired `pi.default` snapshot observed since
-   that time and matching the installed version; older or mismatched snapshots
-   fall back to direct probing. Ordinary status collection still probes Pi.
+   the execution discovery results for both startup and manual status checks.
+   The snapshot must belong to `pi.default`, match the installed version, and be
+   unexpired; a manual refresh additionally requires an observation since its
+   start time. Status never launches a second model catalog query. Missing
+   discovery is reported as pending, and stale or failed discovery offers a
+   concrete retry action. Individual model probe failures do not hide other
+   independently usable models; execution still validates the selected model.
    Capability publication discovers at most three independent
    AI Client instances concurrently, retaining per-instance identity validation and
    failure isolation. A failed or timed-out capability refresh returns its
@@ -187,7 +191,12 @@ AI Runtime.
    evidence that repair is required. Failed verification keeps the displayed
    capability results explicitly marked as last known, with the observation time
    when available. The warning survives dialog reopening and retries, and clears
-   when a check returns a fresh status result. Claude Code sign-in
+   when a check returns a fresh status result. AI Client instance registration,
+   capability publication, and Local AI Client settings share a separate bounded
+   API rate limit (120 requests per minute per authenticated User, or per IP for
+   unauthenticated requests). Capture and import writes cannot exhaust this
+   allowance. Desktop preserves a specific rate-limit explanation if publication
+   is throttled. Claude Code sign-in
    guidance includes a copyable terminal command. Authentication guidance follows
    the latest observation for each enabled instance, including newer card checks,
    so a successful sign-in clears older guidance without another capability scan.

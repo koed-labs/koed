@@ -1605,6 +1605,29 @@ describe("status state aggregation", () => {
 });
 
 describe("Pi integration status", () => {
+  const discoveredPi = (
+    authenticationState:
+      | "authenticated"
+      | "unauthenticated"
+      | "unknown" = "authenticated"
+  ) => ({
+    now: "2026-01-01T00:01:00.000Z",
+    snapshot: {
+      instanceId: "pi.default",
+      clientVersion: "0.84.2",
+      authenticationState,
+      healthState: "healthy" as const,
+      models:
+        authenticationState === "authenticated"
+          ? [{ id: "openai/working" }]
+          : [],
+      capabilities: {},
+      observedAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-01T00:10:00.000Z",
+      stale: false
+    }
+  });
+
   it("explains a Pi profile inspection timeout without recommending repair", () => {
     const root = tempDir();
     const environment = { KOED_HOME: root };
@@ -1636,6 +1659,46 @@ describe("Pi integration status", () => {
     });
   });
 
+  it.each(["missing", "expired", "future", "stale"] as const)(
+    "does not trust %s Pi discovery or probe the catalog again",
+    (kind) => {
+      const root = tempDir();
+      const discovery = discoveredPi();
+      if (kind === "expired")
+        discovery.snapshot.expiresAt = "2026-01-01T00:00:30.000Z";
+      if (kind === "future")
+        discovery.snapshot.observedAt = "2026-01-01T00:02:00.000Z";
+      if (kind === "stale") discovery.snapshot.stale = true;
+      const calls: string[] = [];
+      const status = inspectPi(
+        { KOED_HOME: root },
+        resolveKoedServerPaths({ KOED_HOME: root }),
+        {
+          existsSync: () => true,
+          resolvePiExecutable: () => "/opt/pi",
+          spawnSync: (_command: string, args: string[]) => {
+            calls.push(args[0]!);
+            return spawnResult(
+              args[0] === "--version"
+                ? "0.84.2"
+                : `${resolve(root, "integrations/pi")}\n`
+            );
+          }
+        } as never,
+        {
+          ...discovery,
+          snapshot: kind === "missing" ? null : discovery.snapshot
+        }
+      );
+      expect(calls).toEqual(["--version", "list"]);
+      expect(status.state).toBe(
+        kind === "missing" ? "starting" : "needs_attention"
+      );
+      expect(status.details?.authenticationState).toBe("unknown");
+      expect(status.action).toContain("Click Check again");
+    }
+  );
+
   it("reports a registered Koed package in the active Pi profile", () => {
     const root = tempDir();
     const packagePath = resolve(root, "integrations/pi");
@@ -1643,17 +1706,22 @@ describe("Pi integration status", () => {
     writeFileSync(resolve(packagePath, "extensions/koed.mjs"), "export {};\n");
     const environment = { KOED_HOME: root, KOED_PI_EXECUTABLE: "/opt/pi" };
 
-    const status = inspectPi(environment, resolveKoedServerPaths(environment), {
-      existsSync: (path: PathLike) =>
-        path === resolve(packagePath, "extensions/koed.mjs"),
-      resolvePiExecutable: () => "/opt/pi",
-      spawnSync: (_command: string, args: string[]) =>
-        args[0] === "--version"
-          ? spawnResult("0.84.2\n")
-          : args[0] === "--list-models"
-            ? spawnResult("provider model\nopenai gpt-5.4\n")
-            : spawnResult(`${packagePath}\n`)
-    } as never);
+    const status = inspectPi(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        existsSync: (path: PathLike) =>
+          path === resolve(packagePath, "extensions/koed.mjs"),
+        resolvePiExecutable: () => "/opt/pi",
+        spawnSync: (_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("0.84.2\n")
+            : args[0] === "--list-models"
+              ? spawnResult("provider model\nopenai gpt-5.4\n")
+              : spawnResult(`${packagePath}\n`)
+      } as never,
+      discoveredPi()
+    );
 
     expect(status).toMatchObject({
       state: "healthy",
@@ -1669,12 +1737,50 @@ describe("Pi integration status", () => {
     });
   });
 
+  it("uses execution discovery on ordinary Pi status checks without a second model catalog probe", () => {
+    const root = tempDir();
+    const calls: string[] = [];
+    const status = inspectPi(
+      { KOED_HOME: root },
+      resolveKoedServerPaths({ KOED_HOME: root }),
+      {
+        existsSync: () => true,
+        resolvePiExecutable: () => "/opt/pi",
+        spawnSync: (_command: string, args: string[]) => {
+          calls.push(args[0]!);
+          return args[0] === "--version"
+            ? spawnResult("0.84.2")
+            : args[0] === "list"
+              ? spawnResult(`${resolve(root, "integrations/pi")}\n`)
+              : spawnResult("catalog unavailable", 1);
+        }
+      } as never,
+      {
+        now: "2026-01-01T00:01:00.000Z",
+        snapshot: {
+          instanceId: "pi.default",
+          clientVersion: "0.84.2",
+          authenticationState: "authenticated",
+          healthState: "healthy",
+          models: [{ id: "openai/working-model" }],
+          capabilities: {},
+          observedAt: "2026-01-01T00:00:00.000Z",
+          expiresAt: "2026-01-01T00:10:00.000Z",
+          stale: false
+        }
+      }
+    );
+    expect(calls).toEqual(["--version", "list"]);
+    expect(status.state).toBe("healthy");
+    expect(status.details?.modelCount).toBe(1);
+  });
+
   it.each([
     ["2026-01-01T00:00:01.000Z", "0.84.2", false],
     ["2025-12-31T23:59:59.000Z", "0.84.2", true],
     ["2026-01-01T00:00:01.000Z", "0.85.1", true]
   ] as const)(
-    "reuses only freshly refreshed Pi models (%s, %s)",
+    "rejects outdated or mismatched discovery without a catalog fallback (%s, %s)",
     (observedAt, clientVersion, probesModels) => {
       const root = tempDir();
       const packagePath = resolve(root, "integrations/pi");
@@ -1712,11 +1818,9 @@ describe("Pi integration status", () => {
           }
         }
       );
-      expect(calls.includes("--list-models")).toBe(probesModels);
-      expect(status.details).toMatchObject({
-        authenticated: true,
-        modelCount: 1
-      });
+      expect(calls.includes("--list-models")).toBe(false);
+      expect(status.state).toBe(probesModels ? "needs_attention" : "healthy");
+      expect(status.details?.modelCount).toBe(probesModels ? 0 : 1);
     }
   );
 
@@ -1737,7 +1841,8 @@ describe("Pi integration status", () => {
             : args[0] === "--list-models"
               ? spawnResult("No models available.\n")
               : spawnResult(`${packagePath}\n`)
-      } as never
+      } as never,
+      discoveredPi("unauthenticated")
     );
 
     expect(status).toMatchObject({
@@ -1768,7 +1873,8 @@ describe("Pi integration status", () => {
             : args[0] === "--list-models"
               ? spawnResult("", 1)
               : spawnResult(`${packagePath}\n`)
-      } as never
+      } as never,
+      discoveredPi("unknown")
     );
 
     expect(status).toMatchObject({
@@ -1780,7 +1886,8 @@ describe("Pi integration status", () => {
         modelCount: 0
       }
     });
-    expect(status.action).toContain("Fix Pi model discovery");
+    expect(status.action).toContain("Click Check again");
+    expect(status.action).not.toContain("Fix Pi model discovery");
   });
 
   it("keeps missing Pi optional but actionable", () => {
