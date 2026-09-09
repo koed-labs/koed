@@ -717,6 +717,9 @@ function AiClientIntegrationsSection({
 }: Pick<PreferencesViewProps, "statusStore">) {
   const snapshot = useDesktopStatus(statusStore);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [clientErrors, setClientErrors] = useState<
+    Record<string, string | undefined>
+  >({});
   const [verificationFailures, setVerificationFailures] = useState<
     Record<string, string | undefined>
   >({});
@@ -765,6 +768,7 @@ function AiClientIntegrationsSection({
             ...current,
             [client]: undefined
           }));
+          setClientErrors((current) => ({ ...current, [client]: undefined }));
         }
       }
       const authenticationPending =
@@ -772,9 +776,16 @@ function AiClientIntegrationsSection({
         (result.readiness.authentication === "unauthenticated" ||
           result.readiness.authentication === "unknown");
       if (!mutatesProfile && result?.ok === false && !authenticationPending) {
-        setActionError(
+        const message = (
           result.message ?? "AI Client capabilities need attention."
-        );
+        )
+          .replaceAll("mcp_recall", "MCP Recall")
+          .replaceAll("local_synthesis", "Local Synthesis")
+          .replaceAll("automatic_capture", "Auto-capture");
+        setClientErrors((current) => ({
+          ...current,
+          [action.slice("check_".length)]: message
+        }));
       }
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
@@ -815,6 +826,12 @@ function AiClientIntegrationsSection({
           const capabilitySummaries = summarizeCapabilities(
             readiness?.capabilities
           );
+          const capabilityAttention = capabilitySummaries.some(
+            (capability) => capability.dotClass === "is-attention"
+          );
+          const capabilityUnknown = capabilitySummaries.some(
+            (capability) => capability.dotClass === "is-unknown"
+          );
           const metaLine =
             profileState === "healthy" || authenticationRequired
               ? clientMetaLine(readiness, detected)
@@ -823,28 +840,37 @@ function AiClientIntegrationsSection({
                 : detected
                   ? "Integration needs attention"
                   : "Not installed";
-          const pillClass = verificationFailures[id]
-            ? "is-warning"
-            : profileState === "healthy"
-              ? "is-success"
-              : profileState === "needs_attention"
-                ? "is-warning"
-                : profileState === "starting"
-                  ? "is-active"
-                  : "is-off";
+          const pillClass =
+            verificationFailures[id] ||
+            authenticationRequired ||
+            clientErrors[id] ||
+            capabilityAttention ||
+            capabilityUnknown
+              ? "is-warning"
+              : profileState === "healthy"
+                ? "is-success"
+                : profileState === "needs_attention"
+                  ? "is-warning"
+                  : profileState === "starting"
+                    ? "is-active"
+                    : "is-off";
           const pillText = verificationFailures[id]
             ? "Verification failed"
-            : profileState === "healthy"
-              ? "Healthy"
-              : authenticationRequired
-                ? id === "pi"
-                  ? "Model authentication required"
-                  : "Sign in required"
-                : profileState === "needs_attention"
-                  ? "Needs attention"
-                  : profileState === "starting"
-                    ? "Starting…"
-                    : "Not set up";
+            : authenticationRequired
+              ? id === "pi"
+                ? "Model authentication required"
+                : "Sign in required"
+              : clientErrors[id] || capabilityAttention
+                ? "Needs attention"
+                : profileState === "starting"
+                  ? "Starting…"
+                  : capabilityUnknown && profileState === "healthy"
+                    ? "Status unknown"
+                    : profileState === "healthy"
+                      ? "Healthy"
+                      : profileState === "needs_attention"
+                        ? "Needs attention"
+                        : "Not set up";
           const notConfigured = profileState === "not_configured";
           const primaryCommand =
             `${notConfigured ? "setup" : "repair"}_${id}` as IntegrationMutationCommand;
@@ -898,6 +924,11 @@ function AiClientIntegrationsSection({
                     </>
                   )}
                 </span>
+              ) : null}
+              {clientErrors[id] ? (
+                <p role="alert" className="koed-diagnostic-error">
+                  {clientErrors[id]}
+                </p>
               ) : null}
               <span className="koed-client-caps">
                 {capabilitySummaries.map((capability) => (
@@ -968,7 +999,7 @@ function AiClientIntegrationsSection({
           profile={flatClientStatus(detailsClient, status) ?? undefined}
           readiness={status?.aiClients?.[detailsClient]}
           busy={snapshot.busyCommand !== null}
-          error={actionError}
+          error={clientErrors[detailsClient] ?? actionError}
           verificationError={verificationFailures[detailsClient] ?? null}
           onCheck={() => run(`check_${detailsClient}`)}
           onClose={() => setDetailsClient(null)}

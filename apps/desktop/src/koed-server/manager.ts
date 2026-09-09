@@ -4816,7 +4816,7 @@ export const createKoedServerManager = ({
   ) => {
     const refreshStartedAt = new Date().toISOString();
     let capabilitiesRefreshed = false;
-    let refreshError: string | null = null;
+    let refreshError: string | null;
     try {
       const refreshResult = await refreshLocalAiRuntime({
         fetch: personalMemoryFetch,
@@ -4828,8 +4828,14 @@ export const createKoedServerManager = ({
       if (error instanceof RemoteRequestTimeoutError) {
         refreshError =
           "Capability refresh timed out. Discovery may still be running; try again shortly.";
+      } else {
+        refreshError =
+          "Koed could not refresh AI Client capabilities. Check that the local runtime is running, then try again.";
       }
-      // Check remains fail-closed against current persisted capability state.
+    }
+    if (!capabilitiesRefreshed && !refreshError) {
+      refreshError =
+        "Koed could not confirm that AI Client capability discovery completed. Try again shortly.";
     }
     if (refreshError) {
       return {

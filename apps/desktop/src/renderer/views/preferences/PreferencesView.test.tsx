@@ -611,6 +611,103 @@ describe("PreferencesView", () => {
     }
   );
 
+  it("shows sign-in required for Codex even when its integration profile is healthy", async () => {
+    const current = advancedStatus({
+      aiClients: {
+        codex: {
+          driverId: "codex",
+          instanceId: "codex.default",
+          displayName: "Codex",
+          installed: { state: "healthy" },
+          version: "1.0.0",
+          authentication: "unauthenticated",
+          profile: { state: "healthy" },
+          observedAt: "2026-09-09T12:00:00.000Z",
+          snapshotState: "current",
+          capabilities: [
+            {
+              id: "local_synthesis",
+              support: "supported",
+              readiness: "unauthenticated",
+              diagnostics: []
+            }
+          ]
+        }
+      }
+    });
+    window.koedDesktop = { invoke: vi.fn(async () => current) } as DesktopApi;
+    await renderPreferences({ initialSection: "ai-clients" });
+    const chip = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Show Codex status details"]'
+    )!;
+    expect(chip.textContent).toBe("Sign in required");
+    expect(chip.className).not.toContain("is-success");
+    await act(async () => chip.click());
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("Sign in to Codex");
+  });
+
+  it("keeps a completed capability failure on its client and shows attention after closing the dialog", async () => {
+    const current = advancedStatus({
+      pi: { state: "healthy", configured: true },
+      aiClients: {
+        pi: {
+          driverId: "pi",
+          instanceId: "pi.default",
+          displayName: "Pi",
+          installed: { state: "healthy" },
+          version: "0.85.1",
+          authentication: "authenticated",
+          profile: { state: "healthy" },
+          observedAt: "2026-09-09T12:00:00.000Z",
+          snapshotState: "current",
+          capabilities: [
+            {
+              id: "mcp_recall",
+              support: "supported",
+              readiness: "not_ready",
+              diagnostics: []
+            }
+          ]
+        }
+      }
+    });
+    window.koedDesktop = {
+      invoke: vi.fn(async (command) =>
+        command === "check_pi"
+          ? {
+              ok: false,
+              status: current,
+              message:
+                "Required AI Client capabilities are not ready: mcp_recall.",
+              readiness: {
+                authentication: "authenticated",
+                profile: { configured: true }
+              }
+            }
+          : current
+      )
+    } as DesktopApi;
+    await renderPreferences({ initialSection: "ai-clients" });
+    const chip = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Show Pi status details"]'
+    )!;
+    await act(async () => chip.click());
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    await clickButton(dialog, "Check again");
+    expect(dialog.textContent).toContain("MCP Recall");
+    expect(dialog.textContent).not.toContain("mcp_recall");
+    await clickButton(dialog, "Close");
+    expect(chip.textContent).toBe("Needs attention");
+    const card = chip.closest(".koed-client-card")!;
+    expect(card.querySelector('[role="alert"]')?.textContent).toContain(
+      "MCP Recall"
+    );
+    expect(
+      container.querySelector('.koed-pref-client-section > [role="alert"]')
+    ).toBeNull();
+  });
+
   it("labels ready results as last confirmed after refresh failure and clears the warning only after success", async () => {
     const current = advancedStatus({
       pi: {

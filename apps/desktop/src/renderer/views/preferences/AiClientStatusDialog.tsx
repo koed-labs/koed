@@ -37,7 +37,7 @@ export function AiClientStatusDialog({
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
   const authentication =
-    profile?.details?.authenticated === true || profile?.state === "healthy"
+    profile?.details?.authenticated === true
       ? "authenticated"
       : profile?.details?.authenticated === false
         ? "unauthenticated"
@@ -55,7 +55,7 @@ export function AiClientStatusDialog({
     (authentication === "unauthenticated"
       ? driverId === "pi"
         ? "Authenticate at least one model through Pi, then check again."
-        : "Sign in to the AI Client, then check again. Profile reinstall is not required."
+        : `Sign in to ${label}, then check again. Profile reinstall is not required.`
       : profile?.state === "healthy"
         ? null
         : "Check again to get the latest status. If the issue persists, repair the integration from its card.");

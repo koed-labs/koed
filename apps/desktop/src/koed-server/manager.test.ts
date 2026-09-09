@@ -16,7 +16,9 @@ import {
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   storeDesktopLocalCredential
 } from "@koed/shared";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as capabilityRefresh from "./local-ai-client-refresh.js";
+afterEach(() => vi.restoreAllMocks());
 import {
   configureDetectedSetupAiClients,
   createKoedEnvironment,
@@ -640,6 +642,10 @@ describe("Koed server desktop manager", () => {
   });
 
   it("requires explicit healthy result from AI Client check handlers", async () => {
+    vi.spyOn(capabilityRefresh, "refreshLocalAiRuntime").mockResolvedValue({
+      refreshed: true,
+      refreshError: null
+    });
     const invocations: string[][] = [];
     let healthy = false;
     const manager = createKoedServerManager({
@@ -682,8 +688,22 @@ describe("Koed server desktop manager", () => {
       ok: true
     });
     expect(invocations).toEqual([
-      ["check", "codex", "--include-status", "--json"],
-      ["check", "codex", "--include-status", "--json"]
+      [
+        "check",
+        "codex",
+        "--include-status",
+        "--capabilities-refreshed-since",
+        expect.any(String),
+        "--json"
+      ],
+      [
+        "check",
+        "codex",
+        "--include-status",
+        "--capabilities-refreshed-since",
+        expect.any(String),
+        "--json"
+      ]
     ]);
   });
 
@@ -695,6 +715,10 @@ describe("Koed server desktop manager", () => {
   ] as const)(
     "returns configured %s %s authentication remediation without throwing",
     async (client, authentication) => {
+      vi.spyOn(capabilityRefresh, "refreshLocalAiRuntime").mockResolvedValue({
+        refreshed: true,
+        refreshError: null
+      });
       const result = {
         ok: false,
         state: "needs_attention",
@@ -729,6 +753,10 @@ describe("Koed server desktop manager", () => {
   it.each([true, false])(
     "returns collected check status even when capabilities are unavailable (%s)",
     async (ok) => {
+      vi.spyOn(capabilityRefresh, "refreshLocalAiRuntime").mockResolvedValue({
+        refreshed: true,
+        refreshError: null
+      });
       const current = healthyLocalServiceStatus();
       const calls: string[][] = [];
       const manager = createKoedServerManager({
@@ -762,54 +790,68 @@ describe("Koed server desktop manager", () => {
         status: current
       });
       expect(calls).toEqual([
-        ["check", "claude", "--include-status", "--json"],
+        [
+          "check",
+          "claude",
+          "--include-status",
+          "--capabilities-refreshed-since",
+          expect.any(String),
+          "--json"
+        ],
         ["package", "status", "--json"]
       ]);
     }
   );
 
-  it("does not launch more probes after capability refresh times out", async () => {
-    const root = mkdtempSync(resolve(tmpdir(), "koed-check-timeout-"));
-    mkdirSync(resolve(root, "run"));
-    writeFileSync(
-      resolve(root, "run/local-ai-runtime.json"),
-      JSON.stringify({
-        protocolVersion: 1,
-        url: "http://127.0.0.1:43123",
-        authorization: `Bearer ${"a".repeat(43)}`,
-        pid: 1234,
-        startedAt: "2026-08-19T16:51:41.000Z"
-      }),
-      { mode: 0o600 }
-    );
-    const exec = vi.fn<
-      Parameters<typeof createKoedServerManager>[0]["execFile"]
-    >((_command, _args, _options, callback) =>
-      callback(null, JSON.stringify({ ok: true }), "")
-    );
-    try {
-      const manager = createKoedServerManager({
-        repoRoot: "/repo",
-        cliPath: "/repo/cli.js",
-        environment: { KOED_HOME: root },
-        existsSync: () => true,
-        createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
-        execFile: exec,
-        spawn: () => childProcess() as never,
-        openExternal: async () => undefined,
-        personalMemoryFetch: async () => {
-          throw new RemoteRequestTimeoutError();
-        }
-      });
-      await expect(manager.handlers.check_claude!()).resolves.toMatchObject({
-        ok: false,
-        capabilityRefresh: { refreshed: false }
-      });
-      expect(exec).not.toHaveBeenCalled();
-    } finally {
-      rmSync(root, { recursive: true, force: true });
+  it.each(["timeout", "network", "registration"])(
+    "does not launch more probes after capability refresh fails (%s)",
+    async (failure) => {
+      const root = mkdtempSync(resolve(tmpdir(), "koed-check-timeout-"));
+      mkdirSync(resolve(root, "run"));
+      writeFileSync(
+        resolve(root, "run/local-ai-runtime.json"),
+        JSON.stringify({
+          protocolVersion: 1,
+          url: "http://127.0.0.1:43123",
+          authorization: `Bearer ${"a".repeat(43)}`,
+          pid: 1234,
+          startedAt: "2026-08-19T16:51:41.000Z"
+        }),
+        { mode: 0o600 }
+      );
+      if (failure === "registration")
+        rmSync(resolve(root, "run/local-ai-runtime.json"));
+      const exec = vi.fn<
+        Parameters<typeof createKoedServerManager>[0]["execFile"]
+      >((_command, _args, _options, callback) =>
+        callback(null, JSON.stringify({ ok: true }), "")
+      );
+      try {
+        const manager = createKoedServerManager({
+          repoRoot: "/repo",
+          cliPath: "/repo/cli.js",
+          environment: { KOED_HOME: root },
+          existsSync: () => true,
+          createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+          execFile: exec,
+          spawn: () => childProcess() as never,
+          openExternal: async () => undefined,
+          personalMemoryFetch: async () => {
+            throw failure === "timeout"
+              ? new RemoteRequestTimeoutError()
+              : new TypeError("fetch failed");
+          }
+        });
+        await expect(manager.handlers.check_claude!()).resolves.toMatchObject({
+          ok: false,
+          capabilityRefresh: { refreshed: false }
+        });
+        expect(exec).not.toHaveBeenCalled();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it("throws actionable errors when mutating AI Client commands return failure", async () => {
     const manager = createKoedServerManager({

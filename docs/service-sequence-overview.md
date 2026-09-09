@@ -179,13 +179,17 @@ AI Runtime.
    independently usable models; execution still validates the selected model.
    Capability publication discovers at most three independent
    AI Client instances concurrently, retaining per-instance identity validation and
-   failure isolation. A failed or timed-out capability refresh returns its
-   diagnostic without launching another check or full status scan. Other failed
+   failure isolation. Any failed capability refresh, including registration, network, and timeout
+   errors, returns its diagnostic without launching another check or full status
+   scan; a failed refresh cannot clear a verification warning using older snapshots. Other failed
    operations refresh status before reporting their error. A current unauthenticated or
    unknown profile authentication result overrides older authenticated execution
    descriptors; automatic capture continues to use profile and Transcript Watcher
    health independently.
-   Desktop AI Client status chips open a details dialog with the current reason,
+   Desktop AI Client status chips prioritize execution sign-in requirements and
+   capability readiness over profile configuration health. Completed check errors
+   remain attached to the affected client and its dialog rather than the entire
+   Connections list. Status chips open a details dialog with the current reason,
    recovery guidance, capability states, and a check action. Pi profile inspection
    timeouts are reported as inconclusive checks with retry guidance rather than
    evidence that repair is required. Failed verification keeps the displayed

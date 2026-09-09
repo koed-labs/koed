@@ -21,3 +21,7 @@ capability publication instead of showing a generic refresh failure.
 Use the same Pi model discovery for startup status and execution. Keep usable
 models available after individual model failures, avoid duplicate catalog
 queries, and show a pending state while discovery has not yet completed.
+
+Keep all refresh failures unverified, including registration and network errors.
+Show sign-in requirements and capability failures consistently in client cards
+and details, with check errors scoped to the affected client.
