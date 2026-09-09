@@ -37,6 +37,7 @@ import type { ComponentStatus, KoedServerStatus } from "../../../types.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import type { DesktopApi } from "../../../types.js";
 import { clientMetaLine, summarizeCapabilities } from "../ai-client-card.js";
+import { AiClientStatusDialog } from "./AiClientStatusDialog.js";
 import { LocalAiClientSettingsSection } from "./LocalAiClientSettingsSection.js";
 import { useDesktopStatus } from "../../state/use-status.js";
 import "../ai-client-card.css";
@@ -667,10 +668,27 @@ function AiClientsSection({
   localAiClients,
   statusStore
 }: Pick<PreferencesViewProps, "localAiClients" | "statusStore">) {
+  const { status } = useDesktopStatus(statusStore);
+  const authenticationStatus = Object.values(
+    status?.aiClientInstances ?? status?.aiClients ?? {}
+  ).flatMap((client) =>
+    client
+      ? [
+          {
+            instanceId: client.instanceId,
+            authentication: client.authentication,
+            observedAt: status!.generatedAt
+          }
+        ]
+      : []
+  );
   return (
     <div className="koed-preference-section">
       <AiClientIntegrationsSection statusStore={statusStore} />
-      <LocalAiClientSettingsSection localAiClients={localAiClients} />
+      <LocalAiClientSettingsSection
+        localAiClients={localAiClients}
+        authenticationStatus={authenticationStatus}
+      />
     </div>
   );
 }
@@ -701,6 +719,9 @@ function AiClientIntegrationsSection({
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingCommand, setPendingCommand] =
     useState<IntegrationMutationCommand | null>(null);
+  const [detailsClient, setDetailsClient] = useState<
+    "codex" | "claude" | "pi" | null
+  >(null);
   const status = snapshot.status;
 
   useEffect(() => {
@@ -717,10 +738,23 @@ function AiClientIntegrationsSection({
     setActionError(null);
     try {
       const mutatesProfile = !action.startsWith("check_");
-      await statusStore.run(
-        action,
-        mutatesProfile ? { operatorConsented: true } : undefined
-      );
+      const result = await statusStore.run<{
+        ok?: boolean;
+        message?: string;
+        readiness?: {
+          authentication?: string;
+          profile?: { configured?: boolean };
+        };
+      }>(action, mutatesProfile ? { operatorConsented: true } : undefined);
+      const authenticationPending =
+        result?.readiness?.profile?.configured === true &&
+        (result.readiness.authentication === "unauthenticated" ||
+          result.readiness.authentication === "unknown");
+      if (!mutatesProfile && result?.ok === false && !authenticationPending) {
+        setActionError(
+          result.message ?? "AI Client capabilities need attention."
+        );
+      }
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -758,7 +792,7 @@ function AiClientIntegrationsSection({
               : profileState === "starting"
                 ? null
                 : detected
-                  ? "Could not be started"
+                  ? "Integration needs attention"
                   : "Not installed";
           const pillClass =
             profileState === "healthy"
@@ -792,12 +826,21 @@ function AiClientIntegrationsSection({
             >
               <span className="koed-client-head">
                 <strong>{label}</strong>
-                <span className={`koed-client-pill ${pillClass}`}>
+                <button
+                  type="button"
+                  className={`koed-client-pill koed-client-pill-button ${pillClass}`}
+                  aria-label={`Show ${label} status details`}
+                  aria-haspopup="dialog"
+                  onClick={() => {
+                    setActionError(null);
+                    setDetailsClient(id);
+                  }}
+                >
                   {profileState === "starting" ? (
                     <Spinner aria-hidden="true" className="koed-client-spin" />
                   ) : null}
                   {pillText}
-                </span>
+                </button>
               </span>
               {metaLine ? (
                 <span className="koed-client-meta">{metaLine}</span>
@@ -883,6 +926,22 @@ function AiClientIntegrationsSection({
           );
         })}
       </div>
+      {detailsClient ? (
+        <AiClientStatusDialog
+          key={detailsClient}
+          driverId={detailsClient}
+          label={
+            preferenceClients.find((client) => client.id === detailsClient)!
+              .label
+          }
+          profile={flatClientStatus(detailsClient, status) ?? undefined}
+          readiness={status?.aiClients?.[detailsClient]}
+          busy={snapshot.busyCommand !== null}
+          error={actionError}
+          onCheck={() => run(`check_${detailsClient}`)}
+          onClose={() => setDetailsClient(null)}
+        />
+      ) : null}
       <Dialog
         onOpenChange={(open) => {
           if (!open) setPendingCommand(null);

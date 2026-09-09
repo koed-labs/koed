@@ -94,6 +94,75 @@ describe("AI Client capability publisher", () => {
     expect(apiClient.recordAiClientCapabilitySnapshot).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])(
+    "discovers clients concurrently and respects stop (%s)",
+    async (stop) => {
+      const root = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-publisher-parallel-")
+      );
+      roots.push(root);
+      const registryPath = path.join(root, "instances.json");
+      const ids = ["codex", "claude", "pi"] as const;
+      fs.writeFileSync(
+        registryPath,
+        JSON.stringify({
+          version: 1,
+          instances: ids.map((id) => ({
+            instanceId: `${id}.default`,
+            driverId: id,
+            displayName: id,
+            executablePath: executable(root, id)
+          }))
+        })
+      );
+      const originals = new Map(aiClientDriverRegistry);
+      const seen: Array<{ instanceId: string; executablePath?: string }> = [];
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let active = true;
+      const apiClient = {
+        upsertAiClientInstance: vi.fn(),
+        recordAiClientCapabilitySnapshot: vi.fn()
+      } as unknown as MemoryApiClient;
+      try {
+        for (const id of ids) {
+          const base = driver(id, seen);
+          aiClientDriverRegistry.set(id, {
+            ...base,
+            discover: async (input) => {
+              const discovery = await base.discover(input);
+              await gate;
+              return discovery;
+            }
+          });
+        }
+        const pending = publishAiClientCapabilities(
+          apiClient,
+          { KOED_AI_CLIENT_INSTANCE_REGISTRY: registryPath },
+          { isActive: () => active }
+        );
+        await Promise.resolve();
+        try {
+          expect(seen.map((item) => item.instanceId)).toEqual(
+            ids.map((id) => `${id}.default`)
+          );
+        } finally {
+          active = !stop;
+          release();
+          await pending;
+        }
+        expect(
+          apiClient.recordAiClientCapabilitySnapshot
+        ).toHaveBeenCalledTimes(stop ? 0 : 3);
+      } finally {
+        for (const [id, original] of originals)
+          aiClientDriverRegistry.set(id, original);
+      }
+    }
+  );
+
   it("publishes only explicitly configured instances", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-publisher-"));
     roots.push(root);

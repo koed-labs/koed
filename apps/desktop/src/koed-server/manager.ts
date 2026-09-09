@@ -8,6 +8,7 @@ import {
   collaborationRendererCommandSchema,
   conversationPresentationDecisionSchema,
   fetchBoundedJsonObject,
+  RemoteRequestTimeoutError,
   isApprovalReviewTranscriptEnvelopeText,
   isLoopbackHostname,
   managedDevelopmentPreviewAccessSchema,
@@ -4813,19 +4814,74 @@ export const createKoedServerManager = ({
     client: "Codex" | "Claude Code" | "Pi",
     args: ["check", "codex" | "claude" | "pi"]
   ) => {
+    const refreshStartedAt = new Date().toISOString();
+    let capabilitiesRefreshed = false;
+    let refreshError: string | null = null;
     try {
-      await refreshLocalAiRuntime({
+      const refreshResult = await refreshLocalAiRuntime({
         fetch: personalMemoryFetch,
         koedHome: resolveKoedHome(environment)
       });
-    } catch {
+      capabilitiesRefreshed = refreshResult.refreshed;
+      refreshError = refreshResult.refreshError;
+    } catch (error) {
+      if (error instanceof RemoteRequestTimeoutError) {
+        refreshError =
+          "Capability refresh timed out. Discovery may still be running; try again shortly.";
+      }
       // Check remains fail-closed against current persisted capability state.
     }
-    const result = await runJson(args, 90_000);
-    if (!resultOk(result)) {
+    if (refreshError) {
+      return {
+        ok: false,
+        client: args[1],
+        state: "needs_attention",
+        message: refreshError,
+        capabilityRefresh: { refreshed: false, refreshError }
+      };
+    }
+    const result = await runJson(
+      [
+        ...args,
+        "--include-status",
+        ...(capabilitiesRefreshed
+          ? ["--capabilities-refreshed-since", refreshStartedAt]
+          : [])
+      ],
+      90_000
+    );
+    const check = objectValue(result);
+    const readiness = objectValue(check?.readiness);
+    const profile = objectValue(readiness?.profile);
+    const configuredAuthenticationRequired =
+      check?.state === "needs_attention" &&
+      readiness?.driverId === args[1] &&
+      profile?.configured === true &&
+      profile?.state === "needs_attention" &&
+      (readiness?.authentication === "unauthenticated" ||
+        readiness?.authentication === "unknown");
+    const hasCollectedCheckStatus =
+      check?.client === args[1] &&
+      readiness?.driverId === args[1] &&
+      isRenderableKoedServerStatus(check?.status);
+    if (
+      !resultOk(result) &&
+      !configuredAuthenticationRequired &&
+      !hasCollectedCheckStatus
+    ) {
       throw new Error(
         resultMessage(result, `${client} integration check failed.`)
       );
+    }
+    if (isRenderableKoedServerStatus(check?.status)) {
+      scheduleEnrollmentReconciliation(check.status);
+      return {
+        ...check,
+        status: withPackageComponent(
+          check.status,
+          (await runPackageStatusJson()) as ServerPackageStatusPayload | null
+        )
+      };
     }
     return result;
   };

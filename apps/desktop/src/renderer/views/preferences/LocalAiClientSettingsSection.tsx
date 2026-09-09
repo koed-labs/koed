@@ -10,9 +10,15 @@ import { useLocalAiClientSettings } from "./useLocalAiClientSettings.js";
 const AGENT_SEARCH_ENABLED = false;
 
 export function LocalAiClientSettingsSection({
-  localAiClients
+  localAiClients,
+  authenticationStatus = []
 }: {
   localAiClients?: DesktopApi["localAiClients"];
+  authenticationStatus?: readonly {
+    instanceId: string;
+    authentication: "authenticated" | "unauthenticated" | "unknown";
+    observedAt: string;
+  }[];
 }) {
   const [search, setSearch] = useState("");
   const [copiedClaudeLogin, setCopiedClaudeLogin] = useState(false);
@@ -32,15 +38,28 @@ export function LocalAiClientSettingsSection({
   }
 
   const authenticationRequired = (driverId: "claude" | "pi") =>
-    settings.readModel!.instances.some(
-      (instance) =>
-        instance.driverId === driverId &&
-        settings.readModel!.capabilitySnapshots.some(
-          (snapshot) =>
-            snapshot.instanceId === instance.instanceId &&
-            snapshot.authenticationState === "unauthenticated"
+    settings.readModel!.instances.some((instance) => {
+      if (instance.driverId !== driverId || instance.enabled === false)
+        return false;
+      const latest = settings
+        .readModel!.capabilitySnapshots.filter(
+          (snapshot) => snapshot.instanceId === instance.instanceId
         )
-    );
+        .sort(
+          (left, right) =>
+            Date.parse(right.observedAt) - Date.parse(left.observedAt)
+        )[0];
+      const checked = authenticationStatus.find(
+        (status) => status.instanceId === instance.instanceId
+      );
+      const authentication =
+        checked &&
+        (!latest ||
+          Date.parse(checked.observedAt) >= Date.parse(latest.observedAt))
+          ? checked.authentication
+          : latest?.authenticationState;
+      return authentication === "unauthenticated";
+    });
   const claudeSignInRequired = authenticationRequired("claude");
   const piAuthenticationRequired = authenticationRequired("pi");
   const copyClaudeLogin = async () => {

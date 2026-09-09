@@ -176,12 +176,13 @@ export const publishAiClientCapabilities = async (
 ): Promise<AiClientCapabilityPublication[]> => {
   const now = (options.now ?? (() => new Date()))();
   const ttlMs = options.snapshotTtlMs ?? DEFAULT_SNAPSHOT_TTL_MS;
-  const results: AiClientCapabilityPublication[] = [];
-  for (const instance of instancesFor(environment)) {
-    if (options.isActive && !options.isActive()) break;
+  const publishInstance = async (
+    instance: LocalAiClientInstanceConfiguration
+  ): Promise<AiClientCapabilityPublication | null> => {
+    if (options.isActive && !options.isActive()) return null;
     try {
       const discovery = await discoverInstance(instance, environment);
-      if (options.isActive && !options.isActive()) break;
+      if (options.isActive && !options.isActive()) return null;
       const current = instancesFor(environment).find(
         (candidate) => candidate.instanceId === instance.instanceId
       );
@@ -191,20 +192,30 @@ export const publishAiClientCapabilities = async (
         );
       }
       await publishDiscovery(apiClient, instance, discovery, now, ttlMs);
-      results.push({
+      return {
         instanceId: instance.instanceId,
         driverId: instance.driverId,
         published: true,
         error: instance.configurationError ?? null
-      });
+      };
     } catch (error) {
-      results.push({
+      return {
         instanceId: instance.instanceId,
         driverId: instance.driverId,
         published: false,
         error: error instanceof Error ? error.message : String(error)
-      });
+      };
     }
+  };
+  const results: AiClientCapabilityPublication[] = [];
+  const instances = instancesFor(environment);
+  // Limit concurrent CLI discovery while keeping independent clients off each other's critical path.
+  for (let offset = 0; offset < instances.length; offset += 3) {
+    if (options.isActive && !options.isActive()) break;
+    const batch = await Promise.all(
+      instances.slice(offset, offset + 3).map(publishInstance)
+    );
+    for (const publication of batch) if (publication) results.push(publication);
   }
   return results;
 };

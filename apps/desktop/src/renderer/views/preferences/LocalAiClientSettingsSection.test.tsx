@@ -280,6 +280,68 @@ describe("Agent Configuration selectors", () => {
     expect(refresh.querySelector(".lucide-refresh-cw")).toBeTruthy();
   });
 
+  it("removes stale sign-in guidance when the same client's card becomes authenticated", async () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const signedOut = response();
+    signedOut.readModel.capabilitySnapshots.find(
+      (snapshot) => snapshot.instanceId === "claude.work"
+    )!.authenticationState = "unauthenticated";
+    const api = {
+      list: vi.fn(async () => signedOut),
+      refresh: vi.fn(async () => signedOut),
+      set: vi.fn(async () => signedOut),
+      reset: vi.fn(async () => signedOut)
+    };
+    await act(async () =>
+      root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
+    );
+    expect(container.textContent).toContain("Claude Code sign-in required");
+    await act(async () =>
+      root!.render(
+        <LocalAiClientSettingsSection
+          localAiClients={api}
+          authenticationStatus={[
+            {
+              instanceId: "claude.work",
+              authentication: "authenticated",
+              observedAt: "2026-01-01T00:01:00.000Z"
+            }
+          ]}
+        />
+      )
+    );
+    expect(container.textContent).not.toContain("Claude Code sign-in required");
+    expect(container.textContent).not.toContain("Copy `claude auth login`");
+    expect(api.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the newest snapshot instead of any historical signed-out snapshot", async () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const current = response();
+    const claude = current.readModel.capabilitySnapshots.find(
+      (snapshot) => snapshot.instanceId === "claude.work"
+    )!;
+    current.readModel.capabilitySnapshots.push({
+      ...claude,
+      authenticationState: "unauthenticated",
+      observedAt: "2025-12-31T00:00:00.000Z"
+    });
+    const api = {
+      list: vi.fn(async () => current),
+      refresh: vi.fn(async () => current),
+      set: vi.fn(async () => current),
+      reset: vi.fn(async () => current)
+    };
+    await act(async () =>
+      root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
+    );
+    expect(container.textContent).not.toContain("Claude Code sign-in required");
+  });
+
   it("explains Claude Code sign-in remediation and refreshes without profile reinstall", async () => {
     container = document.createElement("div");
     document.body.append(container);

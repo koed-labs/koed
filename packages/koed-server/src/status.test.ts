@@ -761,6 +761,108 @@ describe("status state aggregation", () => {
     );
   });
 
+  it.each(["unauthenticated", "unknown"] as const)(
+    "overrides an older authenticated snapshot when Claude authentication is %s",
+    (authentication) => {
+      const unauthenticated = (id: string) => ({
+        id,
+        support: "supported" as const,
+        readiness: "ready" as const,
+        diagnostics: []
+      });
+      const clients = inspectAiClientReadiness({
+        codex: {
+          ...notConfigured("Codex is not configured."),
+          configured: false
+        },
+        claudeCode: {
+          ...needsAttention("Claude Code sign-in required", undefined, {
+            version: "2.1.227",
+            ...(authentication === "unauthenticated"
+              ? { authenticated: false }
+              : { authenticationState: "unknown" })
+          }),
+          configured: true,
+          detected: true
+        },
+        pi: {
+          ...notConfigured("Pi is not configured."),
+          configured: false,
+          detected: false
+        },
+        codexTranscriptWatcher: notConfigured("Codex watcher disabled"),
+        claudeTranscriptWatcher: healthy("Claude watcher is running"),
+        mcpServer: healthy("MCP Server is running"),
+        localAiRuntime: healthy("Local AI Runtime is running"),
+        capabilityReadModel: {
+          instances: [
+            {
+              instanceId: "claude.default",
+              driverId: "claude",
+              displayName: "Claude Code"
+            }
+          ],
+          capabilitySnapshots: [
+            {
+              instanceId: "claude.default",
+              clientVersion: "2.1.227",
+              authenticationState: "authenticated",
+              healthState: "healthy",
+              models: [{ id: "claude-sonnet", displayName: "Sonnet" }],
+              capabilities: {
+                descriptors: {
+                  automatic_capture: {
+                    id: "automatic_capture",
+                    support: "supported",
+                    readiness: "unknown",
+                    diagnostics: []
+                  },
+                  mcp_recall: unauthenticated("mcp_recall"),
+                  local_synthesis: unauthenticated("local_synthesis"),
+                  managed_conversation_start: unauthenticated(
+                    "managed_conversation_start"
+                  )
+                }
+              },
+              observedAt: "2026-01-01T00:00:00.000Z",
+              expiresAt: "2026-01-01T00:10:00.000Z"
+            }
+          ]
+        },
+        now: "2026-01-01T00:01:00.000Z"
+      });
+
+      expect(clients.claude).toMatchObject({
+        authentication,
+        profile: { state: "needs_attention" }
+      });
+      expect(clients.claude!.capabilities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "automatic_capture",
+            readiness: "ready"
+          }),
+          expect.objectContaining({
+            id: "mcp_recall",
+            readiness: authentication
+          }),
+          expect.objectContaining({
+            id: "local_synthesis",
+            readiness: authentication
+          }),
+          expect.objectContaining({
+            id: "managed_conversation_start",
+            readiness: authentication
+          }),
+          expect.objectContaining({
+            id: "managed_conversation_send",
+            readiness: authentication
+          })
+        ])
+      );
+    }
+  );
+
   it("keeps Pi automatic capture ready while model authentication is unavailable", () => {
     const unauthenticated = (id: string) => ({
       id,
@@ -1535,6 +1637,57 @@ describe("Pi integration status", () => {
       modelCount: 1
     });
   });
+
+  it.each([
+    ["2026-01-01T00:00:01.000Z", "0.84.2", false],
+    ["2025-12-31T23:59:59.000Z", "0.84.2", true],
+    ["2026-01-01T00:00:01.000Z", "0.85.1", true]
+  ] as const)(
+    "reuses only freshly refreshed Pi models (%s, %s)",
+    (observedAt, clientVersion, probesModels) => {
+      const root = tempDir();
+      const packagePath = resolve(root, "integrations/pi");
+      const calls: string[] = [];
+      const status = inspectPi(
+        { KOED_HOME: root },
+        resolveKoedServerPaths({ KOED_HOME: root }),
+        {
+          existsSync: () => true,
+          resolvePiExecutable: () => "/opt/pi",
+          spawnSync: (_command: string, args: string[]) => {
+            calls.push(args[0]!);
+            return spawnResult(
+              args[0] === "--version"
+                ? "0.84.2"
+                : args[0] === "--list-models"
+                  ? "provider model\nopenai fallback\n"
+                  : `${packagePath}\n`
+            );
+          }
+        } as never,
+        {
+          refreshedSince: "2026-01-01T00:00:00.000Z",
+          now: "2026-01-01T00:00:02.000Z",
+          snapshot: {
+            instanceId: "pi.default",
+            clientVersion,
+            authenticationState: "authenticated",
+            healthState: "healthy",
+            models: [{ id: "fresh-model" }],
+            capabilities: {},
+            observedAt,
+            expiresAt: "2026-01-01T00:10:00.000Z",
+            stale: false
+          }
+        }
+      );
+      expect(calls.includes("--list-models")).toBe(probesModels);
+      expect(status.details).toMatchObject({
+        authenticated: true,
+        modelCount: 1
+      });
+    }
+  );
 
   it("separates registered-package health from authenticated-model health", () => {
     const root = tempDir();

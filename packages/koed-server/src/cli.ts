@@ -722,7 +722,12 @@ export const runKoedServerCli = async (
     }
 
     if (command === "check" && subcommand) {
-      const status = await collectStatus();
+      const status = await collectStatus(undefined, undefined, {
+        capabilitiesRefreshedSince: flagValue(
+          args,
+          "--capabilities-refreshed-since"
+        )
+      });
       const components: Record<string, unknown> = {
         codex: status.codex,
         claude: status.claudeCode,
@@ -736,6 +741,7 @@ export const runKoedServerCli = async (
       const result = {
         client: subcommand,
         readiness: readiness ?? null,
+        ...(args.includes("--include-status") ? { status } : {}),
         ...evaluateAiClientReadiness(readiness)
       };
       if (wantsJson) printJson(stdout, result);

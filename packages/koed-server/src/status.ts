@@ -186,7 +186,12 @@ const readJsonFile = <T>(
 export const inspectPi = (
   environment: NodeJS.ProcessEnv,
   paths: KoedServerPaths,
-  deps: Required<KoedServerStatusDependencies>
+  deps: Required<KoedServerStatusDependencies>,
+  refreshed?: {
+    snapshot: SelectedCapabilitySnapshot | null;
+    refreshedSince: string;
+    now: string;
+  }
 ): KoedServerStatus["pi"] => {
   const packagePath = resolve(paths.koedHome, "integrations/pi");
   const extensionPath = resolve(packagePath, "extensions/koed.mjs");
@@ -281,9 +286,46 @@ export const inspectPi = (
       detected: true
     };
   }
-  const listedModels = runPi(["--list-models"], 15_000, 4 * 1024 * 1024);
-  const parsedModels = parsePiModelListOutput(listedModels.stdout ?? "");
-  if (listedModels.error || listedModels.status !== 0 || !parsedModels.valid) {
+  const snapshot = refreshed?.snapshot;
+  const reuseDiscovery =
+    snapshot &&
+    !snapshot.stale &&
+    snapshot.instanceId === "pi.default" &&
+    snapshot.clientVersion === versionText &&
+    Date.parse(snapshot.observedAt) >= Date.parse(refreshed.refreshedSince) &&
+    Date.parse(snapshot.observedAt) <= Date.parse(refreshed.now) &&
+    Date.parse(snapshot.expiresAt) > Date.parse(refreshed.now);
+  const listedModels = reuseDiscovery
+    ? null
+    : runPi(["--list-models"], 15_000, 4 * 1024 * 1024);
+  const snapshotModelIds =
+    snapshot?.models.map((model) =>
+      model !== null &&
+      typeof model === "object" &&
+      "id" in model &&
+      typeof model.id === "string" &&
+      model.id.trim()
+        ? model.id
+        : null
+    ) ?? [];
+  const parsedModels = reuseDiscovery
+    ? {
+        valid:
+          snapshot.authenticationState === "unauthenticated" ||
+          (snapshot.authenticationState === "authenticated" &&
+            snapshot.healthState === "healthy" &&
+            snapshotModelIds.every((id) => id !== null)),
+        models:
+          snapshot.authenticationState === "unauthenticated"
+            ? []
+            : snapshotModelIds.filter((id): id is string => id !== null)
+      }
+    : parsePiModelListOutput(listedModels?.stdout ?? "");
+  if (
+    listedModels?.error ||
+    (listedModels && listedModels.status !== 0) ||
+    !parsedModels.valid
+  ) {
     return {
       ...needsAttention(
         "Pi's Koed package is registered, but model authentication could not be inspected.",
@@ -1565,6 +1607,9 @@ const localSynthesisReadiness = (
   }
   const current = staleDescriptor(descriptor, snapshot.stale);
   if (current.readiness === "stale") return current;
+  if (profileAuthentication !== "authenticated") {
+    return { ...current, readiness: profileAuthentication };
+  }
   if (snapshot.authenticationState === "unauthenticated") {
     return { ...current, readiness: "unauthenticated" };
   }
@@ -1698,23 +1743,28 @@ export const inspectAiClientReadiness = (input: {
           input.mcpServer.message ?? "MCP Recall profile check completed."
         );
       const mcpDescriptor =
-        profileAuthentication === "unknown"
+        profileAuthentication === "unauthenticated"
           ? {
               ...discoveredMcpDescriptor,
-              readiness: "unknown" as const,
-              diagnostics: [
-                ...discoveredMcpDescriptor.diagnostics,
-                {
-                  code: "authentication_state_unknown",
-                  message: `${displayName} authentication is unknown; MCP Recall cannot be admitted.`,
-                  severity: "warning" as const
-                }
-              ]
+              readiness: "unauthenticated" as const
             }
-          : overlayUnknownProfileReadiness(
-              discoveredMcpDescriptor,
-              mcpFallback
-            );
+          : profileAuthentication === "unknown"
+            ? {
+                ...discoveredMcpDescriptor,
+                readiness: "unknown" as const,
+                diagnostics: [
+                  ...discoveredMcpDescriptor.diagnostics,
+                  {
+                    code: "authentication_state_unknown",
+                    message: `${displayName} authentication is unknown; MCP Recall cannot be admitted.`,
+                    severity: "warning" as const
+                  }
+                ]
+              }
+            : overlayUnknownProfileReadiness(
+                discoveredMcpDescriptor,
+                mcpFallback
+              );
       const synthesisDescriptor = localSynthesisReadiness(
         snapshot,
         descriptorFor(snapshot, "local_synthesis"),
@@ -1747,9 +1797,9 @@ export const inspectAiClientReadiness = (input: {
               ));
         return staleDescriptor(
           driverId !== "pi" &&
-            profileAuthentication === "unauthenticated" &&
+            profileAuthentication !== "authenticated" &&
             snapshot?.stale !== true
-            ? { ...descriptor, readiness: "unauthenticated" }
+            ? { ...descriptor, readiness: profileAuthentication }
             : descriptor,
           snapshot?.stale ?? false
         );
@@ -2422,7 +2472,8 @@ export const collectKoedServerStartupStatus = async (
 
 export const collectKoedServerStatus = async (
   environment: NodeJS.ProcessEnv = process.env,
-  dependencies: KoedServerStatusDependencies = {}
+  dependencies: KoedServerStatusDependencies = {},
+  options: { capabilitiesRefreshedSince?: string } = {}
 ): Promise<KoedServerStatus> => {
   const deps = withDefaults(dependencies);
   const paths = resolveKoedServerPaths(environment);
@@ -2526,7 +2577,24 @@ export const collectKoedServerStatus = async (
   );
   const pi = inspectSafely(
     "Pi",
-    () => inspectPi(runtimeEnvironment, paths, deps),
+    () =>
+      inspectPi(
+        runtimeEnvironment,
+        paths,
+        deps,
+        options.capabilitiesRefreshedSince
+          ? {
+              snapshot: snapshotFor(
+                capabilityReadModel,
+                "pi",
+                deps.now().toISOString(),
+                "pi.default"
+              ),
+              refreshedSince: options.capabilitiesRefreshedSince,
+              now: deps.now().toISOString()
+            }
+          : undefined
+      ),
     { state: "needs_attention", configured: false, detected: false }
   );
   const captureHook = inspectSafely(

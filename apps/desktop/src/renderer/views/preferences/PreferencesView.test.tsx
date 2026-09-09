@@ -545,7 +545,7 @@ describe("PreferencesView", () => {
       "A lengthy startup diagnostic should not be shown."
     );
     expect(container.textContent).toContain("Not installed");
-    expect(container.textContent).toContain("Could not be started");
+    expect(container.textContent).toContain("Integration needs attention");
     expect(container.textContent).not.toContain(
       "Version unknown · Auth unknown"
     );
@@ -553,11 +553,11 @@ describe("PreferencesView", () => {
     const codexCard = [...container.querySelectorAll(".koed-client-card")].find(
       (card) => card.querySelector("strong")?.textContent === "Codex"
     )!;
-    expect(codexCard.querySelectorAll("button")).toHaveLength(3);
+    expect(codexCard.querySelectorAll("button")).toHaveLength(4);
     expect(
-      [...codexCard.querySelectorAll("button")].every(
-        (button) => button.textContent?.trim() === ""
-      )
+      [
+        ...codexCard.querySelectorAll("button:not(.koed-client-pill-button)")
+      ].every((button) => button.textContent?.trim() === "")
     ).toBe(true);
     expect(
       codexCard.querySelector(
@@ -579,6 +579,108 @@ describe("PreferencesView", () => {
         'button[aria-label="Set up Claude Code"] .lucide-play'
       )
     ).toBeTruthy();
+  });
+
+  it.each(["authenticated", "unauthenticated"])(
+    "shows check diagnostics without a second status probe (%s)",
+    async (authentication) => {
+      const current = advancedStatus();
+      const invoke = vi.fn(async (command: string) =>
+        command === "status"
+          ? current
+          : {
+              ok: false,
+              message: "Recall is unavailable",
+              status: current,
+              readiness: { authentication, profile: { configured: true } }
+            }
+      );
+      window.koedDesktop = { invoke } as unknown as DesktopApi;
+      await renderPreferences({ initialSection: "ai-clients" });
+      await vi.waitFor(() =>
+        expect(container.textContent).toContain("Connections")
+      );
+      invoke.mockClear();
+      await clickClientCardButton(container, "Claude Code", "Check");
+      expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+        "check_claude"
+      ]);
+      expect(container.querySelector('[role="alert"]')?.textContent ?? "").toBe(
+        authentication === "authenticated" ? "Recall is unavailable" : ""
+      );
+    }
+  );
+
+  it("opens sign-in details from the chip, copies the command, and clears it after a healthy check", async () => {
+    const initial = advancedStatus({
+      claudeCode: {
+        state: "needs_attention",
+        configured: true,
+        details: { authenticated: false },
+        message: "Claude Code is configured but signed out."
+      }
+    });
+    const healthy = advancedStatus({
+      claudeCode: {
+        state: "healthy",
+        configured: true,
+        details: { authenticated: true },
+        message: "Claude Code is configured and authenticated."
+      }
+    });
+    const writeText = vi.fn(async () => undefined);
+    window.koedDesktop = {
+      invoke: vi.fn(async (command) =>
+        command === "check_claude" ? { ok: true, status: healthy } : initial
+      ),
+      clipboard: { writeText }
+    } as DesktopApi;
+    await renderPreferences({ initialSection: "ai-clients" });
+    const chip = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Show Claude Code status details"]'
+    );
+    expect(chip).toBeTruthy();
+    await act(async () => chip!.click());
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.textContent).toContain(
+      "Claude Code is configured but signed out."
+    );
+    await clickButton(dialog, "Copy command");
+    expect(writeText).toHaveBeenCalledWith("claude auth login");
+    await clickButton(dialog, "Check again");
+    expect(dialog.textContent).toContain(
+      "Claude Code is configured and authenticated."
+    );
+    expect(dialog.textContent).not.toContain("claude auth login");
+  });
+
+  it("shows Pi's specific issue and recovery action in its status dialog", async () => {
+    const current = advancedStatus({
+      pi: {
+        state: "needs_attention",
+        configured: false,
+        detected: true,
+        message: "Pi version is unsupported.",
+        action: "Update Pi, then repair its integration."
+      }
+    });
+    window.koedDesktop = { invoke: vi.fn(async () => current) } as DesktopApi;
+    await renderPreferences({ initialSection: "ai-clients" });
+    const chip = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Show Pi status details"]'
+    );
+    expect(chip).toBeTruthy();
+    await act(async () => chip!.click());
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("Pi version is unsupported.");
+    expect(dialog.textContent).toContain(
+      "Update Pi, then repair its integration."
+    );
+    expect(dialog.textContent).not.toContain("claude auth login");
+    await clickButton(dialog, "Close");
+    await vi.waitFor(() =>
+      expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    );
   });
 
   it("distinguishes configured signed-out Claude Code from Claude Desktop", async () => {

@@ -160,11 +160,34 @@ AI Runtime.
    facts and shared capability descriptors for automatic capture, MCP Recall,
    local Synthesis, and Managed Conversation. Status reads the authenticated
    AI Client instance capability read model best-effort: current or stale
-   snapshots authoritatively gate Local Synthesis and Managed Conversation;
-   profile checks only fill unknown Capture Hook or MCP Recall descriptors.
+   snapshots gate Local Synthesis and Managed Conversation alongside current
+   profile authentication checks.
    AI Client installation, Koed-owned profile configuration, and execution
-   authentication are separate states. Configured unauthenticated Claude Code
-   and Pi profiles can report automatic capture Ready from profile and
+   authentication are separate states. Desktop check results for configured
+   clients that require authentication remain structured readiness results, so
+   Preferences
+   refreshes its cards and presents sign-in remediation. Desktop requests the
+   check's collected status with `--include-status` and reuses it, avoiding a second
+   full CLI inspection. After successful capability refresh, Desktop also passes
+   `--capabilities-refreshed-since` with the refresh start time. Pi status reuses
+   model discovery only from a non-expired `pi.default` snapshot observed since
+   that time and matching the installed version; older or mismatched snapshots
+   fall back to direct probing. Ordinary status collection still probes Pi.
+   Capability publication discovers at most three independent
+   AI Client instances concurrently, retaining per-instance identity validation and
+   failure isolation. A failed or timed-out capability refresh returns its
+   diagnostic without launching another check or full status scan. Other failed
+   operations refresh status before reporting their error. A current unauthenticated or
+   unknown profile authentication result overrides older authenticated execution
+   descriptors; automatic capture continues to use profile and Transcript Watcher
+   health independently.
+   Desktop AI Client status chips open a details dialog with the current reason,
+   recovery guidance, capability states, and a check action. Claude Code sign-in
+   guidance includes a copyable terminal command. Authentication guidance follows
+   the latest observation for each enabled instance, including newer card checks,
+   so a successful sign-in clears older guidance without another capability scan.
+   Configured unauthenticated Claude Code and Pi profiles can report automatic
+   capture Ready from profile and
    Transcript Watcher health while their supported execution capabilities report
    Unauthenticated. Pi continues to report Managed Conversation unsupported.
    Automatic capture is not downgraded by an unauthenticated or stale execution

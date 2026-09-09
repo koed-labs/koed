@@ -201,7 +201,7 @@
 
 .koed-connection-form > p[role="alert"],
 .koed-diagnostic-error {
-  color: var(--destructive-foreground);
+  color: var(--destructive);
 }
 
 .koed-connection-actions,
@@ -569,4 +569,58 @@
   .koed-preference-control select {
     inline-size: 100%;
   }
+}
+
+.koed-client-pill-button {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.koed-client-pill-button:hover {
+  text-decoration: underline;
+}
+
+.koed-client-pill-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
+.koed-client-status-details {
+  display: grid;
+  gap: 16px;
+  padding-block: 16px;
+}
+
+.koed-client-status-details p {
+  margin: 0;
+}
+
+.koed-client-status-command {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--muted);
+}
+
+.koed-client-status-command code {
+  overflow-wrap: anywhere;
+}
+
+.koed-client-status-capabilities {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.koed-client-status-capabilities li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
 }
