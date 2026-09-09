@@ -58,13 +58,16 @@ const supportedReasoningEfforts = (
   });
 };
 
-const localSynthesisReady = (
-  capabilities: Record<string, unknown>
+const assignmentCapabilityReady = (
+  capabilities: Record<string, unknown>,
+  conversations: boolean
 ): boolean => {
   const descriptors = capabilities.descriptors;
   if (!descriptors || typeof descriptors !== "object") return false;
   const descriptor = (descriptors as Record<string, unknown>)[
-    aiClientCapabilityIds.localSynthesis
+    conversations
+      ? aiClientCapabilityIds.managedConversationStart
+      : aiClientCapabilityIds.localSynthesis
   ];
   if (!descriptor || typeof descriptor !== "object") return false;
   const value = descriptor as Record<string, unknown>;
@@ -74,7 +77,8 @@ const localSynthesisReady = (
 const validateAssignment = (
   instances: AiClientInstance[],
   snapshots: CapabilitySnapshot[],
-  input: AssignmentInput
+  input: AssignmentInput,
+  conversations: boolean
 ) => {
   const instance = instances.find(
     (candidate) => candidate.instanceId === input.ai_client_instance_id
@@ -88,7 +92,7 @@ const validateAssignment = (
   const snapshot = snapshots.find(
     (candidate) => candidate.instanceId === input.ai_client_instance_id
   );
-  validateSnapshot(snapshot, input);
+  validateSnapshot(snapshot, input, conversations);
   const selectedModel = snapshot!.models.find((candidate) =>
     modelIds(candidate).includes(input.model)
   );
@@ -123,7 +127,8 @@ const validateInstance = (
 
 const validateSnapshot = (
   snapshot: CapabilitySnapshot | undefined,
-  input: AssignmentInput
+  input: AssignmentInput,
+  conversations: boolean
 ) => {
   if (
     !snapshot ||
@@ -134,9 +139,9 @@ const validateSnapshot = (
       `AI Client instance "${input.ai_client_instance_id}" has no current healthy authenticated capability snapshot`
     );
   }
-  if (!localSynthesisReady(snapshot.capabilities)) {
+  if (!assignmentCapabilityReady(snapshot.capabilities, conversations)) {
     throw assignmentUnavailable(
-      `AI Client instance "${input.ai_client_instance_id}" does not report ready local synthesis`
+      `AI Client instance "${input.ai_client_instance_id}" does not report ready ${conversations ? "conversation start" : "local synthesis"}`
     );
   }
 };
@@ -308,7 +313,12 @@ const registerSettingsWriteRoute = (
         repo.listAiClientInstances(actor),
         repo.listCurrentAiClientCapabilitySnapshots(actor)
       ]);
-      validateAssignment(instances, snapshots, input);
+      validateAssignment(
+        instances,
+        snapshots,
+        input,
+        params.flowKey === "conversations"
+      );
       const setting = await repo.upsertLocalMemoryAgentSetting(actor, {
         flowKey: params.flowKey,
         provider: input.provider,

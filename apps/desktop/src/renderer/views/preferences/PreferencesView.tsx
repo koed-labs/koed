@@ -912,8 +912,10 @@ function AdvancedSection({
         status.api,
         status.database,
         status.workerQueues,
-        status.embeddingService
-      ].some((component) => component.state === "starting")
+        status.embeddingService,
+        status.privacyService,
+        status.localAiRuntime
+      ].some((component) => component?.state === "starting")
     : false;
 
   useEffect(() => {
@@ -941,8 +943,12 @@ function AdvancedSection({
           ["Server package", status.serverPackage],
           ["API", status.api],
           ["Database", status.database],
+          ["Redis", status.redis],
           ["Worker queues", status.workerQueues],
           ["Embedding Service", status.embeddingService],
+          ["Privacy Filter Service", status.privacyService],
+          ["Local AI Runtime", status.localAiRuntime],
+          ["Local runtime credential", status.apiToken],
           ["MCP Server", status.mcpServer],
           ["Capture Hook", status.captureHook],
           ["LCM Summary Service", status.lcmSummaryService],

@@ -1,3 +1,4 @@
+import { assignmentFrom } from "../preferences/local-ai-client-settings-helpers.js";
 import type {
   PersonalConversationPresentation,
   PersonalDesktopApi,
@@ -740,6 +741,7 @@ const launchOwner = (
 const launchSelectionForInstance = selectionForInstance;
 
 function ProjectDetail({
+  localAiClients,
   error,
   hasProjects,
   loading,
@@ -754,6 +756,7 @@ function ProjectDetail({
   onSelectSession,
   project
 }: {
+  localAiClients?: DesktopApi["localAiClients"];
   error: string | null;
   hasProjects: boolean;
   loading: boolean;
@@ -820,12 +823,43 @@ function ProjectDetail({
   useEffect(() => {
     if (!managedConversations || !project?.id) return;
     let active = true;
-    void managedConversations
-      .launchOptions()
-      .then(({ options }) => {
+    void Promise.all([
+      managedConversations.launchOptions(),
+      localAiClients?.list()
+    ])
+      .then(([{ options }, settings]) => {
         if (!active) return;
+        const assignment = settings
+          ? assignmentFrom(settings.readModel, "conversations")
+          : null;
+        if (settings && !assignment) {
+          throw new Error(
+            "The Conversations default is unavailable. Check Agent Configuration."
+          );
+        }
         setLaunchOptions(options);
         setLaunchSelection((current) => {
+          if (assignment) {
+            const selection = launchSelectionForInstance(
+              options,
+              assignment.ai_client_instance_id
+            );
+            const model = options.instances
+              .find(
+                (instance) =>
+                  instance.instanceId === assignment.ai_client_instance_id
+              )
+              ?.models.find((candidate) => candidate.id === assignment.model);
+            return {
+              ...selection,
+              model: model?.id ?? assignment.model,
+              reasoningEffort:
+                assignment.reasoning_effort === "none" &&
+                model?.supportedReasoningEfforts.length === 0
+                  ? ""
+                  : assignment.reasoning_effort
+            };
+          }
           const instance = options.instances.find(
             (candidate) => candidate.instanceId === current.instanceId
           );
@@ -861,7 +895,7 @@ function ProjectDetail({
     return () => {
       active = false;
     };
-  }, [managedConversations, project?.id, setLaunchSelection]);
+  }, [localAiClients, managedConversations, project?.id, setLaunchSelection]);
   if (!project && loading) {
     return (
       <section
@@ -3866,6 +3900,7 @@ export function PersonalMemoryWorkspace({
             />
           ) : (
             <ProjectDetail
+              localAiClients={localAiClients}
               launchSelection={launchSelection}
               setLaunchSelection={setLaunchSelection}
               error={projects.length === 0 ? snapshot.error : null}

@@ -630,6 +630,29 @@ describe("status state aggregation", () => {
     expect(readiness.mcp_memory_answer.state).toBe("healthy");
     expect(readiness.session_title.state).toBe("healthy");
     expect(readiness.curated_memory_review.state).toBe("healthy");
+    expect(readiness.conversations.state).toBe("needs_attention");
+    const conversationReady = inspectAiClientFlowReadiness({
+      environment: {},
+      capabilityReadModel: {
+        ...readModel,
+        capabilitySnapshots: readModel.capabilitySnapshots.map((snapshot) => ({
+          ...snapshot,
+          capabilities: {
+            descriptors: {
+              managed_conversation_start: {
+                id: "managed_conversation_start",
+                support: "supported",
+                readiness: "ready",
+                diagnostics: []
+              }
+            }
+          }
+        }))
+      },
+      now: "2026-01-01T00:01:00.000Z"
+    });
+    expect(conversationReady.conversations.state).toBe("healthy");
+    expect(conversationReady.mcp_memory_answer.state).toBe("needs_attention");
   });
 
   it("reports explicit unavailable defaults as nonblocking attention", () => {

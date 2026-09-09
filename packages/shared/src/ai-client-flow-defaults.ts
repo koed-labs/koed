@@ -1,6 +1,7 @@
 import type { SupportedAiClientDriverId } from "./ai-client-contract.js";
 
 export const localAiClientFlowKeys = [
+  "conversations",
   "mcp_memory_answer",
   "lcm_summary",
   "session_title",
@@ -47,6 +48,12 @@ const answerAttempts = (raw: string | undefined, fallback: number): number =>
 
 export const localAiClientDefaultSpec: Record<LocalAiClientFlowKey, FlowSpec> =
   {
+    conversations: {
+      prefix: "KOED_CONVERSATIONS",
+      timeoutMs: 120_000,
+      parseTimeout: answerTimeout,
+      parseAttempts: answerAttempts
+    },
     mcp_memory_answer: {
       prefix: "MEMORY_ANSWER",
       timeoutMs: 120_000,

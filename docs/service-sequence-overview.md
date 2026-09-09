@@ -168,7 +168,7 @@ AI Runtime.
    registered instance, including healthy secondary instances when a default is
    broken. These records do not select execution flows or change Managed
    Conversation routing. Per-flow assignment readiness is reported separately
-   for Memory Answer, LCM Summary, Session Title, and Curated Memory Review.
+   for Conversations, Memory Answer, LCM Summary, Session Title, and Curated Memory Review.
    The narrower `status --startup --json` contract is used only for supervisor
    and Desktop readiness polling. It reuses live health checks and managed
    process state but skips client/setup diagnostics and model digests. Normal

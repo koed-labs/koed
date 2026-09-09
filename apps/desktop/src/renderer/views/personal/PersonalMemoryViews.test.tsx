@@ -13,6 +13,7 @@ import { act, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { DesktopApi } from "../../../types.js";
 import { PersonalMemoryStore } from "../../state/personal-memory.js";
 import type { ManagedConversationRealtimeUpdate } from "../../state/managed-conversation-runtime.js";
 import type { ManagedConversationDesktopApi } from "../../../ipc/managed-conversation-protocol.js";
@@ -1145,154 +1146,200 @@ describe("PersonalMemoryWorkspace", () => {
     });
   });
 
-  it("starts a managed Codex Conversation and keeps the chat-style composer below the timeline", async () => {
-    let finishSend:
-      | ((
-          value: Awaited<ReturnType<ManagedConversationDesktopApi["send"]>>
-        ) => void)
-      | undefined;
-    const send = vi.fn(
-      (input: Parameters<ManagedConversationDesktopApi["send"]>[0]) =>
-        new Promise<Awaited<ReturnType<ManagedConversationDesktopApi["send"]>>>(
-          (resolve) => {
+  it.each([false, true])(
+    "starts a managed Conversation with configured defaults: %s",
+    async (configured) => {
+      const localAiClients = configured
+        ? {
+            list: vi.fn(async () => ({
+              operation: "list" as const,
+              readModel: {
+                instances: [],
+                capabilitySnapshots: [],
+                defaults: {} as Awaited<
+                  ReturnType<NonNullable<DesktopApi["localAiClients"]>["list"]>
+                >["readModel"]["defaults"],
+                settings: [
+                  {
+                    flowKey: "conversations" as const,
+                    provider: "codex" as const,
+                    aiClientInstanceId: "codex.work",
+                    model: "gpt-test",
+                    reasoningEffort: "high",
+                    timeoutMs: 120_000,
+                    maxAttempts: 2,
+                    createdAt: "",
+                    updatedAt: ""
+                  }
+                ]
+              }
+            })),
+            refresh: vi.fn(),
+            set: vi.fn(),
+            reset: vi.fn()
+          }
+        : undefined;
+      let finishSend:
+        | ((
+            value: Awaited<ReturnType<ManagedConversationDesktopApi["send"]>>
+          ) => void)
+        | undefined;
+      const send = vi.fn(
+        (input: Parameters<ManagedConversationDesktopApi["send"]>[0]) =>
+          new Promise<
+            Awaited<ReturnType<ManagedConversationDesktopApi["send"]>>
+          >((resolve) => {
             finishSend = resolve;
             void input;
-          }
-        )
-    );
-    const managed = managedApi({
-      send,
-      readDraft: vi.fn<ManagedConversationDesktopApi["readDraft"]>(
-        async () => ({ operation: "draft_read", value: "Recovered draft" })
-      )
-    });
-    const source = project([thread(2, { sessionId: null })]);
-    const store = new PersonalMemoryStore(
-      api({ listProjects: vi.fn(async () => [source]) })
-    );
-
-    await act(async () => {
-      root.render(
-        <Harness initialRoute={{ kind: "project", projectId: "project-1" }}>
-          {({ onNavigate, route }) => (
-            <PersonalMemoryWorkspace
-              managedConversations={managed}
-              onNavigate={onNavigate}
-              route={route}
-              store={store}
-            />
-          )}
-        </Harness>
+          })
       );
-    });
-    await vi.waitFor(() => expect(container.textContent).toContain("New"));
-    await act(async () => {
-      [...container.querySelectorAll<HTMLButtonElement>("button")]
-        .find((button) => button.textContent === "New")
-        ?.click();
-    });
-    await act(async () => {
-      container
-        .querySelector<HTMLButtonElement>(
-          'button[aria-label="Start Conversation"]'
+      const managed = managedApi({
+        send,
+        readDraft: vi.fn<ManagedConversationDesktopApi["readDraft"]>(
+          async () => ({ operation: "draft_read", value: "Recovered draft" })
         )
-        ?.click();
-    });
-    await vi.waitFor(() =>
-      expect(container.querySelector("textarea")?.value).toBe("Recovered draft")
-    );
-    expect(managed.start).toHaveBeenCalledWith(
-      expect.objectContaining({
-        projectId: "project-1",
-        aiClientDriverId: "codex",
-        aiClientInstanceId: "codex.default",
-        model: "gpt-test",
-        reasoningEffort: "low",
-        permissionMode: "full_access",
-        runnerKind: "local_device",
-        idempotencyKey: expect.stringMatching(/^desktop-conversation:/)
-      })
-    );
-    expect(managed.resume).toHaveBeenCalledWith({
-      projectId: "project-1",
-      capturedSessionId: sessionId,
-      threadId: "managed-thread"
-    });
-    const shell = container.querySelector(".personal-conversation-shell");
-    expect(shell?.lastElementChild?.classList).toContain(
-      "personal-managed-composer"
-    );
-    expect(container.textContent).not.toContain("Execution owner:");
-    expect(
-      shell?.querySelector(".personal-managed-composer-field")
-    ).not.toBeNull();
+      });
+      if (configured) {
+        const launch = await managed.launchOptions();
+        launch.options.instances.push({
+          ...launch.options.instances[0]!,
+          instanceId: "codex.work",
+          displayName: "Codex Work"
+        });
+        vi.mocked(managed.launchOptions).mockResolvedValue(launch);
+      }
+      const source = project([thread(2, { sessionId: null })]);
+      const store = new PersonalMemoryStore(
+        api({ listProjects: vi.fn(async () => [source]) })
+      );
 
-    const textarea = container.querySelector("textarea")!;
-    expect(textarea.getAttribute("rows")).toBe("1");
-    expect(textarea.value).toBe("Recovered draft");
-    expect(managed.readDraft).toHaveBeenCalledWith({
-      projectId: "project-1",
-      capturedSessionId: "execution-1",
-      threadId: "execution-1"
-    });
-    await act(async () => {
-      changeTextarea(textarea, "First line\nSecond line");
-    });
-    expect(textarea.value).toBe("First line\nSecond line");
-    await vi.waitFor(() =>
-      expect(managed.writeDraft).toHaveBeenCalledWith({
+      await act(async () => {
+        root.render(
+          <Harness initialRoute={{ kind: "project", projectId: "project-1" }}>
+            {({ onNavigate, route }) => (
+              <PersonalMemoryWorkspace
+                localAiClients={localAiClients}
+                managedConversations={managed}
+                onNavigate={onNavigate}
+                route={route}
+                store={store}
+              />
+            )}
+          </Harness>
+        );
+      });
+      await vi.waitFor(() => expect(container.textContent).toContain("New"));
+      await act(async () => {
+        [...container.querySelectorAll<HTMLButtonElement>("button")]
+          .find((button) => button.textContent === "New")
+          ?.click();
+      });
+      await act(async () => {
+        container
+          .querySelector<HTMLButtonElement>(
+            'button[aria-label="Start Conversation"]'
+          )
+          ?.click();
+      });
+      await vi.waitFor(() =>
+        expect(container.querySelector("textarea")?.value).toBe(
+          "Recovered draft"
+        )
+      );
+      expect(managed.start).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          aiClientDriverId: "codex",
+          aiClientInstanceId: configured ? "codex.work" : "codex.default",
+          model: "gpt-test",
+          reasoningEffort: configured ? "high" : "low",
+          permissionMode: "full_access",
+          runnerKind: "local_device",
+          idempotencyKey: expect.stringMatching(/^desktop-conversation:/)
+        })
+      );
+      if (configured) return;
+      expect(managed.resume).toHaveBeenCalledWith({
+        projectId: "project-1",
+        capturedSessionId: sessionId,
+        threadId: "managed-thread"
+      });
+      const shell = container.querySelector(".personal-conversation-shell");
+      expect(shell?.lastElementChild?.classList).toContain(
+        "personal-managed-composer"
+      );
+      expect(container.textContent).not.toContain("Execution owner:");
+      expect(
+        shell?.querySelector(".personal-managed-composer-field")
+      ).not.toBeNull();
+
+      const textarea = container.querySelector("textarea")!;
+      expect(textarea.getAttribute("rows")).toBe("1");
+      expect(textarea.value).toBe("Recovered draft");
+      expect(managed.readDraft).toHaveBeenCalledWith({
         projectId: "project-1",
         capturedSessionId: "execution-1",
-        threadId: "execution-1",
-        value: "First line\nSecond line"
-      })
-    );
-    const sendButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Send prompt"]'
-    )!;
-    await act(async () => {
-      sendButton.click();
-      sendButton.click();
-    });
-    expect(send).toHaveBeenCalledOnce();
-    const interruptButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Interrupt active turn"]'
-    )!;
-    expect(interruptButton.disabled).toBe(false);
-    await act(async () => interruptButton.click());
-    expect(managed.interrupt).toHaveBeenCalledWith(
-      expect.objectContaining({
-        executionId: "execution-1",
-        executionGeneration: 1
-      })
-    );
-    expect(container.textContent).not.toContain("Sending prompt to Codex");
-    expect(container.textContent).toContain("First line\nSecond line");
-    expect(textarea.value).toBe("");
-    expect(textarea.disabled).toBe(false);
-
-    await act(async () =>
-      finishSend?.({
-        operation: "send",
-        status: "queued",
-        conversation: {
-          executionId: null,
+        threadId: "execution-1"
+      });
+      await act(async () => {
+        changeTextarea(textarea, "First line\nSecond line");
+      });
+      expect(textarea.value).toBe("First line\nSecond line");
+      await vi.waitFor(() =>
+        expect(managed.writeDraft).toHaveBeenCalledWith({
           projectId: "project-1",
-          capturedSessionId: sessionId,
-          threadId: "managed-thread"
-        },
-        idempotencyKey: send.mock.calls[0]![0].idempotencyKey,
-        clientUserMessageId: send.mock.calls[0]![0].clientUserMessageId,
-        turnId: "turn-1"
-      })
-    );
-    expect(textarea.value).toBe("");
-    expect(managed.deleteDraft).toHaveBeenCalledWith({
-      projectId: "project-1",
-      capturedSessionId: "execution-1",
-      threadId: "execution-1"
-    });
-  });
+          capturedSessionId: "execution-1",
+          threadId: "execution-1",
+          value: "First line\nSecond line"
+        })
+      );
+      const sendButton = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Send prompt"]'
+      )!;
+      await act(async () => {
+        sendButton.click();
+        sendButton.click();
+      });
+      expect(send).toHaveBeenCalledOnce();
+      const interruptButton = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Interrupt active turn"]'
+      )!;
+      expect(interruptButton.disabled).toBe(false);
+      await act(async () => interruptButton.click());
+      expect(managed.interrupt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          executionId: "execution-1",
+          executionGeneration: 1
+        })
+      );
+      expect(container.textContent).not.toContain("Sending prompt to Codex");
+      expect(container.textContent).toContain("First line\nSecond line");
+      expect(textarea.value).toBe("");
+      expect(textarea.disabled).toBe(false);
+
+      await act(async () =>
+        finishSend?.({
+          operation: "send",
+          status: "queued",
+          conversation: {
+            executionId: null,
+            projectId: "project-1",
+            capturedSessionId: sessionId,
+            threadId: "managed-thread"
+          },
+          idempotencyKey: send.mock.calls[0]![0].idempotencyKey,
+          clientUserMessageId: send.mock.calls[0]![0].clientUserMessageId,
+          turnId: "turn-1"
+        })
+      );
+      expect(textarea.value).toBe("");
+      expect(managed.deleteDraft).toHaveBeenCalledWith({
+        projectId: "project-1",
+        capturedSessionId: "execution-1",
+        threadId: "execution-1"
+      });
+    }
+  );
 
   it.each(["canonical", "completed_command"])(
     "reconciles an optimistic prompt using exact %s identity",

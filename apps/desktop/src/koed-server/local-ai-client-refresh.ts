@@ -35,30 +35,33 @@ export const refreshLocalAiRuntime = async (input: {
         authorization: registration.authorization
       }
     },
-    { timeoutMs: 5_000, maxBytes: 512 * 1_024, readErrorBody: true }
+    { timeoutMs: 30_000, maxBytes: 512 * 1_024, readErrorBody: true }
   );
+  const publications = remote.payload.publications;
+  if (validRefreshPayload(remote.payload, publications)) {
+    const failedCount = publications.filter(
+      (publication) => objectValue(publication)?.published !== true
+    ).length;
+    if (failedCount > 0) {
+      return {
+        refreshed: false,
+        refreshError: `Capability publication failed for ${failedCount} AI Client ${failedCount === 1 ? "instance" : "instances"}. Retry Refresh capabilities.`
+      };
+    }
+  }
   if (!remote.response.ok) {
     return {
       refreshed: false,
-      refreshError: "Capability refresh request failed."
+      refreshError: `Capability refresh request failed (HTTP ${remote.response.status}). Retry Refresh capabilities.`
     };
   }
-  const publications = remote.payload.publications;
   if (!validRefreshPayload(remote.payload, publications)) {
     return {
       refreshed: false,
       refreshError: "Capability refresh returned an invalid response."
     };
   }
-  const failedCount = publications.filter(
-    (publication) => objectValue(publication)?.published !== true
-  ).length;
-  return failedCount > 0
-    ? {
-        refreshed: false,
-        refreshError: `Capability refresh failed for ${failedCount} AI Client ${failedCount === 1 ? "instance" : "instances"}.`
-      }
-    : { refreshed: true, refreshError: null };
+  return { refreshed: true, refreshError: null };
 };
 
 const validRefreshPayload = (

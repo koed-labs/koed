@@ -11813,7 +11813,7 @@ export const localMemoryAgentSettings = pgTable(
     ),
     check(
       "local_memory_agent_settings_flow_key_check",
-      sql`${table.flowKey} in ('mcp_memory_answer', 'manual_memory_answer', 'lcm_summary', 'curated_memory_review', 'session_title')`
+      sql`${table.flowKey} in ('mcp_memory_answer', 'manual_memory_answer', 'lcm_summary', 'curated_memory_review', 'session_title', 'conversations')`
     ),
     check(
       "local_memory_agent_settings_provider_check",

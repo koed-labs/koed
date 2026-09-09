@@ -57,6 +57,7 @@ const response = (): LocalAiClientResponse => ({
             reasoningEfforts: ["low", "high"]
           }
         ],
+        managedConversationStart: { support: "supported", readiness: "ready" },
         localSynthesis: { support: "supported", readiness: "ready" },
         observedAt: "2026-01-01T00:00:00.000Z",
         expiresAt: "2099-01-01T00:00:00.000Z",
@@ -76,6 +77,7 @@ const response = (): LocalAiClientResponse => ({
             reasoningEfforts: ["medium"]
           }
         ],
+        managedConversationStart: { support: "supported", readiness: "ready" },
         localSynthesis: { support: "supported", readiness: "ready" },
         observedAt: "2026-01-01T00:00:00.000Z",
         expiresAt: "2099-01-01T00:00:00.000Z",
@@ -95,6 +97,7 @@ const response = (): LocalAiClientResponse => ({
             reasoningEfforts: ["high"]
           }
         ],
+        managedConversationStart: { support: "supported", readiness: "ready" },
         localSynthesis: { support: "supported", readiness: "ready" },
         observedAt: "2025-01-01T00:00:00.000Z",
         expiresAt: "2025-01-02T00:00:00.000Z",
@@ -115,6 +118,12 @@ const response = (): LocalAiClientResponse => ({
       }
     ],
     defaults: {
+      conversations: {
+        source: "code",
+        available: true,
+        assignment: assignment("codex", "codex.default", "gpt-5.6-luna"),
+        reason: null
+      },
       mcp_memory_answer: {
         source: "code",
         available: true,
@@ -154,6 +163,48 @@ describe("Agent Configuration selectors", () => {
 
   afterEach(() => {
     act(() => root?.unmount());
+  });
+
+  it("saves a conversation default using conversation capabilities", async () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    const value = response();
+    value.readModel.capabilitySnapshots[1]!.localSynthesis = {
+      support: "unsupported",
+      readiness: "not_ready"
+    };
+    const api = {
+      list: vi.fn(async () => value),
+      refresh: vi.fn(async () => value),
+      set: vi.fn(async () => value),
+      reset: vi.fn(async () => value)
+    };
+    root = createRoot(container);
+    await act(async () =>
+      root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
+    );
+    const fieldset = flowFieldset(container, "Conversations")!;
+    const select = fieldset.querySelector<HTMLSelectElement>(
+      'select[aria-label="Conversations Agent"]'
+    )!;
+    await act(async () => {
+      select.value = "claude.work";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => {
+      [...fieldset.querySelectorAll("button")]
+        .find((button) => button.textContent === "Save")!
+        .click();
+    });
+    expect(api.set).toHaveBeenCalledWith(
+      "conversations",
+      expect.objectContaining({
+        provider: "claude",
+        ai_client_instance_id: "claude.work",
+        model: "sonnet",
+        reasoning_effort: "medium"
+      })
+    );
   });
 
   it("uses the shared spinner in a scoped loading state", async () => {
@@ -204,7 +255,7 @@ describe("Agent Configuration selectors", () => {
       root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
     );
     await vi.waitFor(() =>
-      expect(container.querySelectorAll("fieldset")).toHaveLength(4)
+      expect(container.querySelectorAll("fieldset")).toHaveLength(5)
     );
 
     expect(container.textContent).toContain("Agent Configuration");
@@ -298,7 +349,7 @@ describe("Agent Configuration selectors", () => {
       root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
     );
     await vi.waitFor(() =>
-      expect(container.querySelectorAll("fieldset")).toHaveLength(4)
+      expect(container.querySelectorAll("fieldset")).toHaveLength(5)
     );
     expect(container.querySelector('input[type="search"]')).toBeNull();
     expect(container.textContent).not.toContain(

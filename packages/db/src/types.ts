@@ -108,6 +108,7 @@ export type CuratedMemorySourceRole =
   | "derived_summary";
 
 export type LocalMemoryAgentSettingsFlowKey =
+  | "conversations"
   | "mcp_memory_answer"
   | "manual_memory_answer"
   | "lcm_summary"

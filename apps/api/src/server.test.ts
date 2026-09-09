@@ -16529,6 +16529,12 @@ describe("account and access flows", () => {
         ],
         capabilities: {
           descriptors: {
+            managed_conversation_start: {
+              id: "managed_conversation_start",
+              support: "supported",
+              readiness: "ready",
+              diagnostics: []
+            },
             local_synthesis: {
               id: "local_synthesis",
               support: "supported",
@@ -16546,6 +16552,41 @@ describe("account and access flows", () => {
       method: "GET",
       url: "/v1/memory/ai-client-instances",
       headers
+    });
+    const savedConversation = await app.inject({
+      method: "PUT",
+      url: "/v1/memory/local-agent-settings/conversations",
+      headers,
+      payload: {
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoning_effort: "high",
+        timeout_ms: 120000,
+        max_attempts: 2
+      }
+    });
+    expect(savedConversation.statusCode).toBe(200);
+    const withConversation = await app.inject({
+      method: "GET",
+      url: "/v1/memory/local-agent-settings",
+      headers
+    });
+    expect(
+      jsonBody<{ settings: Array<{ flowKey: string; model: string }> }>(
+        withConversation
+      ).settings
+    ).toContainEqual(
+      expect.objectContaining({ flowKey: "conversations", model: "gpt-5.4" })
+    );
+    const resetConversation = await app.inject({
+      method: "DELETE",
+      url: "/v1/memory/local-agent-settings/conversations",
+      headers
+    });
+    expect(resetConversation.statusCode).toBe(200);
+    expect(resetConversation.json()).toMatchObject({
+      flow_key: "conversations",
+      reset: true
     });
     const savedMcp = await app.inject({
       method: "PUT",

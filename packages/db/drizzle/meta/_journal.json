@@ -267,6 +267,13 @@
       "when": 1788600619274,
       "tag": "0037_coding_project_runtime",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1788912000000,
+      "tag": "0038_conversation_agent_default",
+      "breakpoints": true
     }
   ]
 }

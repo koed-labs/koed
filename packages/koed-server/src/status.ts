@@ -1839,14 +1839,18 @@ const flowAssignmentReadiness = (input: {
       `AI Client instance "${instance.instanceId}" is not healthy.`
     );
   }
-  const synthesis = descriptorFor(snapshot, "local_synthesis");
+  const capability =
+    input.flowKey === "conversations"
+      ? "managed_conversation_start"
+      : "local_synthesis";
+  const synthesis = descriptorFor(snapshot, capability);
   if (
     !synthesis ||
     synthesis.support !== "supported" ||
     synthesis.readiness !== "ready"
   ) {
     return unavailable(
-      `AI Client instance "${instance.instanceId}" local synthesis is unavailable.`
+      `AI Client instance "${instance.instanceId}" ${input.flowKey === "conversations" ? "conversation start" : "local synthesis"} is unavailable.`
     );
   }
   const model = snapshot.models.find(
