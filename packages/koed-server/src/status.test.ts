@@ -1605,6 +1605,33 @@ describe("status state aggregation", () => {
 });
 
 describe("Pi integration status", () => {
+  it("explains a Pi profile inspection timeout without recommending repair", () => {
+    const root = tempDir();
+    const environment = { KOED_HOME: root };
+    const status = inspectPi(environment, resolveKoedServerPaths(environment), {
+      existsSync: () => true,
+      resolvePiExecutable: () => "/opt/pi",
+      spawnSync: (_command: string, args: string[]) =>
+        args[0] === "--version"
+          ? spawnResult("0.85.1\n")
+          : {
+              ...spawnResult(""),
+              status: null,
+              error: Object.assign(new Error("spawnSync ETIMEDOUT"), {
+                code: "ETIMEDOUT"
+              })
+            }
+    } as never);
+    expect(status.state).toBe("needs_attention");
+    expect(status.message).toContain("timed out");
+    expect(status.action).toContain("Check again");
+    expect(status.action).not.toContain("Repair");
+    expect(status.details).toMatchObject({
+      inspectionState: "unknown",
+      inspectionErrorCode: "ETIMEDOUT"
+    });
+  });
+
   it("reports a registered Koed package in the active Pi profile", () => {
     const root = tempDir();
     const packagePath = resolve(root, "integrations/pi");

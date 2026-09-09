@@ -132,7 +132,8 @@ export function LocalAiClientSettingsSection({
       ) : null}
       {settings.refreshError ? (
         <p className="koed-diagnostic-error" role="alert">
-          {settings.refreshError}
+          Agent Configuration could not refresh its capabilities. Showing the
+          last known results. {settings.refreshError}
         </p>
       ) : null}
       {flows.map((flow) => (

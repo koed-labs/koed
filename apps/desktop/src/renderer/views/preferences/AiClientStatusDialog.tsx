@@ -88,6 +88,13 @@ export function AiClientStatusDialog({
         </DialogHeader>
         <div className="koed-client-status-details">
           {action ? <p>{action}</p> : null}
+          {profile?.details?.inspectionState === "unknown" ? (
+            <p>
+              Profile inspection and execution capabilities are checked
+              separately. Ready Local Synthesis does not confirm that automatic
+              capture or MCP Recall is ready.
+            </p>
+          ) : null}
           {command ? (
             <div className="koed-client-status-command">
               <code>{command}</code>

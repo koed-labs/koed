@@ -121,12 +121,10 @@ describe("DesktopStatusStore", () => {
   });
 
   it("does not follow a timed-out capability refresh with another status scan", async () => {
-    const invoke = vi
-      .fn<DesktopApi["invoke"]>()
-      .mockResolvedValue({
-        ok: false,
-        capabilityRefresh: { refreshed: false }
-      });
+    const invoke = vi.fn<DesktopApi["invoke"]>().mockResolvedValue({
+      ok: false,
+      capabilityRefresh: { refreshed: false }
+    });
     window.koedDesktop = { invoke } as DesktopApi;
     await new DesktopStatusStore().run("check_claude");
     expect(invoke.mock.calls.map(([command]) => command)).toEqual([

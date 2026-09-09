@@ -265,11 +265,22 @@ export const inspectPi = (
   }
   const listed = runPi(["list"], 5_000);
   if (listed.error || listed.status !== 0) {
+    const errorCode =
+      listed.error && "code" in listed.error ? String(listed.error.code) : null;
     return {
       ...needsAttention(
-        "Koed could not inspect the active Pi profile.",
-        "Repair Pi integration from Koed Desktop.",
-        { executable, version: versionText, packagePath }
+        errorCode === "ETIMEDOUT"
+          ? "Pi profile inspection timed out after 5 seconds."
+          : "Pi profile inspection failed; its configuration could not be verified.",
+        "Check again. If this persists, run `pi list` in your terminal to diagnose the profile. An inspection failure does not establish that repair is needed.",
+        {
+          executable,
+          version: versionText,
+          packagePath,
+          inspectionState: "unknown",
+          inspectionErrorCode: errorCode,
+          inspectionExitCode: listed.status
+        }
       ),
       configured: false,
       detected: true
