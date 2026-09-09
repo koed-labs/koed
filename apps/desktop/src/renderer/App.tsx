@@ -31,7 +31,7 @@ import type {
   PersonalMemoryInspectorEvent,
   PersonalMemoryRoute
 } from "./views/personal/index.js";
-import { SharesStatusView } from "./views/personal/index.js";
+import { SharesStatusView } from "./views/personal/SharesStatusView.js";
 import { PersonalAskView } from "./views/personal/PersonalAskView.js";
 import { PersonalNotesView } from "./views/personal/PersonalNotesView.js";
 import {
@@ -91,7 +91,7 @@ const CollaborationModalLayer = lazy(async () => {
 });
 
 const PersonalMemoryWorkspace = lazy(async () => {
-  const module = await import("./views/personal/index.js");
+  const module = await import("./views/personal/PersonalMemoryViews.js");
   return { default: module.PersonalMemoryWorkspace };
 });
 const PersonalMemorySharesView = lazy(async () => {
