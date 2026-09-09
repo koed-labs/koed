@@ -10,3 +10,6 @@ Add clickable AI Client status details with recovery guidance and a copyable
 Claude Code login command. Clear superseded sign-in guidance, avoid redundant
 capability scans, and explain inspection timeouts without assuming repair is
 required.
+
+Label previously observed readiness and its timestamp when a new check fails,
+keeping verification warnings separate from confirmed capability failures.

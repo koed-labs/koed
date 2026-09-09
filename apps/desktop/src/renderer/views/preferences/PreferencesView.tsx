@@ -717,6 +717,9 @@ function AiClientIntegrationsSection({
 }: Pick<PreferencesViewProps, "statusStore">) {
   const snapshot = useDesktopStatus(statusStore);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [verificationFailures, setVerificationFailures] = useState<
+    Record<string, string | undefined>
+  >({});
   const [pendingCommand, setPendingCommand] =
     useState<IntegrationMutationCommand | null>(null);
   const [detailsClient, setDetailsClient] = useState<
@@ -741,11 +744,29 @@ function AiClientIntegrationsSection({
       const result = await statusStore.run<{
         ok?: boolean;
         message?: string;
+        status?: KoedServerStatus;
+        capabilityRefresh?: { refreshed?: boolean };
         readiness?: {
           authentication?: string;
           profile?: { configured?: boolean };
         };
       }>(action, mutatesProfile ? { operatorConsented: true } : undefined);
+      if (!mutatesProfile) {
+        const client = action.slice("check_".length);
+        if (result?.capabilityRefresh?.refreshed === false) {
+          setVerificationFailures((current) => ({
+            ...current,
+            [client]: result.message ?? "Capability refresh failed."
+          }));
+          return;
+        }
+        if (result?.status) {
+          setVerificationFailures((current) => ({
+            ...current,
+            [client]: undefined
+          }));
+        }
+      }
       const authenticationPending =
         result?.readiness?.profile?.configured === true &&
         (result.readiness.authentication === "unauthenticated" ||
@@ -756,7 +777,15 @@ function AiClientIntegrationsSection({
         );
       }
     } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : String(cause));
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (action.startsWith("check_")) {
+        setVerificationFailures((current) => ({
+          ...current,
+          [action.slice("check_".length)]: message
+        }));
+      } else {
+        setActionError(message);
+      }
     }
   };
 
@@ -794,16 +823,18 @@ function AiClientIntegrationsSection({
                 : detected
                   ? "Integration needs attention"
                   : "Not installed";
-          const pillClass =
-            profileState === "healthy"
+          const pillClass = verificationFailures[id]
+            ? "is-warning"
+            : profileState === "healthy"
               ? "is-success"
               : profileState === "needs_attention"
                 ? "is-warning"
                 : profileState === "starting"
                   ? "is-active"
                   : "is-off";
-          const pillText =
-            profileState === "healthy"
+          const pillText = verificationFailures[id]
+            ? "Verification failed"
+            : profileState === "healthy"
               ? "Healthy"
               : authenticationRequired
                 ? id === "pi"
@@ -871,14 +902,14 @@ function AiClientIntegrationsSection({
               <span className="koed-client-caps">
                 {capabilitySummaries.map((capability) => (
                   <span
-                    aria-label={`${capability.label}: ${capability.statusLabel}`}
+                    aria-label={`${capability.label}: ${verificationFailures[id] ? "Last known: " : ""}${capability.statusLabel}`}
                     className="koed-client-cap"
                     key={capability.id}
-                    title={`${capability.label}: ${capability.statusLabel}`}
+                    title={`${capability.label}: ${verificationFailures[id] ? "Last known: " : ""}${capability.statusLabel}`}
                   >
                     <span
                       aria-hidden="true"
-                      className={`koed-client-cap-dot ${capability.dotClass}`}
+                      className={`koed-client-cap-dot ${verificationFailures[id] ? "is-unknown" : capability.dotClass}`}
                     />
                     {capability.label}
                   </span>
@@ -938,6 +969,7 @@ function AiClientIntegrationsSection({
           readiness={status?.aiClients?.[detailsClient]}
           busy={snapshot.busyCommand !== null}
           error={actionError}
+          verificationError={verificationFailures[detailsClient] ?? null}
           onCheck={() => run(`check_${detailsClient}`)}
           onClose={() => setDetailsClient(null)}
         />

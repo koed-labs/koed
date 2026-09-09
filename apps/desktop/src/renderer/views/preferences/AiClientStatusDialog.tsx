@@ -20,6 +20,7 @@ export function AiClientStatusDialog({
   readiness,
   busy,
   error,
+  verificationError = null,
   onCheck,
   onClose
 }: {
@@ -29,6 +30,7 @@ export function AiClientStatusDialog({
   readiness?: AiClientReadiness;
   busy: boolean;
   error: string | null;
+  verificationError?: string | null;
   onCheck: () => Promise<void>;
   onClose: () => void;
 }) {
@@ -70,6 +72,9 @@ export function AiClientStatusDialog({
     }
   };
   const capabilities = summarizeCapabilities(readiness?.capabilities);
+  const observedAt = readiness?.observedAt;
+  const validObservation =
+    observedAt && Number.isFinite(Date.parse(observedAt));
   return (
     <Dialog
       open
@@ -81,13 +86,33 @@ export function AiClientStatusDialog({
         <DialogHeader>
           <DialogTitle>{label} status</DialogTitle>
           <DialogDescription>
-            {profile?.message ??
-              readiness?.profile.message ??
-              "Koed has not yet confirmed this integration's status."}
+            {verificationError
+              ? "Showing the last known results. They have not been verified by the latest check."
+              : (profile?.message ??
+                readiness?.profile.message ??
+                "Koed has not yet confirmed this integration's status.")}
           </DialogDescription>
         </DialogHeader>
         <div className="koed-client-status-details">
-          {action ? <p>{action}</p> : null}
+          {verificationError ? (
+            <div role="status" className="koed-client-verification-warning">
+              <p>
+                Could not verify the current status. Check again to confirm it.
+              </p>
+              {validObservation ? (
+                <p>
+                  Last observed:{" "}
+                  <time dateTime={observedAt}>
+                    {new Date(observedAt).toLocaleString()}
+                  </time>
+                </p>
+              ) : (
+                <p>The time of the last observation is unavailable.</p>
+              )}
+              <p>{verificationError}</p>
+            </div>
+          ) : null}
+          {!verificationError && action ? <p>{action}</p> : null}
           {profile?.details?.inspectionState === "unknown" ? (
             <p>
               Profile inspection and execution capabilities are checked
@@ -124,7 +149,13 @@ export function AiClientStatusDialog({
               {capabilities.map((capability) => (
                 <li key={capability.id}>
                   <span>{capability.label}</span>
-                  <strong>{capability.statusLabel}</strong>
+                  <strong>
+                    {verificationError
+                      ? capability.statusLabel === "Ready"
+                        ? "Last confirmed ready"
+                        : `Last known: ${capability.statusLabel}`
+                      : capability.statusLabel}
+                  </strong>
                 </li>
               ))}
             </ul>

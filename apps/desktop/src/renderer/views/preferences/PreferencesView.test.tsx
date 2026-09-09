@@ -611,6 +611,84 @@ describe("PreferencesView", () => {
     }
   );
 
+  it("labels ready results as last confirmed after refresh failure and clears the warning only after success", async () => {
+    const current = advancedStatus({
+      pi: {
+        state: "healthy",
+        configured: true,
+        message: "Pi is configured and authenticated for Koed."
+      },
+      aiClients: {
+        pi: {
+          driverId: "pi",
+          instanceId: "pi.default",
+          displayName: "Pi",
+          installed: { state: "healthy" },
+          version: "0.85.1",
+          authentication: "authenticated",
+          profile: { state: "healthy" },
+          observedAt: "2026-09-09T10:01:00.000Z",
+          snapshotState: "current",
+          capabilities: [
+            {
+              id: "local_synthesis",
+              support: "supported",
+              readiness: "ready",
+              diagnostics: []
+            }
+          ]
+        }
+      }
+    });
+    let succeed = false;
+    window.koedDesktop = {
+      invoke: vi.fn(async (command) =>
+        command === "check_pi"
+          ? succeed
+            ? { ok: true, status: current }
+            : {
+                ok: false,
+                message: "Capability refresh request failed.",
+                capabilityRefresh: { refreshed: false }
+              }
+          : current
+      )
+    } as DesktopApi;
+    await renderPreferences({ initialSection: "ai-clients" });
+    const open = async () =>
+      act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            'button[aria-label="Show Pi status details"]'
+          )!
+          .click()
+      );
+    await open();
+    let dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    await clickButton(dialog, "Check again");
+    expect(dialog.textContent).toContain("Last confirmed ready");
+    expect(dialog.querySelector("time")?.dateTime).toBe(
+      "2026-09-09T10:01:00.000Z"
+    );
+    expect(dialog.textContent).toContain("Could not verify the current status");
+    expect(dialog.textContent).not.toContain(
+      "Pi is configured and authenticated for Koed."
+    );
+    await clickButton(dialog, "Close");
+    await open();
+    dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("Could not verify the current status");
+    succeed = true;
+    await clickButton(dialog, "Check again");
+    expect(dialog.textContent).not.toContain(
+      "Could not verify the current status"
+    );
+    expect(dialog.textContent).not.toContain("Last confirmed ready");
+    expect(dialog.textContent).toContain(
+      "Pi is configured and authenticated for Koed."
+    );
+  });
+
   it("opens sign-in details from the chip, copies the command, and clears it after a healthy check", async () => {
     const initial = advancedStatus({
       claudeCode: {

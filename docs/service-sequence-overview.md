@@ -184,7 +184,10 @@ AI Runtime.
    Desktop AI Client status chips open a details dialog with the current reason,
    recovery guidance, capability states, and a check action. Pi profile inspection
    timeouts are reported as inconclusive checks with retry guidance rather than
-   evidence that repair is required. Claude Code sign-in
+   evidence that repair is required. Failed verification keeps the displayed
+   capability results explicitly marked as last known, with the observation time
+   when available. The warning survives dialog reopening and retries, and clears
+   when a check returns a fresh status result. Claude Code sign-in
    guidance includes a copyable terminal command. Authentication guidance follows
    the latest observation for each enabled instance, including newer card checks,
    so a successful sign-in clears older guidance without another capability scan.

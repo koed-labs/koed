@@ -624,3 +624,13 @@
   justify-content: space-between;
   gap: 16px;
 }
+
+.koed-client-verification-warning {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--warning) 12%, transparent);
+  color: var(--warning-foreground);
+}
