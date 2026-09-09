@@ -47,6 +47,7 @@ describe("Personal Memory preload bridge", () => {
       "submitAsk",
       "subscribe",
       "updateNote",
+      "updateSessionPresentation",
       "updateSessionTitle"
     ]);
     expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
@@ -174,6 +175,37 @@ describe("Personal Memory preload bridge", () => {
     await expect(api.listProjects()).rejects.toThrow();
   });
 
+  it("constructs and validates Conversation presentation requests", async () => {
+    const sessionId = "00000000-0000-4000-8000-000000000009";
+    const presentation = {
+      pinnedAt: "2026-08-18T10:00:00.000Z",
+      displayMode: "active" as const,
+      snoozedAt: null,
+      snoozedUntil: null,
+      version: 3,
+      updatedAt: "2026-08-18T10:00:00.000Z"
+    };
+    const invoke = vi
+      .fn()
+      .mockResolvedValue(
+        success("personal.sessions.update_presentation", { presentation })
+      );
+    const api = createPersonalMemoryPreloadApi(invoke, events());
+
+    await expect(
+      api.updateSessionPresentation({
+        sessionId,
+        expectedVersion: 2,
+        pinned: true
+      })
+    ).resolves.toEqual({ presentation });
+    expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.sessions.update_presentation",
+      input: { sessionId, expectedVersion: 2, pinned: true }
+    });
+  });
+
   it("validates live changes and removes the exact listener", () => {
     const eventBridge = events();
     const api = createPersonalMemoryPreloadApi(vi.fn(), eventBridge);
@@ -194,13 +226,22 @@ describe("Personal Memory preload bridge", () => {
           {
             id: "00000000-0000-4000-8000-000000000001",
             projectId: "project-1",
+            sourceTable: "messages",
             threadId: "thread-1"
           }
         ]
       }
     );
     wrapped?.({}, { apiToken: "not-a-change" });
-    expect(listener).toHaveBeenCalledTimes(1);
+    wrapped?.(
+      {},
+      {
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        type: "conversation_presentation_changed",
+        sessionIds: ["00000000-0000-4000-8000-000000000009"]
+      }
+    );
+    expect(listener).toHaveBeenCalledTimes(2);
 
     unsubscribe();
     expect(eventBridge.removeListener).toHaveBeenCalledWith(
@@ -216,11 +257,12 @@ describe("Personal Memory preload bridge", () => {
           {
             id: "00000000-0000-4000-8000-000000000002",
             projectId: "project-1",
+            sourceTable: "messages",
             threadId: "thread-1"
           }
         ]
       }
     );
-    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(2);
   });
 });

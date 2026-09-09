@@ -3,7 +3,6 @@ import {
   spawnSync,
   type ChildProcessWithoutNullStreams
 } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -102,21 +101,51 @@ export interface CodexAppServerDynamicToolResponse {
   text: string;
 }
 
+export interface CodexAppServerProviderRequest {
+  method: string;
+  params: Record<string, unknown>;
+}
+
+export interface CodexAppServerAgentMessageDelta {
+  threadId: string;
+  turnId: string;
+  itemId?: string;
+  delta: string;
+}
+
 export interface CodexAppServerRunConfig {
   appServerBinary: string;
   model: string;
-  reasoningEffort: string;
+  reasoningEffort?: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
   clientName: string;
   baseInstructions: string;
   developerInstructions?: string;
+  approvalPolicy?: "never" | "on-request" | "untrusted";
+  sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
+  approvalsReviewer?: "user" | "auto_review";
   /** Direct-call diagnostics only; ordinary product calls leave this disabled. */
   captureProcessMetrics?: boolean;
   dynamicTools?: CodexAppServerDynamicToolSpec[];
   dynamicToolHandler?: (
     call: CodexAppServerDynamicToolCall
   ) => Promise<CodexAppServerDynamicToolResponse>;
+  providerRequestHandler?: (
+    request: CodexAppServerProviderRequest
+  ) => Promise<Record<string, unknown>>;
+  onAgentMessageDelta?: (
+    delta: CodexAppServerAgentMessageDelta
+  ) => void | Promise<void>;
+  onProviderItemCompleted?: (input: {
+    threadId: string;
+    turnId: string;
+    itemId?: string;
+  }) => void | Promise<void>;
+  onTurnCompleted?: (input: {
+    threadId: string;
+    turnId: string;
+  }) => void | Promise<void>;
 }
 
 export interface CodexAppServerJsonTaskConfig {
@@ -185,6 +214,7 @@ interface JsonRpcMessage {
 }
 
 export interface CodexAppServerClientOptions {
+  configOverrides?: string[];
   requestTimeoutMs?: number;
   interruptRequestTimeoutMs?: number;
   serverRequestTimeoutMs?: number;
@@ -197,6 +227,9 @@ export interface CodexAppServerClientOptions {
   maxTurnBytes?: number;
   maxLineBytes?: number;
   captureProcessMetrics?: boolean;
+  transientEventHandler?: (
+    event: CodexAppServerRawEvent
+  ) => void | Promise<void>;
   onExit?: (exit: CodexAppServerExit) => void;
 }
 
@@ -224,6 +257,12 @@ const DEFAULT_MAX_PENDING_RAW_EVENT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAX_TURN_STATES = 100;
 const DEFAULT_MAX_TURN_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAX_LINE_BYTES = 4 * 1024 * 1024;
+const supportedProviderRequestMethods = new Set([
+  "item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval",
+  "item/permissions/requestApproval",
+  "item/tool/requestUserInput"
+]);
 
 const positiveFiniteInteger = (value: number | undefined, fallback: number) =>
   typeof value === "number" && Number.isFinite(value) && value > 0
@@ -248,368 +287,20 @@ export const resolveCodexAppServerBinary = (
     .find((value): value is string => Boolean(value)) ??
   (process.platform === "win32" ? "codex.cmd" : "codex");
 
-const sourceCodexHome = (env: NodeJS.ProcessEnv): string =>
-  resolveEnvValue(env, "CODEX_HOME") ?? path.join(os.homedir(), ".codex");
-
-const managedCodexRoot = (env: NodeJS.ProcessEnv): string => {
-  const koedHome =
-    resolveEnvValue(env, "KOED_HOME") ?? path.join(os.homedir(), ".koed");
-  return path.resolve(koedHome, "codex-managed");
-};
-
-const MANAGED_HOME_MARKER_FILENAME = "koed-managed-home.json";
-const MANAGED_HOME_LEASE_DIRECTORY = ".koed-managed-home.lease";
-const MANAGED_HOME_LEASE_OWNER_FILENAME = "owner.json";
-
-interface ManagedCodexHomeLeaseOwner {
-  version: 1;
-  pid: number;
-  hostname: string;
-  processStartId: string;
-  token: string;
-  createdAt: string;
-}
-
-export interface ManagedCodexHomeLease {
-  managedHome: string;
-  token: string;
-  release: () => void;
-}
-
-export class CodexManagedHomeLeaseError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "CodexManagedHomeLeaseError";
-  }
-}
-
-const processStartId = (pid: number): string | undefined => {
-  if (process.platform === "linux") {
-    try {
-      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-      const commandEnd = stat.lastIndexOf(")");
-      if (commandEnd < 0) {
-        return undefined;
-      }
-      return stat
-        .slice(commandEnd + 2)
-        .trim()
-        .split(/\s+/)[19];
-    } catch {
-      return undefined;
-    }
-  }
-  if (process.platform === "win32") {
-    const result = spawnSync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`
-      ],
-      { encoding: "utf8", windowsHide: true, timeout: 2_000 }
-    );
-    const value = result.status === 0 ? result.stdout.trim() : "";
-    return value || undefined;
-  }
-  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
-    encoding: "utf8",
-    timeout: 2_000
-  });
-  const value = result.status === 0 ? result.stdout.trim() : "";
-  return value || undefined;
-};
-
-const managedHomeMarkerIsValid = (managedHome: string): boolean => {
-  const markerPath = path.join(managedHome, MANAGED_HOME_MARKER_FILENAME);
-  try {
-    const markerStat = fs.lstatSync(markerPath);
-    if (!markerStat.isFile() || markerStat.isSymbolicLink()) {
-      return false;
-    }
-    const marker = JSON.parse(fs.readFileSync(markerPath, "utf8")) as {
-      version?: unknown;
-      kind?: unknown;
-    };
-    return marker.version === 1 && marker.kind === "koed-managed-codex-home";
-  } catch {
-    return false;
-  }
-};
-
-const validatedManagedCodexHome = (
-  managedHome: string,
-  env: NodeJS.ProcessEnv
-): string => {
-  const root = managedCodexRoot(env);
-  const resolved = path.resolve(managedHome);
-  if (resolved === root || !resolved.startsWith(`${root}${path.sep}`)) {
-    throw new Error("Managed Codex home is outside KOED_HOME");
-  }
-  const homeStat = fs.lstatSync(resolved);
-  const configPath = path.join(resolved, "config.toml");
-  const configStat = fs.lstatSync(configPath);
-  if (
-    !homeStat.isDirectory() ||
-    homeStat.isSymbolicLink() ||
-    !configStat.isFile() ||
-    configStat.isSymbolicLink() ||
-    !managedHomeMarkerIsValid(resolved)
-  ) {
-    throw new Error("Managed Codex home is incomplete or unrecognized");
-  }
-  const realRoot = fs.realpathSync(root);
-  const realHome = fs.realpathSync(resolved);
-  if (realHome === realRoot || !realHome.startsWith(`${realRoot}${path.sep}`)) {
-    throw new Error("Managed Codex home resolves outside KOED_HOME");
-  }
-  return resolved;
-};
-
-const parseManagedHomeLeaseOwner = (
-  leasePath: string
-): ManagedCodexHomeLeaseOwner => {
-  let owner: Partial<ManagedCodexHomeLeaseOwner>;
-  try {
-    const leaseStat = fs.lstatSync(leasePath);
-    if (!leaseStat.isDirectory() || leaseStat.isSymbolicLink()) {
-      throw new Error("lease path is not a directory");
-    }
-    owner = JSON.parse(
-      fs.readFileSync(
-        path.join(leasePath, MANAGED_HOME_LEASE_OWNER_FILENAME),
-        "utf8"
-      )
-    ) as Partial<ManagedCodexHomeLeaseOwner>;
-  } catch (error) {
-    throw new CodexManagedHomeLeaseError(
-      "Managed Codex home lease is malformed and cannot be safely recovered",
-      { cause: error }
-    );
-  }
-  if (
-    owner.version !== 1 ||
-    !Number.isSafeInteger(owner.pid) ||
-    Number(owner.pid) <= 0 ||
-    typeof owner.hostname !== "string" ||
-    typeof owner.token !== "string" ||
-    owner.token.length < 8 ||
-    typeof owner.createdAt !== "string" ||
-    Number.isNaN(Date.parse(owner.createdAt)) ||
-    typeof owner.processStartId !== "string" ||
-    owner.processStartId.length === 0
-  ) {
-    throw new CodexManagedHomeLeaseError(
-      "Managed Codex home lease is malformed and cannot be safely recovered"
-    );
-  }
-  return owner as ManagedCodexHomeLeaseOwner;
-};
-
-const managedHomeLeaseOwnerIsAlive = (
-  owner: ManagedCodexHomeLeaseOwner
-): boolean => {
-  if (owner.hostname !== os.hostname()) {
-    return true;
-  }
-  try {
-    process.kill(owner.pid, 0);
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-  const currentStartId = processStartId(owner.pid);
-  return (
-    currentStartId === undefined || owner.processStartId === currentStartId
-  );
-};
-
-const writeManagedHomeLeaseCandidate = (
-  candidatePath: string,
-  owner: ManagedCodexHomeLeaseOwner
-): void => {
-  fs.mkdirSync(candidatePath, { mode: 0o700 });
-  const ownerPath = path.join(candidatePath, MANAGED_HOME_LEASE_OWNER_FILENAME);
-  fs.writeFileSync(ownerPath, JSON.stringify(owner), { mode: 0o600 });
-  const descriptor = fs.openSync(ownerPath, "r");
-  try {
-    fs.fsyncSync(descriptor);
-  } finally {
-    fs.closeSync(descriptor);
-  }
-};
-
-export const acquireManagedCodexHomeLease = (
-  managedHome: string,
+export const resolveCodexHome = (
   env: NodeJS.ProcessEnv = process.env
-): ManagedCodexHomeLease => {
-  const resolved = validatedManagedCodexHome(managedHome, env);
-  const leasePath = path.join(resolved, MANAGED_HOME_LEASE_DIRECTORY);
-  const currentProcessStartId = processStartId(process.pid);
-  if (!currentProcessStartId) {
-    throw new CodexManagedHomeLeaseError(
-      "Could not establish the current process start identity"
-    );
-  }
-  const owner: ManagedCodexHomeLeaseOwner = {
-    version: 1,
-    pid: process.pid,
-    hostname: os.hostname(),
-    processStartId: currentProcessStartId,
-    token: randomUUID(),
-    createdAt: new Date().toISOString()
-  };
-
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const candidatePath = `${leasePath}.candidate-${owner.token}-${attempt}`;
-    writeManagedHomeLeaseCandidate(candidatePath, owner);
-    try {
-      fs.renameSync(candidatePath, leasePath);
-      let released = false;
-      return {
-        managedHome: resolved,
-        token: owner.token,
-        release: () => {
-          if (released) {
-            return;
-          }
-          released = true;
-          if (!fs.existsSync(leasePath)) {
-            return;
-          }
-          const current = parseManagedHomeLeaseOwner(leasePath);
-          if (current.token !== owner.token) {
-            return;
-          }
-          fs.rmSync(leasePath, { recursive: true, force: true });
-        }
-      };
-    } catch (error) {
-      fs.rmSync(candidatePath, { recursive: true, force: true });
-      const code = (error as NodeJS.ErrnoException).code;
-      if (
-        code !== "EEXIST" &&
-        code !== "ENOTEMPTY" &&
-        code !== "EPERM" &&
-        code !== "EACCES"
-      ) {
-        throw error;
-      }
-    }
-
-    const existing = parseManagedHomeLeaseOwner(leasePath);
-    if (managedHomeLeaseOwnerIsAlive(existing)) {
-      throw new CodexManagedHomeLeaseError(
-        `Managed Codex home is active under lease owned by pid ${existing.pid}`
-      );
-    }
-    const staleIdentity = createHash("sha256")
-      .update(JSON.stringify(existing))
-      .digest("hex")
-      .slice(0, 16);
-    const quarantinePath = `${leasePath}.stale-${staleIdentity}`;
-    try {
-      fs.renameSync(leasePath, quarantinePath);
-      // Keep the non-empty tombstone. A contender that inspected this same
-      // stale owner cannot then rename a newly acquired live lease over it.
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "EEXIST" && code !== "ENOTEMPTY") {
-        throw error;
-      }
-    }
-  }
-  throw new CodexManagedHomeLeaseError(
-    "Managed Codex home lease changed repeatedly during acquisition"
+): string =>
+  path.resolve(
+    resolveEnvValue(env, "CODEX_HOME") ?? path.join(os.homedir(), ".codex")
   );
-};
 
 const copyCodexCredentials = (sourceHome: string, targetHome: string): void => {
   for (const filename of ["auth.json", ".credentials.json"]) {
     const source = path.join(sourceHome, filename);
+    if (!fs.existsSync(source)) continue;
     const target = path.join(targetHome, filename);
-    if (!fs.existsSync(source)) {
-      fs.rmSync(target, { force: true });
-      continue;
-    }
-    if (path.resolve(source) === path.resolve(target)) {
-      continue;
-    }
     fs.copyFileSync(source, target);
     fs.chmodSync(target, 0o600);
-  }
-};
-
-export const prepareManagedCodexHome = (
-  env: NodeJS.ProcessEnv = process.env
-): string => {
-  const sourceHome = sourceCodexHome(env);
-  const managedRoot = managedCodexRoot(env);
-  fs.mkdirSync(managedRoot, { recursive: true, mode: 0o700 });
-  fs.chmodSync(managedRoot, 0o700);
-  const managedHome = fs.mkdtempSync(path.join(managedRoot, "session-"));
-  fs.chmodSync(managedHome, 0o700);
-  try {
-    copyCodexCredentials(sourceHome, managedHome);
-    fs.writeFileSync(
-      path.join(managedHome, "config.toml"),
-      [
-        "# Koed managed conversations use an isolated Codex home.",
-        "# Provider credentials are copied in, but user hooks and MCP servers are not."
-      ].join("\n"),
-      { mode: 0o600 }
-    );
-    fs.writeFileSync(
-      path.join(managedHome, MANAGED_HOME_MARKER_FILENAME),
-      JSON.stringify({ version: 1, kind: "koed-managed-codex-home" }),
-      { mode: 0o600 }
-    );
-    return managedHome;
-  } catch (error) {
-    fs.rmSync(managedHome, { recursive: true, force: true });
-    throw error;
-  }
-};
-
-export const reuseManagedCodexHome = (
-  managedHome: string,
-  env: NodeJS.ProcessEnv = process.env
-): string => {
-  const resolved = validatedManagedCodexHome(managedHome, env);
-  const configPath = path.join(resolved, "config.toml");
-  fs.chmodSync(resolved, 0o700);
-  fs.chmodSync(configPath, 0o600);
-  copyCodexCredentials(sourceCodexHome(env), resolved);
-  return resolved;
-};
-
-export const destroyManagedCodexHome = (
-  managedHome: string,
-  env: NodeJS.ProcessEnv = process.env
-): void => {
-  const resolved = validatedManagedCodexHome(managedHome, env);
-  const lease = acquireManagedCodexHomeLease(resolved, env);
-  try {
-    fs.rmSync(resolved, {
-      recursive: true,
-      force: false,
-      maxRetries: 3,
-      retryDelay: 100
-    });
-  } catch (error) {
-    lease.release();
-    throw error;
-  }
-};
-
-export const removeManagedCodexHome = (
-  managedHome: string,
-  env: NodeJS.ProcessEnv = process.env
-): void => {
-  try {
-    destroyManagedCodexHome(managedHome, env);
-  } catch {
-    // The app-server lifecycle error remains the actionable failure.
   }
 };
 
@@ -635,7 +326,7 @@ const createIsolatedCodexHome = (
   env: NodeJS.ProcessEnv,
   model: string
 ): string => {
-  const sourceHome = sourceCodexHome(env);
+  const sourceHome = resolveCodexHome(env);
   let isolatedHome: string;
   try {
     isolatedHome = fs.mkdtempSync(
@@ -888,6 +579,9 @@ export class CodexAppServerClient {
   private readonly maxTurnStates: number;
   private readonly maxTurnBytes: number;
   private readonly maxLineBytes: number;
+  private readonly transientEventHandler?: (
+    event: CodexAppServerRawEvent
+  ) => void | Promise<void>;
   private turnStateBytes = 0;
   private primaryThreadId: string | null = null;
   private activeTurnKey: string | null = null;
@@ -910,6 +604,9 @@ export class CodexAppServerClient {
   private currentDynamicToolHandler:
     | CodexAppServerRunConfig["dynamicToolHandler"]
     | undefined;
+  private currentProviderRequestHandler:
+    | CodexAppServerRunConfig["providerRequestHandler"]
+    | undefined;
 
   constructor(
     private readonly binary: string,
@@ -920,6 +617,7 @@ export class CodexAppServerClient {
     ) => void | Promise<void>,
     options: CodexAppServerClientOptions = {}
   ) {
+    this.transientEventHandler = options.transientEventHandler;
     this.requestTimeoutMs = positiveFiniteInteger(
       options.requestTimeoutMs,
       DEFAULT_REQUEST_TIMEOUT_MS
@@ -964,7 +662,11 @@ export class CodexAppServerClient {
       options.maxLineBytes,
       DEFAULT_MAX_LINE_BYTES
     );
+    const configArguments = (options.configOverrides ?? []).flatMap(
+      (override) => ["--config", override]
+    );
     const invocation = nodeCliInvocation(binary, [
+      ...configArguments,
       "app-server",
       "--listen",
       "stdio://"
@@ -1032,6 +734,11 @@ export class CodexAppServerClient {
     });
   }
 
+  private installRunHandlers(config: CodexAppServerRunConfig): void {
+    this.currentDynamicToolHandler = config.dynamicToolHandler;
+    this.currentProviderRequestHandler = config.providerRequestHandler;
+  }
+
   async initialize(clientName: string): Promise<Record<string, unknown>> {
     const response = await this.request("initialize", {
       clientInfo: {
@@ -1062,16 +769,24 @@ export class CodexAppServerClient {
     return response.result;
   }
 
+  async readAccount(): Promise<Record<string, unknown>> {
+    const response = await this.request("account/read", {
+      refreshToken: false
+    });
+    return asRecord(response.result);
+  }
+
   async startThread(
     config: CodexAppServerRunConfig,
     options: CodexAppServerThreadStartOptions = {}
   ): Promise<CodexAppServerThreadInfo> {
-    this.currentDynamicToolHandler = config.dynamicToolHandler;
+    this.installRunHandlers(config);
     const params = {
       model: config.model,
       cwd: config.cwd,
-      approvalPolicy: "never",
-      sandbox: "read-only",
+      approvalPolicy: config.approvalPolicy ?? "never",
+      approvalsReviewer: config.approvalsReviewer ?? "user",
+      sandbox: config.sandboxMode ?? "read-only",
       ephemeral: options.ephemeral ?? true,
       experimentalRawEvents: false,
       historyMode:
@@ -1102,13 +817,14 @@ export class CodexAppServerClient {
     threadId: string,
     config: CodexAppServerRunConfig
   ): Promise<CodexAppServerThreadInfo> {
-    this.currentDynamicToolHandler = config.dynamicToolHandler;
+    this.installRunHandlers(config);
     const params = {
       threadId,
       model: config.model,
       cwd: config.cwd,
-      approvalPolicy: "never",
-      sandbox: "read-only",
+      approvalPolicy: config.approvalPolicy ?? "never",
+      approvalsReviewer: config.approvalsReviewer ?? "user",
+      sandbox: config.sandboxMode ?? "read-only",
       baseInstructions: config.baseInstructions,
       developerInstructions: config.developerInstructions ?? "",
       personality: "none"
@@ -1123,14 +839,15 @@ export class CodexAppServerClient {
     sourcePath: string,
     config: CodexAppServerRunConfig
   ): Promise<CodexAppServerThreadInfo> {
-    this.currentDynamicToolHandler = config.dynamicToolHandler;
+    this.installRunHandlers(config);
     const params = {
       threadId,
       path: sourcePath,
       model: config.model,
       cwd: config.cwd,
-      approvalPolicy: "never",
-      sandbox: "read-only",
+      approvalPolicy: config.approvalPolicy ?? "never",
+      approvalsReviewer: config.approvalsReviewer ?? "user",
+      sandbox: config.sandboxMode ?? "read-only",
       ephemeral: false,
       excludeTurns: true,
       deferGoalContinuation: true,
@@ -1164,10 +881,23 @@ export class CodexAppServerClient {
       input: [{ type: "text", text: prompt, text_elements: [] }],
       ...(clientUserMessageId ? { clientUserMessageId } : {}),
       cwd: config.cwd,
-      approvalPolicy: "never",
-      sandboxPolicy: { type: "readOnly", networkAccess: false },
+      approvalPolicy: config.approvalPolicy ?? "never",
+      approvalsReviewer: config.approvalsReviewer ?? "user",
+      sandboxPolicy:
+        config.sandboxMode === "danger-full-access"
+          ? { type: "dangerFullAccess" }
+          : config.sandboxMode === "workspace-write"
+            ? {
+                type: "workspaceWrite",
+                writableRoots: [config.cwd],
+                readOnlyAccess: { type: "fullAccess" },
+                networkAccess: false,
+                excludeTmpdirEnvVar: false,
+                excludeSlashTmp: false
+              }
+            : { type: "readOnly", networkAccess: false },
       model: config.model,
-      effort: config.reasoningEffort
+      ...(config.reasoningEffort ? { effort: config.reasoningEffort } : {})
     };
     const response = await this.request("turn/start", params);
     const turn = asRecord(asRecord(response.result).turn);
@@ -1210,6 +940,18 @@ export class CodexAppServerClient {
       { threadId, turnId },
       this.interruptRequestTimeoutMs
     );
+  }
+
+  activeTurn(): { threadId: string; turnId: string } | null {
+    if (!this.activeTurnKey) return null;
+    const separator = this.activeTurnKey.indexOf(":");
+    if (separator < 1 || separator === this.activeTurnKey.length - 1) {
+      return null;
+    }
+    return {
+      threadId: this.activeTurnKey.slice(0, separator),
+      turnId: this.activeTurnKey.slice(separator + 1)
+    };
   }
 
   close(): void {
@@ -1501,7 +1243,7 @@ export class CodexAppServerClient {
       message.params,
       message.result
     );
-    this.recordRawEvent(message.method, message.params);
+    const rawEvent = this.recordRawEvent(message.method, message.params);
     if (
       this.primaryThreadId &&
       eventThreadId &&
@@ -1519,6 +1261,7 @@ export class CodexAppServerClient {
       ) {
         this.appendTurnText(params.threadId, params.turnId, params.delta);
       }
+      this.dispatchTransientEvent(rawEvent);
       return;
     }
 
@@ -1593,6 +1336,45 @@ export class CodexAppServerClient {
       requestThreadId &&
       requestThreadId !== this.primaryThreadId
     );
+    if (supportedProviderRequestMethods.has(message.method)) {
+      if (recordRequest) {
+        this.recordRawEvent(message.method, message.params);
+      }
+      const handler = this.currentProviderRequestHandler;
+      if (!handler) {
+        this.respondError(
+          message.id,
+          -32601,
+          `No handler is configured for Codex app-server request: ${message.method}`
+        );
+        return;
+      }
+      void Promise.resolve()
+        .then(() =>
+          handler({
+            method: message.method!,
+            params: asRecord(message.params)
+          })
+        )
+        .then((response) => {
+          this.respond(message.id!, response);
+          if (recordRequest) {
+            this.recordRawEvent(`${message.method}/response`, message.params, {
+              responded: true
+            });
+          }
+        })
+        .catch((error) => {
+          this.respondError(
+            message.id!,
+            -32000,
+            error instanceof Error
+              ? error.message
+              : "Managed provider request failed"
+          );
+        });
+      return;
+    }
     if (message.method !== "item/tool/call") {
       if (recordRequest) {
         this.recordRawEvent(message.method, message.params);
@@ -1836,7 +1618,7 @@ export class CodexAppServerClient {
     method: string,
     params?: unknown,
     result?: unknown
-  ): void {
+  ): CodexAppServerRawEvent {
     const event: CodexAppServerRawEvent = {
       method,
       ...(params !== undefined ? { params } : {}),
@@ -1860,7 +1642,7 @@ export class CodexAppServerClient {
       isTransientDeltaMethod(method) ||
       this.terminalError
     ) {
-      return;
+      return event;
     }
     if (
       this.pendingRawEvents.length >= this.maxPendingRawEvents ||
@@ -1871,11 +1653,32 @@ export class CodexAppServerClient {
           `Codex app-server durable event capacity exceeded while enqueueing ${method} (${this.maxPendingRawEvents} events / ${this.maxPendingRawEventBytes} bytes)`
         )
       );
-      return;
+      return event;
     }
     this.pendingRawEvents.push({ event, bytes });
     this.pendingRawEventBytes += bytes;
     void this.scheduleRawEventHandlerDrain();
+    return event;
+  }
+
+  private dispatchTransientEvent(event: CodexAppServerRawEvent): void {
+    if (!this.transientEventHandler || this.terminalError) {
+      return;
+    }
+    try {
+      const pending = this.transientEventHandler(event);
+      if (pending && typeof pending.then === "function") {
+        void pending.catch((error: unknown) => {
+          this.failTerminal(
+            error instanceof Error ? error : new Error(String(error))
+          );
+        });
+      }
+    } catch (error) {
+      this.failTerminal(
+        error instanceof Error ? error : new Error(String(error))
+      );
+    }
   }
 
   private scheduleRawEventHandlerDrain(): Promise<void> {
@@ -2114,7 +1917,7 @@ export class CodexAppServerThreadSession {
   }
 
   private modelLabel(): string {
-    return `codex-app-server:${this.config.model}:${this.config.reasoningEffort}`;
+    return `codex-app-server:${this.config.model}:${this.config.reasoningEffort ?? "default"}`;
   }
 }
 
@@ -2284,6 +2087,56 @@ export const listCodexAppServerModels = async (
   }
 };
 
+export const inspectCodexAppServer = async (
+  input: {
+    appServerBinary: string;
+    model: string;
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    includeHidden?: boolean;
+    clientName?: string;
+  },
+  timeoutMs = 5000
+): Promise<{
+  models: CodexAppServerModelOption[];
+  authenticationState: "authenticated" | "unauthenticated" | "unknown";
+}> => {
+  const isolatedHome = createIsolatedCodexHome(input.env, input.model);
+  const env = {
+    ...input.env,
+    CODEX_HOME: isolatedHome
+  };
+  const client = new CodexAppServerClient(
+    input.appServerBinary,
+    input.cwd,
+    env
+  );
+  const timeout = setTimeout(() => client.close(), timeoutMs);
+  try {
+    await client.initialize(input.clientName ?? "koed-ai-client-inspection");
+    const [models, account] = await Promise.all([
+      listModelsWithClient(client, input.includeHidden),
+      client.readAccount()
+    ]);
+    const requiresOpenaiAuth = account.requiresOpenaiAuth;
+    return {
+      models,
+      authenticationState:
+        account.account && typeof account.account === "object"
+          ? "authenticated"
+          : requiresOpenaiAuth === false
+            ? "authenticated"
+            : requiresOpenaiAuth === true
+              ? "unauthenticated"
+              : "unknown"
+    };
+  } finally {
+    clearTimeout(timeout);
+    client.close();
+    removeIsolatedCodexHome(isolatedHome);
+  }
+};
+
 export const checkCodexAppServerAvailability = async (
   input: {
     appServerBinary: string;
@@ -2291,13 +2144,17 @@ export const checkCodexAppServerAvailability = async (
     cwd: string;
     env: NodeJS.ProcessEnv;
     clientName?: string;
+    homeMode?: "isolated" | "configured";
   },
   timeoutMs = 5000
 ): Promise<{ available: boolean; error?: string }> => {
-  const isolatedHome = createIsolatedCodexHome(input.env, input.model);
+  const isolatedHome =
+    input.homeMode === "configured"
+      ? null
+      : createIsolatedCodexHome(input.env, input.model);
   const env = {
     ...input.env,
-    CODEX_HOME: isolatedHome
+    CODEX_HOME: isolatedHome ?? resolveCodexHome(input.env)
   };
   const client = new CodexAppServerClient(
     input.appServerBinary,
@@ -2331,6 +2188,6 @@ export const checkCodexAppServerAvailability = async (
   } finally {
     clearTimeout(timeout);
     client.close();
-    removeIsolatedCodexHome(isolatedHome);
+    if (isolatedHome) removeIsolatedCodexHome(isolatedHome);
   }
 };

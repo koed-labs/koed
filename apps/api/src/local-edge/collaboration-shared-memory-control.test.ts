@@ -1113,9 +1113,9 @@ const createFixture = (
             capabilities: {
               state: "validated",
               expiresAt: "2099-01-01T00:00:00.000Z",
-              schemaVersion: 6,
+              schemaVersion: 9,
               payload: {
-                capabilitySchemaVersion: 6,
+                capabilitySchemaVersion: 9,
                 protocols: {
                   sharedMemorySourceAdmission: { version: 1 }
                 },
@@ -1404,9 +1404,9 @@ describe("collaboration Shared Memory control", () => {
           capabilities: {
             state: "validated",
             expiresAt: "2099-01-01T00:00:00.000Z",
-            schemaVersion: 6,
+            schemaVersion: 9,
             payload: {
-              capabilitySchemaVersion: 6,
+              capabilitySchemaVersion: 9,
               protocols: {
                 sharedMemorySourceAdmission: { version: 1 }
               },
@@ -1853,9 +1853,9 @@ describe("collaboration Shared Memory control", () => {
             capabilities: {
               state: "validated",
               expiresAt: "2099-01-01T00:00:00.000Z",
-              schemaVersion: 6,
+              schemaVersion: 9,
               payload: {
-                capabilitySchemaVersion: 6,
+                capabilitySchemaVersion: 9,
                 capabilities: {
                   "memory.collaboration": { availability: "partial" }
                 }

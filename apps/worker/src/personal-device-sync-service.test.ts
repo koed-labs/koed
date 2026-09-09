@@ -64,6 +64,7 @@ describe("Personal Device Sync service", () => {
     };
     const secureRuntime = {
       heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+      refreshPeerRoutes: vi.fn().mockResolvedValue(undefined),
       pollLifecycle: vi.fn().mockResolvedValue(undefined),
       poll: vi.fn().mockResolvedValue([]),
       waitForWake: vi.fn(
@@ -87,6 +88,7 @@ describe("Personal Device Sync service", () => {
     service.start();
     await vi.waitFor(() => {
       expect(secureRuntime.heartbeatGroups).toHaveBeenCalledTimes(1);
+      expect(secureRuntime.refreshPeerRoutes).toHaveBeenCalledTimes(1);
       expect(secureRuntime.waitForWake).toHaveBeenCalledTimes(1);
     });
 
@@ -101,12 +103,69 @@ describe("Personal Device Sync service", () => {
     await vi.waitFor(() =>
       expect(secureRuntime.heartbeatGroups).toHaveBeenCalledTimes(3)
     );
+    expect(secureRuntime.refreshPeerRoutes).toHaveBeenCalledTimes(1);
 
     await service.stop();
     expect(wakeClient.query).toHaveBeenCalledWith(
       "unlisten koed_pds_local_sync"
     );
     expect(wakeClient.release).toHaveBeenCalledOnce();
+  });
+
+  it("does not rearm relay wake while the previous wake is being reconciled", async () => {
+    let releaseReconciliation: () => void = () => undefined;
+    const reconciliationHeld = new Promise<void>((resolve) => {
+      releaseReconciliation = resolve;
+    });
+    const repository = {
+      heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+      claimPdsOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsArtifactOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsCommittedOutbox: vi.fn().mockResolvedValue([]),
+      claimPdsInbox: vi.fn().mockResolvedValue([]),
+      getPdsLocalSyncWakeAt: vi.fn().mockResolvedValue(null)
+    } as unknown as MemorySourceRepository;
+    const heartbeatGroups = vi
+      .fn()
+      .mockResolvedValueOnce(["group"])
+      .mockImplementationOnce(async () => {
+        await reconciliationHeld;
+        return ["group"];
+      })
+      .mockResolvedValue(["group"]);
+    const secureRuntime = {
+      heartbeatGroups,
+      pollLifecycle: vi.fn().mockResolvedValue(undefined),
+      poll: vi.fn().mockResolvedValue([]),
+      waitForWake: vi.fn().mockResolvedValue(undefined),
+      publish: vi.fn(),
+      outboundState: vi.fn(),
+      materialize: vi.fn()
+    } as PdsWorkerSecureRuntime;
+    const service = createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool: {
+        connect: vi.fn().mockResolvedValue({
+          query: vi.fn().mockResolvedValue(undefined),
+          on: vi.fn(),
+          removeAllListeners: vi.fn(),
+          release: vi.fn()
+        })
+      },
+      logger: { warn: vi.fn() } as unknown as Logger,
+      workerId: "worker"
+    });
+
+    try {
+      service.start();
+      await vi.waitFor(() => expect(heartbeatGroups).toHaveBeenCalledTimes(2));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(secureRuntime.waitForWake).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseReconciliation();
+      await service.stop();
+    }
   });
 
   it("backs off after an unexpected reconciliation failure", async () => {

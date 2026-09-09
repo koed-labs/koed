@@ -58,6 +58,9 @@ describe("Personal Ask", () => {
     );
     const api: PersonalDesktopApi = {
       assignSessionProject: vi.fn(async () => ({ projectId: null })),
+      updateSessionPresentation: vi.fn(async () => {
+        throw new Error("Unexpected presentation update in this fixture");
+      }),
       listProjects: vi.fn(async () => []),
       loadEventPage: vi.fn(async () => []),
       updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
@@ -189,6 +192,9 @@ describe("Personal Ask", () => {
     );
     const api: PersonalDesktopApi = {
       assignSessionProject: vi.fn(async () => ({ projectId: null })),
+      updateSessionPresentation: vi.fn(async () => {
+        throw new Error("Unexpected presentation update in this fixture");
+      }),
       listProjects: vi.fn(async () => []),
       loadEventPage: vi.fn(async () => []),
       updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
@@ -253,6 +259,9 @@ describe("Personal Notes", () => {
       listProjects: vi.fn(async () => []),
       loadEventPage: vi.fn(async () => []),
       assignSessionProject: vi.fn(async () => ({ projectId: null })),
+      updateSessionPresentation: vi.fn(async () => {
+        throw new Error("Unexpected presentation update in this fixture");
+      }),
       updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
       listNotes,
       subscribe: vi.fn(() => () => undefined)
@@ -325,6 +334,9 @@ describe("Personal Notes", () => {
       listProjects: vi.fn(async () => []),
       loadEventPage: vi.fn(async () => []),
       assignSessionProject: vi.fn(async () => ({ projectId: null })),
+      updateSessionPresentation: vi.fn(async () => {
+        throw new Error("Unexpected presentation update in this fixture");
+      }),
       updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
       listNotes: vi.fn(async () => ({
         notes: [summary],

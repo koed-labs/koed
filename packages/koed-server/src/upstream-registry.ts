@@ -134,7 +134,7 @@ export interface SanitizedCapabilitiesPayload {
   capabilities?: Record<string, CapabilityDescriptor>;
 }
 
-const supportedCapabilitySchemaVersions = new Set([2, 3, 4, 5, 6]);
+const supportedCapabilitySchemaVersions = new Set([2, 3, 4, 5, 6, 7, 8, 9]);
 
 export interface UpstreamRegistryDeps {
   existsSync?: typeof existsSync;

@@ -201,6 +201,8 @@ const enrollmentSupportsCollaboration = (value: unknown): boolean => {
     families.includes("share_grant_management") &&
     families.includes("sync") &&
     families.includes("managed_execution") &&
+    families.includes("managed_file_read") &&
+    families.includes("managed_terminal") &&
     families.includes("action_grant")
   );
 };

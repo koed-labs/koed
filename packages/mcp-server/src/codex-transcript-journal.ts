@@ -619,12 +619,6 @@ export const ingestCodexTranscriptJournal = async (input: {
   }
   if (
     hasTurnBoundary &&
-    input.turnBoundarySourceOffset! > artifact.providerCursorOffset
-  ) {
-    throw new Error("turn_boundary_frontier_not_journalled");
-  }
-  if (
-    hasTurnBoundary &&
     input.turnBoundarySourceOffset === cursor.sourceOffset
   ) {
     const activeTurnId = cursor.parserState.activeTurnId;

@@ -116,6 +116,73 @@ describe("project memory UI view model", () => {
     });
   });
 
+  it("consolidates captured Project identities that resolve to the same path", () => {
+    const projects = mergeProjectSources(
+      [
+        graphProject({
+          id: "legacy-koed",
+          eventCount: 5,
+          threads: [
+            {
+              ...graphProject().threads[0]!,
+              id: "legacy-thread",
+              projectId: "legacy-koed",
+              eventCount: 5,
+              latestAt: "2026-07-09T10:00:00.000Z"
+            }
+          ]
+        }),
+        graphProject({
+          id: "lp_koed",
+          path: "/Users/jedd/agents/koed/",
+          eventCount: 7,
+          threads: [
+            {
+              ...graphProject().threads[0]!,
+              id: "current-thread",
+              projectId: "lp_koed",
+              eventCount: 7,
+              latestAt: "2026-07-10T10:00:00.000Z"
+            }
+          ]
+        })
+      ],
+      [metadata()]
+    );
+
+    expect(projects).toHaveLength(1);
+    expect(projects[0]).toMatchObject({
+      id: "lp_koed",
+      path: "/Users/jedd/agents/koed/",
+      eventCount: 12,
+      localProjectId: "lp_koed"
+    });
+    expect(projects[0]?.threads.map(({ id }) => id)).toEqual([
+      "current-thread",
+      "legacy-thread"
+    ]);
+    expect(projects[0]?.threads.map(({ projectId }) => projectId)).toEqual([
+      "lp_koed",
+      "legacy-koed"
+    ]);
+  });
+
+  it("keeps different checkout paths as separate Projects", () => {
+    const projects = mergeProjectSources(
+      [
+        graphProject(),
+        graphProject({
+          id: "graph-koed-worktree",
+          path: "/Users/jedd/agents/koed-feature",
+          threads: []
+        })
+      ],
+      [metadata()]
+    );
+
+    expect(projects).toHaveLength(2);
+  });
+
   it("keeps catalogued Projects visible before they have captured sessions", () => {
     const [project] = mergeProjectSources([], [metadata()]);
 

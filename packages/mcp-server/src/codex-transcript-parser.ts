@@ -7,7 +7,10 @@ import {
   type CodexTranscriptObservation
 } from "./codex-transcript-adapter.js";
 import type { RawConversationItemRequest } from "./conversation-source-types.js";
-import { codexCanonicalConversationItemKey } from "./codex-conversation-source-adapter.js";
+import {
+  codexCanonicalConversationItemKey,
+  koedClientUserMessageId
+} from "./codex-conversation-source-adapter.js";
 
 export interface CaptureItem {
   actor: "user" | "assistant" | "agent" | "subagent" | "tool" | "system";
@@ -1163,9 +1166,9 @@ export const parseTranscriptJournalBytes = (input: {
       assistantMessagePreference
     );
     if (
-      explicitTurnId &&
+      activeTurnId &&
       transcriptRecordCompletesTurn(record) &&
-      activeTurnId === explicitTurnId
+      (!explicitTurnId || activeTurnId === explicitTurnId)
     ) {
       activeTurnId = undefined;
     }
@@ -1472,6 +1475,17 @@ const rawClientUserMessageId = (record: unknown): string | undefined => {
   return asString(payload?.client_id) ?? asString(payload?.clientId);
 };
 
+const transcriptHasKoedManagedUserIdentity = (
+  records: readonly unknown[]
+): boolean =>
+  records.some((record) => {
+    const clientUserMessageId = rawClientUserMessageId(record);
+    return (
+      rawEventType(record) === "user_message" &&
+      clientUserMessageId?.startsWith("koed-user-message:") === true
+    );
+  });
+
 const responseItemStableId = (record: unknown): string | undefined => {
   if (rawRecordType(record) !== "response_item") {
     return undefined;
@@ -1547,8 +1561,10 @@ export interface CodexTranscriptRecordsInput {
 export const buildCodexTranscriptConversationItems = (
   input: CodexTranscriptRecordsInput
 ): RawConversationItemRequest[] => {
+  const managedTranscript = transcriptHasKoedManagedUserIdentity(input.records);
   const preferProviderResponseItems =
     input.preferStableResponseItems ||
+    managedTranscript ||
     input.records.some(
       (record) =>
         transcriptAssistantMessagePreference(record) === "response_item"
@@ -1614,6 +1630,7 @@ export const buildCodexTranscriptConversationItems = (
   if (!preferProviderResponseItems) return adaptedItems;
 
   const items: RawConversationItemRequest[] = [];
+  let adaptedItemIndex = 0;
   let activeTranscriptTurnId: string | undefined;
   let activeSemanticTurnId: string | undefined;
 
@@ -1663,9 +1680,7 @@ export const buildCodexTranscriptConversationItems = (
       const sourceSequence = safeSourceSequence(
         sourceSequenceBase + parsedItem.sourceOffset
       );
-      const adaptedItem = adaptedItems.find(
-        (candidate) => candidate.sourceSequence === sourceSequence
-      );
+      const adaptedItem = adaptedItems[adaptedItemIndex++];
       if (!adaptedItem) {
         throw new Error("Shared transcript adapter omitted a response item");
       }
@@ -1673,7 +1688,7 @@ export const buildCodexTranscriptConversationItems = (
       const sourceIdempotencyKey = adaptedItem.idempotencyKey;
       const transcriptType = asString(parsedItem.item?.metadata.transcriptType);
       const managedTurnComplete =
-        input.preferStableResponseItems &&
+        preferProviderResponseItems &&
         transcriptRecordCompletesTurn(record) &&
         assignedTurnId !== undefined;
       const toolCall = isRecord(parsedItem.item?.metadata.toolCall)
@@ -1688,7 +1703,7 @@ export const buildCodexTranscriptConversationItems = (
         if (responseStableId) {
           return responseStableId;
         }
-        if (!input.preferStableResponseItems || !parsedItem.item) {
+        if (!preferProviderResponseItems || !parsedItem.item) {
           return undefined;
         }
         if (parsedItem.item.actor === "user") {
@@ -1703,6 +1718,9 @@ export const buildCodexTranscriptConversationItems = (
         }
         return rawExternalItemId(record);
       })();
+      const clientUserMessageId = koedClientUserMessageId(
+        rawClientUserMessageId(record)
+      );
       const canonicalComponent =
         (managedTurnComplete ? "control" : undefined) ??
         responseItemCanonicalComponent(record) ??
@@ -1717,7 +1735,7 @@ export const buildCodexTranscriptConversationItems = (
         input.sourceSessionId ?? context.transcriptSessionId;
       const canonicalItemKey =
         (rawRecordType(record) === "response_item" ||
-          (input.preferStableResponseItems && parsedItem.item) ||
+          (preferProviderResponseItems && parsedItem.item) ||
           managedTurnComplete) &&
         canonicalThreadId &&
         providerTurnId &&
@@ -1744,7 +1762,7 @@ export const buildCodexTranscriptConversationItems = (
         rawRecordType(record) === "event_msg" &&
         /^(agent_message|assistant_message)$/i.test(rawEventType(record) ?? "");
       if (
-        input.preferStableResponseItems &&
+        managedTranscript &&
         requiresExactManagedIdentity &&
         !canonicalItemKey &&
         !ambiguousResponseUserObservation
@@ -1791,6 +1809,7 @@ export const buildCodexTranscriptConversationItems = (
           content: parsedItem.item?.content,
           metadata: {
             ...(parsedItem.item?.metadata ?? {}),
+            ...(clientUserMessageId ? { clientUserMessageId } : {}),
             ...(transcriptByteOffset === undefined
               ? {}
               : { transcriptByteOffset }),
@@ -1798,7 +1817,7 @@ export const buildCodexTranscriptConversationItems = (
             ...(canonicalItemKey
               ? {
                   canonicalIdentityBasis: "provider_ids",
-                  ...(input.preferStableResponseItems
+                  ...(managedTranscript
                     ? { managedConversationReconciliation: true }
                     : {})
                 }
@@ -1814,8 +1833,7 @@ export const buildCodexTranscriptConversationItems = (
                   projectionActor: "system"
                 }
               : {}),
-            ...(duplicateEventMessageObservation &&
-            input.preferStableResponseItems
+            ...(duplicateEventMessageObservation && preferProviderResponseItems
               ? { managedConversationSourceRole: "duplicate_representation" }
               : {}),
             sourceEventTimeAccuracy: rawEventTimeAccuracy(record),
@@ -1844,6 +1862,12 @@ export const buildCodexTranscriptConversationItems = (
       activeTranscriptTurnId = undefined;
       activeSemanticTurnId = undefined;
     }
+  }
+
+  if (adaptedItemIndex !== adaptedItems.length) {
+    throw new Error(
+      "Shared transcript adapter emitted unexpected response items"
+    );
   }
 
   return items;

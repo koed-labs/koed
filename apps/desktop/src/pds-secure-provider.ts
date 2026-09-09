@@ -483,12 +483,24 @@ const createWslDpapiStore = (
 export const createPdsDesktopSecretStore = (input: {
   userDataPath: string;
   storage?: SafeStorage;
+  storeFilename?: string;
 }): PdsDesktopSecretStore | null => {
+  if (
+    input.storeFilename !== undefined &&
+    (!/^[A-Za-z0-9._-]{1,120}$/.test(input.storeFilename) ||
+      input.storeFilename === "." ||
+      input.storeFilename === "..")
+  ) {
+    throw new Error("Invalid Desktop secret store filename.");
+  }
   const storage: SafeStorage = input.storage ?? (safeStorage as SafeStorage);
   if (!secureStorageAvailable(storage)) {
     return input.storage ? null : createWslDpapiStore(input.userDataPath);
   }
-  const storePath = resolve(input.userDataPath, "pds-secrets.json");
+  const storePath = resolve(
+    input.userDataPath,
+    input.storeFilename ?? "pds-secrets.json"
+  );
   let serialOperation = Promise.resolve();
   const serial = async <T>(operation: () => Promise<T>): Promise<T> => {
     const next = serialOperation.then(operation, operation);

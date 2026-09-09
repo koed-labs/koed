@@ -240,6 +240,9 @@ command = ${tomlString(nodeCommand)}
 args = [${tomlString(runtime.mcpCli)}]
 enabled = true
 
+[mcp_servers.${mcpName}.tools.memory_answer]
+approval_mode = "approve"
+
 [mcp_servers.${mcpName}.env]
 KOED_HOME = ${tomlString(paths.koedHome)}
 

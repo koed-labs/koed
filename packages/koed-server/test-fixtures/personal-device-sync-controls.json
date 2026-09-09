@@ -6,12 +6,14 @@
     "sharedFixture": "packages/shared/src/personal-device-sync-v1-fixture.test.ts",
     "packageFixture": "packages/shared/src/personal-device-session-package.test.ts",
     "adversarialFixture": "packages/shared/src/personal-device-sync-adversarial-fixture.test.ts",
+    "peerTransportFixture": "packages/shared/src/personal-device-peer.test.ts",
     "controlsFixture": "packages/koed-server/src/personal-sync.test.ts"
   },
   "coverageBoundary": {
     "executed": [
       "Authority CAS membership, epochs, certificates, and signed Key Bundles",
       "encrypted relay header/chunk/replay/ACK/expiry state",
+      "signed short-lived peer routes and exact recipient materialization receipts",
       "two-or-more device retained packages, cursors, floors, conflicts, and redacted logs",
       "real shared PDS signing, certificate, package, envelope, decrypt, and lifecycle validation"
     ],
@@ -31,6 +33,10 @@
     },
     {
       "id": "relay-replay-chunk-reorder-drop-and-duplicate",
+      "coverage": "executed"
+    },
+    {
+      "id": "peer-direct-route-ack-and-relay-fallback",
       "coverage": "executed"
     },
     { "id": "relay-and-authority-outage", "coverage": "executed" },
@@ -60,6 +66,7 @@
     "remoteAccountLinkSyncsNothing": true,
     "futureClosedSessionsOnly": true,
     "offlineLocalCaptureAndRecallContinue": true,
+    "peerTransportNeverChangesPackageAuthority": true,
     "conflictsRequireExactResolution": true,
     "revocationCannotEraseDownloadedPlaintext": true,
     "allDeviceAndRecoveryLossIsPermanent": true,

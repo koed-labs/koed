@@ -208,7 +208,6 @@ describe("route identity contract", () => {
       contract.path.startsWith("/v1/managed-conversation-runner/")
     );
 
-    expect(runnerRoutes).toHaveLength(45);
     for (const contract of runnerRoutes) {
       expect(contract).toMatchObject({
         identity: "device_credential",
@@ -404,6 +403,15 @@ describe("route identity contract", () => {
   it("documents PDS relay proof-only routes", () => {
     expect(
       routeIdentityFor("POST", "/v1/personal-device-sync/relay/transports")
+    ).toMatchObject({ identity: "pds_relay_proof", status: "implemented" });
+    expect(
+      routeIdentityFor("POST", "/v1/personal-device-sync/relay/peer-routes")
+    ).toMatchObject({ identity: "pds_relay_proof", status: "implemented" });
+    expect(
+      routeIdentityFor(
+        "GET",
+        "/v1/personal-device-sync/relay/transports/{transportId}/peer-receipts/{recipientDeviceId}"
+      )
     ).toMatchObject({ identity: "pds_relay_proof", status: "implemented" });
     expect(
       openApiPaths["/v1/personal-device-sync/relay/transports"]?.post

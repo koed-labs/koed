@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   canReceiveGraphStreamPayload,
   createGraphStreamService,
+  graphEventRefForPayload,
   graphUpdateKey,
   guardedBroadcastGraphUpdate
 } from "./graph-stream.js";
@@ -42,6 +43,32 @@ describe("graph stream updates", () => {
     expect(graphUpdateKey({ table: "drizzle.__drizzle_migrations" })).toBe(
       "global"
     );
+  });
+
+  it("preserves the projection source on display event references", () => {
+    expect(
+      graphEventRefForPayload({
+        table: "messages",
+        operation: "INSERT",
+        id: "event-1",
+        projectId: "project-1",
+        threadId: "thread-1"
+      })
+    ).toEqual({
+      id: "event-1",
+      projectId: "project-1",
+      sourceTable: "messages",
+      threadId: "thread-1"
+    });
+    expect(
+      graphEventRefForPayload({
+        table: "memory_events",
+        operation: "INSERT",
+        id: "event-2",
+        projectId: "project-1",
+        threadId: "thread-1"
+      })
+    ).toMatchObject({ sourceTable: "memory_events" });
   });
 
   it("logs broadcast write failures without dropping later clients", () => {

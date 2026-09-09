@@ -1000,7 +1000,7 @@ describe("desktop collaboration broker", () => {
     const capabilityPayload = {
       product: "koed",
       apiVersion: "v1",
-      capabilitySchemaVersion: 6,
+      capabilitySchemaVersion: 9,
       releaseVersion: "0.4.4",
       deployment: { profile: "team_self_hosted" }
     };
@@ -1361,6 +1361,8 @@ describe("desktop collaboration broker", () => {
           "share_grant_management",
           "sync",
           "managed_execution",
+          "managed_file_read",
+          "managed_terminal",
           "action_grant"
         ],
         createdAt: "2026-07-18T08:30:00.000Z",
@@ -1534,6 +1536,8 @@ describe("desktop collaboration broker", () => {
               "share_grant_management",
               "sync",
               "managed_execution",
+              "managed_file_read",
+              "managed_terminal",
               "action_grant"
             ],
             createdAt: "2026-07-18T08:30:00.000Z",
@@ -1875,6 +1879,8 @@ describe("desktop collaboration broker", () => {
               "share_grant_management",
               "sync",
               "managed_execution",
+              "managed_file_read",
+              "managed_terminal",
               "action_grant"
             ],
             deviceCredentialId: currentDeviceId,

@@ -211,6 +211,10 @@ type ExecutionRow = {
   project_id: string;
   provider: string;
   ai_client_instance_id: string;
+  model: string;
+  reasoning_effort: string | null;
+  permission_mode: ManagedConversationExecutionRecord["permissionMode"];
+  runner_kind: ManagedConversationExecutionRecord["runnerKind"];
   state: ManagedConversationExecutionRecord["state"];
   state_version: number;
   execution_generation: number;
@@ -244,7 +248,8 @@ const FORK_COLUMNS = `
 `;
 
 const EXECUTION_COLUMNS = `
-  id, owner_user_id, project_id, provider, ai_client_instance_id, state,
+  id, owner_user_id, project_id, provider, ai_client_instance_id, model,
+  reasoning_effort, permission_mode, runner_kind, state,
   state_version, execution_generation, runner_deployment_id, runner_device_id,
   runner_id, runner_lease_expires_at, logical_session_id, provider_thread_id,
   provider_cli_version, source_generation_id, last_error_code,
@@ -317,6 +322,10 @@ const mapExecution = (
   projectId: row.project_id,
   provider: row.provider,
   aiClientInstanceId: row.ai_client_instance_id,
+  model: row.model,
+  reasoningEffort: row.reasoning_effort,
+  permissionMode: row.permission_mode,
+  runnerKind: row.runner_kind,
   state: row.state,
   stateVersion: row.state_version,
   executionGeneration: row.execution_generation,
@@ -1119,8 +1128,9 @@ export const createManagedConversationForkRepository = (
       const child = await client.query<ExecutionRow>(
         `insert into managed_conversation_executions (
            id, owner_user_id, project_id, provider, ai_client_instance_id,
+           model, reasoning_effort, permission_mode, runner_kind,
            fencing_token_hash, runner_deployment_id, runner_device_id
-         ) values ($1,$2,$3,$4,$5,$6,$7,$8)
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
          returning ${EXECUTION_COLUMNS}`,
         [
           childId,
@@ -1128,6 +1138,10 @@ export const createManagedConversationForkRepository = (
           parent.rows[0].project_id,
           parent.rows[0].provider,
           parent.rows[0].ai_client_instance_id,
+          parent.rows[0].model,
+          parent.rows[0].reasoning_effort,
+          parent.rows[0].permission_mode,
+          parent.rows[0].runner_kind,
           sha256(fencingToken),
           fork.target_deployment_id,
           fork.target_device_id

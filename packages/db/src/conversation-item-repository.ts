@@ -1,5 +1,10 @@
+import {
+  releaseVerifiedManagedJournalItems,
+  type VerifiedManagedJournalTerminal
+} from "./managed-journal-terminal.js";
 import pg from "pg";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   decryptAuthorizedEncryptedFieldPayloadWithClient,
   upsertEncryptedFieldPayloadWithClient
@@ -42,7 +47,11 @@ export interface ConversationItemRepository {
   ): Promise<ConversationItemRecord[]>;
   releaseConversationProjectionHold(
     actor: ActorContext,
-    input: { sessionId: string; externalTurnId: string }
+    input: {
+      sessionId: string;
+      externalTurnId: string;
+      verifiedJournal?: VerifiedManagedJournalTerminal;
+    }
   ): Promise<{ conversationItemIds: string[] }>;
   findConversationItemByStableIdentity(
     actor: ActorContext,
@@ -55,7 +64,8 @@ export interface ConversationItemRepositoryOptions {
   transactionClient?: pg.PoolClient;
   resolveCapturePolicy?: (
     actor: ActorContext,
-    input: { projectId?: string; threadId?: string; sessionId?: string }
+    input: { projectId?: string; threadId?: string; sessionId?: string },
+    client: pg.PoolClient
   ) => Promise<EffectiveCapturePolicy>;
 }
 
@@ -659,6 +669,29 @@ const canonicalConversationKind = (
   return "message";
 };
 
+const isPiTerminalBlock = (item: ConversationItemInput): boolean => {
+  if (item.sourceKind !== "pi" || item.sourceAdapterVersion !== "pi-session-v1")
+    return false;
+  const raw = isRecord(item.rawJson) ? item.rawJson : {};
+  const entry = isRecord(raw.sourceRecord) ? raw.sourceRecord : {};
+  const message = isRecord(entry.message) ? entry.message : {};
+  const blocks: unknown[] = Array.isArray(message.content)
+    ? message.content
+    : [];
+  return (
+    raw.type === "pi_session_record" &&
+    entry.type === "message" &&
+    message.role === "assistant" &&
+    typeof entry.id === "string" &&
+    ["stop", "length", "error", "aborted"].includes(
+      String(message.stopReason)
+    ) &&
+    blocks.length > 0 &&
+    item.canonicalStableItemId === `${entry.id}:${blocks.length - 1}` &&
+    isDeepStrictEqual(raw.contentBlock, blocks.at(-1))
+  );
+};
+
 const withCanonicalConversationIdentity = (
   item: ConversationItemInput
 ): ConversationItemInput => {
@@ -743,15 +776,16 @@ const withCanonicalConversationIdentity = (
                 normalizedContentHash(content)
             }
           : {}),
-        ...(item.observationComponent === "control" &&
-        ((item.sourceAdapterVersion === "codex-app-server-conversation-v1" &&
-          item.sourceEventType === "turn/completed") ||
-          (item.sourceAdapterVersion === "codex-transcript-v1" &&
-            ["task_complete", "turn_aborted"].includes(
-              item.sourceEventType ?? ""
-            )) ||
-          (item.sourceAdapterVersion === "codex-hook-signal-v1" &&
-            item.sourceEventType === "turn_completed"))
+        ...(isPiTerminalBlock(item) ||
+        (item.observationComponent === "control" &&
+          ((item.sourceAdapterVersion === "codex-app-server-conversation-v1" &&
+            item.sourceEventType === "turn/completed") ||
+            (item.sourceAdapterVersion === "codex-transcript-v1" &&
+              ["task_complete", "turn_aborted"].includes(
+                item.sourceEventType ?? ""
+              )) ||
+            (item.sourceAdapterVersion === "codex-hook-signal-v1" &&
+              item.sourceEventType === "turn_completed")))
           ? { semanticControl: "turn_completed" }
           : {})
       }
@@ -1295,14 +1329,19 @@ const captureMethodForConversationItem = (
 const enforceConversationItemCapturePolicy = async (input: {
   actor: ActorContext;
   item: ConversationItemInput;
+  client: pg.PoolClient;
   resolveCapturePolicy?: ConversationItemRepositoryOptions["resolveCapturePolicy"];
 }): Promise<void> => {
   if (!input.resolveCapturePolicy) {
     return;
   }
-  const policy = await input.resolveCapturePolicy(input.actor, {
-    ...(input.item.sessionId ? { sessionId: input.item.sessionId } : {})
-  });
+  const policy = await input.resolveCapturePolicy(
+    input.actor,
+    {
+      ...(input.item.sessionId ? { sessionId: input.item.sessionId } : {})
+    },
+    input.client
+  );
   if (policy.visibility !== "personal") {
     throw Object.assign(
       new Error(
@@ -1931,6 +1970,12 @@ export const createConversationItemRepository = (
           "select pg_advisory_xact_lock(hashtextextended($1, 0))",
           [`capture-policy:${ownerUserId}`]
         );
+        if (item.sessionId) {
+          await client.query(
+            "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+            [`conversation-projection-session:${ownerUserId}:${item.sessionId}`]
+          );
+        }
         const verifiedSession = await loadAndValidateConversationItemSession({
           client,
           actor,
@@ -1967,6 +2012,7 @@ export const createConversationItemRepository = (
         await enforceConversationItemCapturePolicy({
           actor,
           item,
+          client,
           resolveCapturePolicy: options.resolveCapturePolicy
         });
         await client.query(
@@ -2701,6 +2747,18 @@ export const createConversationItemRepository = (
           ),
           { statusCode: 404, code: "managed_session_not_found" }
         );
+      }
+
+      if (input.verifiedJournal) {
+        const released = await releaseVerifiedManagedJournalItems(
+          client,
+          actor,
+          input.sessionId,
+          input.verifiedJournal,
+          options.envelopeEncryptionProvider
+        );
+        await client.query("commit");
+        return released;
       }
 
       const terminal = await client.query<{ id: string }>(

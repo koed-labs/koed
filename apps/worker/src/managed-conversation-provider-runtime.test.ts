@@ -6,6 +6,25 @@ import {
 } from "./managed-conversation-provider-runtime.js";
 
 describe("ManagedConversationRuntimeRegistry", () => {
+  it.each(["codex", "claude", "pi"] as const)(
+    "does not reuse %s with changed turn settings",
+    (provider) => {
+      const registry = new ManagedConversationRuntimeRegistry();
+      registry.set(provider, "execution", {
+        executionGeneration: 1,
+        aiClientInstanceId: `${provider}.default`,
+        configIdentityHash: "installation",
+        settingsKey: "old-settings",
+        session: { closeAndWait: vi.fn() } as never
+      });
+      expect(
+        registry.get(provider, "execution", { settingsKey: "old-settings" })
+      ).toBeDefined();
+      expect(
+        registry.get(provider, "execution", { settingsKey: "new-settings" })
+      ).toBeUndefined();
+    }
+  );
   it("keeps provider identity attached to a single execution registry", () => {
     const registry = new ManagedConversationRuntimeRegistry();
     const codexSession = {

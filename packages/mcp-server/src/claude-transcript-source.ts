@@ -20,6 +20,16 @@ import {
   type ClaudeTranscriptIndex
 } from "./claude-transcript-discovery.js";
 import type { ClaudeTranscriptWatcherSignal } from "./claude-transcript-watcher-signal.js";
+import { createManagedClaudeSessionStore } from "./claude-managed-conversation.js";
+
+const sessionStoreOptions = (env: NodeJS.ProcessEnv | undefined) =>
+  env?.KOED_CLAUDE_SESSION_STORE_DIR
+    ? {
+        sessionStore: createManagedClaudeSessionStore(
+          env.KOED_CLAUDE_SESSION_STORE_DIR
+        )
+      }
+    : {};
 
 const hash = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -414,6 +424,7 @@ const subagentIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const claudeSourceDescriptors = async (input: {
   signal: ClaudeTranscriptWatcherSignal;
   mainTranscriptPath: string;
+  env?: NodeJS.ProcessEnv;
 }): Promise<ClaudeSourceDescriptor[]> => {
   const components: ClaudeSourceDescriptor[] = [
     {
@@ -430,7 +441,8 @@ const claudeSourceDescriptors = async (input: {
     "subagents"
   );
   const agentIds = await listSubagents(input.signal.sourceSessionId, {
-    dir: input.signal.cwd
+    dir: input.signal.cwd,
+    ...sessionStoreOptions(input.env)
   });
   for (const agentId of [...agentIds].sort()) {
     if (!subagentIdPattern.test(agentId)) {
@@ -460,6 +472,7 @@ const claudeSourceDescriptors = async (input: {
 const claudeSourceComponents = async (input: {
   signal: ClaudeTranscriptWatcherSignal;
   mainTranscriptPath: string;
+  env?: NodeJS.ProcessEnv;
 }): Promise<ClaudeSourceComponent[]> =>
   Promise.all(
     (await claudeSourceDescriptors(input)).map(async (component) => ({
@@ -468,12 +481,13 @@ const claudeSourceComponents = async (input: {
         component.componentId === "main"
           ? await getSessionMessages(input.signal.sourceSessionId, {
               dir: input.signal.cwd,
-              includeSystemMessages: true
+              includeSystemMessages: true,
+              ...sessionStoreOptions(input.env)
             })
           : await getSubagentMessages(
               input.signal.sourceSessionId,
               component.agentId!,
-              { dir: input.signal.cwd }
+              { dir: input.signal.cwd, ...sessionStoreOptions(input.env) }
             )
     }))
   );
@@ -490,7 +504,8 @@ export const discoverClaudeHistoricalComponentCandidates = async (
   );
   const descriptors = await claudeSourceDescriptors({
     signal,
-    mainTranscriptPath
+    mainTranscriptPath,
+    env
   });
   const selected = frontiers
     ? descriptors.filter((component) =>

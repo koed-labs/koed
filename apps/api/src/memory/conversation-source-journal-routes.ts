@@ -44,7 +44,7 @@ const localProfiles = new Set(["developer", "local_personal"]);
 const MAXIMUM_SEGMENT_BYTES = 16 * 1024 * 1024;
 const MAXIMUM_SEGMENT_BASE64_BYTES = Math.ceil(MAXIMUM_SEGMENT_BYTES / 3) * 4;
 
-const requireLocalJournalSurface = (context: ApiRouteContext): void => {
+export const requireLocalJournalSurface = (context: ApiRouteContext): void => {
   if (!localProfiles.has(context.config.deploymentProfile)) {
     throw Object.assign(
       new Error("Conversation source journal is local-only"),

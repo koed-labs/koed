@@ -203,10 +203,20 @@ export {
   type ManagedConversationCommandRecord,
   type ManagedConversationCommandState,
   type ManagedConversationExecutionRecord,
+  type ManagedConversationExecutionCheckpointRecord,
+  type ManagedConversationExecutionDiffRecord,
   type ManagedConversationExecutionState,
   type ManagedConversationRepository,
-  type ManagedConversationRuntimeBindingRecord
+  type ManagedConversationRuntimeBindingRecord,
+  type ManagedConversationRuntimeItemKind,
+  type ManagedConversationRuntimeItemRecord,
+  type ManagedConversationRuntimeItemState
 } from "./managed-conversation-repository.js";
+export {
+  createManagedTerminalRepository,
+  type ManagedTerminalRepository,
+  type ManagedTerminalExecutionAuthority
+} from "./managed-terminal-repository.js";
 export {
   createManagedConversationTransferRepository,
   type ManagedConversationHandoffRecord,
@@ -220,6 +230,15 @@ export {
   type LocalWorkQueueRuntimeLease
 } from "./local-work-queue-repository.js";
 export { createMemoryNodeRepository } from "./memory-node-repository.js";
+export {
+  createRealtimeTransportTicketRepository,
+  type ConsumeRealtimeTransportTicketInput,
+  type CreateRealtimeTransportTicketInput,
+  type RealtimeTransportAdmissionRecord,
+  type RealtimeTransportPrincipalState,
+  type RealtimeTransportTicketAuthKind,
+  type RealtimeTransportTicketRepository
+} from "./realtime-transport-ticket-repository.js";
 export { createMemoryQuestionRepository } from "./memory-question-repository.js";
 export {
   createPersonalDeviceSyncRelayRepository,
@@ -325,6 +344,11 @@ export {
 } from "./retention-lifecycle-repository.js";
 export { createSettingsRepository } from "./settings-repository.js";
 export {
+  ConversationPresentationVersionConflictError,
+  createConversationPresentationRepository,
+  type ConversationPresentationRepository
+} from "./conversation-presentation-repository.js";
+export {
   createSharedMemoryPreview,
   createSharedMemoryRepository,
   composeSharedMemorySemanticText,
@@ -403,3 +427,8 @@ export { createWorkflowTokenUsageRepository } from "./workflow-token-usage-repos
 export { presentMemoryText } from "./presentation.js";
 export * as schema from "./schema.js";
 export * from "./types.js";
+
+export {
+  verifyManagedJournalTerminal,
+  type VerifiedManagedJournalTerminal
+} from "./managed-journal-terminal.js";

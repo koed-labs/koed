@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import type { LocalEmbeddingStatus, MemorySourceRepository } from "@koed/db";
 import {
   PDS_ARTIFACT_PROTOCOL,
+  PDS_PEER_RECEIPT_WAIT_MS,
+  PDS_PEER_ENDPOINT_RUNTIME_FILE,
   PDS_PROTOCOL,
   PdsRelayClient,
   canonicalizePdsJson,
@@ -21,9 +26,13 @@ import {
   pdsSessionPackageDigest,
   signPdsRecord,
   resolveSupportedEmbeddingModelConfig,
+  normalizePdsPeerEndpoint,
+  normalizePdsRelayBaseUrl,
+  selectCompletePdsPeerRouteSet,
   validatePdsConflictResolution,
   validatePdsGroupStatement,
   validatePdsTombstone,
+  verifyPdsPeerReceipt,
   verifyPdsArtifactRecord,
   verifyAndDecryptPdsSessionPackage,
   type EnvelopeEncryptionProvider,
@@ -63,6 +72,44 @@ type RuntimeSecret = {
 };
 
 const maximumSecretBytes = 2_000_000;
+const maximumPeerEndpointRecordBytes = 4_096;
+
+export const resolvePdsPeerEndpoint = (
+  environment: NodeJS.ProcessEnv
+): string | null => {
+  const configured = environment.KOED_PDS_PEER_URL?.trim();
+  if (configured) {
+    try {
+      return normalizePdsPeerEndpoint(configured);
+    } catch {
+      return null;
+    }
+  }
+  const koedHome = resolve(
+    environment.KOED_HOME?.trim() ||
+      `${environment.HOME?.trim() || homedir()}/.koed`
+  );
+  try {
+    const raw = readFileSync(
+      resolve(koedHome, "run", PDS_PEER_ENDPOINT_RUNTIME_FILE),
+      "utf8"
+    );
+    if (Buffer.byteLength(raw, "utf8") > maximumPeerEndpointRecordBytes) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (
+      Object.keys(parsed).length !== 2 ||
+      parsed.version !== 1 ||
+      typeof parsed.endpointUrl !== "string"
+    ) {
+      return null;
+    }
+    return normalizePdsPeerEndpoint(parsed.endpointUrl);
+  } catch {
+    return null;
+  }
+};
 
 const providerEnvironment = (
   environment: NodeJS.ProcessEnv
@@ -293,6 +340,51 @@ export const resolvePdsEmbeddingCapability = (input: {
   };
 };
 
+type PdsDirectPeerClient = Pick<
+  PdsRelayClient,
+  "upload" | "waitForWake" | "peerReceipt"
+>;
+
+export const deliverPdsPackageDirect = async (input: {
+  pkg: PdsSessionPackage;
+  clients: ReadonlyMap<string, PdsDirectPeerClient> | null;
+  verifyReceipt: (input: {
+    recipientDeviceId: string;
+    canonicalAck: string;
+  }) => void;
+  receiptSignal?: () => AbortSignal;
+}): Promise<boolean> => {
+  if (!input.clients?.size) return false;
+  try {
+    await Promise.all(
+      [...input.clients.entries()].map(async ([recipientDeviceId, client]) => {
+        const committed = await client.upload(input.pkg);
+        if (committed.transportId !== input.pkg.header.transportId) {
+          throw new Error("PdsPeerTransportIdentityError");
+        }
+        if (committed.deliveryState !== "acked") {
+          await client.waitForWake(
+            input.receiptSignal?.() ??
+              AbortSignal.timeout(PDS_PEER_RECEIPT_WAIT_MS),
+            [input.pkg.header.transportId]
+          );
+        }
+        const canonicalAck = await client.peerReceipt(
+          input.pkg.header.transportId,
+          recipientDeviceId
+        );
+        if (!canonicalAck) {
+          throw new Error("PdsPeerReceiptUnavailableError");
+        }
+        input.verifyReceipt({ recipientDeviceId, canonicalAck });
+      })
+    );
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const createPdsWorkerRuntimeFromSecret = (
   input: PdsRuntimeFactoryInput,
   secret: RuntimeSecret
@@ -350,14 +442,107 @@ const createPdsWorkerRuntimeFromSecret = (
       baseUrl: secret.relayUrl,
       identity: relayIdentity(secret.certificate)
     });
+    const environment = input.environment ?? process.env;
+    const localRelayUrl = environment.MEMORY_API_URL?.trim() || null;
+    const localRelay =
+      localRelayUrl &&
+      normalizePdsRelayBaseUrl(localRelayUrl) !==
+        normalizePdsRelayBaseUrl(secret.relayUrl)
+        ? new PdsRelayClient({
+            baseUrl: localRelayUrl,
+            identity: relayIdentity(secret.certificate)
+          })
+        : null;
+    let peerRoutes = new Map<string, string>();
+    const peerCertificate = new Map(
+      secret.recipientCertificates.map((certificate) => [
+        String(
+          record(parseCanonicalPdsJson(certificate), "certificate").deviceId
+        ),
+        certificate
+      ])
+    );
+    const inboundRoutes = new Map<string, PdsRelayClient>();
     const downloaded = new Map<
       string,
-      { pkg: PdsSessionPackage; transport: Record<string, unknown> }
+      {
+        pkg: PdsSessionPackage;
+        transport: Record<string, unknown>;
+        client: PdsRelayClient;
+      }
     >();
     const pendingOutboundTransports = new Set<string>();
+    const peerClientsFor = (
+      pkg: PdsSessionPackage
+    ): Map<string, PdsRelayClient> | null => {
+      const intended = pkg.header.intendedRecipientSnapshot.filter(
+        (deviceId) => deviceId !== runtime.recipient.deviceId
+      );
+      const selected = new Map<string, PdsRelayClient>();
+      for (const deviceId of intended) {
+        const endpoint = peerRoutes.get(deviceId);
+        if (!endpoint) return null;
+        selected.set(
+          deviceId,
+          new PdsRelayClient({
+            baseUrl: endpoint,
+            identity: relayIdentity(secret.certificate)
+          })
+        );
+      }
+      return selected.size > 0 ? selected : null;
+    };
+    const deliverDirect = async (pkg: PdsSessionPackage): Promise<boolean> => {
+      const clients = peerClientsFor(pkg);
+      return await deliverPdsPackageDirect({
+        pkg,
+        clients,
+        verifyReceipt: ({ recipientDeviceId, canonicalAck }) => {
+          const certificate = peerCertificate.get(recipientDeviceId);
+          if (!certificate) throw new Error("PdsPeerReceiptUnavailableError");
+          verifyPdsPeerReceipt({
+            canonicalAck,
+            certificate,
+            authorityPublicKey: secret.authority.publicKey,
+            authorityKeyId: secret.authority.keyId,
+            authorityHead: secret.authority.head,
+            currentEpoch: secret.groupSecrets.currentEpoch,
+            groupId: secret.groupId,
+            transportId: pkg.header.transportId,
+            packageId: pkg.header.packageId,
+            sourceManifestHash: pkg.header.sourceManifestHash,
+            intendedRecipientSnapshotHash:
+              pkg.header.intendedRecipientSnapshotHash,
+            recipientDeviceId
+          });
+        }
+      });
+    };
     return {
       heartbeatGroups() {
         return Promise.resolve([secret.groupId]);
+      },
+      async refreshPeerRoutes() {
+        const peerEndpoint = resolvePdsPeerEndpoint(environment);
+        if (!peerEndpoint || !localRelay) {
+          peerRoutes = new Map();
+          return;
+        }
+        await relay.advertisePeerRoute(peerEndpoint);
+        const records = await relay.peerRoutes();
+        peerRoutes =
+          selectCompletePdsPeerRouteSet({
+            records,
+            intendedRecipientDeviceIds: records.map(
+              (peerRoute) => peerRoute.deviceId
+            ),
+            groupId: secret.groupId,
+            authorityHead: secret.authority.head,
+            currentEpoch: secret.groupSecrets.currentEpoch,
+            authorityPublicKey: secret.authority.publicKey,
+            authorityKeyId: secret.authority.keyId,
+            activeCertificates: secret.recipientCertificates
+          }) ?? new Map<string, string>();
       },
       async reconcileArtifacts() {
         const pendingCompletions =
@@ -817,7 +1002,32 @@ const createPdsWorkerRuntimeFromSecret = (
         return staged;
       },
       waitForWake(signal) {
-        return relay.waitForWake(signal, Array.from(pendingOutboundTransports));
+        const waitForRelay = async (relaySignal?: AbortSignal) => {
+          await relay.waitForWake(
+            relaySignal,
+            Array.from(pendingOutboundTransports)
+          );
+          // The wake may have been caused by one of these ACK cursors. Durable
+          // committed-outbox reconciliation adds back any still-pending cursor.
+          pendingOutboundTransports.clear();
+        };
+        if (!localRelay) {
+          return waitForRelay(signal);
+        }
+        const relayAbort = new AbortController();
+        const localAbort = new AbortController();
+        const abort = () => {
+          relayAbort.abort();
+          localAbort.abort();
+        };
+        signal?.addEventListener("abort", abort, { once: true });
+        return Promise.race([
+          waitForRelay(relayAbort.signal),
+          localRelay.waitForWake(localAbort.signal)
+        ]).finally(() => {
+          abort();
+          signal?.removeEventListener("abort", abort);
+        });
       },
       async publish(work) {
         const stored = await input.repository.getPdsOutboxEncryptedEnvelope({
@@ -837,6 +1047,9 @@ const createPdsWorkerRuntimeFromSecret = (
           pkg.header.sourceManifestHash !== work.sourceManifestHash
         ) {
           throw new Error("PdsCryptoIdentityError");
+        }
+        if (await deliverDirect(pkg)) {
+          return { state: "acked" as const };
         }
         const committed = await relay.upload(pkg);
         if (committed.deliveryState === "acked") {
@@ -868,6 +1081,12 @@ const createPdsWorkerRuntimeFromSecret = (
           pkg.header.sourceManifestHash !== work.manifestHash
         ) {
           throw new Error("PdsCryptoIdentityError");
+        }
+        if (await deliverDirect(pkg)) {
+          return {
+            state: "acked" as const,
+            transportId: pkg.header.transportId
+          };
         }
         const committed = await relay.upload(pkg);
         if (committed.deliveryState === "acked") {
@@ -1051,31 +1270,62 @@ const createPdsWorkerRuntimeFromSecret = (
         }
       },
       async poll() {
-        const mailbox = record(await relay.mailbox(), "mailbox");
-        const transports = Array.isArray(mailbox.transports)
-          ? mailbox.transports
-          : [];
-        return transports.map((value) => {
-          const transport = record(value, "mailbox transport");
-          if (
-            typeof transport.transportId !== "string" ||
-            typeof transport.packageId !== "string" ||
-            typeof transport.sourceManifestHash !== "string"
-          )
-            throw new TypeError("PDS mailbox transport is invalid");
-          return {
-            userId: secret.userId,
-            groupId: secret.groupId,
-            packageId: transport.packageId,
-            sourceManifestHash: transport.sourceManifestHash,
-            transportId: transport.transportId
-          };
-        });
+        const sources: Array<{
+          client: PdsRelayClient;
+          mailbox: Record<string, unknown>;
+        }> = [
+          {
+            client: relay,
+            mailbox: record(await relay.mailbox(), "mailbox")
+          }
+        ];
+        if (localRelay) {
+          sources.unshift({
+            client: localRelay,
+            mailbox: record(await localRelay.mailbox(), "peer mailbox")
+          });
+        }
+        const incoming = new Map<
+          string,
+          {
+            userId: string;
+            groupId: string;
+            packageId: string;
+            sourceManifestHash: string;
+            transportId: string;
+          }
+        >();
+        for (const source of sources) {
+          const transports = Array.isArray(source.mailbox.transports)
+            ? source.mailbox.transports
+            : [];
+          for (const value of transports) {
+            const transport = record(value, "mailbox transport");
+            if (
+              typeof transport.transportId !== "string" ||
+              typeof transport.packageId !== "string" ||
+              typeof transport.sourceManifestHash !== "string"
+            ) {
+              throw new TypeError("PDS mailbox transport is invalid");
+            }
+            if (!incoming.has(transport.transportId)) {
+              inboundRoutes.set(transport.transportId, source.client);
+              incoming.set(transport.transportId, {
+                userId: secret.userId,
+                groupId: secret.groupId,
+                packageId: transport.packageId,
+                sourceManifestHash: transport.sourceManifestHash,
+                transportId: transport.transportId
+              });
+            }
+          }
+        }
+        return [...incoming.values()];
       },
       async acknowledge(work) {
         const downloadedPackage = downloaded.get(work.inboxId);
         if (!downloadedPackage) throw new Error("PdsRelayRetryableError");
-        const { pkg, transport } = downloadedPackage;
+        const { pkg, transport, client } = downloadedPackage;
         const relayAcceptedAt = transport.relayAcceptedAt;
         if (typeof relayAcceptedAt !== "string") {
           throw new TypeError("PDS relay receipt is invalid");
@@ -1100,9 +1350,14 @@ const createPdsWorkerRuntimeFromSecret = (
             signature: signPdsRecord("package-ack", unsigned, signingKey)
           }
         };
-        await relay.acknowledge(ack);
+        await client.acknowledge(ack);
         if (work.sourceSequence !== undefined) {
-          await relay.advanceCursor(work.originDeviceId, work.sourceSequence);
+          await Promise.all([
+            client.advanceCursor(work.originDeviceId, work.sourceSequence),
+            ...(client === relay
+              ? []
+              : [relay.advanceCursor(work.originDeviceId, work.sourceSequence)])
+          ]);
         }
         downloaded.delete(work.inboxId);
       },
@@ -1135,8 +1390,9 @@ const createPdsWorkerRuntimeFromSecret = (
           packageId: work.packageId
         });
         if (!transportId) throw new Error("PdsRelayRetryableError");
+        const sourceClient = inboundRoutes.get(transportId) ?? relay;
         const metadata = record(
-          await relay.transport(transportId),
+          await sourceClient.transport(transportId),
           "transport metadata"
         );
         const header = metadata.header;
@@ -1150,7 +1406,7 @@ const createPdsWorkerRuntimeFromSecret = (
             { length: count },
             async (_, index) =>
               record(
-                await relay.chunk(transportId, String(index)),
+                await sourceClient.chunk(transportId, String(index)),
                 "chunk response"
               ).chunk
           )
@@ -1249,7 +1505,11 @@ const createPdsWorkerRuntimeFromSecret = (
             record: artifact,
             encryptedEnvelope: encryptedArtifactEnvelope
           });
-          downloaded.set(work.inboxId, { pkg, transport });
+          downloaded.set(work.inboxId, {
+            pkg,
+            transport,
+            client: sourceClient
+          });
           return {
             kind: "artifact" as const,
             userId: secret.userId,
@@ -1316,7 +1576,11 @@ const createPdsWorkerRuntimeFromSecret = (
           secret.groupId,
           manifest
         );
-        downloaded.set(work.inboxId, { pkg, transport });
+        downloaded.set(work.inboxId, {
+          pkg,
+          transport,
+          client: sourceClient
+        });
         return {
           userId: secret.userId,
           retainedPackageId: retained.retainedPackageId,
@@ -1397,6 +1661,9 @@ export const createReloadablePdsWorkerRuntimeFromEnvironment = (
     async heartbeatGroups() {
       const runtime = resolveCycleRuntime();
       return runtime ? ((await runtime.heartbeatGroups?.()) ?? []) : [];
+    },
+    async refreshPeerRoutes() {
+      await requiredRuntime().refreshPeerRoutes?.();
     },
     async publish(input) {
       return await requiredRuntime().publish(input);

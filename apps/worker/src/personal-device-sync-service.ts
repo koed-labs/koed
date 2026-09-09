@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { MemorySourceRepository } from "@koed/db";
 import type { Logger } from "pino";
+import { PDS_PEER_ROUTE_REFRESH_MS } from "@koed/shared";
 
 /**
  * Secure runtime adapter owns private-key/group-secret operations and relay wire
@@ -10,6 +11,7 @@ import type { Logger } from "pino";
  */
 export interface PdsWorkerSecureRuntime {
   heartbeatGroups?(): Promise<string[]>;
+  refreshPeerRoutes?(): Promise<void>;
   waitForWake?(signal?: AbortSignal): Promise<void>;
   reconcileArtifacts?(): Promise<number>;
   publish(input: {
@@ -127,6 +129,9 @@ export const createPdsLocalSyncService = (input: {
   let remoteWakeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let remoteWakeReconnectAttempt = 0;
   let reconciliationRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let peerRouteRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let peerRouteRefreshInFlight: Promise<void> | null = null;
+  let lastPeerRouteRefreshAt = 0;
   let reconciliationFailureAttempt = 0;
   let runtimeAvailable = false;
 
@@ -143,6 +148,28 @@ export const createPdsLocalSyncService = (input: {
     /(?:crypto|signature|authority|certificate|policy|floor|tamper|quarantine)/i.test(
       `${error.name} ${error.message}`
     );
+
+  const refreshPeerRoutesIfDue = async (): Promise<void> => {
+    if (!runtimeAvailable || !input.secureRuntime.refreshPeerRoutes) return;
+    if (peerRouteRefreshInFlight) return await peerRouteRefreshInFlight;
+    if (Date.now() - lastPeerRouteRefreshAt < PDS_PEER_ROUTE_REFRESH_MS) return;
+    lastPeerRouteRefreshAt = Date.now();
+    peerRouteRefreshInFlight = input.secureRuntime
+      .refreshPeerRoutes()
+      .catch((error) => {
+        input.logger.warn(
+          {
+            err: error,
+            event: { name: "worker.pds.peer_routes.failed", category: "pds" }
+          },
+          "PDS peer route refresh failed; relay remains available"
+        );
+      })
+      .finally(() => {
+        peerRouteRefreshInFlight = null;
+      });
+    await peerRouteRefreshInFlight;
+  };
 
   const processOnce = async (): Promise<{
     failed: boolean;
@@ -172,6 +199,7 @@ export const createPdsLocalSyncService = (input: {
         ]);
       }
       await input.secureRuntime.pollLifecycle?.();
+      await refreshPeerRoutesIfDue();
       const stagedArtifacts =
         (await input.secureRuntime.reconcileArtifacts?.()) ?? 0;
       needsDrain ||= stagedArtifacts >= 50;
@@ -528,8 +556,26 @@ export const createPdsLocalSyncService = (input: {
       })
       .finally(() => {
         if (remoteWakeAbort === controller) remoteWakeAbort = null;
-        if (!stopped && !remoteWakeReconnectTimer) scheduleRemoteWake();
+        if (!stopped && !remoteWakeReconnectTimer && !running) {
+          scheduleRemoteWake();
+        }
       });
+  };
+
+  const schedulePeerRouteRefresh = (): void => {
+    if (
+      stopped ||
+      peerRouteRefreshTimer ||
+      !runtimeAvailable ||
+      !input.secureRuntime.refreshPeerRoutes
+    ) {
+      return;
+    }
+    peerRouteRefreshTimer = setTimeout(() => {
+      peerRouteRefreshTimer = null;
+      void refreshPeerRoutesIfDue().finally(schedulePeerRouteRefresh);
+    }, PDS_PEER_ROUTE_REFRESH_MS);
+    peerRouteRefreshTimer.unref?.();
   };
 
   const requestProcessing = (): void => {
@@ -561,6 +607,7 @@ export const createPdsLocalSyncService = (input: {
       } while (!stopped && runAgain);
       if (!reconciliationRetryTimer) await scheduleDueWake();
       scheduleRemoteWake();
+      schedulePeerRouteRefresh();
     })().finally(() => {
       running = false;
       if (!stopped && runAgain) requestProcessing();
@@ -626,6 +673,10 @@ export const createPdsLocalSyncService = (input: {
       remoteWakeReconnectTimer = null;
       if (reconciliationRetryTimer) clearTimeout(reconciliationRetryTimer);
       reconciliationRetryTimer = null;
+      if (peerRouteRefreshTimer) clearTimeout(peerRouteRefreshTimer);
+      peerRouteRefreshTimer = null;
+      peerRouteRefreshInFlight = null;
+      lastPeerRouteRefreshAt = 0;
       remoteWakeAbort?.abort();
       remoteWakeAbort = null;
       if (wakeClient) {

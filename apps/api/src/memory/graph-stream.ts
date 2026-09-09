@@ -21,6 +21,7 @@ export interface GraphUpdatePayload {
 interface GraphUpdateEventRef {
   id: string;
   projectId: string;
+  sourceTable: "memory_events" | "messages" | "tool_events";
   threadId: string;
 }
 
@@ -96,6 +97,22 @@ export const graphUpdateKey = (payload: GraphUpdatePayload): string => {
 
 const isGraphDisplayEventTable = (table: string | undefined): boolean =>
   table === "memory_events" || table === "messages" || table === "tool_events";
+
+export const graphEventRefForPayload = (
+  payload: GraphUpdatePayload
+): GraphUpdateEventRef | null =>
+  isGraphDisplayEventTable(payload.table) &&
+  payload.operation !== "DELETE" &&
+  payload.id &&
+  payload.projectId &&
+  payload.threadId
+    ? {
+        id: payload.id,
+        projectId: payload.projectId,
+        sourceTable: payload.table as GraphUpdateEventRef["sourceTable"],
+        threadId: payload.threadId
+      }
+    : null;
 
 export const guardedBroadcastGraphUpdate = ({
   app,
@@ -176,18 +193,7 @@ export const createGraphStreamService = async ({
       return;
     }
     const key = graphUpdateKey(payload);
-    const eventRef =
-      isGraphDisplayEventTable(payload.table) &&
-      payload.operation !== "DELETE" &&
-      payload.id &&
-      payload.projectId &&
-      payload.threadId
-        ? {
-            id: payload.id,
-            projectId: payload.projectId,
-            threadId: payload.threadId
-          }
-        : null;
+    const eventRef = graphEventRefForPayload(payload);
     const questionId =
       payload.table === "memory_questions" && payload.id ? payload.id : null;
     const noteId =

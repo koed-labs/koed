@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import pg from "pg";
 import type {
   ActorContext,
+  ManagedConversationTokenUsageRecord,
   Visibility,
   WorkflowTokenUsageInput,
   WorkflowTokenUsageRecord,
@@ -20,7 +21,47 @@ export interface WorkflowTokenUsageRepository {
     actor: ActorContext,
     input?: WorkflowTokenUsageRollupInput
   ): Promise<WorkflowTokenUsageRollupRecord[]>;
+  getLatestManagedConversationTokenUsage(
+    actor: ActorContext,
+    executionId: string
+  ): Promise<ManagedConversationTokenUsageRecord | null>;
 }
+
+type ManagedConversationTokenUsageRow = {
+  id: string;
+  workflow_id: string;
+  model: string | null;
+  model_context_window: number | null;
+  input_tokens: number | null;
+  cached_input_tokens: number | null;
+  output_tokens: number | null;
+  reasoning_output_tokens: number | null;
+  total_tokens: number | null;
+  usage_source: string;
+  usage_accuracy: string;
+  usage_kind: string;
+  metadata: Record<string, unknown>;
+  observed_at: Date;
+};
+
+const mapManagedConversationTokenUsage = (
+  row: ManagedConversationTokenUsageRow
+): ManagedConversationTokenUsageRecord => ({
+  id: row.id,
+  executionId: row.workflow_id,
+  model: row.model,
+  modelContextWindow: row.model_context_window,
+  inputTokens: row.input_tokens,
+  cachedInputTokens: row.cached_input_tokens,
+  outputTokens: row.output_tokens,
+  reasoningOutputTokens: row.reasoning_output_tokens,
+  totalTokens: row.total_tokens,
+  usageSource: row.usage_source,
+  usageAccuracy: row.usage_accuracy,
+  usageKind: row.usage_kind,
+  metadata: row.metadata,
+  observedAt: row.observed_at.toISOString()
+});
 
 type WorkflowTokenUsageRow = {
   id: string;
@@ -439,6 +480,39 @@ export const createWorkflowTokenUsageRepository = (
     } finally {
       client.release();
     }
+  },
+
+  async getLatestManagedConversationTokenUsage(actor, executionId) {
+    const result = await pool.query<ManagedConversationTokenUsageRow>(
+      `
+        select
+          id,
+          workflow_id,
+          model,
+          model_context_window,
+          input_tokens,
+          cached_input_tokens,
+          output_tokens,
+          reasoning_output_tokens,
+          total_tokens,
+          usage_source,
+          usage_accuracy,
+          usage_kind,
+          metadata,
+          observed_at
+        from workflow_token_usage
+        where owner_user_id = $1
+          and visibility = 'personal'
+          and workflow_type = 'managed_conversation'
+          and workflow_id = $2
+        order by observed_at desc, created_at desc, id desc
+        limit 1
+      `,
+      [actor.userId, executionId]
+    );
+    return result.rows[0]
+      ? mapManagedConversationTokenUsage(result.rows[0])
+      : null;
   },
 
   async listWorkflowTokenUsageRollups(actor, input = {}) {

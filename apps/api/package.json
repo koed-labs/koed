@@ -30,22 +30,25 @@
     "build:browser": "vite build",
     "dev": "pnpm run build:browser && tsx watch src/index.ts",
     "start": "node dist/index.js",
+    "smoke:webtransport": "tsx scripts/smoke-webtransport.ts",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.browser.json --noEmit",
     "verify:browser-build": "node scripts/verify-browser-approval-build.mjs"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^11.2.0",
+    "@fastify/websocket": "11.3.0",
     "@koed/core": "workspace:*",
     "@koed/db": "workspace:*",
     "@koed/koed": "workspace:*",
     "@koed/shared": "workspace:*",
-    "@fastify/cookie": "^11.0.2",
-    "@fastify/cors": "^11.2.0",
     "argon2": "^0.44.0",
     "bullmq": "^5.76.9",
     "dotenv": "^17.2.3",
     "fastify": "^5.8.5",
     "ioredis": "^5.10.1",
+    "node-pty": "1.1.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -55,5 +58,8 @@
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "tsx": "^4.22.1"
+  },
+  "optionalDependencies": {
+    "quico": "0.4.0"
   }
 }

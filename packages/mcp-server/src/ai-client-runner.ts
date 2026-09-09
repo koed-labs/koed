@@ -869,19 +869,15 @@ const implementedManagedCapabilityIds: Set<string> = new Set([
   aiClientCapabilityIds.managedConversationStart,
   aiClientCapabilityIds.managedConversationResume,
   aiClientCapabilityIds.managedConversationSend,
+  aiClientCapabilityIds.managedConversationCancel,
+  aiClientCapabilityIds.approvals,
+  aiClientCapabilityIds.streaming,
   aiClientCapabilityIds.sessionIdentity,
   aiClientCapabilityIds.handoff,
   aiClientCapabilityIds.fork
 ]);
 
-const supportedCapabilityIds = (driver: AiClientProvider): Set<string> => {
-  if (driver === "pi") {
-    return new Set(
-      Object.values(aiClientCapabilityIds).filter(
-        (id) => !managedCapabilityIds.has(id)
-      )
-    );
-  }
+const supportedCapabilityIds = (): Set<string> => {
   return new Set(
     Object.values(aiClientCapabilityIds).filter(
       (id) =>
@@ -896,7 +892,7 @@ const capability = (
   synthesisReady: boolean,
   recoveryAction?: AiClientRecoveryActionId
 ): AiClientCapabilityDescriptor => {
-  const supported = supportedCapabilityIds(driver).has(id);
+  const supported = supportedCapabilityIds().has(id);
   const readiness = !supported
     ? "not_ready"
     : id === aiClientCapabilityIds.localSynthesis

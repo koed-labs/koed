@@ -24,6 +24,8 @@ import {
   desktopRendererOrigin,
   isDesktopCommandName,
   managedConversationCommandChannel,
+  managedProjectCommandChannel,
+  managedProjectEventChannel,
   personalDevicePairingProgressChannel,
   personalDevicePairingLinkConsumeChannel,
   personalMemoryCommandChannel,
@@ -45,11 +47,19 @@ import {
 } from "./managed-conversation-protocol.js";
 import { parsePersonalDevicePairingProgress } from "./personal-device-pairing-protocol.js";
 import type { DesktopThemePreference } from "../window/theme-preference.js";
+import type { ManagedPreviewController } from "../window/managed-preview-controller.js";
 import { parsePersonalDevicePairingLink } from "../personal-device-pairing-link.js";
 import {
   localAiClientCommandSchema,
   localAiClientResponseSchema
 } from "./local-ai-client-protocol.js";
+import {
+  managedProjectEventSchema,
+  managedProjectRequestSchema,
+  managedProjectResultSchema,
+  type ManagedProjectRequest,
+  type ManagedProjectResult
+} from "./managed-project-protocol.js";
 
 export const invokeChannel = "koed:invoke";
 
@@ -107,6 +117,12 @@ const contextForSender = (sender: WebContents): DesktopCommandContext => {
       if (!sender.isDestroyed()) {
         sender.send(setupProgressEventChannel, snapshot);
       }
+    },
+    emitManagedProjectEvent: (value) => {
+      const event = managedProjectEventSchema.parse(value);
+      if (!sender.isDestroyed()) {
+        sender.send(managedProjectEventChannel, event);
+      }
     }
   };
   senderContexts.set(sender, { controller, context });
@@ -127,6 +143,11 @@ export const registerDesktopCommandHandlers = (
     managedConversation: (
       request: ManagedConversationRequest
     ) => Promise<ManagedConversationResult>;
+    managedProject: (
+      request: ManagedProjectRequest,
+      context?: DesktopCommandContext
+    ) => Promise<ManagedProjectResult>;
+    managedPreview: ManagedPreviewController;
     consumePendingPersonalDevicePairingLink: (
       expectedLink?: string
     ) => string | null;
@@ -345,13 +366,24 @@ export const registerDesktopCommandHandlers = (
       } catch {
         const messages: Record<ManagedConversationResult["operation"], string> =
           {
+            launch_options:
+              "Koed could not load managed Conversation launch options.",
             start: "Koed could not start the managed AI Client Conversation.",
             inspect:
               "Koed could not inspect the managed AI Client Conversation.",
             resume:
               "Koed could not confirm the managed AI Client Conversation.",
             send: "Koed could not submit the prompt to the managed AI Client Conversation.",
+            draft_read: "Koed could not restore the local Conversation draft.",
+            draft_write: "Koed could not save the local Conversation draft.",
+            draft_delete: "Koed could not remove the local Conversation draft.",
             targets: "Koed could not load Personal Devices.",
+            usage: "Koed could not load managed Conversation usage.",
+            runtime: "Koed could not load managed Conversation activity.",
+            runtime_respond:
+              "Koed could not answer the managed Conversation request.",
+            interrupt: "Koed could not interrupt the active Codex turn.",
+            stop: "Koed could not stop the managed Conversation.",
             transfer_status:
               "Koed could not load the managed Conversation transfer status.",
             handoff: "Koed could not move the managed Conversation.",
@@ -366,4 +398,44 @@ export const registerDesktopCommandHandlers = (
       return result;
     }
   );
+
+  ipcMain.handle(managedProjectCommandChannel, async (event, value) => {
+    if (!trustedSender(event, options.allowedRendererOrigins)) {
+      throw new Error("Untrusted Desktop IPC sender.");
+    }
+    const request = managedProjectRequestSchema.parse(value);
+    const context = contextForSender(event.sender);
+    const result = managedProjectResultSchema.parse(
+      await options.managedProject(request, {
+        ...context,
+        managedPreview: {
+          attach: (input) =>
+            options.managedPreview.attach(
+              event.sender,
+              input,
+              (workspaceEvent) =>
+                context.emitManagedProjectEvent?.(workspaceEvent)
+            ),
+          setBounds: (input) =>
+            options.managedPreview.setBounds(
+              event.sender,
+              input.surfaceId,
+              input.bounds
+            ),
+          reload: (surfaceId) =>
+            options.managedPreview.reload(event.sender, surfaceId),
+          detach: (surfaceId) =>
+            options.managedPreview.detach(event.sender, surfaceId)
+        }
+      })
+    );
+    if (
+      result.requestId !== request.requestId ||
+      result.executionId !== request.executionId ||
+      result.operation !== request.operation
+    ) {
+      throw new Error("Invalid managed Project operation correlation.");
+    }
+    return result;
+  });
 };

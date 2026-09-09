@@ -4,6 +4,76 @@ export const aiClientIdentifierPattern =
 export type AiClientDriverId = string;
 export type AiClientInstanceId = string;
 export type SupportedAiClientDriverId = "codex" | "claude" | "pi";
+export const aiClientPermissionModes = [
+  "supervised",
+  "auto_edit",
+  "auto",
+  "full_access"
+] as const;
+export type AiClientPermissionMode = (typeof aiClientPermissionModes)[number];
+
+/** Settings selected for one managed Conversation turn; ownership never changes here. */
+export type ManagedConversationSettings = {
+  model: string;
+  reasoningEffort: string | null;
+  permissionMode: AiClientPermissionMode;
+};
+
+export type ManagedConversationSettingsChange = {
+  expected: ManagedConversationSettings;
+  next: ManagedConversationSettings;
+};
+
+export const managedConversationSettingsKey = (
+  settings: ManagedConversationSettings
+): string =>
+  JSON.stringify([
+    settings.model,
+    settings.reasoningEffort,
+    settings.permissionMode
+  ]);
+
+export const parseManagedConversationSettings = (
+  value: unknown
+): ManagedConversationSettings => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Conversation settings must be an object.");
+  }
+  const settings = value as Record<string, unknown>;
+  const bounded = (text: unknown, maximum: number): text is string =>
+    typeof text === "string" &&
+    text.length > 0 &&
+    text.trim() === text &&
+    text.length <= maximum;
+  if (
+    Object.keys(settings).length !== 3 ||
+    !bounded(settings.model, 512) ||
+    !(
+      settings.reasoningEffort === null || bounded(settings.reasoningEffort, 64)
+    ) ||
+    !aiClientPermissionModes.includes(
+      settings.permissionMode as AiClientPermissionMode
+    )
+  ) {
+    throw new TypeError("Conversation settings are invalid.");
+  }
+  return {
+    model: settings.model,
+    reasoningEffort: settings.reasoningEffort,
+    permissionMode: settings.permissionMode as AiClientPermissionMode
+  };
+};
+export type AiClientPermissionModeSupport =
+  | "supported"
+  | "requires_bridge"
+  | "unsupported";
+export interface AiClientPermissionContract {
+  defaultPermissionMode: AiClientPermissionMode;
+  permissionModes: Array<{
+    mode: AiClientPermissionMode;
+    support: AiClientPermissionModeSupport;
+  }>;
+}
 
 export const supportedAiClientDriverIds = ["codex", "claude", "pi"] as const;
 export const aiClientDriverIdMaxLength = 96;
@@ -114,6 +184,26 @@ export const isSupportedAiClientDriverId = (
 export const defaultAiClientInstanceId = (
   driverId: SupportedAiClientDriverId
 ): AiClientInstanceId => `${driverId}.default`;
+
+const supportedPermissionModes: Readonly<
+  Record<SupportedAiClientDriverId, ReadonlySet<AiClientPermissionMode>>
+> = Object.freeze({
+  codex: new Set<AiClientPermissionMode>(aiClientPermissionModes),
+  claude: new Set<AiClientPermissionMode>(aiClientPermissionModes),
+  pi: new Set<AiClientPermissionMode>(aiClientPermissionModes)
+});
+
+export const aiClientPermissionContractFor = (
+  driverId: SupportedAiClientDriverId
+): AiClientPermissionContract => ({
+  defaultPermissionMode: "full_access",
+  permissionModes: aiClientPermissionModes.map((mode) => ({
+    mode,
+    support: supportedPermissionModes[driverId].has(mode)
+      ? "supported"
+      : "unsupported"
+  }))
+});
 
 export type AiClientModelProvenance =
   | "reported"

@@ -149,14 +149,14 @@ describe("local edge upstream routing", () => {
     ).toBe(true);
   });
 
-  it("requires capability schema 6, memory.collaboration, and the current realtime protocol", () => {
+  it("requires capability schema 7, memory.collaboration, and the current realtime protocol", () => {
     const supported = backend({
       capabilities: {
         state: "validated",
         expiresAt: "2099-01-01T00:15:00.000Z",
-        schemaVersion: 6,
+        schemaVersion: 9,
         payload: {
-          capabilitySchemaVersion: 6,
+          capabilitySchemaVersion: 9,
           capabilities: {
             "memory.collaboration": { availability: "partial" }
           },
@@ -661,5 +661,63 @@ describe("local edge upstream routing", () => {
         "/v1/memory/conversation-items"
       )
     ).toThrow("not allowed for operation family");
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_file_read",
+        "POST",
+        "/v1/managed-conversations/execution-id/files"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_file_read",
+        "GET",
+        "/v1/managed-conversations/execution-id/files/command-id"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_execution",
+        "GET",
+        "/v1/managed-conversations/execution-id/files/command-id"
+      )
+    ).toThrow("not allowed for operation family");
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "managed_file_read",
+        "GET",
+        "/v1/managed-conversations/execution-id/runtime"
+      )
+    ).toThrow("not allowed for operation family");
+  });
+
+  it("routes file inspection only for its explicit enrolled family", () => {
+    const managedBackend = backend({
+      routePolicy: { managedExecution: "enabled" }
+    });
+    expect(
+      resolveLocalEdgeRouteDecision({
+        operationFamily: "managed_file_read",
+        upstreamBackendId: "team-vps",
+        upstreamBackend: managedBackend,
+        deviceCredential: credential(["managed_execution"]),
+        upstreamCredentialAvailable: true
+      })
+    ).toMatchObject({
+      action: "deny_fail_closed",
+      reason: "operation_not_allowed"
+    });
+    expect(
+      resolveLocalEdgeRouteDecision({
+        operationFamily: "managed_file_read",
+        upstreamBackendId: "team-vps",
+        upstreamBackend: managedBackend,
+        deviceCredential: credential(["managed_file_read"]),
+        upstreamCredentialAvailable: true
+      })
+    ).toMatchObject({
+      action: "live_upstream_proxy",
+      reason: "live_upstream_proxy"
+    });
   });
 });

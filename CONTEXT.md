@@ -58,6 +58,12 @@ _Avoid_: Conversation, thread, transcript
 An AI-client interaction thread whose activity may be captured.
 _Avoid_: Thread, chat, transcript
 
+**Conversation Item Presentation**:
+The owner-facing decision that determines whether and how a captured source or
+live runtime item appears in a Conversation timeline. Presentation is
+independent from Projection, embeddings, LCM, Recall, and Team visibility.
+_Avoid_: UI Projection, Memory Event policy, capture filter
+
 **Conversation Source Artifact**:
 An owner-scoped, verified generation of exact AI-client source records retained
 in the Conversation Source Journal. It is provenance and portability material,

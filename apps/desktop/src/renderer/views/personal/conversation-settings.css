@@ -1,0 +1,204 @@
+.conversation-settings {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.conversation-permission-control {
+  margin-right: auto;
+}
+.conversation-model-controls {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.conversation-setting-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 7px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  min-width: 0;
+  max-width: 100%;
+}
+.conversation-setting-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 21rem;
+}
+.conversation-setting-trigger:hover,
+.conversation-setting-trigger[data-popup-open] {
+  background: var(--accent);
+  color: var(--foreground);
+}
+.conversation-setting-trigger svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.conversation-ai-client-logo {
+  display: inline-flex;
+  color: currentColor;
+  flex-shrink: 0;
+}
+.conversation-ai-client-logo svg {
+  display: block;
+  fill: currentColor;
+}
+.conversation-setting-trigger svg:last-child {
+  width: 11px;
+}
+.conversation-setting-trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.conversation-settings-popup {
+  width: 310px;
+  max-width: calc(100vw - 24px);
+  max-height: min(420px, var(--available-height));
+  overflow-y: auto;
+  border-radius: 13px;
+  padding: 8px;
+  box-shadow: 0 12px 36px #0003;
+}
+.conversation-setting-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  outline: 0;
+  cursor: default;
+}
+.conversation-setting-option small {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 2px;
+}
+.conversation-setting-option svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--primary);
+}
+.conversation-setting-option[data-highlighted],
+.conversation-reasoning-step[data-highlighted] {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+  background: var(--accent);
+}
+.conversation-setting-option[data-disabled],
+.conversation-reasoning-step[data-disabled] {
+  opacity: 0.45;
+}
+.conversation-model-overview {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 10px;
+  background: var(--secondary);
+}
+.conversation-model-overview svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+.conversation-reasoning-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 4px;
+  margin: 12px 4px 4px;
+  border-radius: 8px;
+  background: var(--background);
+}
+.conversation-reasoning-step {
+  flex: 1;
+  text-align: center;
+  white-space: nowrap;
+  padding: 7px 5px;
+  font-size: 11px;
+  border-radius: 5px;
+  outline: 0;
+  cursor: default;
+  color: var(--muted-foreground);
+}
+.conversation-reasoning-step[data-checked] {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.conversation-settings-explanation {
+  padding: 10px 7px 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.personal-managed-composer-field.conversation-input {
+  display: block;
+  border-radius: 16px;
+  padding: 12px;
+  background: var(--card);
+}
+.conversation-input-footer {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+}
+.conversation-input-footer > .conversation-send {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.conversation-send:disabled {
+  opacity: 0.45;
+}
+.conversation-settings-status {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  padding: 5px 4px 0;
+}
+.personal-new-conversation-composer {
+  margin: 16px 18px;
+  border: 0;
+  padding: 0;
+}
+.personal-new-conversation-composer .conversation-settings-popup {
+  margin: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .conversation-settings-popup {
+    transition: none;
+  }
+}
+
+.conversation-new-device {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.conversation-new-device svg {
+  width: 14px;
+  height: 14px;
+}

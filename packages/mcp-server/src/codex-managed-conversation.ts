@@ -1,21 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { managedKoedMcpServer } from "./managed-koed-mcp.js";
 
 import {
   CodexAppServerClient,
   CodexAppServerCapacityError,
-  acquireManagedCodexHomeLease,
   codexAppServerRawEventByteLength,
-  prepareManagedCodexHome,
-  removeManagedCodexHome,
-  reuseManagedCodexHome,
+  resolveCodexHome,
   type CodexAppServerExit,
   type CodexAppServerRawEvent,
   type CodexAppServerRunConfig,
   type CodexAppServerRunResult,
-  type CodexAppServerThreadInfo,
-  type ManagedCodexHomeLease
+  type CodexAppServerThreadInfo
 } from "./codex-app-server-runner.js";
 import {
   assertCodexConversationProtocolCompatibility,
@@ -27,7 +24,7 @@ import {
   type CodexManagedConversationSourceContext
 } from "./codex-conversation-source-adapter.js";
 import { ingestCodexTranscriptJournal } from "./codex-transcript-journal.js";
-import type { MemoryApiClient } from "./index.js";
+import { MemoryApiError, type MemoryApiClient } from "./index.js";
 import {
   persistRawConversationItems,
   projectRawConversationItems
@@ -73,6 +70,19 @@ export interface CodexManagedConversationStartResult {
   transcriptPath: string;
   codexHome: string;
 }
+
+export const managedConversationKoedMcpConfigOverrides = (
+  env: NodeJS.ProcessEnv
+): string[] => {
+  const server = managedKoedMcpServer(env);
+  if (!server) return [];
+  const environment = Object.entries(server.env)
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join(", ");
+  return [
+    `mcp_servers.koed={command=${JSON.stringify(server.command)}, args=${JSON.stringify(server.args)}, env={${environment}}, enabled=true}`
+  ];
+};
 
 export interface CodexManagedConversationSealedSource {
   threadId: string;
@@ -138,6 +148,12 @@ const isTerminalItem = (item: RawConversationItemRequest): boolean => {
     metadata.semanticControl === "turn_completed" ||
     item.sourceEventType === "turn_aborted"
   );
+};
+
+const terminalEvidencePending = (error: unknown): boolean => {
+  if (!(error instanceof MemoryApiError) || error.status !== 409) return false;
+  const payload = asRecord(error.payload);
+  return payload.code === "managed_turn_not_terminal";
 };
 
 const rawEventThreadId = (
@@ -253,9 +269,7 @@ export class CodexManagedConversationSession {
     null;
   private turnQueue: Promise<void> = Promise.resolve();
   private closingPromise: Promise<void> | null = null;
-  private managedHome: string | null = null;
-  private managedHomeLease: ManagedCodexHomeLease | null = null;
-  private managedHomeDurable = false;
+  private codexHome: string | null = null;
   private terminalError: Error | null = null;
   private started = false;
   private closed = false;
@@ -296,56 +310,40 @@ export class CodexManagedConversationSession {
       previousThread &&
       previousSessionId &&
       previousThread.path &&
-      this.managedHome
+      this.codexHome
         ? {
             threadId: previousThread.id,
             sessionId: previousSessionId,
             transcriptPath: previousThread.path,
-            codexHome: this.managedHome
+            codexHome: this.codexHome
           }
         : this.config.resume;
     const forkTarget = resumeTarget ? undefined : this.config.fork;
-    let managedHome: string | null = null;
+    let codexHome: string;
     let client: CodexAppServerClient | null = null;
     try {
-      managedHome =
-        resumeTarget || forkTarget
-          ? path.resolve((resumeTarget ?? forkTarget)!.codexHome)
-          : prepareManagedCodexHome(this.config.appServer.env);
-      this.managedHome ??= managedHome;
-      this.managedHomeDurable = Boolean(resumeTarget || forkTarget);
-      if (
-        this.managedHomeLease &&
-        this.managedHomeLease.managedHome !== managedHome
-      ) {
+      codexHome = resolveCodexHome(this.config.appServer.env);
+      const persistedHome = (resumeTarget ?? forkTarget)?.codexHome;
+      if (persistedHome && path.resolve(persistedHome) !== codexHome) {
         throw new Error(
-          "Managed Codex home lease does not match resume target"
+          "Managed Codex conversation belongs to a different AI Client home"
         );
       }
-      this.managedHomeLease ??= acquireManagedCodexHomeLease(
-        managedHome,
-        this.config.appServer.env
-      );
-      if (resumeTarget || forkTarget) {
-        managedHome = reuseManagedCodexHome(
-          managedHome,
-          this.config.appServer.env
-        );
-      }
-      const managedEnv = {
+      this.codexHome = codexHome;
+      const appServerEnv = {
         ...this.config.appServer.env,
-        CODEX_HOME: managedHome,
+        CODEX_HOME: codexHome,
         [KOED_MANAGED_CONVERSATION_ENV]: "1"
       };
       this.protocol = assertCodexConversationProtocolCompatibility({
         binary: this.config.appServer.appServerBinary,
         cwd: this.config.appServer.cwd,
-        env: managedEnv
+        env: appServerEnv
       });
       const createdClient = new CodexAppServerClient(
         this.config.appServer.appServerBinary,
         this.config.appServer.cwd,
-        managedEnv,
+        appServerEnv,
         (event) => this.handleRawEvent(event),
         {
           requestTimeoutMs: this.config.requestTimeoutMs,
@@ -359,8 +357,10 @@ export class CodexManagedConversationSession {
           maxTurnStates: this.config.maxTurnStates,
           maxTurnBytes: this.config.maxTurnBytes,
           maxLineBytes: this.config.maxLineBytes,
-          onExit: (exit) =>
-            this.handleClientExit(createdClient, managedHome!, exit)
+          configOverrides:
+            managedConversationKoedMcpConfigOverrides(appServerEnv),
+          transientEventHandler: (event) => this.handleTransientEvent(event),
+          onExit: (exit) => this.handleClientExit(createdClient, exit)
         }
       );
       client = createdClient;
@@ -373,7 +373,7 @@ export class CodexManagedConversationSession {
           "Codex app-server initialize response did not include codexHome"
         );
       }
-      if (initialization.codexHome !== managedHome) {
+      if (path.resolve(initialization.codexHome) !== codexHome) {
         throw new Error(
           "Codex app-server initialize response reported an unexpected codexHome"
         );
@@ -484,7 +484,6 @@ export class CodexManagedConversationSession {
       }
       this.thread = thread;
       this.sessionId = session.id;
-      this.managedHomeDurable = true;
       if (this.closed) {
         throw new Error("Codex managed conversation session is closed");
       }
@@ -507,13 +506,11 @@ export class CodexManagedConversationSession {
       return this.startResult();
     } catch (error) {
       this.started = false;
-      if (!this.managedHomeDurable) {
-        this.thread = previousThread;
-        this.sessionId = previousSessionId;
-      }
+      this.thread = previousThread;
+      this.sessionId = previousSessionId;
       this.bufferedEvents.length = 0;
       this.bufferedEventBytes = 0;
-      if (!this.managedHomeDurable && (!previousThread || !previousSessionId)) {
+      if (!previousThread || !previousSessionId) {
         this.clearTurnTracking();
       }
       if (client && this.client === client) {
@@ -539,7 +536,6 @@ export class CodexManagedConversationSession {
           // Preserve the startup failure that initiated cleanup.
         }
       }
-      this.removeManagedHome(managedHome);
       throw error;
     }
   }
@@ -557,6 +553,20 @@ export class CodexManagedConversationSession {
       () => undefined
     );
     return operation;
+  }
+
+  async interruptActiveTurn(): Promise<{
+    interrupted: boolean;
+    turnId?: string;
+  }> {
+    const client = this.client;
+    const active = client?.activeTurn();
+    if (!client || !active) return { interrupted: false };
+    if (this.thread?.id !== active.threadId) {
+      throw new Error("Managed Conversation active turn identity conflicted");
+    }
+    await client.interruptTurn(active.threadId, active.turnId);
+    return { interrupted: true, turnId: active.turnId };
   }
 
   private async runTurnSerialized(
@@ -693,7 +703,6 @@ export class CodexManagedConversationSession {
       } catch (error) {
         ingestionError = ingestionError ?? error;
       }
-      this.removeManagedHome();
       const causes = [interruptError, ingestionError].filter(
         (error) => error !== undefined
       );
@@ -707,9 +716,6 @@ export class CodexManagedConversationSession {
     if (turnStartFailed) {
       if (this.client === client) {
         this.client = null;
-      }
-      if (!recoverableTransportStop) {
-        this.removeManagedHome();
       }
       if (
         runError instanceof Error &&
@@ -735,7 +741,6 @@ export class CodexManagedConversationSession {
       } catch (error) {
         ingestionError = ingestionError ?? error;
       }
-      this.removeManagedHome();
     }
     if (ingestionError) {
       throw ingestionError;
@@ -905,11 +910,7 @@ export class CodexManagedConversationSession {
     this.started = false;
     const client = this.client;
     this.client = null;
-    if (client) {
-      client.close();
-    } else {
-      this.removeManagedHome();
-    }
+    client?.close();
   }
 
   async closeAndWait(): Promise<void> {
@@ -933,50 +934,46 @@ export class CodexManagedConversationSession {
     let handlerError: unknown;
     let reconcileError: unknown;
     let closeError: unknown;
-    try {
-      if (client) {
-        try {
-          await client.flushRawEventHandler();
-        } catch (error) {
-          handlerError = error;
-        }
+    if (client) {
+      try {
+        await client.flushRawEventHandler();
+      } catch (error) {
+        handlerError = error;
       }
-      if (
-        this.thread?.path &&
-        this.sessionId &&
-        fs.existsSync(this.thread.path)
-      ) {
-        try {
-          await this.reconcileTranscriptInternal(true);
-        } catch (error) {
-          reconcileError = error;
-        }
+    }
+    if (
+      this.thread?.path &&
+      this.sessionId &&
+      fs.existsSync(this.thread.path)
+    ) {
+      try {
+        await this.reconcileTranscriptInternal(true);
+      } catch (error) {
+        reconcileError = error;
       }
-      if (client) {
-        try {
-          await client.closeAndWait(
-            positiveFiniteInteger(this.config.closeGraceMs, 1_000)
-          );
-          handlerError = undefined;
-        } catch (error) {
-          closeError = error;
-        }
+    }
+    if (client) {
+      try {
+        await client.closeAndWait(
+          positiveFiniteInteger(this.config.closeGraceMs, 1_000)
+        );
+        handlerError = undefined;
+      } catch (error) {
+        closeError = error;
       }
-      if (
-        !closeError &&
-        this.thread?.path &&
-        this.sessionId &&
-        fs.existsSync(this.thread.path)
-      ) {
-        try {
-          await this.waitForStableTranscript(this.thread.path);
-          await this.reconcileTranscriptInternal(true);
-        } catch (error) {
-          reconcileError = error;
-        }
+    }
+    if (
+      !closeError &&
+      this.thread?.path &&
+      this.sessionId &&
+      fs.existsSync(this.thread.path)
+    ) {
+      try {
+        await this.waitForStableTranscript(this.thread.path);
+        await this.reconcileTranscriptInternal(true);
+      } catch (error) {
+        reconcileError = error;
       }
-    } finally {
-      this.removeManagedHome();
     }
     const error =
       this.terminalError ?? closeError ?? handlerError ?? reconcileError;
@@ -1077,7 +1074,7 @@ export class CodexManagedConversationSession {
       !this.thread ||
       !this.sessionId ||
       !this.thread.path ||
-      !this.managedHome
+      !this.codexHome
     ) {
       throw new Error("Codex managed conversation session has not started");
     }
@@ -1085,7 +1082,7 @@ export class CodexManagedConversationSession {
       thread: this.thread,
       sessionId: this.sessionId,
       transcriptPath: this.thread.path,
-      codexHome: this.managedHome
+      codexHome: this.codexHome
     };
   }
 
@@ -1098,7 +1095,6 @@ export class CodexManagedConversationSession {
 
   private handleClientExit(
     client: CodexAppServerClient,
-    managedHome: string,
     exit: CodexAppServerExit
   ): void {
     const wasCurrentClient = this.client === client;
@@ -1119,41 +1115,6 @@ export class CodexManagedConversationSession {
       this.client = null;
       this.started = false;
     }
-    if (this.terminalError) {
-      this.removeManagedHome(managedHome);
-    } else if (exit.requestedClose) {
-      this.removeManagedHome(managedHome);
-    }
-  }
-
-  private removeManagedHome(
-    managedHome = this.managedHome,
-    force = false
-  ): void {
-    if (!managedHome) {
-      return;
-    }
-    this.releaseManagedHomeLease(managedHome);
-    if (!force && this.managedHomeDurable) {
-      return;
-    }
-    if (this.managedHome === managedHome) {
-      this.managedHome = null;
-      this.managedHomeDurable = false;
-    }
-    removeManagedCodexHome(managedHome, this.config.appServer.env);
-  }
-
-  private releaseManagedHomeLease(managedHome: string): void {
-    if (
-      !this.managedHomeLease ||
-      this.managedHomeLease.managedHome !== path.resolve(managedHome)
-    ) {
-      return;
-    }
-    const lease = this.managedHomeLease;
-    this.managedHomeLease = null;
-    lease.release();
   }
 
   private async handleRawEvent(event: CodexAppServerRawEvent): Promise<void> {
@@ -1180,6 +1141,57 @@ export class CodexManagedConversationSession {
       return;
     }
     await this.persistEvent(event);
+    const params = asRecord(event.params);
+    if (
+      event.method === "item/completed" &&
+      typeof params.threadId === "string" &&
+      typeof params.turnId === "string"
+    ) {
+      const item = asRecord(params.item);
+      await this.config.appServer.onProviderItemCompleted?.({
+        threadId: params.threadId,
+        turnId: params.turnId,
+        ...(typeof item.id === "string"
+          ? { itemId: item.id }
+          : typeof params.itemId === "string"
+            ? { itemId: params.itemId }
+            : {})
+      });
+    } else if (
+      event.method === "turn/completed" &&
+      typeof params.threadId === "string"
+    ) {
+      const turn = asRecord(params.turn);
+      if (typeof turn.id === "string") {
+        await this.config.appServer.onTurnCompleted?.({
+          threadId: params.threadId,
+          turnId: turn.id
+        });
+      }
+    }
+  }
+
+  private handleTransientEvent(
+    event: CodexAppServerRawEvent
+  ): void | Promise<void> {
+    if (!this.started || !this.thread || !this.sessionId) {
+      return;
+    }
+    const params = asRecord(event.params);
+    if (
+      event.method !== "item/agentMessage/delta" ||
+      typeof params.threadId !== "string" ||
+      typeof params.turnId !== "string" ||
+      typeof params.delta !== "string"
+    ) {
+      return;
+    }
+    return this.config.appServer.onAgentMessageDelta?.({
+      threadId: params.threadId,
+      turnId: params.turnId,
+      ...(typeof params.itemId === "string" ? { itemId: params.itemId } : {}),
+      delta: params.delta
+    });
   }
 
   private sourceForThread(threadId: string): ManagedConversationSource | null {
@@ -1326,11 +1338,17 @@ export class CodexManagedConversationSession {
       );
     while (Date.now() < stopAt) {
       await this.reconcileTranscriptInternal(false);
-      const terminalSessionId = this.terminalTurnSessions.get(turnId);
-      if (terminalSessionId) {
+      const terminalSessionId =
+        this.terminalTurnSessions.get(turnId) ?? this.sessionId;
+      if (!terminalSessionId) {
+        throw new Error("Managed Conversation has no local Captured Session");
+      }
+      try {
         await this.releaseTurnProjection(turnId, terminalSessionId);
         await this.releaseTerminalTurns();
         return;
+      } catch (error) {
+        if (!terminalEvidencePending(error)) throw error;
       }
       await sleep(50);
     }

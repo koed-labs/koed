@@ -23,6 +23,8 @@ const operationFamilyLabels: Record<string, string> = {
   action_grant: "Browser-confirmed actions",
   capture_writes: "Capture writes",
   managed_execution: "Managed Conversation execution",
+  managed_file_read: "Managed Conversation file inspection",
+  managed_terminal: "Managed Conversation terminal",
   personal_collaboration_read: "Personal collaboration read access",
   personal_collaboration_write: "Personal collaboration write access",
   personal_memory_read: "Personal Memory recall",

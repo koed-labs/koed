@@ -33,6 +33,8 @@ describe("rate limiting", () => {
         memoryRead: { windowMs: 60_000, max: 1 },
         memoryWrite: { windowMs: 60_000, max: 1 },
         memoryRecall: { windowMs: 60_000, max: 1 },
+        managedConversationRead: { windowMs: 60_000, max: 1 },
+        managedConversationWrite: { windowMs: 60_000, max: 1 },
         sourceJournal: { windowMs: 60_000, max: 1 },
         projectionRebuild: { windowMs: 60_000, max: 1 }
       },
@@ -63,6 +65,8 @@ describe("rate limiting", () => {
         memoryRead: { windowMs: 60_000, max: 1 },
         memoryWrite: { windowMs: 60_000, max: 1 },
         memoryRecall: { windowMs: 60_000, max: 1 },
+        managedConversationRead: { windowMs: 60_000, max: 1 },
+        managedConversationWrite: { windowMs: 60_000, max: 1 },
         sourceJournal: { windowMs: 60_000, max: 1 },
         projectionRebuild: { windowMs: 60_000, max: 1 }
       },
@@ -89,5 +93,47 @@ describe("rate limiting", () => {
     await expect(
       handlers.memoryRead(request("Bearer valid-alice"), reply)
     ).rejects.toMatchObject({ statusCode: 429 });
+  });
+
+  it("keeps managed Conversation requests independent from background memory traffic", async () => {
+    const store = new MemoryRateLimitStore(10);
+    const handlers = createRateLimitHandlers(
+      store,
+      (value) => value,
+      {
+        auth: { windowMs: 60_000, max: 1 },
+        memoryRead: { windowMs: 60_000, max: 1 },
+        memoryWrite: { windowMs: 60_000, max: 1 },
+        memoryRecall: { windowMs: 60_000, max: 1 },
+        managedConversationRead: { windowMs: 60_000, max: 1 },
+        managedConversationWrite: { windowMs: 60_000, max: 1 },
+        sourceJournal: { windowMs: 60_000, max: 1 },
+        projectionRebuild: { windowMs: 60_000, max: 1 }
+      },
+      { resolveAuthenticatedUserId: () => "local-user" }
+    );
+    const reply = {
+      header: () => reply
+    } as unknown as FastifyReply;
+    const localRequest = {
+      ip: "127.0.0.1",
+      headers: {}
+    } as unknown as FastifyRequest;
+
+    await handlers.memoryRead(localRequest, reply);
+    await handlers.memoryWrite(localRequest, reply);
+    await expect(
+      handlers.memoryRead(localRequest, reply)
+    ).rejects.toMatchObject({ statusCode: 429 });
+    await expect(
+      handlers.memoryWrite(localRequest, reply)
+    ).rejects.toMatchObject({ statusCode: 429 });
+
+    await expect(
+      handlers.managedConversationRead(localRequest, reply)
+    ).resolves.toBeUndefined();
+    await expect(
+      handlers.managedConversationWrite(localRequest, reply)
+    ).resolves.toBeUndefined();
   });
 });

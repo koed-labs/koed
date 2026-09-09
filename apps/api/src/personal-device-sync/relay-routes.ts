@@ -3,7 +3,10 @@ import { Readable } from "node:stream";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   canonicalizePdsJson,
+  PDS_PEER_ROUTE_TTL_MS,
+  normalizePdsPeerEndpoint,
   decodePdsBase64url,
+  pdsPeerRouteAdvertisementSchema,
   parseCanonicalPdsJson,
   parsePdsRelayRequestProof,
   pdsRelayRequestNonceExpiresAt,
@@ -34,6 +37,14 @@ const headerValue = (request: FastifyRequest, name: string): string => {
     throw unavailable();
   return Buffer.from(value, "base64url").toString("utf8");
 };
+const requireDataPlane = (context: ApiRouteContext): void => {
+  if (
+    !context.personalDeviceSync.authoritySigner &&
+    !context.personalDeviceSync.secureKeyProvider
+  ) {
+    throw error("Personal Device Sync data plane is unavailable", 503);
+  }
+};
 const b64hash = (value: unknown, label: string): string => {
   if (typeof value !== "string") throw error(`PDS relay ${label} is invalid`);
   decodePdsBase64url(value, 32);
@@ -58,10 +69,10 @@ const authenticate = async (
   )
     throw error("PDS relay requires device request proof", 403);
   let proof;
+  let canonicalProof: string;
   try {
-    proof = parsePdsRelayRequestProof(
-      headerValue(request, "x-pds-relay-proof")
-    );
+    canonicalProof = headerValue(request, "x-pds-relay-proof");
+    proof = parsePdsRelayRequestProof(canonicalProof);
   } catch {
     throw error("PDS relay request proof is invalid", 403);
   }
@@ -93,7 +104,7 @@ const authenticate = async (
     nonce: proof.nonce,
     expiresAt: pdsRelayRequestNonceExpiresAt(proof.timestamp)
   });
-  return { relay, auth };
+  return { relay, auth, proof, canonicalProof };
 };
 
 const verifyAck = (
@@ -141,6 +152,53 @@ export const registerPersonalDeviceSyncRelayRoutes = (
   });
 
   const pre = { preHandler: context.rateLimit.memoryWrite };
+  app.post(
+    "/v1/personal-device-sync/relay/peer-routes",
+    pre,
+    async (request) => {
+      if (!context.personalDeviceSync.authoritySigner)
+        throw error("Personal Device Sync relay is unavailable", 503);
+      const input = await authenticate(request as RawRequest, context);
+      const canonicalAdvertisement = rawBody(request as RawRequest).toString(
+        "utf8"
+      );
+      const advertisement = pdsPeerRouteAdvertisementSchema.parse(
+        body(request as RawRequest)
+      );
+      const advertisedAt = new Date(advertisement.advertisedAt);
+      const expiresAt = new Date(advertisement.expiresAt);
+      const now = Date.now();
+      if (
+        Math.abs(advertisedAt.getTime() - now) > 60_000 ||
+        expiresAt.getTime() <= now ||
+        expiresAt.getTime() - advertisedAt.getTime() !== PDS_PEER_ROUTE_TTL_MS
+      ) {
+        throw error("PDS peer route timestamp is invalid");
+      }
+      await input.relay.advertisePdsPeerRoute({
+        ...input.auth,
+        endpointUrl: normalizePdsPeerEndpoint(advertisement.endpointUrl),
+        canonicalAdvertisement,
+        canonicalRequestProof: input.canonicalProof,
+        recordHash: createHash("sha256")
+          .update(canonicalAdvertisement)
+          .digest("base64url"),
+        advertisedAt,
+        expiresAt
+      });
+      return { accepted: true };
+    }
+  );
+  app.get(
+    "/v1/personal-device-sync/relay/peer-routes",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      if (!context.personalDeviceSync.authoritySigner)
+        throw error("Personal Device Sync relay is unavailable", 503);
+      const input = await authenticate(request as RawRequest, context);
+      return { routes: await input.relay.listPdsPeerRoutes(input.auth) };
+    }
+  );
   app.post(
     "/v1/personal-device-sync/relay/semantic-work/capabilities",
     pre,
@@ -299,8 +357,7 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     "/v1/personal-device-sync/relay/transports",
     pre,
     async (request) => {
-      if (!context.personalDeviceSync.authoritySigner)
-        throw error("Personal Device Sync relay is unavailable", 503);
+      requireDataPlane(context);
       const input = await authenticate(request as RawRequest, context);
       const payload = body(request as RawRequest);
       return {
@@ -318,8 +375,7 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     "/v1/personal-device-sync/relay/transports/:transportId/chunks/:chunkIndex",
     pre,
     async (request) => {
-      if (!context.personalDeviceSync.authoritySigner)
-        throw error("Personal Device Sync relay is unavailable", 503);
+      requireDataPlane(context);
       const input = await authenticate(request as RawRequest, context);
       const params = request.params as {
         transportId: string;
@@ -339,8 +395,7 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     "/v1/personal-device-sync/relay/transports/:transportId/commit",
     pre,
     async (request) => {
-      if (!context.personalDeviceSync.authoritySigner)
-        throw error("Personal Device Sync relay is unavailable", 503);
+      requireDataPlane(context);
       const input = await authenticate(request as RawRequest, context);
       const payload = body(request as RawRequest);
       const packageDigest = b64hash(payload.packageDigest, "package digest");
@@ -357,8 +412,7 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     "/v1/personal-device-sync/relay/mailbox",
     { preHandler: context.rateLimit.memoryRead },
     async (request) => {
-      if (!context.personalDeviceSync.authoritySigner)
-        throw error("Personal Device Sync relay is unavailable", 503);
+      requireDataPlane(context);
       const input = await authenticate(request as RawRequest, context);
       const query = request.query as { cursor?: string; limit?: string };
       const parsed = Number(query.limit ?? "50");
@@ -375,8 +429,7 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     "/v1/personal-device-sync/relay/wake",
     { preHandler: context.rateLimit.memoryRead },
     async (request, reply) => {
-      if (!context.personalDeviceSync.authoritySigner)
-        throw error("Personal Device Sync relay is unavailable", 503);
+      requireDataPlane(context);
       const input = await authenticate(request as RawRequest, context);
       const query = request.query as { transportId?: string | string[] };
       const transportIds = (
@@ -444,8 +497,7 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     "/v1/personal-device-sync/relay/transports/:transportId",
     { preHandler: context.rateLimit.memoryRead },
     async (request) => {
-      if (!context.personalDeviceSync.authoritySigner)
-        throw error("Personal Device Sync relay is unavailable", 503);
+      requireDataPlane(context);
       const input = await authenticate(request as RawRequest, context);
       const value = await input.relay.getPdsRelayTransportMetadata({
         ...input.auth,
@@ -462,8 +514,7 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     "/v1/personal-device-sync/relay/transports/:transportId/chunks/:chunkIndex",
     { preHandler: context.rateLimit.memoryRead },
     async (request) => {
-      if (!context.personalDeviceSync.authoritySigner)
-        throw error("Personal Device Sync relay is unavailable", 503);
+      requireDataPlane(context);
       const input = await authenticate(request as RawRequest, context);
       const params = request.params as {
         transportId: string;
@@ -479,8 +530,7 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     }
   );
   app.post("/v1/personal-device-sync/relay/acks", pre, async (request) => {
-    if (!context.personalDeviceSync.authoritySigner)
-      throw error("Personal Device Sync relay is unavailable", 503);
+    requireDataPlane(context);
     const input = await authenticate(request as RawRequest, context);
     const ack = body(request as RawRequest);
     verifyAck(
@@ -499,6 +549,25 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     });
     return { accepted: true };
   });
+  app.get(
+    "/v1/personal-device-sync/relay/transports/:transportId/peer-receipts/:recipientDeviceId",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      requireDataPlane(context);
+      const input = await authenticate(request as RawRequest, context);
+      const params = request.params as {
+        transportId: string;
+        recipientDeviceId: string;
+      };
+      const canonicalAck = await input.relay.getPdsPeerReceipt({
+        ...input.auth,
+        transportId: params.transportId,
+        recipientDeviceId: params.recipientDeviceId
+      });
+      if (!canonicalAck) unavailable();
+      return { canonicalAck };
+    }
+  );
   app.get(
     "/v1/personal-device-sync/relay/certificate",
     { preHandler: context.rateLimit.memoryRead },
@@ -594,8 +663,7 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     "/v1/personal-device-sync/relay/cursors/:originDeviceId",
     pre,
     async (request) => {
-      if (!context.personalDeviceSync.authoritySigner)
-        throw error("Personal Device Sync relay is unavailable", 503);
+      requireDataPlane(context);
       const input = await authenticate(request as RawRequest, context);
       const payload = body(request as RawRequest);
       if (

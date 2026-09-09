@@ -13,6 +13,10 @@ export {
   decryptCollaborationRealtimeCursor,
   collaborationRealtimePrincipalHash,
   type CollaborationRealtimeCloseReason,
+  type CollaborationRealtimeEventSink,
+  type CollaborationRealtimeTransportPrincipal,
+  type CollaborationRealtimeTransportStreamInput,
+  type PreparedCollaborationRealtimeStream,
   type CollaborationRealtimeServiceOptions
 } from "./realtime.js";
 export type { CollaborationRouteContext } from "./routes.js";

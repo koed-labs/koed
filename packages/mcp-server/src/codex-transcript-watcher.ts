@@ -1250,9 +1250,20 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private recordFailure(error: unknown): void {
     this.failureCount += 1;
     const code = watcherErrorCode(error);
+    const backendCode =
+      error instanceof MemoryApiError &&
+      error.payload &&
+      typeof error.payload === "object" &&
+      "code" in error.payload &&
+      typeof error.payload.code === "string"
+        ? error.payload.code
+        : undefined;
     this.metrics.lastFailureAt = new Date().toISOString();
     this.metrics.lastErrorCode = code;
-    logger.warn({ code }, "Codex Transcript Watcher pass failed");
+    logger.warn(
+      { code, ...(backendCode ? { backendCode } : {}) },
+      "Codex Transcript Watcher pass failed"
+    );
   }
 
   private writeStatus(): void {

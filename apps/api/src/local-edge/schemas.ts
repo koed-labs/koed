@@ -61,6 +61,8 @@ export const localEdgeOperationFamilySchema = z.enum([
   "capture_writes",
   "sync",
   "managed_execution",
+  "managed_file_read",
+  "managed_terminal",
   "admin"
 ]);
 

@@ -22,6 +22,14 @@ test("the server image builds API-owned browser approval assets", () => {
   assert.doesNotMatch(dockerfile, /explorer/i);
 });
 
+test("the embedding image skips unrelated workspace lifecycle scripts", () => {
+  const dockerfile = readRepositoryFile("apps/embedding-service/Dockerfile");
+
+  assert.match(dockerfile, /pnpm install --frozen-lockfile --ignore-scripts/);
+  assert.match(dockerfile, /pnpm --filter @koed\/shared build/);
+  assert.match(dockerfile, /pnpm --filter @koed\/embedding-service build/);
+});
+
 test("server Compose exposes approval pages through koed-server only", () => {
   const compose = readRepositoryFile(
     "examples/server-compose/docker-compose.yml"
@@ -38,4 +46,21 @@ test("server Compose exposes approval pages through koed-server only", () => {
   assert.ok(!serviceNames.some((name) => /explorer|browser/i.test(name)));
   assert.match(services, /"127\.0\.0\.1:\$\{API_HOST_PORT:-3300\}:3300"/);
   assert.match(services, /dockerfile: packages\/koed-server\/Dockerfile/);
+});
+
+test("the API keeps collaboration ciphertext on the Team provider boundary", () => {
+  const buildServer = readRepositoryFile("apps/api/src/server/build-server.ts");
+
+  assert.match(
+    buildServer,
+    /pool && envelopeEncryptionProvider[\s\S]*createCollaborationRepository\(pool, \{[\s\S]*envelopeEncryptionProvider,[\s\S]*teamEnvelopeEncryptionProvider/
+  );
+  assert.match(
+    buildServer,
+    /getMessageForRealtime:\s*collaborationRepository\.getMessageForRealtime/
+  );
+  assert.match(
+    buildServer,
+    /materializationRepository:\s*collaborationRealtimeMaterializationRepository/
+  );
 });

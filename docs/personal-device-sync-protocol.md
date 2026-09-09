@@ -23,7 +23,7 @@ versions. No mixed-version window, downgrade path, or protocol fallback exists
 in V1.
 
 PDS replicates all **eligible future closed Captured Sessions** to every active
-Personal Device Group device. It is relay-required. Each device remains a
+Personal Device Group device. It is relay-backed. Each device remains a
 symmetric local replica: capture and Recall are local, while compatible
 origin-signed derived artifacts may be imported to avoid repeating Projection
 or embedding work. Relay outage never stops local capture or Recall of already
@@ -32,8 +32,10 @@ materialized Memory.
 The same-network V1 profile uses one fixed Authority/Relay-hosting
 installation. This is an operational availability hub, not a plaintext Memory,
 Projection, embedding, or Recall authority. Its outage pauses enrollment,
-governance, and package transfer. V1 has no direct/multiple relay endpoint
-selection and no Authority transfer or rotation ceremony.
+governance, route discovery, anti-entropy, and offline delivery. Current
+same-network routes may carry the identical encrypted package directly between
+enrolled devices until their short expiry. V1 has no Authority transfer or
+rotation ceremony.
 
 PDS is not PostgreSQL replication, Team replication, a Personal Hub, or
 Directed Hosted Cross-Identity Sync. Directed Hosted Cross-Identity Sync remains
@@ -68,11 +70,36 @@ The one-use invitation secret remains in a URL fragment and is never sent as an
 HTTP bearer credential. HKDF-SHA-256 derives an invitation transport key, and
 all pairing exchanges use AES-256-GCM with direction, invitation ID, and
 message ID bound as AAD. The listener permits only the exact enrollment routes
-and the existing authenticated encrypted relay route. It is hosted alongside
-the group's Authority/Relay by the Authority-hosting installation; joined
-replicas do not receive or copy the Authority private key merely to originate
-invitations. A valid invitation can request approval, but only the active
+and the existing authenticated encrypted package data plane. Every enrolled
+Desktop may host the package receive path; only the Authority-hosting
+installation exposes invitation creation. Joined replicas do not receive or
+copy the Authority private key. A valid invitation can request approval, but only the active
 device's existing PDS signing key can authorize the transition.
+
+### Peer-assisted package transport
+
+Each listening device may advertise exactly one private-network HTTP or HTTPS
+`/pds` endpoint to the Authority/Relay. The advertisement is canonical JSON,
+uses `koed/pds-peer/v1`, is bound to the existing signed relay request proof,
+and expires after three minutes. The Authority/Relay stores only the current
+signer-bound route and returns routes only to another currently authenticated
+member of the same group. An older advertisement cannot replace a newer one.
+
+A sender selects direct transfer only when every other intended recipient in
+the package snapshot has one current, unambiguous, cryptographically verified
+route. It uploads the unchanged `koed/pds/v1` package to each route. A direct
+delivery is complete only after the sender verifies a normal recipient-signed
+`package-ack` whose group, authority head, epoch, package identity, recipient,
+and result all match. It then records the same anti-entropy cursor at the
+Authority/Relay. Missing routes, route expiry, connection failure, timeout,
+partial delivery, malformed response, or invalid acknowledgement cause normal
+relay upload. Receiving the same package by both paths is idempotent.
+
+Peer transport never carries plaintext, private keys, browser sessions, API
+Tokens, Desktop credentials, lifecycle authority, or a distinct payload format.
+The relay remains the durable mailbox and anti-entropy authority. Peer endpoint
+addresses are bounded network metadata visible only to authenticated devices in
+the Personal Device Group and are removed by expiry or membership revocation.
 
 Completion is not successful until the joining deployment has verified and
 durably reconciled the active group state into its own database. That local

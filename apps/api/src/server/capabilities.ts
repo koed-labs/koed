@@ -1,9 +1,14 @@
 import releaseManifest from "@koed/koed/package.json" with { type: "json" };
-import { COLLABORATION_CONTRACT_VERSION } from "@koed/shared";
+import {
+  COLLABORATION_CONTRACT_VERSION,
+  REALTIME_TRANSPORT_TICKET_TTL_SECONDS,
+  REALTIME_TRANSPORT_TICKET_VERSION,
+  type RealtimeTransportOffer
+} from "@koed/shared";
 
 const koedReleaseVersion = releaseManifest.version;
 
-export const capabilitySchemaVersion = 6;
+export const capabilitySchemaVersion = 9;
 export const collaborationRealtimeProtocolVersion =
   COLLABORATION_CONTRACT_VERSION;
 export const sharedMemorySourceAdmissionProtocolVersion = 1;
@@ -83,6 +88,7 @@ export interface CapabilitiesConfig {
   managedConversations?: CapabilityAvailability;
   teamCollaborationEnabled: boolean;
   personalDeviceSync?: CapabilityAvailability;
+  realtimeTransportOffers?: RealtimeTransportOffer[];
 }
 
 export interface CapabilityDescriptor {
@@ -131,16 +137,25 @@ export interface CapabilitiesResponse {
     crossIdentitySync: CapabilityAvailability;
     conversationSourceReplication: CapabilityAvailability;
     managedConversations: CapabilityAvailability;
+    managedDevelopmentPreviews: CapabilityAvailability;
+    managedSourceControl: CapabilityAvailability;
     personalDeviceSync: CapabilityAvailability;
     memoryInbox: CapabilityAvailability;
   };
   protocols: {
     collaborationRealtime: {
       version: typeof collaborationRealtimeProtocolVersion;
-      transport: "sse";
       snapshotEndpoint: "/v1/collaboration/realtime/snapshot";
       streamEndpoint: "/v1/collaboration/realtime/stream";
       acknowledgementEndpoint: "/v1/collaboration/realtime/ack";
+      offers: RealtimeTransportOffer[];
+      transportTicket: {
+        endpoint: "/v1/realtime/transport-tickets";
+        version: typeof REALTIME_TRANSPORT_TICKET_VERSION;
+        ttlSeconds: typeof REALTIME_TRANSPORT_TICKET_TTL_SECONDS;
+        singleUse: true;
+        authority: "admission_only";
+      };
     };
     sharedMemorySourceAdmission: {
       version: typeof sharedMemorySourceAdmissionProtocolVersion;
@@ -494,22 +509,49 @@ const buildCapabilities = (input: {
   ),
   "memory.managedConversations": descriptor(
     input.memory.managedConversations,
-    "Server-owned local AI Client conversations with durable prompt commands.",
+    "Server-owned local AI Client conversations with durable prompts and runner-rooted checkpoint files.",
     {
       endpoints:
         input.memory.managedConversations === "available"
           ? [
               "/v1/managed-conversations",
               "/v1/managed-conversations/{executionId}",
-              "/v1/managed-conversations/{executionId}/prompts"
+              "/v1/managed-conversations/{executionId}/prompts",
+              "/v1/managed-conversations/{executionId}/files",
+              "/v1/managed-conversations/{executionId}/files/{commandId}"
             ]
+          : undefined,
+      requiresAuthentication: true
+    }
+  ),
+  "memory.managedDevelopmentPreviews": descriptor(
+    input.memory.managedDevelopmentPreviews,
+    "Runner-owned development-server discovery and isolated Desktop previews.",
+    {
+      endpoints:
+        input.memory.managedDevelopmentPreviews === "available"
+          ? [
+              "/v1/managed-conversations/{executionId}/previews",
+              "/v1/managed-conversations/{executionId}/previews/{previewId}/access"
+            ]
+          : undefined,
+      requiresAuthentication: true
+    }
+  ),
+  "memory.managedSourceControl": descriptor(
+    input.memory.managedSourceControl,
+    "Runner-owned provider-neutral source control and revision-bound review workflows.",
+    {
+      endpoints:
+        input.memory.managedSourceControl === "available"
+          ? ["/v1/managed-conversations/{executionId}/source-control"]
           : undefined,
       requiresAuthentication: true
     }
   ),
   "memory.personalDeviceSync": descriptor(
     input.memory.personalDeviceSync,
-    "Personal Device Group authority and device-authenticated encrypted relay. Authority or relay-state absence fails closed.",
+    "Personal Device Group authority, device-authenticated encrypted relay, and optional peer-assisted package transfer. Authority or relay-state absence fails closed.",
     {
       endpoints:
         input.memory.personalDeviceSync === "available"
@@ -523,6 +565,7 @@ const buildCapabilities = (input: {
               "/v1/personal-device-sync/groups/{groupId}/certificates/{deviceId}",
               "/v1/personal-device-sync/groups/{groupId}/status",
               "/v1/personal-device-sync/relay/transports",
+              "/v1/personal-device-sync/relay/peer-routes",
               "/v1/personal-device-sync/relay/mailbox",
               "/v1/personal-device-sync/relay/acks"
             ]
@@ -628,6 +671,16 @@ export const buildCapabilitiesResponse = (
       config.applicationLayerEncryption !== "unavailable"
         ? (config.managedConversations ?? ("available" as const))
         : ("unavailable" as const),
+    managedDevelopmentPreviews:
+      ["developer", "local_personal"].includes(config.deploymentProfile) &&
+      config.applicationLayerEncryption !== "unavailable"
+        ? ("available" as const)
+        : ("unavailable" as const),
+    managedSourceControl:
+      ["developer", "local_personal"].includes(config.deploymentProfile) &&
+      config.applicationLayerEncryption !== "unavailable"
+        ? ("available" as const)
+        : ("unavailable" as const),
     personalDeviceSync: config.personalDeviceSync ?? ("unavailable" as const),
     memoryInbox: "unavailable" as const
   };
@@ -691,10 +744,28 @@ export const buildCapabilitiesResponse = (
     protocols: {
       collaborationRealtime: {
         version: collaborationRealtimeProtocolVersion,
-        transport: "sse",
         snapshotEndpoint: "/v1/collaboration/realtime/snapshot",
         streamEndpoint: "/v1/collaboration/realtime/stream",
-        acknowledgementEndpoint: "/v1/collaboration/realtime/ack"
+        acknowledgementEndpoint: "/v1/collaboration/realtime/ack",
+        offers: [
+          {
+            id: "sse",
+            availability: "available",
+            protocolVersions: [collaborationRealtimeProtocolVersion],
+            endpoint: "/v1/collaboration/realtime/stream",
+            authentication: "session_or_device_credential",
+            reliability: "reliable_ordered",
+            direction: "server_to_client"
+          },
+          ...(config.realtimeTransportOffers ?? [])
+        ],
+        transportTicket: {
+          endpoint: "/v1/realtime/transport-tickets",
+          version: REALTIME_TRANSPORT_TICKET_VERSION,
+          ttlSeconds: REALTIME_TRANSPORT_TICKET_TTL_SECONDS,
+          singleUse: true,
+          authority: "admission_only"
+        }
       },
       sharedMemorySourceAdmission: {
         version: sharedMemorySourceAdmissionProtocolVersion,

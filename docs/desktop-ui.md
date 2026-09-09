@@ -117,6 +117,21 @@ bounded, explained raw-text fallback so no captured content is silently lost.
 
 ## Core Workflows
 
+### Start Or Resume A Managed Conversation
+
+From a Project, **New** opens a compact launch form populated from the local
+edge's current AI Client capability snapshot. The User chooses the AI Client
+instance, model, available reasoning effort, and an exactly supported
+permission mode. Runner placement is explicit even when only **This device**
+is available. Unavailable instances and unsupported modes cannot be selected.
+
+Opening a Captured Session resumes its existing provider Conversation with the
+persisted launch choices. Koed shows a recoverable error when exact resume is
+not possible and never substitutes a new provider Conversation. The prompt
+composer restores an encrypted device-local draft, saves edits without putting
+them in renderer storage or Memory, and clears the draft only after the command
+is accepted.
+
 ### Connect A Personal Device
 
 Open **Devices** from the account rail. The Authority-hosting installation can

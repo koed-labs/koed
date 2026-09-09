@@ -174,6 +174,44 @@ const enrichProject = (
   isWorktree: metadata?.git?.isWorktree ?? false
 });
 
+const mergeGraphProjectsByPath = (
+  graphProjects: DesktopProjectGroup[],
+  metadataByPath: ReadonlyMap<string, DesktopProjectMetadata>
+): DesktopProjectGroup[] => {
+  const grouped = new Map<string, DesktopProjectGroup[]>();
+  for (const project of graphProjects) {
+    const path = normalizedPath(project.path);
+    const key = path ? `path:${path}` : `id:${project.id}`;
+    const projects = grouped.get(key) ?? [];
+    projects.push(project);
+    grouped.set(key, projects);
+  }
+
+  return [...grouped.values()].map((projects) => {
+    const path = normalizedPath(projects[0]?.path);
+    const metadata = path ? metadataByPath.get(path) : undefined;
+    const representative =
+      projects.find(({ id }) => id === metadata?.localProjectId) ??
+      projects[0]!;
+    const threads = projects
+      .flatMap((project) => project.threads)
+      .sort(
+        (left, right) =>
+          Date.parse(right.latestAt) - Date.parse(left.latestAt) ||
+          left.id.localeCompare(right.id)
+      );
+
+    return {
+      ...representative,
+      eventCount: projects.reduce(
+        (total, project) => total + project.eventCount,
+        0
+      ),
+      threads
+    };
+  });
+};
+
 export const mergeProjectSources = (
   graphProjects: DesktopProjectGroup[],
   metadataProjects: DesktopProjectMetadata[]
@@ -185,13 +223,15 @@ export const mergeProjectSources = (
   }
 
   const matchedMetadataIds = new Set<string>();
-  const merged = graphProjects.map((project) => {
-    const metadata = project.path
-      ? (metadataByPath.get(normalizedPath(project.path) ?? "") ?? null)
-      : null;
-    if (metadata) matchedMetadataIds.add(metadata.localProjectId);
-    return enrichProject(project, metadata);
-  });
+  const merged = mergeGraphProjectsByPath(graphProjects, metadataByPath).map(
+    (project) => {
+      const metadata = project.path
+        ? (metadataByPath.get(normalizedPath(project.path) ?? "") ?? null)
+        : null;
+      if (metadata) matchedMetadataIds.add(metadata.localProjectId);
+      return enrichProject(project, metadata);
+    }
+  );
 
   for (const metadata of metadataProjects) {
     if (matchedMetadataIds.has(metadata.localProjectId)) continue;

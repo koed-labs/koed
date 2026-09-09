@@ -35,6 +35,10 @@ const inspectWorkspace = async (window) =>
       titleTextOverflow: title && getComputedStyle(title).textOverflow,
       previewTextOverflow: preview && getComputedStyle(preview).textOverflow,
       sourceAiClient: row?.textContent.includes('Codex CLI') ?? false,
+      pinnedHeadingVisible: document.body.textContent.includes('Pinned'),
+      inactiveToggleVisible: document.body.textContent.includes('Inactive'),
+      presentationActionCount: document.querySelectorAll('.personal-session-actions').length,
+      sessionListOverflow: Boolean(list && list.scrollWidth > list.clientWidth),
       rawMetadataExposed: document.body.textContent.includes('untrusted metadata'),
       timelineScrollable: Boolean(timeline && timeline.scrollHeight > timeline.clientHeight),
       timelineOverflowY: timeline && getComputedStyle(timeline).overflowY,
@@ -308,6 +312,30 @@ const run = async () => {
     assert.equal(wide.titleTextOverflow, "clip");
     assert.equal(wide.previewTextOverflow, "clip");
     assert.equal(wide.sourceAiClient, false);
+    assert.equal(wide.pinnedHeadingVisible, true);
+    assert.equal(wide.inactiveToggleVisible, true);
+    assert.equal(wide.presentationActionCount, 4);
+    const actionMenuState = await window.webContents.executeJavaScript(`(() => {
+      const summaries = [...document.querySelectorAll('.personal-session-actions > summary')];
+      summaries[0]?.click();
+      summaries[1]?.click();
+      const menus = [...document.querySelectorAll('.personal-session-actions')];
+      const openMenu = menus.find((menu) => menu.open);
+      const closedMenu = menus.find((menu) => !menu.open);
+      const result = {
+        openCount: menus.filter((menu) => menu.open).length,
+        openZIndex: openMenu ? Number(getComputedStyle(openMenu).zIndex) : null,
+        closedZIndex: closedMenu ? Number(getComputedStyle(closedMenu).zIndex) : null
+      };
+      openMenu?.querySelector('summary')?.click();
+      return result;
+    })()`);
+    assert.equal(actionMenuState.openCount, 1, JSON.stringify(actionMenuState));
+    assert.ok(
+      actionMenuState.openZIndex > actionMenuState.closedZIndex,
+      JSON.stringify(actionMenuState)
+    );
+    assert.equal(wide.sessionListOverflow, false);
     assert.equal(wide.rawMetadataExposed, false);
     assert.ok(
       contrastRatio(wide.foreground, wide.background) >= 4.5,
@@ -350,6 +378,41 @@ const run = async () => {
       JSON.stringify(narrowConversation)
     );
     await setEmulatedViewport(window, 1440, 900);
+    const titleTypography = await window.webContents.executeJavaScript(`(() => {
+      const title = document.querySelector('.personal-session-title-row h2');
+      if (!title) return null;
+      const style = getComputedStyle(title);
+      return {
+        fontSize: style.fontSize,
+        fontWeight: style.fontWeight,
+        letterSpacing: style.letterSpacing,
+        lineHeight: style.lineHeight
+      };
+    })()`);
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="Rename Captured Session"]')?.click()`
+    );
+    await waitFor(
+      window,
+      `Boolean(document.querySelector('#personal-session-title'))`,
+      "Captured Session title editor"
+    );
+    const titleEditorTypography = await window.webContents
+      .executeJavaScript(`(() => {
+      const input = document.querySelector('#personal-session-title');
+      if (!input) return null;
+      const style = getComputedStyle(input);
+      return {
+        fontSize: style.fontSize,
+        fontWeight: style.fontWeight,
+        letterSpacing: style.letterSpacing,
+        lineHeight: style.lineHeight
+      };
+    })()`);
+    assert.deepEqual(titleEditorTypography, titleTypography);
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="Cancel Captured Session rename"]')?.click()`
+    );
     if (process.env.KOED_PROJECT_NARROW_ONLY === "1") return;
     await waitFor(
       window,

@@ -383,34 +383,34 @@ describe("AI Client independent readiness acceptance matrix", () => {
     }
   );
 
-  it("keeps Managed Conversation execution on the exact persisted owner", () => {
-    const registry = new ManagedConversationRuntimeRegistry();
-    const codexSession = { closeAndWait: vi.fn(async () => undefined) };
-    assertManagedConversationExecutionOwner({
-      provider: "codex",
-      aiClientInstanceId: "codex.work"
-    });
-    registry.set("codex", "execution-1", {
-      executionGeneration: 1,
-      aiClientInstanceId: "codex.work",
-      configIdentityHash: identityHash,
-      session: codexSession as never
-    });
-
-    expect(
-      registry.get("codex", "execution-1", {
-        aiClientInstanceId: "codex.work",
-        configIdentityHash: identityHash
-      })?.session
-    ).toBe(codexSession);
-    expect(registry.get("claude", "execution-1")).toBeUndefined();
-    expect(() =>
+  it.each(["codex", "claude", "pi"] as const)(
+    "keeps %s Managed Conversation execution on the exact persisted owner",
+    (provider) => {
+      const registry = new ManagedConversationRuntimeRegistry();
+      const codexSession = { closeAndWait: vi.fn(async () => undefined) };
       assertManagedConversationExecutionOwner({
-        provider: "pi",
-        aiClientInstanceId: "pi.default"
-      })
-    ).toThrow("ManagedConversationUnsupportedAiClientError");
-  });
+        provider,
+        aiClientInstanceId: `${provider}.work`
+      });
+      registry.set(provider, "execution-1", {
+        executionGeneration: 1,
+        aiClientInstanceId: `${provider}.work`,
+        configIdentityHash: identityHash,
+        session: codexSession as never
+      });
+
+      expect(
+        registry.get(provider, "execution-1", {
+          aiClientInstanceId: `${provider}.work`,
+          configIdentityHash: identityHash
+        })?.session
+      ).toBe(codexSession);
+      for (const other of ["codex", "claude", "pi"] as const) {
+        if (other !== provider)
+          expect(registry.get(other, "execution-1")).toBeUndefined();
+      }
+    }
+  );
 
   it("migrates existing Codex-only ownership without selecting another client", () => {
     const home = fs.mkdtempSync(

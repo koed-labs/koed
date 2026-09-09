@@ -300,9 +300,9 @@ const backend = (
   capabilities: {
     state: "validated",
     expiresAt: "2099-01-01T00:15:00.000Z",
-    schemaVersion: 6,
+    schemaVersion: 9,
     payload: {
-      capabilitySchemaVersion: 6,
+      capabilitySchemaVersion: 9,
       capabilities: {
         "memory.collaboration": { availability: "partial" }
       }
@@ -336,9 +336,9 @@ const sourceSyncBackend = (): LocalEdgeUpstreamBackend =>
     capabilities: {
       state: "validated",
       expiresAt: "2099-01-01T00:15:00.000Z",
-      schemaVersion: 6,
+      schemaVersion: 9,
       payload: {
-        capabilitySchemaVersion: 6,
+        capabilitySchemaVersion: 9,
         capabilities: {
           "memory.collaboration": { availability: "available" },
           "memory.crossIdentitySync": { availability: "available" }
@@ -3977,9 +3977,9 @@ describe("local-edge collaboration command route", () => {
         capabilities: {
           state: "validated",
           expiresAt: "2000-01-01T00:00:00.000Z",
-          schemaVersion: 6,
+          schemaVersion: 9,
           payload: {
-            capabilitySchemaVersion: 6,
+            capabilitySchemaVersion: 9,
             capabilities: {
               "memory.collaboration": { availability: "available" }
             }

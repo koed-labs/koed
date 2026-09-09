@@ -155,7 +155,7 @@ Observed on 2026-08-03:
    libraries, so the exact Desktop Electron interaction gate was run on the
    macOS host instead.
 
-3. Register the fresh Docker backend in Desktop, refresh capability schema 6,
+3. Register the fresh Docker backend in Desktop, refresh capability schema 9,
    and enable only the route families needed by the inventory.
 4. Start device enrollment, inspect the exact requested operation families in
    the API-hosted approval page, approve through the authenticated browser

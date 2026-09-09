@@ -161,3 +161,32 @@ describe("Pi session parser", () => {
     );
   });
 });
+
+it("retains native completion evidence on the last assistant content block", () => {
+  const parsed = parsePiSessionJournalBytes({
+    bytes: Buffer.from(
+      JSON.stringify({
+        type: "message",
+        id: "answer",
+        parentId: "user",
+        message: {
+          role: "assistant",
+          stopReason: "stop",
+          content: [
+            { type: "thinking", thinking: "synthetic" },
+            { type: "text", text: "done" }
+          ]
+        }
+      }) + "\n"
+    ),
+    absoluteStartOffset: 0,
+    lineIndexOffset: 0,
+    sessionId: "captured",
+    externalSessionId: "native",
+    sourceFingerprint: "fingerprint"
+  });
+  expect(parsed.items.at(-1)?.rawJson).toMatchObject({
+    sourceRecord: { id: "answer", message: { stopReason: "stop" } },
+    contentBlock: { type: "text", text: "done" }
+  });
+});

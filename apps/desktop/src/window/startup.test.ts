@@ -17,18 +17,21 @@ describe("Desktop startup", () => {
       await runtime;
       order.push("resume-complete");
     });
+    const onRuntimeSettled = vi.fn();
 
     await expect(
       startDesktopWindowAndRuntime({
         background: false,
         createWindow,
-        resumeRuntime
+        resumeRuntime,
+        onRuntimeSettled
       })
     ).resolves.toBeUndefined();
     expect(order).toEqual(["window", "resume-started"]);
+    expect(onRuntimeSettled).not.toHaveBeenCalled();
 
     releaseRuntime();
-    await runtime;
+    await vi.waitFor(() => expect(onRuntimeSettled).toHaveBeenCalledOnce());
   });
 
   it("contains background runtime failures after the window is available", async () => {
@@ -36,16 +39,19 @@ describe("Desktop startup", () => {
     const resumeRuntime = vi.fn(async () => {
       throw new Error("runtime unavailable");
     });
+    const onRuntimeSettled = vi.fn();
 
     await expect(
       startDesktopWindowAndRuntime({
         background: false,
         createWindow,
-        resumeRuntime
+        resumeRuntime,
+        onRuntimeSettled
       })
     ).resolves.toBeUndefined();
     expect(createWindow).toHaveBeenCalledOnce();
     expect(resumeRuntime).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(onRuntimeSettled).toHaveBeenCalledOnce());
   });
 
   it("resumes the runtime without creating a background startup window", async () => {

@@ -23,12 +23,14 @@ import {
   resolveSupportedRerankerModelConfig,
   type EnvelopeEncryptionProvider,
   type EnvelopeEncryptionProviderStatus,
-  type KoedJobQueue
+  type KoedJobQueue,
+  type RealtimeTransportOffer
 } from "@koed/shared";
 import type { FastifyInstance } from "fastify";
 import { Redis } from "ioredis";
 import { z } from "zod";
 import type { ApiRouteContext } from "./context.js";
+import type { WebTransportGatewayMetrics } from "../realtime-transport/index.js";
 import {
   buildCapabilitiesResponse,
   type DeploymentProfile,
@@ -48,6 +50,8 @@ interface OperationalRouteOptions {
   dbPool?: DbPool | null;
   repository: MemorySourceRepository | null;
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  realtimeTransportOffers?: RealtimeTransportOffer[];
+  realtimeTransportMetrics?: () => WebTransportGatewayMetrics;
   alertFetch?: typeof fetch;
   embeddingQueue: KoedJobQueue<unknown> | null;
   lcmEmbeddingQueue: KoedJobQueue<unknown> | null;
@@ -912,7 +916,8 @@ export const registerOperationalRoutes = (
             ? "unavailable"
             : "available",
         teamCollaborationEnabled: config.teamCollaborationEnabled,
-        personalDeviceSync: await pdsRelayCapability()
+        personalDeviceSync: await pdsRelayCapability(),
+        realtimeTransportOffers: options.realtimeTransportOffers
       },
       "public"
     )
@@ -967,7 +972,8 @@ export const registerOperationalRoutes = (
             ? "unavailable"
             : "available",
         teamCollaborationEnabled: config.teamCollaborationEnabled,
-        personalDeviceSync: await pdsRelayCapability()
+        personalDeviceSync: await pdsRelayCapability(),
+        realtimeTransportOffers: options.realtimeTransportOffers
       },
       "authenticated",
       entitlement,
@@ -1397,6 +1403,21 @@ export const registerOperationalRoutes = (
         `koed_embedding_end_to_end_milliseconds_count${labels} ${item.endToEndSampleCount}`
       );
     }
+    const realtime = options.realtimeTransportMetrics?.();
+    if (realtime) {
+      lines.push(
+        "# HELP koed_realtime_webtransport_sessions WebTransport sessions by state.",
+        "# TYPE koed_realtime_webtransport_sessions gauge",
+        `koed_realtime_webtransport_sessions${metricLabels({ state: "active" })} ${realtime.sessionsActive}`,
+        "# HELP koed_realtime_webtransport_events_total WebTransport runtime outcomes.",
+        "# TYPE koed_realtime_webtransport_events_total counter",
+        `koed_realtime_webtransport_events_total${metricLabels({ event: "sessions_accepted" })} ${realtime.sessionsAccepted}`,
+        `koed_realtime_webtransport_events_total${metricLabels({ event: "sessions_rejected" })} ${realtime.sessionsRejected}`,
+        `koed_realtime_webtransport_events_total${metricLabels({ event: "streams_accepted" })} ${realtime.streamsAccepted}`,
+        `koed_realtime_webtransport_events_total${metricLabels({ event: "streams_rejected" })} ${realtime.streamsRejected}`,
+        `koed_realtime_webtransport_events_total${metricLabels({ event: "datagrams_dropped" })} ${realtime.datagramsDroppedUnauthenticated + realtime.datagramsDroppedOversized + realtime.datagramsDroppedUnsupported + realtime.datagramsDroppedInvalid}`
+      );
+    }
     lines.push("# EOF", "");
     return reply
       .header(
@@ -1544,6 +1565,10 @@ export const registerOperationalRoutes = (
       integration: {
         supportedClients: ["codex"],
         unsupportedClients: []
+      },
+      realtimeTransport: {
+        offers: options.realtimeTransportOffers ?? [],
+        webTransport: options.realtimeTransportMetrics?.() ?? null
       },
       embeddingStatus,
       overview,

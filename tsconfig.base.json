@@ -30,8 +30,20 @@
         "packages/mcp-server/src/runtime-contracts.ts"
       ],
       "@koed/shared": ["packages/shared/src/index.ts"],
+      "@koed/shared/ai-client-contract": [
+        "packages/shared/src/ai-client-contract.ts"
+      ],
       "@koed/shared/collaboration": [
         "packages/shared/src/collaboration-contract.ts"
+      ],
+      "@koed/shared/collaboration-client-runtime": [
+        "packages/shared/src/collaboration-client-runtime.ts"
+      ],
+      "@koed/shared/durable-realtime": [
+        "packages/shared/src/durable-realtime.ts"
+      ],
+      "@koed/shared/execution-checkout": [
+        "packages/shared/src/execution-checkout.ts"
       ],
       "@koed/shared/personal-desktop": [
         "packages/shared/src/personal-desktop-contract.ts"

@@ -21,6 +21,9 @@ import type {
   PdsRemoteAccountLinkVerifier
 } from "../personal-device-sync/index.js";
 import type { PdsSecureKeyProvider } from "../personal-device-sync/local-source.js";
+import type { ManagedTerminalRuntime } from "../managed-conversations/terminal-runtime.js";
+import type { ManagedDevelopmentPreviewRuntime } from "../managed-conversations/preview-runtime.js";
+import type { SourceControlRuntime } from "../source-control/runtime.js";
 
 export type CapturePolicy = Awaited<
   ReturnType<MemorySourceRepository["getEffectiveCapturePolicy"]>
@@ -96,6 +99,8 @@ export interface ApiRouteContext {
     inspect(): DeviceIdentityInspection;
   };
   managedConversations: {
+    terminalRuntime: ManagedTerminalRuntime;
+    previewRuntime: ManagedDevelopmentPreviewRuntime;
     commandWakePool: {
       connect(): Promise<{
         query(sql: string): Promise<unknown>;
@@ -111,6 +116,9 @@ export interface ApiRouteContext {
   };
   trustedServices: {
     fetch: typeof fetch;
+  };
+  sourceControl: {
+    runtime: SourceControlRuntime;
   };
   localEdge: {
     upstreamBackendsPath: string;

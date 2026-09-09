@@ -41,12 +41,14 @@ import {
   type SharedMemorySourcePage,
   type SharedMemorySourceRef
 } from "@koed/shared/collaboration";
+import {
+  CollaborationClientRuntime,
+  negotiateDurableRealtimeTransport
+} from "@koed/shared/collaboration-client-runtime";
 
 import { CollaborationActionGrantProjectionStore } from "./action-grant-projection-store.js";
 import { RendererEventQueue } from "./renderer-event-queue.js";
-import { CollaborationSelectionViewCache } from "./selection-view-cache.js";
 import { SharedSourceBackfillCoordinator } from "./shared-source-backfill.js";
-import { CollaborationSubscriptionCoordinator } from "./subscription-coordinator.js";
 
 export interface CollaborationRendererBridge {
   command(
@@ -1484,7 +1486,6 @@ export const createCollaborationRendererClient = (
 ): CollaborationRendererClient => {
   let snapshot: CollaborationSnapshot | null = null;
   let disposed = false;
-  let connectedRemoteUrl: string | null = null;
   const appliedReceiptVersions = new Map<string, number>();
   const pendingDeliveryReceipts = new Map<
     string,
@@ -1498,15 +1499,7 @@ export const createCollaborationRendererClient = (
   >();
   const listeners = new Set<CollaborationClientListener>();
   const actionGrantProjections = new CollaborationActionGrantProjectionStore();
-  const selectionViews = new CollaborationSelectionViewCache(
-    selectionIdentity,
-    teamIdForSelection,
-    SELECTION_VIEW_CACHE_LIMIT,
-    SELECTION_VIEW_CACHE_RETENTION_MS
-  );
   const sourceBackfills = new SharedSourceBackfillCoordinator();
-  let authorityGeneration = 0;
-  let authorityChangeWasRevocation = false;
   let selectionRequestGeneration = 0;
   let selectionIntentGeneration = 0;
   const seenEventIds = new Set<string>();
@@ -1581,15 +1574,15 @@ export const createCollaborationRendererClient = (
     actionGrantProjections.publish(projection);
 
   const rememberSelectionView = (next: CollaborationSnapshot) =>
-    selectionViews.remember(next);
+    clientRuntime.rememberSelectionView(next);
   const cachedSelectionView = (selection: CollaborationSelection) =>
-    selectionViews.get(selection);
+    clientRuntime.selectionView(selection);
   const clearTeamSelectionViews = (teamId?: string) =>
-    selectionViews.clearTeam(teamId);
+    clientRuntime.clearTeamSelectionViews(teamId);
   const clearThreadSelectionViews = (threadId: string) =>
-    selectionViews.clearThread(threadId);
+    clientRuntime.clearThreadSelectionViews(threadId);
   const clearSharedSessionSelectionView = (sharedSessionId: string) =>
-    selectionViews.clearSharedSession(sharedSessionId);
+    clientRuntime.clearSharedSessionSelectionView(sharedSessionId);
 
   const recoverableSharedSessionSelection = () => {
     if (
@@ -1746,7 +1739,7 @@ export const createCollaborationRendererClient = (
     try {
       if (disposed) throw new CollaborationClientError(offlineError());
       const command = collaborationRendererCommandSchema.parse(value);
-      const commandAuthorityGeneration = authorityGeneration;
+      const commandAuthorityGeneration = clientRuntime.authorityGeneration();
       const result = await bridge.command(command);
       if (
         result.requestId !== command.requestId ||
@@ -1756,10 +1749,10 @@ export const createCollaborationRendererClient = (
       }
       if (
         command.command !== "collaboration.disconnect_backend" &&
-        commandAuthorityGeneration !== authorityGeneration
+        !clientRuntime.authorityIsCurrent(commandAuthorityGeneration)
       ) {
         throw new CollaborationAuthorityChangedError(
-          authorityChangeWasRevocation
+          clientRuntime.authorityWasRevokedSince(commandAuthorityGeneration)
             ? accessRevokedError()
             : {
                 code: "conflict",
@@ -1880,15 +1873,22 @@ export const createCollaborationRendererClient = (
     }
   };
 
-  const subscriptions = new CollaborationSubscriptionCoordinator(
-    async (scope) => {
+  const desktopTransportId = negotiateDurableRealtimeTransport(
+    ["desktop_ipc"],
+    ["desktop_ipc"]
+  );
+  if (!desktopTransportId) {
+    throw new Error("Desktop collaboration transport is unavailable.");
+  }
+  const clientRuntime = new CollaborationClientRuntime({
+    createSubscription: async (scope) => {
       const result = await command("collaboration.subscribe", { scope });
       return result.ok && result.command === "collaboration.subscribe"
         ? result.data.subscription
         : null;
     },
-    unsubscribeSubscriptionId,
-    (scope) => ({
+    releaseSubscription: unsubscribeSubscriptionId,
+    preferredSelection: (scope) => ({
       selection:
         scope.scope === "team" &&
         snapshot &&
@@ -1896,8 +1896,30 @@ export const createCollaborationRendererClient = (
           ? snapshot.selection
           : null,
       intentGeneration: selectionIntentGeneration
-    })
-  );
+    }),
+    selectionIdentity,
+    teamIdForSelection,
+    selectionCacheLimit: SELECTION_VIEW_CACHE_LIMIT,
+    selectionCacheRetentionMs: SELECTION_VIEW_CACHE_RETENTION_MS
+  });
+
+  const bindClientRuntime = (
+    next: CollaborationSnapshot,
+    remoteUrl?: string | null
+  ) => {
+    const currentBinding = clientRuntime.binding();
+    clientRuntime.bind({
+      backendId: next.connection.backendId,
+      principalId: next.navigation.teamPrincipal?.id ?? null,
+      remoteUrl:
+        remoteUrl !== undefined
+          ? remoteUrl
+          : currentBinding?.backendId === next.connection.backendId
+            ? currentBinding.remoteUrl
+            : null,
+      transportId: desktopTransportId
+    });
+  };
 
   const prewarmSharedSessionViews = async (
     navigation: CollaborationSnapshot["navigation"]
@@ -1931,33 +1953,37 @@ export const createCollaborationRendererClient = (
       while (index < candidates.length) {
         const candidate = candidates[index++];
         if (!candidate) return;
-        const existing = selectionViews.inFlight(candidate.selection);
+        const existing = clientRuntime.coordinatedSelectionLoad(
+          candidate.selection
+        );
         if (existing) {
           await existing;
           continue;
         }
-        const pending = selectionViews.coordinate(candidate.selection, () =>
-          command("collaboration.select", {
-            selection: candidate.selection,
-            navigationIntent: "prewarm"
-          })
-            .then((result) => {
-              if (
-                result.ok &&
-                result.command === "collaboration.select" &&
-                result.data.snapshot.selection.kind === "shared_session" &&
-                result.data.snapshot.selection.sharedSessionId ===
-                  candidate.session.id &&
-                result.data.snapshot.view.kind === "shared_session" &&
-                result.data.snapshot.view.session.sourceRevision ===
-                  candidate.session.sourceRevision
-              ) {
-                rememberSelectionView(result.data.snapshot);
-                return result.data.snapshot;
-              }
-              return null;
+        const pending = clientRuntime.coordinateSelectionLoad(
+          candidate.selection,
+          () =>
+            command("collaboration.select", {
+              selection: candidate.selection,
+              navigationIntent: "prewarm"
             })
-            .catch(() => null)
+              .then((result) => {
+                if (
+                  result.ok &&
+                  result.command === "collaboration.select" &&
+                  result.data.snapshot.selection.kind === "shared_session" &&
+                  result.data.snapshot.selection.sharedSessionId ===
+                    candidate.session.id &&
+                  result.data.snapshot.view.kind === "shared_session" &&
+                  result.data.snapshot.view.session.sourceRevision ===
+                    candidate.session.sourceRevision
+                ) {
+                  rememberSelectionView(result.data.snapshot);
+                  return result.data.snapshot;
+                }
+                return null;
+              })
+              .catch(() => null)
         );
         await pending;
       }
@@ -2240,13 +2266,13 @@ export const createCollaborationRendererClient = (
     }
   };
 
-  const resetSubscriptions = () => subscriptions.reset();
+  const resetSubscriptions = () => clientRuntime.resetSubscriptions();
   const recordSubscription = (
     subscription: CollaborationSubscription,
     preferredSelection?: CollaborationSelection | null,
     preferredSelectionIntentGeneration?: number
   ) =>
-    subscriptions.record(
+    clientRuntime.recordSubscription(
       subscription,
       preferredSelection,
       preferredSelectionIntentGeneration
@@ -2267,7 +2293,7 @@ export const createCollaborationRendererClient = (
   };
 
   const subscribeScope = (scope: CollaborationSubscription["scope"]) =>
-    subscriptions.subscribe(scope);
+    clientRuntime.subscribe(scope);
 
   const syncTeamSubscription = async (selection: CollaborationSelection) => {
     const teamId = teamIdForSelection(selection);
@@ -2279,7 +2305,7 @@ export const createCollaborationRendererClient = (
   ) => {
     const subscriptionId =
       event.type === "snapshot" ? event.subscription.id : event.subscriptionId;
-    const current = subscriptions.get(subscriptionId)?.subscription;
+    const current = clientRuntime.subscription(subscriptionId)?.subscription;
     const expectedSubscriptionVersion =
       event.type === "snapshot" ? event.subscription.version : current?.version;
     if (!expectedSubscriptionVersion) return;
@@ -2290,9 +2316,9 @@ export const createCollaborationRendererClient = (
       expectedSubscriptionVersion
     });
     if (result.ok && result.command === "collaboration.acknowledge_delivery") {
-      const record = subscriptions.get(subscriptionId);
+      const record = clientRuntime.subscription(subscriptionId);
       if (record) {
-        subscriptions.updateVersion(
+        clientRuntime.updateSubscriptionVersion(
           subscriptionId,
           result.data.subscriptionVersion
         );
@@ -2712,6 +2738,7 @@ export const createCollaborationRendererClient = (
         becameLive &&
         !backendChanged &&
         (snapshot.navigation.teams.length === 0 || recoveredSelectedTeamStream);
+      bindClientRuntime({ ...snapshot, connection: event.connection });
       if (
         backendChanged ||
         event.connection.state === "disconnected" ||
@@ -2735,8 +2762,12 @@ export const createCollaborationRendererClient = (
     if (event.type === "control") {
       const current = snapshot;
       if (!current) return;
-      const record = subscriptions.get(event.subscriptionId)?.subscription;
-      const subscriptionRecord = subscriptions.get(event.subscriptionId);
+      const record = clientRuntime.subscription(
+        event.subscriptionId
+      )?.subscription;
+      const subscriptionRecord = clientRuntime.subscription(
+        event.subscriptionId
+      );
       const currentPreferredSelection =
         record?.scope.scope === "team" &&
         teamIdForSelection(current.selection) === record.scope.teamId
@@ -2760,7 +2791,7 @@ export const createCollaborationRendererClient = (
           ? retainedSelection
           : (currentPreferredSelection ?? subscribedPreferredSelection);
       dropPendingDeliveries(event.subscriptionId);
-      subscriptions.drop(event.subscriptionId);
+      clientRuntime.dropSubscription(event.subscriptionId);
       if (record?.scope.scope === "team") {
         await purgeTeam(
           record.scope.teamId,
@@ -2812,7 +2843,10 @@ export const createCollaborationRendererClient = (
       await publish(next, { kind: "realtime" });
       return;
     }
-    if (event.type === "update" && !subscriptions.has(event.subscriptionId)) {
+    if (
+      event.type === "update" &&
+      !clientRuntime.hasSubscription(event.subscriptionId)
+    ) {
       if (event.family === "access_revoked" && snapshot) {
         await purgeAllTeams(
           {
@@ -2869,9 +2903,9 @@ export const createCollaborationRendererClient = (
     (event.type === "update" && event.family === "access_revoked");
 
   const advanceAuthority = (event: CollaborationRendererEvent): void => {
-    authorityGeneration += 1;
-    authorityChangeWasRevocation = eventRevokesAuthority(event);
-    if (authorityChangeWasRevocation) {
+    const revoked = eventRevokesAuthority(event);
+    clientRuntime.invalidateAuthority({ revoked });
+    if (revoked) {
       actionGrantProjections.revokeAuthority();
     }
     selectionRequestGeneration += 1;
@@ -2900,7 +2934,7 @@ export const createCollaborationRendererClient = (
                 ? event.subscriptionId
                 : null;
           const record = subscriptionId
-            ? subscriptions.get(subscriptionId)?.subscription
+            ? clientRuntime.subscription(subscriptionId)?.subscription
             : null;
           if (record?.scope.scope === "team") {
             await purgeTeam(record.scope.teamId, cause.userMessage);
@@ -2924,16 +2958,14 @@ export const createCollaborationRendererClient = (
       return null;
     },
     () => {
-      authorityGeneration += 1;
-      authorityChangeWasRevocation = false;
+      clientRuntime.invalidateAuthority();
       selectionRequestGeneration += 1;
       if (snapshot) {
         void purgeAllTeams(
           unavailableConnection(snapshot.connection),
           collaborationSafeErrorMessages.temporarily_unavailable
         ).finally(() => {
-          authorityGeneration += 1;
-          authorityChangeWasRevocation = false;
+          clientRuntime.invalidateAuthority();
           selectionRequestGeneration += 1;
         });
       }
@@ -2998,6 +3030,7 @@ export const createCollaborationRendererClient = (
       if (!isCurrent()) return requireSnapshot();
     }
     if (!isCurrent()) return requireSnapshot();
+    bindClientRuntime(next);
     await publishValidated(next, { kind: "command" });
     if (!isCurrent()) return requireSnapshot();
     await syncTeamSubscription(next.selection);
@@ -3133,7 +3166,7 @@ export const createCollaborationRendererClient = (
     }
     const generation = ++selectionRequestGeneration;
     const previous = snapshot;
-    const warming = selectionViews.inFlight(selection);
+    const warming = clientRuntime.coordinatedSelectionLoad(selection);
     if (warming) {
       const warmed = await warming;
       if (generation !== selectionRequestGeneration) return requireSnapshot();
@@ -3250,7 +3283,7 @@ export const createCollaborationRendererClient = (
   return {
     load: loadSnapshot,
     current: () => snapshot,
-    currentRemoteUrl: () => connectedRemoteUrl,
+    currentRemoteUrl: () => clientRuntime.binding()?.remoteUrl ?? null,
     currentSelection: () =>
       snapshot?.selection ?? ({ kind: "personal_memory" } as const),
     subscribe(listener) {
@@ -3309,7 +3342,7 @@ export const createCollaborationRendererClient = (
         throw new Error("Unexpected collaboration result.");
       }
       await resetSubscriptions();
-      connectedRemoteUrl = result.data.backend.baseUrl;
+      bindClientRuntime(result.data.snapshot, result.data.backend.baseUrl);
       const next = await applyCommandSnapshot(result.data.snapshot);
       await subscribeScope({ scope: "personal" });
       return next;
@@ -3330,13 +3363,17 @@ export const createCollaborationRendererClient = (
       if (!result.ok || result.command !== "collaboration.disconnect_backend") {
         throw new Error("Unexpected collaboration result.");
       }
-      authorityGeneration += 1;
+      clientRuntime.invalidateAuthority({ revoked: true });
       actionGrantProjections.revokeAuthority();
-      authorityChangeWasRevocation = true;
       selectionRequestGeneration += 1;
       dropPendingDeliveries();
       await resetSubscriptions();
-      connectedRemoteUrl = null;
+      clientRuntime.bind({
+        backendId: null,
+        principalId: null,
+        remoteUrl: null,
+        transportId: desktopTransportId
+      });
       return applyCommandSnapshot({
         ...result.data.snapshot,
         navigation: { ...result.data.snapshot.navigation, teams: [] },
@@ -4159,10 +4196,7 @@ export const createCollaborationRendererClient = (
       removeBridgeListener();
       listeners.clear();
       actionGrantProjections.dispose();
-      const ids = subscriptions.dispose();
-      for (const subscriptionId of ids) {
-        void unsubscribeSubscriptionId(subscriptionId);
-      }
+      clientRuntime.dispose();
     }
   };
 };

@@ -17,7 +17,8 @@ const protectedWrites = [
   ["POST", "/v1/retention/legal-holds"],
   ["POST", "/v1/teams"],
   ["PUT", "/v1/team-workspaces/workspace-id/access"],
-  ["POST", "/v1/team-invites/accept"]
+  ["POST", "/v1/team-invites/accept"],
+  ["POST", "/v1/realtime/transport-tickets"]
 ] as const satisfies ReadonlyArray<readonly [HTTPMethods, string]>;
 const ordinaryBrowserWrite =
   "/v1/collaboration/teams/00000000-0000-4000-8000-000000000001/threads/00000000-0000-4000-8000-000000000002/messages";

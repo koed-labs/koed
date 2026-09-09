@@ -32,7 +32,8 @@ export const processClaudeTranscriptSignal = async (
   client: MemoryApiClient,
   state: ClaudeWatcherState,
   signal: ClaudeTranscriptWatcherSignal,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  options: { managedProjection?: boolean } = {}
 ): Promise<void> => {
   const transcriptPath = await verifiedTranscriptPath(
     signal.transcriptPath,
@@ -170,6 +171,20 @@ export const processClaudeTranscriptSignal = async (
       persisted,
       `Claude session ${signal.sourceSessionId}`
     );
+  }
+  if (options.managedProjection) {
+    for (const artifact of artifacts) {
+      const released = await client.releaseManagedJournalProjection({
+        sessionId: artifact.sessionId,
+        artifactId: artifact.id,
+        sourceOffset: artifact.providerCursorOffset
+      });
+      await projectRawConversationItems(
+        client,
+        released.conversationItemIds.map((id) => ({ id })),
+        `managed Claude journal ${artifact.id}`
+      );
+    }
   }
   if (signal.hookEventName === "SessionEnd" && artifacts.length > 0) {
     for (const artifact of artifacts) {

@@ -64,6 +64,104 @@ describe("codex-transcript-v1 adapter", () => {
     });
   });
 
+  it("closes the active turn when task_complete omits a repeated turn id", () => {
+    const turnId = "turn-with-implicit-completion-identity";
+    const records = [
+      {
+        timestamp: "2026-07-01T12:00:00.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: turnId }
+      },
+      {
+        timestamp: "2026-07-01T12:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete" }
+      }
+    ];
+    const parsed = parseTranscriptJournalBytes({
+      bytes: Buffer.from(
+        records.map((item) => JSON.stringify(item)).join("\n") + "\n"
+      ),
+      absoluteStartOffset: 0,
+      lineIndexOffset: 0
+    });
+
+    expect(parsed.checkpoint.activeTurnId).toBeUndefined();
+    const terminal = buildCodexTranscriptConversationItems({
+      records: parsed.records,
+      sourceSessionId: "implicit-completion-session",
+      sourceTransport: "transcript",
+      threadKind: "conversation",
+      preferStableResponseItems: true
+    }).find((item) => item.sourceEventType === "task_complete");
+    expect(terminal?.externalTurnId).toBe(turnId);
+    expect(terminal?.metadata).toMatchObject({
+      semanticControl: "turn_completed"
+    });
+  });
+
+  it("keeps response observations distinct beyond the bounded source sequence range", () => {
+    const turnId = "turn-large-transcript";
+    const records = [
+      {
+        timestamp: "2026-07-01T12:00:00.000Z",
+        type: "event_msg",
+        payload: {
+          type: "agent_message",
+          message: "Large transcript event representation",
+          turn_id: turnId
+        }
+      },
+      {
+        timestamp: "2026-07-01T12:00:00.001Z",
+        type: "response_item",
+        payload: {
+          id: "assistant-large-transcript",
+          type: "message",
+          role: "assistant",
+          content: [
+            { type: "output_text", text: "Large transcript response item" }
+          ],
+          internal_chat_message_metadata_passthrough: { turn_id: turnId }
+        }
+      },
+      {
+        timestamp: "2026-07-01T12:00:00.002Z",
+        type: "event_msg",
+        payload: { type: "token_count", turn_id: turnId }
+      }
+    ];
+    const bytes = Buffer.from(
+      records.map((item) => JSON.stringify(item)).join("\n") + "\n"
+    );
+    const parsed = parseTranscriptJournalBytes({
+      bytes,
+      absoluteStartOffset: 1_100_000_000,
+      lineIndexOffset: 400_000,
+      prior: {
+        activeTurnId: turnId,
+        assistantMessagePreference: "response_item"
+      }
+    });
+
+    const items = buildCodexTranscriptConversationItems({
+      records: parsed.records,
+      indexOffset: parsed.indexOffset,
+      sourceSessionId: "large-transcript-session",
+      sourceTransport: "transcript",
+      threadKind: "conversation"
+    });
+
+    expect(items).toHaveLength(3);
+    expect(new Set(items.map((item) => item.idempotencyKey)).size).toBe(3);
+    expect(new Set(items.map((item) => item.sourceHash)).size).toBe(3);
+    expect(items.map((item) => item.sourceRecordType)).toEqual([
+      "event_msg",
+      "response_item",
+      "event_msg"
+    ]);
+  });
+
   it("keeps canonical identity transport and path independent", () => {
     const common = {
       observations: [observation],

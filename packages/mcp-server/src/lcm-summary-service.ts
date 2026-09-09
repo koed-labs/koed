@@ -170,6 +170,7 @@ export const startLcmSummaryService = (
   const fallbackWorkerConfig = options.workerConfig;
   let timer: NodeJS.Timeout | undefined;
   let running = false;
+  let rerunRequested = false;
   let stopped = false;
   let lastRunAt: string | null = null;
   let lastSuccessAt: string | null = null;
@@ -196,7 +197,11 @@ export const startLcmSummaryService = (
       workerConfig?: LcmSummaryWorkerConfig;
     } = {}
   ) => {
-    if (stopped || running) {
+    if (stopped) {
+      return;
+    }
+    if (running) {
+      rerunRequested = true;
       return;
     }
     if (timer) {
@@ -226,6 +231,7 @@ export const startLcmSummaryService = (
       timer = undefined;
     }
     running = true;
+    let batchWasFull = false;
     void reason;
     lastRunAt = new Date().toISOString();
     try {
@@ -255,6 +261,9 @@ export const startLcmSummaryService = (
         sessionTitles,
         lcmSummaries
       };
+      batchWasFull =
+        lcmSummaries.requestedLimit > 0 &&
+        lcmSummaries.submittedCount === lcmSummaries.requestedLimit;
       lastError = null;
       lastSuccessAt = new Date().toISOString();
       return { ran: true, result: lastResult };
@@ -263,7 +272,11 @@ export const startLcmSummaryService = (
       return { ran: true, error: lastError };
     } finally {
       running = false;
-      schedule(serviceConfig.intervalMs);
+      const shouldContinue = rerunRequested || batchWasFull;
+      rerunRequested = false;
+      schedule(
+        shouldContinue ? serviceConfig.pushDelayMs : serviceConfig.intervalMs
+      );
     }
   };
 

@@ -318,6 +318,7 @@ describe("Personal Device LAN pairing server", () => {
         mode: "relay",
         method: "PUT",
         path: "/v1/personal-device-sync/relay/packages/package-1",
+        signal: expect.any(AbortSignal),
         headers: expect.objectContaining({
           "content-type": "application/json",
           "x-pds-membership-certificate": "certificate",
@@ -331,7 +332,18 @@ describe("Personal Device LAN pairing server", () => {
   });
 
   it("terminates held relay requests during shutdown", async () => {
-    const forwardControl = vi.fn(() => new Promise<never>(() => undefined));
+    let forwardedSignal: AbortSignal | null = null;
+    const forwardControl = vi.fn(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          forwardedSignal = signal;
+          signal.addEventListener(
+            "abort",
+            () => reject(new Error("forwarding aborted")),
+            { once: true }
+          );
+        })
+    );
     const server = await startPersonalDevicePairingServer({
       port: 0,
       host: "127.0.0.1",
@@ -351,5 +363,6 @@ describe("Personal Device LAN pairing server", () => {
     await vi.waitFor(() => expect(forwardControl).toHaveBeenCalledOnce());
     await expect(server.close()).resolves.toBeUndefined();
     await expect(held).rejects.toThrow();
+    await vi.waitFor(() => expect(forwardedSignal?.aborted).toBe(true));
   });
 });

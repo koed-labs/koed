@@ -34,6 +34,16 @@ const secureStorage = () => ({
 });
 
 describe("PDS Desktop secret provider", () => {
+  it("rejects secret store filenames that escape the Desktop data directory", () => {
+    expect(() =>
+      createPdsDesktopSecretStore({
+        userDataPath: "/tmp/koed",
+        storeFilename: "../drafts.json",
+        storage: secureStorage()
+      })
+    ).toThrow("Invalid Desktop secret store filename");
+  });
+
   it("warms bounded secrets once and keeps mutations durable-first", async () => {
     const values = new Map([["pds-runtime", "runtime-secret"]]);
     const persistent = {

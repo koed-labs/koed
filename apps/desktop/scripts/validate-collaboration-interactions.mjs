@@ -524,7 +524,11 @@ const run = async () => {
       alice,
       `${byText(".desktop-sidebar-nav-item", "People")}`
     );
-    await waitFor(alice, bodyIncludes("Invites"), "People administration");
+    await waitFor(
+      alice,
+      bodyIncludes("Invite member"),
+      "People administration"
+    );
     alice.setSize(1150, 800);
     await delay(50);
     const memberLayout = await evaluate(
@@ -534,9 +538,9 @@ const run = async () => {
           left && right &&
           !(left.right <= right.left || right.right <= left.left ||
             left.bottom <= right.top || right.bottom <= left.top);
-        return [...document.querySelectorAll('.collab-person-admin-row')].map((row) => {
-          const access = row.querySelector('.collab-access-grid')?.getBoundingClientRect();
-          const disable = row.querySelector('.collab-member-disable')?.getBoundingClientRect();
+        return [...document.querySelectorAll('.collab-person-row:not(.collab-invite-row)')].map((row) => {
+          const access = row.querySelector('.collab-roster-access')?.getBoundingClientRect();
+          const disable = row.querySelector('.collab-roster-actions')?.getBoundingClientRect();
           const role = row.querySelector('.collab-member-role')?.getBoundingClientRect();
           return {
             accessDisableOverlap: Boolean(overlaps(access, disable)),
@@ -690,10 +694,19 @@ const run = async () => {
     await trustedClick(
       alice,
       `(() => {
-        const row = [...document.querySelectorAll('.collab-invitation-row')]
+        const row = [...document.querySelectorAll('.collab-invite-row')]
           .find((item) => item.textContent.includes('revoke@example.test'));
         return row?.querySelector('button');
       })()`
+    );
+    await waitFor(
+      alice,
+      `Boolean([...document.querySelectorAll('button')].find((button) => button.checkVisibility() && button.textContent.trim() === 'Revoke'))`,
+      "invitation action menu"
+    );
+    await trustedClick(
+      alice,
+      `[...document.querySelectorAll('button')].find((button) => button.checkVisibility() && button.textContent.trim() === 'Revoke')`
     );
     await waitFor(
       alice,
