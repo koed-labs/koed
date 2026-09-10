@@ -157,7 +157,7 @@ const registerInstanceListRoute = (
   } = context;
   app.get(
     "/v1/memory/ai-client-instances",
-    { preHandler: rateLimit.memoryRead },
+    { preHandler: rateLimit.aiClientControl },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -188,7 +188,7 @@ const registerInstanceWriteRoute = (
   } = context;
   app.put(
     "/v1/memory/ai-client-instances/:instanceId",
-    { preHandler: rateLimit.memoryWrite },
+    { preHandler: rateLimit.aiClientControl },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -220,7 +220,7 @@ const registerCapabilitySnapshotRoute = (
   } = context;
   app.post(
     "/v1/memory/ai-client-instances/:instanceId/capability-snapshots",
-    { preHandler: rateLimit.memoryWrite },
+    { preHandler: rateLimit.aiClientControl },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -271,7 +271,7 @@ const registerSettingsListRoute = (
   } = context;
   app.get(
     "/v1/memory/local-agent-settings",
-    { preHandler: rateLimit.memoryRead },
+    { preHandler: rateLimit.aiClientControl },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -302,7 +302,7 @@ const registerSettingsWriteRoute = (
   } = context;
   app.put(
     "/v1/memory/local-agent-settings/:flowKey",
-    { preHandler: rateLimit.memoryWrite },
+    { preHandler: rateLimit.aiClientControl },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -344,7 +344,7 @@ const registerSettingsDeleteRoute = (
   } = context;
   app.delete(
     "/v1/memory/local-agent-settings/:flowKey",
-    { preHandler: rateLimit.memoryWrite },
+    { preHandler: rateLimit.aiClientControl },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);

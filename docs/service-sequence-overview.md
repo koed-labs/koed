@@ -160,9 +160,58 @@ AI Runtime.
    facts and shared capability descriptors for automatic capture, MCP Recall,
    local Synthesis, and Managed Conversation. Status reads the authenticated
    AI Client instance capability read model best-effort: current or stale
-   snapshots authoritatively gate Local Synthesis and Managed Conversation;
-   profile checks only fill unknown Capture Hook or MCP Recall descriptors.
-   Stale snapshots are non-runnable, and read-model failure reports Unknown
+   snapshots gate Local Synthesis and Managed Conversation alongside current
+   profile authentication checks.
+   AI Client installation, Koed-owned profile configuration, and execution
+   authentication are separate states. Desktop check results for configured
+   clients that require authentication remain structured readiness results, so
+   Preferences
+   refreshes its cards and presents sign-in remediation. Desktop requests the
+   check's collected status with `--include-status` and reuses it, avoiding a second
+   full CLI inspection. After successful capability refresh, Desktop also passes
+   `--capabilities-refreshed-since` with the refresh start time. Pi status reuses
+   the execution discovery results for both startup and manual status checks.
+   The snapshot must belong to `pi.default`, match the installed version, and be
+   unexpired; a manual refresh additionally requires an observation since its
+   start time. Status never launches a second model catalog query. Missing
+   discovery is reported as pending, and stale or failed discovery offers a
+   concrete retry action. Individual model probe failures do not hide other
+   independently usable models; execution still validates the selected model.
+   Capability publication discovers at most three independent
+   AI Client instances concurrently, retaining per-instance identity validation and
+   failure isolation. Any failed capability refresh, including registration, network, and timeout
+   errors, returns its diagnostic without launching another check or full status
+   scan; a failed refresh cannot clear a verification warning using older snapshots. Other failed
+   operations refresh status before reporting their error. A current unauthenticated or
+   unknown profile authentication result overrides older authenticated execution
+   descriptors; automatic capture continues to use profile and Transcript Watcher
+   health independently.
+   Desktop AI Client status chips prioritize execution sign-in requirements and
+   capability readiness over profile configuration health. Completed check errors
+   remain attached to the affected client and its dialog rather than the entire
+   Connections list. Status chips open a details dialog with the current reason,
+   recovery guidance, capability states, and a check action. Pi profile inspection
+   timeouts are reported as inconclusive checks with retry guidance rather than
+   evidence that repair is required. Failed verification keeps the displayed
+   capability results explicitly marked as last known, with the observation time
+   when available. The warning survives dialog reopening and retries, and clears
+   when a check returns a fresh status result. AI Client instance registration,
+   capability publication, and Local AI Client settings share a separate bounded
+   API rate limit (120 requests per minute per authenticated User, or per IP for
+   unauthenticated requests). Capture and import writes cannot exhaust this
+   allowance. Desktop preserves a specific rate-limit explanation if publication
+   is throttled. Claude Code sign-in
+   guidance includes a copyable terminal command. Authentication guidance follows
+   the latest observation for each enabled instance, including newer card checks,
+   so a successful sign-in clears older guidance without another capability scan.
+   Configured unauthenticated Claude Code and Pi profiles can report automatic
+   capture Ready from profile and
+   Transcript Watcher health while their supported execution capabilities report
+   Unauthenticated. Pi continues to report Managed Conversation unsupported.
+   Automatic capture is not downgraded by an unauthenticated or stale execution
+   snapshot. Execution admission still requires a fresh,
+   healthy, authenticated snapshot. Stale snapshots are non-runnable, and
+   read-model failure reports Unknown
    without degrading core status. Pi reports Managed Conversation unsupported.
    Legacy `aiClients` remains provider-keyed; `aiClientInstances` exposes every
    registered instance, including healthy secondary instances when a default is
@@ -214,12 +263,21 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     both mint the token through the active runtime repository with the same
     database and token pepper used by the API; Electron main only retains and
     rereads that supervisor-owned credential.
-    `koed-server setup claude --json` independently verifies Claude Code version
-    and sign-in, then preserves unrelated user settings while installing Koed's
-    MCP and Supported Capture Hook entries. `koed-server setup pi --json`
-    independently registers Koed's stable local package in the active Pi
-    profile after canonical executable and authenticated-model checks. Both
-    commands are idempotent and use strict subprocess environment allowlists.
+    `koed-server setup claude --json` independently verifies Claude Code version,
+    records sign-in as advisory readiness, and preserves unrelated user settings
+    while transactionally installing Koed's user-scoped MCP and Supported
+    Capture Hook entries and registering `claude.default`. Signed-out setup
+    succeeds with structured partial-readiness output. Desktop boundedly asks
+    the Local AI Runtime to refresh capabilities after registration. Running
+    `claude auth login` and refreshing makes execution capabilities ready without
+    profile reinstall. Claude Desktop authentication and Anthropic API keys are
+    outside this flow and are never inspected or reused. `koed-server setup pi
+--json` independently installs Koed's stable local package and registers
+    `pi.default` after canonical executable/version checks. Authenticated-model
+    discovery is advisory for profile setup: no-model setup succeeds with
+    structured partial readiness, while Pi execution remains unavailable until
+    model authentication and capability refresh. Both commands are idempotent
+    and use strict subprocess environment allowlists.
     Claude setup replaces only an MCP entry proven to be Koed-owned; Pi's
     installed package derives custom `KOED_HOME` from its stable package path.
 11. Koed Desktop can start/connect to the same headless command surface, run

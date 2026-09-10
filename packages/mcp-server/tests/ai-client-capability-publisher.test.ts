@@ -94,6 +94,75 @@ describe("AI Client capability publisher", () => {
     expect(apiClient.recordAiClientCapabilitySnapshot).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])(
+    "discovers clients concurrently and respects stop (%s)",
+    async (stop) => {
+      const root = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-publisher-parallel-")
+      );
+      roots.push(root);
+      const registryPath = path.join(root, "instances.json");
+      const ids = ["codex", "claude", "pi"] as const;
+      fs.writeFileSync(
+        registryPath,
+        JSON.stringify({
+          version: 1,
+          instances: ids.map((id) => ({
+            instanceId: `${id}.default`,
+            driverId: id,
+            displayName: id,
+            executablePath: executable(root, id)
+          }))
+        })
+      );
+      const originals = new Map(aiClientDriverRegistry);
+      const seen: Array<{ instanceId: string; executablePath?: string }> = [];
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let active = true;
+      const apiClient = {
+        upsertAiClientInstance: vi.fn(),
+        recordAiClientCapabilitySnapshot: vi.fn()
+      } as unknown as MemoryApiClient;
+      try {
+        for (const id of ids) {
+          const base = driver(id, seen);
+          aiClientDriverRegistry.set(id, {
+            ...base,
+            discover: async (input) => {
+              const discovery = await base.discover(input);
+              await gate;
+              return discovery;
+            }
+          });
+        }
+        const pending = publishAiClientCapabilities(
+          apiClient,
+          { KOED_AI_CLIENT_INSTANCE_REGISTRY: registryPath },
+          { isActive: () => active }
+        );
+        await Promise.resolve();
+        try {
+          expect(seen.map((item) => item.instanceId)).toEqual(
+            ids.map((id) => `${id}.default`)
+          );
+        } finally {
+          active = !stop;
+          release();
+          await pending;
+        }
+        expect(
+          apiClient.recordAiClientCapabilitySnapshot
+        ).toHaveBeenCalledTimes(stop ? 0 : 3);
+      } finally {
+        for (const [id, original] of originals)
+          aiClientDriverRegistry.set(id, original);
+      }
+    }
+  );
+
   it("publishes only explicitly configured instances", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-publisher-"));
     roots.push(root);
@@ -207,6 +276,105 @@ describe("AI Client capability publisher", () => {
       "codex.missing",
       expect.objectContaining({ health_state: "unavailable" })
     );
+  });
+
+  it("publishes a useful snapshot for a registered signed-out Claude instance", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-publisher-claude-signed-out-")
+    );
+    roots.push(root);
+    const executablePath = executable(root, "claude");
+    const registryPath = path.join(root, "instances.json");
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code",
+            executablePath
+          }
+        ]
+      })
+    );
+    const original = aiClientDriverRegistry.get("claude")!;
+    aiClientDriverRegistry.set("claude", {
+      ...original,
+      discover: vi.fn(async () => ({
+        installationIdentityHash: "a".repeat(64),
+        clientVersion: "2.1.227",
+        authenticationState: "unauthenticated" as const,
+        healthState: "unavailable" as const,
+        models: [],
+        capabilities: [
+          {
+            id: "automatic_capture" as const,
+            support: "supported" as const,
+            readiness: "unknown" as const,
+            diagnostics: []
+          },
+          {
+            id: "local_synthesis" as const,
+            support: "supported" as const,
+            readiness: "unauthenticated" as const,
+            diagnostics: []
+          }
+        ],
+        diagnostics: []
+      }))
+    });
+    const apiClient = {
+      upsertAiClientInstance: vi.fn(async () => ({})),
+      recordAiClientCapabilitySnapshot: vi.fn(async () => ({}))
+    } as unknown as MemoryApiClient;
+
+    try {
+      await expect(
+        publishAiClientCapabilities(apiClient, {
+          KOED_AI_CLIENT_INSTANCE_REGISTRY: registryPath
+        })
+      ).resolves.toEqual([
+        expect.objectContaining({
+          instanceId: "claude.default",
+          published: true,
+          error: null
+        })
+      ]);
+      const snapshotMock =
+        apiClient.recordAiClientCapabilitySnapshot as unknown as {
+          mock: { calls: unknown[][] };
+        };
+      const snapshotCall = snapshotMock.mock.calls[0] as
+        | [
+            string,
+            {
+              client_version: string;
+              authentication_state: string;
+              health_state: string;
+              models: unknown[];
+              capabilities: {
+                descriptors: Record<string, { readiness?: string }>;
+                diagnostics: unknown[];
+              };
+            }
+          ]
+        | undefined;
+      expect(snapshotCall?.[0]).toBe("claude.default");
+      expect(snapshotCall?.[1].client_version).toBe("2.1.227");
+      expect(snapshotCall?.[1].authentication_state).toBe("unauthenticated");
+      expect(snapshotCall?.[1].health_state).toBe("unavailable");
+      expect(snapshotCall?.[1].models).toEqual([]);
+      expect(
+        snapshotCall?.[1].capabilities.descriptors.automatic_capture?.readiness
+      ).toBe("unknown");
+      expect(
+        snapshotCall?.[1].capabilities.descriptors.local_synthesis?.readiness
+      ).toBe("unauthenticated");
+    } finally {
+      aiClientDriverRegistry.set("claude", original);
+    }
   });
 
   it("isolates malformed configured entries from healthy instances", async () => {

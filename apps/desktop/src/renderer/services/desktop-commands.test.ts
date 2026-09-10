@@ -100,6 +100,57 @@ describe("DesktopStatusStore", () => {
     });
   });
 
+  it("uses the status returned by a check without running another full probe", async () => {
+    const checkedStatus = status(false);
+    const invoke = vi.fn<DesktopApi["invoke"]>().mockResolvedValue({
+      ok: false,
+      state: "needs_attention",
+      status: checkedStatus
+    });
+    window.koedDesktop = { invoke } as DesktopApi;
+    const store = new DesktopStatusStore();
+    await store.run("check_claude");
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "check_claude"
+    ]);
+    expect(store.current()).toMatchObject({
+      status: checkedStatus,
+      revision: 1,
+      busyCommand: null
+    });
+  });
+
+  it("does not follow a timed-out capability refresh with another status scan", async () => {
+    const invoke = vi.fn<DesktopApi["invoke"]>().mockResolvedValue({
+      ok: false,
+      capabilityRefresh: { refreshed: false }
+    });
+    window.koedDesktop = { invoke } as DesktopApi;
+    await new DesktopStatusStore().run("check_claude");
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "check_claude"
+    ]);
+  });
+
+  it("refreshes status after a failed client check and preserves its error", async () => {
+    const invoke = vi
+      .fn<DesktopApi["invoke"]>()
+      .mockRejectedValueOnce(new Error("Discovery failed"))
+      .mockResolvedValueOnce(status(false));
+    window.koedDesktop = { invoke } as DesktopApi;
+    const store = new DesktopStatusStore();
+    await expect(store.run("check_claude")).rejects.toThrow("Discovery failed");
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "check_claude",
+      "status"
+    ]);
+    expect(store.current()).toMatchObject({
+      busyCommand: null,
+      error: "Discovery failed",
+      status: status(false)
+    });
+  });
+
   it.each(["setup_pi", "setup_claude"] as const)(
     "refreshes optional AI Client status after %s",
     async (command) => {

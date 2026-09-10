@@ -35,6 +35,7 @@ describe("rate limiting", () => {
         memoryRecall: { windowMs: 60_000, max: 1 },
         managedConversationRead: { windowMs: 60_000, max: 1 },
         managedConversationWrite: { windowMs: 60_000, max: 1 },
+        aiClientControl: { windowMs: 60_000, max: 1 },
         sourceJournal: { windowMs: 60_000, max: 1 },
         projectionRebuild: { windowMs: 60_000, max: 1 }
       },
@@ -81,6 +82,7 @@ describe("rate limiting", () => {
         memoryRecall: { windowMs: 60_000, max: 1 },
         managedConversationRead: { windowMs: 60_000, max: 1 },
         managedConversationWrite: { windowMs: 60_000, max: 1 },
+        aiClientControl: { windowMs: 60_000, max: 1 },
         sourceJournal: { windowMs: 60_000, max: 1 },
         projectionRebuild: { windowMs: 60_000, max: 1 }
       },
@@ -133,6 +135,7 @@ describe("rate limiting", () => {
         memoryRecall: { windowMs: 60_000, max: 1 },
         managedConversationRead: { windowMs: 60_000, max: 1 },
         managedConversationWrite: { windowMs: 60_000, max: 1 },
+        aiClientControl: { windowMs: 60_000, max: 1 },
         sourceJournal: { windowMs: 60_000, max: 1 },
         projectionRebuild: { windowMs: 60_000, max: 1 }
       },

@@ -38,6 +38,23 @@ export const refreshLocalAiRuntime = async (input: {
     { timeoutMs: 30_000, maxBytes: 512 * 1_024, readErrorBody: true }
   );
   const publications = remote.payload.publications;
+  if (!remote.response.ok) {
+    const publications = remote.payload.publications;
+    if (
+      validRefreshPayload(remote.payload, publications) &&
+      publications.some(
+        (publication) =>
+          objectValue(publication)?.published === false &&
+          objectValue(publication)?.error === "Rate limit exceeded"
+      )
+    ) {
+      return {
+        refreshed: false,
+        refreshError:
+          "Capability updates are rate-limited by Koed. Wait a minute before checking again."
+      };
+    }
+  }
   if (validRefreshPayload(remote.payload, publications)) {
     const failedCount = publications.filter(
       (publication) => objectValue(publication)?.published !== true

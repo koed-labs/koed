@@ -88,6 +88,7 @@ async function fixture() {
     encryption: {},
     rateLimit: {
       sourceJournal: async () => {},
+      aiClientControl: async () => {},
       memoryRead: async () => {},
       memoryWrite: async () => {},
       projectionRebuild: async () => {}

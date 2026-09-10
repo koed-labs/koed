@@ -2,6 +2,10 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
+import {
+  assertPrivacyReload,
+  classificationSignature
+} from "./privacy-runtime-reload.mjs";
 
 const args = process.argv.slice(2);
 const value = (name) => {
@@ -105,14 +109,6 @@ const classify = () =>
       ]
     })
   });
-const classificationSignature = (classification) => ({
-  classifier: classification.classifier,
-  spans: classification.fields?.[0]?.spans?.map((span) => ({
-    start: span.start,
-    end: span.end,
-    label: span.label
-  }))
-});
 
 try {
   let status;
@@ -190,13 +186,14 @@ try {
     if (unloadedStatus.acceleratorResident !== false) {
       throw new Error("Packaged Privacy accelerator did not unload when idle.");
     }
-    await classify();
+    const reloadedClassification = await classify();
     const reloadedStatus = await runtimeStatus();
-    if (reloadedStatus.acceleratorResident !== true) {
-      throw new Error(
-        "Packaged Privacy accelerator did not reload for classification."
-      );
-    }
+    assertPrivacyReload({
+      provider,
+      status: reloadedStatus,
+      classification: reloadedClassification,
+      initialSignature
+    });
     behavior.idleUnloadReload = true;
   }
 

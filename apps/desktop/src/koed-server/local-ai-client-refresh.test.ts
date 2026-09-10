@@ -58,6 +58,31 @@ describe("Local AI Client capability refresh", () => {
     });
   });
 
+  it("explains rate-limited publication instead of discarding the runtime diagnostic", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            protocolVersion: 1,
+            publications: [
+              {
+                instanceId: "pi.default",
+                published: false,
+                error: "Rate limit exceeded"
+              }
+            ]
+          }),
+          { status: 503 }
+        )
+    );
+    const result = await refreshLocalAiRuntime({
+      fetch,
+      koedHome: runtimeHome()
+    });
+    expect(result.refreshed).toBe(false);
+    expect(result.refreshError).toContain("rate-limited");
+  });
+
   it("rejects non-ok HTTP responses before accepting payload", async () => {
     const fetch = vi.fn(
       async () =>

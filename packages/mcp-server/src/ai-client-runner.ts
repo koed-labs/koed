@@ -171,6 +171,7 @@ export interface ClaudeCodeAvailability {
   executablePath: string | null;
   version: string | null;
   authenticated: boolean;
+  authenticationState: "authenticated" | "unauthenticated" | "unknown";
   authMethod: string | null;
   apiProvider: string | null;
   error: string | null;
@@ -518,44 +519,66 @@ export const checkClaudeCodeAvailability = async (
 ): Promise<ClaudeCodeAvailability> => {
   try {
     const executablePath = resolveClaudeCodeExecutable(env, options);
+    const probeEnvironment = claudeAgentSdkProcessEnvironment(
+      executablePath,
+      env,
+      "availability-check"
+    );
     const versionProbe = claudeProbeInvocation(executablePath, ["--version"]);
+    const { stdout: versionOutput } = await execFileAsync(
+      versionProbe.command,
+      versionProbe.args,
+      { env: probeEnvironment, timeout: 10_000 }
+    );
+    assertClaudeCodeVersionCompatibility(versionOutput);
+    rememberConfirmedInstallation(env, executablePath);
+
     const authProbe = claudeProbeInvocation(executablePath, [
       "auth",
       "status",
       "--json"
     ]);
-    const [{ stdout: versionOutput }, { stdout: authOutput }] =
-      await Promise.all([
-        execFileAsync(versionProbe.command, versionProbe.args, {
-          env: claudeAgentSdkProcessEnvironment(
-            executablePath,
-            env,
-            "availability-check"
-          ),
-          timeout: 10_000
-        }),
-        execFileAsync(authProbe.command, authProbe.args, {
-          env: claudeAgentSdkProcessEnvironment(
-            executablePath,
-            env,
-            "availability-check"
-          ),
-          timeout: 10_000
-        })
-      ]);
-    const auth = JSON.parse(authOutput) as Record<string, unknown>;
-    assertClaudeCodeVersionCompatibility(versionOutput);
-    const authenticated = auth.loggedIn === true;
-    rememberConfirmedInstallation(env, executablePath);
+    let authOutput = "";
+    let authProbeSucceeded = false;
+    try {
+      const result = await execFileAsync(authProbe.command, authProbe.args, {
+        env: probeEnvironment,
+        timeout: 10_000
+      });
+      authOutput = result.stdout;
+      authProbeSucceeded = true;
+    } catch (error) {
+      const output = (error as { stdout?: unknown }).stdout;
+      authOutput = typeof output === "string" ? output : "";
+    }
+    let auth: Record<string, unknown> = {};
+    try {
+      auth = JSON.parse(authOutput) as Record<string, unknown>;
+    } catch {
+      // A failed auth probe still proves installation, but never execution auth.
+    }
+    const authenticationState =
+      authProbeSucceeded && auth.loggedIn === true
+        ? "authenticated"
+        : auth.loggedIn === false
+          ? "unauthenticated"
+          : "unknown";
+    const authenticated = authenticationState === "authenticated";
     return {
-      available: authenticated,
+      available: true,
       executablePath,
       version: versionOutput.trim() || null,
       authenticated,
+      authenticationState,
       authMethod: typeof auth.authMethod === "string" ? auth.authMethod : null,
       apiProvider:
         typeof auth.apiProvider === "string" ? auth.apiProvider : null,
-      error: authenticated ? null : "Claude Code is not signed in."
+      error:
+        authenticationState === "unauthenticated"
+          ? "Claude Code is not signed in."
+          : authenticated
+            ? null
+            : "Claude Code authentication could not be verified."
     };
   } catch (error) {
     return {
@@ -563,6 +586,7 @@ export const checkClaudeCodeAvailability = async (
       executablePath: null,
       version: null,
       authenticated: false,
+      authenticationState: "unknown",
       authMethod: null,
       apiProvider: null,
       error: error instanceof Error ? error.message : String(error)
@@ -1074,6 +1098,51 @@ const codexDriver: AiClientDriver = {
   }
 };
 
+const claudeAuthenticationUnavailableDiscovery = (
+  input: AiClientDriverDiscoveryInput,
+  availability: ClaudeCodeAvailability
+): AiClientDriverDiscovery => {
+  const unauthenticated =
+    availability.authenticationState === "unauthenticated";
+  const message = unauthenticated
+    ? "Claude Code sign-in is required for Recall, Local Synthesis, and Managed Conversations."
+    : "Claude Code authentication could not be verified; execution remains unavailable.";
+  const diagnostics: AiClientDiagnostic[] = [
+    {
+      code: unauthenticated
+        ? "authentication_required"
+        : "authentication_probe_failed",
+      message,
+      severity: "warning"
+    }
+  ];
+  return {
+    installationIdentityHash: installationIdentityHash(
+      availability.executablePath ?? input.executablePath ?? input.instanceId
+    ),
+    clientVersion: availability.version,
+    authenticationState: availability.authenticationState,
+    healthState: "unavailable",
+    models: [],
+    capabilities: capabilitiesFor("claude", false).map((descriptor) => ({
+      ...descriptor,
+      diagnostics,
+      ...(descriptor.id === aiClientCapabilityIds.automaticCapture
+        ? { readiness: "unknown" as const }
+        : descriptor.id === aiClientCapabilityIds.mcpRecall ||
+            descriptor.id === aiClientCapabilityIds.localSynthesis ||
+            managedCapabilityIds.has(descriptor.id)
+          ? {
+              readiness: unauthenticated
+                ? ("unauthenticated" as const)
+                : ("unavailable" as const)
+            }
+          : {})
+    })),
+    diagnostics
+  };
+};
+
 const claudeDriver: AiClientDriver = {
   id: "claude",
   displayName: "Claude Code",
@@ -1090,6 +1159,9 @@ const claudeDriver: AiClientDriver = {
           "claude",
           new Error(availability.error ?? "Claude Code is unavailable")
         );
+      }
+      if (!availability.authenticated) {
+        return claudeAuthenticationUnavailableDiscovery(input, availability);
       }
       const models = await listClaudeAgentSdkModels(input.environment);
       const normalized = models.map((model) =>
@@ -1118,6 +1190,50 @@ const claudeDriver: AiClientDriver = {
   }
 };
 
+const piAuthenticationUnavailableDiscovery = (
+  input: AiClientDriverDiscoveryInput,
+  availability: Awaited<ReturnType<typeof checkPiAvailability>>
+): AiClientDriverDiscovery => {
+  const unauthenticated =
+    availability.authenticationState === "unauthenticated";
+  const message = unauthenticated
+    ? "Pi model authentication is required for Recall and Local Synthesis."
+    : "Pi model authentication could not be verified; execution remains unavailable.";
+  const diagnostics: AiClientDiagnostic[] = [
+    {
+      code: unauthenticated
+        ? "authentication_required"
+        : "authentication_probe_failed",
+      message,
+      severity: "warning"
+    }
+  ];
+  return {
+    installationIdentityHash: installationIdentityHash(
+      availability.executablePath ?? input.executablePath ?? input.instanceId
+    ),
+    clientVersion: availability.version,
+    authenticationState: availability.authenticationState,
+    healthState: "unavailable",
+    models: [],
+    capabilities: capabilitiesFor("pi", false).map((descriptor) => ({
+      ...descriptor,
+      diagnostics,
+      ...(descriptor.id === aiClientCapabilityIds.automaticCapture
+        ? { readiness: "unknown" as const }
+        : descriptor.id === aiClientCapabilityIds.mcpRecall ||
+            descriptor.id === aiClientCapabilityIds.localSynthesis
+          ? {
+              readiness: unauthenticated
+                ? ("unauthenticated" as const)
+                : ("unavailable" as const)
+            }
+          : {})
+    })),
+    diagnostics
+  };
+};
+
 const piDriver: AiClientDriver = {
   id: "pi",
   displayName: "Pi",
@@ -1135,6 +1251,9 @@ const piDriver: AiClientDriver = {
           new Error(availability.error ?? "Pi is unavailable")
         );
       }
+      if (!availability.authenticated) {
+        return piAuthenticationUnavailableDiscovery(input, availability);
+      }
       const models = availability.models.map((model) =>
         normalizedModelCapability({
           id: model.id,
@@ -1144,6 +1263,15 @@ const piDriver: AiClientDriver = {
           supportedReasoningEfforts: model.supportedReasoningEfforts
         })
       );
+      const diagnostics: AiClientDiagnostic[] = availability.error
+        ? [
+            {
+              code: "model_discovery_partial",
+              message: availability.error,
+              severity: "warning"
+            }
+          ]
+        : [];
       return {
         installationIdentityHash: installationIdentityHash(
           availability.executablePath
@@ -1152,8 +1280,11 @@ const piDriver: AiClientDriver = {
         authenticationState: "authenticated",
         healthState: "healthy",
         models,
-        capabilities: capabilitiesFor("pi", true),
-        diagnostics: []
+        capabilities: capabilitiesFor("pi", true).map((descriptor) => ({
+          ...descriptor,
+          diagnostics
+        })),
+        diagnostics
       };
     } catch (error) {
       return aiClientDiscoveryError(input, "pi", error);
