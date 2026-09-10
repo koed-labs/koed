@@ -1290,6 +1290,57 @@ describe("CollaborationApp", () => {
     return client;
   };
 
+  it("reloads both recent lists when the Personal owner changes with the same API", async () => {
+    const api = createPersonalMemoryApi();
+    api.listAskThreads = vi.fn(async () => ({ threads: [], nextCursor: null }));
+    api.listRecentConversations = vi.fn(async () => ({
+      conversations: [],
+      nextCursor: null
+    }));
+    const client = createClient();
+    await act(async () =>
+      root.render(
+        <App
+          collaborationClient={client}
+          onboardingComplete
+          statusReadyOverride
+          personalMemoryApi={api}
+          managedConversations={
+            {
+              launchOptions: vi.fn(async () => ({
+                operation: "launch_options",
+                options: { runners: [], instances: [] }
+              }))
+            } as unknown as NonNullable<
+              Parameters<typeof App>[0]
+            >["managedConversations"]
+          }
+        />
+      )
+    );
+    const asksBefore = vi.mocked(api.listAskThreads).mock.calls.length;
+    const conversationsBefore = vi.mocked(api.listRecentConversations).mock
+      .calls.length;
+    expect(asksBefore).toBeGreaterThan(0);
+    expect(conversationsBefore).toBeGreaterThan(0);
+    const current = requireCurrent(client);
+    await act(async () =>
+      client.emit({
+        ...current,
+        navigation: {
+          ...current.navigation,
+          personalOwner: { ...current.navigation.personalOwner, id: uuid(999) }
+        }
+      })
+    );
+    expect(vi.mocked(api.listAskThreads).mock.calls.length).toBeGreaterThan(
+      asksBefore
+    );
+    expect(
+      vi.mocked(api.listRecentConversations).mock.calls.length
+    ).toBeGreaterThan(conversationsBefore);
+  });
+
   it("does not mount Personal Memory before local setup is verified", async () => {
     const component = (
       state: "not_configured" | "healthy"

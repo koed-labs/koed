@@ -7,12 +7,11 @@ healthy, authenticated, fresh, identity-matched capability snapshot. Hosted
 authority delegates deferred local execution readiness to the assigned Worker.
 Missing or unavailable owners never fall back to another AI Client.
 
-The managed Conversation worker marks its API traffic with the fixed
-`x-koed-request-class: managed-conversation` header. Memory reads, memory writes,
-and source-journal requests use separate buckets from background ingestion.
-Each bucket retains its configured limit and authenticated User identity.
-The header selects a bounded traffic class. It does not bypass authentication
-or rate limits. Background ingestion cannot exhaust these Conversation budgets.
+Managed Conversation endpoints use separate read and write budgets from Memory
+endpoints. The API selects each budget from the endpoint and authenticated User
+identity. Memory reads, Memory writes, and source-journal requests share their
+respective budgets with background ingestion. The `x-koed-request-class` header
+does not select an additional API budget.
 The Memory API client retries managed Conversation capture requests at most
 twice after HTTP 429. Registration outside this traffic class requires an
 idempotency key for retry. Each retry retains the original API request and
@@ -35,11 +34,24 @@ responses, so recovery does not create a second execution or prompt. After the
 first message is accepted, Desktop stores a bounded recovery record in its
 encrypted, owner-scoped secret store. A restart can restore the provisional
 Conversation before capture has supplied its canonical session identity.
+After inspection reports a failed, stopped, or fenced execution, Retry creates
+and stores a new start key before dispatch. The replacement execution retains
+the existing navigation route. Uncertain requests retain their start key.
 
 An Independent launch uses an owner-local Independent Project for navigation.
 The API creates a separate Koed-owned working directory for each execution. A
 later resume uses the persisted runtime binding for that directory. Repository
 features remain subject to their capability checks.
+The start digest includes Independent context. Reusing a start key with a
+different context returns a conflict before the API changes the runtime binding.
+Desktop identifies Chats from metadata for the exact Koed-owned Independent
+Project directory. A User-controlled Project name does not establish this identity.
+
+Recents reads additional graph pages until it collects the requested number of
+Conversations or reaches the end. Subagent rows consume raw offsets but do not
+consume Conversation slots. An owner change clears and reloads both recent lists.
+Launch selections resolve model defaults through the canonical ID, qualified ID,
+or model alias from the capability snapshot.
 
 After API readiness, the supervisor resolves the active local API Token and
 passes the same credential to the Worker and Local AI Runtime. This includes

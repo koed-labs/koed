@@ -2384,6 +2384,10 @@ describe("managed Conversation routes", () => {
 
       expect(response.statusCode).toBe(202);
       expect(secondResponse.statusCode).toBe(202);
+      expect(createManagedConversation).toHaveBeenCalledWith(
+        { userId },
+        expect.objectContaining({ contextKind: "independent" })
+      );
       expect(JSON.parse(response.body).execution.id).toBe(executionId);
       expect(JSON.parse(secondResponse.body).execution.id).toBe(
         secondExecutionId

@@ -309,6 +309,8 @@ export type ManagedConversationLaunchOptions = {
     readiness: string;
     models: Array<{
       id: string;
+      fullId?: string;
+      model?: string;
       displayName?: string;
       description?: string;
       supportedReasoningEfforts: string[];
@@ -1258,6 +1260,17 @@ const parseLaunchOptions = (
           );
           return {
             id: identifier(model.id, "AI Client model id"),
+            ...(typeof model.fullId === "string"
+              ? {
+                  fullId: identifier(
+                    model.fullId,
+                    "AI Client qualified model id"
+                  )
+                }
+              : {}),
+            ...(typeof model.model === "string"
+              ? { model: identifier(model.model, "AI Client model alias") }
+              : {}),
             ...(typeof model.displayName === "string"
               ? {
                   displayName: identifier(

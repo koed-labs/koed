@@ -2416,6 +2416,55 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("rejects context changes under a reused start key in both directions", async () => {
+    const repository = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 45).toString("base64")
+      )
+    });
+    const owner = await repository.createUser({
+      email: `context-${randomUUID()}@example.com`
+    });
+    const actor = { userId: owner.id };
+    const input = {
+      projectId: "context-project",
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      model: "model",
+      permissionMode: "supervised" as const,
+      runnerKind: "local_device" as const,
+      runnerDeploymentId: randomUUID(),
+      runnerDeviceId: randomUUID(),
+      idempotencyKey: randomUUID()
+    };
+    for (const contextKind of ["project", "independent"] as const) {
+      const request = { ...input, contextKind, idempotencyKey: randomUUID() };
+      const created = await repository.createManagedConversation(
+        actor,
+        request
+      );
+      expect(
+        (await repository.createManagedConversation(actor, request)).execution
+          .id
+      ).toBe(created.execution.id);
+      await expect(
+        repository.createManagedConversation(actor, {
+          ...request,
+          contextKind: contextKind === "project" ? "independent" : "project"
+        })
+      ).rejects.toMatchObject({ statusCode: 409 });
+    }
+    const legacy = await repository.createManagedConversation(actor, input);
+    expect(
+      (
+        await repository.createManagedConversation(actor, {
+          ...input,
+          contextKind: "project"
+        })
+      ).execution.id
+    ).toBe(legacy.execution.id);
+  });
+
   it("admits settings atomically with an idle turn and preserves idempotency and ownership", async () => {
     const settingsRepo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(

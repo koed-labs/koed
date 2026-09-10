@@ -683,7 +683,10 @@ const localPersonalMemoryOrigin = (value: unknown): string | null => {
   }
 };
 
-const personalProjectsData = (payload: Record<string, unknown>) => {
+const personalProjectsData = (
+  payload: Record<string, unknown>,
+  includeSubagents = false
+) => {
   const projects = Array.isArray(payload.projects) ? payload.projects : null;
   if (!projects) {
     throw new PersonalMemoryBoundaryError("invalid_response", false);
@@ -728,7 +731,10 @@ const personalProjectsData = (payload: Record<string, unknown>) => {
             : null;
         const hasVisibleParent =
           parentThreadId !== null && threadIds.has(parentThreadId);
-        return !(thread.threadKind === "subagent" && hasVisibleParent);
+        return (
+          includeSubagents ||
+          !(thread.threadKind === "subagent" && hasVisibleParent)
+        );
       });
       return {
         id: project.id,
@@ -758,6 +764,11 @@ const localProjectMetadataData = (environment: NodeJS.ProcessEnv) => {
       lastSeenAt: project.lastSeenAt,
       localProjectId: project.localProjectId,
       displayName: project.displayName,
+      contextKind:
+        resolve(project.path.projectRoot ?? project.path.cwd) ===
+        resolve(resolveKoedHome(environment), "projects", "Independent")
+          ? "independent"
+          : "project",
       path: {
         cwd: project.path.cwd,
         projectRoot: project.path.projectRoot
@@ -2579,33 +2590,10 @@ export const createKoedServerManager = ({
     cursor?: string;
     limit: 50;
   }) => {
-    const offset = Number(input.cursor ?? "0");
+    let offset = Number(input.cursor ?? "0");
     if (!Number.isSafeInteger(offset) || offset < 0) {
       throw new PersonalMemoryBoundaryError("invalid_response", false);
     }
-    const remoteLimit = input.limit + 1;
-    const payload = await authenticatedPersonalMemoryRequest(
-      ({ apiOrigin }) => {
-        const url = new URL("/v1/memory/graph/threads", apiOrigin);
-        url.search = new URLSearchParams({
-          limit: String(remoteLimit),
-          offset: String(offset),
-          includeInvalidated: "false"
-        }).toString();
-        return { url, init: { method: "GET" } };
-      },
-      2 * 1_024 * 1_024
-    );
-    const rawThreadCount = Array.isArray(payload.projects)
-      ? payload.projects.reduce((count, projectValue) => {
-          const project = objectValue(projectValue);
-          return (
-            count +
-            (Array.isArray(project?.threads) ? project.threads.length : 0)
-          );
-        }, 0)
-      : 0;
-    const projects = personalProjectsData(payload).projects;
     const metadataById = new Map(
       (
         listProjectMetadata(resolveKoedServerPaths(environment)).projects ?? []
@@ -2634,29 +2622,60 @@ export const createKoedServerManager = ({
         return "Chats";
       return metadata?.displayName || project.name;
     };
-    const conversations = projects
-      .flatMap((project) =>
-        project.threads
-          .filter((thread) => thread.threadKind !== "subagent")
-          .map((thread) => ({
-            id: thread.sessionId ?? thread.id,
-            title: thread.name || "Conversation",
-            projectId: project.id,
-            projectName: recentProjectName(project),
-            sessionId: thread.sessionId ?? thread.id,
-            latestAt: thread.latestAt
-          }))
-      )
-      .sort(
-        (left, right) =>
-          Date.parse(right.latestAt) - Date.parse(left.latestAt) ||
-          right.id.localeCompare(left.id)
-      )
-      .slice(0, input.limit);
+    const conversations: Array<{
+      id: string;
+      title: string;
+      projectId: string;
+      projectName: string;
+      sessionId: string;
+      latestAt: string;
+    }> = [];
+    let nextCursor: string | null = null;
+    while (conversations.length < input.limit) {
+      const remaining = input.limit - conversations.length;
+      const payload = await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => {
+          const url = new URL("/v1/memory/graph/threads", apiOrigin);
+          url.search = new URLSearchParams({
+            limit: String(remaining + 1),
+            offset: String(offset),
+            includeInvalidated: "false"
+          }).toString();
+          return { url, init: { method: "GET" } };
+        },
+        2 * 1_024 * 1_024
+      );
+      // Match the graph's ordering before consuming its raw page. The extra
+      // row is a lookahead and remains available at the next raw offset.
+      const rows = personalProjectsData(payload, true)
+        .projects.flatMap((project) =>
+          project.threads.map((thread) => ({ project, thread }))
+        )
+        .sort(
+          (left, right) =>
+            Date.parse(right.thread.latestAt) -
+              Date.parse(left.thread.latestAt) ||
+            right.thread.id.localeCompare(left.thread.id)
+        );
+      const consumed = rows.slice(0, remaining);
+      for (const { project, thread } of consumed) {
+        if (thread.threadKind === "subagent") continue;
+        conversations.push({
+          id: thread.sessionId ?? thread.id,
+          title: thread.name || "Conversation",
+          projectId: project.id,
+          projectName: recentProjectName(project),
+          sessionId: thread.sessionId ?? thread.id,
+          latestAt: thread.latestAt
+        });
+      }
+      offset += consumed.length;
+      nextCursor = rows.length > remaining ? String(offset) : null;
+      if (nextCursor === null) break;
+    }
     return personalDesktopConversationRecentsDataSchema.parse({
       conversations,
-      nextCursor:
-        rawThreadCount > input.limit ? String(offset + input.limit) : null
+      nextCursor
     });
   };
 

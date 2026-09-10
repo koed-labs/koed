@@ -251,6 +251,7 @@ export interface ManagedConversationRepository {
     actor: ActorContext,
     input: {
       projectId: string;
+      contextKind?: "project" | "independent";
       provider: string;
       aiClientInstanceId: string;
       model: string;
@@ -1056,6 +1057,7 @@ const sha256 = (value: string): string =>
 
 const startDigest = (input: {
   projectId: string;
+  contextKind?: "project" | "independent";
   provider: string;
   aiClientInstanceId: string;
   model: string;
@@ -1070,6 +1072,10 @@ const startDigest = (input: {
   sha256(
     JSON.stringify({
       kind: "start",
+      // Keep existing Project request digests compatible with retries.
+      ...(input.contextKind === "independent"
+        ? { contextKind: "independent" }
+        : {}),
       projectId: input.projectId,
       provider: input.provider,
       aiClientInstanceId: input.aiClientInstanceId,
@@ -1405,6 +1411,7 @@ export const createManagedConversationRepository = (
           }
           const expectedDigest = startDigest({
             projectId,
+            contextKind: input.contextKind,
             provider: input.provider,
             aiClientInstanceId: input.aiClientInstanceId,
             model: input.model,
@@ -1437,6 +1444,7 @@ export const createManagedConversationRepository = (
         const fencingToken = randomBytes(32).toString("base64url");
         const requestDigest = startDigest({
           projectId,
+          contextKind: input.contextKind,
           provider: input.provider,
           aiClientInstanceId: input.aiClientInstanceId,
           model: input.model,

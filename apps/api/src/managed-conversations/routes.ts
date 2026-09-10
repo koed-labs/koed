@@ -1767,6 +1767,7 @@ export const registerManagedConversationRoutes = (
         { userId: user.id },
         {
           projectId: input.projectId,
+          contextKind: input.contextKind,
           provider: input.provider,
           aiClientInstanceId: input.aiClientInstanceId,
           model: input.model,

@@ -23,6 +23,8 @@ export type ManagedConversationDraft = {
   conversation: ManagedConversationIdentity;
   launchInput: Parameters<ManagedConversationDesktopApi["start"]>[0];
   initialPrompt?: InitialConversationPrompt;
+  confirmedTerminal?: boolean;
+  retryStartPending?: boolean;
   status: "starting" | "ready" | "failed" | "reconciling";
   message: string;
   thread: PersonalDesktopProjectThread;
@@ -70,7 +72,11 @@ const recoveredManagedConversationDrafts = (
         const conversation = parseManagedConversationIdentity(
           draft.conversation
         );
-        if (conversation.executionId !== entry.routeId) continue;
+        // The route stays stable when a terminal retry creates a new execution.
+        parseManagedConversationIdentity({
+          ...conversation,
+          executionId: entry.routeId
+        });
         const status = draft.status;
         if (
           status !== "starting" &&
@@ -106,6 +112,8 @@ const recoveredManagedConversationDrafts = (
         recovered.set(entry.routeId, {
           conversation,
           launchInput,
+          confirmedTerminal: draft.confirmedTerminal === true,
+          retryStartPending: draft.retryStartPending === true,
           ...(initialPrompt ? { initialPrompt } : {}),
           status,
           message,
@@ -303,6 +311,7 @@ export function useManagedConversationLifecycle({
       );
       if (!entry) return current;
       const [routeId, draft] = entry;
+      if (draft.retryStartPending) return current;
       const capturedSessionId =
         realtime.execution.sessionId ?? draft.conversation.capturedSessionId;
       const threadId =
@@ -310,6 +319,9 @@ export function useManagedConversationLifecycle({
       const next: ManagedConversationDraft = {
         ...draft,
         conversation: { ...draft.conversation, capturedSessionId, threadId },
+        confirmedTerminal: ["failed", "fenced", "stopped"].includes(
+          realtime.execution.state
+        ),
         status:
           realtime.execution.state === "running" &&
           realtime.execution.sessionId &&
@@ -335,6 +347,7 @@ export function useManagedConversationLifecycle({
         }
       };
       if (
+        next.confirmedTerminal === draft.confirmedTerminal &&
         next.status === draft.status &&
         next.message === draft.message &&
         capturedSessionId === draft.conversation.capturedSessionId &&
@@ -354,13 +367,29 @@ export function useManagedConversationLifecycle({
         continue;
       const executionId = draft.conversation.executionId;
       if (!executionId) continue;
-      void api
-        .inspect(executionId)
+      const request = async () => {
+        if (!draft.retryStartPending) return api.inspect(executionId);
+        // Persist the replacement key before dispatch, including after recovery.
+        if (ownerId && api.writeRecovery) {
+          const write = api.writeRecovery;
+          writeQueue.current = writeQueue.current
+            .catch(() => undefined)
+            .then(async () => {
+              if (scope.current === currentScope)
+                await write(ownerId, managedConversationRecoveryValue(drafts));
+            });
+          await writeQueue.current;
+        }
+        if (!active || scope.current !== currentScope) return null;
+        return api.start(draft.launchInput);
+      };
+      void request()
         .then((result) => {
           if (
+            !result ||
             !active ||
             scope.current !== currentScope ||
-            result.status === "starting"
+            (result.status === "starting" && !draft.retryStartPending)
           )
             return;
           if (result.status === "ready" && result.conversation) {
@@ -373,15 +402,24 @@ export function useManagedConversationLifecycle({
           setDrafts((current) => {
             if (current.get(routeId) !== draft) return current;
             const conversation =
-              result.status === "ready" && result.conversation
-                ? result.conversation
-                : draft.conversation;
+              result.conversation ??
+              (result.operation === "start"
+                ? {
+                    ...draft.conversation,
+                    executionId: result.executionId,
+                    capturedSessionId: result.executionId,
+                    threadId: result.executionId
+                  }
+                : draft.conversation);
             const message =
               result.status === "ready"
                 ? ""
-                : (result.message ??
-                  "The AI Client could not establish a writable Conversation.");
+                : result.status === "starting"
+                  ? draft.message
+                  : (("message" in result ? result.message : undefined) ??
+                    "The AI Client could not establish a writable Conversation.");
             if (
+              !draft.retryStartPending &&
               draft.status === result.status &&
               draft.message === message &&
               conversation === draft.conversation
@@ -390,6 +428,8 @@ export function useManagedConversationLifecycle({
             return new Map(current).set(routeId, {
               ...draft,
               conversation,
+              retryStartPending: false,
+              confirmedTerminal: result.status === "failed",
               status: result.status,
               message,
               thread: {
@@ -417,62 +457,31 @@ export function useManagedConversationLifecycle({
     return () => {
       active = false;
     };
-  }, [api, drafts, revision, store, currentScope]);
+  }, [api, drafts, revision, store, currentScope, ownerId]);
 
   const retry = useCallback(
     (routeId: string) => {
       const draft = drafts.get(routeId);
       if (!api || !draft) return;
-      const currentScope = scope.current;
+      if (draft.status !== "failed" && draft.status !== "reconciling") return;
       const pending: ManagedConversationDraft = {
         ...draft,
+        launchInput: draft.confirmedTerminal
+          ? { ...draft.launchInput, idempotencyKey: crypto.randomUUID() }
+          : draft.launchInput,
+        confirmedTerminal: false,
+        retryStartPending: true,
         status: "starting",
         message:
           draft.launchInput.contextKind === "independent"
             ? "Starting a Chat…"
             : "Starting the AI Client in this Project…"
       };
-      setDrafts((current) => new Map(current).set(routeId, pending));
-      void api
-        .start(draft.launchInput)
-        .then((result) => {
-          if (scope.current !== currentScope) return;
-          setDrafts((current) => {
-            const existing = current.get(routeId);
-            if (
-              !existing ||
-              existing.conversation.executionId !==
-                draft.conversation.executionId ||
-              existing.status === "ready"
-            )
-              return current;
-            const conversation = result.conversation ?? draft.conversation;
-            return new Map(current).set(routeId, {
-              ...existing,
-              conversation,
-              status: result.status,
-              message: result.status === "starting" ? pending.message : "",
-              thread: {
-                ...existing.thread,
-                id: conversation.threadId,
-                sessionId: conversation.capturedSessionId
-              }
-            });
-          });
-        })
-        .catch((cause: unknown) => {
-          if (scope.current !== currentScope) return;
-          setDrafts((current) =>
-            current.get(routeId) !== pending
-              ? current
-              : new Map(current).set(routeId, {
-                  ...pending,
-                  status: "failed",
-                  message:
-                    cause instanceof Error ? cause.message : String(cause)
-                })
-          );
-        });
+      setDrafts((current) =>
+        current.get(routeId) === draft
+          ? new Map(current).set(routeId, pending)
+          : current
+      );
     },
     [api, drafts]
   );

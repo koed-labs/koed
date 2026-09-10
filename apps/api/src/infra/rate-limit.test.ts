@@ -60,9 +60,6 @@ describe("rate limiting", () => {
       ).rejects.toMatchObject({ statusCode: 429 });
       await expect(
         handlers[kind](interactiveRequest, reply)
-      ).resolves.toBeUndefined();
-      await expect(
-        handlers[kind](interactiveRequest, reply)
       ).rejects.toMatchObject({ statusCode: 429 });
     }
 
@@ -107,6 +104,18 @@ describe("rate limiting", () => {
 
     await handlers.memoryRead(request("Bearer valid-alice"), reply);
     await handlers.memoryRead(request("Bearer valid-bob"), reply);
+    await expect(
+      handlers.memoryRead(
+        {
+          ...request("Bearer valid-alice"),
+          headers: {
+            authorization: "Bearer valid-alice",
+            "x-koed-request-class": "managed-conversation"
+          }
+        } as FastifyRequest,
+        reply
+      )
+    ).rejects.toMatchObject({ statusCode: 429 });
     await expect(
       handlers.memoryRead(request("Bearer valid-alice"), reply)
     ).rejects.toMatchObject({ statusCode: 429 });

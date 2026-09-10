@@ -853,6 +853,7 @@ export function App({
   }, [
     askAvailable,
     personalMemoryApi,
+    snapshot?.navigation.personalOwner.id,
     refreshAskRecents,
     refreshConversationRecents,
     scheduleConversationRecentsRefresh

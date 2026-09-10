@@ -264,14 +264,11 @@ describe("managed Conversation lifecycle", () => {
     expect(lifecycle.drafts.get(executionId)?.status).toBe("ready");
   });
 
-  it("retries the persisted launch without generating a new execution request", async () => {
+  it("retains the launch key when inspection fails without a confirmed terminal state", async () => {
     const api = {
-      inspect: vi.fn(async () => ({
-        operation: "inspect",
-        status: "failed",
-        executionId,
-        message: "Try again"
-      })),
+      inspect: vi.fn(async () => {
+        throw new Error("Network unavailable");
+      }),
       start: vi.fn(async () => ({
         operation: "start",
         status: "ready",
@@ -287,5 +284,95 @@ describe("managed Conversation lifecycle", () => {
     await act(async () => lifecycle.retry(executionId));
     expect(api.start).toHaveBeenCalledWith(launch);
     expect(lifecycle.drafts.get(executionId)?.initialPrompt).toEqual(prompt);
+  });
+  it("persists a new terminal retry key, adopts the new execution, and restores its stable route", async () => {
+    vi.useFakeTimers();
+    let saved = "";
+    const replacementId = "44444444-4444-4444-8444-444444444444";
+    const start =
+      deferred<Awaited<ReturnType<ManagedConversationDesktopApi["start"]>>>();
+    const api = {
+      readRecovery: vi.fn(async () => ({
+        operation: "recovery_read",
+        value: saved
+      })),
+      writeRecovery: vi.fn(async (_owner: string, value: string) => {
+        saved = value;
+        return { operation: "recovery_write", ok: true };
+      }),
+      inspect: vi.fn(async (id: string) => ({
+        operation: "inspect",
+        executionId: id,
+        status: id === executionId ? "failed" : "starting"
+      })),
+      start: vi.fn(() => {
+        expect(saved).not.toContain("launch-original");
+        return start.promise;
+      })
+    } as unknown as ManagedConversationDesktopApi;
+    await act(async () =>
+      root.render(<Harness api={api} store={null} ownerId="owner-1" />)
+    );
+    await act(async () => {
+      started();
+    });
+    await act(async () => lifecycle.retry(executionId));
+    const replacementKey = vi.mocked(api.start).mock.calls[0]?.[0]
+      .idempotencyKey;
+    expect(replacementKey).toBeTruthy();
+    expect(replacementKey).not.toBe(launch.idempotencyKey);
+    expect(saved).toContain(replacementKey!);
+    expect(api.inspect).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      start.resolve({
+        operation: "start",
+        status: "starting",
+        executionId: replacementId
+      })
+    );
+    expect(lifecycle.drafts.get(executionId)).toMatchObject({
+      conversation: {
+        executionId: replacementId,
+        capturedSessionId: replacementId
+      },
+      launchInput: { idempotencyKey: replacementKey },
+      status: "starting"
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150);
+    });
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () =>
+      root.render(<Harness api={api} store={null} ownerId="owner-1" />)
+    );
+    expect(lifecycle.drafts.get(executionId)?.conversation.executionId).toBe(
+      replacementId
+    );
+    expect(api.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the replacement key after an uncertain terminal retry response", async () => {
+    const api = {
+      inspect: vi.fn(async () => ({
+        operation: "inspect",
+        status: "failed",
+        executionId
+      })),
+      start: vi.fn(async () => {
+        throw new Error("Response lost");
+      })
+    } as unknown as ManagedConversationDesktopApi;
+    await act(async () => root.render(<Harness api={api} store={null} />));
+    await act(async () => {
+      started();
+    });
+    await act(async () => lifecycle.retry(executionId));
+    await act(async () => lifecycle.retry(executionId));
+    const calls = vi.mocked(api.start).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.[0].idempotencyKey).not.toBe(launch.idempotencyKey);
+    expect(calls[1]?.[0]).toEqual(calls[0]?.[0]);
+    expect(api.inspect).toHaveBeenCalledOnce();
   });
 });

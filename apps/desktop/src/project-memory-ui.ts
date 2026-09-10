@@ -33,6 +33,7 @@ export type DesktopProjectMetadata = {
   lastSeenAt: string;
   localProjectId: string;
   displayName: string;
+  contextKind?: "project" | "independent";
   path: {
     cwd: string;
     projectRoot: string | null;
@@ -161,13 +162,11 @@ const enrichProject = (
   ...project,
   threads: project.threads as PersonalDesktopProjectThread[],
   name:
-    (metadata?.displayName || project.name) === "Independent"
+    metadata?.contextKind === "independent"
       ? "Chats"
       : metadata?.displayName || project.name,
   contextKind:
-    (metadata?.displayName || project.name) === "Independent"
-      ? "independent"
-      : "project",
+    metadata?.contextKind === "independent" ? "independent" : "project",
   path:
     project.path ?? metadata?.path.projectRoot ?? metadata?.path.cwd ?? null,
   catalogued: Boolean(metadata),
@@ -224,10 +223,8 @@ export const mergeProjectSources = (
 ): DesktopProject[] => {
   // A standalone Conversation has a private runtime directory, but belongs
   // to the stable Chats Project. Discovery can catalogue both directories.
-  const chatsRoots = metadataProjects.filter((metadata) =>
-    (
-      normalizedPath(metadata.path.projectRoot ?? metadata.path.cwd) ?? ""
-    ).endsWith("/projects/Independent")
+  const chatsRoots = metadataProjects.filter(
+    (metadata) => metadata.contextKind === "independent"
   );
   const chatsMetadataForPath = (path: string | null) => {
     const normalized = normalizedPath(path);

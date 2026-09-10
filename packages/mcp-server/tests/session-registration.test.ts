@@ -37,7 +37,7 @@ it("retries rate-limited registration with the same identity after Retry-After",
   expect(fetch.mock.calls[1]?.[1]?.headers).toMatchObject({
     "x-koed-request-class": "managed-conversation"
   });
-  expect(fetch.mock.calls[0]?.[1].body).toBe(fetch.mock.calls[1]?.[1].body);
+  expect(fetch.mock.calls[0]?.[1]?.body).toBe(fetch.mock.calls[1]?.[1]?.body);
 });
 
 it.each([401, 403, 500])(

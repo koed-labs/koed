@@ -25,10 +25,11 @@ it("invalidates changed runtime fingerprints, model identities, and malformed ca
       await fileValidationCache(path, "runtime-two").read(runtime)
     ).toBeUndefined();
     expect(
-      await cache.read({
-        ...runtime,
-        modelRevision: "changed"
-      } as typeof runtime)
+      await cache.read(
+        Object.assign(new DeterministicPrivacyRuntime(), {
+          modelRevision: "changed"
+        })
+      )
     ).toBeUndefined();
     await writeFile(path, "{broken");
     expect(await cache.read(runtime)).toBeUndefined();

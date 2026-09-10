@@ -97,7 +97,11 @@ export const selectionForAssignment = (
     .find(
       (instance) => instance.instanceId === assignment.ai_client_instance_id
     )
-    ?.models.find((candidate) => candidate.id === assignment.model);
+    ?.models.find((candidate) =>
+      [candidate.id, candidate.fullId, candidate.model].includes(
+        assignment.model
+      )
+    );
   return {
     ...selection,
     model: model?.id ?? assignment.model,

@@ -276,6 +276,7 @@ export const personalDesktopProjectMetadataSchema = z
     lastSeenAt: timestampSchema,
     localProjectId: identifierSchema,
     displayName: projectNameSchema,
+    contextKind: z.enum(["project", "independent"]).optional(),
     path: z
       .object({
         cwd: localProjectPathSchema,

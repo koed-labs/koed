@@ -296,6 +296,7 @@ describe("Koed server desktop manager", () => {
         projects: [
           {
             localProjectId: "local-project",
+            contextKind: "project",
             git: {
               remotes: [{ display: "github.com/koed-labs/koed" }]
             }
@@ -303,6 +304,69 @@ describe("Koed server desktop manager", () => {
         ]
       }
     });
+  });
+
+  it("marks only the exact Koed-owned Chats root as independent metadata", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-chats-metadata-"));
+    try {
+      mkdirSync(resolve(koedHome, "config"), { recursive: true });
+      writeFileSync(
+        resolve(koedHome, "config/projects.json"),
+        JSON.stringify({
+          schemaVersion: 3,
+          updatedAt: "2026-07-24T00:00:00.000Z",
+          deviceSaltId: "pms_test",
+          projects: [
+            resolve(koedHome, "projects", "Independent"),
+            "/work/projects/Independent"
+          ].map((cwd, index) => ({
+            schemaVersion: 1,
+            discoveredAt: "2026-07-23T00:00:00.000Z",
+            lastSeenAt: "2026-07-24T00:00:00.000Z",
+            localProjectId: `project-${index}`,
+            displayName: "Independent",
+            path: {
+              cwd,
+              projectRoot: null,
+              basename: "Independent",
+              localPathHash: `hmac_sha256:${index}`
+            },
+            packages: []
+          }))
+        })
+      );
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: { KOED_HOME: koedHome },
+        createCliInvocation: (args) => ({
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_HOME: koedHome }
+        }),
+        existsSync: () => true,
+        execFile: (_command, _args, _options, callback) =>
+          callback(null, JSON.stringify({ ok: true }), ""),
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined
+      });
+      const result = await manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.projects.metadata.list",
+        input: {}
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        data: {
+          projects: [
+            { localProjectId: "project-0", contextKind: "independent" },
+            { localProjectId: "project-1", contextKind: "project" }
+          ]
+        }
+      });
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
   });
 
   it("reconciles graph Project paths into fresh local metadata", async () => {
@@ -1489,6 +1553,58 @@ describe("Koed server desktop manager", () => {
     const recentUrl = new URL(String(personalMemoryFetch.mock.calls[1]?.[0]));
     expect(recentUrl.searchParams.get("limit")).toBe("51");
     expect(recentUrl.searchParams.get("offset")).toBe("0");
+    const rows = Array.from({ length: 123 }, (_, index) =>
+      thread({
+        id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        sessionId: `10000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        latestAt: new Date(
+          Date.parse("2026-08-05T12:00:00.000Z") - index * 1000
+        ).toISOString(),
+        threadKind: index < 70 ? "subagent" : "conversation"
+      })
+    );
+    personalMemoryFetch.mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      const offset = Number(url.searchParams.get("offset"));
+      const limit = Number(url.searchParams.get("limit"));
+      return new Response(
+        JSON.stringify({
+          projects: [
+            {
+              id: "project-1",
+              name: "koed",
+              path: "/repo",
+              eventCount: 0,
+              threads: rows.slice(offset, offset + limit)
+            }
+          ]
+        }),
+        { status: 200 }
+      );
+    });
+    const page = await manager.personalMemory({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.conversations.recent.list",
+      input: { limit: 50 }
+    });
+    expect(page).toMatchObject({ ok: true, data: { nextCursor: "120" } });
+    if (!page.ok || page.operation !== "personal.conversations.recent.list")
+      throw new Error("Expected recents");
+    expect(page.data.conversations).toHaveLength(50);
+    expect(page.data.conversations.map((item) => item.id)).toEqual(
+      rows.slice(70, 120).map((item) => item.sessionId)
+    );
+    const older = await manager.personalMemory({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.conversations.recent.list",
+      input: { limit: 50, cursor: page.data.nextCursor! }
+    });
+    expect(older).toMatchObject({ ok: true, data: { nextCursor: null } });
+    if (!older.ok || older.operation !== "personal.conversations.recent.list")
+      throw new Error("Expected recents");
+    expect(older.data.conversations.map((item) => item.id)).toEqual(
+      rows.slice(120).map((item) => item.sessionId)
+    );
     const runtimeId = "69b33165-f70c-4123-8291-4a3871a68400";
     personalMemoryFetch.mockResolvedValueOnce(
       new Response(

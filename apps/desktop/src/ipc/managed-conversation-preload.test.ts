@@ -4,6 +4,7 @@ import {
   createManagedConversationPreloadApi,
   type ManagedConversationIpcInvoke
 } from "./managed-conversation-preload.js";
+import { selectionForAssignment } from "../renderer/views/personal/ConversationSettings.js";
 import { managedConversationCommandChannel } from "./managed-conversation-protocol.js";
 
 const identity = {
@@ -106,6 +107,61 @@ describe("Managed Conversation preload bridge", () => {
         ]
       }
     });
+  });
+
+  it("preserves capability aliases and normalizes qualified launch defaults", async () => {
+    const api = createManagedConversationPreloadApi(
+      vi.fn(async () => ({
+        operation: "launch_options",
+        options: {
+          runners: [],
+          instances: [
+            {
+              instanceId: "codex.default",
+              driverId: "codex",
+              displayName: "Codex",
+              ready: true,
+              readiness: "ready",
+              models: [
+                {
+                  id: "gpt-5.6-luna",
+                  fullId: "openai/gpt-5.6-luna",
+                  model: "luna-alias",
+                  supportedReasoningEfforts: ["low"]
+                }
+              ],
+              capabilities: {
+                defaultPermissionMode: "supervised",
+                permissionModes: [{ mode: "supervised", support: "supported" }]
+              }
+            }
+          ]
+        }
+      }))
+    );
+    const { options } = await api.launchOptions();
+    for (const model of ["gpt-5.6-luna", "openai/gpt-5.6-luna", "luna-alias"]) {
+      expect(
+        selectionForAssignment(options, {
+          provider: "codex",
+          timeout_ms: 60000,
+          max_attempts: 1,
+          ai_client_instance_id: "codex.default",
+          model,
+          reasoning_effort: "low"
+        })
+      ).toMatchObject({ model: "gpt-5.6-luna", reasoningEffort: "low" });
+    }
+    expect(
+      selectionForAssignment(options, {
+        provider: "codex",
+        timeout_ms: 60000,
+        max_attempts: 1,
+        ai_client_instance_id: "codex.default",
+        model: "unavailable-model",
+        reasoning_effort: "low"
+      }).model
+    ).toBe("unavailable-model");
   });
 
   it("exposes exact validated methods without transport or filesystem authority", async () => {

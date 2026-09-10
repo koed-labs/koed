@@ -68,6 +68,7 @@ describe("repoUrlFromRemoteDisplay", () => {
   it("presents standalone conversations as one Chats project while preserving their identity", () => {
     const standaloneMetadata = metadata({
       displayName: "Independent",
+      contextKind: "independent",
       localProjectId: "lp_chats",
       path: { cwd: "/tmp/koed/projects/Independent", projectRoot: null }
     });
@@ -90,6 +91,7 @@ describe("repoUrlFromRemoteDisplay", () => {
     const root = metadata({
       localProjectId: "lp_chats",
       displayName: "Independent",
+      contextKind: "independent",
       path: { cwd: "/tmp/koed/projects/Independent", projectRoot: null }
     });
     const runtimePath =
@@ -120,6 +122,7 @@ describe("repoUrlFromRemoteDisplay", () => {
     const root = metadata({
       localProjectId: "lp_chats",
       displayName: "Independent",
+      contextKind: "independent",
       path: { cwd: "/tmp/koed/projects/Independent", projectRoot: null }
     });
     const path =
@@ -129,6 +132,23 @@ describe("repoUrlFromRemoteDisplay", () => {
     expect(projects).toHaveLength(1);
     expect(projects[0]?.threads).toEqual(captured.threads);
     expect(projects[0]?.id).toBe("lp_chats");
+  });
+
+  it("keeps user Projects named Independent, including lookalike paths, available as Projects", () => {
+    const ordinary = metadata({
+      displayName: "Independent",
+      path: { cwd: "/work/projects/Independent", projectRoot: null }
+    });
+    expect(mergeProjectSources([], [ordinary])[0]).toMatchObject({
+      name: "Independent",
+      contextKind: "project"
+    });
+    expect(
+      mergeProjectSources([graphProject({ name: "Independent" })], [])[0]
+    ).toMatchObject({
+      name: "Independent",
+      contextKind: "project"
+    });
   });
 
   it("prefixes a normalized remote display with https://", () => {
