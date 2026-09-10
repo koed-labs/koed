@@ -1877,7 +1877,11 @@ describe("PersonalMemoryWorkspace", () => {
     const render = (routeId: string) => (
       <PersonalMemoryWorkspace
         managedConversations={managed}
-        managedConversationDrafts={drafts}
+        managedConversationLifecycle={{
+          drafts,
+          started: vi.fn(),
+          retry: vi.fn()
+        }}
         onNavigate={vi.fn()}
         route={{ kind: "session", projectId: "project-1", sessionId: routeId }}
         store={store}

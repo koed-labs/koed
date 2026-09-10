@@ -23,9 +23,15 @@ an available AI Client, model, reasoning level, and permission mode before
 they start. Sending the first message starts the Conversation and queues that
 message behind runtime startup. Starting without a message remains available.
 
-An uncertain start retains its request identity for an explicit retry. An
-uncertain first prompt is not submitted again automatically. A rejected first
-prompt remains available as a draft.
+An uncertain start retains its request identity for an explicit retry.
+An uncertain first prompt retains its exact text and message identity.
+Desktop disables text edits until an explicit retry resolves that prompt.
+It does not submit the prompt again automatically.
+After a definite rejection, an edited prompt receives a new message identity.
+The launch identity stays the same for both retry paths.
+
+The selected Project stays fixed after a launch attempt starts.
+Ask and Projects share provisional titles, identity updates, and restart recovery.
 
 New Conversations start on this device. The existing handoff action controls
 subsequent device changes. This change does not add remote launch support.
@@ -88,8 +94,8 @@ The fixture URL is
 
 The throwaway variants and switcher are removed.
 
-## Existing development databases
+## Database schema
 
-Migration `0039_conversation_start_ack` repairs databases that applied an earlier
-version of migration `0037`. It adds the missing runtime-binding acknowledgement
-column. It preserves existing values and Conversation records.
+Migration `0038_conversation_agent_default` adds the Conversations setting.
+Migration `0037_coding_project_runtime` already creates the runtime acknowledgement column.
+The alpha migration chain does not include a repair for earlier development versions.

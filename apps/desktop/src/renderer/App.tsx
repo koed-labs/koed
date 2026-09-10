@@ -7,10 +7,8 @@ import {
 } from "@koed/shared/collaboration";
 import type {
   PersonalDesktopApi,
-  PersonalDesktopAskThread,
-  PersonalDesktopProjectThread
+  PersonalDesktopAskThread
 } from "@koed/shared/personal-desktop";
-import { personalDesktopProjectThreadSchema } from "@koed/shared/personal-desktop";
 import { Button, ToastProvider } from "@koed/ui";
 import { AlertTriangle, LoaderCircle } from "lucide-react";
 import {
@@ -30,7 +28,6 @@ import {
   type CollaborationRendererClient
 } from "../collaboration/renderer-client.js";
 import type {
-  ManagedConversationDraft,
   PersonalMemoryInspectorEvent,
   PersonalMemoryRoute
 } from "./views/personal/index.js";
@@ -57,13 +54,10 @@ import {
 import { DesktopStatusStore } from "./services/desktop-commands.js";
 import { createRendererPlatform } from "./services/platform.js";
 import { PersonalMemoryStore } from "./state/personal-memory.js";
+import { useManagedConversationLifecycle } from "./state/use-managed-conversation-lifecycle.js";
 import type { ManagedConversationRealtimeUpdate } from "./state/managed-conversation-runtime.js";
 import { sessionSelectionId } from "../project-memory-ui.js";
-import {
-  parseManagedConversationIdentity,
-  parseManagedConversationRequest,
-  type ManagedConversationDesktopApi
-} from "../ipc/managed-conversation-protocol.js";
+import type { ManagedConversationDesktopApi } from "../ipc/managed-conversation-protocol.js";
 import type { ManagedProjectDesktopApi } from "../ipc/managed-project-protocol.js";
 import { ThemeStore } from "./state/theme.js";
 import { useDesktopStatus } from "./state/use-status.js";
@@ -117,8 +111,6 @@ const fallbackCollaborationClient = (): CollaborationRendererClient =>
 
 const PERSONAL_ASK_RECENTS_CACHE_LIMIT = 500;
 const PERSONAL_CONVERSATION_RECENTS_CACHE_LIMIT = 500;
-const MANAGED_CONVERSATION_RECOVERY_LIMIT = 100;
-const MANAGED_CONVERSATION_RECOVERY_TARGET_BYTES = 900 * 1024;
 
 const mergeAskRecents = (
   current: readonly PersonalDesktopAskThread[],
@@ -178,126 +170,6 @@ const mergeConversationRecents = (
     )
     .slice(0, PERSONAL_CONVERSATION_RECENTS_CACHE_LIMIT);
 };
-
-const recoveredManagedConversationDrafts = (
-  value: string
-): ReadonlyMap<string, ManagedConversationDraft> => {
-  if (!value) return new Map();
-  try {
-    const payload = JSON.parse(value) as unknown;
-    if (!payload || typeof payload !== "object" || Array.isArray(payload))
-      return new Map();
-    const root = payload as Record<string, unknown>;
-    if (root.schemaVersion !== 1 || !Array.isArray(root.drafts))
-      return new Map();
-    const recovered = new Map<string, ManagedConversationDraft>();
-    for (const candidate of root.drafts.slice(
-      0,
-      MANAGED_CONVERSATION_RECOVERY_LIMIT
-    )) {
-      try {
-        if (
-          !candidate ||
-          typeof candidate !== "object" ||
-          Array.isArray(candidate)
-        )
-          continue;
-        const entry = candidate as Record<string, unknown>;
-        if (
-          typeof entry.routeId !== "string" ||
-          !entry.draft ||
-          typeof entry.draft !== "object"
-        )
-          continue;
-        const draft = entry.draft as Record<string, unknown>;
-        const launch = parseManagedConversationRequest({
-          operation: "start",
-          ...(draft.launchInput as Record<string, unknown>)
-        });
-        if (launch.operation !== "start") continue;
-        const { operation: _operation, ...launchInput } = launch;
-        void _operation;
-        const conversation = parseManagedConversationIdentity(
-          draft.conversation
-        );
-        if (conversation.executionId !== entry.routeId) continue;
-        const status = draft.status;
-        if (
-          status !== "starting" &&
-          status !== "ready" &&
-          status !== "failed" &&
-          status !== "reconciling"
-        )
-          continue;
-        const message = typeof draft.message === "string" ? draft.message : "";
-        const thread = personalDesktopProjectThreadSchema.parse(draft.thread);
-        const prompt = draft.initialPrompt;
-        const initialPrompt: ManagedConversationDraft["initialPrompt"] =
-          prompt && typeof prompt === "object" && !Array.isArray(prompt)
-            ? (() => {
-                const item = prompt as Record<string, unknown>;
-                if (
-                  typeof item.clientUserMessageId !== "string" ||
-                  typeof item.prompt !== "string" ||
-                  (item.status !== "queued" &&
-                    item.status !== "rejected" &&
-                    item.status !== "reconciling") ||
-                  typeof item.message !== "string"
-                )
-                  return undefined;
-                return {
-                  clientUserMessageId: item.clientUserMessageId,
-                  prompt: item.prompt,
-                  status: item.status,
-                  message: item.message
-                };
-              })()
-            : undefined;
-        recovered.set(entry.routeId, {
-          conversation,
-          launchInput,
-          ...(initialPrompt ? { initialPrompt } : {}),
-          status,
-          message,
-          thread
-        });
-      } catch {
-        // Skip one malformed recovery record without discarding valid entries.
-      }
-    }
-    return recovered;
-  } catch {
-    return new Map();
-  }
-};
-
-const managedConversationRecoveryValue = (
-  drafts: ReadonlyMap<string, ManagedConversationDraft>
-): string => {
-  const entries: Array<{ routeId: string; draft: ManagedConversationDraft }> =
-    [];
-  const candidates = [...drafts.entries()]
-    .sort(
-      ([, left], [, right]) =>
-        Date.parse(right.thread.latestAt) - Date.parse(left.thread.latestAt)
-    )
-    .slice(0, MANAGED_CONVERSATION_RECOVERY_LIMIT);
-  for (const [routeId, draft] of candidates) {
-    const candidate = [...entries, { routeId, draft }];
-    const value = JSON.stringify({ schemaVersion: 1, drafts: candidate });
-    if (
-      new TextEncoder().encode(value).byteLength >
-      MANAGED_CONVERSATION_RECOVERY_TARGET_BYTES
-    )
-      break;
-    entries.push({ routeId, draft });
-  }
-  return JSON.stringify({ schemaVersion: 1, drafts: entries });
-};
-
-const provisionalConversationTitle = (prompt: string | undefined): string =>
-  prompt?.trim().replace(/\s+/gu, " ").slice(0, 120) ||
-  "New AI Client Conversation";
 
 const defaultClient = createCollaborationRendererClient(
   window.koedDesktop?.collaboration ?? {
@@ -735,12 +607,6 @@ export function App({
   const conversationRecentsRefreshTimer = useRef<number | null>(null);
   const [managedConversationRevision, setManagedConversationRevision] =
     useState(0);
-  const [managedConversationDrafts, setManagedConversationDrafts] = useState<
-    ReadonlyMap<string, ManagedConversationDraft>
-  >(new Map());
-  const [managedRecoveryOwner, setManagedRecoveryOwner] = useState<
-    string | null
-  >(null);
   const [
     managedConversationRecoveryRevision,
     setManagedConversationRecoveryRevision
@@ -811,6 +677,14 @@ export function App({
         : snapshotWithoutTeamCollaboration(collaboration.snapshot),
     [collaboration.snapshot, teamCollaborationEnabled]
   );
+  const managedConversationLifecycle = useManagedConversationLifecycle({
+    api: managedConversations,
+    store: personalMemoryStore,
+    ownerId: snapshot?.navigation.personalOwner.id ?? null,
+    revision: managedConversationRevision,
+    update: managedConversationUpdate
+  });
+  const managedConversationDrafts = managedConversationLifecycle.drafts;
   const personalOwnerRef = useRef<string | null>(null);
   personalOwnerRef.current = snapshot?.navigation.personalOwner.id ?? null;
   const conversationRecents = useMemo(() => {
@@ -998,57 +872,15 @@ export function App({
   );
 
   useEffect(() => {
-    const ownerId = snapshot?.navigation.personalOwner.id;
-    if (!ownerId) return;
-    let active = true;
-    setManagedRecoveryOwner(null);
     if (conversationRecentsRefreshTimer.current !== null) {
       window.clearTimeout(conversationRecentsRefreshTimer.current);
       conversationRecentsRefreshTimer.current = null;
     }
-    setManagedConversationDrafts(new Map());
     setAskRecents([]);
     setAskRecentsNextCursor(null);
     setCapturedConversationRecents([]);
     setConversationRecentsNextCursor(null);
-    if (!managedConversations?.readRecovery) {
-      setManagedRecoveryOwner(ownerId);
-      return;
-    }
-    void managedConversations
-      .readRecovery(ownerId)
-      .then((result) => {
-        if (!active) return;
-        setManagedConversationDrafts(
-          recoveredManagedConversationDrafts(result.value)
-        );
-        setManagedRecoveryOwner(ownerId);
-      })
-      .catch(() => {
-        if (active) setManagedRecoveryOwner(ownerId);
-      });
-    return () => {
-      active = false;
-    };
-  }, [managedConversations, snapshot?.navigation.personalOwner.id]);
-
-  useEffect(() => {
-    const ownerId = snapshot?.navigation.personalOwner.id;
-    const writeRecovery = managedConversations?.writeRecovery;
-    if (!ownerId || managedRecoveryOwner !== ownerId || !writeRecovery) return;
-    const timer = window.setTimeout(() => {
-      void writeRecovery(
-        ownerId,
-        managedConversationRecoveryValue(managedConversationDrafts)
-      ).catch(() => undefined);
-    }, 100);
-    return () => window.clearTimeout(timer);
-  }, [
-    managedConversationDrafts,
-    managedConversations,
-    managedRecoveryOwner,
-    snapshot?.navigation.personalOwner.id
-  ]);
+  }, [snapshot?.navigation.personalOwner.id]);
 
   useEffect(() => {
     if (!teamCollaborationEnabled) return;
@@ -1170,53 +1002,6 @@ export function App({
             revision: (current?.revision ?? 0) + 1,
             update: realtime
           }));
-          setManagedConversationDrafts((current) => {
-            const entry = [...current.entries()].find(
-              ([, draft]) =>
-                draft.conversation.executionId === realtime.execution.id
-            );
-            if (!entry) return current;
-            const [routeId, draft] = entry;
-            const capturedSessionId =
-              realtime.execution.sessionId ??
-              draft.conversation.capturedSessionId;
-            const threadId =
-              realtime.execution.providerThreadId ??
-              draft.conversation.threadId;
-            const promptActivityAt =
-              realtime.latestCommand?.commandKind === "prompt" &&
-              realtime.latestCommand.clientUserMessageId
-                ? realtime.latestCommand.updatedAt
-                : draft.thread.latestAt;
-            const next = new Map(current);
-            next.set(routeId, {
-              ...draft,
-              conversation: {
-                ...draft.conversation,
-                capturedSessionId,
-                threadId
-              },
-              status:
-                realtime.execution.state === "running" &&
-                realtime.execution.sessionId &&
-                realtime.execution.providerThreadId
-                  ? "ready"
-                  : realtime.execution.state === "reconciling"
-                    ? "reconciling"
-                    : realtime.execution.state === "failed" ||
-                        realtime.execution.state === "fenced" ||
-                        realtime.execution.state === "stopped"
-                      ? "failed"
-                      : draft.status,
-              thread: {
-                ...draft.thread,
-                id: threadId,
-                sessionId: capturedSessionId,
-                latestAt: promptActivityAt
-              }
-            });
-            return next;
-          });
         }
         if (update.realtimeUpdate?.type === "personal_memory_upserted") {
           personalMemoryStore?.refreshFromDurableEvent();
@@ -1801,50 +1586,14 @@ export function App({
             initialPrompt
           ) => {
             if (initialPrompt?.status !== "queued") return;
-            const routeId = conversation.executionId;
+            const routeId = managedConversationLifecycle.started(
+              project,
+              conversation,
+              status,
+              launchInput,
+              initialPrompt
+            );
             if (!routeId) return;
-            const now = new Date().toISOString();
-            const draft: PersonalDesktopProjectThread = {
-              id: conversation.threadId,
-              name: provisionalConversationTitle(initialPrompt?.prompt),
-              sessionId: conversation.capturedSessionId,
-              sourceAiClient:
-                launchInput.aiClientDriverId === "claude"
-                  ? "claude-code"
-                  : launchInput.aiClientDriverId,
-              projectId: project.id,
-              projectName: project.name,
-              projectPath: project.path,
-              projectAssignmentSource: "user_override",
-              eventCount: 0,
-              invalidatedCount: 0,
-              latestAt: now,
-              sample: initialPrompt?.prompt ?? "",
-              presentation: null
-            };
-            if (
-              status === "ready" &&
-              conversation.capturedSessionId !== conversation.executionId
-            ) {
-              personalMemoryStore?.upsertThread(draft);
-            }
-            setManagedConversationDrafts((current) => {
-              const next = new Map(current);
-              next.set(routeId, {
-                conversation,
-                launchInput,
-                initialPrompt,
-                status,
-                message:
-                  status === "starting"
-                    ? launchInput.contextKind === "independent"
-                      ? "Starting a Chat…"
-                      : "Starting the AI Client in this Project…"
-                    : "",
-                thread: draft
-              });
-              return next;
-            });
             const currentRoute = currentNavigationEntry(
               navigationRef.current
             ).route;
@@ -2073,13 +1822,12 @@ export function App({
               client.authorizeManagedConversationTransfer
             }
             managedConversationRevision={managedConversationRevision}
-            managedConversationDrafts={managedConversationDrafts}
+            managedConversationLifecycle={managedConversationLifecycle}
             managedConversationRecoveryRevision={
               managedConversationRecoveryRevision
             }
             managedConversationUpdate={managedConversationUpdate}
             managedConversations={managedConversations}
-            setManagedConversationDrafts={setManagedConversationDrafts}
             managedProject={managedProject}
             markdownAdapters={collaboration.markdownAdapters}
             openExternal={platform.openExternal}

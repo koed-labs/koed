@@ -66,6 +66,12 @@ import {
 } from "../../../project-memory-ui.js";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import { type PersonalMemoryStore } from "../../state/personal-memory.js";
+import {
+  useManagedConversationLifecycle,
+  type ManagedConversationLifecycle,
+  type ManagedConversationDraft
+} from "../../state/use-managed-conversation-lifecycle.js";
+export type { ManagedConversationDraft } from "../../state/use-managed-conversation-lifecycle.js";
 import { usePersonalMemorySnapshot } from "../../state/use-personal-memory.js";
 import {
   managedConversationRuntimeStateFromSnapshot,
@@ -133,10 +139,7 @@ export type PersonalMemoryWorkspaceProps = {
     update: ManagedConversationRealtimeUpdate;
   } | null;
   managedConversations?: ManagedConversationDesktopApi | null;
-  managedConversationDrafts?: ReadonlyMap<string, ManagedConversationDraft>;
-  setManagedConversationDrafts?: Dispatch<
-    SetStateAction<ReadonlyMap<string, ManagedConversationDraft>>
-  >;
+  managedConversationLifecycle?: ManagedConversationLifecycle;
   localAiClients?: DesktopApi["localAiClients"];
   managedProject?: ManagedProjectDesktopApi | null;
   markdownAdapters?: MarkdownPlatformAdapters;
@@ -715,7 +718,6 @@ function SessionRow({
   );
 }
 
-type ManagedLaunchSelection = ConversationSelection;
 type ManagedOwnerCapabilities = {
   resume: boolean;
   send: boolean;
@@ -728,28 +730,14 @@ const ManagedCapabilitiesContext = createContext<
 const managedOwnerKey = (owner: { driverId: string; instanceId: string }) =>
   `${owner.driverId}:${owner.instanceId}`;
 
-type ManagedConversationOwner = {
-  aiClientDriverId: "codex" | "claude" | "pi";
-  aiClientInstanceId: string;
-  displayName: string;
-  ready: boolean;
-};
-
-const launchOwner = (
+const launchReady = (
   instance: ManagedConversationLaunchOptions["instances"][number]
-): ManagedConversationOwner => ({
-  aiClientDriverId: instance.driverId,
-  aiClientInstanceId: instance.instanceId,
-  displayName: instance.displayName,
-  ready:
-    instance.ready &&
-    instance.models.length > 0 &&
-    instance.capabilities.permissionModes.some(
-      (mode) => mode.support === "supported"
-    )
-});
-
-const launchSelectionForInstance = selectionForInstance;
+): boolean =>
+  instance.ready &&
+  instance.models.length > 0 &&
+  instance.capabilities.permissionModes.some(
+    (mode) => mode.support === "supported"
+  );
 
 function ProjectDetail({
   localAiClients,
@@ -772,8 +760,8 @@ function ProjectDetail({
   hasProjects: boolean;
   loading: boolean;
   managedConversations?: ManagedConversationDesktopApi | null;
-  launchSelection: ManagedLaunchSelection;
-  setLaunchSelection: Dispatch<SetStateAction<ManagedLaunchSelection>>;
+  launchSelection: ConversationSelection;
+  setLaunchSelection: Dispatch<SetStateAction<ConversationSelection>>;
   onChangeSessionPresentation: (
     thread: PersonalDesktopProjectThread,
     input: Omit<
@@ -793,11 +781,7 @@ function ProjectDetail({
   onSelectSession: (sessionId: string) => void;
   project: DesktopProject | null;
 }) {
-  const [startState, setStartState] = useState<{
-    status: "idle" | "starting" | "error";
-    message: string;
-    executionId: string | null;
-  }>({ status: "idle", message: "", executionId: null });
+  const [launchError, setLaunchError] = useState<string | null>(null);
   const [launchOpen, setLaunchOpen] = useState(false);
   const [launchOptions, setLaunchOptions] =
     useState<ManagedConversationLaunchOptions | null>(null);
@@ -829,6 +813,7 @@ function ProjectDetail({
     setPresentationNow(Date.now());
     setLaunchOpen(false);
     setLaunchOptions(null);
+    setLaunchError(null);
     setOpenSessionActionsId(null);
   }, [project?.id]);
   useEffect(() => {
@@ -849,6 +834,7 @@ function ProjectDetail({
           );
         }
         setLaunchOptions(options);
+        setLaunchError(null);
         setLaunchSelection((current) => {
           if (assignment) {
             return selectionForAssignment(options, assignment);
@@ -858,7 +844,7 @@ function ProjectDetail({
           );
           if (
             instance &&
-            launchOwner(instance).ready &&
+            launchReady(instance) &&
             instance.models.some((model) => model.id === current.model) &&
             instance.capabilities.permissionModes.some(
               (mode) =>
@@ -867,23 +853,16 @@ function ProjectDetail({
             )
           )
             return current;
-          const firstReady = options.instances.find(
-            (candidate) => launchOwner(candidate).ready
+          const firstReady = options.instances.find((candidate) =>
+            launchReady(candidate)
           );
-          return launchSelectionForInstance(
-            options,
-            firstReady?.instanceId ?? ""
-          );
+          return selectionForInstance(options, firstReady?.instanceId ?? "");
         });
       })
       .catch((cause: unknown) => {
         if (!active) return;
         setLaunchOptions(null);
-        setStartState({
-          status: "error",
-          message: cause instanceof Error ? cause.message : String(cause),
-          executionId: null
-        });
+        setLaunchError(cause instanceof Error ? cause.message : String(cause));
       });
     return () => {
       active = false;
@@ -1097,16 +1076,9 @@ function ProjectDetail({
           New
         </button>
       </header>
-      {startState.message ? (
-        <p
-          className={
-            startState.status === "error"
-              ? "personal-managed-error"
-              : "personal-managed-status"
-          }
-          role={startState.status === "error" ? "alert" : "status"}
-        >
-          {startState.message}
+      {launchError ? (
+        <p className="personal-managed-error" role="alert">
+          {launchError}
         </p>
       ) : null}
       <section className="personal-sessions" aria-label="Captured Sessions">
@@ -3553,15 +3525,6 @@ function SessionDetail({
   );
 }
 
-export type ManagedConversationDraft = {
-  conversation: ManagedConversationIdentity;
-  launchInput: Parameters<ManagedConversationDesktopApi["start"]>[0];
-  initialPrompt?: InitialConversationPrompt;
-  status: "starting" | "ready" | "failed" | "reconciling";
-  message: string;
-  thread: PersonalDesktopProjectThread;
-};
-
 export function PersonalMemoryWorkspace({
   assignSessionProject,
   updateSessionPresentation,
@@ -3570,7 +3533,7 @@ export function PersonalMemoryWorkspace({
   managedConversationRecoveryRevision = 0,
   managedConversationUpdate = null,
   managedConversations,
-  managedConversationDrafts,
+  managedConversationLifecycle,
   localAiClients,
   managedProject,
   markdownAdapters,
@@ -3584,17 +3547,17 @@ export function PersonalMemoryWorkspace({
   ready = true,
   route,
   sharingRecords = [],
-  setManagedConversationDrafts,
   store,
   workspaceCandidates = []
 }: PersonalMemoryWorkspaceProps) {
-  const [launchSelection, setLaunchSelection] =
-    useState<ManagedLaunchSelection>({
+  const [launchSelection, setLaunchSelection] = useState<ConversationSelection>(
+    {
       instanceId: "",
       model: "",
       reasoningEffort: "",
       permissionMode: ""
-    });
+    }
+  );
   const [managedCapabilities, setManagedCapabilities] = useState<
     ReadonlyMap<string, ManagedOwnerCapabilities>
   >(new Map());
@@ -3655,12 +3618,14 @@ export function PersonalMemoryWorkspace({
   const snapshot = usePersonalMemorySnapshot(store);
   const requestedRef = useRef(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
-  const [localManagedDrafts, setLocalManagedDrafts] = useState<
-    ReadonlyMap<string, ManagedConversationDraft>
-  >(new Map());
-  const managedDrafts = managedConversationDrafts ?? localManagedDrafts;
-  const setManagedDrafts =
-    setManagedConversationDrafts ?? setLocalManagedDrafts;
+  const localLifecycle = useManagedConversationLifecycle({
+    api: managedConversationLifecycle ? null : managedConversations,
+    store,
+    revision: managedConversationRevision,
+    update: managedConversationLifecycle ? null : managedConversationUpdate
+  });
+  const lifecycle = managedConversationLifecycle ?? localLifecycle;
+  const managedDrafts = lifecycle.drafts;
   const projects = useMemo(
     () =>
       snapshot.projectOrder.flatMap((id) => {
@@ -3702,149 +3667,7 @@ export function PersonalMemoryWorkspace({
   const pendingCanonicalConversation =
     selectedManagedDraft !== null && selectedManagedDraft.status !== "ready";
 
-  useEffect(() => {
-    if (!managedConversations) return;
-    const pending = [...managedDrafts.entries()].filter(
-      ([, draft]) =>
-        draft.status === "starting" || draft.status === "reconciling"
-    );
-    if (pending.length === 0) return;
-    let active = true;
-    for (const [routeId, draft] of pending) {
-      const executionId = draft.conversation.executionId;
-      if (!executionId) continue;
-      void managedConversations
-        .inspect(executionId)
-        .then((result) => {
-          if (!active || result.status === "starting") return;
-          if (result.status === "ready" && result.conversation) {
-            store.upsertThread({
-              ...draft.thread,
-              id: result.conversation.threadId,
-              sessionId: result.conversation.capturedSessionId
-            });
-          }
-          setManagedDrafts((current) => {
-            const existing = current.get(routeId);
-            if (!existing || existing.conversation.executionId !== executionId)
-              return current;
-            const next = new Map(current);
-            if (result.status === "ready" && result.conversation) {
-              next.set(routeId, {
-                ...existing,
-                conversation: result.conversation,
-                status: "ready",
-                message: "",
-                thread: {
-                  ...existing.thread,
-                  id: result.conversation.threadId,
-                  sessionId: result.conversation.capturedSessionId
-                }
-              });
-            } else {
-              const message =
-                result.message ??
-                "The AI Client could not establish a writable Conversation.";
-              if (
-                existing.status === result.status &&
-                existing.message === message
-              ) {
-                return current;
-              }
-              next.set(routeId, {
-                ...existing,
-                status: result.status,
-                message
-              });
-            }
-            return next;
-          });
-        })
-        .catch((cause: unknown) => {
-          if (!active) return;
-          setManagedDrafts((current) => {
-            const existing = current.get(routeId);
-            if (!existing || existing.conversation.executionId !== executionId)
-              return current;
-            const next = new Map(current);
-            next.set(routeId, {
-              ...existing,
-              status: "failed",
-              message: cause instanceof Error ? cause.message : String(cause)
-            });
-            return next;
-          });
-        });
-    }
-    return () => {
-      active = false;
-    };
-  }, [managedConversationRevision, managedConversations, managedDrafts]);
-  const retryManagedConversation = useCallback(
-    (routeId: string) => {
-      if (!managedConversations) return;
-      const current = managedDrafts.get(routeId);
-      if (!current) return;
-      const launchInput = current.launchInput;
-      setManagedDrafts((drafts) => {
-        const existing = drafts.get(routeId);
-        if (!existing) return drafts;
-        const next = new Map(drafts);
-        next.set(routeId, {
-          ...existing,
-          launchInput,
-          status: "starting",
-          message: "Starting the AI Client in this Project…"
-        });
-        return next;
-      });
-      void managedConversations
-        .start(launchInput)
-        .then((result) => {
-          setManagedDrafts((drafts) => {
-            const existing = drafts.get(routeId);
-            if (!existing) return drafts;
-            const conversation = result.conversation ?? {
-              executionId: result.executionId,
-              projectId: launchInput.projectId,
-              capturedSessionId: result.executionId,
-              threadId: result.executionId
-            };
-            const next = new Map(drafts);
-            next.set(routeId, {
-              ...existing,
-              conversation,
-              launchInput,
-              status: result.status,
-              message:
-                result.status === "starting"
-                  ? "Starting the AI Client in this Project…"
-                  : "",
-              thread: {
-                ...existing.thread,
-                id: conversation.threadId,
-                sessionId: conversation.capturedSessionId
-              }
-            });
-            return next;
-          });
-        })
-        .catch((cause: unknown) => {
-          setManagedDrafts((drafts) => {
-            const existing = drafts.get(routeId);
-            if (!existing) return drafts;
-            const next = new Map(drafts);
-            next.set(routeId, {
-              ...existing,
-              status: "failed",
-              message: cause instanceof Error ? cause.message : String(cause)
-            });
-            return next;
-          });
-        });
-    },
-    [managedConversations, managedDrafts]
-  );
+  const retryManagedConversation = lifecycle.retry;
   const effectiveRoute =
     route.kind === "session" && !selectedThread
       ? selectedProject
@@ -3978,47 +3801,14 @@ export function PersonalMemoryWorkspace({
                 initialPrompt
               ) => {
                 if (!selectedProject) return;
-                const now = new Date().toISOString();
-                const routeId = conversation.executionId!;
-                const draft: PersonalDesktopProjectThread = {
-                  id: conversation.threadId,
-                  name: "New AI Client Conversation",
-                  sessionId: conversation.capturedSessionId,
-                  sourceAiClient:
-                    launchInput.aiClientDriverId === "claude"
-                      ? "claude-code"
-                      : launchInput.aiClientDriverId,
-                  projectId: selectedProject.id,
-                  projectName: selectedProject.name,
-                  projectPath: selectedProject.path,
-                  projectAssignmentSource: "user_override",
-                  eventCount: 0,
-                  invalidatedCount: 0,
-                  latestAt: now,
-                  sample: "",
-                  presentation: null
-                };
-                if (
-                  status === "ready" &&
-                  conversation.capturedSessionId !== conversation.executionId
-                ) {
-                  store.upsertThread(draft);
-                }
-                setManagedDrafts((current) => {
-                  const next = new Map(current);
-                  next.set(routeId, {
-                    conversation,
-                    launchInput,
-                    initialPrompt,
-                    status,
-                    message:
-                      status === "starting"
-                        ? "Starting the AI Client in this Project…"
-                        : "",
-                    thread: draft
-                  });
-                  return next;
-                });
+                const routeId = lifecycle.started(
+                  selectedProject,
+                  conversation,
+                  status,
+                  launchInput,
+                  initialPrompt
+                );
+                if (!routeId) return;
                 onNavigate({
                   kind: "session",
                   projectId: selectedProject.id,

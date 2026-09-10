@@ -25,6 +25,10 @@ identity to captured-session identity. Reconciliation does not clear those
 messages while their captured versions are unavailable.
 
 Ask and Projects use the same managed launch controller and Conversation input.
+One Desktop lifecycle module owns provisional Conversations, identity updates,
+startup retries, and encrypted recovery. App owns navigation and recent history.
+The Project view consumes lifecycle state without changing the recovery map.
+Recovery writes run in order and remain specific to the current owner.
 Desktop opens the Project Conversation detail after the first prompt enters the
 managed queue. It retains stable launch and message identities during uncertain
 responses, so recovery does not create a second execution or prompt. After the

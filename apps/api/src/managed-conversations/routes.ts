@@ -1704,6 +1704,32 @@ export const registerManagedConversationRoutes = (
           { statusCode: 409 }
         );
       }
+      const bindExecution = async (execution: {
+        id: string;
+        executionGeneration: number;
+      }) => {
+        let executionProjectPath = projectPath;
+        if (input.contextKind === "independent" && localExecution) {
+          executionProjectPath = resolve(
+            context.config.koedHome,
+            "managed-conversations",
+            "independent",
+            execution.id
+          );
+          await mkdir(executionProjectPath, { mode: 0o700, recursive: true });
+        }
+        if (!executionProjectPath) return;
+        await repository.upsertManagedConversationRuntimeBinding(
+          { userId: user.id },
+          {
+            executionId: execution.id,
+            deploymentId: runner.deploymentId,
+            deviceId: runner.deviceId,
+            executionGeneration: execution.executionGeneration,
+            projectPath: executionProjectPath
+          }
+        );
+      };
       const proxied = await proxyManaged("POST", "/v1/managed-conversations", {
         ...input,
         deferUntilRuntimeBinding: true
@@ -1732,28 +1758,7 @@ export const registerManagedConversationRoutes = (
             { statusCode: 502 }
           );
         }
-        const executionProjectPath =
-          input.contextKind === "independent" && localExecution
-            ? resolve(
-                context.config.koedHome,
-                "managed-conversations",
-                "independent",
-                parsed.data.execution.id
-              )
-            : projectPath;
-        if (input.contextKind === "independent" && localExecution) {
-          await mkdir(executionProjectPath, { mode: 0o700, recursive: true });
-        }
-        await repository.upsertManagedConversationRuntimeBinding(
-          { userId: user.id },
-          {
-            executionId: parsed.data.execution.id,
-            deploymentId: runner.deploymentId,
-            deviceId: runner.deviceId,
-            executionGeneration: parsed.data.execution.executionGeneration,
-            projectPath: executionProjectPath
-          }
-        );
+        await bindExecution(parsed.data.execution);
         return reply
           .status(proxied.status)
           .send(await localizeExecutions(user.id, parsed.data));
@@ -1774,30 +1779,7 @@ export const registerManagedConversationRoutes = (
           deferUntilRuntimeBinding: true
         }
       );
-      const executionProjectPath =
-        input.contextKind === "independent" && localExecution
-          ? resolve(
-              context.config.koedHome,
-              "managed-conversations",
-              "independent",
-              created.execution.id
-            )
-          : projectPath;
-      if (input.contextKind === "independent" && localExecution) {
-        await mkdir(executionProjectPath!, { mode: 0o700, recursive: true });
-      }
-      if (executionProjectPath) {
-        await repository.upsertManagedConversationRuntimeBinding(
-          { userId: user.id },
-          {
-            executionId: created.execution.id,
-            deploymentId: runner.deploymentId,
-            deviceId: runner.deviceId,
-            executionGeneration: created.execution.executionGeneration,
-            projectPath: executionProjectPath
-          }
-        );
-      }
+      await bindExecution(created.execution);
       return reply.status(202).send({
         execution: await publicExecutionFor(user.id, created.execution),
         command: {

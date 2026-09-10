@@ -93,6 +93,7 @@ export function PersonalAskView({
         .slice(0, 3),
     [projects]
   );
+  const [launchPending, setLaunchPending] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     null
   );
@@ -279,6 +280,7 @@ export function PersonalAskView({
             role="group"
           >
             <button
+              disabled={launchPending}
               aria-pressed={selectedProjectId === null}
               className={selectedProjectId === null ? "selected" : ""}
               onClick={() => setSelectedProjectId(null)}
@@ -290,6 +292,7 @@ export function PersonalAskView({
             </button>
             {projectChoices.map((project) => (
               <button
+                disabled={launchPending}
                 aria-pressed={selectedProjectId === project.id}
                 className={selectedProjectId === project.id ? "selected" : ""}
                 key={project.id}
@@ -309,6 +312,7 @@ export function PersonalAskView({
           </div>
           <button
             className="personal-agent-open-project"
+            disabled={launchPending}
             onClick={() =>
               void onOpenProject?.()
                 .then((project) => {
@@ -336,6 +340,7 @@ export function PersonalAskView({
           ) : null}
           <NewConversationComposer
             api={managedConversations}
+            onPendingChange={setLaunchPending}
             contextKind={selectedProjectId === null ? "independent" : "project"}
             onChange={setSelection}
             onStarted={(conversation, status, launch, initialPrompt) =>

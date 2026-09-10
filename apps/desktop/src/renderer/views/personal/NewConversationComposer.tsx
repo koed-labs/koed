@@ -8,12 +8,8 @@ import type {
 import type { ConversationSelection } from "./ConversationSettings.js";
 import { ConversationInput } from "./ConversationInput.js";
 
-export type InitialConversationPrompt = {
-  clientUserMessageId: string;
-  prompt: string;
-  status: "queued" | "rejected" | "reconciling";
-  message: string;
-};
+import type { InitialConversationPrompt } from "../../state/use-managed-conversation-lifecycle.js";
+export type { InitialConversationPrompt } from "../../state/use-managed-conversation-lifecycle.js";
 
 export function NewConversationComposer({
   api,
@@ -25,6 +21,7 @@ export function NewConversationComposer({
   options,
   selection,
   onChange,
+  onPendingChange,
   onStarted
 }: {
   api: ManagedConversationDesktopApi | null;
@@ -36,6 +33,7 @@ export function NewConversationComposer({
   options: ManagedConversationLaunchOptions | null;
   selection: ConversationSelection;
   onChange: (value: ConversationSelection) => void;
+  onPendingChange?: (pending: boolean) => void;
   onStarted: (
     conversation: ManagedConversationIdentity,
     status: "starting" | "ready",
@@ -88,11 +86,12 @@ export function NewConversationComposer({
       idempotencyKey: `desktop-conversation:${crypto.randomUUID()}`
     };
     launchRef.current = launch;
+    onPendingChange?.(true);
     try {
       const result = await api.start(launch);
       const conversation = result.conversation ?? {
         executionId: result.executionId,
-        projectId,
+        projectId: launch.projectId,
         capturedSessionId: result.executionId,
         threadId: result.executionId,
         executionOwner: {
@@ -103,7 +102,10 @@ export function NewConversationComposer({
       let initialPrompt: InitialConversationPrompt | undefined;
       if (prompt.trim()) {
         initialPrompt =
-          initialPromptRef.current ??
+          (initialPromptRef.current?.status === "rejected" &&
+          initialPromptRef.current.prompt !== prompt
+            ? null
+            : initialPromptRef.current) ??
           ({
             clientUserMessageId: crypto.randomUUID(),
             prompt,
@@ -112,13 +114,13 @@ export function NewConversationComposer({
           } satisfies InitialConversationPrompt);
         initialPromptRef.current = initialPrompt;
         const draftScope = {
-          projectId,
+          projectId: launch.projectId,
           capturedSessionId: result.executionId,
           threadId: result.executionId
         };
         // Keep the draft available even if enqueue has an uncertain response.
         await api
-          .writeDraft({ ...draftScope, value: prompt })
+          .writeDraft({ ...draftScope, value: initialPrompt.prompt })
           .catch(() => undefined);
         try {
           const sent = await api.send({
@@ -127,7 +129,7 @@ export function NewConversationComposer({
             threadId: conversation.threadId,
             idempotencyKey: `desktop-prompt:${initialPrompt.clientUserMessageId}`,
             clientUserMessageId: initialPrompt.clientUserMessageId,
-            prompt
+            prompt: initialPrompt.prompt
           });
           initialPrompt.status = sent.status;
           initialPrompt.message =
@@ -179,7 +181,7 @@ export function NewConversationComposer({
           disabled: busy || !available || (requirePrompt && !prompt.trim())
         }}
         autoFocus
-        disabled={busy}
+        disabled={busy || initialPromptRef.current?.status === "reconciling"}
         label="First message"
         onChange={setPrompt}
         onSubmit={() => void start()}
