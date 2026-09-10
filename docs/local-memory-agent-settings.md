@@ -8,7 +8,7 @@ memory and evidence but does not run LLM synthesis.
 The supervised Local AI Runtime owns three services and four configurable flow
 assignments:
 
-- MCP Memory Answer: a fresh isolated worker for each `memory_answer` call.
+- MCP Memory Answer: durable Personal tasks, each using a fresh isolated worker.
 - LCM Summary and Session Title: background LCM Summary and captured-session title work.
 - Curated Memory Review: asynchronous source-linked proposal review.
 
@@ -28,7 +28,9 @@ refresh capabilities asynchronously with a bounded timeout.
 Memory Answer settings resolve in this order:
 
 1. API user setting in `local_memory_agent_settings`.
-2. `MEMORY_ANSWER_*` environment defaults.
+2. `MEMORY_ANSWER_*` environment defaults. `HARD_TIMEOUT_MS` is the persisted
+   provider execution ceiling; `NO_PROGRESS_TIMEOUT_MS` is runtime watchdog
+   policy and is not a model setting.
 3. Code defaults.
 
 LCM Summary settings resolve in this order:
@@ -88,4 +90,5 @@ worker configuration or persistent scheduling. Persisted Memory Question
 results remain inspectable through the API, but Desktop does not run a browser
 answer bridge or submit manual synthesis work.
 
-See [ADR 0025](adr/0025-mcp-v2-local-ai-runtime-ownership.md).
+See [Durable Memory Answer Execution](durable-memory-answer.md) and
+[ADR 0025](adr/0025-mcp-v2-local-ai-runtime-ownership.md).

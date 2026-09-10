@@ -469,6 +469,49 @@ describe("memory answer worker", () => {
     expect(compact.retrieval.evidenceCount).toBe(1);
   });
 
+  it.each([
+    ["answer_only", ["localMemoryWorker", "markdown", "retrieval"]],
+    [
+      "with_citations",
+      ["citations", "localMemoryWorker", "markdown", "retrieval"]
+    ],
+    [
+      "with_evidence",
+      [
+        "citations",
+        "evidence",
+        "localMemoryWorker",
+        "markdown",
+        "retrieval",
+        "structuredAnswer"
+      ]
+    ]
+  ] as const)(
+    "preserves the synchronous %s response contract",
+    (responseDetail, expectedKeys) => {
+      const response = compactMemoryAnswerPayload(
+        {
+          ...payload,
+          localMemoryWorker: {
+            provider: "codex",
+            promptVersion: MEMORY_ANSWER_PROMPT_VERSION,
+            jobId: "contract-job",
+            model: "gpt-5.4-mini",
+            usedFallback: false
+          }
+        },
+        responseDetail
+      );
+
+      expect(Object.keys(response).sort()).toEqual([...expectedKeys]);
+      expect(response.markdown).toBe(payload.markdown);
+      expect(response.retrieval).toEqual({
+        evidenceCount: 1,
+        retrievalMode: "semantic_vector"
+      });
+    }
+  );
+
   it("returns only selected evidence, citations, and public status with evidence", () => {
     const response = compactMemoryAnswerPayload(
       {
@@ -598,7 +641,7 @@ describe("memory answer worker", () => {
       MEMORY_ANSWER_PROVIDER: "codex",
       MEMORY_ANSWER_MODEL: "gpt-5.3-codex-spark",
       MEMORY_ANSWER_REASONING_EFFORT: "low",
-      MEMORY_ANSWER_TIMEOUT_MS: "25000",
+      MEMORY_ANSWER_HARD_TIMEOUT_MS: "25000",
       MEMORY_ANSWER_MAX_ATTEMPTS: "3",
       MEMORY_ANSWER_MAX_SEARCHES: "4",
       MEMORY_ANSWER_MAX_EXPANSIONS: "2",
@@ -1223,7 +1266,7 @@ describe("memory answer worker", () => {
           config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
-            MEMORY_ANSWER_TIMEOUT_MS: "25",
+            MEMORY_ANSWER_HARD_TIMEOUT_MS: "25",
             MEMORY_ANSWER_MAX_ATTEMPTS: "2"
           })
         }

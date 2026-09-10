@@ -59,6 +59,7 @@ import { createDevelopmentWorkspaceSnapshotRepository } from "./development-work
 import { createManagedConversationTransferRepository } from "./managed-conversation-transfer-repository.js";
 import { createMemoryNodeRepository } from "./memory-node-repository.js";
 import { createMemoryQuestionRepository } from "./memory-question-repository.js";
+import { createMemoryAnswerTaskRepository } from "./memory-answer-task-repository.js";
 import { createPersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
 import { createPersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
 import { createPersonalDeviceArtifactRepository } from "./personal-device-artifact-repository.js";
@@ -4143,6 +4144,9 @@ export const createMemorySourceRepository = (
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
       encryptedMemoryQuestionSearchBatchSize:
         options.encryptedMemoryQuestionSearchBatchSize
+    }),
+    ...createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
     ...createWorkflowTokenUsageRepository(pool),
 

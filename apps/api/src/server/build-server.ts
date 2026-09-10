@@ -87,6 +87,7 @@ import {
   registerHistoricalImportRoutes,
   registerLocalAgentSettingsRoutes,
   registerLcmRoutes,
+  registerMemoryAnswerTaskRoutes,
   registerQuestionRoutes,
   registerRawConversationRoutes,
   registerRecallRoutes,
@@ -1825,6 +1826,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerRecallRoutes(app, routeContext);
   registerLocalAgentSettingsRoutes(app, routeContext);
   registerQuestionRoutes(app, routeContext);
+  registerMemoryAnswerTaskRoutes(app, routeContext);
   registerLcmRoutes(app, routeContext);
   registerGraphRoutes(app, routeContext);
   graphStreamService.registerRoutes();

@@ -832,6 +832,72 @@ export class MemoryApiClient {
     return this.request("POST", "/v1/memory/questions/final", input);
   }
 
+  async acceptMemoryAnswerTask(
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/memory/answer-tasks", input);
+  }
+
+  async getMemoryAnswerTask(taskId: string): Promise<Record<string, unknown>> {
+    return this.request(
+      "GET",
+      `/v1/memory/answer-tasks/${encodeURIComponent(taskId)}`
+    );
+  }
+
+  async claimMemoryAnswerTask(
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/memory/answer-tasks/claim", input);
+  }
+
+  async heartbeatMemoryAnswerTask(
+    taskId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/memory/answer-tasks/${encodeURIComponent(taskId)}/heartbeat`,
+      input
+    );
+  }
+
+  async cancelMemoryAnswerTask(
+    taskId: string
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/memory/answer-tasks/${encodeURIComponent(taskId)}/cancel`,
+      {}
+    );
+  }
+
+  async completeMemoryAnswerTask(
+    taskId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/memory/answer-tasks/${encodeURIComponent(taskId)}/complete`,
+      input
+    );
+  }
+
+  async failMemoryAnswerTask(
+    taskId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/memory/answer-tasks/${encodeURIComponent(taskId)}/fail`,
+      input
+    );
+  }
+
+  async deleteExpiredMemoryAnswerTasks(): Promise<{ deleted: number }> {
+    return this.request("DELETE", "/v1/memory/answer-tasks/expired");
+  }
+
   async createPendingDesktopAsk(
     input: Record<string, unknown>
   ): Promise<Record<string, unknown>> {

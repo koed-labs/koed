@@ -16,6 +16,7 @@ export type EncryptedFieldSourceTable =
   | "curated_memory_topics"
   | "memory_embeddings"
   | "memory_events"
+  | "memory_answer_tasks"
   | "memory_nodes"
   | "memory_questions"
   | "personal_notes"

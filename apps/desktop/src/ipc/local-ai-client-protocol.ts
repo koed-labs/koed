@@ -19,7 +19,7 @@ export const localAiClientAssignmentSchema = z
     ai_client_instance_id: z.string().min(1).max(128),
     model: z.string().min(1).max(384),
     reasoning_effort: z.string().min(1).max(64),
-    timeout_ms: z.number().int().min(1_000).max(600_000),
+    timeout_ms: z.number().int().min(1_000).max(1_800_000),
     max_attempts: z.number().int().min(1).max(25)
   })
   .strict();
@@ -63,7 +63,7 @@ const instanceSchema = z
 
 const capabilityDescriptorSchema = z
   .object({
-    support: z.enum(["supported", "unsupported", "unknown"]),
+    support: z.enum(["supported", "requires_bridge", "unsupported", "unknown"]),
     readiness: z.enum(["ready", "not_ready", "unknown"])
   })
   .strict();

@@ -95,6 +95,9 @@ export const aiClientCapabilityIds = {
   managedConversationCancel: "managed_conversation_cancel",
   approvals: "approvals",
   streaming: "streaming",
+  durableMemoryAnswer: "durable_memory_answer",
+  hostTaskNotifications: "host_task_notifications",
+  modelContinuationDuringTool: "model_continuation_during_tool",
   sessionIdentity: "session_identity",
   handoff: "handoff",
   fork: "fork"
@@ -103,7 +106,10 @@ export const aiClientCapabilityIds = {
 export type AiClientCapabilityId =
   (typeof aiClientCapabilityIds)[keyof typeof aiClientCapabilityIds];
 
-export type AiClientCapabilitySupport = "supported" | "unsupported";
+export type AiClientCapabilitySupport =
+  | "supported"
+  | "requires_bridge"
+  | "unsupported";
 export type AiClientCapabilityReadiness =
   | "ready"
   | "not_ready"

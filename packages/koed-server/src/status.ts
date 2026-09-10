@@ -1351,6 +1351,7 @@ const descriptorFor = (
   if (
     descriptor.id !== id ||
     (descriptor.support !== "supported" &&
+      descriptor.support !== "requires_bridge" &&
       descriptor.support !== "unsupported") ||
     ![
       "ready",

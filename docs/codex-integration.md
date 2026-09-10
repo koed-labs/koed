@@ -5,6 +5,11 @@ see [Claude Code integration](claude-code-integration.md) and
 [Pi integration](pi-integration.md) for other client setup. Select each flow's
 instance and model in [Local AI Runtime Settings](local-memory-agent-settings.md).
 
+Personal Memory Answers use [durable execution](durable-memory-answer.md).
+Current Codex waits outside the model loop for the terminal MCP result; native
+Responses async continuation remains capability-gated on an upstream Codex
+bridge that preserves the original call identity.
+
 ## Recommended Setup
 
 Start the local control plane supervisor in one terminal:

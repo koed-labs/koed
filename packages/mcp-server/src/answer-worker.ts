@@ -5,7 +5,7 @@ import {
   MEMORY_RETRIEVAL_HINT_MAX_COUNT,
   MEMORY_RETRIEVAL_HINT_MAX_LENGTH,
   MEMORY_RETRIEVAL_SEMANTIC_HINT_MAX_COUNT,
-  MEMORY_ANSWER_TIMEOUT_MAX_MS,
+  MEMORY_ANSWER_HARD_TIMEOUT_MAX_MS,
   EMBEDDING_RETRIEVAL_DOCUMENT_TRANSFORM,
   EMBEDDING_RETRIEVAL_QUERY_TRANSFORM,
   resolveSupportedEmbeddingModelConfig
@@ -50,7 +50,7 @@ import {
 } from "./prompt-loader.js";
 
 const CODEX_ANSWER_PROVIDER = "codex";
-const DEFAULT_ANSWER_TIMEOUT_MS = 120_000;
+const DEFAULT_ANSWER_TIMEOUT_MS = 30 * 60_000;
 export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-worker-v9";
 export const MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION = "memory-answer-v1";
 const MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE = "koed_memory";
@@ -564,9 +564,10 @@ export const resolveMemoryAnswerWorkerConfig = (
       resolveEnvValue(env, "MEMORY_ANSWER_REASONING_EFFORT") ??
       "low",
     timeoutMs: parsePositiveInteger(
-      overrides.timeoutMs ?? resolveEnvValue(env, "MEMORY_ANSWER_TIMEOUT_MS"),
+      overrides.timeoutMs ??
+        resolveEnvValue(env, "MEMORY_ANSWER_HARD_TIMEOUT_MS"),
       DEFAULT_ANSWER_TIMEOUT_MS,
-      { min: 1000, max: MEMORY_ANSWER_TIMEOUT_MAX_MS }
+      { min: 1000, max: MEMORY_ANSWER_HARD_TIMEOUT_MAX_MS }
     ),
     maxAttempts: parsePositiveInteger(
       overrides.maxAttempts ??

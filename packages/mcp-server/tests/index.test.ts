@@ -76,7 +76,7 @@ describe("Curated Memory review settings", () => {
         MEMORY_ANSWER_PROVIDER: "other-answer-provider",
         MEMORY_ANSWER_MODEL: "gpt-answer",
         MEMORY_ANSWER_REASONING_EFFORT: "xhigh",
-        MEMORY_ANSWER_TIMEOUT_MS: "300000",
+        MEMORY_ANSWER_HARD_TIMEOUT_MS: "300000",
         MEMORY_ANSWER_MAX_ATTEMPTS: "9",
         MEMORY_LCM_SUMMARY_MODEL: "gpt-lcm"
       } as NodeJS.ProcessEnv)
@@ -1546,7 +1546,7 @@ describe("LCM summary background service", () => {
           config: {
             ...resolveMemoryAnswerWorkerTestConfig(directory, {
               MEMORY_ANSWER_PROVIDER: "codex",
-              MEMORY_ANSWER_TIMEOUT_MS: "5000",
+              MEMORY_ANSWER_HARD_TIMEOUT_MS: "5000",
               MEMORY_ANSWER_MAX_ATTEMPTS: "1",
               MEMORY_ANSWER_MAX_SEARCHES: "2",
               MEMORY_ANSWER_MAX_EXPANSIONS: "0",
@@ -2037,7 +2037,7 @@ describe("LCM summary background service", () => {
           config: {
             ...resolveMemoryAnswerWorkerTestConfig(directory, {
               MEMORY_ANSWER_PROVIDER: "codex",
-              MEMORY_ANSWER_TIMEOUT_MS: "5000",
+              MEMORY_ANSWER_HARD_TIMEOUT_MS: "5000",
               MEMORY_ANSWER_MAX_ATTEMPTS: "1",
               MEMORY_ANSWER_MAX_SEARCHES: "2",
               MEMORY_ANSWER_MAX_EXPANSIONS: "0",

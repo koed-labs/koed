@@ -397,3 +397,27 @@ describe("Managed Conversation launch configuration migration", () => {
     expect(migrationSql).toContain(`"runner_kind" = 'local_device'`);
   });
 });
+
+describe("Durable Memory Answer migration", () => {
+  it("keeps Personal task ownership, leases, and terminal state database-enforced", async () => {
+    const migrationSql = await readDrizzleFile("0038_tough_harpoon.sql");
+
+    expect(migrationSql).toContain('CREATE TABLE "memory_answer_tasks"');
+    expect(migrationSql).toContain(
+      'CONSTRAINT "memory_answer_tasks_personal_owner_check"'
+    );
+    expect(migrationSql).toContain(
+      'CONSTRAINT "memory_answer_tasks_lease_check"'
+    );
+    expect(migrationSql).toContain(
+      'CONSTRAINT "memory_answer_tasks_terminal_check"'
+    );
+    expect(migrationSql).toContain(
+      'CREATE UNIQUE INDEX "memory_answer_tasks_owner_invocation_unique"'
+    );
+    expect(migrationSql).toContain(
+      'FOREIGN KEY ("question_id") REFERENCES "public"."memory_questions"("id") ON DELETE no action'
+    );
+    expect(migrationSql).toContain("'memory_answer_tasks'");
+  });
+});

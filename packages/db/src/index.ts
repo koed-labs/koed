@@ -241,6 +241,14 @@ export {
 } from "./realtime-transport-ticket-repository.js";
 export { createMemoryQuestionRepository } from "./memory-question-repository.js";
 export {
+  createMemoryAnswerTaskRepository,
+  type ClaimedMemoryAnswerTask,
+  type MemoryAnswerTaskOrigin,
+  type MemoryAnswerTaskRecord,
+  type MemoryAnswerTaskRepository,
+  type MemoryAnswerTaskStatus
+} from "./memory-answer-task-repository.js";
+export {
   createPersonalDeviceSyncRelayRepository,
   type PdsRelayDeviceCapability,
   type PdsRelayDeviceReadiness,

@@ -53,6 +53,11 @@ import {
 } from "./local-runtime-protocol.js";
 import { logger } from "./logger.js";
 import { MemoryToolExecutor } from "./memory-tool-executor.js";
+import {
+  MemoryAnswerTaskScheduler,
+  memoryAnswerTaskIsTerminal,
+  type MemoryAnswerTaskView
+} from "./memory-answer-task-scheduler.js";
 
 export const LOCAL_AI_RUNTIME_MAX_BODY_BYTES = 256 * 1024;
 export const LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS = 2;
@@ -74,7 +79,8 @@ const callerSchema = z
 const toolRequestSchema = z
   .object({
     input: z.record(z.string(), z.unknown()),
-    caller: callerSchema
+    caller: callerSchema,
+    invocationKey: z.string().trim().min(1).max(500).optional()
   })
   .strict();
 
@@ -278,6 +284,17 @@ export interface LocalAiRuntimeToolExecutor {
     caller: z.infer<typeof callerSchema>,
     signal?: AbortSignal
   ): Promise<Record<string, unknown>>;
+  executeMemoryAnswerTask?(
+    input: Record<string, unknown>,
+    caller: z.infer<typeof callerSchema>,
+    taskId: string,
+    signal?: AbortSignal,
+    onProgress?: (status: string) => void
+  ): Promise<{ questionId: string; result: Record<string, unknown> }>;
+  durableMemoryAnswerEligible?(
+    input: Record<string, unknown>,
+    caller: z.infer<typeof callerSchema>
+  ): boolean;
 }
 
 export interface LocalAiRuntimeServices {
@@ -543,6 +560,41 @@ export const startLocalAiRuntime = async ({
       LOCAL_AI_RUNTIME_DEFAULT_MAX_QUEUED_ANSWERS
     )
   );
+  const taskScheduler = executor.executeMemoryAnswerTask
+    ? new MemoryAnswerTaskScheduler(
+        apiClient,
+        {
+          executeMemoryAnswerTask: (
+            input,
+            caller,
+            taskId,
+            signal,
+            onProgress
+          ) =>
+            executor.executeMemoryAnswerTask!(
+              input,
+              caller,
+              taskId,
+              signal,
+              onProgress
+            )
+        },
+        {
+          maxActive: positiveInteger(
+            environment.KOED_LOCAL_AI_RUNTIME_MAX_ACTIVE_ANSWERS,
+            LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS
+          ),
+          noProgressTimeoutMs: positiveInteger(
+            environment.MEMORY_ANSWER_NO_PROGRESS_TIMEOUT_MS,
+            5 * 60_000
+          ),
+          hardTimeoutMs: positiveInteger(
+            environment.MEMORY_ANSWER_HARD_TIMEOUT_MS,
+            30 * 60_000
+          )
+        }
+      )
+    : null;
   const authorization = `Bearer ${randomBytes(32).toString("base64url")}`;
   const activeRequests = new Set<AbortController>();
 
@@ -564,7 +616,8 @@ export const startLocalAiRuntime = async ({
           json(response, 200, {
             ok: true,
             protocolVersion: LOCAL_AI_RUNTIME_PROTOCOL_VERSION,
-            memoryAnswers: answerAdmission.diagnostics
+            memoryAnswers:
+              taskScheduler?.diagnostics ?? answerAdmission.diagnostics
           });
           return;
         }
@@ -629,6 +682,78 @@ export const startLocalAiRuntime = async ({
           }
           return;
         }
+        if (
+          request.method === "POST" &&
+          requestUrl.pathname === "/v1/tasks/memory-answer"
+        ) {
+          if (!taskScheduler) {
+            json(response, 503, {
+              error: "Durable Memory Answer is unavailable"
+            });
+            return;
+          }
+          const parsed = toolRequestSchema.parse(await readJsonBody(request));
+          if (
+            executor.durableMemoryAnswerEligible &&
+            !executor.durableMemoryAnswerEligible(parsed.input, parsed.caller)
+          ) {
+            json(response, 409, {
+              error:
+                "Team Workspace Memory Answer does not support detached tasks"
+            });
+            return;
+          }
+          const task = await taskScheduler.start({
+            origin:
+              parsed.caller.clientInfo?.name === "pi" ? "pi_extension" : "mcp",
+            invocationKey: parsed.invocationKey,
+            toolInput: parsed.input,
+            caller: parsed.caller
+          });
+          json(response, 202, { task });
+          return;
+        }
+        const taskMatch = requestUrl.pathname.match(
+          /^\/v1\/tasks\/([0-9a-f-]{36})(?:\/(events|cancel))?$/i
+        );
+        if (taskMatch && taskScheduler) {
+          const taskId = taskMatch[1]!;
+          const action = taskMatch[2];
+          if (request.method === "GET" && !action) {
+            json(response, 200, { task: await taskScheduler.get(taskId) });
+            return;
+          }
+          if (request.method === "POST" && action === "cancel") {
+            json(response, 200, { task: await taskScheduler.cancel(taskId) });
+            return;
+          }
+          if (request.method === "GET" && action === "events") {
+            const writeTask = (task: MemoryAnswerTaskView) => {
+              if (response.writableEnded) return;
+              response.write(
+                `id: ${task.version}\nevent: task\ndata: ${JSON.stringify(task)}\n\n`
+              );
+              if (memoryAnswerTaskIsTerminal(task)) response.end();
+            };
+            response.writeHead(200, {
+              "content-type": "text/event-stream; charset=utf-8",
+              "cache-control": "no-store",
+              connection: "keep-alive",
+              "x-content-type-options": "nosniff"
+            });
+            const unsubscribe = taskScheduler.subscribe(taskId, writeTask);
+            const keepalive = setInterval(() => {
+              if (!response.writableEnded) response.write(": keepalive\n\n");
+            }, 15_000);
+            keepalive.unref?.();
+            response.once("close", () => {
+              clearInterval(keepalive);
+              unsubscribe();
+            });
+            writeTask(await taskScheduler.get(taskId));
+            return;
+          }
+        }
         const toolPrefix = "/v1/tools/";
         if (
           request.method !== "POST" ||
@@ -645,6 +770,38 @@ export const startLocalAiRuntime = async ({
           return;
         }
         const parsed = toolRequestSchema.parse(await readJsonBody(request));
+        if (
+          toolName === "memory_answer" &&
+          taskScheduler &&
+          (!executor.durableMemoryAnswerEligible ||
+            executor.durableMemoryAnswerEligible(parsed.input, parsed.caller))
+        ) {
+          const task = await taskScheduler.start({
+            origin:
+              parsed.caller.clientInfo?.name === "pi" ? "pi_extension" : "mcp",
+            invocationKey: parsed.invocationKey,
+            toolInput: parsed.input,
+            caller: parsed.caller
+          });
+          const terminal = await taskScheduler.waitForTerminal(
+            task.id,
+            requestAbort.signal
+          );
+          if (terminal.status === "completed" && terminal.result) {
+            if (!requestAbort.signal.aborted)
+              json(response, 200, terminal.result);
+            return;
+          }
+          throw Object.assign(
+            new Error(
+              terminal.lastErrorMessage ??
+                (terminal.status === "cancelled"
+                  ? "Memory Answer task was cancelled"
+                  : "Memory Answer task failed")
+            ),
+            { statusCode: terminal.status === "cancelled" ? 409 : 500 }
+          );
+        }
         const release =
           toolName === "memory_answer"
             ? await answerAdmission.acquire(requestAbort.signal)
@@ -721,6 +878,7 @@ export const startLocalAiRuntime = async ({
           server.close(() => resolve());
           server.closeAllConnections();
         });
+        await taskScheduler?.close();
         await services.close();
       }
     };
@@ -728,6 +886,7 @@ export const startLocalAiRuntime = async ({
     if (server.listening) {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+    await taskScheduler?.close();
     await services.close();
     throw error;
   }

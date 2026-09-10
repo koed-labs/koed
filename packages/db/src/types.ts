@@ -32,6 +32,7 @@ import type { PersonalDeviceSyncRepository } from "./personal-device-sync-reposi
 import type { PersonalDeviceSyncRelayRepository } from "./personal-device-sync-relay-repository.js";
 import type { MemoryNodeRepository } from "./memory-node-repository.js";
 import type { MemoryQuestionRepository } from "./memory-question-repository.js";
+import type { MemoryAnswerTaskRepository } from "./memory-answer-task-repository.js";
 import type { SharedMemoryRepository } from "./shared-memory-repository.js";
 import type { TeamConversationSourceRepository } from "./team-conversation-source-repository.js";
 import type { WorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
@@ -1957,6 +1958,7 @@ export interface MemorySourceRepository
     PersonalDeviceSyncRelayRepository,
     MemoryNodeRepository,
     MemoryQuestionRepository,
+    MemoryAnswerTaskRepository,
     SharedMemoryRepository,
     TeamConversationSourceRepository,
     WorkflowTokenUsageRepository {

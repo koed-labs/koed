@@ -150,6 +150,34 @@ describe("Claude AI Client runner boundary", () => {
     });
   });
 
+  it("publishes deferred Memory Answer capabilities independently", async () => {
+    for (const driverId of ["codex", "claude", "pi"] as const) {
+      const discovery = await aiClientDriverFor(driverId).discover({
+        instanceId: `${driverId}.missing`,
+        environment: {},
+        executablePath: `/missing/koed-${driverId}`
+      });
+      const capability = (id: string) =>
+        discovery.capabilities.find((item) => item.id === id);
+
+      expect(capability("durable_memory_answer")).toMatchObject({
+        support: "supported"
+      });
+      expect(capability("host_task_notifications")).toMatchObject({
+        support: driverId === "claude" ? "unsupported" : "requires_bridge"
+      });
+      expect(["not_ready", "unavailable"]).toContain(
+        capability("host_task_notifications")?.readiness
+      );
+      expect(capability("model_continuation_during_tool")).toMatchObject({
+        support: driverId === "claude" ? "unsupported" : "requires_bridge"
+      });
+      expect(["not_ready", "unavailable"]).toContain(
+        capability("model_continuation_during_tool")?.readiness
+      );
+    }
+  });
+
   it("derives provider-specific execution identity", () => {
     expect(
       aiClientExecutionIdentity("codex", "codex.work", {
