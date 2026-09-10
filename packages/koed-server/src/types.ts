@@ -89,6 +89,7 @@ export interface KoedServerStatus {
   captureHook: KoedServerComponentStatus;
   codexTranscriptWatcher: KoedServerComponentStatus;
   claudeTranscriptWatcher: KoedServerComponentStatus;
+  piTranscriptWatcher?: KoedServerComponentStatus;
   codex: KoedServerComponentStatus & {
     configured: boolean;
     detected?: boolean;
@@ -153,6 +154,7 @@ export interface KoedServerRuntimeState {
   automaticPorts?: boolean;
   codexTranscriptWatcherEnabled?: boolean;
   claudeTranscriptWatcherEnabled?: boolean;
+  piTranscriptWatcherEnabled?: boolean;
   repoRoot: string;
   apiUrl: string;
   services: string[];

@@ -13,6 +13,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  parsePiModelListOutput,
+  piPackageIsListed,
   removePi,
   resolvePiSetupExecutable,
   resolvePiSetupLauncher,
@@ -31,6 +33,37 @@ afterEach(() => {
 });
 
 describe("Pi setup", () => {
+  it("parses model and package listings without substring matches", () => {
+    expect(parsePiModelListOutput("provider model\nopenai gpt-5.4\n")).toEqual({
+      valid: true,
+      models: ["openai/gpt-5.4"]
+    });
+    expect(parsePiModelListOutput("No models available.\n")).toEqual({
+      valid: true,
+      models: []
+    });
+    expect(parsePiModelListOutput("provider model\nmalformed\n")).toEqual({
+      valid: false,
+      models: []
+    });
+    expect(parsePiModelListOutput("unexpected output\n")).toEqual({
+      valid: false,
+      models: []
+    });
+    expect(
+      piPackageIsListed(
+        "/tmp/koed/integrations/pi-old\n",
+        "/tmp/koed/integrations/pi"
+      )
+    ).toBe(false);
+    expect(
+      piPackageIsListed(
+        "/tmp/koed/integrations/pi\n",
+        "/tmp/koed/integrations/pi"
+      )
+    ).toBe(true);
+  });
+
   it("finds and stores Pi from a macOS fallback directory", () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-macos-discovery-"));
     temporaryDirectories.push(root);
@@ -56,7 +89,9 @@ describe("Pi setup", () => {
           ? spawnResult("0.84.2\n")
           : args[0] === "--list-models"
             ? spawnResult("provider model\nopenai gpt-5.4\n")
-            : spawnResult("installed\n")) as never
+            : args[0] === "list"
+              ? spawnResult(`${resolve(root, "koed/integrations/pi")}\n`)
+              : spawnResult("installed\n")) as never
     );
 
     expect(result).toMatchObject({
@@ -120,6 +155,9 @@ describe("Pi setup", () => {
         if (args[0] === "--list-models") {
           return spawnResult("provider model\nopenai gpt-5.4\n");
         }
+        if (args[0] === "list") {
+          return spawnResult(`${resolve(root, "koed/integrations/pi")}\n`);
+        }
         return spawnResult("installed\n");
       }) as never
     );
@@ -158,10 +196,65 @@ describe("Pi setup", () => {
     }
   });
 
-  it("fails closed when Pi has no authenticated models", () => {
+  it("configures the Pi profile while no models are authenticated", () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-pi-models-"));
     temporaryDirectories.push(root);
     const source = resolve(root, "packages/mcp-server/integrations/pi");
+    const executable = resolve(root, "pi");
+    mkdirSync(resolve(source, "extensions"), { recursive: true });
+    writeFileSync(resolve(source, "package.json"), "{}\n");
+    writeFileSync(resolve(source, "extensions/koed.mjs"), "export {};\n");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o700);
+
+    const calls: string[][] = [];
+    const result = setupPi(
+      {
+        HOME: root,
+        KOED_HOME: resolve(root, "koed"),
+        KOED_REPO_ROOT: root,
+        KOED_PI_EXECUTABLE: executable
+      },
+      ((_command: string, args: string[]) => {
+        calls.push(args);
+        return args[0] === "--version"
+          ? spawnResult("0.84.2\n")
+          : args[0] === "--list-models"
+            ? spawnResult("No models available.\n")
+            : args[0] === "list"
+              ? spawnResult(`${resolve(root, "koed/integrations/pi")}\n`)
+              : spawnResult("installed\n");
+      }) as never
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: "needs_attention",
+      profileConfigured: true,
+      authenticationState: "unauthenticated",
+      executionCapabilities: "unavailable",
+      modelCount: 0
+    });
+    expect(result.action).toContain("Authenticate at least one Pi model");
+    expect(calls).toContainEqual([
+      "install",
+      resolve(root, "koed/integrations/pi")
+    ]);
+    expect(
+      JSON.parse(
+        readFileSync(
+          resolve(root, "koed/config/ai-client-instances.json"),
+          "utf8"
+        )
+      )
+    ).toMatchObject({ instances: [{ instanceId: "pi.default" }] });
+  });
+
+  it("configures the Pi profile when model discovery fails but reports unknown authentication", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-model-probe-"));
+    temporaryDirectories.push(root);
+    const source = resolve(root, "packages/mcp-server/integrations/pi");
+    const target = resolve(root, "koed/integrations/pi");
     const executable = resolve(root, "pi");
     mkdirSync(resolve(source, "extensions"), { recursive: true });
     writeFileSync(resolve(source, "package.json"), "{}\n");
@@ -179,11 +272,65 @@ describe("Pi setup", () => {
       ((_command: string, args: string[]) =>
         args[0] === "--version"
           ? spawnResult("0.84.2\n")
-          : spawnResult("provider model\n")) as never
+          : args[0] === "--list-models"
+            ? spawnResult("", 1)
+            : args[0] === "list"
+              ? spawnResult(`${target}\n`)
+              : spawnResult("installed\n")) as never
     );
 
-    expect(result).toMatchObject({ ok: false, state: "needs_attention" });
-    expect(result.error).toContain("no authenticated models");
+    expect(result).toMatchObject({
+      ok: true,
+      state: "needs_attention",
+      profileConfigured: true,
+      authenticationState: "unknown",
+      executionCapabilities: "unavailable",
+      modelDiscoveryError: "Pi model discovery exited with code 1."
+    });
+    expect(result.action).toContain("Fix Pi model discovery");
+  });
+
+  it("rolls back an unverified Pi profile installation", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-pi-profile-verify-"));
+    temporaryDirectories.push(root);
+    const source = resolve(root, "packages/mcp-server/integrations/pi");
+    const target = resolve(root, "koed/integrations/pi");
+    const executable = resolve(root, "pi");
+    mkdirSync(resolve(source, "extensions"), { recursive: true });
+    writeFileSync(resolve(source, "package.json"), "{}\n");
+    writeFileSync(resolve(source, "extensions/koed.mjs"), "export {};\n");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o700);
+
+    const result = setupPi(
+      {
+        HOME: root,
+        KOED_HOME: resolve(root, "koed"),
+        KOED_REPO_ROOT: root,
+        KOED_PI_EXECUTABLE: executable
+      },
+      ((_command: string, args: string[]) =>
+        args[0] === "--version"
+          ? spawnResult("0.84.2\n")
+          : args[0] === "--list-models"
+            ? spawnResult("provider model\n")
+            : args[0] === "list"
+              ? spawnResult("unrelated-package\n")
+              : spawnResult("installed\n")) as never
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "needs_attention",
+      profileConfigured: false
+    });
+    expect(result.error).toContain(
+      "Pi active profile does not reference the installed Koed package"
+    );
+    expect(existsSync(target)).toBe(false);
+    expect(
+      existsSync(resolve(root, "koed/config/ai-client-instances.json"))
+    ).toBe(false);
   });
 
   it("preserves fnm launcher while resolving its canonical invocation target", () => {
@@ -415,6 +562,7 @@ describe("Pi setup", () => {
         if (args[0] === "--version") return spawnResult("0.84.2\n");
         if (args[0] === "--list-models")
           return spawnResult("provider model\nopenai gpt-5.4\n");
+        if (args[0] === "list") return spawnResult(`${target}\n`);
         installs += 1;
         return installs === 1 ? spawnResult("", 1) : spawnResult("restored\n");
       }) as never

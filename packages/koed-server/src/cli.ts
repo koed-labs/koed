@@ -682,7 +682,9 @@ export const runKoedServerCli = async (
       } else {
         stdout.write(
           result.ok
-            ? "Pi setup completed.\n"
+            ? result.authenticationState === "authenticated"
+              ? "Pi setup completed.\n"
+              : "Pi profile configured. Authenticate at least one model through Pi, then refresh capabilities; Pi-executed work remains unavailable until authentication.\n"
             : `${result.error ?? "Pi setup failed."}\n`
         );
       }
@@ -696,7 +698,9 @@ export const runKoedServerCli = async (
       } else {
         stdout.write(
           result.ok
-            ? "Claude Code setup completed. Restart Claude Code before verifying capture and recall.\n"
+            ? result.authenticationState === "authenticated"
+              ? "Claude Code setup completed. Restart Claude Code before verifying capture and recall.\n"
+              : "Claude Code profile configured. Run `claude auth login`, then refresh capabilities; Claude-executed work remains unavailable until sign-in.\n"
             : `${result.error ?? "Claude Code setup failed."}\n`
         );
       }
@@ -718,7 +722,12 @@ export const runKoedServerCli = async (
     }
 
     if (command === "check" && subcommand) {
-      const status = await collectStatus();
+      const status = await collectStatus(undefined, undefined, {
+        capabilitiesRefreshedSince: flagValue(
+          args,
+          "--capabilities-refreshed-since"
+        )
+      });
       const components: Record<string, unknown> = {
         codex: status.codex,
         claude: status.claudeCode,
@@ -732,6 +741,7 @@ export const runKoedServerCli = async (
       const result = {
         client: subcommand,
         readiness: readiness ?? null,
+        ...(args.includes("--include-status") ? { status } : {}),
         ...evaluateAiClientReadiness(readiness)
       };
       if (wantsJson) printJson(stdout, result);

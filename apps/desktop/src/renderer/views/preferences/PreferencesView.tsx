@@ -37,6 +37,7 @@ import type { ComponentStatus, KoedServerStatus } from "../../../types.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import type { DesktopApi } from "../../../types.js";
 import { clientMetaLine, summarizeCapabilities } from "../ai-client-card.js";
+import { AiClientStatusDialog } from "./AiClientStatusDialog.js";
 import { LocalAiClientSettingsSection } from "./LocalAiClientSettingsSection.js";
 import { useDesktopStatus } from "../../state/use-status.js";
 import "../ai-client-card.css";
@@ -667,10 +668,27 @@ function AiClientsSection({
   localAiClients,
   statusStore
 }: Pick<PreferencesViewProps, "localAiClients" | "statusStore">) {
+  const { status } = useDesktopStatus(statusStore);
+  const authenticationStatus = Object.values(
+    status?.aiClientInstances ?? status?.aiClients ?? {}
+  ).flatMap((client) =>
+    client
+      ? [
+          {
+            instanceId: client.instanceId,
+            authentication: client.authentication,
+            observedAt: status!.generatedAt
+          }
+        ]
+      : []
+  );
   return (
     <div className="koed-preference-section">
       <AiClientIntegrationsSection statusStore={statusStore} />
-      <LocalAiClientSettingsSection localAiClients={localAiClients} />
+      <LocalAiClientSettingsSection
+        localAiClients={localAiClients}
+        authenticationStatus={authenticationStatus}
+      />
     </div>
   );
 }
@@ -699,8 +717,17 @@ function AiClientIntegrationsSection({
 }: Pick<PreferencesViewProps, "statusStore">) {
   const snapshot = useDesktopStatus(statusStore);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [clientErrors, setClientErrors] = useState<
+    Record<string, string | undefined>
+  >({});
+  const [verificationFailures, setVerificationFailures] = useState<
+    Record<string, string | undefined>
+  >({});
   const [pendingCommand, setPendingCommand] =
     useState<IntegrationMutationCommand | null>(null);
+  const [detailsClient, setDetailsClient] = useState<
+    "codex" | "claude" | "pi" | null
+  >(null);
   const status = snapshot.status;
 
   useEffect(() => {
@@ -717,12 +744,59 @@ function AiClientIntegrationsSection({
     setActionError(null);
     try {
       const mutatesProfile = !action.startsWith("check_");
-      await statusStore.run(
-        action,
-        mutatesProfile ? { operatorConsented: true } : undefined
-      );
+      const result = await statusStore.run<{
+        ok?: boolean;
+        message?: string;
+        status?: KoedServerStatus;
+        capabilityRefresh?: { refreshed?: boolean };
+        readiness?: {
+          authentication?: string;
+          profile?: { configured?: boolean };
+        };
+      }>(action, mutatesProfile ? { operatorConsented: true } : undefined);
+      if (!mutatesProfile) {
+        const client = action.slice("check_".length);
+        if (result?.capabilityRefresh?.refreshed === false) {
+          setVerificationFailures((current) => ({
+            ...current,
+            [client]: result.message ?? "Capability refresh failed."
+          }));
+          return;
+        }
+        if (result?.status) {
+          setVerificationFailures((current) => ({
+            ...current,
+            [client]: undefined
+          }));
+          setClientErrors((current) => ({ ...current, [client]: undefined }));
+        }
+      }
+      const authenticationPending =
+        result?.readiness?.profile?.configured === true &&
+        (result.readiness.authentication === "unauthenticated" ||
+          result.readiness.authentication === "unknown");
+      if (!mutatesProfile && result?.ok === false && !authenticationPending) {
+        const message = (
+          result.message ?? "AI Client capabilities need attention."
+        )
+          .replaceAll("mcp_recall", "MCP Recall")
+          .replaceAll("local_synthesis", "Local Synthesis")
+          .replaceAll("automatic_capture", "Auto-capture");
+        setClientErrors((current) => ({
+          ...current,
+          [action.slice("check_".length)]: message
+        }));
+      }
     } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : String(cause));
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (action.startsWith("check_")) {
+        setVerificationFailures((current) => ({
+          ...current,
+          [action.slice("check_".length)]: message
+        }));
+      } else {
+        setActionError(message);
+      }
     }
   };
 
@@ -745,33 +819,58 @@ function AiClientIntegrationsSection({
           const detected = readiness?.installed.state === "healthy";
           const flat = flatClientStatus(id, status);
           const profileState = flat?.state ?? "not_configured";
+          const authenticationRequired =
+            flat?.configured === true &&
+            (readiness?.authentication === "unauthenticated" ||
+              flat.details?.authenticated === false);
           const capabilitySummaries = summarizeCapabilities(
             readiness?.capabilities
           );
+          const capabilityAttention = capabilitySummaries.some(
+            (capability) => capability.dotClass === "is-attention"
+          );
+          const capabilityUnknown = capabilitySummaries.some(
+            (capability) => capability.dotClass === "is-unknown"
+          );
           const metaLine =
-            profileState === "healthy"
+            profileState === "healthy" || authenticationRequired
               ? clientMetaLine(readiness, detected)
               : profileState === "starting"
                 ? null
                 : detected
-                  ? "Could not be started"
+                  ? "Integration needs attention"
                   : "Not installed";
           const pillClass =
-            profileState === "healthy"
-              ? "is-success"
-              : profileState === "needs_attention"
-                ? "is-warning"
-                : profileState === "starting"
-                  ? "is-active"
-                  : "is-off";
-          const pillText =
-            profileState === "healthy"
-              ? "Healthy"
-              : profileState === "needs_attention"
+            verificationFailures[id] ||
+            authenticationRequired ||
+            clientErrors[id] ||
+            capabilityAttention ||
+            capabilityUnknown
+              ? "is-warning"
+              : profileState === "healthy"
+                ? "is-success"
+                : profileState === "needs_attention"
+                  ? "is-warning"
+                  : profileState === "starting"
+                    ? "is-active"
+                    : "is-off";
+          const pillText = verificationFailures[id]
+            ? "Verification failed"
+            : authenticationRequired
+              ? id === "pi"
+                ? "Model authentication required"
+                : "Sign in required"
+              : clientErrors[id] || capabilityAttention
                 ? "Needs attention"
                 : profileState === "starting"
                   ? "Starting…"
-                  : "Not set up";
+                  : capabilityUnknown && profileState === "healthy"
+                    ? "Status unknown"
+                    : profileState === "healthy"
+                      ? "Healthy"
+                      : profileState === "needs_attention"
+                        ? "Needs attention"
+                        : "Not set up";
           const notConfigured = profileState === "not_configured";
           const primaryCommand =
             `${notConfigured ? "setup" : "repair"}_${id}` as IntegrationMutationCommand;
@@ -784,27 +883,64 @@ function AiClientIntegrationsSection({
             >
               <span className="koed-client-head">
                 <strong>{label}</strong>
-                <span className={`koed-client-pill ${pillClass}`}>
+                <button
+                  type="button"
+                  className={`koed-client-pill koed-client-pill-button ${pillClass}`}
+                  aria-label={`Show ${label} status details`}
+                  aria-haspopup="dialog"
+                  onClick={() => {
+                    setActionError(null);
+                    setDetailsClient(id);
+                  }}
+                >
                   {profileState === "starting" ? (
                     <Spinner aria-hidden="true" className="koed-client-spin" />
                   ) : null}
                   {pillText}
-                </span>
+                </button>
               </span>
               {metaLine ? (
                 <span className="koed-client-meta">{metaLine}</span>
               ) : null}
+              {authenticationRequired ? (
+                <span className="koed-client-warning">
+                  {id === "pi" ? (
+                    <>
+                      Pi profile configured. Authenticate at least one model
+                      through Pi, then check or refresh capabilities. Profile
+                      reinstall is not required.
+                    </>
+                  ) : id === "claude" ? (
+                    <>
+                      Claude Code profile configured. Run `claude auth login`,
+                      then check or refresh capabilities. Claude Desktop sign-in
+                      does not authenticate Claude Code.
+                    </>
+                  ) : (
+                    <>
+                      Codex profile configured. Authenticate Codex, then check
+                      or refresh capabilities. Profile reinstall is not
+                      required.
+                    </>
+                  )}
+                </span>
+              ) : null}
+              {clientErrors[id] ? (
+                <p role="alert" className="koed-diagnostic-error">
+                  {clientErrors[id]}
+                </p>
+              ) : null}
               <span className="koed-client-caps">
                 {capabilitySummaries.map((capability) => (
                   <span
-                    aria-label={`${capability.label}: ${capability.statusLabel}`}
+                    aria-label={`${capability.label}: ${verificationFailures[id] ? "Last known: " : ""}${capability.statusLabel}`}
                     className="koed-client-cap"
                     key={capability.id}
-                    title={`${capability.label}: ${capability.statusLabel}`}
+                    title={`${capability.label}: ${verificationFailures[id] ? "Last known: " : ""}${capability.statusLabel}`}
                   >
                     <span
                       aria-hidden="true"
-                      className={`koed-client-cap-dot ${capability.dotClass}`}
+                      className={`koed-client-cap-dot ${verificationFailures[id] ? "is-unknown" : capability.dotClass}`}
                     />
                     {capability.label}
                   </span>
@@ -852,6 +988,23 @@ function AiClientIntegrationsSection({
           );
         })}
       </div>
+      {detailsClient ? (
+        <AiClientStatusDialog
+          key={detailsClient}
+          driverId={detailsClient}
+          label={
+            preferenceClients.find((client) => client.id === detailsClient)!
+              .label
+          }
+          profile={flatClientStatus(detailsClient, status) ?? undefined}
+          readiness={status?.aiClients?.[detailsClient]}
+          busy={snapshot.busyCommand !== null}
+          error={clientErrors[detailsClient] ?? actionError}
+          verificationError={verificationFailures[detailsClient] ?? null}
+          onCheck={() => run(`check_${detailsClient}`)}
+          onClose={() => setDetailsClient(null)}
+        />
+      ) : null}
       <Dialog
         onOpenChange={(open) => {
           if (!open) setPendingCommand(null);

@@ -10,10 +10,15 @@ until Pi ordering, provenance, and restart recovery can be proven.
 
 - Pi `0.84.2` or newer
 - Pi installed separately and available on `PATH`, in a common macOS executable directory, or configured with absolute `KOED_PI_EXECUTABLE`
-- At least one Pi model authenticated through Pi
+- At least one Pi model authenticated through Pi for capabilities that cause Pi
+  to execute
 - Persistent Pi sessions enabled for automatic capture
 
-Koed canonicalizes configured executable paths and fails closed when executable, version, selected model, or Pi-managed authentication is unavailable. Models use full Pi provider/model identity, such as `anthropic/claude-opus-4-6` or `openai/gpt-5.4`.
+Koed canonicalizes configured executable paths and fails closed when executable,
+version, selected model, or Pi-managed authentication is unavailable. Profile
+setup and automatic capture do not require an authenticated model. Models use
+full Pi provider/model identity, such as `anthropic/claude-opus-4-6` or
+`openai/gpt-5.4`.
 
 Koed first uses `KOED_PI_EXECUTABLE`, then searches the inherited `PATH`. On
 macOS it also searches `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin`
@@ -37,9 +42,10 @@ idempotent repair action. Pi remains optional when it is not installed or detect
 reports Pi executable/profile availability but never selects or configures Pi
 automatically. Select Pi explicitly in post-core onboarding; its setup has an
 independent consent prompt and can be cancelled without affecting core or other
-clients. A detected but unauthenticated Pi installation produces a Pi-only
-setup result and does not affect Koed's local runtime health. Preferences can set up, check, repair,
-or remove Pi later.
+clients. A detected but unauthenticated Pi installation can still install the
+Koed-owned package and register `pi.default`. Setup reports partial success and
+does not affect Koed's local runtime health. Preferences can set up, check,
+repair, refresh, or remove Pi later.
 
 Contributor checkout alternative:
 
@@ -59,8 +65,9 @@ loads the integration; no wrapper or separate extension command is needed.
 
 Koed canonicalizes the Pi executable before invoking it. On Windows, npm command shims are resolved to the verifiable Pi Node entry point and are never passed directly to process-spawn APIs. Koed passes a bounded
 setup environment containing profile/system essentials plus `KOED_HOME`, not
-Koed API Tokens, database credentials, or provider keys. Setup also requires at
-least one authenticated Pi model. The installed extension derives custom
+Koed API Tokens, database credentials, or provider keys. Setup checks model
+authentication as advisory readiness rather than a package-installation gate.
+The installed extension derives custom
 `KOED_HOME` from its stable package path when an ordinary later Pi process does
 not inherit that environment variable.
 
@@ -70,7 +77,13 @@ Custom profiles remain supported:
 PI_CODING_AGENT_DIR=/path/to/profile pnpm pi:configure
 ```
 
-Configure, check/repair, and remove touch only Koed package entry and stable package directory. Unrelated Pi packages, extensions, skills, prompts, themes, and settings remain unchanged.
+Configure, check/repair, and remove touch only Koed package entry and stable
+package directory. Unrelated Pi packages, extensions, skills, prompts, themes,
+and settings remain unchanged. With no authenticated models, automatic capture
+can still report Ready from the installed package and healthy Pi Transcript
+Watcher. Recall and Local Synthesis through Pi report unauthenticated and remain
+fail-closed. Authenticate a model through Pi and refresh capabilities to make
+execution ready without reinstalling the Koed profile.
 
 ## Recall
 

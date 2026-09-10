@@ -6842,6 +6842,57 @@ describe("api health", () => {
     expect(status.configuration).not.toHaveProperty("plannedClients");
   });
 
+  it("keeps AI Client capability publication available when capture exhausts memory writes", async () => {
+    const keys: string[] = [];
+    let exhaustControl = false;
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      rateLimitStore: {
+        increment: async (key: string) => {
+          keys.push(key);
+          return {
+            count:
+              key.startsWith("memoryWrite:") || exhaustControl ? 1000000 : 1,
+            resetAt: Date.now() + 60000
+          };
+        }
+      }
+    });
+    try {
+      const headers = { authorization: "Bearer invalid" };
+      const capture = await app.inject({
+        method: "POST",
+        url: "/v1/memory/capture-personal-event",
+        headers,
+        payload: {}
+      });
+      expect(capture.statusCode).toBe(429);
+      for (const [method, url] of [
+        ["PUT", "/v1/memory/ai-client-instances/pi.default"],
+        [
+          "POST",
+          "/v1/memory/ai-client-instances/pi.default/capability-snapshots"
+        ]
+      ] as const) {
+        const result = await app.inject({ method, url, headers, payload: {} });
+        expect(result.statusCode).not.toBe(429);
+        expect(result.statusCode).toBeGreaterThanOrEqual(400);
+      }
+      expect(keys.some((key) => key.startsWith("aiClientControl:"))).toBe(true);
+      exhaustControl = true;
+      const limited = await app.inject({
+        method: "PUT",
+        url: "/v1/memory/ai-client-instances/pi.default",
+        headers,
+        payload: {}
+      });
+      expect(limited.statusCode).toBe(429);
+      expect(limited.headers["retry-after"]).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("uses separate memory rate-limit buckets with Retry-After headers", async () => {
     process.env.MEMORY_READ_RATE_LIMIT_WINDOW_MS = "60000";
     process.env.MEMORY_READ_RATE_LIMIT_MAX = "1";

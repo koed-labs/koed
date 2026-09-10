@@ -503,6 +503,170 @@ describe("SetupChecklist", () => {
     }
   );
 
+  it("shows unauthenticated clients as configured and continues the setup queue", async () => {
+    const configured = new Set<ClientId>();
+    const status = (): KoedServerStatus => {
+      const current = statusWithClientProfiles({
+        codex: "not_configured",
+        claude: configured.has("claude") ? "healthy" : "not_configured",
+        pi: configured.has("pi") ? "healthy" : "not_configured"
+      });
+      if (configured.has("claude")) {
+        current.claudeCode = {
+          state: "needs_attention",
+          configured: true,
+          detected: true,
+          details: { authenticated: false, profileConfigured: true }
+        };
+        current.aiClients!.claude = {
+          ...clientReadiness("claude", "needs_attention"),
+          authentication: "unauthenticated",
+          capabilities: [
+            {
+              id: "automatic_capture",
+              support: "supported",
+              readiness: "ready",
+              diagnostics: []
+            },
+            {
+              id: "local_synthesis",
+              support: "supported",
+              readiness: "unauthenticated",
+              diagnostics: []
+            }
+          ]
+        };
+      }
+      if (configured.has("pi")) {
+        current.pi = {
+          state: "needs_attention",
+          configured: true,
+          detected: true,
+          details: { authenticated: false, packageRegistered: true }
+        };
+        current.aiClients!.pi = {
+          ...clientReadiness("pi", "needs_attention"),
+          authentication: "unauthenticated",
+          capabilities: [
+            {
+              id: "automatic_capture",
+              support: "supported",
+              readiness: "ready",
+              diagnostics: []
+            },
+            {
+              id: "local_synthesis",
+              support: "supported",
+              readiness: "unauthenticated",
+              diagnostics: []
+            }
+          ]
+        };
+      }
+      return current;
+    };
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "status") return status();
+      if (command === "setup_claude") {
+        configured.add("claude");
+        return {
+          ok: true,
+          state: "needs_attention",
+          profileConfigured: true,
+          authenticationState: "unauthenticated",
+          executionCapabilities: "unavailable"
+        };
+      }
+      if (command === "setup_pi") {
+        configured.add("pi");
+        return {
+          ok: true,
+          state: "needs_attention",
+          profileConfigured: true,
+          authenticationState: "unauthenticated",
+          executionCapabilities: "unavailable"
+        };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    window.koedDesktop = {
+      invoke: async <T = unknown,>(command: string): Promise<T> =>
+        (await invoke(command)) as T,
+      setup: {
+        inspect: async () => completeSetupFixture(),
+        run: async () => completeSetupFixture(),
+        subscribe: () => () => undefined
+      }
+    };
+
+    await act(async () => {
+      root.render(
+        <SetupChecklist
+          onComplete={vi.fn()}
+          showTrustGuide={false}
+          statusStore={new DesktopStatusStore()}
+        />
+      );
+    });
+    await vi.waitFor(() =>
+      expect(
+        [...container.querySelectorAll("button")].find(
+          (button) => button.textContent === "Continue"
+        )
+      ).toBeTruthy()
+    );
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue")!
+        .click()
+    );
+    const checkboxes = [
+      ...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')
+    ];
+    await act(async () => {
+      checkboxes[1]!.click();
+      checkboxes[2]!.click();
+    });
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue")!
+        .click()
+    );
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain(
+        "Claude Code: configured — sign in required"
+      );
+      expect(container.textContent).toContain(
+        "Pi: configured — model authentication required"
+      );
+    });
+    const claudeCard = [
+      ...container.querySelectorAll(".koed-client-card")
+    ].find(
+      (card) => card.querySelector("strong")?.textContent === "Claude Code"
+    );
+    expect(claudeCard?.textContent).toContain("Configured — sign in required");
+    expect(claudeCard?.textContent).toContain("claude auth login");
+    expect(claudeCard?.textContent).toContain(
+      "Claude Desktop sign-in does not authenticate Claude Code"
+    );
+    expect(claudeCard?.querySelector(".koed-client-error")).toBeNull();
+    const piCard = [...container.querySelectorAll(".koed-client-card")].find(
+      (card) => card.querySelector("strong")?.textContent === "Pi"
+    );
+    expect(piCard?.textContent).toContain(
+      "Configured — model authentication required"
+    );
+    expect(piCard?.textContent).toContain(
+      "Authenticate at least one model through Pi"
+    );
+    expect(piCard?.querySelector(".koed-client-error")).toBeNull();
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual(
+      expect.arrayContaining(["setup_claude", "setup_pi"])
+    );
+  });
+
   it("shows only a spinner without resizing the primary action during AI Client setup", async () => {
     let configured = false;
     let resolveSetup!: () => void;

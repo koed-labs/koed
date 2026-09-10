@@ -201,7 +201,7 @@
 
 .koed-connection-form > p[role="alert"],
 .koed-diagnostic-error {
-  color: var(--destructive-foreground);
+  color: var(--destructive);
 }
 
 .koed-connection-actions,
@@ -282,6 +282,38 @@
 .koed-local-ai-settings {
   display: grid;
   gap: 14px;
+}
+
+.koed-local-ai-auth-warning {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warning) 8%, var(--background));
+}
+
+.koed-local-ai-auth-warning > svg {
+  color: var(--warning-foreground);
+}
+
+.koed-local-ai-auth-warning strong {
+  font-size: 13px;
+}
+
+.koed-local-ai-auth-warning p {
+  margin: 4px 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.koed-local-ai-auth-warning .koed-local-ai-auth-action,
+.koed-local-ai-auth-warning > [role="alert"] {
+  grid-column: 2 / -1;
+  margin: 0;
 }
 
 .koed-local-ai-settings-loading {
@@ -537,4 +569,68 @@
   .koed-preference-control select {
     inline-size: 100%;
   }
+}
+
+.koed-client-pill-button {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.koed-client-pill-button:hover {
+  text-decoration: underline;
+}
+
+.koed-client-pill-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
+.koed-client-status-details {
+  display: grid;
+  gap: 16px;
+  padding-block: 16px;
+}
+
+.koed-client-status-details p {
+  margin: 0;
+}
+
+.koed-client-status-command {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--muted);
+}
+
+.koed-client-status-command code {
+  overflow-wrap: anywhere;
+}
+
+.koed-client-status-capabilities {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.koed-client-status-capabilities li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.koed-client-verification-warning {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--warning) 12%, transparent);
+  color: var(--warning-foreground);
 }
