@@ -27,7 +27,10 @@ describe("Koed Pi Memory Answer bridge", () => {
     );
     let finish!: (response: Response) => void;
     const fetchMock = vi.fn(
-      async () =>
+      async (
+        _input: string | URL | Request,
+        _init?: RequestInit
+      ): Promise<Response> =>
         await new Promise<Response>((resolve) => {
           finish = resolve;
         })
