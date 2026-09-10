@@ -1452,6 +1452,22 @@ export const createManagedConversationService = (options: {
     }
     return new CodexManagedConversationSession({
       memoryClient,
+      onStartupTiming: (timing) =>
+        options.logger.info(
+          {
+            event: {
+              name: "worker.managed_conversation.startup_stage",
+              category: "managed_conversation"
+            },
+            execution_id: execution.id,
+            execution_generation: execution.executionGeneration,
+            startup_stage: timing.stage,
+            startup_status: timing.status,
+            duration_ms: timing.durationMs,
+            elapsed_ms: timing.elapsedMs
+          },
+          "managed Conversation startup stage"
+        ),
       projectId: execution.projectId,
       appServer: {
         appServerBinary:

@@ -290,16 +290,16 @@ export function ConversationSettings({
             aria-label={`Model and reasoning: ${modelLabel}${selection.reasoningEffort ? `, ${reasoningLabel(selection.reasoningEffort)}` : ""}`}
           >
             <span>
-              {modelLabel}
-              {selection.reasoningEffort &&
-                ` · ${reasoningLabel(selection.reasoningEffort)}`}
+              {modelOpen
+                ? "Model & reasoning"
+                : `${modelLabel}${selection.reasoningEffort ? ` · ${reasoningLabel(selection.reasoningEffort)}` : ""}`}
             </span>
             <ChevronDown aria-hidden="true" />
           </DropdownMenuTrigger>
           <DropdownMenuPopup
             side="top"
             align="end"
-            className="conversation-settings-popup"
+            className="conversation-settings-popup conversation-model-popup"
           >
             <DropdownMenuGroup>
               <DropdownMenuLabel>
@@ -358,33 +358,71 @@ export function ConversationSettings({
                     closeOnClick={false}
                     onClick={() => setModelView(true)}
                   >
-                    <span>{modelLabel}</span>
+                    <span className="conversation-model-summary">
+                      <span>{modelLabel}</span>
+                      {selection.reasoningEffort && (
+                        <small>
+                          {reasoningLabel(selection.reasoningEffort)}
+                        </small>
+                      )}
+                    </span>
                     <ChevronRight aria-hidden="true" />
                   </DropdownMenuItem>
                   {Boolean(model?.supportedReasoningEfforts.length) && (
-                    <DropdownMenuRadioGroup
-                      className="conversation-reasoning-bar"
-                      aria-label="Reasoning"
-                      value={selection.reasoningEffort}
-                      onValueChange={(value) =>
-                        onChange({
-                          ...selection,
-                          reasoningEffort: String(value)
-                        })
-                      }
-                    >
-                      {model?.supportedReasoningEfforts.map((effort) => (
-                        <DropdownMenuRadioItem
-                          className="conversation-reasoning-step"
-                          closeOnClick={false}
-                          key={effort}
-                          value={effort}
-                          disabled={blocked}
-                        >
-                          {reasoningLabel(effort)}
-                        </DropdownMenuRadioItem>
-                      ))}
-                    </DropdownMenuRadioGroup>
+                    <div className="conversation-reasoning-slider">
+                      <div
+                        className="conversation-reasoning-notches"
+                        aria-hidden="true"
+                      >
+                        {model?.supportedReasoningEfforts.map((effort) => (
+                          <span key={effort} />
+                        ))}
+                      </div>
+                      <input
+                        type="range"
+                        aria-label="Reasoning effort"
+                        aria-valuetext={reasoningLabel(
+                          selection.reasoningEffort
+                        )}
+                        min={0}
+                        max={Math.max(
+                          1,
+                          (model?.supportedReasoningEfforts.length ?? 1) - 1
+                        )}
+                        step={1}
+                        value={Math.max(
+                          0,
+                          model?.supportedReasoningEfforts.indexOf(
+                            selection.reasoningEffort
+                          ) ?? 0
+                        )}
+                        disabled={
+                          blocked ||
+                          (model?.supportedReasoningEfforts.length ?? 0) < 2
+                        }
+                        onKeyDown={(event) => {
+                          if (
+                            [
+                              "ArrowLeft",
+                              "ArrowRight",
+                              "ArrowUp",
+                              "ArrowDown",
+                              "Home",
+                              "End"
+                            ].includes(event.key)
+                          )
+                            event.stopPropagation();
+                        }}
+                        onChange={(event) => {
+                          const effort =
+                            model?.supportedReasoningEfforts[
+                              Number(event.currentTarget.value)
+                            ];
+                          if (effort)
+                            onChange({ ...selection, reasoningEffort: effort });
+                        }}
+                      />
+                    </div>
                   )}
                 </>
               )}

@@ -494,6 +494,21 @@ const fetchJson = async <T>(
   }
 };
 
+export const inspectPrivacyRuntimeConfiguration = (
+  runtime: Pick<KoedServerRuntimeState, "services"> | null,
+  running: boolean
+): KoedServerComponentStatus | null =>
+  running &&
+  runtime &&
+  Array.isArray(runtime.services) &&
+  !runtime.services.includes("privacy-service-native")
+    ? needsAttention(
+        "Privacy Filter was not started by the running supervisor.",
+        "Restart Koed with Team collaboration enabled to start Privacy Filter.",
+        { reason: "runtime_configuration_changed" }
+      )
+    : null;
+
 const inspectExternalPrivacyService = async (
   baseUrl: string,
   token: string,
@@ -2242,14 +2257,15 @@ export const collectKoedServerStartupStatus = async (
         }
       )
     : useBundledLocalDependencies
-      ? await collectLocalPrivacyRuntimeHealthStatus(
+      ? (inspectPrivacyRuntimeConfiguration(runtime, runtimeProcessRunning) ??
+        (await collectLocalPrivacyRuntimeHealthStatus(
           paths,
           serviceEnvironment,
           {
             existsSync: deps.existsSync,
             fetch: deps.fetch
           }
-        )
+        )))
       : !serviceEnvironment.PRIVACY_SERVICE_TOKEN?.trim() ||
           !privacyControlToken
         ? notConfigured(
@@ -2481,10 +2497,11 @@ export const collectKoedServerStatus = async (
         }
       )
     : useBundledLocalDependencies
-      ? await collectLocalPrivacyRuntimeStatus(paths, serviceEnvironment, {
+      ? (inspectPrivacyRuntimeConfiguration(runtime, runtimeProcessRunning) ??
+        (await collectLocalPrivacyRuntimeStatus(paths, serviceEnvironment, {
           existsSync: deps.existsSync,
           fetch: deps.fetch
-        })
+        })))
       : !serviceEnvironment.PRIVACY_SERVICE_TOKEN?.trim() ||
           !privacyControlToken
         ? notConfigured(

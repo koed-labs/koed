@@ -349,6 +349,11 @@ export function PersonalAskView({
               )
             }
             options={launchOptions}
+            placeholder={
+              selectedProjectId === null
+                ? "Ask a question or start a conversation…"
+                : `Ask about ${selectedProject?.name ?? "this Project"}…`
+            }
             projectId={selectedProject?.id ?? null}
             requirePrompt
             showContextHelp={false}

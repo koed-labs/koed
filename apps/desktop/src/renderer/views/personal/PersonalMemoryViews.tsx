@@ -56,6 +56,7 @@ import {
   type ConversationSurfaceModel
 } from "../../../NativeConversationSurface.js";
 import {
+  projectIdForSession,
   projectIsActive,
   projectLatestAt,
   relativeTime,
@@ -513,7 +514,11 @@ function ProjectsPane({
           </div>
         ) : (
           <>
-            <section aria-label="Active Projects">
+            <section aria-labelledby="personal-active-projects">
+              <div className="personal-project-section-heading">
+                <span id="personal-active-projects">Active</span>
+                <span>{active.length}</span>
+              </div>
               {active.map((project) => (
                 <ProjectRow
                   key={project.id}
@@ -1429,14 +1434,22 @@ function StoreConversation({
       return;
     setOptimisticPrompts(unreconciledOptimisticPrompts);
   }, [optimisticPrompts.length, unreconciledOptimisticPrompts]);
-  const previousRouteSessionId = useRef(routeSessionId);
+  const executionIdentity =
+    managedDraft?.conversation.executionId ??
+    canonicalConversation?.executionId;
+  const previousConversation = useRef({ routeSessionId, executionIdentity });
   useEffect(() => {
-    if (previousRouteSessionId.current === routeSessionId) return;
-    previousRouteSessionId.current = routeSessionId;
+    const previous = previousConversation.current;
+    previousConversation.current = { routeSessionId, executionIdentity };
+    if (
+      previous.routeSessionId === routeSessionId ||
+      (executionIdentity && previous.executionIdentity === executionIdentity)
+    )
+      return;
     setOptimisticPrompts([]);
     setTransientAssistantOutputs([]);
     setContextAttachments([]);
-  }, [routeSessionId]);
+  }, [routeSessionId, executionIdentity]);
   const latestPromptTime = Math.max(
     0,
     ...canonicalEvents
@@ -1449,6 +1462,18 @@ function StoreConversation({
   const streamingOutput = [...unreconciledTransientOutputs]
     .reverse()
     .find((event) => Date.parse(event.timestamp) >= latestPromptTime);
+  // Capture can publish the answer before the runtime marks its prompt complete.
+  // Do not recreate the empty response row during that handoff.
+  const hasCapturedResponse = canonicalEvents.some(
+    (event) =>
+      (event.actor === "assistant" || event.actor === "agent") &&
+      (event.eventType === "captured" ||
+        event.eventType === "agent_message" ||
+        event.eventType === "message") &&
+      !event.invalidatedAt &&
+      Boolean(event.content || event.contentPreview) &&
+      Date.parse(event.timestamp) > latestPromptTime
+  );
   const overlayEvents = [
     ...unreconciledOptimisticPrompts.map(({ event }) => event),
     ...unreconciledTransientOutputs.map((event) =>
@@ -1459,7 +1484,7 @@ function StoreConversation({
           }
         : event
     ),
-    ...(responseActive && !streamingOutput
+    ...(responseActive && !streamingOutput && !hasCapturedResponse
       ? [
           {
             id: `pending-response:${routeSessionId}`,
@@ -1657,20 +1682,25 @@ const transferLifecycleMessage = (
 function ManagedConversationUsage({
   model,
   provider,
-  usage
+  usage,
+  initializing = false,
+  contextWindow
 }: {
   model: string | null;
   provider: "codex" | "claude" | "pi";
   usage: ManagedConversationContextUsage | null;
+  initializing?: boolean;
+  contextWindow?: number;
 }) {
   const displayModel = usage?.model ?? model;
+  const usedTokens = usage?.usedTokens ?? (initializing ? 0 : null);
+  const modelContextWindow = usage?.modelContextWindow ?? contextWindow;
   const percentage =
-    usage?.usedTokens !== null &&
-    usage?.usedTokens !== undefined &&
-    usage.modelContextWindow &&
-    usage.modelContextWindow > 0
-      ? Math.min(100, (usage.usedTokens / usage.modelContextWindow) * 100)
-      : null;
+    usedTokens !== null && modelContextWindow && modelContextWindow > 0
+      ? Math.min(100, (usedTokens / modelContextWindow) * 100)
+      : initializing && usedTokens === 0
+        ? 0
+        : null;
   const details = [
     usage?.inputTokens !== null && usage?.inputTokens !== undefined
       ? `Input ${compactTokenCount(usage.inputTokens)}`
@@ -1695,11 +1725,11 @@ function ManagedConversationUsage({
         .filter(Boolean)
         .join(" · ")}
     >
-      {usage?.usedTokens !== null && usage?.usedTokens !== undefined ? (
+      {usedTokens !== null ? (
         <>
           <span>Context:</span>
           <span className="personal-managed-usage-count">
-            {compactTokenCount(usage.usedTokens)}
+            {compactTokenCount(usedTokens)}
           </span>
           {percentage !== null ? (
             <span
@@ -1713,9 +1743,9 @@ function ManagedConversationUsage({
               <span style={{ width: `${percentage}%` }} />
             </span>
           ) : null}
-          {usage.modelContextWindow ? (
+          {modelContextWindow ? (
             <span className="personal-managed-usage-count">
-              {compactTokenCount(usage.modelContextWindow)}
+              {compactTokenCount(modelContextWindow)}
             </span>
           ) : null}
         </>
@@ -2907,17 +2937,37 @@ function ManagedConversationComposer({
           {settingsError}
         </p>
       )}
-      {resolvedConversation.executionId && usage ? (
+      {resolvedConversation.executionId ? (
         <div className="personal-managed-meta-row">
           <ManagedConversationUsage
-            model={usage.model}
-            provider={usage.provider}
-            usage={usage.usage}
+            model={usage?.model ?? initialSelection?.model ?? null}
+            provider={
+              usage?.provider ??
+              resolvedConversation.executionOwner?.driverId ??
+              "codex"
+            }
+            usage={usage?.usage ?? null}
+            initializing={Boolean(initialSelection)}
+            contextWindow={
+              settingsOptions?.instances
+                .find(
+                  (instance) =>
+                    instance.instanceId === initialSelection?.aiClientInstanceId
+                )
+                ?.models.find(
+                  (model) =>
+                    model.id === (usage?.model ?? initialSelection?.model)
+                )?.contextWindow
+            }
           />
-          {state.status === "ready" && authorizeTransfer ? (
+          {authorizeTransfer ? (
             <details
               className="personal-managed-transfer"
               onToggle={(event) => {
+                if (state.status !== "ready") {
+                  event.currentTarget.open = false;
+                  return;
+                }
                 if (!event.currentTarget.open || targetDevices.length) return;
                 setTransferMessage("Loading Personal Devices…");
                 void api
@@ -2938,7 +2988,12 @@ function ManagedConversationComposer({
                   });
               }}
             >
-              <summary>
+              <summary
+                aria-disabled={state.status !== "ready"}
+                onClick={(event) => {
+                  if (state.status !== "ready") event.preventDefault();
+                }}
+              >
                 <MonitorSmartphone aria-hidden="true" />
                 Switch device
               </summary>
@@ -2962,7 +3017,10 @@ function ManagedConversationComposer({
                 </label>
                 <button
                   disabled={
-                    transferBusy || !selectedTarget || !ownerHandoffReady
+                    state.status !== "ready" ||
+                    transferBusy ||
+                    !selectedTarget ||
+                    !ownerHandoffReady
                   }
                   onClick={() => {
                     const operationId = crypto.randomUUID();
@@ -3001,7 +3059,12 @@ function ManagedConversationComposer({
                   Move
                 </button>
                 <button
-                  disabled={transferBusy || !selectedTarget || !ownerForkReady}
+                  disabled={
+                    state.status !== "ready" ||
+                    transferBusy ||
+                    !selectedTarget ||
+                    !ownerForkReady
+                  }
                   onClick={() => {
                     const operationId = crypto.randomUUID();
                     setTransferBusy(true);
@@ -3606,7 +3669,14 @@ export function PersonalMemoryWorkspace({
       }),
     [snapshot.projectOrder, snapshot.projectsById]
   );
-  const selectedProjectId = route.kind === "projects" ? null : route.projectId;
+  const selectedProjectId =
+    route.kind === "projects"
+      ? null
+      : snapshot.projectsById.has(route.projectId)
+        ? route.projectId
+        : route.kind === "session"
+          ? projectIdForSession(projects, route.sessionId)
+          : route.projectId;
   const selectedProject =
     (selectedProjectId ? snapshot.projectsById.get(selectedProjectId) : null) ??
     null;

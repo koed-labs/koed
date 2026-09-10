@@ -110,13 +110,11 @@ const metadataPaths = (project: DesktopProjectMetadata): string[] =>
 export const projectLatestAt = (
   project: Pick<DesktopProject, "threads" | "lastSeenAt">
 ): string | null => {
-  const timestamps = [
-    project.lastSeenAt,
-    ...project.threads.map((thread) => thread.latestAt)
-  ]
+  const timestamps = project.threads
+    .map((thread) => thread.latestAt)
     .filter((value): value is string => Boolean(value))
     .filter((value) => Number.isFinite(Date.parse(value)))
-    .sort();
+    .sort((left, right) => Date.parse(left) - Date.parse(right));
   return timestamps.at(-1) ?? null;
 };
 
@@ -151,8 +149,8 @@ export const reconcileSelectedProjectId = (
 export const sortProjects = (projects: DesktopProject[]): DesktopProject[] =>
   [...projects].sort((left, right) => {
     const activityDelta =
-      Date.parse(projectLatestAt(right) ?? "0") -
-      Date.parse(projectLatestAt(left) ?? "0");
+      (Date.parse(projectLatestAt(right) ?? "") || 0) -
+      (Date.parse(projectLatestAt(left) ?? "") || 0);
     return activityDelta || left.name.localeCompare(right.name);
   });
 
@@ -224,6 +222,56 @@ export const mergeProjectSources = (
   graphProjects: DesktopProjectGroup[],
   metadataProjects: DesktopProjectMetadata[]
 ): DesktopProject[] => {
+  // A standalone Conversation has a private runtime directory, but belongs
+  // to the stable Chats Project. Discovery can catalogue both directories.
+  const chatsRoots = metadataProjects.filter((metadata) =>
+    (
+      normalizedPath(metadata.path.projectRoot ?? metadata.path.cwd) ?? ""
+    ).endsWith("/projects/Independent")
+  );
+  const chatsMetadataForPath = (path: string | null) => {
+    const normalized = normalizedPath(path);
+    return chatsRoots.find((metadata) => {
+      const root = normalizedPath(
+        metadata.path.projectRoot ?? metadata.path.cwd
+      )!;
+      const runtimeRoot =
+        root.slice(0, -"projects/Independent".length) +
+        "managed-conversations/independent/";
+      const suffix = normalized?.startsWith(runtimeRoot)
+        ? normalized.slice(runtimeRoot.length)
+        : "";
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        suffix
+      );
+    });
+  };
+  const metadataById = new Map(
+    metadataProjects.map((metadata) => [metadata.localProjectId, metadata])
+  );
+  graphProjects = graphProjects.map((project) => {
+    const metadata = metadataById.get(project.id);
+    const canonical = metadata
+      ? (chatsMetadataForPath(metadata.path.projectRoot ?? metadata.path.cwd) ??
+        metadata)
+      : chatsMetadataForPath(project.path);
+    return canonical
+      ? {
+          ...project,
+          id: canonical.localProjectId,
+          path:
+            normalizedPath(project.path) ===
+            normalizedPath(canonical.path.projectRoot ?? canonical.path.cwd)
+              ? project.path
+              : (canonical.path.projectRoot ?? canonical.path.cwd),
+          name: canonical.displayName
+        }
+      : project;
+  });
+  metadataProjects = metadataProjects.filter(
+    (metadata) =>
+      !chatsMetadataForPath(metadata.path.projectRoot ?? metadata.path.cwd)
+  );
   const metadataByPath = new Map<string, DesktopProjectMetadata>();
   for (const project of metadataProjects) {
     for (const path of metadataPaths(project))

@@ -17,6 +17,7 @@ import {
   collectKoedServerStatus,
   healthy,
   inspectCodex,
+  inspectPrivacyRuntimeConfiguration,
   inspectAiClientFlowReadiness,
   inspectAiClientInstanceReadiness,
   inspectAiClientReadiness,
@@ -406,7 +407,12 @@ describe("startup status", () => {
         runtimeMode: "developer",
         dependencyMode: "bundled-local",
         automaticPorts: true,
-        services: ["api", "worker", "local-ai-runtime"],
+        services: [
+          "api",
+          "worker",
+          "local-ai-runtime",
+          "privacy-service-native"
+        ],
         processes: { api: 45, worker: 43, localAiRuntime: 44 }
       })
     );
@@ -2388,5 +2394,28 @@ describe("status and doctor JSON contracts", () => {
     expect(status.codex.state).toBe("healthy");
     expect(status.mcpServer.state).toBe("healthy");
     expect(status.redis.message).toContain("local queue");
+  });
+});
+
+describe("Privacy Filter supervisor configuration", () => {
+  it("requests restart when a running supervisor omitted Privacy Filter", () => {
+    expect(
+      inspectPrivacyRuntimeConfiguration({ services: ["api", "worker"] }, true)
+    ).toMatchObject({
+      state: "needs_attention",
+      details: { reason: "runtime_configuration_changed" }
+    });
+  });
+  it("allows health checks during startup and when Privacy Filter was launched", () => {
+    expect(inspectPrivacyRuntimeConfiguration(null, false)).toBeNull();
+    expect(
+      inspectPrivacyRuntimeConfiguration({ services: [] }, false)
+    ).toBeNull();
+    expect(
+      inspectPrivacyRuntimeConfiguration(
+        { services: ["privacy-service-native"] },
+        true
+      )
+    ).toBeNull();
   });
 });

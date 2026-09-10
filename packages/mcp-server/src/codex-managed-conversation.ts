@@ -31,10 +31,26 @@ import {
 } from "./raw-conversation-items.js";
 import type { RawConversationItemRequest } from "./conversation-source-types.js";
 
+export interface CodexConversationStartupTiming {
+  stage:
+    | "prepare"
+    | "protocol_check"
+    | "client_initialize"
+    | "thread_open"
+    | "event_flush"
+    | "capture_registration"
+    | "startup_event_persistence"
+    | "transcript_reconciliation";
+  status: "completed" | "failed";
+  durationMs: number;
+  elapsedMs: number;
+}
+
 export interface CodexManagedConversationConfig {
   memoryClient: MemoryApiClient;
   appServer: CodexAppServerRunConfig;
   projectId?: string;
+  onStartupTiming?: (timing: CodexConversationStartupTiming) => void;
   transcriptReadMaxBytes?: number;
   requestTimeoutMs?: number;
   interruptRequestTimeoutMs?: number;
@@ -304,6 +320,27 @@ export class CodexManagedConversationSession {
   }
 
   private async startInternal(): Promise<CodexManagedConversationStartResult> {
+    const startedAt = performance.now();
+    let stageStartedAt = startedAt;
+    let stage: CodexConversationStartupTiming["stage"] = "prepare";
+    const reportStage = (status: CodexConversationStartupTiming["status"]) => {
+      const now = performance.now();
+      try {
+        this.config.onStartupTiming?.({
+          stage,
+          status,
+          durationMs: Math.round(now - stageStartedAt),
+          elapsedMs: Math.round(now - startedAt)
+        });
+      } catch {
+        // Diagnostics must not change startup or recovery behavior.
+      }
+    };
+    const nextStage = (next: CodexConversationStartupTiming["stage"]) => {
+      reportStage("completed");
+      stage = next;
+      stageStartedAt = performance.now();
+    };
     const previousThread = this.thread;
     const previousSessionId = this.sessionId;
     const resumeTarget =
@@ -335,11 +372,13 @@ export class CodexManagedConversationSession {
         CODEX_HOME: codexHome,
         [KOED_MANAGED_CONVERSATION_ENV]: "1"
       };
+      nextStage("protocol_check");
       this.protocol = assertCodexConversationProtocolCompatibility({
         binary: this.config.appServer.appServerBinary,
         cwd: this.config.appServer.cwd,
         env: appServerEnv
       });
+      nextStage("client_initialize");
       const createdClient = new CodexAppServerClient(
         this.config.appServer.appServerBinary,
         this.config.appServer.cwd,
@@ -378,6 +417,7 @@ export class CodexManagedConversationSession {
           "Codex app-server initialize response reported an unexpected codexHome"
         );
       }
+      nextStage("thread_open");
       let thread = resumeTarget
         ? await client.resumeThread(
             resumeTarget.threadId,
@@ -395,6 +435,7 @@ export class CodexManagedConversationSession {
               threadSource: "user",
               minimalContext: false
             });
+      nextStage("event_flush");
       await client.flushRawEventHandler();
       thread = mergeStartedThreadInfo(thread, this.bufferedEvents);
       if (!thread.path) {
@@ -424,6 +465,7 @@ export class CodexManagedConversationSession {
           "Codex app-server did not preserve the requested fork lineage"
         );
       }
+      nextStage("capture_registration");
       const response = await this.config.memoryClient.createSession({
         ...(this.config.projectId ? { projectId: this.config.projectId } : {}),
         externalSessionId: thread.id,
@@ -492,6 +534,7 @@ export class CodexManagedConversationSession {
           "Codex managed conversation app-server exited during startup"
         );
       }
+      nextStage("startup_event_persistence");
       await this.persistBufferedEvents();
       if (client.isClosed()) {
         throw new Error(
@@ -500,11 +543,14 @@ export class CodexManagedConversationSession {
       }
       this.started = true;
       if (resumeTarget || forkTarget) {
+        nextStage("transcript_reconciliation");
         await this.reconcileTranscript();
       }
       this.throwIdentityIssues();
+      reportStage("completed");
       return this.startResult();
     } catch (error) {
+      reportStage("failed");
       this.started = false;
       this.thread = previousThread;
       this.sessionId = previousSessionId;
@@ -1281,7 +1327,9 @@ export class CodexManagedConversationSession {
     return source;
   }
 
-  private async persistEvent(event: CodexAppServerRawEvent): Promise<void> {
+  private async itemsForEvent(
+    event: CodexAppServerRawEvent
+  ): Promise<RawConversationItemRequest[]> {
     const startedThread = threadInfoFromStartedEvent(event);
     if (startedThread && this.thread && startedThread.id !== this.thread.id) {
       await this.ensureChildSource(startedThread);
@@ -1301,12 +1349,15 @@ export class CodexManagedConversationSession {
     };
     const adapted = adaptCodexAppServerConversationEvent(event, context);
     this.addIdentityIssues(adapted.identityIssues);
-    if (adapted.items.length === 0) {
-      return;
-    }
+    return adapted.items;
+  }
+
+  private async persistEvent(event: CodexAppServerRawEvent): Promise<void> {
+    const items = await this.itemsForEvent(event);
+    if (items.length === 0) return;
     await persistRawConversationItems(
       this.config.memoryClient,
-      adapted.items,
+      items,
       `managed Codex app-server event ${event.method}`
     );
   }
@@ -1314,10 +1365,23 @@ export class CodexManagedConversationSession {
   private async persistBufferedEvents(): Promise<void> {
     this.bufferedEvents.sort((left, right) => left.sequence - right.sequence);
     while (this.bufferedEvents.length > 0) {
-      const event = this.bufferedEvents[0]!;
-      await this.persistEvent(event);
-      this.bufferedEvents.shift();
-      this.bufferedEventBytes -= codexAppServerRawEventByteLength(event);
+      const events = this.bufferedEvents.slice(0, 100);
+      const items: RawConversationItemRequest[] = [];
+      // Preserve source registration and event order, then use the existing
+      // byte- and item-bounded transport instead of one request per event.
+      for (const event of events)
+        items.push(...(await this.itemsForEvent(event)));
+      if (items.length) {
+        await persistRawConversationItems(
+          this.config.memoryClient,
+          items,
+          "managed Codex startup events"
+        );
+      }
+      this.bufferedEvents.splice(0, events.length);
+      for (const event of events) {
+        this.bufferedEventBytes -= codexAppServerRawEventByteLength(event);
+      }
     }
     this.bufferedEventBytes = 0;
   }

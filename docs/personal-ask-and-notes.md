@@ -65,12 +65,23 @@ Follow-up retrieval uses only the current question. The runtime can send up to
 has a 64 KiB UTF-8 limit. The runtime removes the oldest pairs first. It does
 not send evidence, diagnostics, credentials, or authorization data as context.
 
+Project activity labels, ordering, and active status use the newest Conversation
+activity. Catalogue discovery and refresh times do not count as activity.
+Projects without Conversations show No activity. The Project list labels its
+activity groups **Active** and **Inactive**.
+
+Chats has one stable Project identity. Desktop matches captured Projects to
+catalogue entries by identity before path. Private runtime directories under
+`managed-conversations/independent` belong to Chats and do not appear as separate
+Project rows or recent Project cards. Existing catalogue entries for these
+directories are folded into Chats without deleting their Conversations.
+
 ## Recents
 
 Recents combines visible Personal Conversations from Projects with historical
 Ask threads. Managed Conversations appear after first-message acceptance, before
 their captured source becomes available. Explicit execution and capture
-identities prevent duplicate rows. Standalone rows use **Chat** as their
+identities prevent duplicate rows. Standalone rows use **Chats** as their
 context label and do not expose their internal working-directory names.
 
 Recents appears at the bottom of the primary Personal navigation. The Ask

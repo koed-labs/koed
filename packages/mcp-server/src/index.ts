@@ -518,25 +518,7 @@ export class MemoryApiClient {
   async createSession(
     input: Record<string, unknown>
   ): Promise<{ session?: { id: string }; skipped?: boolean }> {
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        return await this.request("POST", "/v1/sessions", input);
-      } catch (error) {
-        if (
-          !(error instanceof MemoryApiError) ||
-          error.status !== 429 ||
-          typeof input.idempotencyKey !== "string" ||
-          !input.idempotencyKey ||
-          attempt >= 2
-        )
-          throw error;
-        const delay = Math.min(
-          60_000,
-          Math.max(1000, error.retryAfterMs ?? 1000 * 2 ** attempt)
-        );
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
+    return this.request("POST", "/v1/sessions", input);
   }
 
   async ensureConversationSourceArtifact(
@@ -1169,6 +1151,41 @@ export class MemoryApiClient {
   }
 
   protected async request<T>(
+    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
+    path: string,
+    body?: unknown,
+    options: { authorization?: string } = {}
+  ): Promise<T> {
+    const registration =
+      path === "/v1/sessions" &&
+      body !== null &&
+      typeof body === "object" &&
+      "idempotencyKey" in body &&
+      typeof body.idempotencyKey === "string" &&
+      Boolean(body.idempotencyKey);
+    const retryThrottling =
+      this.config.requestClass === "managed-conversation" || registration;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.requestOnce<T>(method, path, body, options);
+      } catch (error) {
+        if (
+          !retryThrottling ||
+          !(error instanceof MemoryApiError) ||
+          error.status !== 429 ||
+          attempt >= 2
+        )
+          throw error;
+        const delay = Math.min(
+          60_000,
+          Math.max(1000, error.retryAfterMs ?? 1000 * 2 ** attempt)
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  private async requestOnce<T>(
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     path: string,
     body?: unknown,

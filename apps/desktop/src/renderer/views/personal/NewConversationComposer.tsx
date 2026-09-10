@@ -20,6 +20,7 @@ export function NewConversationComposer({
   contextKind = "project",
   requirePrompt = false,
   showContextHelp = true,
+  placeholder = "Tell the selected AI Client what to do",
   projectId,
   options,
   selection,
@@ -30,6 +31,7 @@ export function NewConversationComposer({
   contextKind?: "project" | "independent";
   requirePrompt?: boolean;
   showContextHelp?: boolean;
+  placeholder?: string;
   projectId: string | null;
   options: ManagedConversationLaunchOptions | null;
   selection: ConversationSelection;
@@ -181,7 +183,7 @@ export function NewConversationComposer({
         label="First message"
         onChange={setPrompt}
         onSubmit={() => void start()}
-        placeholder="Tell the selected AI Client what to do"
+        placeholder={placeholder}
         rows={2}
         settings={{
           options,

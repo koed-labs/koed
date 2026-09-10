@@ -69,6 +69,9 @@
   padding: 8px;
   box-shadow: 0 12px 36px #0003;
 }
+.conversation-settings-popup.conversation-model-popup {
+  width: 260px;
+}
 .conversation-setting-option {
   display: flex;
   align-items: center;
@@ -93,14 +96,12 @@
   flex-shrink: 0;
   color: var(--primary);
 }
-.conversation-setting-option[data-highlighted],
-.conversation-reasoning-step[data-highlighted] {
+.conversation-setting-option[data-highlighted] {
   outline: 2px solid var(--ring);
   outline-offset: -2px;
   background: var(--accent);
 }
-.conversation-setting-option[data-disabled],
-.conversation-reasoning-step[data-disabled] {
+.conversation-setting-option[data-disabled] {
   opacity: 0.45;
 }
 .conversation-model-overview {
@@ -115,29 +116,71 @@
   height: 15px;
   flex-shrink: 0;
 }
-.conversation-reasoning-bar {
+.conversation-model-summary {
   display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
-  padding: 4px;
-  margin: 12px 4px 4px;
-  border-radius: 8px;
-  background: var(--background);
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
 }
-.conversation-reasoning-step {
-  flex: 1;
-  text-align: center;
+.conversation-model-summary > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 7px 5px;
-  font-size: 11px;
-  border-radius: 5px;
-  outline: 0;
-  cursor: default;
-  color: var(--muted-foreground);
 }
-.conversation-reasoning-step[data-checked] {
+.conversation-model-summary small {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.conversation-reasoning-slider {
+  position: relative;
+  margin: 10px 12px 4px;
+}
+.conversation-reasoning-notches {
+  position: absolute;
+  inset: 7px 6px auto;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+}
+.conversation-reasoning-notches span {
+  width: 2px;
+  height: 10px;
+  background: var(--muted-foreground);
+  border-radius: 1px;
+}
+.conversation-reasoning-slider input {
+  appearance: none;
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 24px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.conversation-reasoning-slider input::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.conversation-reasoning-slider input::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
   background: var(--primary);
-  color: var(--primary-foreground);
+}
+.conversation-reasoning-slider input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+.conversation-reasoning-slider input:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .conversation-settings-explanation {
   padding: 10px 7px 4px;

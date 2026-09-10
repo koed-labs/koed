@@ -13,10 +13,16 @@ and source-journal requests use separate buckets from background ingestion.
 Each bucket retains its configured limit and authenticated User identity.
 The header selects a bounded traffic class. It does not bypass authentication
 or rate limits. Background ingestion cannot exhaust these Conversation budgets.
-The Memory API client retries registration at most twice after HTTP 429 when
-an idempotency key is present. Each retry retains the original request and
+The Memory API client retries managed Conversation capture requests at most
+twice after HTTP 429. Registration outside this traffic class requires an
+idempotency key for retry. Each retry retains the original API request and
 waits for Retry-After, with a maximum delay of 60 seconds per retry.
-Other registration errors are returned without retry.
+These retries do not resend prompts to the AI Client. Other API errors are
+returned without retry.
+
+Desktop retains displayed messages when a Chat route changes from execution
+identity to captured-session identity. Reconciliation does not clear those
+messages while their captured versions are unavailable.
 
 Ask and Projects use the same managed launch controller and Conversation input.
 Desktop opens the Project Conversation detail after the first prompt enters the
@@ -137,3 +143,30 @@ released the start and the runner records acknowledgement. Retries verify the
 existing checkout, including after runner restart. Pending assignments are
 checked against current execution authority before preparation or fenced cleanup;
 a stale local execution mirror cannot hide them from reconciliation.
+
+Desktop shows the device switch control during startup, disabled until the
+Conversation is ready. New Conversations show zero context usage until the
+AI Client reports usage. Existing Conversations without a usage report do not
+claim zero usage.
+
+The Codex Transcript Watcher backs off repeated truncated or mutated source
+ranges per file, from one second to a maximum of one minute. Filesystem hints
+do not bypass this delay. Healthy files continue through normal capture. A
+successful retry clears the backoff; retries never rewind captured cursors.
+
+Codex startup emits `worker.managed_conversation.startup_stage` Worker events.
+Each event includes the execution ID, generation, stage, status, stage duration,
+and elapsed startup time in milliseconds. Stages separate protocol validation,
+client initialization, thread opening, event flushing, capture registration,
+startup event persistence, and resume or fork transcript reconciliation.
+Failures report the stage before cleanup. These events contain no prompts,
+message content, credentials, or local paths. Diagnostic failures do not stop
+startup. Compare these timings with command creation and dispatch timestamps
+to separate queue delays from runtime preparation.
+
+Startup capture adapts buffered Codex events in provider order and sends them
+through the existing byte- and item-bounded batch transport. Events leave the
+buffer only after their batch succeeds. This reduces capture requests during
+new launches and recovery without releasing prompts before startup capture.
+Desktop recognises both `agent` capture events and `assistant` message events
+when deciding whether the current response still needs an empty placeholder.

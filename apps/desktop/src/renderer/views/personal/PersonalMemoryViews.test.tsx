@@ -19,6 +19,7 @@ import type { ManagedConversationRealtimeUpdate } from "../../state/managed-conv
 import type { ManagedConversationDesktopApi } from "../../../ipc/managed-conversation-protocol.js";
 import {
   PersonalMemoryWorkspace,
+  type ManagedConversationDraft,
   type PersonalMemoryRoute
 } from "./PersonalMemoryViews.js";
 
@@ -434,10 +435,13 @@ describe("PersonalMemoryWorkspace", () => {
       expect(container.textContent).toContain(source.name)
     );
     const activeProjects = container.querySelector(
-      '[aria-label="Active Projects"]'
+      '[aria-labelledby="personal-active-projects"]'
     );
     expect(activeProjects).not.toBeNull();
-    expect(activeProjects?.textContent).not.toContain("Active");
+    expect(
+      activeProjects?.querySelector(".personal-project-section-heading")
+        ?.textContent
+    ).toBe("Active1");
     expect(container.textContent).toContain("koed-labs/koed");
     const overview = container.querySelector(
       '[data-project-id="project-1"] .personal-project-overview'
@@ -1589,6 +1593,9 @@ describe("PersonalMemoryWorkspace", () => {
         status: "starting",
         executionId
       })),
+      usage: vi.fn<ManagedConversationDesktopApi["usage"]>(
+        () => new Promise(() => undefined)
+      ),
       readDraft: vi.fn<ManagedConversationDesktopApi["readDraft"]>(
         () => new Promise(() => undefined)
       )
@@ -1602,6 +1609,9 @@ describe("PersonalMemoryWorkspace", () => {
         <Harness initialRoute={{ kind: "project", projectId: "project-1" }}>
           {({ onNavigate, route }) => (
             <PersonalMemoryWorkspace
+              authorizeManagedConversationTransfer={vi.fn(async () => ({
+                id: "grant-1"
+              }))}
               managedConversations={managed}
               onNavigate={onNavigate}
               route={route}
@@ -1632,6 +1642,28 @@ describe("PersonalMemoryWorkspace", () => {
       "Starting the AI Client in this Project"
     );
     expect(managed.resume).not.toHaveBeenCalled();
+    expect(
+      container.querySelector(".personal-managed-usage-count")?.textContent
+    ).toBe("0");
+    expect(
+      container
+        .querySelector('[role="progressbar"]')
+        ?.getAttribute("aria-valuenow")
+    ).toBe("0");
+    const switchDevice = container.querySelector<HTMLElement>(
+      ".personal-managed-transfer summary"
+    )!;
+    expect(switchDevice.textContent).toContain("Switch device");
+    expect(switchDevice.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => switchDevice.click());
+    await vi.waitFor(() =>
+      expect(
+        container
+          .querySelector(".personal-managed-transfer")
+          ?.hasAttribute("open")
+      ).toBe(false)
+    );
+    expect(managed.targets).not.toHaveBeenCalled();
 
     const textarea = container.querySelector("textarea")!;
     await act(async () => changeTextarea(textarea, "Begin immediately"));
@@ -1743,11 +1775,16 @@ describe("PersonalMemoryWorkspace", () => {
     await click(
       container.querySelector('button[aria-label^="Model and reasoning:"]')
     );
-    await click(
-      [...document.querySelectorAll('[role="menuitemradio"]')].find(
-        (item) => item.textContent === "High"
-      )
-    );
+    await act(async () => {
+      const slider = document.querySelector<HTMLInputElement>(
+        'input[aria-label="Reasoning effort"]'
+      )!;
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value"
+      )!.set!.call(slider, "1");
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     await click(container.querySelector('button[aria-label^="Permissions:"]'));
     await click(
       [...document.querySelectorAll('[role="menuitemradio"]')].find((item) =>
@@ -1771,6 +1808,90 @@ describe("PersonalMemoryWorkspace", () => {
       expect.objectContaining({ id: "managed-thread", sessionId })
     );
     expect(container.childElementCount).toBeGreaterThan(0);
+  });
+
+  it("retains messages when a reconciling Chat changes from execution to captured-session route", async () => {
+    const managed = managedApi();
+    const selected = thread(1);
+    const draft: ManagedConversationDraft = {
+      conversation: {
+        executionId: "execution-1",
+        projectId: "project-1",
+        capturedSessionId: sessionId,
+        threadId: selected.id
+      },
+      launchInput: {
+        projectId: "project-1",
+        aiClientDriverId: "codex",
+        aiClientInstanceId: "codex.default",
+        model: "gpt-5.6-luna",
+        reasoningEffort: "low",
+        permissionMode: "full_access",
+        runnerKind: "local_device",
+        idempotencyKey: "launch-1"
+      },
+      initialPrompt: {
+        clientUserMessageId: "prompt-1",
+        prompt: "Retain my question",
+        status: "reconciling",
+        message: ""
+      },
+      status: "reconciling",
+      message: "Reconciling",
+      thread: selected
+    };
+    const runtime = await managed.runtime("execution-1");
+    vi.mocked(managed.runtime).mockResolvedValue({
+      ...runtime,
+      executionState: "reconciling",
+      items: [
+        {
+          id: "response-1",
+          executionGeneration: 1,
+          providerTurnId: "turn-1",
+          providerItemId: "message-1",
+          itemKind: "transient_output",
+          presentation: {
+            mode: "expanded",
+            renderer: "message",
+            policyKey: "transient_output",
+            policyRevision: 1,
+            reason: "test"
+          },
+          state: "pending",
+          payload: { text: "Retain the answer" },
+          revision: 1,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          answered: false
+        }
+      ]
+    });
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [project([selected])]),
+        loadEventPage: vi.fn(async () => [])
+      })
+    );
+    const drafts = new Map([["execution-1", draft]]);
+    const render = (routeId: string) => (
+      <PersonalMemoryWorkspace
+        managedConversations={managed}
+        managedConversationDrafts={drafts}
+        onNavigate={vi.fn()}
+        route={{ kind: "session", projectId: "project-1", sessionId: routeId }}
+        store={store}
+      />
+    );
+    await act(async () => root.render(render("execution-1")));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Retain the answer")
+    );
+    expect(container.textContent).toContain("Retain my question");
+    await act(async () => root.render(render(sessionId)));
+    expect(container.textContent).toContain("Retain the answer");
+    expect(container.textContent).toContain("Retain my question");
+    expect(managed.send).not.toHaveBeenCalled();
   });
 
   it("keeps optimistic conversation content visible during its canonical load", async () => {
@@ -1987,10 +2108,21 @@ describe("PersonalMemoryWorkspace", () => {
       const popup = document.querySelector(".conversation-settings-popup")!;
       expect(popup.textContent).not.toContain("How much effort");
       expect(popup.textContent).not.toContain("AI Client");
-      const high = [...popup.querySelectorAll('[role="menuitemradio"]')].find(
-        (item) => item.textContent === "High"
-      ) as HTMLElement;
-      await act(async () => high.click());
+      const slider = popup.querySelector<HTMLInputElement>(
+        'input[aria-label="Reasoning effort"]'
+      )!;
+      expect(slider.getAttribute("aria-valuetext")).toBe("Low");
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value"
+        )!.set!.call(slider, "1");
+        slider.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(slider.getAttribute("aria-valuetext")).toBe("High");
+      expect(
+        popup.querySelector(".conversation-model-summary small")?.textContent
+      ).toBe("High");
       if (noReasoning) {
         await act(async () =>
           popup
@@ -2221,6 +2353,65 @@ describe("PersonalMemoryWorkspace", () => {
     expect(container.querySelector(".personal-managed-retry")).toBeNull();
     expect(container.querySelector('[aria-label="Stop response"]')).toBeNull();
   });
+
+  it.each([
+    [true, "assistant", "message"],
+    [false, "assistant", "message"],
+    [true, "agent", "captured"],
+    [false, "agent", "captured"]
+  ] as const)(
+    "keeps the pending response scoped to the latest prompt when captured answer is current: %s (%s / %s)",
+    async (currentAnswer, actor, eventType) => {
+      const managed = managedApi();
+      const runtime = managed.runtime;
+      managed.runtime = vi.fn(async (executionId) => ({
+        ...(await runtime(executionId)),
+        latestCommand: {
+          id: "active-prompt",
+          sequence: 1,
+          executionGeneration: 1,
+          commandKind: "prompt" as const,
+          state: "dispatching" as const,
+          clientUserMessageId: null,
+          lastErrorCode: null,
+          updatedAt: event(2).timestamp
+        }
+      }));
+      const store = new PersonalMemoryStore(
+        api({
+          listProjects: vi.fn(async () => [project([thread(1)])]),
+          loadEventPage: vi.fn(async () => [
+            event(2),
+            { ...event(currentAnswer ? 3 : 1), actor, eventType }
+          ])
+        })
+      );
+      await act(async () =>
+        root.render(
+          <PersonalMemoryWorkspace
+            managedConversations={managed}
+            onNavigate={vi.fn()}
+            route={{ kind: "session", projectId: "project-1", sessionId }}
+            store={store}
+          />
+        )
+      );
+      await vi.waitFor(() =>
+        expect(
+          container.querySelector('button[aria-label="Interrupt active turn"]')
+        ).not.toBeNull()
+      );
+      const timeline = container.querySelector('[data-testid="conversation"]')!;
+      expect(timeline.textContent).toContain(
+        currentAnswer ? "2 rendered events" : "3 rendered events"
+      );
+      expect(
+        [...timeline.querySelectorAll("button")].filter(
+          (button) => !button.textContent
+        )
+      ).toHaveLength(currentAnswer ? 0 : 1);
+    }
+  );
 
   it("presents transient output, durable input, controls, and indeterminate dispatch", async () => {
     const now = "2026-08-18T05:00:00.000Z";
@@ -2696,7 +2887,7 @@ describe("PersonalMemoryWorkspace", () => {
     );
   });
 
-  it("shows catalogue activity for a Project without Captured Sessions", async () => {
+  it("shows no activity for a Project without Conversations", async () => {
     const metadata: PersonalDesktopProjectMetadata = {
       schemaVersion: 1,
       discoveredAt: "2026-07-23T00:00:00.000Z",
@@ -2723,6 +2914,16 @@ describe("PersonalMemoryWorkspace", () => {
     });
     await vi.waitFor(() =>
       expect(
+        container.querySelector(".personal-inactive-toggle")
+      ).not.toBeNull()
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(".personal-inactive-toggle")
+        ?.click()
+    );
+    await vi.waitFor(() =>
+      expect(
         container.querySelector(
           `[data-project-id="${metadata.localProjectId}"]`
         )
@@ -2733,7 +2934,7 @@ describe("PersonalMemoryWorkspace", () => {
       `[data-project-id="${metadata.localProjectId}"]`
     );
     const activity = projectRow?.querySelector("time");
-    expect(activity?.dateTime).toBe(metadata.lastSeenAt);
-    expect(activity?.textContent).not.toBe("No activity");
+    expect(activity?.dateTime).not.toBe(metadata.lastSeenAt);
+    expect(projectRow?.textContent).toContain("No activity");
   });
 });

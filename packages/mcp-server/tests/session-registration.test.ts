@@ -75,3 +75,29 @@ it("bounds retries when registration remains rate limited", async () => {
   await checked;
   expect(fetch).toHaveBeenCalledTimes(3);
 });
+
+it("retries throttled managed response persistence without resending a provider prompt", async () => {
+  vi.useFakeTimers();
+  const fetch = vi
+    .fn<typeof globalThis.fetch>()
+    .mockResolvedValueOnce(
+      new Response("{}", { status: 429, headers: { "retry-after": "2" } })
+    )
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ artifact: { id: "artifact-1" } }))
+    );
+  vi.stubGlobal("fetch", fetch);
+  const client = new MemoryApiClient({
+    apiUrl: "http://localhost:3000",
+    apiToken: "test-token",
+    requestClass: "managed-conversation"
+  });
+  const pending = client.ensureConversationSourceArtifact({
+    externalSessionId: "same-thread"
+  });
+  await vi.advanceTimersByTimeAsync(2000);
+  await expect(pending).resolves.toEqual({ artifact: { id: "artifact-1" } });
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(fetch.mock.calls[0]?.[0]).toBe(fetch.mock.calls[1]?.[0]);
+  expect(fetch.mock.calls[0]?.[1]?.body).toBe(fetch.mock.calls[1]?.[1]?.body);
+});

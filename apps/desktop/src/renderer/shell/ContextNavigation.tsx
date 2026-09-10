@@ -216,7 +216,7 @@ function ConversationRecentItem({
         <span className="desktop-sidebar-nav-label">{item.title}</span>
         <small>
           {["Independent", "Chats"].includes(item.projectName)
-            ? "Chat"
+            ? "Chats"
             : item.projectName}{" "}
           · <time dateTime={item.latestAt}>{relativeTime(item.latestAt)}</time>
         </small>

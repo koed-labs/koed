@@ -223,7 +223,7 @@ describe("context navigation", () => {
       expect.stringContaining("Historical decision"),
       expect.stringContaining("Review the branch")
     ]);
-    expect(rows[0]?.textContent).toContain("Chat");
+    expect(rows[0]?.querySelector("small")?.textContent).toMatch(/^Chats ·/);
     expect(rows[0]?.querySelector("time")?.getAttribute("datetime")).toBe(
       "2026-08-17T12:02:00.000Z"
     );

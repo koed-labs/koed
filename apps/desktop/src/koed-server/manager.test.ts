@@ -1489,6 +1489,40 @@ describe("Koed server desktop manager", () => {
     const recentUrl = new URL(String(personalMemoryFetch.mock.calls[1]?.[0]));
     expect(recentUrl.searchParams.get("limit")).toBe("51");
     expect(recentUrl.searchParams.get("offset")).toBe("0");
+    const runtimeId = "69b33165-f70c-4123-8291-4a3871a68400";
+    personalMemoryFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          projects: [
+            {
+              id: "project-1",
+              name: runtimeId,
+              path: resolve(
+                koedHome,
+                "managed-conversations",
+                "independent",
+                runtimeId
+              ),
+              eventCount: 3,
+              threads: [thread({})]
+            }
+          ]
+        }),
+        { status: 200 }
+      )
+    );
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.conversations.recent.list",
+        input: { limit: 50 }
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        conversations: [{ projectId: "project-1", projectName: "Chats" }]
+      }
+    });
   });
 
   it("derives the approval-review display projection for previously stored messages", async () => {

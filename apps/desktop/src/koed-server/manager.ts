@@ -2606,6 +2606,34 @@ export const createKoedServerManager = ({
         }, 0)
       : 0;
     const projects = personalProjectsData(payload).projects;
+    const metadataById = new Map(
+      (
+        listProjectMetadata(resolveKoedServerPaths(environment)).projects ?? []
+      ).map((metadata) => [metadata.localProjectId, metadata])
+    );
+    const standaloneRuntimeRoot =
+      resolve(
+        resolveKoedHome(environment),
+        "managed-conversations",
+        "independent"
+      ) + "/";
+    const recentProjectName = (project: {
+      id: string;
+      name: string;
+      path: string | null;
+    }) => {
+      const metadata = metadataById.get(project.id);
+      const path =
+        metadata?.path.projectRoot ?? metadata?.path.cwd ?? project.path;
+      const independentRoot = resolve(
+        resolveKoedHome(environment),
+        "projects",
+        "Independent"
+      );
+      if (path === independentRoot || path?.startsWith(standaloneRuntimeRoot))
+        return "Chats";
+      return metadata?.displayName || project.name;
+    };
     const conversations = projects
       .flatMap((project) =>
         project.threads
@@ -2614,7 +2642,7 @@ export const createKoedServerManager = ({
             id: thread.sessionId ?? thread.id,
             title: thread.name || "Conversation",
             projectId: project.id,
-            projectName: project.name,
+            projectName: recentProjectName(project),
             sessionId: thread.sessionId ?? thread.id,
             latestAt: thread.latestAt
           }))
@@ -2635,7 +2663,13 @@ export const createKoedServerManager = ({
   const reconcileLocalProjectMetadata = async (
     projects: Array<{ path: string | null }>
   ): Promise<void> => {
+    const standaloneRuntimeRoot = resolve(
+      resolveKoedHome(environment),
+      "managed-conversations",
+      "independent"
+    );
     for (const path of localProjectPathsFrom(projects)) {
+      if (path.startsWith(`${standaloneRuntimeRoot}/`)) continue;
       pendingProjectMetadataPaths.add(path);
     }
     if (projectMetadataReconciliation) return projectMetadataReconciliation;

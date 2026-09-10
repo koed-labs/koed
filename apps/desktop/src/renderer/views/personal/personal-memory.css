@@ -105,6 +105,7 @@
   display: none;
 }
 
+.personal-project-section-heading,
 .personal-inactive-toggle {
   align-items: center;
   color: var(--muted-foreground);
@@ -2755,8 +2756,8 @@
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  min-height: 7.25rem;
-  padding: 1.15rem 0.875rem;
+  min-height: 6.25rem;
+  padding: 0.65rem 0.875rem;
   text-align: left;
 }
 
@@ -2789,11 +2790,11 @@
   align-items: center;
   background: transparent;
   border: 0;
-  color: inherit;
+  color: var(--muted-foreground);
   display: inline-flex;
   font-size: 0.76rem;
   gap: 0.45rem;
-  margin: 0.9rem 0 1rem;
+  margin: 0.9rem 0 1.75rem;
   padding: 0;
   text-decoration: underline;
   text-underline-offset: 0.2rem;
@@ -3024,4 +3025,15 @@
 .personal-sessions-empty {
   flex: 1;
   height: auto;
+}
+
+/* Keep the streaming caret in the final paragraph's inline formatting context. */
+.native-response-streaming .native-event-content,
+.native-response-streaming .native-event-content > p:last-child {
+  display: inline;
+}
+
+.personal-managed-transfer summary[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
 }
