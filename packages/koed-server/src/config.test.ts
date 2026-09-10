@@ -69,6 +69,7 @@ describe("koed-server config", () => {
       dependencyMode: "external",
       codexTranscriptWatcherEnabled: true,
       claudeTranscriptWatcherEnabled: true,
+      piTranscriptWatcherEnabled: true,
       codexGlobalMemoryGuidanceEnabled: true,
       hardwareAcceleration: "auto"
     });
@@ -249,13 +250,15 @@ describe("koed-server config", () => {
       JSON.stringify({
         runtimeMode: "local-personal",
         codexTranscriptWatcherEnabled: false,
-        claudeTranscriptWatcherEnabled: false
+        claudeTranscriptWatcherEnabled: false,
+        piTranscriptWatcherEnabled: false
       })
     );
 
     expect(resolveKoedServerConfig(paths(root), {})).toMatchObject({
       codexTranscriptWatcherEnabled: false,
-      claudeTranscriptWatcherEnabled: false
+      claudeTranscriptWatcherEnabled: false,
+      piTranscriptWatcherEnabled: false
     });
     expect(
       resolveKoedServerConfig(paths(root), {
@@ -273,10 +276,16 @@ describe("koed-server config", () => {
       })
     ).toMatchObject({ claudeTranscriptWatcherEnabled: true });
     expect(
+      resolveKoedServerConfig(paths(root), {
+        MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED: "true"
+      })
+    ).toMatchObject({ piTranscriptWatcherEnabled: true });
+    expect(
       resolveKoedServerConfig(paths(root), { KOED_RUNTIME_MODE: "external" })
     ).toMatchObject({
       codexTranscriptWatcherEnabled: false,
-      claudeTranscriptWatcherEnabled: false
+      claudeTranscriptWatcherEnabled: false,
+      piTranscriptWatcherEnabled: false
     });
   });
 

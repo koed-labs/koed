@@ -19,6 +19,7 @@ export interface KoedServerConfig {
   dependencyMode: KoedDependencyMode;
   codexTranscriptWatcherEnabled: boolean;
   claudeTranscriptWatcherEnabled: boolean;
+  piTranscriptWatcherEnabled: boolean;
   codexGlobalMemoryGuidanceEnabled: boolean;
   hardwareAcceleration: HardwareAccelerationPreference;
   external?: {
@@ -34,6 +35,7 @@ export const defaultKoedServerConfig: KoedServerConfig = {
   dependencyMode: "external",
   codexTranscriptWatcherEnabled: true,
   claudeTranscriptWatcherEnabled: true,
+  piTranscriptWatcherEnabled: true,
   codexGlobalMemoryGuidanceEnabled: true,
   hardwareAcceleration: "auto"
 };
@@ -72,6 +74,7 @@ const codexTranscriptWatcherSetting = (
 };
 
 const claudeTranscriptWatcherSetting = codexTranscriptWatcherSetting;
+const piTranscriptWatcherSetting = codexTranscriptWatcherSetting;
 const booleanSetting = codexTranscriptWatcherSetting;
 
 const hardwareAccelerationPreference = (
@@ -123,10 +126,15 @@ export const resolveKoedServerConfig = (
     claudeTranscriptWatcherSetting(
       environment.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED
     ) ?? claudeTranscriptWatcherSetting(file.claudeTranscriptWatcherEnabled);
+  const resolvedPiTranscriptWatcherSetting =
+    piTranscriptWatcherSetting(
+      environment.MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED
+    ) ?? piTranscriptWatcherSetting(file.piTranscriptWatcherEnabled);
   if (
     resolvedRuntimeMode === "external" &&
     (resolvedTranscriptWatcherSetting === true ||
-      resolvedClaudeTranscriptWatcherSetting === true)
+      resolvedClaudeTranscriptWatcherSetting === true ||
+      resolvedPiTranscriptWatcherSetting === true)
   ) {
     throw new Error(
       "Transcript Watchers cannot run in external runtime mode; run capture through a local-personal koed-server."
@@ -143,6 +151,8 @@ export const resolveKoedServerConfig = (
     claudeTranscriptWatcherEnabled:
       resolvedClaudeTranscriptWatcherSetting ??
       resolvedRuntimeMode !== "external",
+    piTranscriptWatcherEnabled:
+      resolvedPiTranscriptWatcherSetting ?? resolvedRuntimeMode !== "external",
     codexGlobalMemoryGuidanceEnabled:
       booleanSetting(environment.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED) ??
       booleanSetting(file.codexGlobalMemoryGuidanceEnabled) ??

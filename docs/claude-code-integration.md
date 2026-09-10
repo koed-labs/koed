@@ -22,10 +22,12 @@ unsupported Managed Conversation owner.
 - A built MCP Server: `pnpm --filter @koed/mcp-server build`.
 - A configured Local AI Runtime under `KOED_HOME`. `koed-server` provisions and
   retains its Personal API Token; Claude Code does not receive it.
-- Claude Code 2.1.227 or newer installed separately and signed in with
-  `claude auth login`. This is the oldest release covered by Koed's pinned
-  Agent SDK compatibility contract; older or unparseable versions fail with an
-  update diagnostic.
+- Claude Code 2.1.227 or newer installed separately. This is the oldest release
+  covered by Koed's pinned Agent SDK compatibility contract; older or
+  unparseable versions fail with an update diagnostic.
+- Claude Code sign-in through `claude auth login` for any capability that causes
+  Claude Code to execute. Sign-in is not required to install Koed's profile or
+  run automatic capture through the Transcript Watcher.
 
 Koed does not bundle Claude Code and does not accept an Anthropic API key for
 Claude-managed Synthesis. It uses the pinned official TypeScript Claude Agent
@@ -35,11 +37,13 @@ state stay local and are not stored by the Koed backend.
 
 ## Configure Claude Code
 
-In Koed Desktop, open **Preferences → Advanced Diagnostics** and choose **Set
-up Claude Code integration**. Desktop verifies the independently installed
-Claude Code executable and sign-in, then configures the Koed-owned MCP and Hook
-entries after explicit confirmation. The same screen reports integration health
-and provides an idempotent repair action.
+In Koed Desktop, open **Preferences → Agents** and choose **Set up Claude Code
+integration**. Desktop verifies the independently installed Claude Code
+executable, then configures the Koed-owned MCP and Hook entries after explicit
+confirmation. Profile setup succeeds while Claude Code is signed out and reports
+**Configured — sign in required**. The same screen reports capability health,
+provides an idempotent repair action, and explains how to copy `claude auth
+login` and refresh capabilities.
 
 From a contributor checkout after building the MCP Server, the equivalent Local
 Operator Script is:
@@ -48,10 +52,11 @@ Operator Script is:
 pnpm claude:configure
 ```
 
-The Local Operator Script verifies Claude Code sign-in, installs the Koed MCP
-Server at Claude Code's user scope, and merges the Koed Capture Hook into the
-local Claude settings file. It preserves unrelated hooks. Restart Claude Code
-after the command completes.
+The Local Operator Script checks Claude Code sign-in without using it as a
+profile-setup gate, installs the Koed MCP Server at Claude Code's user scope,
+merges the Koed Capture Hook into the local Claude settings file, and registers
+`claude.default`. It preserves unrelated hooks and MCP entries. Restart Claude
+Code after the command completes.
 
 Validate or remove only the Koed-owned integration with:
 
@@ -88,6 +93,16 @@ The setup script writes only `KOED_HOME` to the local MCP configuration. The
 stateless MCP adapter discovers the authenticated Local AI Runtime through its
 owner-only registration. Neither the MCP adapter nor Capture Hook receives a
 Koed credential.
+
+Installation, profile configuration, and execution authentication are separate
+states. While Claude Code is signed out, Koed reports automatic capture ready
+when the configured profile and Transcript Watcher are healthy. MCP
+configuration remains installed, but Recall through Claude Code, Local
+Synthesis, and Managed Conversation execution report unauthenticated and fail
+closed. Running `claude auth login` followed by capability refresh makes those
+execution capabilities ready without reinstalling the profile. Claude Desktop
+uses a separate authentication context: Koed never inspects, copies, or reuses
+Claude Desktop credentials. Koed also does not read or store Anthropic API keys.
 
 Before replacing an existing user-scoped MCP entry, setup verifies that its
 command and `KOED_HOME` identify a Koed-owned adapter. An unrelated entry using
@@ -138,7 +153,9 @@ Capture creates Personal Memory only and grants no Team or Workspace authority.
 On first activation, the Local AI Runtime automatically considers Claude
 Conversations active in the inclusive previous 30 days, selects at most the
 newest 50, and imports them oldest-first through the provider-neutral
-historical-ingestion coordinator. The import includes the main transcript and
+historical-ingestion coordinator. Transcript discovery and historical import do
+not require Claude Code execution authentication and continue while Claude Code
+is signed out. The import includes the main transcript and
 its discovered source components. Explicit User-selected import continues to
 use the same historical-import orchestration boundary. Import registers the
 complete signed source journal, then processes only the range before the live
@@ -222,9 +239,12 @@ Installing one integration neither configures nor disables the other.
   availability, but never selects or configures Claude automatically. Select
   Claude Code explicitly in the post-core AI Client screen; setup has its own
   consent prompt and can be cancelled without affecting core or other clients.
-  A detected but unsupported or unauthenticated installation affects only the
-  Claude client result, not core Koed runtime health. Preferences can set up,
-  check, repair, or remove Claude later.
+  A detected unsupported installation affects only the Claude client result,
+  not core Koed runtime health. A supported signed-out installation can still be
+  configured: onboarding reports partial success, automatic capture stays
+  independent, and Claude-executed capabilities remain unavailable until
+  sign-in. Preferences can set up, check, repair, refresh, or remove Claude
+  later.
 - Desktop setup configures MCP and hooks but does not run an automated end-to-end
   capture fixture. Verify a fresh live session explicitly.
 - Documented synthesis defaults remain Codex-oriented. A Claude-only installation

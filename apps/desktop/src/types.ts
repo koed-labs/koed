@@ -77,6 +77,7 @@ export interface KoedServerStatus {
   captureHook: ComponentStatus;
   codexTranscriptWatcher?: ComponentStatus;
   claudeTranscriptWatcher?: ComponentStatus;
+  piTranscriptWatcher?: ComponentStatus;
   codex: ComponentStatus & { configured: boolean };
   claudeCode?: ComponentStatus & { configured: boolean; detected?: boolean };
   pi?: ComponentStatus & { configured: boolean; detected?: boolean };

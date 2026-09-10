@@ -146,17 +146,39 @@ export class DesktopStatusStore {
       );
     }
     this.#replace({ ...this.#snapshot, busyCommand: command, error: null });
+    const refreshStatus =
+      command !== "open_external" &&
+      command !== "reveal_local_project" &&
+      command !== "open_logs";
     try {
       const result = await invokeDesktop<Result>(command, args);
+      const capabilityRefreshFailed =
+        command.startsWith("check_") &&
+        result &&
+        typeof result === "object" &&
+        (result as { capabilityRefresh?: { refreshed?: boolean } })
+          .capabilityRefresh?.refreshed === false;
+      const checkedStatus =
+        command.startsWith("check_") && result && typeof result === "object"
+          ? (result as { status?: KoedServerStatus }).status
+          : undefined;
       if (
-        command !== "open_external" &&
-        command !== "reveal_local_project" &&
-        command !== "open_logs"
+        checkedStatus &&
+        typeof checkedStatus.ok === "boolean" &&
+        typeof checkedStatus.generatedAt === "string"
       ) {
+        this.#replace({
+          ...this.#snapshot,
+          status: checkedStatus,
+          error: null,
+          revision: this.#snapshot.revision + 1
+        });
+      } else if (refreshStatus && !capabilityRefreshFailed) {
         await this.refresh();
       }
       return result;
     } catch (cause) {
+      if (refreshStatus) await this.refresh();
       const message = cause instanceof Error ? cause.message : String(cause);
       this.#replace({ ...this.#snapshot, error: message });
       throw cause;

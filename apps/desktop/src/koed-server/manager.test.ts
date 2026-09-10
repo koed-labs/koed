@@ -12,10 +12,13 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   PDS_PEER_ENDPOINT_RUNTIME_FILE,
+  RemoteRequestTimeoutError,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   storeDesktopLocalCredential
 } from "@koed/shared";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as capabilityRefresh from "./local-ai-client-refresh.js";
+afterEach(() => vi.restoreAllMocks());
 import {
   configureDetectedSetupAiClients,
   createKoedEnvironment,
@@ -608,7 +611,7 @@ describe("Koed server desktop manager", () => {
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
-      environment: {},
+      environment: { KOED_HOME: "/repo/.koed" },
       createCliInvocation: (args) => {
         invocations.push(args);
         return {
@@ -639,12 +642,16 @@ describe("Koed server desktop manager", () => {
   });
 
   it("requires explicit healthy result from AI Client check handlers", async () => {
+    vi.spyOn(capabilityRefresh, "refreshLocalAiRuntime").mockResolvedValue({
+      refreshed: true,
+      refreshError: null
+    });
     const invocations: string[][] = [];
     let healthy = false;
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
-      environment: {},
+      environment: { KOED_HOME: "/repo/.koed" },
       createCliInvocation: (args) => {
         invocations.push(args);
         return {
@@ -681,10 +688,170 @@ describe("Koed server desktop manager", () => {
       ok: true
     });
     expect(invocations).toEqual([
-      ["check", "codex", "--json"],
-      ["check", "codex", "--json"]
+      [
+        "check",
+        "codex",
+        "--include-status",
+        "--capabilities-refreshed-since",
+        expect.any(String),
+        "--json"
+      ],
+      [
+        "check",
+        "codex",
+        "--include-status",
+        "--capabilities-refreshed-since",
+        expect.any(String),
+        "--json"
+      ]
     ]);
   });
+
+  it.each([
+    ["claude", "unauthenticated"],
+    ["claude", "unknown"],
+    ["pi", "unauthenticated"],
+    ["pi", "unknown"]
+  ] as const)(
+    "returns configured %s %s authentication remediation without throwing",
+    async (client, authentication) => {
+      vi.spyOn(capabilityRefresh, "refreshLocalAiRuntime").mockResolvedValue({
+        refreshed: true,
+        refreshError: null
+      });
+      const result = {
+        ok: false,
+        state: "needs_attention",
+        message: "Sign-in required",
+        readiness: {
+          driverId: client,
+          authentication,
+          profile: { state: "needs_attention", configured: true }
+        }
+      };
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: { KOED_HOME: "/nonexistent/koed-test" },
+        personalMemoryFetch: async () => {
+          throw new Error("Runtime unavailable");
+        },
+        createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+        existsSync: () => true,
+        execFile: (_command, _args, _options, callback) => {
+          callback(null, JSON.stringify(result), "");
+        },
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined
+      });
+      await expect(manager.handlers[`check_${client}`]!()).resolves.toEqual(
+        result
+      );
+    }
+  );
+
+  it.each([true, false])(
+    "returns collected check status even when capabilities are unavailable (%s)",
+    async (ok) => {
+      vi.spyOn(capabilityRefresh, "refreshLocalAiRuntime").mockResolvedValue({
+        refreshed: true,
+        refreshError: null
+      });
+      const current = healthyLocalServiceStatus();
+      const calls: string[][] = [];
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: { KOED_HOME: "/repo/.koed" },
+        createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+        existsSync: () => true,
+        execFile: (_command, args, _options, callback) => {
+          calls.push([...args]);
+          callback(
+            null,
+            JSON.stringify(
+              args[0] === "check"
+                ? {
+                    ok,
+                    client: "claude",
+                    readiness: { driverId: "claude" },
+                    state: "healthy",
+                    status: current
+                  }
+                : { state: "not_configured" }
+            ),
+            ""
+          );
+        },
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined
+      });
+      await expect(manager.handlers.check_claude!()).resolves.toMatchObject({
+        status: current
+      });
+      expect(calls).toEqual([
+        [
+          "check",
+          "claude",
+          "--include-status",
+          "--capabilities-refreshed-since",
+          expect.any(String),
+          "--json"
+        ],
+        ["package", "status", "--json"]
+      ]);
+    }
+  );
+
+  it.each(["timeout", "network", "registration"])(
+    "does not launch more probes after capability refresh fails (%s)",
+    async (failure) => {
+      const root = mkdtempSync(resolve(tmpdir(), "koed-check-timeout-"));
+      mkdirSync(resolve(root, "run"));
+      writeFileSync(
+        resolve(root, "run/local-ai-runtime.json"),
+        JSON.stringify({
+          protocolVersion: 1,
+          url: "http://127.0.0.1:43123",
+          authorization: `Bearer ${"a".repeat(43)}`,
+          pid: 1234,
+          startedAt: "2026-08-19T16:51:41.000Z"
+        }),
+        { mode: 0o600 }
+      );
+      if (failure === "registration")
+        rmSync(resolve(root, "run/local-ai-runtime.json"));
+      const exec = vi.fn<
+        Parameters<typeof createKoedServerManager>[0]["execFile"]
+      >((_command, _args, _options, callback) =>
+        callback(null, JSON.stringify({ ok: true }), "")
+      );
+      try {
+        const manager = createKoedServerManager({
+          repoRoot: "/repo",
+          cliPath: "/repo/cli.js",
+          environment: { KOED_HOME: root },
+          existsSync: () => true,
+          createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+          execFile: exec,
+          spawn: () => childProcess() as never,
+          openExternal: async () => undefined,
+          personalMemoryFetch: async () => {
+            throw failure === "timeout"
+              ? new RemoteRequestTimeoutError()
+              : new TypeError("fetch failed");
+          }
+        });
+        await expect(manager.handlers.check_claude!()).resolves.toMatchObject({
+          ok: false,
+          capabilityRefresh: { refreshed: false }
+        });
+        expect(exec).not.toHaveBeenCalled();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
 
   it("throws actionable errors when mutating AI Client commands return failure", async () => {
     const manager = createKoedServerManager({

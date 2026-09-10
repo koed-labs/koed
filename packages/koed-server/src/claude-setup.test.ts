@@ -13,6 +13,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CLAUDE_HOOK_EVENTS,
+  claudeAuthenticationState,
   claudeMcpEntryIsKoedOwned,
   removeClaude,
   setupClaude
@@ -31,6 +32,19 @@ afterEach(() => {
 });
 
 describe("Claude Code setup", () => {
+  it("requires a successful explicit logged-in auth probe", () => {
+    expect(claudeAuthenticationState(spawnResult('{"loggedIn":true}', 1))).toBe(
+      "unknown"
+    );
+    expect(claudeAuthenticationState(spawnResult("", 0))).toBe("unknown");
+    expect(claudeAuthenticationState(spawnResult("probe failed", 1))).toBe(
+      "unknown"
+    );
+    expect(claudeAuthenticationState(spawnResult('{"loggedIn":true}', 0))).toBe(
+      "authenticated"
+    );
+  });
+
   it("proves MCP ownership with exact runtime and Koed home paths", () => {
     const output =
       "koed:\n  Args: /expected/mcp-server/dist/cli.js\n  Environment:\n    KOED_HOME=/expected/koed\n";
@@ -124,9 +138,11 @@ describe("Claude Code setup", () => {
         calls.push({ command, args, rawArgs, env: options?.env });
         return args[0] === "--version"
           ? spawnResult("2.1.227 (Claude Code)\n")
-          : args[0] === "mcp" && args[1] === "get"
-            ? spawnResult("", 1)
-            : spawnResult();
+          : args[0] === "auth"
+            ? spawnResult('{"loggedIn":true}\n')
+            : args[0] === "mcp" && args[1] === "get"
+              ? spawnResult("", 1)
+              : spawnResult();
       }) as never
     );
 
@@ -178,6 +194,96 @@ describe("Claude Code setup", () => {
           executablePath: claudeExecutable
         }
       ]
+    });
+  });
+
+  it("configures MCP, hooks, and registry while Claude Code is signed out", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-claude-signed-out-"));
+    temporaryDirectories.push(root);
+    const settingsPath = resolve(root, ".claude/settings.json");
+    const runtimeDirectory = resolve(root, "packages/mcp-server/dist");
+    const mcpCli = resolve(runtimeDirectory, "cli.js");
+    const captureHook = resolve(runtimeDirectory, "capture-hook.js");
+    const koedHome = resolve(root, "koed");
+    mkdirSync(runtimeDirectory, { recursive: true });
+    mkdirSync(resolve(root, ".claude"), { recursive: true });
+    writeFileSync(mcpCli, "");
+    writeFileSync(captureHook, "");
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        theme: "dark",
+        hooks: { SessionStart: [{ hooks: [{ command: "unrelated-hook" }] }] }
+      })
+    );
+    const calls: string[][] = [];
+
+    const result = setupClaude(
+      {
+        HOME: root,
+        KOED_HOME: koedHome,
+        KOED_REPO_ROOT: root,
+        CLAUDE_SETTINGS_PATH: settingsPath,
+        KOED_CLAUDE_CODE_EXECUTABLE: "/bin/sh"
+      },
+      ((_command: string, args: string[]) => {
+        calls.push(args);
+        if (args[0] === "--version") {
+          return spawnResult("2.1.227 (Claude Code)\n");
+        }
+        if (args[0] === "auth") {
+          return spawnResult(
+            '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}\n',
+            1
+          );
+        }
+        if (args[0] === "mcp" && args[1] === "get") {
+          return spawnResult("", 1, "not found");
+        }
+        return spawnResult();
+      }) as never
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: "needs_attention",
+      profileConfigured: true,
+      authenticationState: "unauthenticated",
+      executionCapabilities: "unavailable"
+    });
+    expect(result.action).toContain("claude auth login");
+    expect(calls).toContainEqual([
+      "mcp",
+      "add",
+      "--scope",
+      "user",
+      "koed",
+      "--env",
+      `KOED_HOME=${koedHome}`,
+      "--",
+      "node",
+      mcpCli
+    ]);
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      theme: string;
+      hooks: Record<string, unknown>;
+    };
+    expect(settings.theme).toBe("dark");
+    expect(JSON.stringify(settings.hooks.SessionStart)).toContain(
+      "unrelated-hook"
+    );
+    for (const eventName of CLAUDE_HOOK_EVENTS) {
+      expect(JSON.stringify(settings.hooks[eventName])).toContain(captureHook);
+    }
+    expect(
+      JSON.parse(
+        readFileSync(
+          resolve(koedHome, "config/ai-client-instances.json"),
+          "utf8"
+        )
+      )
+    ).toMatchObject({
+      instances: [{ instanceId: "claude.default", driverId: "claude" }]
     });
   });
 
@@ -306,6 +412,7 @@ describe("Claude Code setup", () => {
         calls.push(args);
         if (args[0] === "--version")
           return spawnResult("2.1.227 (Claude Code)\\n");
+        if (args[0] === "auth") return spawnResult('{"loggedIn":true}\n');
         if (args[0] === "mcp" && args[1] === "get") {
           return spawnResult("", 1, "not found");
         }
@@ -357,6 +464,7 @@ describe("Claude Code setup", () => {
         calls.push(args);
         if (args[0] === "--version")
           return spawnResult("2.1.227 (Claude Code)\\n");
+        if (args[0] === "auth") return spawnResult('{"loggedIn":true}\n');
         if (args[0] === "mcp" && args[1] === "get") return spawnResult(prior);
         if (args[0] === "mcp" && args[1] === "add") {
           addCalls += 1;
@@ -417,6 +525,7 @@ describe("Claude Code setup", () => {
         if (args[0] === "--version") {
           return spawnResult("2.1.227 (Claude Code)\n");
         }
+        if (args[0] === "auth") return spawnResult('{"loggedIn":true}\n');
         if (args[0] === "mcp" && args[1] === "get") {
           return spawnResult(
             "koed:\n  Type: stdio\n  Command: node\n  Args: /other/mcp-server/dist/cli.js\n  Environment:\n    KOED_HOME=/other\n"

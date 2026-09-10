@@ -154,6 +154,7 @@ export interface PiAvailability {
   executablePath: string | null;
   version: string | null;
   authenticated: boolean;
+  authenticationState: "authenticated" | "unauthenticated" | "unknown";
   models: PiModelInfo[];
   error: string | null;
 }
@@ -197,10 +198,16 @@ type PiRpcResponse = {
   error?: string;
 };
 
+interface PiModelCapabilityQuery {
+  models: PiModelInfo[];
+  candidateCount: number;
+  failedCount: number;
+}
+
 const queryPiModelCapabilities = async (
   executablePath: string,
   env: NodeJS.ProcessEnv
-): Promise<PiModelInfo[]> => {
+): Promise<PiModelCapabilityQuery> => {
   const workerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-probe-"));
   const args = [
     "--mode",
@@ -323,41 +330,58 @@ const queryPiModelCapabilities = async (
   };
   try {
     const available = await request({ type: "get_available_models" });
-    const models = Array.isArray(available.data?.models)
-      ? available.data.models
-      : [];
+    if (!Array.isArray(available.data?.models)) {
+      throw new Error("Pi RPC returned an invalid available-models response");
+    }
+    const models = available.data.models;
     const capabilities: PiModelInfo[] = [];
+    let candidateCount = 0;
+    let failedCount = 0;
     for (const value of models.slice(0, 1_000)) {
-      if (!value || typeof value !== "object") continue;
-      const model = value as Record<string, unknown>;
-      if (typeof model.provider !== "string" || typeof model.id !== "string")
+      candidateCount += 1;
+      if (!value || typeof value !== "object") {
+        failedCount += 1;
         continue;
+      }
+      const model = value as Record<string, unknown>;
+      const provider =
+        typeof model.provider === "string" ? model.provider.trim() : "";
+      const modelId = typeof model.id === "string" ? model.id.trim() : "";
+      if (!provider || !modelId) {
+        failedCount += 1;
+        continue;
+      }
       try {
         await request({
           type: "set_model",
-          provider: model.provider,
-          modelId: model.id
+          provider,
+          modelId
         });
         const thinking = await request({
           type: "get_available_thinking_levels"
         });
         const levels = Array.isArray(thinking.data?.levels)
-          ? thinking.data.levels.filter(
-              (level): level is string => typeof level === "string"
-            )
+          ? thinking.data.levels.flatMap((level) => {
+              const normalized = typeof level === "string" ? level.trim() : "";
+              return normalized ? [normalized] : [];
+            })
           : [];
-        if (levels.length === 0) continue;
+        if (levels.length === 0) {
+          failedCount += 1;
+          continue;
+        }
         capabilities.push({
-          id: `${model.provider}/${model.id}`,
-          provider: model.provider,
-          model: model.id,
+          id: `${provider}/${modelId}`,
+          provider,
+          model: modelId,
           supportedReasoningEfforts: levels
         });
       } catch {
+        failedCount += 1;
         // Fail this model closed without hiding other independently usable models.
       }
     }
-    return capabilities;
+    return { models: capabilities, candidateCount, failedCount };
   } finally {
     terminateProcessTree(child);
     fs.rmSync(workerRoot, { recursive: true, force: true });
@@ -368,7 +392,7 @@ export const listPiModels = async (
   env: NodeJS.ProcessEnv = process.env
 ): Promise<PiModelInfo[]> => {
   const executable = resolvePiExecutable(env);
-  return queryPiModelCapabilities(executable, env);
+  return (await queryPiModelCapabilities(executable, env)).models;
 };
 
 export const checkPiAvailability = async (
@@ -386,17 +410,41 @@ export const checkPiAvailability = async (
       }
     );
     assertPiVersionCompatibility(stdout);
-    const models = await listPiModels({
-      ...env,
-      KOED_PI_EXECUTABLE: executablePath
-    });
+    let discovery: PiModelCapabilityQuery;
+    try {
+      discovery = await queryPiModelCapabilities(executablePath, env);
+    } catch (error) {
+      return {
+        available: true,
+        executablePath,
+        version: stdout.trim(),
+        authenticated: false,
+        authenticationState: "unknown",
+        models: [],
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+    const authenticated = discovery.models.length > 0;
+    const authenticationState = authenticated
+      ? "authenticated"
+      : discovery.candidateCount === 0
+        ? "unauthenticated"
+        : "unknown";
     return {
-      available: models.length > 0,
+      available: true,
       executablePath,
       version: stdout.trim(),
-      authenticated: models.length > 0,
-      models,
-      error: models.length > 0 ? null : "Pi has no authenticated models."
+      authenticated,
+      authenticationState,
+      models: discovery.models,
+      error:
+        authenticated && discovery.failedCount > 0
+          ? `Pi capability discovery skipped ${discovery.failedCount} of ${discovery.candidateCount} model candidates.`
+          : authenticated
+            ? null
+            : authenticationState === "unauthenticated"
+              ? "Pi has no authenticated models."
+              : `Pi reported ${discovery.candidateCount} model candidates, but ${discovery.failedCount} capability probes failed.`
     };
   } catch (error) {
     return {
@@ -404,6 +452,7 @@ export const checkPiAvailability = async (
       executablePath: null,
       version: null,
       authenticated: false,
+      authenticationState: "unknown",
       models: [],
       error: error instanceof Error ? error.message : String(error)
     };

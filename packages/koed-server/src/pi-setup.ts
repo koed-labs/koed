@@ -84,14 +84,36 @@ export const piSetupEnvironment = (
   KOED_HOME: koedHome
 });
 
+export const parsePiModelListOutput = (
+  stdout: string
+): { valid: boolean; models: string[] } => {
+  const lines = stdout.split(/\r?\n/).filter((line) => line.trim());
+  if (/^no models available(?:\.|$)/i.test(lines[0]?.trim() ?? "")) {
+    return { valid: true, models: [] };
+  }
+  const header = lines[0]?.trim().toLowerCase().split(/\s+/);
+  const hasHeader = header?.[0] === "provider" && header[1] === "model";
+  if (!hasHeader) return { valid: false, models: [] };
+  const models: string[] = [];
+  for (const line of lines.slice(1)) {
+    const match = line.trim().match(/^(\S+)\s+(\S+)/);
+    if (!match) return { valid: false, models: [] };
+    models.push(`${match[1]}/${match[2]}`);
+  }
+  return { valid: true, models };
+};
+
 export const piModelIdsFromListOutput = (stdout: string): string[] =>
-  stdout
-    .split(/\r?\n/)
-    .slice(1)
-    .flatMap((line) => {
-      const match = line.trim().match(/^(\S+)\s+(\S+)/);
-      return match ? [`${match[1]}/${match[2]}`] : [];
-    });
+  parsePiModelListOutput(stdout).models;
+
+export const piPackageIsListed = (
+  stdout: string,
+  packagePath: string
+): boolean =>
+  stdout.split(/\r?\n/).some((line) => {
+    const entry = line.trim().replace(/^[-*]\s+/, "");
+    return isAbsolute(entry) && resolve(entry) === resolve(packagePath);
+  });
 
 const executableNames = (platform: NodeJS.Platform): string[] =>
   platform === "win32" ? ["pi.exe", "pi.cmd", "pi"] : ["pi"];
@@ -187,6 +209,10 @@ export interface KoedServerSetupPiResult {
   checkedAt: string;
   executablePath?: string;
   modelCount?: number;
+  modelDiscoveryError?: string;
+  profileConfigured?: boolean;
+  authenticationState?: "authenticated" | "unauthenticated" | "unknown";
+  executionCapabilities?: "ready" | "unavailable";
   stdout?: string;
   stderr?: string;
   error?: string;
@@ -250,7 +276,7 @@ export const removePi = (
           "Pi profile verification failed after removal."
       );
     }
-    if ((listed.stdout ?? "").includes(target)) {
+    if (piPackageIsListed(listed.stdout ?? "", target)) {
       throw new Error(
         "Pi active profile still references Koed package after removal."
       );
@@ -314,7 +340,7 @@ export const removePi = (
           if (
             listed.error ||
             listed.status !== 0 ||
-            !(listed.stdout ?? "").includes(target)
+            !piPackageIsListed(listed.stdout ?? "", target)
           ) {
             failures.push(
               `Pi profile rollback failed: ${listed.error?.message ?? listed.stderr?.trim() ?? "Pi profile rollback verification failed."}`
@@ -409,39 +435,69 @@ export const setupPi = (
       );
     }
     const listedModels = runPi(["--list-models"], 15_000);
-    const models =
-      listedModels.error || listedModels.status !== 0
-        ? []
-        : piModelIdsFromListOutput(listedModels.stdout ?? "");
-    if (models.length === 0) {
-      throw new Error(
-        "Pi has no authenticated models. Authenticate at least one Pi model before setup."
-      );
-    }
+    const parsedModels = parsePiModelListOutput(listedModels.stdout ?? "");
+    const modelDiscoverySucceeded =
+      !listedModels.error && listedModels.status === 0 && parsedModels.valid;
+    const models = modelDiscoverySucceeded ? parsedModels.models : [];
+    const modelDiscoveryError = modelDiscoverySucceeded
+      ? null
+      : (listedModels.error?.message ??
+        (listedModels.status === 0
+          ? "Pi model discovery returned an invalid response."
+          : `Pi model discovery exited with code ${listedModels.status ?? 1}.`));
+    const authenticationState = !modelDiscoverySucceeded
+      ? ("unknown" as const)
+      : models.length > 0
+        ? ("authenticated" as const)
+        : ("unauthenticated" as const);
     const registryEnvironment = { ...environment, KOED_HOME: paths.koedHome };
     const registrySnapshot = captureAiClientRegistry(registryEnvironment);
+    type InstallAttempt = {
+      install: ReturnType<typeof runPi>;
+      verification?: ReturnType<typeof runPi>;
+    };
+    const installAndVerify = (): InstallAttempt => {
+      const install = runPi(["install", target], 30_000);
+      return install.error || install.status !== 0
+        ? { install }
+        : { install, verification: runPi(["list"], 10_000) };
+    };
+    const installSucceeded = (candidate: unknown): boolean => {
+      const attempt = candidate as InstallAttempt;
+      return Boolean(
+        !attempt.install.error &&
+        attempt.install.status === 0 &&
+        !attempt.verification?.error &&
+        attempt.verification?.status === 0 &&
+        piPackageIsListed(attempt.verification.stdout ?? "", target)
+      );
+    };
+    const installError = (attempt: InstallAttempt | undefined): string | null =>
+      attempt?.install.error?.message ||
+      attempt?.install.stderr?.trim() ||
+      attempt?.verification?.error?.message ||
+      attempt?.verification?.stderr?.trim() ||
+      (attempt?.verification &&
+      !piPackageIsListed(attempt.verification.stdout ?? "", target)
+        ? "Pi active profile does not reference the installed Koed package."
+        : null);
     const transaction = installPiPackageTransaction({
       source,
       target,
-      install: () => runPi(["install", target], 30_000),
-      installSucceeded: (candidate) => {
-        const result = candidate as ReturnType<typeof runPi>;
-        return !result.error && result.status === 0;
-      }
+      install: installAndVerify,
+      installSucceeded
     });
-    const result = transaction.installResult as
-      | ReturnType<typeof runPi>
+    const installation = transaction.installResult as
+      | InstallAttempt
       | undefined;
     const rollback = transaction.registrationResult as
-      | ReturnType<typeof runPi>
+      | InstallAttempt
       | undefined;
+    const result = installation?.install;
     const ok = transaction.ok;
     const hadPrevious = transaction.hadPrevious;
-    const rollbackError = rollback
-      ? rollback.error?.message ||
-        rollback.stderr?.trim() ||
-        `rollback exited with code ${rollback.status ?? 1}`
-      : transaction.registrationError;
+    const rollbackError =
+      installError(rollback) ?? transaction.registrationError;
     let registrationError: string | undefined;
     if (ok) {
       try {
@@ -466,35 +522,46 @@ export const setupPi = (
         registrationError = `${registrationError ?? "Pi setup failed."} Registry rollback failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`;
       }
     }
+    const authenticated = authenticationState === "authenticated";
     return {
       ok: setupOk,
-      state: setupOk ? "healthy" : "needs_attention",
+      state: setupOk && authenticated ? "healthy" : "needs_attention",
       command: `${executable} install ${target}`,
       koedHome: paths.koedHome,
       checkedAt,
       executablePath: executable,
       modelCount: models.length,
+      ...(modelDiscoveryError ? { modelDiscoveryError } : {}),
+      profileConfigured: setupOk,
+      authenticationState,
+      executionCapabilities: setupOk && authenticated ? "ready" : "unavailable",
       ...(result?.stdout ? { stdout: result.stdout.trim() } : {}),
       ...(result?.stderr ? { stderr: result.stderr.trim() } : {}),
-      ...(!setupOk
+      ...(setupOk && !authenticated
         ? {
-            error:
-              registrationError ??
-              result?.error?.message ??
-              result?.stderr?.trim() ??
-              transaction.error ??
-              "Pi integration registration failed.",
-            action: registrationError
-              ? "Pi package was installed, but registry registration failed. Repair the AI Client registry, then rerun Pi setup."
-              : transaction.restorationError
-                ? `The previous package could not be restored (${transaction.restorationError}). It remains at ${transaction.backupPath ?? "the backup path"}; repair the filesystem before retrying.`
-                : rollbackError
-                  ? `The previous package was restored but its Pi registration could not be verified: ${rollbackError}. Fix Pi, then rerun koed-server setup pi --json.`
-                  : hadPrevious
-                    ? "The previous Koed Pi package was restored. Fix the Pi package installation error, then rerun koed-server setup pi --json."
-                    : "The failed package candidate was removed. Fix the Pi package installation error, then rerun koed-server setup pi --json."
+            action:
+              authenticationState === "unauthenticated"
+                ? "Authenticate at least one Pi model through Pi, then refresh capabilities."
+                : "Fix Pi model discovery, then refresh capabilities."
           }
-        : {})
+        : !setupOk
+          ? {
+              error:
+                registrationError ??
+                installError(installation) ??
+                transaction.error ??
+                "Pi integration registration failed.",
+              action: registrationError
+                ? "Pi package was installed, but registry registration failed. Repair the AI Client registry, then rerun Pi setup."
+                : transaction.restorationError
+                  ? `The previous package could not be restored (${transaction.restorationError}). It remains at ${transaction.backupPath ?? "the backup path"}; repair the filesystem before retrying.`
+                  : rollbackError
+                    ? `The previous package was restored but its Pi registration could not be verified: ${rollbackError}. Fix Pi, then rerun koed-server setup pi --json.`
+                    : hadPrevious
+                      ? "The previous Koed Pi package was restored. Fix the Pi package installation error, then rerun koed-server setup pi --json."
+                      : "The failed package candidate was removed. Fix the Pi package installation error, then rerun koed-server setup pi --json."
+            }
+          : {})
     };
   } catch (error) {
     return {
@@ -503,9 +570,11 @@ export const setupPi = (
       command: `${requestedExecutable} install ${target}`,
       koedHome: paths.koedHome,
       checkedAt,
+      profileConfigured: false,
+      authenticationState: "unknown",
+      executionCapabilities: "unavailable",
       error: error instanceof Error ? error.message : String(error),
-      action:
-        "Install and authenticate supported Pi, then rerun koed-server setup pi --json."
+      action: "Install supported Pi, then rerun koed-server setup pi --json."
     };
   }
 };

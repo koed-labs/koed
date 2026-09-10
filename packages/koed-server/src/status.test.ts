@@ -554,7 +554,7 @@ describe("status state aggregation", () => {
           id: "automatic_capture",
           readiness: "ready"
         }),
-        expect.objectContaining({ id: "mcp_recall", readiness: "ready" })
+        expect.objectContaining({ id: "mcp_recall", readiness: "unknown" })
       ])
     );
     expect(clients.claude!.capabilities).toEqual(
@@ -576,6 +576,379 @@ describe("status state aggregation", () => {
     expect(clients.claude!.profile.state).toBe("needs_attention");
     expect(clients.codex!.profile.state).toBe("healthy");
   });
+  it("keeps Claude capture ready when MCP profile configuration needs repair", () => {
+    const clients = inspectAiClientReadiness({
+      codex: { ...notConfigured("Codex unavailable"), configured: false },
+      claudeCode: {
+        ...notConfigured("Claude MCP configuration is incomplete", undefined, {
+          captureConfigured: true,
+          mcpConfigured: false,
+          version: "2.1.227"
+        }),
+        configured: false,
+        detected: true
+      },
+      pi: {
+        ...notConfigured("Pi unavailable"),
+        configured: false,
+        detected: false
+      },
+      codexTranscriptWatcher: notConfigured("Codex watcher disabled"),
+      claudeTranscriptWatcher: healthy("Claude watcher is running"),
+      mcpServer: healthy("MCP Server is running"),
+      localAiRuntime: healthy("Local AI Runtime is running"),
+      now: "2026-01-01T00:01:00.000Z"
+    });
+
+    expect(clients.claude!.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "ready"
+        }),
+        expect.objectContaining({ id: "mcp_recall", readiness: "unknown" })
+      ])
+    );
+  });
+
+  it("does not trust a ready Claude MCP descriptor when authentication is unknown", () => {
+    const clients = inspectAiClientReadiness({
+      codex: { ...notConfigured("Codex unavailable"), configured: false },
+      claudeCode: { ...healthy(), configured: true, detected: true },
+      pi: {
+        ...notConfigured("Pi unavailable"),
+        configured: false,
+        detected: false
+      },
+      codexTranscriptWatcher: notConfigured("Codex watcher disabled"),
+      claudeTranscriptWatcher: healthy("Claude watcher running"),
+      mcpServer: healthy("MCP Server running"),
+      localAiRuntime: healthy("Local AI Runtime running"),
+      capabilityReadModel: {
+        instances: [
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code"
+          }
+        ],
+        capabilitySnapshots: [
+          {
+            instanceId: "claude.default",
+            clientVersion: "2.1.227",
+            authenticationState: "unknown",
+            healthState: "healthy",
+            models: [],
+            capabilities: {
+              descriptors: {
+                mcp_recall: {
+                  id: "mcp_recall",
+                  support: "supported",
+                  readiness: "ready",
+                  diagnostics: []
+                }
+              }
+            },
+            observedAt: "2026-01-01T00:00:00.000Z",
+            expiresAt: "2026-01-01T00:10:00.000Z"
+          }
+        ]
+      },
+      now: "2026-01-01T00:01:00.000Z"
+    });
+
+    expect(
+      clients.claude!.capabilities.find(
+        (capability) => capability.id === "mcp_recall"
+      )
+    ).toMatchObject({ readiness: "unknown" });
+  });
+
+  it("keeps Claude automatic capture ready while signed-out execution stays unavailable", () => {
+    const unauthenticated = (id: string) => ({
+      id,
+      support: "supported" as const,
+      readiness: "unauthenticated" as const,
+      diagnostics: []
+    });
+    const clients = inspectAiClientReadiness({
+      codex: {
+        ...notConfigured("Codex is not configured."),
+        configured: false
+      },
+      claudeCode: {
+        ...needsAttention("Claude Code sign-in required", undefined, {
+          version: "2.1.227",
+          authenticated: false
+        }),
+        configured: true,
+        detected: true
+      },
+      pi: {
+        ...notConfigured("Pi is not configured."),
+        configured: false,
+        detected: false
+      },
+      codexTranscriptWatcher: notConfigured("Codex watcher disabled"),
+      claudeTranscriptWatcher: healthy("Claude watcher is running"),
+      mcpServer: healthy("MCP Server is running"),
+      localAiRuntime: healthy("Local AI Runtime is running"),
+      capabilityReadModel: {
+        instances: [
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude Code"
+          }
+        ],
+        capabilitySnapshots: [
+          {
+            instanceId: "claude.default",
+            clientVersion: "2.1.227",
+            authenticationState: "unauthenticated",
+            healthState: "unavailable",
+            models: [],
+            capabilities: {
+              descriptors: {
+                automatic_capture: {
+                  id: "automatic_capture",
+                  support: "supported",
+                  readiness: "unknown",
+                  diagnostics: []
+                },
+                mcp_recall: unauthenticated("mcp_recall"),
+                local_synthesis: unauthenticated("local_synthesis"),
+                managed_conversation_start: unauthenticated(
+                  "managed_conversation_start"
+                )
+              }
+            },
+            observedAt: "2026-01-01T00:00:00.000Z",
+            expiresAt: "2026-01-01T00:10:00.000Z"
+          }
+        ]
+      },
+      now: "2026-01-01T00:01:00.000Z"
+    });
+
+    expect(clients.claude).toMatchObject({
+      authentication: "unauthenticated",
+      profile: { state: "needs_attention" }
+    });
+    expect(clients.claude!.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "ready"
+        }),
+        expect.objectContaining({
+          id: "mcp_recall",
+          readiness: "unauthenticated"
+        }),
+        expect.objectContaining({
+          id: "local_synthesis",
+          readiness: "unauthenticated"
+        }),
+        expect.objectContaining({
+          id: "managed_conversation_start",
+          readiness: "unauthenticated"
+        }),
+        expect.objectContaining({
+          id: "managed_conversation_send",
+          readiness: "unauthenticated"
+        })
+      ])
+    );
+  });
+
+  it.each(["unauthenticated", "unknown"] as const)(
+    "overrides an older authenticated snapshot when Claude authentication is %s",
+    (authentication) => {
+      const unauthenticated = (id: string) => ({
+        id,
+        support: "supported" as const,
+        readiness: "ready" as const,
+        diagnostics: []
+      });
+      const clients = inspectAiClientReadiness({
+        codex: {
+          ...notConfigured("Codex is not configured."),
+          configured: false
+        },
+        claudeCode: {
+          ...needsAttention("Claude Code sign-in required", undefined, {
+            version: "2.1.227",
+            ...(authentication === "unauthenticated"
+              ? { authenticated: false }
+              : { authenticationState: "unknown" })
+          }),
+          configured: true,
+          detected: true
+        },
+        pi: {
+          ...notConfigured("Pi is not configured."),
+          configured: false,
+          detected: false
+        },
+        codexTranscriptWatcher: notConfigured("Codex watcher disabled"),
+        claudeTranscriptWatcher: healthy("Claude watcher is running"),
+        mcpServer: healthy("MCP Server is running"),
+        localAiRuntime: healthy("Local AI Runtime is running"),
+        capabilityReadModel: {
+          instances: [
+            {
+              instanceId: "claude.default",
+              driverId: "claude",
+              displayName: "Claude Code"
+            }
+          ],
+          capabilitySnapshots: [
+            {
+              instanceId: "claude.default",
+              clientVersion: "2.1.227",
+              authenticationState: "authenticated",
+              healthState: "healthy",
+              models: [{ id: "claude-sonnet", displayName: "Sonnet" }],
+              capabilities: {
+                descriptors: {
+                  automatic_capture: {
+                    id: "automatic_capture",
+                    support: "supported",
+                    readiness: "unknown",
+                    diagnostics: []
+                  },
+                  mcp_recall: unauthenticated("mcp_recall"),
+                  local_synthesis: unauthenticated("local_synthesis"),
+                  managed_conversation_start: unauthenticated(
+                    "managed_conversation_start"
+                  )
+                }
+              },
+              observedAt: "2026-01-01T00:00:00.000Z",
+              expiresAt: "2026-01-01T00:10:00.000Z"
+            }
+          ]
+        },
+        now: "2026-01-01T00:01:00.000Z"
+      });
+
+      expect(clients.claude).toMatchObject({
+        authentication,
+        profile: { state: "needs_attention" }
+      });
+      expect(clients.claude!.capabilities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "automatic_capture",
+            readiness: "ready"
+          }),
+          expect.objectContaining({
+            id: "mcp_recall",
+            readiness: authentication
+          }),
+          expect.objectContaining({
+            id: "local_synthesis",
+            readiness: authentication
+          }),
+          expect.objectContaining({
+            id: "managed_conversation_start",
+            readiness: authentication
+          }),
+          expect.objectContaining({
+            id: "managed_conversation_send",
+            readiness: authentication
+          })
+        ])
+      );
+    }
+  );
+
+  it("keeps Pi automatic capture ready while model authentication is unavailable", () => {
+    const unauthenticated = (id: string) => ({
+      id,
+      support: "supported" as const,
+      readiness: "unauthenticated" as const,
+      diagnostics: []
+    });
+    const clients = inspectAiClientReadiness({
+      codex: { ...notConfigured("Codex unavailable"), configured: false },
+      claudeCode: {
+        ...notConfigured("Claude unavailable"),
+        configured: false,
+        detected: false
+      },
+      pi: {
+        ...needsAttention("Pi model authentication required", undefined, {
+          version: "0.84.2",
+          packageRegistered: true,
+          authenticated: false
+        }),
+        configured: true,
+        detected: true
+      },
+      codexTranscriptWatcher: notConfigured("Codex watcher disabled"),
+      claudeTranscriptWatcher: notConfigured("Claude watcher disabled"),
+      piTranscriptWatcher: healthy("Pi watcher running"),
+      mcpServer: healthy("MCP Server running"),
+      localAiRuntime: healthy("Local AI Runtime running"),
+      capabilityReadModel: {
+        instances: [
+          {
+            instanceId: "pi.default",
+            driverId: "pi",
+            displayName: "Pi"
+          }
+        ],
+        capabilitySnapshots: [
+          {
+            instanceId: "pi.default",
+            clientVersion: "0.84.2",
+            authenticationState: "unauthenticated",
+            healthState: "unavailable",
+            models: [],
+            capabilities: {
+              descriptors: {
+                automatic_capture: {
+                  id: "automatic_capture",
+                  support: "supported",
+                  readiness: "unknown",
+                  diagnostics: []
+                },
+                mcp_recall: unauthenticated("mcp_recall"),
+                local_synthesis: unauthenticated("local_synthesis")
+              }
+            },
+            observedAt: "2026-01-01T00:00:00.000Z",
+            expiresAt: "2026-01-01T00:10:00.000Z"
+          }
+        ]
+      },
+      now: "2026-01-01T00:01:00.000Z"
+    });
+
+    expect(clients.pi).toMatchObject({ authentication: "unauthenticated" });
+    expect(clients.pi!.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "ready"
+        }),
+        expect.objectContaining({
+          id: "mcp_recall",
+          readiness: "unauthenticated"
+        }),
+        expect.objectContaining({
+          id: "local_synthesis",
+          readiness: "unauthenticated"
+        }),
+        expect.objectContaining({
+          id: "managed_conversation_start",
+          support: "unsupported"
+        })
+      ])
+    );
+  });
+
   it("reports independent flow assignment readiness from defaults and settings", () => {
     const readModel = {
       instances: [
@@ -898,7 +1271,7 @@ describe("status state aggregation", () => {
     );
   });
 
-  it("keeps stale snapshots non-runnable and does not use runtime for synthesis", () => {
+  it("keeps stale execution snapshots non-runnable without downgrading capture", () => {
     const descriptor = (id: string) => ({
       id,
       support: "supported" as const,
@@ -950,7 +1323,7 @@ describe("status state aggregation", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: "automatic_capture",
-          readiness: "stale"
+          readiness: "ready"
         }),
         expect.objectContaining({ id: "mcp_recall", readiness: "stale" }),
         expect.objectContaining({ id: "local_synthesis", readiness: "stale" }),
@@ -1232,6 +1605,100 @@ describe("status state aggregation", () => {
 });
 
 describe("Pi integration status", () => {
+  const discoveredPi = (
+    authenticationState:
+      | "authenticated"
+      | "unauthenticated"
+      | "unknown" = "authenticated"
+  ) => ({
+    now: "2026-01-01T00:01:00.000Z",
+    snapshot: {
+      instanceId: "pi.default",
+      clientVersion: "0.84.2",
+      authenticationState,
+      healthState: "healthy" as const,
+      models:
+        authenticationState === "authenticated"
+          ? [{ id: "openai/working" }]
+          : [],
+      capabilities: {},
+      observedAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-01T00:10:00.000Z",
+      stale: false
+    }
+  });
+
+  it("explains a Pi profile inspection timeout without recommending repair", () => {
+    const root = tempDir();
+    const environment = { KOED_HOME: root };
+    const status = inspectPi(environment, resolveKoedServerPaths(environment), {
+      existsSync: () => true,
+      resolvePiExecutable: () => "/opt/pi",
+      spawnSync: (_command: string, args: string[]) =>
+        args[0] === "--version"
+          ? spawnResult("0.85.1\n")
+          : {
+              stdout: "",
+              stderr: "",
+              signal: "SIGTERM",
+              pid: 1,
+              output: [],
+              status: null,
+              error: Object.assign(new Error("spawnSync ETIMEDOUT"), {
+                code: "ETIMEDOUT"
+              })
+            }
+    } as never);
+    expect(status.state).toBe("needs_attention");
+    expect(status.message).toContain("timed out");
+    expect(status.action).toContain("Check again");
+    expect(status.action).not.toContain("Repair");
+    expect(status.details).toMatchObject({
+      inspectionState: "unknown",
+      inspectionErrorCode: "ETIMEDOUT"
+    });
+  });
+
+  it.each(["missing", "expired", "future", "stale"] as const)(
+    "does not trust %s Pi discovery or probe the catalog again",
+    (kind) => {
+      const root = tempDir();
+      const discovery = discoveredPi();
+      if (kind === "expired")
+        discovery.snapshot.expiresAt = "2026-01-01T00:00:30.000Z";
+      if (kind === "future")
+        discovery.snapshot.observedAt = "2026-01-01T00:02:00.000Z";
+      if (kind === "stale") discovery.snapshot.stale = true;
+      const calls: string[] = [];
+      const status = inspectPi(
+        { KOED_HOME: root },
+        resolveKoedServerPaths({ KOED_HOME: root }),
+        {
+          existsSync: () => true,
+          resolvePiExecutable: () => "/opt/pi",
+          spawnSync: (_command: string, args: string[]) => {
+            calls.push(args[0]!);
+            return spawnResult(
+              args[0] === "--version"
+                ? "0.84.2"
+                : `${resolve(root, "integrations/pi")}\n`
+            );
+          }
+        } as never,
+        {
+          ...discovery,
+          snapshot: kind === "missing" ? null : discovery.snapshot
+        }
+      );
+      expect(calls).toEqual(["--version", "list"]);
+      expect(status.state).toBe(
+        kind === "missing" ? "starting" : "needs_attention"
+      );
+      expect(status.details?.authenticationState).toBe("unknown");
+      expect(status.action).toContain("Click Check again");
+    }
+  );
+
   it("reports a registered Koed package in the active Pi profile", () => {
     const root = tempDir();
     const packagePath = resolve(root, "integrations/pi");
@@ -1239,17 +1706,22 @@ describe("Pi integration status", () => {
     writeFileSync(resolve(packagePath, "extensions/koed.mjs"), "export {};\n");
     const environment = { KOED_HOME: root, KOED_PI_EXECUTABLE: "/opt/pi" };
 
-    const status = inspectPi(environment, resolveKoedServerPaths(environment), {
-      existsSync: (path: PathLike) =>
-        path === resolve(packagePath, "extensions/koed.mjs"),
-      resolvePiExecutable: () => "/opt/pi",
-      spawnSync: (_command: string, args: string[]) =>
-        args[0] === "--version"
-          ? spawnResult("0.84.2\n")
-          : args[0] === "--list-models"
-            ? spawnResult("provider model\nopenai gpt-5.4\n")
-            : spawnResult(`${packagePath}\n`)
-    } as never);
+    const status = inspectPi(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        existsSync: (path: PathLike) =>
+          path === resolve(packagePath, "extensions/koed.mjs"),
+        resolvePiExecutable: () => "/opt/pi",
+        spawnSync: (_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("0.84.2\n")
+            : args[0] === "--list-models"
+              ? spawnResult("provider model\nopenai gpt-5.4\n")
+              : spawnResult(`${packagePath}\n`)
+      } as never,
+      discoveredPi()
+    );
 
     expect(status).toMatchObject({
       state: "healthy",
@@ -1264,6 +1736,93 @@ describe("Pi integration status", () => {
       modelCount: 1
     });
   });
+
+  it("uses execution discovery on ordinary Pi status checks without a second model catalog probe", () => {
+    const root = tempDir();
+    const calls: string[] = [];
+    const status = inspectPi(
+      { KOED_HOME: root },
+      resolveKoedServerPaths({ KOED_HOME: root }),
+      {
+        existsSync: () => true,
+        resolvePiExecutable: () => "/opt/pi",
+        spawnSync: (_command: string, args: string[]) => {
+          calls.push(args[0]!);
+          return args[0] === "--version"
+            ? spawnResult("0.84.2")
+            : args[0] === "list"
+              ? spawnResult(`${resolve(root, "integrations/pi")}\n`)
+              : spawnResult("catalog unavailable", 1);
+        }
+      } as never,
+      {
+        now: "2026-01-01T00:01:00.000Z",
+        snapshot: {
+          instanceId: "pi.default",
+          clientVersion: "0.84.2",
+          authenticationState: "authenticated",
+          healthState: "healthy",
+          models: [{ id: "openai/working-model" }],
+          capabilities: {},
+          observedAt: "2026-01-01T00:00:00.000Z",
+          expiresAt: "2026-01-01T00:10:00.000Z",
+          stale: false
+        }
+      }
+    );
+    expect(calls).toEqual(["--version", "list"]);
+    expect(status.state).toBe("healthy");
+    expect(status.details?.modelCount).toBe(1);
+  });
+
+  it.each([
+    ["2026-01-01T00:00:01.000Z", "0.84.2", false],
+    ["2025-12-31T23:59:59.000Z", "0.84.2", true],
+    ["2026-01-01T00:00:01.000Z", "0.85.1", true]
+  ] as const)(
+    "rejects outdated or mismatched discovery without a catalog fallback (%s, %s)",
+    (observedAt, clientVersion, probesModels) => {
+      const root = tempDir();
+      const packagePath = resolve(root, "integrations/pi");
+      const calls: string[] = [];
+      const status = inspectPi(
+        { KOED_HOME: root },
+        resolveKoedServerPaths({ KOED_HOME: root }),
+        {
+          existsSync: () => true,
+          resolvePiExecutable: () => "/opt/pi",
+          spawnSync: (_command: string, args: string[]) => {
+            calls.push(args[0]!);
+            return spawnResult(
+              args[0] === "--version"
+                ? "0.84.2"
+                : args[0] === "--list-models"
+                  ? "provider model\nopenai fallback\n"
+                  : `${packagePath}\n`
+            );
+          }
+        } as never,
+        {
+          refreshedSince: "2026-01-01T00:00:00.000Z",
+          now: "2026-01-01T00:00:02.000Z",
+          snapshot: {
+            instanceId: "pi.default",
+            clientVersion,
+            authenticationState: "authenticated",
+            healthState: "healthy",
+            models: [{ id: "fresh-model" }],
+            capabilities: {},
+            observedAt,
+            expiresAt: "2026-01-01T00:10:00.000Z",
+            stale: false
+          }
+        }
+      );
+      expect(calls.includes("--list-models")).toBe(false);
+      expect(status.state).toBe(probesModels ? "needs_attention" : "healthy");
+      expect(status.details?.modelCount).toBe(probesModels ? 0 : 1);
+    }
+  );
 
   it("separates registered-package health from authenticated-model health", () => {
     const root = tempDir();
@@ -1280,9 +1839,10 @@ describe("Pi integration status", () => {
           args[0] === "--version"
             ? spawnResult("0.84.2\n")
             : args[0] === "--list-models"
-              ? spawnResult("provider model\n")
+              ? spawnResult("No models available.\n")
               : spawnResult(`${packagePath}\n`)
-      } as never
+      } as never,
+      discoveredPi("unauthenticated")
     );
 
     expect(status).toMatchObject({
@@ -1294,6 +1854,40 @@ describe("Pi integration status", () => {
       authenticated: false,
       modelCount: 0
     });
+  });
+
+  it("distinguishes Pi model discovery failure from missing authentication", () => {
+    const root = tempDir();
+    const packagePath = resolve(root, "integrations/pi");
+
+    const status = inspectPi(
+      { KOED_HOME: root },
+      resolveKoedServerPaths({ KOED_HOME: root }),
+      {
+        existsSync: (path: PathLike) =>
+          path === resolve(packagePath, "extensions/koed.mjs"),
+        resolvePiExecutable: () => "/opt/pi",
+        spawnSync: (_command: string, args: string[]) =>
+          args[0] === "--version"
+            ? spawnResult("0.84.2\n")
+            : args[0] === "--list-models"
+              ? spawnResult("", 1)
+              : spawnResult(`${packagePath}\n`)
+      } as never,
+      discoveredPi("unknown")
+    );
+
+    expect(status).toMatchObject({
+      state: "needs_attention",
+      configured: true,
+      details: {
+        packageRegistered: true,
+        authenticationState: "unknown",
+        modelCount: 0
+      }
+    });
+    expect(status.action).toContain("Click Check again");
+    expect(status.action).not.toContain("Fix Pi model discovery");
   });
 
   it("keeps missing Pi optional but actionable", () => {
@@ -1407,7 +2001,7 @@ describe("Claude Code integration status", () => {
               ? spawnResult(
                   `koed:\n  Type: stdio\n  Command: node\n  Args: ${resolve(root, "packages/mcp-server/dist/cli.js")}\n  Environment:\n    KOED_HOME=${resolve(root, "koed")}\n`
                 )
-              : spawnResult("");
+              : spawnResult('{"loggedIn":true}\n');
         }
       } as never
     );
@@ -1431,6 +2025,80 @@ describe("Claude Code integration status", () => {
     expect(commands.every(({ env }) => env?.ELECTRON_RUN_AS_NODE === "1")).toBe(
       true
     );
+  });
+
+  it("reports configured capture separately from signed-out execution", () => {
+    const root = tempDir();
+    const settingsPath = resolve(root, ".claude/settings.json");
+    const runtimeDirectory = resolve(root, "packages/mcp-server/dist");
+    const captureHook = resolve(runtimeDirectory, "capture-hook.js");
+    const mcpCli = resolve(runtimeDirectory, "cli.js");
+    mkdirSync(runtimeDirectory, { recursive: true });
+    mkdirSync(resolve(root, ".claude"), { recursive: true });
+    writeFileSync(mcpCli, "");
+    writeFileSync(captureHook, "");
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: Object.fromEntries(
+          [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "Stop",
+            "StopFailure",
+            "SubagentStart",
+            "SubagentStop",
+            "SessionEnd"
+          ].map((eventName) => [
+            eventName,
+            [{ hooks: [{ command: `node ${captureHook}` }] }]
+          ])
+        )
+      })
+    );
+    const environment = {
+      HOME: root,
+      KOED_HOME: resolve(root, "koed"),
+      KOED_REPO_ROOT: root,
+      CLAUDE_SETTINGS_PATH: settingsPath
+    };
+
+    const status = inspectClaudeCode(
+      environment,
+      resolveKoedServerPaths(environment),
+      {
+        existsSync,
+        readFileSync,
+        resolveClaudeExecutable: () => "/bin/sh",
+        spawnSync: (_command: string, args: string[]) => {
+          if (args[0] === "--version") {
+            return spawnResult("2.1.227 (Claude Code)\n");
+          }
+          if (args[0] === "mcp") {
+            return spawnResult(
+              `koed:\n  Command: node\n  Args: ${mcpCli}\n  Environment:\n    KOED_HOME=${resolve(root, "koed")}\n`
+            );
+          }
+          return spawnResult(
+            '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}',
+            1
+          );
+        }
+      } as never
+    );
+
+    expect(status).toMatchObject({
+      state: "needs_attention",
+      configured: true,
+      detected: true,
+      details: {
+        profileConfigured: true,
+        authenticated: false
+      }
+    });
+    expect(status.action).toContain("Claude Desktop sign-in");
   });
 
   it("keeps missing Claude Code optional but actionable", () => {
@@ -2325,6 +2993,7 @@ describe("status and doctor JSON contracts", () => {
           "local-ai-runtime"
         ],
         codexTranscriptWatcherEnabled: true,
+        piTranscriptWatcherEnabled: false,
         processes: {
           api: 43,
           worker: 44,
@@ -2362,6 +3031,7 @@ describe("status and doctor JSON contracts", () => {
     expect(status.dependencyMode).toBe("bundled-local");
     expect(status.codexTranscriptWatcher.state).toBe("healthy");
     expect(status.claudeTranscriptWatcher.state).toBe("healthy");
+    expect(status.piTranscriptWatcher?.state).toBe("not_configured");
     expect(status.codex.state).toBe("healthy");
     expect(status.mcpServer.state).toBe("healthy");
     expect(status.redis.message).toContain("local queue");

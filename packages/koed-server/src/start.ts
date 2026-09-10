@@ -1256,6 +1256,7 @@ export const startKoedServer = async ({
       automaticPorts: desktopManagedLocal,
       codexTranscriptWatcherEnabled: config.codexTranscriptWatcherEnabled,
       claudeTranscriptWatcherEnabled: config.claudeTranscriptWatcherEnabled,
+      piTranscriptWatcherEnabled: config.piTranscriptWatcherEnabled,
       services: [...runtimeServices, "api"],
       processes: {
         ...(nativeEmbeddingProcess
@@ -1362,6 +1363,9 @@ export const startKoedServer = async ({
           ),
           MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: String(
             config.claudeTranscriptWatcherEnabled
+          ),
+          MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED: String(
+            config.piTranscriptWatcherEnabled
           )
         },
         spawn,

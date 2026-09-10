@@ -264,6 +264,115 @@ describe("Claude AI Client runner boundary", () => {
     });
   });
 
+  it("publishes installation and capture separately from signed-out execution", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-claude-signed-out-")
+    );
+    temporaryDirectories.push(root);
+    const binaryDirectory = path.join(root, "bin");
+    fs.mkdirSync(binaryDirectory, { recursive: true });
+    const target = path.join(binaryDirectory, "claude");
+    fs.writeFileSync(
+      target,
+      `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "2.1.227"
+  exit 0
+fi
+echo '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}'
+exit 1
+`,
+      { mode: 0o700 }
+    );
+    const environment = {
+      HOME: root,
+      PATH: binaryDirectory,
+      KOED_HOME: path.join(root, "koed"),
+      KOED_CLAUDE_CODE_EXECUTABLE: target
+    };
+
+    await expect(
+      checkClaudeCodeAvailability(environment)
+    ).resolves.toMatchObject({
+      available: true,
+      executablePath: fs.realpathSync(target),
+      version: "2.1.227",
+      authenticated: false,
+      authenticationState: "unauthenticated",
+      authMethod: "none",
+      apiProvider: "firstParty",
+      error: "Claude Code is not signed in."
+    });
+    const discovery = await aiClientDriverFor("claude").discover({
+      instanceId: "claude.default",
+      environment,
+      executablePath: target
+    });
+
+    expect(discovery).toMatchObject({
+      clientVersion: "2.1.227",
+      authenticationState: "unauthenticated",
+      healthState: "unavailable",
+      models: []
+    });
+    expect(discovery.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "automatic_capture",
+          readiness: "unknown"
+        }),
+        expect.objectContaining({
+          id: "mcp_recall",
+          readiness: "unauthenticated"
+        }),
+        expect.objectContaining({
+          id: "local_synthesis",
+          readiness: "unauthenticated"
+        }),
+        expect.objectContaining({
+          id: "managed_conversation_start",
+          readiness: "unauthenticated"
+        })
+      ])
+    );
+  });
+
+  it("does not authenticate Claude when the auth probe fails with logged-in output", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-claude-failed-auth-probe-")
+    );
+    temporaryDirectories.push(root);
+    const binaryDirectory = path.join(root, "bin");
+    fs.mkdirSync(binaryDirectory, { recursive: true });
+    const target = path.join(binaryDirectory, "claude");
+    fs.writeFileSync(
+      target,
+      `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "2.1.227"
+  exit 0
+fi
+echo '{"loggedIn":true,"authMethod":"subscription"}'
+exit 1
+`,
+      { mode: 0o700 }
+    );
+
+    await expect(
+      checkClaudeCodeAvailability({
+        HOME: root,
+        PATH: binaryDirectory,
+        KOED_CLAUDE_CODE_EXECUTABLE: target
+      })
+    ).resolves.toMatchObject({
+      available: true,
+      authenticated: false,
+      authenticationState: "unknown",
+      authMethod: "subscription",
+      error: "Claude Code authentication could not be verified."
+    });
+  });
+
   it("rejects unparseable and older Claude Code versions", () => {
     expect(() => assertClaudeCodeVersionCompatibility("2.1.227")).not.toThrow();
     expect(() =>

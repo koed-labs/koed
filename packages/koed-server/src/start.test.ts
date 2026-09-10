@@ -1948,6 +1948,9 @@ describe("start supervisor", () => {
         expect(
           localAiRuntime?.env?.MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED
         ).toBe("true");
+        expect(localAiRuntime?.env?.MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED).toBe(
+          "true"
+        );
         const runtime = JSON.parse(
           readFileSync(resolve(root, "run/koed-server.json"), "utf8")
         ) as { services: string[]; processes: Record<string, number> };

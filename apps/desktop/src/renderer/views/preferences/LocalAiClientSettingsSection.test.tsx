@@ -154,6 +154,7 @@ describe("Agent Configuration selectors", () => {
 
   afterEach(() => {
     act(() => root?.unmount());
+    delete window.koedDesktop;
   });
 
   it("uses the shared spinner in a scoped loading state", async () => {
@@ -277,6 +278,143 @@ describe("Agent Configuration selectors", () => {
     )!;
     expect(refresh.textContent).toBe("");
     expect(refresh.querySelector(".lucide-refresh-cw")).toBeTruthy();
+  });
+
+  it("removes stale sign-in guidance when the same client's card becomes authenticated", async () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const signedOut = response();
+    signedOut.readModel.capabilitySnapshots.find(
+      (snapshot) => snapshot.instanceId === "claude.work"
+    )!.authenticationState = "unauthenticated";
+    const api = {
+      list: vi.fn(async () => signedOut),
+      refresh: vi.fn(async () => signedOut),
+      set: vi.fn(async () => signedOut),
+      reset: vi.fn(async () => signedOut)
+    };
+    await act(async () =>
+      root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
+    );
+    expect(container.textContent).toContain("Claude Code sign-in required");
+    await act(async () =>
+      root!.render(
+        <LocalAiClientSettingsSection
+          localAiClients={api}
+          authenticationStatus={[
+            {
+              instanceId: "claude.work",
+              authentication: "authenticated",
+              observedAt: "2026-01-01T00:01:00.000Z"
+            }
+          ]}
+        />
+      )
+    );
+    expect(container.textContent).not.toContain("Claude Code sign-in required");
+    expect(container.textContent).not.toContain("Copy `claude auth login`");
+    expect(api.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the newest snapshot instead of any historical signed-out snapshot", async () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const current = response();
+    const claude = current.readModel.capabilitySnapshots.find(
+      (snapshot) => snapshot.instanceId === "claude.work"
+    )!;
+    current.readModel.capabilitySnapshots.push({
+      ...claude,
+      authenticationState: "unauthenticated",
+      observedAt: "2025-12-31T00:00:00.000Z"
+    });
+    const api = {
+      list: vi.fn(async () => current),
+      refresh: vi.fn(async () => current),
+      set: vi.fn(async () => current),
+      reset: vi.fn(async () => current)
+    };
+    await act(async () =>
+      root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
+    );
+    expect(container.textContent).not.toContain("Claude Code sign-in required");
+  });
+
+  it("explains Claude Code sign-in remediation and refreshes without profile reinstall", async () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    const signedOut = response();
+    const claudeSnapshot = signedOut.readModel.capabilitySnapshots.find(
+      (snapshot) => snapshot.instanceId === "claude.work"
+    )!;
+    claudeSnapshot.authenticationState = "unauthenticated";
+    claudeSnapshot.healthState = "unavailable";
+    claudeSnapshot.models = [];
+    claudeSnapshot.localSynthesis = {
+      support: "supported",
+      readiness: "not_ready"
+    };
+    const piSnapshot = signedOut.readModel.capabilitySnapshots.find(
+      (snapshot) => snapshot.instanceId === "pi.default"
+    )!;
+    piSnapshot.authenticationState = "unauthenticated";
+    piSnapshot.healthState = "unavailable";
+    piSnapshot.models = [];
+    piSnapshot.localSynthesis = {
+      support: "supported",
+      readiness: "not_ready"
+    };
+    const writeText = vi.fn(async () => undefined);
+    window.koedDesktop = { invoke: vi.fn(), clipboard: { writeText } };
+    const api = {
+      list: vi.fn(async () => signedOut),
+      refresh: vi.fn(async () => ({
+        ...signedOut,
+        operation: "refresh" as const,
+        refreshed: true,
+        refreshError: null
+      })),
+      set: vi.fn(async () => signedOut),
+      reset: vi.fn(async () => signedOut)
+    };
+    root = createRoot(container);
+    await act(async () =>
+      root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
+    );
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Claude Code sign-in required")
+    );
+
+    expect(container.textContent).toContain(
+      "Automatic capture remains available"
+    );
+    expect(container.textContent).toContain(
+      "Claude Desktop sign-in does not authenticate Claude Code"
+    );
+    expect(container.textContent).toContain(
+      "Profile reinstall is not required"
+    );
+    expect(container.textContent).toContain("Pi model authentication required");
+    expect(container.textContent).toContain(
+      "Recall and Local Synthesis through Pi stay unavailable"
+    );
+    const copy = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Copy `claude auth login`")
+    )!;
+    await act(async () => copy.click());
+    expect(writeText).toHaveBeenCalledWith("claude auth login");
+    expect(container.textContent).toContain("Copied");
+
+    const refresh = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh capabilities"]'
+    )!;
+    const callsBeforeClick = api.refresh.mock.calls.length;
+    await act(async () => refresh.click());
+    await vi.waitFor(() =>
+      expect(api.refresh.mock.calls.length).toBeGreaterThan(callsBeforeClick)
+    );
   });
 
   it("hides search while keeping native selectors keyboard-accessible", async () => {

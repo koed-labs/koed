@@ -1530,47 +1530,61 @@ describe("JSON command output", () => {
     }
   });
 
-  it("returns failed check contract for stale readiness", async () => {
-    const stdout = writer();
-    const staleStatus = {
-      ...status,
-      aiClients: {
-        codex: {
-          driverId: "codex",
-          instanceId: "codex.default",
-          displayName: "Codex",
-          installed: { state: "healthy" },
-          version: "1.0.0",
-          authentication: "authenticated",
-          profile: { state: "healthy" },
-          capabilities: [
-            "automatic_capture",
-            "mcp_recall",
-            "local_synthesis"
-          ].map((id) => ({
-            id,
-            support: "supported",
-            readiness: "stale",
-            diagnostics: []
-          })),
-          observedAt: "2026-01-01T00:00:00.000Z",
-          snapshotState: "stale"
+  it.each([false, true])(
+    "returns failed check contract with optional collected status (%s)",
+    async (includeStatus) => {
+      const stdout = writer();
+      const staleStatus = {
+        ...status,
+        aiClients: {
+          codex: {
+            driverId: "codex",
+            instanceId: "codex.default",
+            displayName: "Codex",
+            installed: { state: "healthy" },
+            version: "1.0.0",
+            authentication: "authenticated",
+            profile: { state: "healthy" },
+            capabilities: [
+              "automatic_capture",
+              "mcp_recall",
+              "local_synthesis"
+            ].map((id) => ({
+              id,
+              support: "supported",
+              readiness: "stale",
+              diagnostics: []
+            })),
+            observedAt: "2026-01-01T00:00:00.000Z",
+            snapshotState: "stale"
+          }
         }
-      }
-    } as never;
+      } as never;
 
-    const exitCode = await runKoedServerCli(["check", "codex", "--json"], {
-      stdout: stdout.stream,
-      collectStatus: async () => staleStatus
-    });
+      const exitCode = await runKoedServerCli(
+        [
+          "check",
+          "codex",
+          "--json",
+          ...(includeStatus ? ["--include-status"] : [])
+        ],
+        {
+          stdout: stdout.stream,
+          collectStatus: async () => staleStatus
+        }
+      );
 
-    expect(exitCode).toBe(1);
-    expect(JSON.parse(stdout.text())).toMatchObject({
-      ok: false,
-      client: "codex",
-      readiness: { snapshotState: "stale" }
-    });
-  });
+      expect(exitCode).toBe(1);
+      expect(
+        (JSON.parse(stdout.text()) as { status?: unknown }).status
+      ).toEqual(includeStatus ? staleStatus : undefined);
+      expect(JSON.parse(stdout.text())).toMatchObject({
+        ok: false,
+        client: "codex",
+        readiness: { snapshotState: "stale" }
+      });
+    }
+  );
 
   it("prints repair codex --json", async () => {
     const stdout = writer();
