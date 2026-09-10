@@ -50,6 +50,8 @@ Managed Codex and Claude Code launches register Koed's packaged stdio MCP Server
 explicitly for the selected `KOED_HOME`; recall does not depend on global AI
 Client configuration. Pi loads the Koed extension explicitly. These connections
 use the Local AI Runtime and do not put API Tokens in AI Client configuration.
+Managed Codex launches mark Koed as a required MCP Server. Codex waits for its
+tools before the first turn and fails startup if the server cannot initialize.
 Desktop credentials include the distinct file, terminal, preview, and source-control
 operation families; none grants an AI Client permission or a remote mutation approval.
 

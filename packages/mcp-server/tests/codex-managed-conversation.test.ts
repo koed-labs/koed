@@ -850,6 +850,7 @@ describe("Codex managed conversation coordinator", () => {
     expect(overrides[0]).toContain('/cli.js"]');
     expect(overrides[0]).toContain('env={KOED_HOME="/tmp/koed home"}');
     expect(overrides[0]).toContain("enabled=true");
+    expect(overrides[0]).toContain("required=true");
     expect(managedConversationKoedMcpConfigOverrides({})).toEqual([]);
   });
 

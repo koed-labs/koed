@@ -57,6 +57,10 @@ search across the Personal Memory stages. This search avoids duplicate query
 embeddings before the worker starts. Questions with retrieval hints retain the
 staged scan and routed search path.
 
+The AI Client receives retrieval stage counts, coverage, and failure details.
+Full candidate ID lists and operational telemetry remain in the saved retrieval
+trace. This keeps repeated scan diagnostics from consuming the evidence budget.
+
 The backend does not perform LLM synthesis. The Local AI Runtime uses the
 connected Codex installation for synthesis.
 

@@ -96,7 +96,7 @@ export const managedConversationKoedMcpConfigOverrides = (
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
     .join(", ");
   return [
-    `mcp_servers.koed={command=${JSON.stringify(server.command)}, args=${JSON.stringify(server.args)}, env={${environment}}, enabled=true}`
+    `mcp_servers.koed={command=${JSON.stringify(server.command)}, args=${JSON.stringify(server.args)}, env={${environment}}, enabled=true, required=true}`
   ];
 };
 

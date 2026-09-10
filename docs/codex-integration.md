@@ -260,10 +260,11 @@ Conversations may share that Codex home; command and workspace fencing provide
 execution isolation. Koed never removes or rewrites the provider home during
 shutdown or cleanup.
 
-When Desktop runs against a non-default `KOED_HOME`, its managed app-server
-process overlays only `[mcp_servers.koed.env].KOED_HOME` for that process. The
-User's normal Codex configuration remains unchanged, while `memory_answer`
-uses the same active Koed runtime as Desktop.
+Desktop's managed app-server process configures Koed's packaged stdio MCP
+Server with the selected `KOED_HOME` and `required=true`. Codex waits for
+Koed's tools before the first turn and fails startup if the server cannot
+initialize. The User's normal Codex configuration remains unchanged, while
+`memory_answer` uses the same active Koed runtime as Desktop.
 
 Managed subagent `thread/started` events create linked child Captured Sessions
 and reconcile each child rollout separately. Managed terminal boundaries are

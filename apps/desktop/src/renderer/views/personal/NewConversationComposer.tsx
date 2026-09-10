@@ -211,10 +211,6 @@ export function NewConversationComposer({
             {options?.runners[0]?.displayName ?? "This device"}
           </span>
         </div>
-      ) : busy ? (
-        <p className="conversation-settings-status" role="status">
-          Starting the AI Client…
-        </p>
       ) : null}
       {error && (
         <p role="alert" className="personal-managed-error">
