@@ -1309,6 +1309,19 @@ describe("PersonalMemoryWorkspace", () => {
         'button[aria-label="Interrupt active turn"]'
       )!;
       expect(interruptButton.disabled).toBe(false);
+      await act(async () => {
+        changeTextarea(textarea, "Follow-up draft");
+        textarea.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            bubbles: true,
+            cancelable: true
+          })
+        );
+      });
+      expect(managed.interrupt).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledOnce();
+      expect(textarea.value).toBe("Follow-up draft");
       await act(async () => interruptButton.click());
       expect(managed.interrupt).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1318,7 +1331,7 @@ describe("PersonalMemoryWorkspace", () => {
       );
       expect(container.textContent).not.toContain("Sending prompt to Codex");
       expect(container.textContent).toContain("First line\nSecond line");
-      expect(textarea.value).toBe("");
+      expect(textarea.value).toBe("Follow-up draft");
       expect(textarea.disabled).toBe(false);
 
       await act(async () =>
@@ -1336,12 +1349,8 @@ describe("PersonalMemoryWorkspace", () => {
           turnId: "turn-1"
         })
       );
-      expect(textarea.value).toBe("");
-      expect(managed.deleteDraft).toHaveBeenCalledWith({
-        projectId: "project-1",
-        capturedSessionId: "execution-1",
-        threadId: "execution-1"
-      });
+      expect(textarea.value).toBe("Follow-up draft");
+      expect(managed.deleteDraft).not.toHaveBeenCalled();
     }
   );
 
@@ -2589,17 +2598,11 @@ describe("PersonalMemoryWorkspace", () => {
     const stopButton = container.querySelector<HTMLButtonElement>(
       '.personal-session-header-actions button[aria-label="Stop managed Conversation"]'
     );
-    expect(stopButton).not.toBeNull();
+    expect(stopButton).toBeNull();
     expect(
       container.querySelector(".personal-managed-runtime-controls")
     ).toBeNull();
-    await act(async () => stopButton?.click());
-    expect(managed.stop).toHaveBeenCalledWith(
-      expect.objectContaining({
-        executionId: "execution-runtime",
-        executionGeneration: 2
-      })
-    );
+    expect(managed.stop).not.toHaveBeenCalled();
   });
 
   it("keeps an ambiguous prompt visible and disables further submission while reconciling", async () => {

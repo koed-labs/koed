@@ -1586,7 +1586,6 @@ export function App({
             launchInput,
             initialPrompt
           ) => {
-            if (initialPrompt?.status !== "queued") return;
             const routeId = managedConversationLifecycle.started(
               project,
               conversation,

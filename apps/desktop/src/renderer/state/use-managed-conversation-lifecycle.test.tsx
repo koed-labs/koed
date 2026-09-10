@@ -6,6 +6,7 @@ import {
   useManagedConversationLifecycle,
   type ManagedConversationLifecycle
 } from "./use-managed-conversation-lifecycle.js";
+import { NewConversationComposer } from "../views/personal/NewConversationComposer.js";
 import type { ManagedConversationDesktopApi } from "../../ipc/managed-conversation-protocol.js";
 import type { PersonalMemoryStore } from "./personal-memory.js";
 import type { DesktopProject } from "../../project-memory-ui.js";
@@ -375,4 +376,130 @@ describe("managed Conversation lifecycle", () => {
     expect(calls[1]?.[0]).toEqual(calls[0]?.[0]);
     expect(api.inspect).toHaveBeenCalledOnce();
   });
+  it.each(["lost_response", "reconciling"] as const)(
+    "recovers a created execution and uncertain first prompt after %s without resending",
+    async (outcome) => {
+      vi.useFakeTimers();
+      let saved = "";
+      const api = {
+        readRecovery: vi.fn(async () => ({
+          operation: "recovery_read",
+          value: saved
+        })),
+        writeRecovery: vi.fn(async (_owner: string, value: string) => {
+          saved = value;
+          return { operation: "recovery_write", ok: true };
+        }),
+        writeDraft: vi.fn(async () => ({ operation: "draft_write", ok: true })),
+        start: vi.fn(async () => ({
+          operation: "start",
+          status: "starting",
+          executionId
+        })),
+        inspect: vi.fn(async () => ({
+          operation: "inspect",
+          status: "starting",
+          executionId
+        })),
+        send: vi.fn(async () => {
+          if (outcome === "lost_response") throw new Error("Response lost");
+          return {
+            operation: "send",
+            status: "reconciling",
+            message: "Delivery is uncertain"
+          };
+        })
+      } as unknown as ManagedConversationDesktopApi;
+      function ComposerHarness() {
+        lifecycle = useManagedConversationLifecycle({
+          api,
+          store: null,
+          ownerId: "owner-1"
+        });
+        return lifecycle.drafts.size ? (
+          <p>Recovered Conversation</p>
+        ) : (
+          <NewConversationComposer
+            api={api}
+            projectId={project.id}
+            requirePrompt
+            options={{
+              runners: [],
+              instances: [
+                {
+                  instanceId: "codex.default",
+                  driverId: "codex",
+                  displayName: "Codex",
+                  ready: true,
+                  readiness: "ready",
+                  models: [{ id: "model", supportedReasoningEfforts: [] }],
+                  capabilities: {
+                    defaultPermissionMode: "supervised",
+                    permissionModes: [
+                      { mode: "supervised", support: "supported" }
+                    ]
+                  }
+                }
+              ]
+            }}
+            selection={{
+              instanceId: "codex.default",
+              model: "model",
+              reasoningEffort: "",
+              permissionMode: "supervised"
+            }}
+            onChange={() => undefined}
+            onStarted={(identity, status, launchInput, initialPrompt) =>
+              lifecycle.started(
+                project,
+                identity,
+                status,
+                launchInput,
+                initialPrompt
+              )
+            }
+          />
+        );
+      }
+      await act(async () => root.render(<ComposerHarness />));
+      const input = container.querySelector("textarea")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value"
+        )!.set!.call(input, "Run this task once");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            '[aria-label="Start Conversation"]'
+          )!
+          .click()
+      );
+      const draft = lifecycle.drafts.get(executionId)!;
+      expect(draft.initialPrompt).toMatchObject({
+        status: "reconciling",
+        prompt: "Run this task once"
+      });
+      expect(draft.launchInput).toEqual(
+        vi.mocked(api.start).mock.calls[0]?.[0]
+      );
+      expect(draft.initialPrompt?.clientUserMessageId).toBe(
+        vi.mocked(api.send).mock.calls[0]?.[0].clientUserMessageId
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(150);
+      });
+      await act(async () => root.unmount());
+      root = createRoot(container);
+      await act(async () => root.render(<ComposerHarness />));
+      expect(lifecycle.drafts.get(executionId)).toMatchObject({
+        launchInput: draft.launchInput,
+        initialPrompt: draft.initialPrompt
+      });
+      expect(api.start).toHaveBeenCalledOnce();
+      expect(api.send).toHaveBeenCalledOnce();
+    }
+  );
 });

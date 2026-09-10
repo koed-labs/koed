@@ -128,13 +128,26 @@ describe("first Conversation prompt retries", () => {
       await enter("Original prompt");
       await submit();
       expect(send).toHaveBeenCalledOnce();
-      expect(onStarted).not.toHaveBeenCalled();
+      expect(onStarted).toHaveBeenCalledOnce();
+      expect(onStarted).toHaveBeenLastCalledWith(
+        conversation,
+        "starting",
+        start.mock.calls[0]![0],
+        expect.objectContaining({
+          prompt: "Original prompt",
+          clientUserMessageId: send.mock.calls[0]![0].clientUserMessageId,
+          status: outcome === "uncertain" ? "reconciling" : "rejected"
+        })
+      );
       expect(textarea.disabled).toBe(outcome === "uncertain");
       if (outcome === "rejected") await enter("Edited prompt");
       await submit();
       expect(start.mock.calls[1]![0]).toEqual(start.mock.calls[0]![0]);
       const first = send.mock.calls[0]![0];
       const retry = send.mock.calls[1]![0];
+      expect(onStarted.mock.calls[0]![3].status).toBe(
+        outcome === "uncertain" ? "reconciling" : "rejected"
+      );
       if (outcome === "uncertain") expect(retry).toEqual(first);
       else {
         expect(retry.prompt).toBe("Edited prompt");

@@ -1152,7 +1152,6 @@ function StoreConversation({
   pendingCanonicalConversation,
   managedDraft,
   onRetryManagedConversation,
-  onStopControlChange,
   onInspectEvent,
   project,
   routeSessionId,
@@ -1169,7 +1168,6 @@ function StoreConversation({
   pendingCanonicalConversation: boolean;
   managedDraft: ManagedConversationDraft | null;
   onRetryManagedConversation: (() => void) | null;
-  onStopControlChange: (control: ManagedConversationStopControl | null) => void;
   onInspectEvent?: (selection: PersonalMemoryInspectorEvent) => void;
   project: PersonalDesktopProject;
   routeSessionId: string;
@@ -1546,7 +1544,6 @@ function StoreConversation({
           startupStatus={managedDraft?.status ?? null}
           startupMessage={managedDraft?.message ?? ""}
           onRetryStartup={onRetryManagedConversation}
-          onStopControlChange={onStopControlChange}
           managedConversationRecoveryRevision={
             managedConversationRecoveryRevision
           }
@@ -1606,11 +1603,6 @@ type ComposerState =
   | { status: "reconciling"; message: string }
   | { status: "read_only"; message: string }
   | { status: "error"; message: string };
-
-type ManagedConversationStopControl = {
-  disabled: boolean;
-  stop: () => void;
-};
 
 const transferLifecycleMessage = (
   transfer: Awaited<
@@ -1953,7 +1945,6 @@ function ManagedConversationComposer({
   startupMessage,
   startupStatus,
   onRetryStartup,
-  onStopControlChange,
   managedConversationRecoveryRevision,
   managedConversationUpdate,
   contextAttachments,
@@ -1974,7 +1965,6 @@ function ManagedConversationComposer({
   startupMessage: string;
   startupStatus: ManagedConversationDraft["status"] | null;
   onRetryStartup: (() => void) | null;
-  onStopControlChange: (control: ManagedConversationStopControl | null) => void;
   managedConversationRecoveryRevision: number;
   managedConversationUpdate: PersonalMemoryWorkspaceProps["managedConversationUpdate"];
   contextAttachments: Array<
@@ -2383,6 +2373,12 @@ function ManagedConversationComposer({
     submissionInFlightRef.current = false;
     submissionRef.current = null;
     setResolvedConversation(conversation);
+    if (initialPrompt?.status === "reconciling") {
+      setState({ status: "reconciling", message: initialPrompt.message });
+      return () => {
+        active = false;
+      };
+    }
     if (startupStatus === "starting") {
       setState({
         status: "starting",
@@ -2398,12 +2394,6 @@ function ManagedConversationComposer({
         message:
           startupMessage || "Koed is reconciling this Conversation safely."
       });
-      return () => {
-        active = false;
-      };
-    }
-    if (initialPrompt?.status === "reconciling") {
-      setState({ status: "reconciling", message: initialPrompt.message });
       return () => {
         active = false;
       };
@@ -2588,7 +2578,7 @@ function ManagedConversationComposer({
       setSettingsChange(null);
       setSettingsError("");
       void refreshRuntimeSnapshot(resolvedConversation.executionId);
-      void persistDraft("", false);
+      void persistDraft(draftRef.current, false);
       setState(
         startupStatus === "starting"
           ? {
@@ -2666,28 +2656,21 @@ function ManagedConversationComposer({
     [api, resolvedConversation.executionId, runtimeActionBusy]
   );
 
-  const controlRuntime = useCallback(
-    (operation: "interrupt" | "stop") => {
-      const executionId = resolvedConversation.executionId;
-      if (!executionId || !runtime || runtimeActionBusy) return;
-      setRuntimeActionBusy(true);
-      void api[operation]({
+  const interruptRuntime = useCallback(() => {
+    const executionId = resolvedConversation.executionId;
+    if (!executionId || !runtime || runtimeActionBusy) return;
+    if (runtime.executionState !== "running") return;
+    setRuntimeActionBusy(true);
+    void api
+      .interrupt({
         executionId,
         executionGeneration: runtime.executionGeneration,
-        idempotencyKey: `desktop-${operation}:${crypto.randomUUID()}`
+        idempotencyKey: `desktop-interrupt:${crypto.randomUUID()}`
       })
-        .then(() => setRuntimeActionBusy(false))
-        .catch(() => setRuntimeActionBusy(false));
-    },
-    [api, resolvedConversation.executionId, runtime, runtimeActionBusy]
-  );
+      .then(() => setRuntimeActionBusy(false))
+      .catch(() => setRuntimeActionBusy(false));
+  }, [api, resolvedConversation.executionId, runtime, runtimeActionBusy]);
 
-  const stopDisabled =
-    !runtime ||
-    runtimeActionBusy ||
-    ["stopping", "stopped", "failed", "fenced"].includes(
-      runtime.executionState
-    );
   useEffect(() => {
     const command = runtime?.latestCommand;
     if (
@@ -2716,17 +2699,6 @@ function ManagedConversationComposer({
     onContextAttachmentsChanged,
     refreshSettingsOptions
   ]);
-  useEffect(() => {
-    if (!runtime) {
-      onStopControlChange(null);
-      return;
-    }
-    onStopControlChange({
-      disabled: stopDisabled,
-      stop: () => controlRuntime("stop")
-    });
-    return () => onStopControlChange(null);
-  }, [controlRuntime, onStopControlChange, runtime, stopDisabled]);
 
   const terminalRuntimeFailure =
     runtime?.executionState === "failed" || startupStatus === "failed";
@@ -2781,7 +2753,9 @@ function ManagedConversationComposer({
         ))}
       {!terminalRuntimeFailure &&
       (state.status === "error" ||
-        (state.status === "reconciling" && startupStatus === "reconciling")) ? (
+        (state.status === "reconciling" &&
+          (startupStatus === "reconciling" ||
+            initialPrompt?.status === "reconciling"))) ? (
         <p
           className="personal-managed-status"
           role={state.status === "error" ? "alert" : "status"}
@@ -2845,9 +2819,7 @@ function ManagedConversationComposer({
           setDraftError("");
           submissionRef.current = null;
         }}
-        onSubmit={() =>
-          promptActive ? controlRuntime("interrupt") : void submit()
-        }
+        onSubmit={() => (promptActive ? interruptRuntime() : void submit())}
         placeholder={
           state.status === "ready" ||
           state.status === "starting" ||
@@ -3337,8 +3309,6 @@ function SessionDetail({
   const [titleDraft, setTitleDraft] = useState(title);
   const [titleBusy, setTitleBusy] = useState(false);
   const [titleError, setTitleError] = useState<string | null>(null);
-  const [managedStopControl, setManagedStopControl] =
-    useState<ManagedConversationStopControl | null>(null);
 
   useEffect(() => {
     if (!editingTitle) setTitleDraft(title);
@@ -3483,18 +3453,6 @@ function SessionDetail({
             store={store}
             thread={thread}
           />
-          {managedStopControl ? (
-            <button
-              aria-label="Stop managed Conversation"
-              className="personal-session-stop-button"
-              disabled={managedStopControl.disabled}
-              onClick={managedStopControl.stop}
-              title="Stop managed Conversation"
-              type="button"
-            >
-              <X aria-hidden="true" />
-            </button>
-          ) : null}
         </div>
       </header>
       <div className="personal-conversation-host">
@@ -3514,7 +3472,6 @@ function SessionDetail({
           pendingCanonicalConversation={pendingCanonicalConversation}
           managedDraft={managedDraft}
           onRetryManagedConversation={onRetryManagedConversation}
-          onStopControlChange={setManagedStopControl}
           project={project}
           routeSessionId={routeSessionId}
           store={store}

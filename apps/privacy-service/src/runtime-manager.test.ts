@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DeterministicPrivacyRuntime } from "./runtime.js";
 import {
   PrivacyProviderSwitchError,
@@ -413,6 +413,118 @@ describe("Privacy Filter startup validation cache", () => {
     expect(texts).toHaveLength(1);
     expect(warm.status().calibrations).toEqual([]);
     await warm.dispose();
+  });
+
+  it.each(["coreml", "cuda", "dml"] as const)(
+    "calibrates fresh auto %s after readiness and reuses its measurements on restart",
+    async (accelerator) => {
+      let saved: Awaited<
+        ReturnType<
+          import("./runtime-manager.js").PrivacyValidationCache["read"]
+        >
+      >;
+      let calibrationStarted = false;
+      let releaseCalibration!: () => void;
+      const calibrationGate = new Promise<void>((resolve) => {
+        releaseCalibration = resolve;
+      });
+      const texts: string[] = [];
+      const options = {
+        preference: "auto" as const,
+        candidateProviders: ["cpu", accelerator] as PrivacyRuntimeProvider[],
+        observeCuda: normalCuda,
+        minimumAutoSpeedupRatio: 0,
+        acceleratorIdleUnloadSeconds: 0,
+        validationCache: {
+          read: async () => saved,
+          write: async (
+            _runtime: unknown,
+            value: NonNullable<typeof saved>
+          ) => {
+            saved = value;
+          }
+        },
+        factory: (provider: PrivacyRuntimeProvider) => {
+          const runtime = new FakeRuntime(provider);
+          const classify = runtime.classify.bind(runtime);
+          runtime.classify = async (text) => {
+            texts.push(text);
+            if (
+              text.startsWith("Synthetic project discussion") &&
+              !calibrationStarted
+            ) {
+              calibrationStarted = true;
+              await calibrationGate;
+            }
+            return classify(text);
+          };
+          return runtime;
+        }
+      };
+      const manager = await PrivacyRuntimeManager.create(options);
+      expect(manager.provider).toBe("cpu");
+      expect(manager.isReady()).toBe(true);
+      expect(calibrationStarted).toBe(false);
+      await vi.waitFor(() => expect(calibrationStarted).toBe(true));
+      try {
+        expect(manager.isReady()).toBe(true);
+        expect((await manager.classify("foreground request")).decodedText).toBe(
+          "foreground request"
+        );
+      } finally {
+        releaseCalibration();
+      }
+      await vi.waitFor(() => expect(manager.provider).toBe(accelerator));
+      expect(saved?.calibrations.map((item) => item.provider)).toEqual([
+        "cpu",
+        accelerator
+      ]);
+      await manager.dispose();
+      texts.length = 0;
+      const warm = await PrivacyRuntimeManager.create(options);
+      expect(warm.provider).toBe(accelerator);
+      expect(
+        texts.some((text) => text.startsWith("Synthetic project discussion"))
+      ).toBe(false);
+      await warm.dispose();
+    }
+  );
+
+  it("keeps CPU ready when deferred auto validation rejects an accelerator", async () => {
+    const manager = await PrivacyRuntimeManager.create({
+      preference: "auto",
+      candidateProviders: ["cpu", "coreml"],
+      factory: (provider) =>
+        new FakeRuntime(provider, { parityMismatch: provider === "coreml" })
+    });
+    await vi.waitFor(() =>
+      expect(manager.status().lastFailure?.code).toBe("provider_parity_failed")
+    );
+    expect(manager.provider).toBe("cpu");
+    expect(manager.isReady()).toBe(true);
+    await manager.dispose();
+  });
+
+  it("cancels deferred calibration when the Operator selects CPU or shuts down", async () => {
+    for (const action of ["cpu", "dispose"] as const) {
+      const factory = vi.fn(
+        (provider: PrivacyRuntimeProvider) => new FakeRuntime(provider)
+      );
+      const clearTimeout = vi.fn<typeof globalThis.clearTimeout>();
+      const manager = await PrivacyRuntimeManager.create({
+        preference: "auto",
+        candidateProviders: ["cpu", "coreml"],
+        factory,
+        setTimeout: (() => ({
+          unref: () => undefined
+        })) as unknown as typeof globalThis.setTimeout,
+        clearTimeout
+      });
+      if (action === "cpu") await manager.switchProvider("cpu");
+      await manager.dispose();
+      expect(clearTimeout).toHaveBeenCalledOnce();
+      expect(factory).toHaveBeenCalledTimes(1);
+    }
   });
 
   it("uses cached auto measurements without recalibrating either provider", async () => {

@@ -60,7 +60,8 @@ export function ConversationInput({
                 !composingRef.current
               ) {
                 event.preventDefault();
-                onSubmit();
+                if (!disabled && !action.disabled && action.kind === "send")
+                  onSubmit();
               }
             }}
             placeholder={placeholder}

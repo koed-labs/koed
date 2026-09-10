@@ -215,6 +215,9 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
   private idleTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
   private idleUnloadPromise: Promise<void> | undefined;
   private acceleratorIdleUnloaded = false;
+  private autoCalibrationTimer:
+    | ReturnType<typeof globalThis.setTimeout>
+    | undefined;
 
   private constructor(
     runtime: LoadablePrivacyRuntime,
@@ -301,6 +304,7 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
       }
     }
     manager.scheduleIdleUnload();
+    manager.scheduleAutoCalibration();
     return manager;
   }
 
@@ -381,6 +385,7 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
     preference: PrivacyRuntimePreference,
     initial = false
   ): Promise<PrivacyRuntimeStatus> {
+    this.cancelAutoCalibration();
     const run = async (): Promise<PrivacyRuntimeStatus> => {
       this.cancelIdleUnload();
       await this.idleUnloadPromise;
@@ -459,11 +464,13 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
           : await loadCandidate(this.options.factory, "cpu");
       try {
         this.calibrations.set("cpu", await calibrate(cpu, this.options.now));
+        await this.saveValidation();
       } finally {
         if (cpu !== this.active.runtime) await cpu.dispose?.();
       }
     }
-    // An explicit control request may measure providers; startup never does.
+    // Deferred auto calibration and explicit controls can measure providers.
+    // Initial readiness never waits for a benchmark.
     if (
       !initial &&
       preference === "auto" &&
@@ -588,6 +595,37 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
     await slot.runtime.dispose?.();
   }
 
+  private scheduleAutoCalibration(): void {
+    const accelerator = this.options.candidateProviders.find(
+      (provider) => provider !== "cpu"
+    );
+    if (
+      this.requestedProvider !== "auto" ||
+      !accelerator ||
+      (this.calibrations.has("cpu") && this.calibrations.has(accelerator))
+    )
+      return;
+    // Release CPU readiness before optional accelerator work. This uses the
+    // same switch queue as provider controls, so a later explicit choice wins.
+    this.autoCalibrationTimer = this.options.setTimeout(() => {
+      this.autoCalibrationTimer = undefined;
+      if (this.requestedProvider !== "auto") return;
+      void this.switchProvider("auto").catch(() => {
+        this.fallbackReason =
+          this.lastFailure?.code === "provider_parity_failed"
+            ? "provider_parity_failed"
+            : "provider_initialization_failed";
+      });
+    }, 0);
+    this.autoCalibrationTimer.unref?.();
+  }
+
+  private cancelAutoCalibration(): void {
+    if (this.autoCalibrationTimer === undefined) return;
+    this.options.clearTimeout(this.autoCalibrationTimer);
+    this.autoCalibrationTimer = undefined;
+  }
+
   private cancelIdleUnload(): void {
     if (this.idleTimer === undefined) return;
     this.options.clearTimeout(this.idleTimer);
@@ -642,9 +680,11 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
   }
 
   async dispose(): Promise<void> {
+    this.cancelAutoCalibration();
     this.cancelIdleUnload();
     await this.idleUnloadPromise;
     await this.switchTail.catch(() => undefined);
+    this.cancelIdleUnload();
     const slots = [this.active, ...this.retired];
     await Promise.all(
       slots.map(async (slot) => {

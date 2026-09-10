@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act, useState } from "react";
+import { act, useState, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -92,4 +92,53 @@ describe("ConversationInput", () => {
     expect(onSubmit).toHaveBeenCalledTimes(2);
     expect(container.querySelector(".conversation-settings")).not.toBeNull();
   });
+  it.each([
+    ["send", false, 1],
+    ["send", true, 0],
+    ["interrupt", false, 0],
+    ["interrupt", true, 0],
+    ["busy", true, 0]
+  ] as const)(
+    "Enter with %s (disabled=%s) submits only an enabled send",
+    async (kind, disabled, count) => {
+      const onSubmit = vi.fn();
+      const props: ComponentProps<typeof ConversationInput> = {
+        action: { kind, disabled, label: "Action" },
+        label: "Prompt",
+        placeholder: "Prompt",
+        value: "Follow-up draft",
+        onChange: vi.fn(),
+        onSubmit,
+        settings: {
+          options: null,
+          selection: {
+            instanceId: "",
+            model: "",
+            reasoningEffort: "",
+            permissionMode: ""
+          },
+          onChange: vi.fn()
+        }
+      };
+      await act(async () => root.render(<ConversationInput {...props} />));
+      const event = new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true
+      });
+      await act(async () => {
+        container.querySelector("textarea")!.dispatchEvent(event);
+      });
+      expect(event.defaultPrevented).toBe(true);
+      expect(onSubmit).toHaveBeenCalledTimes(count);
+      if (kind === "interrupt" && !disabled) {
+        await act(async () =>
+          container
+            .querySelector<HTMLButtonElement>('[aria-label="Action"]')!
+            .click()
+        );
+        expect(onSubmit).toHaveBeenCalledOnce();
+      }
+    }
+  );
 });

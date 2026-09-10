@@ -28,15 +28,21 @@ One Desktop lifecycle module owns provisional Conversations, identity updates,
 startup retries, and encrypted recovery. App owns navigation and recent history.
 The Project view consumes lifecycle state without changing the recovery map.
 Recovery writes run in order and remain specific to the current owner.
-Desktop opens the Project Conversation detail after the first prompt enters the
-managed queue. It retains stable launch and message identities during uncertain
-responses, so recovery does not create a second execution or prompt. After the
-first message is accepted, Desktop stores a bounded recovery record in its
-encrypted, owner-scoped secret store. A restart can restore the provisional
+Desktop opens the Project Conversation detail after start, including when the
+first prompt has an uncertain delivery response. It retains stable launch and
+message identities during uncertain responses, so recovery does not create a
+second execution or prompt. After the
+start succeeds, Desktop stores the launch and first-prompt identities in a
+bounded recovery record, including uncertain delivery, in its encrypted,
+owner-scoped secret store. A restart can restore the provisional
 Conversation before capture has supplied its canonical session identity.
 After inspection reports a failed, stopped, or fenced execution, Retry creates
 and stores a new start key before dispatch. The replacement execution retains
 the existing navigation route. Uncertain requests retain their start key.
+
+Enter submits only an enabled Send action. It never invokes Interrupt during
+startup or an active turn. The Interrupt button requires a running execution,
+and the control handler checks that state again.
 
 An Independent launch uses an owner-local Independent Project for navigation.
 The API creates a separate Koed-owned working directory for each execution. A

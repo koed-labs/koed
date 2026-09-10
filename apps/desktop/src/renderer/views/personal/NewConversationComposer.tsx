@@ -145,14 +145,14 @@ export function NewConversationComposer({
             "Koed could not confirm whether the first prompt was accepted. It will not submit the prompt again automatically.";
         }
       }
-      if (!initialPrompt || initialPrompt.status === "queued") {
-        onStarted(conversation, result.status, launch, initialPrompt);
-      } else {
-        setError(
-          initialPrompt?.message ??
-            "The first message was not accepted. Your draft is available."
-        );
-      }
+      // The execution exists even when first-prompt delivery is uncertain.
+      // Hand its launch and prompt identities to owner-scoped recovery.
+      onStarted(
+        conversation,
+        result.status,
+        launch,
+        initialPrompt ? { ...initialPrompt } : undefined
+      );
     } catch (cause) {
       setError(
         cause instanceof Error

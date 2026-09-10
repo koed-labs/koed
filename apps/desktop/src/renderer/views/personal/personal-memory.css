@@ -662,8 +662,7 @@
   padding: 0.3rem;
 }
 
-.personal-session-manage-button,
-.personal-session-stop-button {
+.personal-session-manage-button {
   align-items: center;
   background: transparent;
   border: 1px solid var(--border);
@@ -684,17 +683,10 @@
   color: var(--foreground);
 }
 
-.personal-session-stop-button:hover:not(:disabled) {
-  background: color-mix(in oklab, var(--destructive) 10%, transparent);
-  border-color: color-mix(in oklab, var(--destructive) 45%, var(--border));
-  color: var(--destructive);
-}
-
 .personal-session-title-edit:focus-visible,
 .personal-session-title-editor button:focus-visible,
 .personal-session-title-editor input:focus-visible,
-.personal-session-manage-button:focus-visible,
-.personal-session-stop-button:focus-visible {
+.personal-session-manage-button:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
@@ -705,8 +697,7 @@
   width: 0.9rem;
 }
 
-.personal-session-manage-button svg,
-.personal-session-stop-button svg {
+.personal-session-manage-button svg {
   height: 1.1rem;
   width: 1.1rem;
 }
