@@ -80,9 +80,7 @@ export function PersonalAskView({
       [...projects]
         .filter(
           (project) =>
-            Boolean(project.path) &&
-            project.contextKind !== "independent" &&
-            project.name !== "Independent"
+            Boolean(project.path) && project.contextKind !== "independent"
         )
         .sort(
           (left, right) =>

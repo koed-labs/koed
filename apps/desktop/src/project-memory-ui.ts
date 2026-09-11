@@ -1,3 +1,4 @@
+import { localPathDescendant, normalizedLocalPath } from "./local-path.js";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 
 export type DesktopThreadGroup = {
@@ -98,10 +99,7 @@ export const repoUrlFromRemoteDisplay = (remoteDisplay: string): string =>
 export const repoLabelFromRemoteDisplay = (remoteDisplay: string): string =>
   repositoryPresentationFromRemoteDisplay(remoteDisplay).label;
 
-const normalizedPath = (value: string | null | undefined): string | null => {
-  const trimmed = value?.trim().replace(/\/+$/, "");
-  return trimmed || null;
-};
+const normalizedPath = normalizedLocalPath;
 
 const metadataPaths = (project: DesktopProjectMetadata): string[] =>
   [project.path.projectRoot, project.path.cwd]
@@ -232,12 +230,8 @@ export const mergeProjectSources = (
       const root = normalizedPath(
         metadata.path.projectRoot ?? metadata.path.cwd
       )!;
-      const runtimeRoot =
-        root.slice(0, -"projects/Independent".length) +
-        "managed-conversations/independent/";
-      const suffix = normalized?.startsWith(runtimeRoot)
-        ? normalized.slice(runtimeRoot.length)
-        : "";
+      const runtimeRoot = `${root}/../../managed-conversations/independent`;
+      const suffix = localPathDescendant(runtimeRoot, normalized) ?? "";
       return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
         suffix
       );

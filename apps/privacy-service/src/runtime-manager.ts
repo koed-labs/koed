@@ -272,22 +272,18 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
       ?.read(cpu)
       .catch(() => undefined);
     let parityBaseline: ParityBaseline;
-    let cacheMatches = false;
+    let cacheMatches: boolean;
     try {
-      if (cached) {
-        const smoke = await parityOutput(cpu, PARITY_CORPUS.slice(0, 1));
-        cacheMatches =
-          JSON.stringify(smoke[0]) === JSON.stringify(cached.baseline[0]);
-      }
-      parityBaseline =
-        cacheMatches && cached ? cached.baseline : await parityOutput(cpu);
+      parityBaseline = await parityOutput(cpu);
+      cacheMatches =
+        cached !== undefined &&
+        JSON.stringify(parityBaseline) === JSON.stringify(cached.baseline);
     } catch (error) {
       await cpu.dispose?.();
       throw error;
     }
     const manager = new PrivacyRuntimeManager(cpu, parityBaseline, resolved);
     if (cacheMatches && cached) {
-      for (const provider of cached.providers) manager.verified.add(provider);
       for (const calibration of cached.calibrations)
         manager.calibrations.set(calibration.provider, calibration);
     }
@@ -518,14 +514,9 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
       this.recordFailure(target, "provider_parity_failed");
       throw new PrivacyProviderSwitchError("provider_parity_failed", target);
     }
-    const parityMatches = await (
-      this.verified.has(target)
-        ? parityOutput(candidate, PARITY_CORPUS.slice(0, 1)).then(
-            (output) =>
-              JSON.stringify(output[0]) ===
-              JSON.stringify(this.parityBaseline[0])
-          )
-        : equivalentMasking(this.parityBaseline, candidate)
+    const parityMatches = await equivalentMasking(
+      this.parityBaseline,
+      candidate
     ).catch(() => false);
     if (!parityMatches) {
       await candidate.dispose?.();
@@ -582,7 +573,10 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
     await this.options.validationCache
       ?.write(this, {
         baseline: this.parityBaseline,
-        providers: [...this.verified],
+        // Cached provider identities retain measurements, never current verification.
+        providers: [
+          ...new Set([...this.verified, ...this.calibrations.keys()])
+        ],
         calibrations: [...this.calibrations.values()]
       })
       .catch(() => undefined);

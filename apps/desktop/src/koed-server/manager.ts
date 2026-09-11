@@ -1,3 +1,4 @@
+import { localPathDescendant, normalizedLocalPath } from "../local-path.js";
 import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import WebSocket from "ws";
@@ -2601,12 +2602,11 @@ export const createKoedServerManager = ({
         listProjectMetadata(resolveKoedServerPaths(environment)).projects ?? []
       ).map((metadata) => [metadata.localProjectId, metadata])
     );
-    const standaloneRuntimeRoot =
-      resolve(
-        resolveKoedHome(environment),
-        "managed-conversations",
-        "independent"
-      ) + "/";
+    const standaloneRuntimeRoot = resolve(
+      resolveKoedHome(environment),
+      "managed-conversations",
+      "independent"
+    );
     const recentProjectName = (project: {
       id: string;
       name: string;
@@ -2620,7 +2620,10 @@ export const createKoedServerManager = ({
         "projects",
         "Independent"
       );
-      if (path === independentRoot || path?.startsWith(standaloneRuntimeRoot))
+      if (
+        normalizedLocalPath(path) === normalizedLocalPath(independentRoot) ||
+        localPathDescendant(standaloneRuntimeRoot, path) !== null
+      )
         return "Chats";
       return metadata?.displayName || project.name;
     };
@@ -2690,7 +2693,7 @@ export const createKoedServerManager = ({
       "independent"
     );
     for (const path of localProjectPathsFrom(projects)) {
-      if (path.startsWith(`${standaloneRuntimeRoot}/`)) continue;
+      if (localPathDescendant(standaloneRuntimeRoot, path) !== null) continue;
       pendingProjectMetadataPaths.add(path);
     }
     if (projectMetadataReconciliation) return projectMetadataReconciliation;

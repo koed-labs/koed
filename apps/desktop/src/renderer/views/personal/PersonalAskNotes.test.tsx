@@ -314,6 +314,51 @@ describe("Personal Ask", () => {
     );
   });
 
+  it("shows an ordinary Project named Independent while excluding the verified Chats Project", async () => {
+    const ordinary: DesktopProject = {
+      id: "ordinary",
+      name: "Independent",
+      path: "/work/projects/Independent",
+      eventCount: 0,
+      threads: [],
+      catalogued: true,
+      discoveredAt: null,
+      lastSeenAt: null,
+      localProjectId: "ordinary",
+      branch: null,
+      remoteDisplay: null,
+      isWorktree: false
+    };
+    const chats: DesktopProject = {
+      ...ordinary,
+      id: "chats",
+      name: "Reserved Chats",
+      contextKind: "independent",
+      path: "/koed/projects/Independent",
+      localProjectId: "chats"
+    };
+    await act(async () => {
+      root.render(
+        <PersonalAskView
+          api={
+            {
+              loadAskThread: vi.fn(async () => [])
+            } as unknown as PersonalDesktopApi
+          }
+          markdownAdapters={adapters}
+          onNew={vi.fn()}
+          projects={[ordinary, chats]}
+        />
+      );
+    });
+    const projectNames = Array.from(
+      container.querySelectorAll("strong"),
+      (element) => element.textContent
+    );
+    expect(projectNames).toContain("Independent");
+    expect(projectNames).not.toContain("Reserved Chats");
+  });
+
   it("keeps the empty start page understandable when AI Clients are unavailable", async () => {
     const independent = {
       id: "project-independent",
