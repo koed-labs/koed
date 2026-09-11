@@ -1,5 +1,65 @@
 # @koed/koed
 
+## 0.8.0
+
+### Minor Changes
+
+- f6d438d: Allow Claude Code and Pi capture setup before execution authentication is
+  available. Keep automatic capture readiness separate from authenticated Recall,
+  Local Synthesis, and Managed Conversation capabilities.
+
+  Add clickable AI Client status details with recovery guidance and a copyable
+  Claude Code login command. Clear superseded sign-in guidance, avoid redundant
+  capability scans, and explain inspection timeouts without assuming repair is
+  required.
+
+  Label previously observed readiness and its timestamp when a new check fails,
+  keeping verification warnings separate from confirmed capability failures.
+
+  Keep AI Client status updates available during capture/import bursts by giving
+  status and settings requests a separate bounded rate limit. Explain throttled
+  capability publication instead of showing a generic refresh failure.
+
+  Use the same Pi model discovery for startup status and execution. Keep usable
+  models available after individual model failures, avoid duplicate catalog
+  queries, and show a pending state while discovery has not yet completed.
+
+  Keep all refresh failures unverified, including registration and network errors.
+  Show sign-in requirements and capability failures consistently in client cards
+  and details, with check errors scoped to the affected client.
+
+- e1a9b62: Run Personal Memory Answer as durable, encrypted PostgreSQL tasks owned by the
+  Local AI Runtime. Keep MCP, Claude Code, and Pi adapters stateless while they
+  wait for host-delivered completion, add fenced leases, cancellation, recovery,
+  progress-aware watchdogs, and replace the former single answer timeout with
+  separate no-progress and hard execution ceilings.
+- 375455c: Add managed Projects for Codex, Claude Code, and Pi with model and
+  permission controls, streaming, approvals, protected drafts, native resume,
+  handoff, and fork. Full access is the launch default; Pi approval modes use
+  Koed tool gates rather than an OS sandbox.
+
+  Add runner-owned Git worktrees, checkpoints, diff/restore, file browsing and
+  mentions, terminals, isolated development previews, and credential-scoped source
+  control for GitHub, GitLab, Bitbucket, and Azure DevOps. Add Conversation
+  presentation controls, child-Agent grouping, and provider-attributed usage.
+
+  Unify durable realtime delivery with bounded reconnect/replay, retain SSE, and
+  add opt-in HTTP/3/WebTransport. Add portable client state and peer-assisted
+  Personal Device Sync with encrypted delivery and durable relay fallback.
+
+  Verify native completion before managed Projection, fix capture and Restore
+  consistency, and reconcile streaming output and optimistic prompts across all
+  three clients. Preserve current Desktop startup and Shared Memory behavior,
+  add the combined coding Project migration, and isolate native container builds.
+
+  Harden checkpoint and terminal content handling, authenticated Git transport,
+  and scoped checkout actions. Preserve prior presentation choices during upgrade;
+  legacy managed executions require an explicit reset before migration.
+
+### Patch Changes
+
+- e1342ab: Turn Ask into a managed agent Conversation launcher with Project and Independent contexts, native folder selection, and unified recent Conversation history.
+
 ## 0.7.5
 
 ### Patch Changes
