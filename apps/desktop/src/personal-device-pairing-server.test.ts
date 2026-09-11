@@ -87,6 +87,22 @@ describe("Personal Device LAN pairing server", () => {
     }
   });
 
+  it("issues pairing links for Tailscale addresses", async () => {
+    const server = await startPersonalDevicePairingServer({
+      port: 0,
+      host: "127.0.0.1",
+      addresses: () => ["100.98.6.2"],
+      forwardControl: vi.fn()
+    });
+    try {
+      expect(server.createInvitation(baseInvitation()).url).toMatch(
+        /^http:\/\/100\.98\.6\.2:[1-9][0-9]*\/pair\//
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
   it("keeps the invitation secret out of HTTP and encrypts invitation data", async () => {
     const server = await startPersonalDevicePairingServer({
       port: 0,

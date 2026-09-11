@@ -257,16 +257,31 @@ paths, or key references.
 
 ### Personal Sync control commands
 
-`koed-server personal-sync` is bounded browser-session control-plane client;
-Authority owns group, policy, membership, current head, activation, relay, and
-worker outcome. Commands never report local enable/revoke success. Set only
-`PDS_CONTROL_URL` plus `PDS_BROWSER_SESSION_FD` (FD number, not session value).
-API Tokens and legacy credentials are rejected.
+`koed-server personal-sync` is a bounded control-plane client; Authority owns
+group, policy, membership, current head, activation, relay, and worker outcome.
+Commands never report local enable/revoke success. The ordinary control commands
+use `PDS_CONTROL_URL` plus `PDS_BROWSER_SESSION_FD` (FD number, not session
+value); API Tokens and legacy credentials are rejected.
+
+For an SSH-only joining device, `personal-sync join redeem` accepts the complete
+one-time Desktop invitation link, optionally checks `--expected-code`, submits
+the signed request over the encrypted invitation transport, waits for approval
+on the Authority device, and completes local enrollment. Use `--link-stdin` or
+`--link-fd` when avoiding the token-bearing link in shell history/process lists.
+It uses the Koed local Desktop credential only for the loopback reconciliation
+step; no Desktop window is required on the joining device. Redeem resolves the
+local API from Koed's configured port; set `PDS_LOCAL_CONTROL_URL` only when
+that API uses a non-default local URL. The joining User's OS credential store
+must be available to the SSH session (for example, an unlocked login Keychain
+on macOS); otherwise use an Operator-managed provider.
 
 ```bash
 node packages/koed-server/dist/cli.js personal-sync status --json
 node packages/koed-server/dist/cli.js personal-sync join request \
   --group-id "pds_group_id" --json
+node packages/koed-server/dist/cli.js personal-sync join redeem \
+  --link 'http://100.98.6.2:3310/pair/...#token=...' \
+  --expected-code "ABCD1234" --device-label studio --json
 node packages/koed-server/dist/cli.js personal-sync policy pause \
   --group-id "pds_group_id" --json
 node packages/koed-server/dist/cli.js personal-sync policy resume \
@@ -296,25 +311,28 @@ disables PDS only; Desktop never writes PDS secrets to plaintext state,
 configuration, or environment. Association and Remote Account Links alone
 synchronize nothing.
 
-### Same-network Desktop pairing
+### Same-network or Tailscale Desktop pairing
 
 After first-device Personal Device Group setup, open **Devices** on the
 Authority-hosting installation and choose **Pair another device**. Koed shows a
-QR code, copyable private-network link, eight-character comparison code, and
-expiry. The second Desktop may scan the QR, open the `koed-pair://` handoff, or
-paste the link under **Join with link**. Confirm that both devices show the same
-short code, then approve on the Authority-hosting installation. Joined devices
+QR code, copyable private-network or Tailscale link, eight-character
+comparison code, and expiry. The second Desktop may scan the QR, open the
+`koed-pair://` handoff, or paste the link under **Join with link**. Confirm
+that both devices show the same short code, then approve on the Authority-hosting
+installation. Joined devices
 are symmetric Personal Memory replicas. They receive encrypted packages
 directly when every recipient has a current reachable peer route, but V1 does
 not copy the Authority key or offer another invitation from those replicas.
 Unreachable devices continue through the configured relay.
 
-Pairing requires both devices to reach the inviting installation's private IPv4
-address on TCP port `3310`. The invitation lasts ten minutes, is invalidated
-after completion, and never transmits its secret in HTTP. Koed encrypts the
-ceremony at the application layer and then uses the existing signed PDS
-membership and encrypted relay protocol. Do not expose port `3310` to the
-public internet.
+Pairing requires both devices to reach the inviting installation's private
+IPv4 address on TCP port `3310`. This may be an RFC1918 LAN address or a
+Tailscale address in `100.64.0.0/10`; Tailscale must be configured so the
+inviting device's port is reachable over the tailnet. The invitation lasts ten
+minutes, is invalidated after completion, and never transmits its secret in
+HTTP. Koed encrypts the ceremony at the application layer and then uses the
+existing signed PDS membership and encrypted relay protocol. Do not expose
+port `3310` to the public internet.
 
 After enrollment, every Desktop keeps its private-network package receive path
 available for certificate-authenticated encrypted replication and restores it

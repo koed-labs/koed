@@ -15,6 +15,8 @@ export const isPrivateNetworkIpv4Address = (hostname: string): boolean => {
   }
   return (
     octets[0] === 10 ||
+    // Tailscale assigns nodes from the CGNAT 100.64.0.0/10 range.
+    (octets[0] === 100 && octets[1]! >= 64 && octets[1]! <= 127) ||
     octets[0] === 127 ||
     (octets[0] === 169 && octets[1] === 254) ||
     (octets[0] === 172 && octets[1]! >= 16 && octets[1]! <= 31) ||

@@ -238,7 +238,7 @@ describe("Devices modal", () => {
       if (command === "personal_sync_status") return status;
       if (command === "personal_sync_pairing_redeem") {
         throw new Error(
-          "Error invoking remote method 'koed:invoke': Error: Same-network pairing requires a private-network link issued by Koed."
+          "Error invoking remote method 'koed:invoke': Error: Same-network pairing requires a private-network or Tailscale link issued by Koed."
         );
       }
       throw new Error(`Unexpected command ${command}`);
@@ -261,7 +261,7 @@ describe("Devices modal", () => {
     );
 
     expect(container.textContent).toContain(
-      "Same-network pairing requires a private-network link issued by Koed."
+      "Same-network pairing requires a private-network or Tailscale link issued by Koed."
     );
     expect(container.textContent).not.toContain("remote method");
 

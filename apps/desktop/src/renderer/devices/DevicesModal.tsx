@@ -257,7 +257,7 @@ function PairingInvitation({
               ? "Confirm that the short code is the same on both devices before approving."
               : pairing.state === "approved"
                 ? "The other device is completing encrypted setup."
-                : "Both devices must be on the same private network. This invitation can be used once."}
+                : "Both devices must be reachable on the same private network or Tailscale network. This invitation can be used once."}
           </p>
           <div className="device-short-code" aria-label="Pairing short code">
             {pairing.shortCode}

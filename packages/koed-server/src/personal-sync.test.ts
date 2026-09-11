@@ -58,6 +58,31 @@ const controlEnv = (fd: number) => ({
 });
 
 describe("Personal Sync control client", () => {
+  it("requires a full invitation link for SSH pairing redemption", async () => {
+    await expect(
+      runPersonalSyncCommand(["join", "redeem"], pathsFor(root()), {})
+    ).rejects.toThrow("Use exactly one of --link, --link-stdin, or --link-fd.");
+  });
+
+  it("validates the optional SSH pairing code before network access", async () => {
+    await expect(
+      runPersonalSyncCommand(
+        [
+          "join",
+          "redeem",
+          "--link",
+          "http://100.98.6.2:3310/pair/11111111-2222-4333-8444-555555555555#token=abcdefghijklmnopqrstuvwxyzABCDEFGH123456789",
+          "--expected-code",
+          "not-a-code"
+        ],
+        pathsFor(root()),
+        {}
+      )
+    ).rejects.toThrow(
+      "--expected-code must be an eight-character hexadecimal code."
+    );
+  });
+
   it("runs the Desktop secret bridge provider through Electron's Node mode", () => {
     expect(
       personalSyncProviderEnvironment({

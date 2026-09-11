@@ -5,6 +5,7 @@ import {
   closeSync,
   mkdirSync,
   openSync,
+  readSync,
   realpathSync,
   writeFileSync
 } from "node:fs";
@@ -87,6 +88,7 @@ import {
   rotateDeviceIdentity
 } from "./device-identity.js";
 import { runPersonalSyncCommand } from "./personal-sync.js";
+import { runNativeSecretProvider } from "./native-secret-provider.js";
 import type { KoedServerDoctorResult } from "./types.js";
 
 export const usageText = `Usage: koed-server <command> [options]
@@ -105,6 +107,8 @@ Commands:
   personal-sync group bootstrap --json    Create group and encrypted recovery kit
   personal-sync recovery-kit create|verify --json
   personal-sync join request|challenge|complete --json
+  personal-sync join redeem (--link <link>|--link-stdin|--link-fd <fd>)
+    [--expected-code <code>] [--device-label <label>] --json
   personal-sync active-device approve|refresh --json
   personal-sync recovery approve|guidance --json
   personal-sync policy enable|pause|resume --json
@@ -460,6 +464,51 @@ const parseRoutePolicyUpdate = (args: string[]): UpstreamRoutePolicyUpdate => {
   return update;
 };
 
+const readSecretStdin = (): string | null => {
+  const maximum = 2_000_000;
+  const buffer = Buffer.allocUnsafe(maximum + 1);
+  let offset = 0;
+  try {
+    while (offset < buffer.length) {
+      const count = readSync(0, buffer, offset, buffer.length - offset, null);
+      if (count === 0) break;
+      offset += count;
+    }
+    if (offset > maximum) return null;
+    return buffer.subarray(0, offset).toString("utf8");
+  } finally {
+    buffer.fill(0);
+  }
+};
+
+const runNativeSecretProviderCli = async (
+  args: string[],
+  stdout: Pick<NodeJS.WritableStream, "write">
+): Promise<number> => {
+  const operation = args[1];
+  const reference = args[2];
+  if (
+    (operation !== "get" && operation !== "put" && operation !== "delete") ||
+    !reference ||
+    args.length !== 3
+  ) {
+    stdout.write(
+      "Usage: koed-server secret-provider <get|put|delete> <reference>\n"
+    );
+    return 1;
+  }
+  const value = operation === "put" ? readSecretStdin() : undefined;
+  if (operation === "put" && value === null) return 1;
+  const result = await runNativeSecretProvider(
+    operation,
+    reference,
+    value ?? undefined
+  );
+  if (!result.ok) return 1;
+  if (operation === "get" && result.value !== null) stdout.write(result.value);
+  return 0;
+};
+
 export const runKoedServerCli = async (
   args: string[],
   {
@@ -536,6 +585,10 @@ export const runKoedServerCli = async (
     if (wantsHelp || !command) {
       stdout.write(usageText);
       return 0;
+    }
+
+    if (command === "secret-provider") {
+      return await runNativeSecretProviderCli(args, stdout);
     }
 
     if (command === "status") {

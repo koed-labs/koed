@@ -269,13 +269,18 @@ material, proof references, paths, and fingerprints.
 
 ## Personal Device Sync V1 authority configuration
 
-PDS uses explicit secret-provider mode. Headless setup requires
-`PDS_SECRET_PROVIDER=headless` and `PDS_SECRET_PROVIDER_COMMAND`; Koed invokes
-that Operator-managed provider with a bounded `get`, `put`, or `delete`
-operation and an opaque reference. Provider `put` receives generated material
-on stdin and `get` returns it on stdout inside the local process boundary. No
-secret appears in command arguments, ordinary
-configuration, status, logs, queue payloads, or `KOED_HOME` state.
+PDS uses a secure secret provider. Local Koed installs automatically use the
+bundled native OS-backed provider (`keytar`) when no provider is configured;
+it stores PDS material in macOS Keychain, Windows Credential Manager, or the
+Linux Secret Service/KWallet backend. This makes standalone `koed-server`
+commands, including SSH-only pairing, work without Desktop or manual provider
+environment variables. If the native OS store is unavailable, configure an
+Operator-managed provider with `PDS_SECRET_PROVIDER=headless` and
+`PDS_SECRET_PROVIDER_COMMAND`; Koed invokes it with a bounded `get`, `put`, or
+`delete` operation and an opaque reference. Provider `put` receives generated
+material on stdin and `get` returns it on stdout inside the local process
+boundary. No secret appears in command arguments, ordinary configuration,
+status, logs, queue payloads, or `KOED_HOME` state.
 
 Packaged Desktop provisions a separate local Authority signing key through its
 platform-backed provider and gives the trusted local API child only the opaque
@@ -816,9 +821,14 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `EMBEDDING_LLAMA_N_CTX`, `EMBEDDING_LLAMA_N_BATCH`, and `EMBEDDING_LLAMA_N_UBATCH`: context, logical batch, and physical microbatch sizes. The defaults are 8192, 8192, and 512. The bounded context and microbatch avoid allocating accelerator buffers for unused 32K context or the entire logical batch while preserving the 4096-token embedding input contract.
 - `KOED_PACKAGED_DESKTOP=1`: selects packaged Desktop resolver behavior. Packaged mode does not use source-checkout fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `status --json` and `doctor --json` include runtime artifact source diagnostics such as `koed-home-runtime`, `packaged-resource`, or `source-checkout`.
 - `KOED_EMBEDDING_HOST`, `KOED_EMBEDDING_PORT`: host and port for the native bundled-local Embedding Service. Defaults to `127.0.0.1` and `EMBEDDING_SERVICE_HOST_PORT`/`3800`.
-- `KOED_PDS_LAN_PORT`: private-network Desktop pairing and local PDS relay
-  gateway port. Defaults to `3310`. Keep it off the public internet; changing
-  it is intended for a local port conflict, not as an authentication control.
+- `KOED_PDS_LAN_PORT`: private-network or trusted-overlay Desktop pairing and
+  local PDS relay gateway port. Defaults to `3310`. Tailscale addresses in
+  `100.64.0.0/10` are supported for pairing. Keep it off the public internet;
+  changing it is intended for a local port conflict, not as an authentication
+  control.
+- `PDS_LOCAL_CONTROL_URL`: optional local API URL used by SSH-only
+  `personal-sync join redeem`; when omitted, Koed derives it from the local API
+  port configuration.
 - `koed-server runtime status --provider homebrew --json`: macOS, Linux, and WSL diagnostic command for Homebrew-backed native runtime assets. It does not install packages or mutate Homebrew state.
 - `koed-server runtime install --provider homebrew --dependency-mode bundled-local --json`: explicit macOS, Linux, and WSL install command that may run Homebrew for missing `postgresql@17`, `pgvector`, and `llama.cpp`, links selected binaries under `KOED_HOME/runtime`, and writes metadata under `KOED_HOME/cache`.
 - `koed-server` writes Desktop's app-provisioned local credential under `KOED_HOME/config/local-app-credential.json` without exposing the API Token in status output.

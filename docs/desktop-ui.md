@@ -136,9 +136,9 @@ is accepted.
 
 Open **Devices** from the account rail. The Authority-hosting installation can
 choose **Pair another device** to show a one-use QR code, copyable
-private-network link, comparison code, and expiry. The joining device opens
-**Devices**, chooses **Join with link**, and waits for the active device on the
-Authority host to approve the matching code. Approval remains visibly in
+private-network or Tailscale link, comparison code, and expiry. The joining device
+opens **Devices**, chooses **Join with link**, and waits for the active device on
+the Authority host to approve the matching code. Approval remains visibly in
 progress until the joining device activates the new membership epoch; there is
 no periodic refresh. Joined replicas remain symmetric data-plane sources and
 replicas, but direct the User back to the Authority host when another device

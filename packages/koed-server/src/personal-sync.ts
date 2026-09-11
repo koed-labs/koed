@@ -4,6 +4,7 @@ import {
   createHash,
   generateKeyPairSync,
   randomBytes,
+  randomUUID,
   scryptSync,
   sign,
   type KeyObject
@@ -38,6 +39,9 @@ import {
   validatePdsGroupStatement
 } from "@koed/shared";
 import { ensureDeviceIdentity } from "./device-identity.js";
+import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
+import { redeemPersonalDevicePairing } from "./personal-device-pairing-client.js";
+import { runNativeSecretProvider } from "./native-secret-provider.js";
 import type { KoedServerPaths } from "./paths.js";
 
 const KIT_FORMAT = "koed/pds-recovery-kit/v1";
@@ -705,7 +709,12 @@ const runSecretProvider = async (
   environment: NodeJS.ProcessEnv,
   value?: string
 ): Promise<{ ok: boolean; stdout: string }> => {
+  const provider = environment.PDS_SECRET_PROVIDER?.trim();
   const command = environment.PDS_SECRET_PROVIDER_COMMAND?.trim();
+  if (!provider && !command) {
+    const result = await runNativeSecretProvider(operation, reference, value);
+    return { ok: result.ok, stdout: result.value ?? "" };
+  }
   if (
     !validSecretProvider(environment) ||
     !command ||
@@ -2371,6 +2380,26 @@ const readJsonFd = (args: string[], name: string): Record<string, unknown> => {
   }
 };
 
+const withTransientJsonFd = async <T>(
+  paths: KoedServerPaths,
+  payload: Record<string, unknown>,
+  operation: (fd: number) => Promise<T>
+): Promise<T> => {
+  mkdirSync(paths.runDir, { recursive: true, mode: 0o700 });
+  const path = resolve(
+    paths.runDir,
+    `pds-cli-${process.pid}-${randomUUID()}.json`
+  );
+  writeFileSync(path, JSON.stringify(payload), { flag: "wx", mode: 0o600 });
+  const fd = openSync(path, "r");
+  unlinkSync(path);
+  try {
+    return await operation(fd);
+  } finally {
+    closeSync(fd);
+  }
+};
+
 const submitTransition = async (
   args: string[],
   environment: NodeJS.ProcessEnv,
@@ -2412,6 +2441,66 @@ const submitTransition = async (
   };
 };
 
+const pairingLinkFromArgs = (args: string[]): string => {
+  const direct = args.includes("--link");
+  const stdin = args.includes("--link-stdin");
+  const fd = flag(args, "--link-fd");
+  if (Number(direct) + Number(stdin) + Number(fd !== undefined) !== 1) {
+    fail("Use exactly one of --link, --link-stdin, or --link-fd.");
+  }
+  if (direct) return requiredFlag(args, "--link");
+  const raw = readBoundedFd(stdin ? "0" : fd, "--link-fd", 4_096);
+  try {
+    return raw.toString("utf8").trim();
+  } finally {
+    raw.fill(0);
+  }
+};
+
+const redeemPairingFromCli = async (
+  args: string[],
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  deps: PersonalSyncDependencies
+): Promise<PersonalSyncResult> => {
+  const link = pairingLinkFromArgs(args);
+  const expectedShortCode = flag(args, "--expected-code")?.trim().toUpperCase();
+  if (expectedShortCode && !/^[0-9A-F]{8}$/.test(expectedShortCode)) {
+    fail("--expected-code must be an eight-character hexadecimal code.");
+  }
+  const deviceLabel = flag(args, "--device-label")?.trim() || "SSH device";
+  if (deviceLabel.length > 80 || /[\\r\\n\\0]/.test(deviceLabel)) {
+    fail("--device-label is invalid.");
+  }
+  const localControlUrl = controlOrigin({
+    ...loadRepoEnv(paths.repoRoot, environment),
+    ...environment,
+    PDS_CONTROL_URL:
+      environment.PDS_LOCAL_CONTROL_URL?.trim() ||
+      environment.PDS_CONTROL_URL?.trim() ||
+      resolveApiUrl(environment, loadRepoEnv(paths.repoRoot, environment))
+  });
+  return await redeemPersonalDevicePairing({
+    link,
+    ...(expectedShortCode ? { expectedShortCode } : {}),
+    deviceLabel,
+    requestId: randomUUID(),
+    localControlUrl,
+    koedHome: paths.koedHome,
+    environment,
+    fetch: deps.fetch,
+    runPersonalSync: async (nestedArgs, options) =>
+      await runPersonalSyncCommand(nestedArgs, paths, options.environment, {
+        ...deps,
+        desktopAuthorization: undefined,
+        pairingToken: options.pairingToken,
+        fetch: options.fetch
+      }),
+    withJsonFd: async (payload, operation) =>
+      await withTransientJsonFd(paths, payload, operation)
+  });
+};
+
 export const runPersonalSyncCommand = async (
   args: string[],
   paths: KoedServerPaths,
@@ -2427,6 +2516,8 @@ export const runPersonalSyncCommand = async (
     return createPairingInvitation(args.slice(2), environment, deps);
   if (area === "join" && action === "request")
     return createJoinChallenge(args.slice(2), paths, environment, deps);
+  if (area === "join" && action === "redeem")
+    return redeemPairingFromCli(args.slice(2), paths, environment, deps);
   if (area === "join" && action === "complete")
     return completeDeviceJoin(args.slice(2), paths, environment, deps);
   if (area === "join" && action === "bind-local-user")
