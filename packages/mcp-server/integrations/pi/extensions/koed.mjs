@@ -1,23 +1,15 @@
-/* global AbortController, AbortSignal, fetch */
+/* global AbortController, AbortSignal */
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
-import { URL } from "node:url";
 import { Type } from "typebox";
 import { resolveInstalledKoedHome } from "../koed-home.mjs";
+import { callLocalRuntimeTool } from "../runtime-client.mjs";
 
 const koedHome = resolveInstalledKoedHome(process.env, import.meta.url);
-const registrationPath = join(koedHome, "run", "local-ai-runtime.json");
 const signalDirectory = join(koedHome, "run", "pi-transcript-signals");
 const wakePath = join(koedHome, "run", "pi-transcript-watcher.wake");
-
-const readRegistration = () => {
-  const value = JSON.parse(readFileSync(registrationPath, "utf8"));
-  if (typeof value.url !== "string" || typeof value.authorization !== "string")
-    throw new Error("Koed Local AI Runtime registration is invalid");
-  return value;
-};
 
 const writePrivate = (target, content) => {
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
@@ -47,31 +39,15 @@ const signalWatcher = (ctx, eventName) => {
   writePrivate(wakePath, `${Date.now()}\n`);
 };
 
-const callTool = async (name, input, ctx, signal) => {
-  const registration = readRegistration();
-  const response = await fetch(new URL(`/v1/tools/${name}`, registration.url), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: registration.authorization
-    },
-    body: JSON.stringify({
-      input,
-      caller: {
-        cwd: ctx.cwd,
-        clientInfo: { name: "pi", version: "koed-extension-v1" }
-      }
-    }),
-    signal
+export const callTool = async (name, input, ctx, signal, invocationKey) => {
+  return callLocalRuntimeTool({
+    koedHome,
+    name,
+    input,
+    context: ctx,
+    signal,
+    invocationKey
   });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok)
-    throw new Error(
-      typeof body.error === "string"
-        ? body.error
-        : `Koed Local AI Runtime returned HTTP ${response.status}`
-    );
-  return body;
 };
 
 const answerParameters = Type.Object(
@@ -161,12 +137,18 @@ export default function koedExtension(pi) {
       label,
       description,
       parameters,
-      async execute(_id, params, signal, _update, ctx) {
+      async execute(id, params, signal, _update, ctx) {
         const combined = AbortSignal.any(
           [signal, sessionController?.signal].filter(Boolean)
         );
         try {
-          const result = await callTool(name, params, ctx, combined);
+          const result = await callTool(
+            name,
+            params,
+            ctx,
+            combined,
+            `${ctx.sessionManager.getSessionId()}:${id}`
+          );
           return {
             content: [{ type: "text", text: JSON.stringify(result) }],
             details: result

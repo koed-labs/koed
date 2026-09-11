@@ -18,7 +18,7 @@ import {
   readDesktopLocalCredentialAuthorization,
   resolveTeamCollaborationEnabled,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
-  MEMORY_ANSWER_TIMEOUT_MAX_MS,
+  MEMORY_ANSWER_HARD_TIMEOUT_MAX_MS,
   MEMORY_ANSWER_TRANSPORT_OVERHEAD_MS,
   personalDesktopChangeSchema,
   personalDesktopAskSubmitDataSchema,
@@ -1626,7 +1626,8 @@ export const createKoedServerManager = ({
       },
       {
         timeoutMs:
-          MEMORY_ANSWER_TIMEOUT_MAX_MS + MEMORY_ANSWER_TRANSPORT_OVERHEAD_MS,
+          MEMORY_ANSWER_HARD_TIMEOUT_MAX_MS +
+          MEMORY_ANSWER_TRANSPORT_OVERHEAD_MS,
         maxBytes: 2 * 1_024 * 1_024
       }
     );

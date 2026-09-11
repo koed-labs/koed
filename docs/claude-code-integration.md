@@ -6,7 +6,11 @@ Supported Capture Hook and supervised Transcript Watcher, Recall through the
 MCP Server, and optional local Synthesis through Claude Code.
 
 Koed does not require Codex for the Claude integration. Codex and Claude Code
-may both connect to the same local Koed deployment, but neither installation is
+use the same [durable Personal Memory Answer path](durable-memory-answer.md).
+Claude's Agent SDK still requires the matching tool result before model
+continuation, so the host waits while durable work continues without model
+polling. Both AI Clients may connect to the same local Koed deployment, but
+neither installation is
 used as a fallback for the other.
 
 Desktop-managed Conversations require explicit `claude` driver and instance

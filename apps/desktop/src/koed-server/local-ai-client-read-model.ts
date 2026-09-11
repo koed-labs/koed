@@ -136,7 +136,11 @@ const readHealth = (value: unknown) =>
     ? value
     : "unavailable";
 const readSupport = (value: unknown) =>
-  value === "supported" || value === "unsupported" ? value : "unknown";
+  value === "supported" ||
+  value === "requires_bridge" ||
+  value === "unsupported"
+    ? value
+    : "unknown";
 const readReadiness = (value: unknown) =>
   value === "ready" || value === "not_ready" ? value : "unknown";
 

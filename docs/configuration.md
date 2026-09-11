@@ -1019,7 +1019,17 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_ANSWER_AI_CLIENT_INSTANCE`: selected local AI Client instance. Default `<provider>.default`.
 - `MEMORY_ANSWER_MODEL`: provider model for MCP Memory Answer synthesis. The Codex default is `gpt-5.6-luna`; Claude uses `haiku` when unset, and Pi requires an explicit full provider/model ID.
 - `MEMORY_ANSWER_REASONING_EFFORT`: provider-supported reasoning effort. Default `low`.
-- `MEMORY_ANSWER_TIMEOUT_MS`: timeout for each local MCP Memory Answer app-server turn.
+- `MEMORY_ANSWER_NO_PROGRESS_TIMEOUT_MS`: maximum time without a completed
+  synthesis or retrieval progress milestone (default `300000`).
+- `MEMORY_ANSWER_HARD_TIMEOUT_MS`: hard ceiling for one local Memory Answer
+  execution regardless of progress (default `1800000`).
+- `KOED_LOCAL_AI_RUNTIME_MAX_ACTIVE_ANSWERS`: shared maximum number of active
+  Memory Answer executions across durable Personal and blocking Team/Desktop
+  work. Default `2`.
+- `KOED_LOCAL_AI_RUNTIME_MAX_QUEUED_ANSWERS`: per-owner maximum accepted
+  durable Personal backlog and maximum in-process blocking backlog. Default
+  `16`. Idempotent retries return their existing durable task even at the
+  limit.
 - `MEMORY_ANSWER_MAX_ATTEMPTS`: maximum local MCP Memory Answer synthesis attempts.
 - `MEMORY_ANSWER_MAX_SEARCHES`: maximum Koed RAG search tool calls per MCP Memory Answer worker turn.
 - `MEMORY_ANSWER_MAX_EXPANSIONS`: maximum Koed RAG evidence expansion tool calls per MCP Memory Answer worker turn.

@@ -7,6 +7,11 @@ Prometheus counters; operate the launch from `/ops/status`, `/v1/capabilities`,
 durable audit rows, and exact `event.name` log queries. Do not invent or alert on
 metric names that are not emitted.
 
+Memory Answer task lifecycle logs contain task identity, state, attempt, fence,
+and bounded error code only. Query, answer, evidence, caller path, and provider
+payload remain encrypted content and must not be logged. Local Runtime `/ready`
+reports the active task count.
+
 ## Safe Request Logs
 
 Request logs contain request ID, method, path without query values, route,

@@ -167,7 +167,9 @@ export const createRecordedCliExperienceReplayDependencies = (
     MEMORY_ANSWER_PROVIDER: "codex",
     MEMORY_ANSWER_MODEL: config.memory_answer.model.id,
     MEMORY_ANSWER_REASONING_EFFORT: config.memory_answer.model.reasoning_effort,
-    MEMORY_ANSWER_TIMEOUT_MS: String(config.timeouts.agent_seconds * 1_000),
+    MEMORY_ANSWER_HARD_TIMEOUT_MS: String(
+      config.timeouts.agent_seconds * 1_000
+    ),
     MEMORY_LCM_SUMMARY_PROVIDER: "codex",
     MEMORY_LCM_SUMMARY_MODEL: config.lcm_summary.model.id,
     MEMORY_LCM_SUMMARY_REASONING_EFFORT:

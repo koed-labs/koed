@@ -52,7 +52,13 @@ import {
   type LocalRuntimeToolName
 } from "./local-runtime-protocol.js";
 import { logger } from "./logger.js";
+import {
+  AnswerExecutionCapacity,
+  BlockingAnswerAdmission
+} from "./answer-admission.js";
 import { MemoryToolExecutor } from "./memory-tool-executor.js";
+import { MemoryAnswerTaskScheduler } from "./memory-answer-task-scheduler.js";
+import { MemoryAnswerTaskRuntime } from "./memory-answer-task-runtime.js";
 
 export const LOCAL_AI_RUNTIME_MAX_BODY_BYTES = 256 * 1024;
 export const LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS = 2;
@@ -74,7 +80,8 @@ const callerSchema = z
 const toolRequestSchema = z
   .object({
     input: z.record(z.string(), z.unknown()),
-    caller: callerSchema
+    caller: callerSchema,
+    invocationKey: z.string().trim().min(1).max(500).optional()
   })
   .strict();
 
@@ -98,75 +105,6 @@ const positiveInteger = (
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
-
-class AdmissionGate {
-  private active = 0;
-  private readonly queue: Array<{
-    resolve: (release: () => void) => void;
-    reject: (error: Error) => void;
-    signal?: AbortSignal;
-    abort?: () => void;
-  }> = [];
-
-  constructor(
-    private readonly maxActive: number,
-    private readonly maxQueued: number
-  ) {}
-
-  acquire(signal?: AbortSignal): Promise<() => void> {
-    if (signal?.aborted) {
-      return Promise.reject(new Error("Koed memory request was cancelled"));
-    }
-    if (this.active < this.maxActive) {
-      this.active += 1;
-      return Promise.resolve(this.releaseOnce());
-    }
-    if (this.queue.length >= this.maxQueued) {
-      return Promise.reject(
-        Object.assign(new Error("Koed Memory Answer queue is full"), {
-          statusCode: 429
-        })
-      );
-    }
-    return new Promise((resolve, reject) => {
-      const entry: (typeof this.queue)[number] = { resolve, reject, signal };
-      entry.abort = () => {
-        const index = this.queue.indexOf(entry);
-        if (index >= 0) this.queue.splice(index, 1);
-        reject(new Error("Koed memory request was cancelled"));
-      };
-      signal?.addEventListener("abort", entry.abort, { once: true });
-      this.queue.push(entry);
-    });
-  }
-
-  get diagnostics() {
-    return { active: this.active, queued: this.queue.length };
-  }
-
-  private releaseOnce(): () => void {
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.active -= 1;
-      this.drain();
-    };
-  }
-
-  private drain(): void {
-    while (this.active < this.maxActive && this.queue.length > 0) {
-      const entry = this.queue.shift()!;
-      entry.signal?.removeEventListener("abort", entry.abort!);
-      if (entry.signal?.aborted) {
-        entry.reject(new Error("Koed memory request was cancelled"));
-        continue;
-      }
-      this.active += 1;
-      entry.resolve(this.releaseOnce());
-    }
-  }
-}
 
 const readJsonBody = async (
   request: http.IncomingMessage
@@ -278,6 +216,17 @@ export interface LocalAiRuntimeToolExecutor {
     caller: z.infer<typeof callerSchema>,
     signal?: AbortSignal
   ): Promise<Record<string, unknown>>;
+  executeMemoryAnswerTask?(
+    input: Record<string, unknown>,
+    caller: z.infer<typeof callerSchema>,
+    taskId: string,
+    signal?: AbortSignal,
+    onProgress?: (status: string) => void
+  ): Promise<{ questionId: string; result: Record<string, unknown> }>;
+  durableMemoryAnswerEligible?(
+    input: Record<string, unknown>,
+    caller: z.infer<typeof callerSchema>
+  ): boolean;
 }
 
 export interface LocalAiRuntimeServices {
@@ -533,16 +482,55 @@ export const startLocalAiRuntime = async ({
   const apiClient = new MemoryApiClient(config);
   const services = await serviceFactory({ apiClient, environment, koedHome });
   const executor = services.executor;
-  const answerAdmission = new AdmissionGate(
-    positiveInteger(
-      environment.KOED_LOCAL_AI_RUNTIME_MAX_ACTIVE_ANSWERS,
-      LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS
-    ),
-    positiveInteger(
-      environment.KOED_LOCAL_AI_RUNTIME_MAX_QUEUED_ANSWERS,
-      LOCAL_AI_RUNTIME_DEFAULT_MAX_QUEUED_ANSWERS
-    )
+  const maxActiveAnswers = positiveInteger(
+    environment.KOED_LOCAL_AI_RUNTIME_MAX_ACTIVE_ANSWERS,
+    LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS
   );
+  const maxQueuedAnswers = positiveInteger(
+    environment.KOED_LOCAL_AI_RUNTIME_MAX_QUEUED_ANSWERS,
+    LOCAL_AI_RUNTIME_DEFAULT_MAX_QUEUED_ANSWERS
+  );
+  const answerCapacity = new AnswerExecutionCapacity(maxActiveAnswers);
+  const answerAdmission = new BlockingAnswerAdmission(
+    answerCapacity,
+    maxQueuedAnswers
+  );
+  const taskScheduler = executor.executeMemoryAnswerTask
+    ? new MemoryAnswerTaskScheduler(
+        apiClient,
+        {
+          executeMemoryAnswerTask: (
+            input,
+            caller,
+            taskId,
+            signal,
+            onProgress
+          ) =>
+            executor.executeMemoryAnswerTask!(
+              input,
+              caller,
+              taskId,
+              signal,
+              onProgress
+            )
+        },
+        {
+          executionCapacity: answerCapacity,
+          maxQueued: maxQueuedAnswers,
+          noProgressTimeoutMs: positiveInteger(
+            environment.MEMORY_ANSWER_NO_PROGRESS_TIMEOUT_MS,
+            5 * 60_000
+          ),
+          hardTimeoutMs: positiveInteger(
+            environment.MEMORY_ANSWER_HARD_TIMEOUT_MS,
+            30 * 60_000
+          )
+        }
+      )
+    : null;
+  const taskRuntime = taskScheduler
+    ? new MemoryAnswerTaskRuntime(taskScheduler, executor)
+    : null;
   const authorization = `Bearer ${randomBytes(32).toString("base64url")}`;
   const activeRequests = new Set<AbortController>();
 
@@ -564,7 +552,8 @@ export const startLocalAiRuntime = async ({
           json(response, 200, {
             ok: true,
             protocolVersion: LOCAL_AI_RUNTIME_PROTOCOL_VERSION,
-            memoryAnswers: answerAdmission.diagnostics
+            memoryAnswers:
+              taskScheduler?.diagnostics ?? answerAdmission.diagnostics
           });
           return;
         }
@@ -629,6 +618,32 @@ export const startLocalAiRuntime = async ({
           }
           return;
         }
+        if (
+          request.method === "POST" &&
+          requestUrl.pathname === "/v1/tasks/memory-answer"
+        ) {
+          if (!taskRuntime) {
+            json(response, 503, {
+              error: "Durable Memory Answer is unavailable"
+            });
+            return;
+          }
+          const parsed = toolRequestSchema.parse(await readJsonBody(request));
+          const task = await taskRuntime.start(parsed);
+          json(response, 202, { task });
+          return;
+        }
+        if (
+          taskRuntime &&
+          (await taskRuntime.handleResourceRoute(
+            request,
+            response,
+            requestUrl,
+            json
+          ))
+        ) {
+          return;
+        }
         const toolPrefix = "/v1/tools/";
         if (
           request.method !== "POST" ||
@@ -645,6 +660,18 @@ export const startLocalAiRuntime = async ({
           return;
         }
         const parsed = toolRequestSchema.parse(await readJsonBody(request));
+        if (
+          toolName === "memory_answer" &&
+          taskRuntime &&
+          taskRuntime.eligible(parsed)
+        ) {
+          const result = await taskRuntime.executeBlocking(
+            parsed,
+            requestAbort.signal
+          );
+          if (!requestAbort.signal.aborted) json(response, 200, result);
+          return;
+        }
         const release =
           toolName === "memory_answer"
             ? await answerAdmission.acquire(requestAbort.signal)
@@ -721,6 +748,8 @@ export const startLocalAiRuntime = async ({
           server.close(() => resolve());
           server.closeAllConnections();
         });
+        await taskScheduler?.close();
+        answerAdmission.close();
         await services.close();
       }
     };
@@ -728,6 +757,8 @@ export const startLocalAiRuntime = async ({
     if (server.listening) {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+    await taskScheduler?.close();
+    answerAdmission.close();
     await services.close();
     throw error;
   }

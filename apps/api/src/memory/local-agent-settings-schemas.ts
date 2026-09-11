@@ -95,7 +95,7 @@ export const aiClientModelDescriptorSchema = z
 export const aiClientCapabilityDescriptorSchema = z
   .object({
     id: z.enum(aiClientCapabilityIdValues),
-    support: z.enum(["supported", "unsupported"]),
+    support: z.enum(["supported", "requires_bridge", "unsupported"]),
     readiness: z.enum([
       "ready",
       "not_ready",
@@ -166,7 +166,7 @@ export const localMemoryAgentSettingsSchema = z
     ai_client_instance_id: aiClientInstanceIdSchema.optional(),
     model: z.string().trim().min(1),
     reasoning_effort: z.string().trim().min(1),
-    timeout_ms: z.coerce.number().int().min(1000).max(600000),
+    timeout_ms: z.coerce.number().int().min(1000).max(1800000),
     max_attempts: z.coerce.number().int().min(1).max(25)
   })
   .strict()

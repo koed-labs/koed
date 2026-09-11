@@ -134,7 +134,7 @@ export type {
 
 // Internal bootstrap identity shared by local capture and Desktop credentials.
 export const LOCAL_PERSONAL_USER_EMAIL = "local@koed.ai";
-export const MEMORY_ANSWER_TIMEOUT_MAX_MS = 600_000;
+export const MEMORY_ANSWER_HARD_TIMEOUT_MAX_MS = 1_800_000;
 export const MEMORY_ANSWER_TRANSPORT_OVERHEAD_MS = 30_000;
 
 export {
@@ -1791,3 +1791,28 @@ export {
   sourceContentLimits,
   type SourceContentExclusionReason
 } from "./source-content-policy.js";
+
+export {
+  acceptMemoryAnswerTaskSchema,
+  claimedMemoryAnswerTaskSchema,
+  claimMemoryAnswerTaskSchema,
+  completeMemoryAnswerTaskSchema,
+  failMemoryAnswerTaskSchema,
+  heartbeatMemoryAnswerTaskSchema,
+  memoryAnswerTaskClaimResponseSchema,
+  memoryAnswerTaskIsTerminal,
+  memoryAnswerTaskOrigins,
+  memoryAnswerTaskParamsSchema,
+  memoryAnswerTaskResponseSchema,
+  memoryAnswerTaskSchema,
+  memoryAnswerTaskStatuses,
+  type AcceptMemoryAnswerTaskInput,
+  type ClaimedMemoryAnswerTask,
+  type ClaimMemoryAnswerTaskInput,
+  type CompleteMemoryAnswerTaskInput,
+  type FailMemoryAnswerTaskInput,
+  type HeartbeatMemoryAnswerTaskInput,
+  type MemoryAnswerTask,
+  type MemoryAnswerTaskOrigin,
+  type MemoryAnswerTaskStatus
+} from "./memory-answer-task-contract.js";

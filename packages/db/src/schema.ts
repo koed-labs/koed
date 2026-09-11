@@ -2955,6 +2955,7 @@ export const encryptedFieldPayloads = pgTable(
         'curated_memory_proposals',
         'curated_memory_sources',
         'curated_memory_topics',
+        'memory_answer_tasks',
         'memory_embeddings',
         'memory_events',
         'memory_nodes',
@@ -3034,6 +3035,7 @@ export const encryptedFieldBackfillRuns = pgTable(
         'conversation_item_observations',
         'collaboration_messages',
         'collaboration_threads',
+        'memory_answer_tasks',
         'memory_embeddings',
         'memory_events',
         'memory_nodes',
@@ -11497,6 +11499,100 @@ export const memoryQuestions = pgTable(
   ]
 );
 
+export const memoryAnswerTasks = pgTable(
+  "memory_answer_tasks",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    visibility: visibilityScope("visibility").notNull().default("personal"),
+    origin: text("origin").notNull(),
+    invocationKey: text("invocation_key"),
+    requestSnapshot: jsonb("request_snapshot")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    resultSnapshot: jsonb("result_snapshot").$type<Record<string, unknown>>(),
+    questionId: uuid("question_id").references(() => memoryQuestions.id),
+    status: text("status").notNull().default("accepted"),
+    statusMessage: text("status_message"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(3),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    leaseOwner: text("lease_owner"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    fenceGeneration: integer("fence_generation").notNull().default(0),
+    cancelRequestedAt: timestamp("cancel_requested_at", {
+      withTimezone: true
+    }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    lastProgressAt: timestamp("last_progress_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    failedAt: timestamp("failed_at", { withTimezone: true }),
+    lastErrorCode: text("last_error_code"),
+    lastErrorMessage: text("last_error_message"),
+    version: integer("version").notNull().default(1),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    uniqueIndex("memory_answer_tasks_owner_invocation_unique")
+      .on(table.ownerUserId, table.origin, table.invocationKey)
+      .where(sql`${table.invocationKey} is not null`),
+    uniqueIndex("memory_answer_tasks_question_unique")
+      .on(table.questionId)
+      .where(sql`${table.questionId} is not null`),
+    index("memory_answer_tasks_claim_idx")
+      .on(table.status, table.availableAt, table.leaseUntil, table.id)
+      .where(
+        sql`${table.status} in ('accepted', 'running', 'cancel_requested')`
+      ),
+    index("memory_answer_tasks_owner_lookup_idx").on(
+      table.ownerUserId,
+      table.id
+    ),
+    index("memory_answer_tasks_expiry_idx")
+      .on(table.expiresAt)
+      .where(sql`${table.status} in ('completed', 'failed', 'cancelled')`),
+    check(
+      "memory_answer_tasks_personal_owner_check",
+      sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
+    ),
+    check(
+      "memory_answer_tasks_origin_check",
+      sql`${table.origin} in ('mcp', 'pi_extension')`
+    ),
+    check(
+      "memory_answer_tasks_status_check",
+      sql`${table.status} in ('accepted', 'running', 'cancel_requested', 'completed', 'failed', 'cancelled')`
+    ),
+    check(
+      "memory_answer_tasks_attempts_check",
+      sql`${table.attemptCount} >= 0 and ${table.maxAttempts} >= 1 and ${table.attemptCount} <= ${table.maxAttempts}`
+    ),
+    check(
+      "memory_answer_tasks_fence_version_check",
+      sql`${table.fenceGeneration} >= 0 and ${table.version} >= 1`
+    ),
+    check(
+      "memory_answer_tasks_lease_check",
+      sql`(${table.status} in ('running', 'cancel_requested') and ${table.leaseOwner} is not null and ${table.leaseUntil} is not null)
+        or (${table.status} not in ('running', 'cancel_requested') and ${table.leaseOwner} is null and ${table.leaseUntil} is null)`
+    ),
+    check(
+      "memory_answer_tasks_terminal_check",
+      sql`(${table.status} = 'completed' and ${table.resultSnapshot} is not null and ${table.questionId} is not null and ${table.completedAt} is not null and ${table.failedAt} is null and ${table.cancelledAt} is null)
+        or (${table.status} = 'failed' and ${table.resultSnapshot} is null and ${table.questionId} is null and ${table.completedAt} is null and ${table.failedAt} is not null and ${table.cancelledAt} is null)
+        or (${table.status} = 'cancelled' and ${table.resultSnapshot} is null and ${table.questionId} is null and ${table.completedAt} is null and ${table.failedAt} is null and ${table.cancelledAt} is not null)
+        or (${table.status} not in ('completed', 'failed', 'cancelled') and ${table.resultSnapshot} is null and ${table.questionId} is null and ${table.completedAt} is null and ${table.failedAt} is null and ${table.cancelledAt} is null)`
+    )
+  ]
+);
+
 export const workflowTokenUsage = pgTable(
   "workflow_token_usage",
   {
@@ -11827,7 +11923,7 @@ export const localMemoryAgentSettings = pgTable(
     ),
     check(
       "local_memory_agent_settings_timeout_ms_check",
-      sql`${table.timeoutMs} between 1000 and 600000`
+      sql`${table.timeoutMs} between 1000 and 1800000`
     ),
     check(
       "local_memory_agent_settings_max_attempts_check",

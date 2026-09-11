@@ -25694,7 +25694,7 @@ describeDb("memory repository visibility", () => {
         aiClientInstanceId: "codex.default",
         model: "gpt-5.4",
         reasoningEffort: "high",
-        timeoutMs: 180000,
+        timeoutMs: 1_800_000,
         maxAttempts: 3
       }
     );
@@ -25736,6 +25736,7 @@ describeDb("memory repository visibility", () => {
     );
 
     expect(created.flowKey).toBe("mcp_memory_answer");
+    expect(created.timeoutMs).toBe(1_800_000);
     expect(updated).toMatchObject({
       ownerUserId: alice.id,
       flowKey: "mcp_memory_answer",
