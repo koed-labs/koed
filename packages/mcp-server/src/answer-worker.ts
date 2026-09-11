@@ -2813,7 +2813,8 @@ const runClaudeMemoryAnswer = async (
   handler: (
     call: CodexAppServerDynamicToolCall
   ) => Promise<CodexAppServerDynamicToolResponse>,
-  callerSignal?: AbortSignal
+  callerSignal?: AbortSignal,
+  onProgress?: (status: string) => void
 ): Promise<CodexAnswerResult> => {
   const invoke = (toolName: string, args: Record<string, unknown>) =>
     handler({
@@ -2964,11 +2965,15 @@ const runClaudeMemoryAnswer = async (
         strictMcpConfig: true,
         settingSources: [],
         persistSession: false,
+        includePartialMessages: true,
         maxTurns: Math.max(2, config.maxSearches + config.maxExpansions + 1)
       }
     });
     if (callerSignal?.aborted) stream.close();
     for await (const message of stream) {
+      if (message.type !== "system") {
+        onProgress?.("Claude provider activity");
+      }
       if ("session_id" in message && typeof message.session_id === "string") {
         threadId = message.session_id;
       }
@@ -3584,6 +3589,7 @@ const runDynamicToolMemoryAnswer = async (
     evaluation: ResolvedMemoryAnswerEvaluationController;
     promptTemplate: LoadedPrompt;
     signal?: AbortSignal;
+    onProgress?: (status: string) => void;
     captureProcessMetrics?: boolean;
     /** Trusted local conversation context. This value never changes retrieval authorization. */
     conversationContext?: readonly MemoryAnswerConversationTurn[];
@@ -3764,6 +3770,7 @@ const runDynamicToolMemoryAnswer = async (
           systemPrompt: koedMemoryAnswerBaseInstructions,
           developerInstructions: koedMemoryAnswerDeveloperInstructions,
           signal: options.signal,
+          onProgress: options.onProgress,
           outputSchema: {
             type: "object",
             properties: {
@@ -3806,7 +3813,8 @@ const runDynamicToolMemoryAnswer = async (
           options.config,
           remaining,
           dynamicToolHandler,
-          options.signal
+          options.signal,
+          options.onProgress
         ),
         state
       };
@@ -3822,7 +3830,8 @@ const runDynamicToolMemoryAnswer = async (
       developerInstructions: koedMemoryAnswerDeveloperInstructions,
       dynamicTools: dynamicToolSpecs(),
       dynamicToolHandler,
-      captureProcessMetrics: options.captureProcessMetrics
+      captureProcessMetrics: options.captureProcessMetrics,
+      onProviderActivity: options.onProgress
     });
     const abort = () => session.close();
     options.signal?.addEventListener("abort", abort, { once: true });
@@ -4034,6 +4043,7 @@ export const answerWithMemoryWorker = async (
     limit?: number;
     responseDetail?: MemoryAnswerResponseDetail;
     signal?: AbortSignal;
+    onProgress?: (status: string) => void;
     retrievalHints?: MemoryAnswerRetrievalHints;
     evaluationController?: MemoryAnswerEvaluationController;
     /** Direct-call Retrieval Arena telemetry; never exposed through API/MCP input. */
@@ -4109,7 +4119,8 @@ export const answerWithMemoryWorker = async (
       promptTemplate,
       captureProcessMetrics: options.captureProcessMetrics,
       conversationContext: options.conversationContext,
-      signal: options.signal
+      signal: options.signal,
+      onProgress: options.onProgress
     });
     return compactMemoryAnswerPayload(
       {

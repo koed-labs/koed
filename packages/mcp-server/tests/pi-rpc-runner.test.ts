@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   assertPiVersionCompatibility,
   checkPiAvailability,
@@ -245,6 +245,54 @@ process.stdin.on("data", chunk => {
         5_000
       )
     ).rejects.toThrow("cancelled");
+  });
+
+  it("reports parsed RPC events as provider activity", async () => {
+    const root = mkdtempSync(join(tmpdir(), "koed-pi-progress-"));
+    const executable = join(root, "pi");
+    const bridge = join(
+      root,
+      "integrations",
+      "pi",
+      "extensions",
+      "structured-result.mjs"
+    );
+    mkdirSync(join(root, "integrations", "pi", "extensions"), {
+      recursive: true
+    });
+    writeFileSync(bridge, "export default () => {};\n");
+    writeFileSync(
+      executable,
+      `#!/usr/bin/env node
+process.stdin.once("data", () => {
+  process.stdout.write(JSON.stringify({ type: "message_update" }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "tool_execution_end", toolName: "koed_structured_result", result: { details: { value: { ok: true } } } }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+});
+`
+    );
+    chmodSync(executable, 0o700);
+    const onProgress = vi.fn();
+
+    await expect(
+      runPiRpcTask(
+        "test",
+        {
+          provider: "pi",
+          model: "test/model",
+          reasoningEffort: "off",
+          cwd: root,
+          env: { KOED_HOME: root, PATH: process.env.PATH },
+          executablePath: executable,
+          clientName: "test",
+          systemPrompt: "test",
+          outputSchema: { type: "object" },
+          onProgress
+        },
+        5_000
+      )
+    ).resolves.toMatchObject({ text: JSON.stringify({ ok: true }) });
+    expect(onProgress).toHaveBeenCalledWith("Pi provider activity");
   });
 
   it("uses minimal environment without Koed or provider credentials", () => {

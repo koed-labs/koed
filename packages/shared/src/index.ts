@@ -1791,3 +1791,28 @@ export {
   sourceContentLimits,
   type SourceContentExclusionReason
 } from "./source-content-policy.js";
+
+export {
+  acceptMemoryAnswerTaskSchema,
+  claimedMemoryAnswerTaskSchema,
+  claimMemoryAnswerTaskSchema,
+  completeMemoryAnswerTaskSchema,
+  failMemoryAnswerTaskSchema,
+  heartbeatMemoryAnswerTaskSchema,
+  memoryAnswerTaskClaimResponseSchema,
+  memoryAnswerTaskIsTerminal,
+  memoryAnswerTaskOrigins,
+  memoryAnswerTaskParamsSchema,
+  memoryAnswerTaskResponseSchema,
+  memoryAnswerTaskSchema,
+  memoryAnswerTaskStatuses,
+  type AcceptMemoryAnswerTaskInput,
+  type ClaimedMemoryAnswerTask,
+  type ClaimMemoryAnswerTaskInput,
+  type CompleteMemoryAnswerTaskInput,
+  type FailMemoryAnswerTaskInput,
+  type HeartbeatMemoryAnswerTaskInput,
+  type MemoryAnswerTask,
+  type MemoryAnswerTaskOrigin,
+  type MemoryAnswerTaskStatus
+} from "./memory-answer-task-contract.js";

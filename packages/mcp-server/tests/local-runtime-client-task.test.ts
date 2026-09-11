@@ -21,6 +21,7 @@ const task = (
   return {
     id: "7c07a3cc-5679-4df2-bb67-c86571df93c2",
     origin: "mcp",
+    invocationKey: null,
     questionId: null,
     status: "accepted",
     statusMessage: null,

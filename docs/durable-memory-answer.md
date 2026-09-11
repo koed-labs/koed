@@ -12,12 +12,18 @@ Synthesis.
 1. An adapter forwards one validated `memory_answer` call and, when available,
    its host invocation identity to the loopback Local AI Runtime.
 2. The runtime accepts an encrypted Personal task through the authenticated
-   API. Repeating the same owner, origin, and invocation identity returns the
-   existing task.
+   API. Admission locks the owner, enforces the configured durable backlog
+   bound transactionally, and only then inserts the task. Repeating the same
+   owner, origin, and invocation identity returns the existing task even when
+   the queue is full.
 3. The runtime scheduler claims due work with a lease and generation fence.
-4. The selected Codex, Claude Code, or Pi driver performs synthesis. Completed
-   retrieval operations report progress; timer ticks and lease heartbeats do
-   not.
+   Request decryption and validation complete in the claim transaction, so an
+   unreadable request is never committed as running. Terminal transitions made
+   while reconciling expired leases are returned to the runtime and published
+   to attached waiters.
+4. The selected Codex, Claude Code, or Pi driver performs synthesis. Provider
+   stream activity and completed retrieval operations report progress; timer
+   ticks and lease heartbeats do not.
 5. Koed creates the final Memory Question with a task-derived idempotency key,
    then commits the encrypted terminal task result through the current fence.
 6. An attached waiter receives the result immediately. A disconnected waiter
@@ -44,6 +50,13 @@ Task request, result, and failure detail are envelope encrypted. Ordinary task
 logs contain identifiers, state, attempts, fences, and bounded error codes but
 never queries, answers, evidence, caller paths, or provider payloads.
 
+`KOED_LOCAL_AI_RUNTIME_MAX_ACTIVE_ANSWERS` is one shared execution limit across
+durable Personal tasks and blocking Team/Desktop work; those paths cannot each
+consume the full limit independently. `KOED_LOCAL_AI_RUNTIME_MAX_QUEUED_ANSWERS`
+limits both the per-owner durable accepted backlog and the remaining bounded
+in-process blocking queue. Durable lifecycle calls use the AI Client control
+rate-limit policy rather than consuming the ordinary memory-write allowance.
+
 ## Cancellation And Time Limits
 
 Closing an MCP or loopback request detaches only that waiter. Explicit task
@@ -56,7 +69,13 @@ late result.
   regardless of progress. The persisted `timeout_ms` AI Client assignment is
   the same hard provider-execution ceiling.
 - The internal execution lease defaults to 60 seconds and is renewed every 15
-  seconds. Lease renewal is not progress.
+  seconds. Heartbeats are serialized, and lease renewal is not progress.
+
+The attempt controller records one first-wins termination reason for explicit
+cancellation, shutdown, lease loss, no-progress expiry, hard timeout, or
+execution failure. Personal eligibility is checked again immediately before
+synthesis, so a routing change cannot execute a queued Personal task against a
+Team Workspace.
 
 The removed `MEMORY_ANSWER_TIMEOUT_MS` name has no compatibility alias.
 

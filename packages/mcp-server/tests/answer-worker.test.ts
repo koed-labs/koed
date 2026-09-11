@@ -348,9 +348,11 @@ describe("memory answer worker", () => {
     const removeEventListener = vi.spyOn(caller.signal, "removeEventListener");
     const close = vi.fn();
     let sdkSignal: AbortSignal | undefined;
+    const onProgress = vi.fn();
     sdk.query.mockImplementation(({ options }: { options?: Options }) => {
       sdkSignal = options?.abortController?.signal;
       async function* hang(): AsyncGenerator<SDKMessage, void> {
+        yield { type: "stream_event" } as SDKMessage;
         await new Promise<void>((_resolve, reject) => {
           if (sdkSignal?.aborted) {
             reject(new Error("aborted before iteration"));
@@ -378,6 +380,7 @@ describe("memory answer worker", () => {
         }
       },
       signal: caller.signal,
+      onProgress,
       config: {
         ...resolveMemoryAnswerWorkerConfig({}),
         provider: "claude",
@@ -388,6 +391,9 @@ describe("memory answer worker", () => {
       }
     });
     await vi.waitFor(() => expect(sdkSignal).toBeDefined());
+    await vi.waitFor(() =>
+      expect(onProgress).toHaveBeenCalledWith("Claude provider activity")
+    );
 
     caller.abort();
 

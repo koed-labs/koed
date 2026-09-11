@@ -16,7 +16,7 @@ export const registerMemoryAnswerTaskRoutes = (
   const {
     requireRepository,
     auth: { authenticateApiToken },
-    rateLimit: { memoryRead, memoryWrite }
+    rateLimit: { aiClientControl, memoryRead, memoryWrite }
   } = context;
 
   app.post(
@@ -31,7 +31,8 @@ export const registerMemoryAnswerTaskRoutes = (
           origin: input.origin,
           invocationKey: input.invocation_key,
           request: input.request,
-          maxAttempts: input.max_attempts
+          maxAttempts: input.max_attempts,
+          maxQueued: input.max_queued
         }
       );
       return { task };
@@ -56,22 +57,20 @@ export const registerMemoryAnswerTaskRoutes = (
 
   app.post(
     "/v1/memory/answer-tasks/claim",
-    { preHandler: memoryWrite },
+    { preHandler: aiClientControl },
     async (request) => {
       const user = await authenticateApiToken(request);
       const input = claimMemoryAnswerTaskSchema.parse(request.body);
-      return {
-        task: await requireRepository().claimMemoryAnswerTask(
-          { userId: user.id },
-          { leaseOwner: input.lease_owner, leaseMs: input.lease_ms }
-        )
-      };
+      return await requireRepository().claimMemoryAnswerTask(
+        { userId: user.id },
+        { leaseOwner: input.lease_owner, leaseMs: input.lease_ms }
+      );
     }
   );
 
   app.post(
     "/v1/memory/answer-tasks/:taskId/heartbeat",
-    { preHandler: memoryWrite },
+    { preHandler: aiClientControl },
     async (request, reply) => {
       const user = await authenticateApiToken(request);
       const { taskId } = memoryAnswerTaskParamsSchema.parse(request.params);
@@ -95,7 +94,7 @@ export const registerMemoryAnswerTaskRoutes = (
 
   app.post(
     "/v1/memory/answer-tasks/:taskId/cancel",
-    { preHandler: memoryWrite },
+    { preHandler: aiClientControl },
     async (request, reply) => {
       const user = await authenticateApiToken(request);
       const { taskId } = memoryAnswerTaskParamsSchema.parse(request.params);
@@ -111,7 +110,7 @@ export const registerMemoryAnswerTaskRoutes = (
 
   app.post(
     "/v1/memory/answer-tasks/:taskId/complete",
-    { preHandler: memoryWrite },
+    { preHandler: aiClientControl },
     async (request, reply) => {
       const user = await authenticateApiToken(request);
       const { taskId } = memoryAnswerTaskParamsSchema.parse(request.params);
@@ -134,7 +133,7 @@ export const registerMemoryAnswerTaskRoutes = (
 
   app.post(
     "/v1/memory/answer-tasks/:taskId/fail",
-    { preHandler: memoryWrite },
+    { preHandler: aiClientControl },
     async (request, reply) => {
       const user = await authenticateApiToken(request);
       const { taskId } = memoryAnswerTaskParamsSchema.parse(request.params);
@@ -159,7 +158,7 @@ export const registerMemoryAnswerTaskRoutes = (
 
   app.delete(
     "/v1/memory/answer-tasks/expired",
-    { preHandler: memoryWrite },
+    { preHandler: aiClientControl },
     async (request) => {
       const user = await authenticateApiToken(request);
       return {

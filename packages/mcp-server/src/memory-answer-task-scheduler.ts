@@ -1,43 +1,30 @@
 import { randomBytes } from "node:crypto";
+import {
+  memoryAnswerTaskIsTerminal,
+  type ClaimedMemoryAnswerTask as SharedClaimedMemoryAnswerTask,
+  type MemoryAnswerTask,
+  type MemoryAnswerTaskStatus
+} from "@koed/shared";
+import { z } from "zod";
+import { AnswerExecutionCapacity } from "./answer-admission.js";
 import type { MemoryApiClient } from "./index.js";
 import type { LocalRuntimeCallerContext } from "./local-runtime-protocol.js";
 import { logger } from "./logger.js";
 
-export type MemoryAnswerTaskStatus =
-  | "accepted"
-  | "running"
-  | "cancel_requested"
-  | "completed"
-  | "failed"
-  | "cancelled";
+export type MemoryAnswerTaskView = MemoryAnswerTask;
+export type MemoryAnswerTaskApi = Pick<
+  MemoryApiClient,
+  | "acceptMemoryAnswerTask"
+  | "cancelMemoryAnswerTask"
+  | "claimMemoryAnswerTask"
+  | "completeMemoryAnswerTask"
+  | "deleteExpiredMemoryAnswerTasks"
+  | "failMemoryAnswerTask"
+  | "getMemoryAnswerTask"
+  | "heartbeatMemoryAnswerTask"
+>;
 
-export interface MemoryAnswerTaskView {
-  id: string;
-  origin: "mcp" | "pi_extension";
-  questionId: string | null;
-  status: MemoryAnswerTaskStatus;
-  statusMessage: string | null;
-  attemptCount: number;
-  maxAttempts: number;
-  fenceGeneration: number;
-  cancelRequestedAt: string | null;
-  startedAt: string | null;
-  lastProgressAt: string | null;
-  completedAt: string | null;
-  failedAt: string | null;
-  cancelledAt: string | null;
-  lastErrorCode: string | null;
-  lastErrorMessage: string | null;
-  result: Record<string, unknown> | null;
-  version: number;
-  createdAt: string;
-  updatedAt: string;
-  expiresAt: string;
-}
-
-interface ClaimedMemoryAnswerTask extends MemoryAnswerTaskView {
-  leaseOwner: string;
-  leaseUntil: string;
+interface ClaimedMemoryAnswerTask extends SharedClaimedMemoryAnswerTask {
   request: {
     input: Record<string, unknown>;
     caller: LocalRuntimeCallerContext;
@@ -56,6 +43,8 @@ export interface MemoryAnswerTaskExecutor {
 
 export interface MemoryAnswerTaskSchedulerOptions {
   maxActive?: number;
+  maxQueued?: number;
+  executionCapacity?: AnswerExecutionCapacity;
   leaseMs?: number;
   heartbeatMs?: number;
   reconcileMs?: number;
@@ -69,56 +58,69 @@ const TERMINAL = new Set<MemoryAnswerTaskStatus>([
   "cancelled"
 ]);
 
-const asRecord = (value: unknown): Record<string, unknown> | null =>
-  value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
+const claimedRequestSchema = z
+  .object({
+    input: z.record(z.string(), z.unknown()),
+    caller: z
+      .object({
+        cwd: z.string(),
+        protocolVersion: z.string().optional(),
+        clientInfo: z.record(z.string(), z.unknown()).optional(),
+        clientCapabilities: z.record(z.string(), z.unknown()).optional()
+      })
+      .strict()
+  })
+  .strict();
 
-const taskFromResponse = (
-  response: Record<string, unknown>
-): MemoryAnswerTaskView => {
-  const task = asRecord(response.task);
-  if (
-    !task ||
-    typeof task.id !== "string" ||
-    !["mcp", "pi_extension"].includes(String(task.origin)) ||
-    ![
-      "accepted",
-      "running",
-      "cancel_requested",
-      "completed",
-      "failed",
-      "cancelled"
-    ].includes(String(task.status)) ||
-    typeof task.version !== "number"
-  ) {
-    throw new Error("Memory Answer task API returned an invalid task");
-  }
-  return task as unknown as MemoryAnswerTaskView;
-};
-
-const claimedTaskFromResponse = (
-  response: Record<string, unknown>
-): ClaimedMemoryAnswerTask | null => {
-  if (response.task === null) return null;
-  const task = taskFromResponse(response) as ClaimedMemoryAnswerTask;
-  if (
-    typeof task.leaseOwner !== "string" ||
-    typeof task.leaseUntil !== "string" ||
-    !asRecord(task.request) ||
-    !asRecord(task.request.input) ||
-    !asRecord(task.request.caller) ||
-    typeof task.request.caller.cwd !== "string"
-  ) {
-    throw new Error("Memory Answer task API returned an invalid claim");
-  }
-  return task;
-};
+const claimedTask = (
+  task: SharedClaimedMemoryAnswerTask
+): ClaimedMemoryAnswerTask => ({
+  ...task,
+  request: claimedRequestSchema.parse(task.request)
+});
 
 const positive = (value: number | undefined, fallback: number): number =>
   Number.isInteger(value) && value !== undefined && value > 0
     ? value
     : fallback;
+
+type AttemptEndReason =
+  | "cancelled"
+  | "execution_failed"
+  | "hard_timeout"
+  | "lease_lost"
+  | "no_progress_timeout"
+  | "shutdown";
+
+class MemoryAnswerAttemptControl {
+  readonly controller = new AbortController();
+  endReason: AttemptEndReason | null = null;
+  lastProgressAt = Date.now();
+  progressPending = true;
+  statusMessage = "starting";
+
+  progress(status: string): void {
+    if (this.controller.signal.aborted) return;
+    this.lastProgressAt = Date.now();
+    this.progressPending = true;
+    this.statusMessage = status;
+  }
+
+  consumeProgress(): boolean {
+    const pending = this.progressPending;
+    this.progressPending = false;
+    return pending;
+  }
+
+  stop(reason: AttemptEndReason, error: unknown): boolean {
+    if (this.endReason) return false;
+    this.endReason = reason;
+    this.controller.abort(
+      error instanceof Error ? error : new Error(String(error))
+    );
+    return true;
+  }
+}
 
 export class MemoryAnswerTaskScheduler {
   private readonly leaseOwner = `local-runtime-${randomBytes(24).toString("base64url")}`;
@@ -128,9 +130,11 @@ export class MemoryAnswerTaskScheduler {
   >();
   private readonly running = new Map<
     string,
-    { controller: AbortController; promise: Promise<void> }
+    { attempt: MemoryAnswerAttemptControl; promise: Promise<void> }
   >();
-  private readonly maxActive: number;
+  private readonly maxQueued: number;
+  private readonly executionCapacity: AnswerExecutionCapacity;
+  private readonly removeCapacityListener: () => void;
   private readonly leaseMs: number;
   private readonly heartbeatMs: number;
   private readonly noProgressTimeoutMs: number;
@@ -141,11 +145,17 @@ export class MemoryAnswerTaskScheduler {
   private closed = false;
 
   constructor(
-    private readonly apiClient: MemoryApiClient,
+    private readonly apiClient: MemoryAnswerTaskApi,
     private readonly executor: MemoryAnswerTaskExecutor,
     options: MemoryAnswerTaskSchedulerOptions = {}
   ) {
-    this.maxActive = positive(options.maxActive, 2);
+    this.executionCapacity =
+      options.executionCapacity ??
+      new AnswerExecutionCapacity(positive(options.maxActive, 2));
+    this.removeCapacityListener = this.executionCapacity.onAvailable(() =>
+      this.nudge()
+    );
+    this.maxQueued = positive(options.maxQueued, 16);
     this.leaseMs = positive(options.leaseMs, 60_000);
     this.heartbeatMs = Math.min(
       positive(options.heartbeatMs, 15_000),
@@ -173,13 +183,12 @@ export class MemoryAnswerTaskScheduler {
     toolInput: Record<string, unknown>;
     caller: LocalRuntimeCallerContext;
   }): Promise<MemoryAnswerTaskView> {
-    const task = taskFromResponse(
-      await this.apiClient.acceptMemoryAnswerTask({
-        origin: input.origin,
-        invocation_key: input.invocationKey,
-        request: { input: input.toolInput, caller: input.caller }
-      })
-    );
+    const { task } = await this.apiClient.acceptMemoryAnswerTask({
+      origin: input.origin,
+      invocation_key: input.invocationKey,
+      request: { input: input.toolInput, caller: input.caller },
+      max_queued: this.maxQueued
+    });
     this.publish(task);
     logger.info(
       { taskId: task.id, origin: task.origin, status: task.status },
@@ -190,13 +199,11 @@ export class MemoryAnswerTaskScheduler {
   }
 
   async get(taskId: string): Promise<MemoryAnswerTaskView> {
-    return taskFromResponse(await this.apiClient.getMemoryAnswerTask(taskId));
+    return (await this.apiClient.getMemoryAnswerTask(taskId)).task;
   }
 
   async cancel(taskId: string): Promise<MemoryAnswerTaskView> {
-    const task = taskFromResponse(
-      await this.apiClient.cancelMemoryAnswerTask(taskId)
-    );
+    const { task } = await this.apiClient.cancelMemoryAnswerTask(taskId);
     this.publish(task);
     logger.info(
       { taskId: task.id, status: task.status },
@@ -205,7 +212,10 @@ export class MemoryAnswerTaskScheduler {
     if (task.status === "cancel_requested") {
       this.running
         .get(task.id)
-        ?.controller.abort(new Error("Memory Answer task was cancelled"));
+        ?.attempt.stop(
+          "cancelled",
+          new Error("Memory Answer task was cancelled")
+        );
     }
     return task;
   }
@@ -288,8 +298,9 @@ export class MemoryAnswerTaskScheduler {
     this.closed = true;
     clearInterval(this.reconcileTimer);
     clearInterval(this.cleanupTimer);
-    for (const { controller } of this.running.values()) {
-      controller.abort(new Error("Local AI Runtime is shutting down"));
+    this.removeCapacityListener();
+    for (const { attempt } of this.running.values()) {
+      attempt.stop("shutdown", new Error("Local AI Runtime is shutting down"));
     }
     await Promise.allSettled(
       [...this.running.values()].map(({ promise }) => promise)
@@ -302,14 +313,27 @@ export class MemoryAnswerTaskScheduler {
   }
 
   private async drain(): Promise<void> {
-    while (!this.closed && this.running.size < this.maxActive) {
-      const claim = claimedTaskFromResponse(
-        await this.apiClient.claimMemoryAnswerTask({
+    while (!this.closed) {
+      const release = this.executionCapacity.tryAcquire();
+      if (!release) return;
+      let batch: Awaited<
+        ReturnType<MemoryAnswerTaskApi["claimMemoryAnswerTask"]>
+      >;
+      try {
+        batch = await this.apiClient.claimMemoryAnswerTask({
           lease_owner: this.leaseOwner,
           lease_ms: this.leaseMs
-        })
-      );
-      if (!claim) return;
+        });
+      } catch (error) {
+        release();
+        throw error;
+      }
+      for (const reconciled of batch.reconciled) this.publish(reconciled);
+      const claim = batch.task ? claimedTask(batch.task) : null;
+      if (!claim) {
+        release();
+        return;
+      }
       this.publish(claim);
       logger.info(
         {
@@ -319,58 +343,65 @@ export class MemoryAnswerTaskScheduler {
         },
         "memory answer task claimed"
       );
-      const controller = new AbortController();
-      const promise = this.executeClaim(claim, controller).finally(() => {
+      const attempt = new MemoryAnswerAttemptControl();
+      const promise = this.executeClaim(claim, attempt).finally(() => {
         this.running.delete(claim.id);
+        release();
         this.nudge();
       });
-      this.running.set(claim.id, { controller, promise });
+      this.running.set(claim.id, { attempt, promise });
     }
   }
 
   private async executeClaim(
     task: ClaimedMemoryAnswerTask,
-    controller: AbortController
+    attempt: MemoryAnswerAttemptControl
   ): Promise<void> {
-    let reason = "execution_failed";
-    let lastProgressAt = Date.now();
-    let progressPending = true;
-    let statusMessage = "starting";
-    const heartbeat = setInterval(() => {
-      if (Date.now() - lastProgressAt >= this.noProgressTimeoutMs) {
-        reason = "no_progress_timeout";
-        controller.abort(
+    let heartbeatTimer: NodeJS.Timeout | undefined;
+    let heartbeatInFlight: Promise<void> | null = null;
+    let finishing = false;
+    const scheduleHeartbeat = () => {
+      if (finishing || attempt.controller.signal.aborted) return;
+      heartbeatTimer = setTimeout(() => {
+        heartbeatInFlight = heartbeatOnce().finally(() => {
+          heartbeatInFlight = null;
+          scheduleHeartbeat();
+        });
+      }, this.heartbeatMs);
+      heartbeatTimer.unref?.();
+    };
+    const heartbeatOnce = async (): Promise<void> => {
+      if (Date.now() - attempt.lastProgressAt >= this.noProgressTimeoutMs) {
+        attempt.stop(
+          "no_progress_timeout",
           new Error("Memory Answer no-progress watchdog expired")
         );
         return;
       }
-      const madeProgress = progressPending;
-      progressPending = false;
-      void this.apiClient
-        .heartbeatMemoryAnswerTask(task.id, {
-          lease_owner: task.leaseOwner,
-          fence_generation: task.fenceGeneration,
-          lease_ms: this.leaseMs,
-          made_progress: madeProgress,
-          status_message: statusMessage
-        })
-        .then((response) => {
-          const current = taskFromResponse(response);
-          this.publish(current);
-          if (current.status === "cancel_requested") {
-            reason = "cancelled";
-            controller.abort(new Error("Memory Answer task was cancelled"));
-          }
-        })
-        .catch((error) => {
-          reason = "lease_lost";
-          controller.abort(error);
-        });
-    }, this.heartbeatMs);
-    heartbeat.unref?.();
+      try {
+        const { task: current } =
+          await this.apiClient.heartbeatMemoryAnswerTask(task.id, {
+            lease_owner: task.leaseOwner,
+            fence_generation: task.fenceGeneration,
+            lease_ms: this.leaseMs,
+            made_progress: attempt.consumeProgress(),
+            status_message: attempt.statusMessage
+          });
+        this.publish(current);
+        if (current.status === "cancel_requested") {
+          attempt.stop(
+            "cancelled",
+            new Error("Memory Answer task was cancelled")
+          );
+        }
+      } catch (error) {
+        attempt.stop("lease_lost", error);
+      }
+    };
+    scheduleHeartbeat();
     const hardTimeout = setTimeout(() => {
-      reason = "hard_timeout";
-      controller.abort(
+      attempt.stop(
+        "hard_timeout",
         new Error("Memory Answer hard execution ceiling reached")
       );
     }, this.hardTimeoutMs);
@@ -381,20 +412,23 @@ export class MemoryAnswerTaskScheduler {
         task.request.input,
         task.request.caller,
         task.id,
-        controller.signal,
-        (status) => {
-          lastProgressAt = Date.now();
-          progressPending = true;
-          statusMessage = status;
-        }
+        attempt.controller.signal,
+        (status) => attempt.progress(status)
       );
-      const terminal = taskFromResponse(
-        await this.apiClient.completeMemoryAnswerTask(task.id, {
+      finishing = true;
+      if (heartbeatTimer) clearTimeout(heartbeatTimer);
+      await Promise.resolve(heartbeatInFlight);
+      if (attempt.controller.signal.aborted) {
+        throw attempt.controller.signal.reason;
+      }
+      const { task: terminal } = await this.apiClient.completeMemoryAnswerTask(
+        task.id,
+        {
           lease_owner: task.leaseOwner,
           fence_generation: task.fenceGeneration,
           question_id: completed.questionId,
           result: completed.result
-        })
+        }
       );
       this.publish(terminal);
       logger.info(
@@ -407,17 +441,18 @@ export class MemoryAnswerTaskScheduler {
         "memory answer task completed"
       );
     } catch (error) {
-      if (
-        reason === "execution_failed" &&
-        controller.signal.aborted &&
-        /cancelled/i.test(
-          controller.signal.reason instanceof Error
-            ? controller.signal.reason.message
-            : String(controller.signal.reason)
-        )
-      ) {
-        reason = "cancelled";
-      }
+      const classified =
+        error && typeof error === "object"
+          ? (error as {
+              memoryAnswerTaskErrorCode?: unknown;
+              retryable?: unknown;
+            })
+          : {};
+      const reason =
+        attempt.endReason ??
+        (typeof classified.memoryAnswerTaskErrorCode === "string"
+          ? classified.memoryAnswerTaskErrorCode
+          : "execution_failed");
       if (reason === "lease_lost") {
         logger.warn(
           {
@@ -429,10 +464,14 @@ export class MemoryAnswerTaskScheduler {
         );
         return;
       }
-      const retry = reason !== "cancelled" && reason !== "hard_timeout";
+      const retry =
+        classified.retryable !== false &&
+        reason !== "cancelled" &&
+        reason !== "hard_timeout";
       try {
-        const terminal = taskFromResponse(
-          await this.apiClient.failMemoryAnswerTask(task.id, {
+        const { task: terminal } = await this.apiClient.failMemoryAnswerTask(
+          task.id,
+          {
             lease_owner: task.leaseOwner,
             fence_generation: task.fenceGeneration,
             error_code: reason,
@@ -442,7 +481,7 @@ export class MemoryAnswerTaskScheduler {
             retry_delay_ms: retry
               ? Math.min(1_000 * 2 ** task.attemptCount, 30_000)
               : 0
-          })
+          }
         );
         this.publish(terminal);
         logger.info(
@@ -466,7 +505,8 @@ export class MemoryAnswerTaskScheduler {
         );
       }
     } finally {
-      clearInterval(heartbeat);
+      finishing = true;
+      if (heartbeatTimer) clearTimeout(heartbeatTimer);
       clearTimeout(hardTimeout);
     }
   }
@@ -489,6 +529,4 @@ export class MemoryAnswerTaskScheduler {
   }
 }
 
-export const memoryAnswerTaskIsTerminal = (
-  task: MemoryAnswerTaskView
-): boolean => TERMINAL.has(task.status);
+export { memoryAnswerTaskIsTerminal };

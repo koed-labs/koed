@@ -64,6 +64,21 @@ class AcceptPool {
     if (["begin", "commit", "rollback"].includes(sql)) {
       return { rows: [], rowCount: null } as unknown as pg.QueryResult<T>;
     }
+    if (sql.startsWith("select id from users")) {
+      return {
+        rows: [{ id: ownerId }],
+        rowCount: 1
+      } as unknown as pg.QueryResult<T>;
+    }
+    if (sql.includes("and origin = $2 and invocation_key = $3")) {
+      return { rows: [], rowCount: 0 } as unknown as pg.QueryResult<T>;
+    }
+    if (sql.startsWith("select count(*)::text as count")) {
+      return {
+        rows: [{ count: "0" }],
+        rowCount: 1
+      } as unknown as pg.QueryResult<T>;
+    }
     if (sql.startsWith("insert into memory_answer_tasks")) {
       return {
         rows: [
@@ -142,6 +157,7 @@ describe("Memory Answer task repository", () => {
       {
         origin: "mcp",
         invocationKey: "adapter:call-1",
+        maxQueued: 16,
         request: { input: { query: secretQuery }, caller: { cwd: "/private" } }
       }
     );

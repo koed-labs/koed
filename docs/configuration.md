@@ -1023,6 +1023,13 @@ These values are copied into the AI Client configuration and are not consumed au
   synthesis or retrieval progress milestone (default `300000`).
 - `MEMORY_ANSWER_HARD_TIMEOUT_MS`: hard ceiling for one local Memory Answer
   execution regardless of progress (default `1800000`).
+- `KOED_LOCAL_AI_RUNTIME_MAX_ACTIVE_ANSWERS`: shared maximum number of active
+  Memory Answer executions across durable Personal and blocking Team/Desktop
+  work. Default `2`.
+- `KOED_LOCAL_AI_RUNTIME_MAX_QUEUED_ANSWERS`: per-owner maximum accepted
+  durable Personal backlog and maximum in-process blocking backlog. Default
+  `16`. Idempotent retries return their existing durable task even at the
+  limit.
 - `MEMORY_ANSWER_MAX_ATTEMPTS`: maximum local MCP Memory Answer synthesis attempts.
 - `MEMORY_ANSWER_MAX_SEARCHES`: maximum Koed RAG search tool calls per MCP Memory Answer worker turn.
 - `MEMORY_ANSWER_MAX_EXPANSIONS`: maximum Koed RAG evidence expansion tool calls per MCP Memory Answer worker turn.

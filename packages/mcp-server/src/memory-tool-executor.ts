@@ -371,6 +371,17 @@ export class MemoryToolExecutor {
     signal?: AbortSignal,
     onProgress?: (status: string) => void
   ): Promise<{ questionId: string; result: Record<string, unknown> }> {
+    if (!this.durableMemoryAnswerEligible(input, caller)) {
+      throw Object.assign(
+        new Error(
+          "Memory Answer task is no longer eligible for Personal execution"
+        ),
+        {
+          memoryAnswerTaskErrorCode: "personal_route_changed",
+          retryable: false
+        }
+      );
+    }
     let recordedQuestion: McpMemoryQuestion | undefined;
     const result = await this.executeMemoryAnswer(
       input,
@@ -558,7 +569,8 @@ export class MemoryToolExecutor {
       responseDetail: "internal",
       retrievalHints: retrieval_hints,
       conversationContext: execution.conversationContext,
-      signal
+      signal,
+      onProgress: execution.onProgress
     });
     execution.onProgress?.("answer synthesis completed");
     if (signal?.aborted) throw new Error("Koed memory request was cancelled");

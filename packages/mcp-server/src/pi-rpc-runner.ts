@@ -601,6 +601,7 @@ export const runPiRpcTask = async (
         if (!line) continue;
         try {
           const event = JSON.parse(line) as Record<string, unknown>;
+          config.onProgress?.("Pi provider activity");
           events.push(event);
           eventSizes.push(record.length);
           eventBytes += record.length;

@@ -1,50 +1,37 @@
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import {
-  createEncryptedPayloadRepository,
+  decryptAuthorizedEncryptedFieldPayloadWithClient,
   upsertEncryptedFieldPayloadWithClient
 } from "./encrypted-payload-repository.js";
-import type { EnvelopeEncryptionProvider } from "@koed/shared";
+import type {
+  ClaimedMemoryAnswerTask,
+  EnvelopeEncryptionProvider,
+  MemoryAnswerTask as MemoryAnswerTaskRecord,
+  MemoryAnswerTaskOrigin,
+  MemoryAnswerTaskStatus
+} from "@koed/shared";
 import type { ActorContext } from "./types.js";
 
-export type MemoryAnswerTaskOrigin = "mcp" | "pi_extension";
-export type MemoryAnswerTaskStatus =
-  | "accepted"
-  | "running"
-  | "cancel_requested"
-  | "completed"
-  | "failed"
-  | "cancelled";
+export type {
+  ClaimedMemoryAnswerTask,
+  MemoryAnswerTaskOrigin,
+  MemoryAnswerTaskRecord,
+  MemoryAnswerTaskStatus
+};
 
-export interface MemoryAnswerTaskRecord {
-  id: string;
-  origin: MemoryAnswerTaskOrigin;
-  invocationKey: string | null;
-  questionId: string | null;
-  status: MemoryAnswerTaskStatus;
-  statusMessage: string | null;
-  attemptCount: number;
-  maxAttempts: number;
-  fenceGeneration: number;
-  cancelRequestedAt: string | null;
-  startedAt: string | null;
-  lastProgressAt: string | null;
-  completedAt: string | null;
-  failedAt: string | null;
-  cancelledAt: string | null;
-  lastErrorCode: string | null;
-  lastErrorMessage: string | null;
-  result: Record<string, unknown> | null;
-  version: number;
-  createdAt: string;
-  updatedAt: string;
-  expiresAt: string;
+export interface MemoryAnswerTaskClaimBatch {
+  task: ClaimedMemoryAnswerTask | null;
+  reconciled: MemoryAnswerTaskRecord[];
 }
 
-export interface ClaimedMemoryAnswerTask extends MemoryAnswerTaskRecord {
-  leaseOwner: string;
-  leaseUntil: string;
-  request: Record<string, unknown>;
+export class MemoryAnswerTaskQueueFullError extends Error {
+  readonly statusCode = 429;
+
+  constructor() {
+    super("Koed Memory Answer queue is full");
+    this.name = "MemoryAnswerTaskQueueFullError";
+  }
 }
 
 export interface MemoryAnswerTaskRepository {
@@ -55,6 +42,7 @@ export interface MemoryAnswerTaskRepository {
       invocationKey?: string;
       request: Record<string, unknown>;
       maxAttempts?: number;
+      maxQueued: number;
       retentionMs?: number;
     }
   ): Promise<MemoryAnswerTaskRecord>;
@@ -65,7 +53,7 @@ export interface MemoryAnswerTaskRepository {
   claimMemoryAnswerTask(
     actor: ActorContext,
     input: { leaseOwner: string; leaseMs: number }
-  ): Promise<ClaimedMemoryAnswerTask | null>;
+  ): Promise<MemoryAnswerTaskClaimBatch>;
   heartbeatMemoryAnswerTask(
     actor: ActorContext,
     input: {
@@ -205,7 +193,6 @@ export const createMemoryAnswerTaskRepository = (
   pool: pg.Pool,
   options: MemoryAnswerTaskRepositoryOptions = {}
 ): MemoryAnswerTaskRepository => {
-  const encryptedPayloads = createEncryptedPayloadRepository(pool);
   const provider = options.envelopeEncryptionProvider;
   const requireProvider = (): EnvelopeEncryptionProvider => {
     if (!provider) {
@@ -240,12 +227,14 @@ export const createMemoryAnswerTaskRepository = (
     );
   };
 
-  const decrypt = async (
+  const decryptWithClient = async (
+    client: pg.Pool | pg.PoolClient,
     actor: ActorContext,
     taskId: string,
     sourceColumn: "request_snapshot" | "result_snapshot" | "last_error_message"
   ): Promise<unknown> => {
-    const value = await encryptedPayloads.decryptAuthorizedEncryptedField(
+    const value = await decryptAuthorizedEncryptedFieldPayloadWithClient(
+      client,
       actor,
       requireProvider(),
       { sourceTable: "memory_answer_tasks", sourceId: taskId, sourceColumn }
@@ -257,6 +246,12 @@ export const createMemoryAnswerTaskRepository = (
     }
     return value.plaintext;
   };
+
+  const decrypt = (
+    actor: ActorContext,
+    taskId: string,
+    sourceColumn: "request_snapshot" | "result_snapshot" | "last_error_message"
+  ): Promise<unknown> => decryptWithClient(pool, actor, taskId, sourceColumn);
 
   const hydrateTask = async (
     actor: ActorContext,
@@ -311,6 +306,35 @@ export const createMemoryAnswerTaskRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        await client.query("select id from users where id = $1 for update", [
+          actor.userId
+        ]);
+        if (input.invocationKey) {
+          const existing = await client.query<TaskRow>(
+            `select ${TASK_COLUMNS}
+               from memory_answer_tasks
+              where owner_user_id = $1 and visibility = 'personal'
+                and origin = $2 and invocation_key = $3
+              limit 1`,
+            [actor.userId, input.origin, input.invocationKey]
+          );
+          if (existing.rows[0]) {
+            await client.query("commit");
+            return await hydrateTask(actor, existing.rows[0]);
+          }
+        }
+        const queued = await client.query<{ count: string }>(
+          `select count(*)::text as count
+             from memory_answer_tasks
+            where owner_user_id = $1 and visibility = 'personal'
+              and status = 'accepted'`,
+          [actor.userId]
+        );
+        if (
+          Number.parseInt(queued.rows[0]?.count ?? "0", 10) >= input.maxQueued
+        ) {
+          throw new MemoryAnswerTaskQueueFullError();
+        }
         const inserted = await client.query<TaskRow>(
           `insert into memory_answer_tasks (
              id, owner_user_id, visibility, origin, invocation_key,
@@ -319,9 +343,6 @@ export const createMemoryAnswerTaskRepository = (
              $1, $2, 'personal', $3, $4, $5::jsonb, 'accepted', $6,
              now() + ($7::text::interval)
            )
-           on conflict (owner_user_id, origin, invocation_key)
-             where invocation_key is not null
-             do nothing
            returning ${TASK_COLUMNS}`,
           [
             taskId,
@@ -333,27 +354,15 @@ export const createMemoryAnswerTaskRepository = (
             `${retentionMs} milliseconds`
           ]
         );
-        let row = inserted.rows[0];
-        if (row) {
-          await encryptWithClient(
-            client,
-            actor,
-            row.id,
-            "request_snapshot",
-            input.request
-          );
-        } else {
-          const existing = await client.query<TaskRow>(
-            `select ${TASK_COLUMNS}
-               from memory_answer_tasks
-              where owner_user_id = $1 and visibility = 'personal'
-                and origin = $2 and invocation_key = $3
-              limit 1`,
-            [actor.userId, input.origin, input.invocationKey]
-          );
-          row = existing.rows[0];
-          if (!row) throw new Error("Memory Answer task acceptance failed");
-        }
+        const row = inserted.rows[0];
+        if (!row) throw new Error("Memory Answer task acceptance failed");
+        await encryptWithClient(
+          client,
+          actor,
+          row.id,
+          "request_snapshot",
+          input.request
+        );
         await client.query("commit");
         return await hydrateTask(actor, row);
       } catch (error) {
@@ -374,22 +383,24 @@ export const createMemoryAnswerTaskRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
-        await client.query(
+        const cancelled = await client.query<TaskRow>(
           `update memory_answer_tasks
               set status = 'cancelled', lease_owner = null, lease_until = null,
                   cancelled_at = now(), updated_at = now(), version = version + 1
             where owner_user_id = $1 and visibility = 'personal'
-              and status = 'cancel_requested' and lease_until < now()`,
+              and status = 'cancel_requested' and lease_until < now()
+           returning ${TASK_COLUMNS}`,
           [actor.userId]
         );
-        await client.query(
+        const exhausted = await client.query<TaskRow>(
           `update memory_answer_tasks
               set status = 'failed', lease_owner = null, lease_until = null,
                   failed_at = now(), last_error_code = 'attempts_exhausted',
                   last_error_message = null, updated_at = now(), version = version + 1
             where owner_user_id = $1 and visibility = 'personal'
               and status = 'running' and lease_until < now()
-              and attempt_count >= max_attempts`,
+              and attempt_count >= max_attempts
+           returning ${TASK_COLUMNS}`,
           [actor.userId]
         );
         const result = await client.query<TaskRow>(
@@ -417,18 +428,35 @@ export const createMemoryAnswerTaskRepository = (
            returning ${TASK_COLUMNS}`,
           [actor.userId, input.leaseOwner, `${leaseMs} milliseconds`]
         );
-        await client.query("commit");
         const row = result.rows[0];
-        if (!row) return null;
-        const request = await decrypt(actor, row.id, "request_snapshot");
-        if (!request || typeof request !== "object" || Array.isArray(request)) {
-          throw new Error("Encrypted Memory Answer task request is invalid");
+        let task: ClaimedMemoryAnswerTask | null = null;
+        if (row) {
+          const request = await decryptWithClient(
+            client,
+            actor,
+            row.id,
+            "request_snapshot"
+          );
+          if (
+            !request ||
+            typeof request !== "object" ||
+            Array.isArray(request)
+          ) {
+            throw new Error("Encrypted Memory Answer task request is invalid");
+          }
+          task = {
+            ...mapTask(row),
+            leaseOwner: row.lease_owner!,
+            leaseUntil: row.lease_until!.toISOString(),
+            request: request as Record<string, unknown>
+          };
         }
+        await client.query("commit");
         return {
-          ...(await hydrateTask(actor, row)),
-          leaseOwner: row.lease_owner!,
-          leaseUntil: row.lease_until!.toISOString(),
-          request: request as Record<string, unknown>
+          task,
+          reconciled: [...cancelled.rows, ...exhausted.rows].map((item) =>
+            mapTask(item)
+          )
         };
       } catch (error) {
         await client.query("rollback").catch(() => undefined);

@@ -13192,7 +13192,7 @@
         },
         "local_memory_agent_settings_timeout_ms_check": {
           "name": "local_memory_agent_settings_timeout_ms_check",
-          "value": "\"local_memory_agent_settings\".\"timeout_ms\" between 1000 and 600000"
+          "value": "\"local_memory_agent_settings\".\"timeout_ms\" between 1000 and 1800000"
         },
         "local_memory_agent_settings_max_attempts_check": {
           "name": "local_memory_agent_settings_max_attempts_check",

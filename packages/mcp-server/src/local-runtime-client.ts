@@ -1,13 +1,15 @@
 import {
+  memoryAnswerTaskIsTerminal,
+  memoryAnswerTaskResponseSchema,
+  memoryAnswerTaskSchema,
+  type MemoryAnswerTask
+} from "@koed/shared";
+import {
   readLocalRuntimeRegistration,
   type LocalRuntimeCapabilities,
   type LocalRuntimeCallerContext,
   type LocalRuntimeToolName
 } from "./local-runtime-protocol.js";
-import {
-  memoryAnswerTaskIsTerminal,
-  type MemoryAnswerTaskView
-} from "./memory-answer-task-scheduler.js";
 
 const responseJson = async (
   response: Response
@@ -29,30 +31,9 @@ const responseJson = async (
   return body as Record<string, unknown>;
 };
 
-const taskFromUnknown = (value: unknown): MemoryAnswerTaskView => {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    typeof (value as { id?: unknown }).id !== "string" ||
-    typeof (value as { version?: unknown }).version !== "number" ||
-    ![
-      "accepted",
-      "running",
-      "cancel_requested",
-      "completed",
-      "failed",
-      "cancelled"
-    ].includes(String((value as { status?: unknown }).status))
-  ) {
-    throw new Error("Koed local AI runtime returned an invalid task");
-  }
-  return value as MemoryAnswerTaskView;
-};
-
 const taskFromRuntimeResponse = (
   response: Record<string, unknown>
-): MemoryAnswerTaskView => taskFromUnknown(response.task);
+): MemoryAnswerTask => memoryAnswerTaskResponseSchema.parse(response).task;
 
 const retryDelay = async (
   delayMs: number,
@@ -193,7 +174,7 @@ export class LocalAiRuntimeClient {
     caller: LocalRuntimeCallerContext,
     invocationKey?: string,
     signal?: AbortSignal
-  ): Promise<MemoryAnswerTaskView> {
+  ): Promise<MemoryAnswerTask> {
     return taskFromRuntimeResponse(
       await this.request(
         "/v1/tasks/memory-answer",
@@ -210,7 +191,7 @@ export class LocalAiRuntimeClient {
   async getMemoryAnswerTask(
     taskId: string,
     signal?: AbortSignal
-  ): Promise<MemoryAnswerTaskView> {
+  ): Promise<MemoryAnswerTask> {
     return taskFromRuntimeResponse(
       await this.request(
         `/v1/tasks/${encodeURIComponent(taskId)}`,
@@ -224,7 +205,7 @@ export class LocalAiRuntimeClient {
   async cancelMemoryAnswerTask(
     taskId: string,
     signal?: AbortSignal
-  ): Promise<MemoryAnswerTaskView> {
+  ): Promise<MemoryAnswerTask> {
     return taskFromRuntimeResponse(
       await this.request(
         `/v1/tasks/${encodeURIComponent(taskId)}/cancel`,
@@ -238,7 +219,7 @@ export class LocalAiRuntimeClient {
   async waitForMemoryAnswerTask(
     taskId: string,
     signal?: AbortSignal
-  ): Promise<MemoryAnswerTaskView> {
+  ): Promise<MemoryAnswerTask> {
     let lastVersion = 0;
     let retryMs = 250;
     while (!signal?.aborted) {
@@ -267,7 +248,7 @@ export class LocalAiRuntimeClient {
     taskId: string,
     afterVersion: number,
     signal?: AbortSignal
-  ): Promise<MemoryAnswerTaskView | null> {
+  ): Promise<MemoryAnswerTask | null> {
     const registration = readLocalRuntimeRegistration(this.environment);
     const response = await this.fetchImpl(
       new URL(
@@ -299,7 +280,7 @@ export class LocalAiRuntimeClient {
           .map((line) => line.slice(5).trimStart())
           .join("\n");
         if (!data) continue;
-        const task = taskFromUnknown(JSON.parse(data));
+        const task = memoryAnswerTaskSchema.parse(JSON.parse(data));
         if (task.version <= afterVersion) continue;
         afterVersion = task.version;
         if (memoryAnswerTaskIsTerminal(task)) return task;

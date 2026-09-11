@@ -52,6 +52,7 @@ describeDb("durable Memory Answer task repository", () => {
         tasks.acceptMemoryAnswerTask(actor, {
           origin: "mcp",
           invocationKey,
+          maxQueued: 16,
           request: { input: { query: secret }, caller: { cwd: "/private" } }
         })
       )
@@ -66,7 +67,7 @@ describeDb("durable Memory Answer task repository", () => {
         leaseOwner: `other-${randomUUID()}`,
         leaseMs: 1_000
       })
-    ).toBeNull();
+    ).toMatchObject({ task: null, reconciled: [] });
 
     const stored = await pool.query<{
       request: string;
@@ -94,13 +95,14 @@ describeDb("durable Memory Answer task repository", () => {
     const accepted = await tasks.acceptMemoryAnswerTask(actor, {
       origin: "mcp",
       invocationKey: randomUUID(),
+      maxQueued: 16,
       request: { input: { query: "lease test" }, caller: { cwd: "/work" } }
     });
     const first = await tasks.claimMemoryAnswerTask(actor, {
       leaseOwner: `first-${randomUUID()}`,
       leaseMs: 1_000
     });
-    expect(first?.fenceGeneration).toBe(1);
+    expect(first.task?.fenceGeneration).toBe(1);
     await pool.query(
       "update memory_answer_tasks set lease_until = now() - interval '1 second' where id = $1",
       [accepted.id]
@@ -109,12 +111,12 @@ describeDb("durable Memory Answer task repository", () => {
       leaseOwner: `second-${randomUUID()}`,
       leaseMs: 60_000
     });
-    expect(second?.fenceGeneration).toBe(2);
+    expect(second.task?.fenceGeneration).toBe(2);
     expect(
       await tasks.heartbeatMemoryAnswerTask(actor, {
         taskId: accepted.id,
-        leaseOwner: first!.leaseOwner,
-        fenceGeneration: first!.fenceGeneration,
+        leaseOwner: first.task!.leaseOwner,
+        fenceGeneration: first.task!.fenceGeneration,
         leaseMs: 60_000
       })
     ).toBeNull();
@@ -125,8 +127,8 @@ describeDb("durable Memory Answer task repository", () => {
     expect(
       await tasks.completeMemoryAnswerTask(actor, {
         taskId: accepted.id,
-        leaseOwner: second!.leaseOwner,
-        fenceGeneration: second!.fenceGeneration,
+        leaseOwner: second.task!.leaseOwner,
+        fenceGeneration: second.task!.fenceGeneration,
         questionId: randomUUID(),
         result: { markdown: "late result" }
       })
@@ -134,8 +136,8 @@ describeDb("durable Memory Answer task repository", () => {
     expect(
       await tasks.failMemoryAnswerTask(actor, {
         taskId: accepted.id,
-        leaseOwner: second!.leaseOwner,
-        fenceGeneration: second!.fenceGeneration,
+        leaseOwner: second.task!.leaseOwner,
+        fenceGeneration: second.task!.fenceGeneration,
         errorCode: "cancelled",
         errorMessage: "cancelled by fixture",
         retry: true
@@ -159,6 +161,7 @@ describeDb("durable Memory Answer task repository", () => {
     const completedTask = await tasks.acceptMemoryAnswerTask(actor, {
       origin: "mcp",
       invocationKey: randomUUID(),
+      maxQueued: 16,
       request: { input: { query: "result" }, caller: { cwd: "/work" } }
     });
     const completedClaim = await tasks.claimMemoryAnswerTask(actor, {
@@ -167,8 +170,8 @@ describeDb("durable Memory Answer task repository", () => {
     });
     await tasks.completeMemoryAnswerTask(actor, {
       taskId: completedTask.id,
-      leaseOwner: completedClaim!.leaseOwner,
-      fenceGeneration: completedClaim!.fenceGeneration,
+      leaseOwner: completedClaim.task!.leaseOwner,
+      fenceGeneration: completedClaim.task!.fenceGeneration,
       questionId: question.id,
       result: { markdown: resultSecret }
     });
@@ -177,6 +180,7 @@ describeDb("durable Memory Answer task repository", () => {
     const failedTask = await tasks.acceptMemoryAnswerTask(actor, {
       origin: "mcp",
       invocationKey: randomUUID(),
+      maxQueued: 16,
       request: { input: { query: "error" }, caller: { cwd: "/work" } }
     });
     const failedClaim = await tasks.claimMemoryAnswerTask(actor, {
@@ -185,8 +189,8 @@ describeDb("durable Memory Answer task repository", () => {
     });
     await tasks.failMemoryAnswerTask(actor, {
       taskId: failedTask.id,
-      leaseOwner: failedClaim!.leaseOwner,
-      fenceGeneration: failedClaim!.fenceGeneration,
+      leaseOwner: failedClaim.task!.leaseOwner,
+      fenceGeneration: failedClaim.task!.fenceGeneration,
       errorCode: "fixture_error",
       errorMessage: errorSecret,
       retry: false
@@ -214,5 +218,109 @@ describeDb("durable Memory Answer task repository", () => {
         lastErrorMessage: errorSecret
       }
     );
+  });
+
+  it("enforces the durable backlog bound without rejecting an idempotent retry", async () => {
+    const { actor } = await createActor("bounded-queue");
+    const tasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: encryptionProvider
+    });
+    const invocationKey = randomUUID();
+    const first = await tasks.acceptMemoryAnswerTask(actor, {
+      origin: "mcp",
+      invocationKey,
+      maxQueued: 1,
+      request: { input: { query: "first" }, caller: { cwd: "/work" } }
+    });
+
+    await expect(
+      tasks.acceptMemoryAnswerTask(actor, {
+        origin: "mcp",
+        invocationKey: randomUUID(),
+        maxQueued: 1,
+        request: { input: { query: "second" }, caller: { cwd: "/work" } }
+      })
+    ).rejects.toMatchObject({
+      name: "MemoryAnswerTaskQueueFullError",
+      statusCode: 429
+    });
+    await expect(
+      tasks.acceptMemoryAnswerTask(actor, {
+        origin: "mcp",
+        invocationKey,
+        maxQueued: 1,
+        request: { input: { query: "duplicate" }, caller: { cwd: "/work" } }
+      })
+    ).resolves.toMatchObject({ id: first.id });
+  });
+
+  it("rolls back a claim when its encrypted request cannot be loaded", async () => {
+    const { actor } = await createActor("claim-decryption");
+    const tasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: encryptionProvider
+    });
+    const accepted = await tasks.acceptMemoryAnswerTask(actor, {
+      origin: "mcp",
+      invocationKey: randomUUID(),
+      maxQueued: 16,
+      request: { input: { query: "decrypt" }, caller: { cwd: "/work" } }
+    });
+    await pool.query(
+      `delete from encrypted_field_payloads
+        where source_table = 'memory_answer_tasks' and source_id = $1`,
+      [accepted.id]
+    );
+
+    await expect(
+      tasks.claimMemoryAnswerTask(actor, {
+        leaseOwner: `claim-${randomUUID()}`,
+        leaseMs: 1_000
+      })
+    ).rejects.toThrow("request_snapshot is missing");
+    await expect(
+      tasks.getMemoryAnswerTask(actor, accepted.id)
+    ).resolves.toMatchObject({
+      status: "accepted",
+      attemptCount: 0,
+      fenceGeneration: 0
+    });
+  });
+
+  it("returns terminal lease reconciliation alongside the next claim", async () => {
+    const { actor } = await createActor("claim-reconciliation");
+    const tasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: encryptionProvider
+    });
+    const accepted = await tasks.acceptMemoryAnswerTask(actor, {
+      origin: "mcp",
+      invocationKey: randomUUID(),
+      maxQueued: 16,
+      maxAttempts: 1,
+      request: { input: { query: "expire" }, caller: { cwd: "/work" } }
+    });
+    await tasks.claimMemoryAnswerTask(actor, {
+      leaseOwner: `first-${randomUUID()}`,
+      leaseMs: 1_000
+    });
+    await pool.query(
+      "update memory_answer_tasks set lease_until = now() - interval '1 second' where id = $1",
+      [accepted.id]
+    );
+
+    await expect(
+      tasks.claimMemoryAnswerTask(actor, {
+        leaseOwner: `second-${randomUUID()}`,
+        leaseMs: 1_000
+      })
+    ).resolves.toMatchObject({
+      task: null,
+      reconciled: [
+        {
+          id: accepted.id,
+          status: "failed",
+          lastErrorCode: "attempts_exhausted"
+        }
+      ]
+    });
   });
 });

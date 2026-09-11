@@ -11923,7 +11923,7 @@ export const localMemoryAgentSettings = pgTable(
     ),
     check(
       "local_memory_agent_settings_timeout_ms_check",
-      sql`${table.timeoutMs} between 1000 and 600000`
+      sql`${table.timeoutMs} between 1000 and 1800000`
     ),
     check(
       "local_memory_agent_settings_max_attempts_check",

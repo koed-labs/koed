@@ -54,6 +54,7 @@ export interface AiClientRunConfig {
   developerInstructions?: string;
   outputSchema?: Record<string, unknown>;
   signal?: AbortSignal;
+  onProgress?: (status: string) => void;
 }
 
 export interface AiClientRunResult {
@@ -781,12 +782,15 @@ export const runClaudeAgentSdkTask = async (
         settingSources: [],
         persistSession: false,
         maxTurns: 1,
-        includePartialMessages: false,
+        includePartialMessages: Boolean(config.onProgress),
         forwardSubagentText: false
       }
     });
     for await (const message of stream) {
       providerEvents.push(message);
+      if (message.type !== "system") {
+        config.onProgress?.("Claude provider activity");
+      }
       if ("session_id" in message && typeof message.session_id === "string") {
         sessionId = message.session_id;
       }
@@ -1052,7 +1056,8 @@ const codexDriver: AiClientDriver = {
         baseInstructions: config.systemPrompt,
         developerInstructions:
           config.developerInstructions ??
-          koedAiClientWorkerDeveloperInstructions
+          koedAiClientWorkerDeveloperInstructions,
+        onProviderActivity: config.onProgress
       },
       timeoutMs
     );

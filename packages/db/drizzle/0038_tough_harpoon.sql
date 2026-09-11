@@ -40,6 +40,8 @@ CREATE TABLE "memory_answer_tasks" (
         or ("memory_answer_tasks"."status" not in ('completed', 'failed', 'cancelled') and "memory_answer_tasks"."result_snapshot" is null and "memory_answer_tasks"."question_id" is null and "memory_answer_tasks"."completed_at" is null and "memory_answer_tasks"."failed_at" is null and "memory_answer_tasks"."cancelled_at" is null))
 );
 --> statement-breakpoint
+ALTER TABLE "local_memory_agent_settings" DROP CONSTRAINT "local_memory_agent_settings_timeout_ms_check";--> statement-breakpoint
+ALTER TABLE "local_memory_agent_settings" ADD CONSTRAINT "local_memory_agent_settings_timeout_ms_check" CHECK ("local_memory_agent_settings"."timeout_ms" between 1000 and 1800000);--> statement-breakpoint
 ALTER TABLE "encrypted_field_backfill_runs" DROP CONSTRAINT "encrypted_field_backfill_runs_source_table_check";--> statement-breakpoint
 ALTER TABLE "encrypted_field_payloads" DROP CONSTRAINT "encrypted_field_payloads_source_table_check";--> statement-breakpoint
 ALTER TABLE "memory_answer_tasks" ADD CONSTRAINT "memory_answer_tasks_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
