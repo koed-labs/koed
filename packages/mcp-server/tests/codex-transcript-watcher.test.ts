@@ -1413,6 +1413,9 @@ describe("Codex Transcript Watcher source journal", () => {
     try {
       const beforeRetry = lookup.mock.calls.length;
       writeFileSync(transcript, content);
+      // Same-size rewrites can retain the original millisecond mtime in CI.
+      const repairedAt = new Date(modified.getTime() + 2_000);
+      utimesSync(transcript, repairedAt, repairedAt);
       await watcher.scanNow();
       expect(lookup.mock.calls.length).toBeGreaterThan(beforeRetry);
       expect(watcher.snapshot().lastErrorCode).toBeNull();
