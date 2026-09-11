@@ -1,3 +1,11 @@
+import {
+  localApiRetryDelay,
+  LocalApiRateLimitError
+} from "../../../local-api-errors.js";
+import {
+  managedConversationUpdatesSince,
+  type ManagedConversationUpdateEnvelope
+} from "../../state/managed-conversation-runtime.js";
 import { assignmentFrom } from "../preferences/local-ai-client-settings-helpers.js";
 import type {
   PersonalConversationPresentation,
@@ -134,10 +142,7 @@ export type PersonalMemoryWorkspaceProps = {
   updateSessionPresentation?: PersonalDesktopApi["updateSessionPresentation"];
   managedConversationRevision?: number;
   managedConversationRecoveryRevision?: number;
-  managedConversationUpdate?: {
-    revision: number;
-    update: ManagedConversationRealtimeUpdate;
-  } | null;
+  managedConversationUpdate?: ManagedConversationUpdateEnvelope | null;
   managedConversations?: ManagedConversationDesktopApi | null;
   managedConversationLifecycle?: ManagedConversationLifecycle;
   localAiClients?: DesktopApi["localAiClients"];
@@ -1259,13 +1264,36 @@ function StoreConversation({
       attachContext({ kind: "terminal", reference: contextReference, label }),
     [attachContext]
   );
+  const retiredTransientIds = useRef(new Set<string>());
+  const refreshedTerminalCommand = useRef<string | null>(null);
   const mergeTransientOutputs = useCallback(
     (
       items: ManagedConversationRuntimeItem[],
       command: ManagedConversationRuntimeState["latestCommand"]
     ) => {
+      const terminal =
+        command?.commandKind === "prompt" &&
+        ["completed", "failed", "indeterminate"].includes(command.state);
       const completed =
         command?.commandKind === "prompt" && command.state === "completed";
+      if (terminal) {
+        if (command.state !== "indeterminate")
+          for (const item of items) retiredTransientIds.current.add(item.id);
+        const key = `${command.id}:${command.updatedAt}:${canonicalConversation?.threadId ?? thread.id}`;
+        if (refreshedTerminalCommand.current !== key) {
+          refreshedTerminalCommand.current = key;
+          store.refreshFromDurableEvent();
+          void store.loadInitial(
+            {
+              ...thread,
+              id: canonicalConversation?.threadId ?? thread.id,
+              sessionId:
+                canonicalConversation?.capturedSessionId ?? thread.sessionId
+            },
+            { refresh: true }
+          );
+        }
+      }
       if (completed && command.clientUserMessageId) {
         setOptimisticPrompts((current) =>
           current.some(
@@ -1280,16 +1308,13 @@ function StoreConversation({
       }
       const visible = items.filter(
         (item) =>
-          item.state === "pending" && (item.providerItemId || !completed)
+          item.state === "pending" && !retiredTransientIds.current.has(item.id)
       );
       const visibleIds = new Set(visible.map((item) => item.id));
       setTransientAssistantOutputs((current) => {
         const next = new Map(
           current
-            .filter(
-              (event) =>
-                event.metadata.providerItemId || visibleIds.has(event.id)
-            )
+            .filter((event) => visibleIds.has(event.id))
             .map((event) => [event.id, event] as const)
         );
         let changed = next.size !== current.length;
@@ -1329,7 +1354,12 @@ function StoreConversation({
         return changed ? [...next.values()] : current;
       });
     },
-    []
+    [
+      store,
+      thread,
+      canonicalConversation?.threadId,
+      canonicalConversation?.capturedSessionId
+    ]
   );
   useEffect(() => {
     setCanonicalConversation(initialCanonicalConversation);
@@ -1373,6 +1403,19 @@ function StoreConversation({
       ),
     [canonicalEvents]
   );
+  const canonicalProviderTurns = useMemo(
+    () =>
+      new Set(
+        canonicalEvents
+          .filter(
+            (event) => event.actor === "assistant" || event.actor === "agent"
+          )
+          .flatMap((event) =>
+            event.metadata.providerTurnId ? [event.metadata.providerTurnId] : []
+          )
+      ),
+    [canonicalEvents]
+  );
   const unreconciledTransientOutputs = useMemo(
     () =>
       transientAssistantOutputs.filter((event) => {
@@ -1380,11 +1423,12 @@ function StoreConversation({
         const itemId = event.metadata.providerItemId;
         return (
           !turnId ||
-          !itemId ||
-          !canonicalProviderItems.has(`${turnId}\0${itemId}`)
+          (itemId
+            ? !canonicalProviderItems.has(`${turnId}\0${itemId}`)
+            : !canonicalProviderTurns.has(turnId))
         );
       }),
-    [canonicalProviderItems, transientAssistantOutputs]
+    [canonicalProviderItems, canonicalProviderTurns, transientAssistantOutputs]
   );
   const unreconciledOptimisticPrompts = useMemo(() => {
     const canonicalClientMessageIds = new Set(
@@ -1418,6 +1462,8 @@ function StoreConversation({
       return;
     setOptimisticPrompts([]);
     setTransientAssistantOutputs([]);
+    retiredTransientIds.current.clear();
+    refreshedTerminalCommand.current = null;
     setContextAttachments([]);
   }, [routeSessionId, executionIdentity]);
   const latestPromptTime = Math.max(
@@ -2134,15 +2180,23 @@ function ManagedConversationComposer({
             persistedDraftRef.current = { scopeKey, value };
           }
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           if (reportFailure) {
-            setDraftError("Koed could not save this draft securely.");
+            const delay = localApiRetryDelay(error);
+            setDraftError(
+              delay
+                ? new LocalApiRateLimitError(delay).message
+                : "Koed could not save this draft securely."
+            );
           }
         });
       return draftWriteChainRef.current;
     },
     [api, draftScope, draftScopeKey]
   );
+
+  const transientOutputsListener = useRef(onTransientOutputs);
+  transientOutputsListener.current = onTransientOutputs;
 
   const refreshRuntimeSnapshot = useCallback(
     async (executionId: string) => {
@@ -2159,6 +2213,10 @@ function ManagedConversationComposer({
           if (update.execution.id !== executionId) continue;
           const reduced = reduceManagedConversationRuntime(next, update);
           next = reduced.state;
+          transientOutputsListener.current(
+            next.items.filter((item) => item.itemKind === "transient_output"),
+            next.latestCommand
+          );
           requiresFollowup ||= reduced.requiresSnapshot;
         }
         runtimeRef.current = next;
@@ -2181,11 +2239,15 @@ function ManagedConversationComposer({
     [api]
   );
 
+  const [draftReadRevision, setDraftReadRevision] = useState(0);
   useEffect(() => {
     let active = true;
-    setDraft("");
-    draftRef.current = "";
-    draftEditedRef.current = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    if (persistedDraftRef.current.scopeKey !== draftScopeKey) {
+      setDraft("");
+      draftRef.current = "";
+      draftEditedRef.current = false;
+    }
     persistedDraftRef.current = { scopeKey: draftScopeKey, value: "" };
     setDraftReady(false);
     setDraftError("");
@@ -2206,15 +2268,26 @@ function ManagedConversationComposer({
         };
         setDraftReady(true);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!active) return;
-        setDraftError("Draft persistence is unavailable on this device.");
-        setDraftReady(true);
+        const delay = localApiRetryDelay(error);
+        setDraftError(
+          delay
+            ? new LocalApiRateLimitError(delay).message
+            : "Draft persistence is unavailable on this device. Reopen this Conversation to retry."
+        );
+        // Do not overwrite a saved draft when its read failed.
+        if (delay)
+          retryTimer = setTimeout(
+            () => setDraftReadRevision((value) => value + 1),
+            delay * 1000
+          );
       });
     return () => {
       active = false;
+      if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [api, draftScope, draftScopeKey, initialPrompt]);
+  }, [api, draftScope, draftScopeKey, initialPrompt, draftReadRevision]);
 
   useEffect(() => {
     if (!draftReady) return;
@@ -2302,37 +2375,65 @@ function ManagedConversationComposer({
     resolvedConversation.executionId
   ]);
 
+  const processedRuntimeRevision = useRef(0);
   useEffect(() => {
     const envelope = managedConversationUpdate;
     const executionId = resolvedConversation.executionId;
-    if (
-      !envelope ||
-      !executionId ||
-      envelope.update.execution.id !== executionId
-    ) {
-      return;
-    }
-    if (runtimeSnapshotInFlightRef.current || !runtimeRef.current) {
-      pendingRuntimeUpdatesRef.current.push(envelope.update);
-      if (!runtimeSnapshotInFlightRef.current) {
-        void refreshRuntimeSnapshot(executionId);
-      }
-      return;
-    }
-    const reduced = reduceManagedConversationRuntime(
-      runtimeRef.current,
-      envelope.update
+    if (!envelope || !executionId) return;
+    const batch = managedConversationUpdatesSince(
+      envelope,
+      processedRuntimeRevision.current
     );
-    runtimeRef.current = reduced.state;
-    setRuntime(reduced.state);
-    setRuntimeActionBusy(false);
-    if (reduced.requiresSnapshot) {
-      void refreshRuntimeSnapshot(executionId);
+    processedRuntimeRevision.current = envelope.revision;
+    let requiresSnapshot = batch.gap;
+    for (const { update } of batch.updates) {
+      if (update.execution.id !== executionId) continue;
+      if (runtimeSnapshotInFlightRef.current || !runtimeRef.current) {
+        pendingRuntimeUpdatesRef.current.push(update);
+        requiresSnapshot ||= !runtimeSnapshotInFlightRef.current;
+        continue;
+      }
+      const reduced = reduceManagedConversationRuntime(
+        runtimeRef.current,
+        update
+      );
+      runtimeRef.current = reduced.state;
+      // Apply terminal turn bookkeeping before React can batch a later turn.
+      transientOutputsListener.current(
+        reduced.state.items.filter(
+          (item) => item.itemKind === "transient_output"
+        ),
+        reduced.state.latestCommand
+      );
+      setRuntime(reduced.state);
+      setRuntimeActionBusy(false);
+      requiresSnapshot ||= reduced.requiresSnapshot;
     }
+    if (requiresSnapshot && !runtimeSnapshotInFlightRef.current)
+      void refreshRuntimeSnapshot(executionId);
   }, [
     managedConversationUpdate,
     refreshRuntimeSnapshot,
     resolvedConversation.executionId
+  ]);
+
+  // Reconcile missed delivery and reconnects against durable command state.
+  useEffect(() => {
+    const executionId = resolvedConversation.executionId;
+    if (
+      !executionId ||
+      ["failed", "stopped", "fenced"].includes(runtime?.executionState ?? "")
+    )
+      return;
+    const timer = setInterval(() => {
+      if (!runtimeSnapshotInFlightRef.current)
+        void refreshRuntimeSnapshot(executionId);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [
+    resolvedConversation.executionId,
+    runtime?.executionState,
+    refreshRuntimeSnapshot
   ]);
 
   useEffect(() => {
@@ -2700,6 +2801,48 @@ function ManagedConversationComposer({
     refreshSettingsOptions
   ]);
 
+  useEffect(() => {
+    const command = runtime?.latestCommand;
+    if (
+      command?.commandKind !== "prompt" ||
+      !["completed", "failed", "indeterminate"].includes(command.state)
+    )
+      return;
+    submissionInFlightRef.current = false;
+    setState((current) =>
+      current.status === "sending" || current.status === "starting"
+        ? {
+            status:
+              runtime?.executionState === "running" &&
+              command.state !== "indeterminate"
+                ? "ready"
+                : "reconciling",
+            message: ""
+          }
+        : current
+    );
+  }, [runtime?.latestCommand, runtime?.executionState]);
+
+  const authenticationFailed =
+    runtime?.latestCommand?.lastErrorCode ===
+      "ManagedConversationAuthenticationError" ||
+    runtime?.executionLastErrorCode ===
+      "ManagedConversationAuthenticationError";
+  const preservedPrompt =
+    lastSubmittedRef.current?.prompt ?? initialPrompt?.prompt ?? draft;
+  useEffect(() => {
+    if (
+      !authenticationFailed ||
+      !draftReady ||
+      !preservedPrompt ||
+      draftRef.current
+    )
+      return;
+    setDraft(preservedPrompt);
+    draftRef.current = preservedPrompt;
+    void persistDraft(preservedPrompt, true);
+  }, [authenticationFailed, draftReady, preservedPrompt, persistDraft]);
+
   const terminalRuntimeFailure =
     runtime?.executionState === "failed" || startupStatus === "failed";
   const inputDisabled =
@@ -2710,6 +2853,12 @@ function ManagedConversationComposer({
     inputDisabled || state.status === "sending" || !draft.trim();
   const promptActive =
     !terminalRuntimeFailure &&
+    !(
+      runtime?.latestCommand?.commandKind === "prompt" &&
+      ["completed", "failed", "indeterminate"].includes(
+        runtime.latestCommand.state
+      )
+    ) &&
     (state.status === "sending" ||
       (["attaching", "starting", "ready"].includes(state.status) &&
         initialPrompt?.status === "queued" &&
@@ -2727,7 +2876,26 @@ function ManagedConversationComposer({
       aria-busy={state.status === "sending"}
       className={`personal-managed-composer state-${state.status}`}
     >
-      {runtime?.latestCommand?.state === "indeterminate" ? (
+      {authenticationFailed ? (
+        <div className="personal-managed-runtime-error" role="alert">
+          <p>
+            The AI Client rejected authentication. Sign in to the selected AI
+            Client, then start a new Conversation with the preserved prompt.
+            Koed will not resend it automatically.
+          </p>
+          {preservedPrompt ? (
+            <label>
+              Preserved prompt
+              <textarea
+                aria-label="Preserved prompt"
+                readOnly
+                value={preservedPrompt}
+                onFocus={(event) => event.currentTarget.select()}
+              />
+            </label>
+          ) : null}
+        </div>
+      ) : runtime?.latestCommand?.state === "indeterminate" ? (
         <div className="personal-managed-runtime-error" role="alert">
           Koed cannot prove whether the last {runtime.latestCommand.commandKind}{" "}
           reached the AI Client. It will not retry automatically.

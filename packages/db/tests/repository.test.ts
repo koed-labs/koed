@@ -2414,6 +2414,29 @@ describeDb("memory repository visibility", () => {
         providerThreadId: running.providerThreadId
       }
     });
+    const temporary = await managedRepo.putManagedConversationRuntimeItem(
+      { userId: owner.id },
+      {
+        executionId: managed.execution.id,
+        executionGeneration: 1,
+        providerRequestId: "pi:turn-1",
+        providerTurnId: "turn-1",
+        itemKind: "transient_output",
+        payload: { text: "First Pi answer" }
+      }
+    );
+    expect(temporary.providerItemId).toBeNull();
+    await managedRepo.completeManagedConversationCommand({
+      commandId: claimedPrompt!.id,
+      leaseToken: claimedPrompt!.leaseToken!,
+      result: { turnId: "turn-1" }
+    });
+    expect(
+      await managedRepo.getManagedConversationRuntimeItem(
+        { userId: owner.id },
+        temporary.id
+      )
+    ).toBeNull();
   });
 
   it("rejects context changes under a reused start key in both directions", async () => {

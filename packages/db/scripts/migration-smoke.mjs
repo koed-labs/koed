@@ -70,9 +70,9 @@ const expectedPreSelectivePiiTag = "0033_fixed_scarlet_witch";
 const expectedSelectivePiiTag = "0034_young_silvermane";
 const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
-const expectedLatestMigrationTag = "0039_conversation_agent_default";
+const expectedLatestMigrationTag = "0040_repair_conversation_start_authority";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 39;
+const expectedLatestMigrationIndex = 40;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -1366,6 +1366,54 @@ try {
       await assertMigrationLedger(pool, fullRecords);
     });
   });
+
+  await runScenario(
+    "repair-recorded-conversation-start-authority",
+    async () => {
+      const earlierFolder = await createMigrationSlice(journal, 39);
+      temporaryFolders.add(earlierFolder);
+      const target = await createDisposableDatabase("start_authority_repair");
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: earlierFolder });
+        // Reproduce an already-recorded development migration lacking the column.
+        await pool.query(
+          "alter table managed_conversation_runtime_bindings drop column start_authority_acknowledged_at"
+        );
+        const owner = randomUUID();
+        const execution = randomUUID();
+        await pool.query("insert into users (id,email) values ($1,$2)", [
+          owner,
+          `${owner}@example.test`
+        ]);
+        await pool.query(
+          `insert into managed_conversation_runtime_bindings
+          (execution_id,owner_user_id,deployment_id,device_id,execution_generation,project_path,source_project_path)
+          values ($1,$2,$3,$4,1,'/retained-project','/retained-project')`,
+          [execution, owner, randomUUID(), randomUUID()]
+        );
+        await runDbMigrations(pool);
+        const retained = await pool.query(
+          `select project_path, start_authority_acknowledged_at
+          from managed_conversation_runtime_bindings where execution_id=$1`,
+          [execution]
+        );
+        if (
+          retained.rows[0]?.project_path !== "/retained-project" ||
+          retained.rows[0]?.start_authority_acknowledged_at !== null
+        )
+          throw new Error(
+            "Repair changed retained runtime binding or granted start authority"
+          );
+        await pool.query(
+          `update managed_conversation_runtime_bindings set start_authority_acknowledged_at=now() where execution_id=$1`,
+          [execution]
+        );
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        await assertCurrentSchema(pool);
+      });
+    }
+  );
 
   await runScenario("clean-full-migration", async () => {
     const target = await createDisposableDatabase("clean_full");

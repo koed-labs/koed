@@ -1419,6 +1419,16 @@ export const registerManagedConversationRoutes = (
   };
 
   app.get(
+    "/v1/managed-conversations/access",
+    { preHandler: managedConversationReadRateLimit },
+    async (request) => {
+      assertAvailable(context);
+      const user = await context.auth.authenticateApiToken(request);
+      return { user: { id: user.id } };
+    }
+  );
+
+  app.get(
     "/v1/managed-conversations/launch-options",
     { preHandler: managedConversationReadRateLimit },
     async (request) => {

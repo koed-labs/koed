@@ -212,6 +212,41 @@ describe("ClaudeManagedConversationSession", () => {
     }
   );
 
+  it("preserves an actionable authentication failure after successful start without replaying the prompt", async () => {
+    const { config } = fixture();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+      queryFrom([
+        {
+          type: "assistant",
+          session_id: options!.sessionId!,
+          error: "authentication_failed",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: "Not logged in · Please run /login secret diagnostic"
+              }
+            ]
+          }
+        } as unknown as SDKMessage
+      ])
+    );
+    const session = new ClaudeManagedConversationSession(config);
+    try {
+      await session.start();
+      await expect(
+        session.prompt("Preserve this first prompt")
+      ).rejects.toMatchObject({
+        name: "ManagedConversationAuthenticationError",
+        message: "ManagedConversationAuthenticationError"
+      });
+      expect(sdk.query).toHaveBeenCalledTimes(1);
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
   it("uses the official SessionStore fork path and returns SDK-remapped JSONL", async () => {
     const { cwd } = fixture();
     const parentSessionId = randomUUID();

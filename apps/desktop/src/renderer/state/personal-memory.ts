@@ -281,13 +281,15 @@ export class PersonalMemoryStore {
   }
 
   async loadInitial(
-    thread: PersonalDesktopProjectThread
+    thread: PersonalDesktopProjectThread,
+    { refresh = false }: { refresh?: boolean } = {}
   ): Promise<PersonalMemoryDetail> {
     const key = personalMemoryThreadKey(thread);
     const existing = this.#cache.get(key);
     const now = Date.now();
     if (existing) existing.thread = thread;
     if (
+      !refresh &&
       existing?.status === "ready" &&
       now - existing.loadedAt < personalMemoryCacheRetentionMs
     ) {
@@ -318,7 +320,10 @@ export class PersonalMemoryStore {
         limit: PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT
       });
       if (this.#cache.get(key) !== entry) return entry;
-      entry.events = mergeConversationEvents([], events);
+      entry.events = mergeConversationEvents(
+        refresh ? entry.events : [],
+        events
+      );
       entry.hasOlder = entry.events.length < thread.eventCount;
       entry.loadedAt = Date.now();
       entry.status = "ready";

@@ -564,6 +564,65 @@ describe("managed Conversation capability admission", () => {
 });
 
 describe("managed Conversation routes", () => {
+  it("authorizes draft access independently of exhausted background memory quotas", async () => {
+    const userId = randomUUID();
+    let limited = false;
+    const app = Fastify({ logger: false });
+    registerManagedConversationRoutes(app, {
+      encryption: { envelopeEncryptionProvider: {} },
+      rateLimit: {
+        memoryRead: async () => {
+          throw Object.assign(new Error("background exhausted"), {
+            statusCode: 429
+          });
+        },
+        memoryWrite: async () => undefined,
+        managedConversationRead: async (
+          _request: unknown,
+          reply: { header: (name: string, value: string) => void }
+        ) => {
+          if (limited) {
+            reply.header("retry-after", "30");
+            throw Object.assign(new Error("rate limit"), { statusCode: 429 });
+          }
+        }
+      },
+      auth: {
+        authenticateApiToken: async (request: {
+          headers: { authorization?: string };
+        }) => {
+          if (request.headers.authorization !== "Bearer valid")
+            throw Object.assign(new Error("Unauthorized"), { statusCode: 401 });
+          return { id: userId, passwordHash: "must-not-leak" };
+        }
+      }
+    } as unknown as ApiRouteContext);
+    try {
+      const request = {
+        method: "GET" as const,
+        url: "/v1/managed-conversations/access",
+        headers: { authorization: "Bearer valid" }
+      };
+      const response = await app.inject(request);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ user: { id: userId } });
+      expect(
+        (
+          await app.inject({
+            ...request,
+            headers: { authorization: "Bearer revoked" }
+          })
+        ).statusCode
+      ).toBe(401);
+      limited = true;
+      const throttled = await app.inject(request);
+      expect(throttled.statusCode).toBe(429);
+      expect(throttled.headers["retry-after"]).toBe("30");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns only the owning User's server-derived execution diff", async () => {
     const ownerUserId = randomUUID();
     const strangerUserId = randomUUID();

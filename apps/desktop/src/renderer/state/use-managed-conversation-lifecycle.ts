@@ -1,3 +1,7 @@
+import {
+  managedConversationUpdatesSince,
+  type ManagedConversationUpdateEnvelope
+} from "./managed-conversation-runtime.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   personalDesktopProjectThreadSchema,
@@ -11,7 +15,6 @@ import {
   type ManagedConversationIdentity
 } from "../../ipc/managed-conversation-protocol.js";
 import type { PersonalMemoryStore } from "./personal-memory.js";
-import type { ManagedConversationRealtimeUpdate } from "./managed-conversation-runtime.js";
 export type InitialConversationPrompt = {
   clientUserMessageId: string;
   prompt: string;
@@ -172,10 +175,7 @@ export function useManagedConversationLifecycle({
   store: PersonalMemoryStore | null;
   ownerId?: string | null;
   revision?: number;
-  update?: {
-    revision: number;
-    update: ManagedConversationRealtimeUpdate;
-  } | null;
+  update?: ManagedConversationUpdateEnvelope | null;
 }) {
   const [drafts, setDrafts] = useState<
     ReadonlyMap<string, ManagedConversationDraft>
@@ -289,74 +289,82 @@ export function useManagedConversationLifecycle({
     [store, currentScope]
   );
 
+  const processedUpdateRevision = useRef(0);
   useEffect(() => {
     if (!update) return;
-    const realtime = update.update;
-    const previous = executionVersions.current.get(realtime.execution.id);
-    const generation = realtime.execution.executionGeneration;
-    const version = realtime.execution.stateVersion;
-    if (
-      previous &&
-      (generation < previous.generation ||
-        (generation === previous.generation && version < previous.version))
-    )
-      return;
-    executionVersions.current.set(realtime.execution.id, {
-      generation,
-      version
-    });
-    setDrafts((current) => {
-      const entry = [...current.entries()].find(
-        ([, draft]) => draft.conversation.executionId === realtime.execution.id
-      );
-      if (!entry) return current;
-      const [routeId, draft] = entry;
-      if (draft.retryStartPending) return current;
-      const capturedSessionId =
-        realtime.execution.sessionId ?? draft.conversation.capturedSessionId;
-      const threadId =
-        realtime.execution.providerThreadId ?? draft.conversation.threadId;
-      const next: ManagedConversationDraft = {
-        ...draft,
-        conversation: { ...draft.conversation, capturedSessionId, threadId },
-        confirmedTerminal: ["failed", "fenced", "stopped"].includes(
-          realtime.execution.state
-        ),
-        status:
-          realtime.execution.state === "running" &&
-          realtime.execution.sessionId &&
-          realtime.execution.providerThreadId
-            ? "ready"
-            : realtime.execution.state === "reconciling"
-              ? "reconciling"
-              : ["failed", "fenced", "stopped"].includes(
-                    realtime.execution.state
-                  )
-                ? "failed"
-                : draft.status,
-        message: realtime.execution.state === "running" ? "" : draft.message,
-        thread: {
-          ...draft.thread,
-          id: threadId,
-          sessionId: capturedSessionId,
-          latestAt:
-            realtime.latestCommand?.commandKind === "prompt" &&
-            realtime.latestCommand.clientUserMessageId
-              ? realtime.latestCommand.updatedAt
-              : draft.thread.latestAt
-        }
-      };
+    const batch = managedConversationUpdatesSince(
+      update,
+      processedUpdateRevision.current
+    );
+    processedUpdateRevision.current = update.revision;
+    for (const { update: realtime } of batch.updates) {
+      const previous = executionVersions.current.get(realtime.execution.id);
+      const generation = realtime.execution.executionGeneration;
+      const version = realtime.execution.stateVersion;
       if (
-        next.confirmedTerminal === draft.confirmedTerminal &&
-        next.status === draft.status &&
-        next.message === draft.message &&
-        capturedSessionId === draft.conversation.capturedSessionId &&
-        threadId === draft.conversation.threadId &&
-        next.thread.latestAt === draft.thread.latestAt
+        previous &&
+        (generation < previous.generation ||
+          (generation === previous.generation && version < previous.version))
       )
-        return current;
-      return new Map(current).set(routeId, next);
-    });
+        continue;
+      executionVersions.current.set(realtime.execution.id, {
+        generation,
+        version
+      });
+      setDrafts((current) => {
+        const entry = [...current.entries()].find(
+          ([, draft]) =>
+            draft.conversation.executionId === realtime.execution.id
+        );
+        if (!entry) return current;
+        const [routeId, draft] = entry;
+        if (draft.retryStartPending) return current;
+        const capturedSessionId =
+          realtime.execution.sessionId ?? draft.conversation.capturedSessionId;
+        const threadId =
+          realtime.execution.providerThreadId ?? draft.conversation.threadId;
+        const next: ManagedConversationDraft = {
+          ...draft,
+          conversation: { ...draft.conversation, capturedSessionId, threadId },
+          confirmedTerminal: ["failed", "fenced", "stopped"].includes(
+            realtime.execution.state
+          ),
+          status:
+            realtime.execution.state === "running" &&
+            realtime.execution.sessionId &&
+            realtime.execution.providerThreadId
+              ? "ready"
+              : realtime.execution.state === "reconciling"
+                ? "reconciling"
+                : ["failed", "fenced", "stopped"].includes(
+                      realtime.execution.state
+                    )
+                  ? "failed"
+                  : draft.status,
+          message: realtime.execution.state === "running" ? "" : draft.message,
+          thread: {
+            ...draft.thread,
+            id: threadId,
+            sessionId: capturedSessionId,
+            latestAt:
+              realtime.latestCommand?.commandKind === "prompt" &&
+              realtime.latestCommand.clientUserMessageId
+                ? realtime.latestCommand.updatedAt
+                : draft.thread.latestAt
+          }
+        };
+        if (
+          next.confirmedTerminal === draft.confirmedTerminal &&
+          next.status === draft.status &&
+          next.message === draft.message &&
+          capturedSessionId === draft.conversation.capturedSessionId &&
+          threadId === draft.conversation.threadId &&
+          next.thread.latestAt === draft.thread.latestAt
+        )
+          return current;
+        return new Map(current).set(routeId, next);
+      });
+    }
   }, [update]);
 
   useEffect(() => {

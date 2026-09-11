@@ -1601,6 +1601,16 @@ describe("Managed Conversation failure codes", () => {
     ).toBe("ManagedConversationPrimarySourceError");
   });
 
+  it("preserves the provider authentication code through worker failure handling", () => {
+    expect(
+      managedConversationFailureCode(
+        Object.assign(new Error("private provider diagnostic"), {
+          name: "ManagedConversationAuthenticationError"
+        })
+      )
+    ).toBe("ManagedConversationAuthenticationError");
+  });
+
   it("does not expose arbitrary exception names or messages", () => {
     expect(
       managedConversationFailureCode(new Error("database password leaked"))

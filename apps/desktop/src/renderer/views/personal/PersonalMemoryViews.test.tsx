@@ -1,3 +1,8 @@
+import {
+  appendManagedConversationUpdate,
+  type ManagedConversationUpdateEnvelope
+} from "../../state/managed-conversation-runtime.js";
+import { LocalApiRateLimitError } from "../../../local-api-errors.js";
 // @vitest-environment happy-dom
 
 import type {
@@ -1472,6 +1477,277 @@ describe("PersonalMemoryWorkspace", () => {
       ).toHaveLength(1);
     }
   );
+
+  it("keeps two Pi turns ordered and retires temporary output across batched interleaved completion", async () => {
+    const managed = managedApi();
+    const captured: PersonalDesktopConversationEvent[] = [];
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [project([thread(1)])]),
+        loadEventPage: vi.fn(async () => [...captured])
+      })
+    );
+    let envelope: ManagedConversationUpdateEnvelope | null = null;
+    const update = (
+      sequence: number,
+      state: "dispatching" | "completed",
+      output?: string
+    ): ManagedConversationRealtimeUpdate => ({
+      type: "managed_conversation_upserted",
+      execution: {
+        id: "execution-1",
+        projectId: "project-1",
+        provider: "pi",
+        state: "running",
+        stateVersion: sequence,
+        executionGeneration: 1,
+        logicalSessionId: null,
+        sessionId,
+        providerThreadId: "thread-1",
+        providerCliVersion: "test",
+        lastErrorCode: null,
+        createdAt: threadLatestAt,
+        updatedAt: threadLatestAt,
+        startedAt: threadLatestAt,
+        quiescedAt: null,
+        stoppedAt: null
+      },
+      latestCommand: {
+        id: `command-${sequence}`,
+        sequence,
+        executionGeneration: 1,
+        commandKind: "prompt",
+        state,
+        clientUserMessageId: `user-${sequence}`,
+        lastErrorCode: null,
+        updatedAt: threadLatestAt
+      },
+      runtimeItemChange: output
+        ? {
+            kind: "upsert",
+            item: {
+              id: `output-${sequence}`,
+              executionGeneration: 1,
+              providerTurnId: `turn-${sequence}`,
+              providerItemId: null,
+              itemKind: "transient_output",
+              state: "pending",
+              payload: { text: output },
+              revision: 1,
+              createdAt: threadLatestAt,
+              updatedAt: threadLatestAt,
+              answered: false,
+              presentation: {
+                mode: "expanded",
+                renderer: "message",
+                policyKey: "agent_message",
+                policyRevision: 1,
+                reason: "test"
+              }
+            }
+          }
+        : null
+    });
+    const render = () => (
+      <PersonalMemoryWorkspace
+        managedConversationUpdate={envelope}
+        managedConversations={managed}
+        onNavigate={vi.fn()}
+        route={{ kind: "session", projectId: "project-1", sessionId }}
+        store={store}
+      />
+    );
+    await act(async () => root.render(render()));
+    for (const sequence of [1, 2]) {
+      const question = `Pi question ${sequence}`;
+      const answer = `Pi answer ${sequence}`;
+      captured.push({
+        ...event(sequence * 2),
+        actor: "user",
+        content: question,
+        contentPreview: question,
+        metadata: { clientUserMessageId: `user-${sequence}` }
+      });
+      envelope = appendManagedConversationUpdate(
+        envelope,
+        update(sequence, "dispatching", answer)
+      );
+      await act(async () => root.render(render()));
+      expect(container.textContent).toContain(answer);
+      captured.push({
+        ...event(sequence * 2 + 1),
+        content: answer,
+        contentPreview: answer,
+        metadata: { providerTurnId: `turn-${sequence}` }
+      });
+      const completion = update(sequence, "completed");
+      envelope = appendManagedConversationUpdate(envelope, completion);
+      envelope = appendManagedConversationUpdate(envelope, {
+        ...completion,
+        execution: { ...completion.execution, id: "another-conversation" }
+      });
+      await act(async () => root.render(render()));
+      await vi.waitFor(() => {
+        expect(container.textContent?.split(answer).length).toBe(2);
+        expect(container.textContent?.split(question).length).toBe(2);
+        expect(
+          container.querySelector('[aria-label="Interrupt active turn"]')
+        ).toBeNull();
+      });
+    }
+    const text = container.textContent!;
+    expect(text.indexOf("Pi question 1")).toBeLessThan(
+      text.indexOf("Pi answer 1")
+    );
+    expect(text.indexOf("Pi answer 1")).toBeLessThan(
+      text.indexOf("Pi question 2")
+    );
+    expect(text.indexOf("Pi question 2")).toBeLessThan(
+      text.indexOf("Pi answer 2")
+    );
+    // Reopening uses only the saved timeline.
+    await act(async () => root.render(<div />));
+    await act(async () => root.render(render()));
+    expect(container.textContent?.split("Pi answer 1").length).toBe(2);
+    expect(container.textContent?.split("Pi answer 2").length).toBe(2);
+    // A whole turn can settle before React renders the next turn's first delta.
+    envelope = appendManagedConversationUpdate(
+      envelope,
+      update(3, "dispatching", "Retired third-turn output")
+    );
+    envelope = appendManagedConversationUpdate(
+      envelope,
+      update(3, "completed")
+    );
+    envelope = appendManagedConversationUpdate(
+      envelope,
+      update(4, "dispatching", "Fourth-turn streaming output")
+    );
+    await act(async () => root.render(render()));
+    expect(container.textContent).not.toContain("Retired third-turn output");
+    expect(container.textContent).toContain("Fourth-turn streaming output");
+  });
+
+  it("preserves a first prompt and ends generation after a provider authentication failure", async () => {
+    const managed = managedApi({
+      readDraft: vi.fn<ManagedConversationDesktopApi["readDraft"]>(
+        async () => ({ operation: "draft_read", value: "Keep my first prompt" })
+      ),
+      send: vi.fn<ManagedConversationDesktopApi["send"]>(async (input) => ({
+        operation: "send",
+        status: "queued",
+        conversation: {
+          executionId: "execution-1",
+          projectId: "project-1",
+          capturedSessionId: sessionId,
+          threadId: "thread-1"
+        },
+        idempotencyKey: input.idempotencyKey,
+        clientUserMessageId: input.clientUserMessageId
+      }))
+    });
+    const store = new PersonalMemoryStore(
+      api({ listProjects: vi.fn(async () => [project([thread(1)])]) })
+    );
+    const render = (
+      envelope: ManagedConversationUpdateEnvelope | null = null
+    ) => (
+      <PersonalMemoryWorkspace
+        managedConversationUpdate={envelope}
+        managedConversations={managed}
+        onNavigate={vi.fn()}
+        route={{ kind: "session", projectId: "project-1", sessionId }}
+        store={store}
+      />
+    );
+    await act(async () => root.render(render()));
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Send prompt"]')!
+        .click()
+    );
+    expect(managed.send).toHaveBeenCalledTimes(1);
+    const input = vi.mocked(managed.send).mock.calls[0]![0];
+    const update: ManagedConversationRealtimeUpdate = {
+      type: "managed_conversation_upserted",
+      execution: {
+        id: "execution-1",
+        projectId: "project-1",
+        provider: "claude",
+        state: "reconciling",
+        stateVersion: 3,
+        executionGeneration: 1,
+        logicalSessionId: null,
+        sessionId,
+        providerThreadId: "thread-1",
+        providerCliVersion: "test",
+        lastErrorCode: "ManagedConversationAuthenticationError",
+        createdAt: threadLatestAt,
+        updatedAt: threadLatestAt,
+        startedAt: threadLatestAt,
+        quiescedAt: null,
+        stoppedAt: null
+      },
+      latestCommand: {
+        id: "prompt-1",
+        sequence: 2,
+        executionGeneration: 1,
+        commandKind: "prompt",
+        state: "indeterminate",
+        clientUserMessageId: input.clientUserMessageId,
+        lastErrorCode: "ManagedConversationAuthenticationError",
+        updatedAt: threadLatestAt
+      },
+      runtimeItemChange: null
+    };
+    await act(async () =>
+      root.render(render(appendManagedConversationUpdate(null, update)))
+    );
+    expect(container.textContent).toContain(
+      "Sign in to the selected AI Client"
+    );
+    expect(
+      container.querySelector<HTMLTextAreaElement>(
+        '[aria-label="Preserved prompt"]'
+      )?.value
+    ).toBe("Keep my first prompt");
+    expect(
+      container.querySelector('[aria-label="Interrupt active turn"]')
+    ).toBeNull();
+    expect(managed.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for Retry-After before loading a throttled draft and never overwrites it", async () => {
+    vi.useFakeTimers();
+    const readDraft = vi
+      .fn<ManagedConversationDesktopApi["readDraft"]>()
+      .mockRejectedValueOnce(new LocalApiRateLimitError(30))
+      .mockResolvedValue({ operation: "draft_read", value: "Retained draft" });
+    const managed = managedApi({ readDraft });
+    const store = new PersonalMemoryStore(
+      api({ listProjects: vi.fn(async () => [project([thread(1)])]) })
+    );
+    await act(async () =>
+      root.render(
+        <PersonalMemoryWorkspace
+          managedConversations={managed}
+          onNavigate={vi.fn()}
+          route={{ kind: "session", projectId: "project-1", sessionId }}
+          store={store}
+        />
+      )
+    );
+    expect(container.textContent).toContain("Try again in 30 seconds");
+    await act(async () => vi.advanceTimersByTimeAsync(29000));
+    expect(readDraft).toHaveBeenCalledTimes(1);
+    expect(managed.deleteDraft).not.toHaveBeenCalled();
+    expect(managed.writeDraft).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(readDraft).toHaveBeenCalledTimes(2);
+    expect(
+      container.querySelector<HTMLTextAreaElement>("textarea")?.value
+    ).toBe("Retained draft");
+  });
 
   it.each(["item-1", null])(
     "streams output with provider item identity %s without reattaching or stealing focus",
