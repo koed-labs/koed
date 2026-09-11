@@ -1008,6 +1008,7 @@ describe("Codex app-server runner", () => {
     );
     const realCodexHome = path.join(tempDirectory, "real-codex-home");
     fs.mkdirSync(realCodexHome, { mode: 0o700 });
+    const providerActivity: string[] = [];
     const session = new CodexAppServerThreadSession({
       appServerBinary: writeFakeAppServer(tempDirectory),
       model: "gpt-5.4-mini",
@@ -1020,7 +1021,8 @@ describe("Codex app-server runner", () => {
       },
       clientName: "koed-test",
       baseInstructions: "Return the answer.",
-      developerInstructions: ""
+      developerInstructions: "",
+      onProviderActivity: (status) => providerActivity.push(status)
     });
 
     try {
@@ -1042,6 +1044,7 @@ describe("Codex app-server runner", () => {
       expect(second.rawEvents?.map((event) => event.method)).not.toContain(
         "thread/start"
       );
+      expect(providerActivity).toContain("Codex provider activity");
     } finally {
       session.close();
       fs.rmSync(tempDirectory, { recursive: true, force: true });

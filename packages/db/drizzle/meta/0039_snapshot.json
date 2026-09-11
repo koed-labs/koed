@@ -1,6 +1,6 @@
 {
-  "id": "b90927c6-f5f9-4434-978f-f6371aa25d1d",
-  "prevId": "577f3438-76ba-439f-aa5e-2f1dd16df24a",
+  "id": "1d1e523d-1527-490e-93ae-6ceb55412480",
+  "prevId": "b90927c6-f5f9-4434-978f-f6371aa25d1d",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -13176,7 +13176,7 @@
       "checkConstraints": {
         "local_memory_agent_settings_flow_key_check": {
           "name": "local_memory_agent_settings_flow_key_check",
-          "value": "\"local_memory_agent_settings\".\"flow_key\" in ('mcp_memory_answer', 'manual_memory_answer', 'lcm_summary', 'curated_memory_review', 'session_title')"
+          "value": "\"local_memory_agent_settings\".\"flow_key\" in ('mcp_memory_answer', 'manual_memory_answer', 'lcm_summary', 'curated_memory_review', 'session_title', 'conversations')"
         },
         "local_memory_agent_settings_provider_check": {
           "name": "local_memory_agent_settings_provider_check",

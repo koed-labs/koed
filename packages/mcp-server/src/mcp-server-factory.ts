@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   CLIENT_CAPABILITIES_META_KEY,
   CLIENT_INFO_META_KEY,
@@ -157,6 +158,7 @@ export const createKoedMcpServer = async (
     callerContextResolver = ({ defaultContext }) => defaultContext
   }: CreateKoedMcpServerOptions = {}
 ): Promise<McpServer> => {
+  const invocationNamespace = randomUUID();
   let runtimeCapabilities: BackendToolCapabilities;
   let runtimeAvailable = true;
   let capabilitiesNeedRefresh = false;
@@ -203,7 +205,8 @@ export const createKoedMcpServer = async (
               defaultContext: defaultCallerContext(context),
               requestContext: _requestContext
             }),
-            context.mcpReq.signal
+            context.mcpReq.signal,
+            `${context.sessionId ?? invocationNamespace}:${String(context.mcpReq.id)}`
           );
           runtimeAvailable = true;
           if (capabilitiesNeedRefresh) {

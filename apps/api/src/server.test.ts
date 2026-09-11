@@ -6872,7 +6872,8 @@ describe("api health", () => {
         [
           "POST",
           "/v1/memory/ai-client-instances/pi.default/capability-snapshots"
-        ]
+        ],
+        ["POST", "/v1/memory/answer-tasks/claim"]
       ] as const) {
         const result = await app.inject({ method, url, headers, payload: {} });
         expect(result.statusCode).not.toBe(429);
@@ -6881,8 +6882,8 @@ describe("api health", () => {
       expect(keys.some((key) => key.startsWith("aiClientControl:"))).toBe(true);
       exhaustControl = true;
       const limited = await app.inject({
-        method: "PUT",
-        url: "/v1/memory/ai-client-instances/pi.default",
+        method: "POST",
+        url: "/v1/memory/answer-tasks/claim",
         headers,
         payload: {}
       });

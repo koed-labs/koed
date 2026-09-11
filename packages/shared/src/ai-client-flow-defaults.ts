@@ -42,7 +42,7 @@ const minimumInteger = (raw: string | undefined, fallback: number): number =>
 const curatedTimeout = (raw: string | undefined, fallback: number): number =>
   Math.max(1_000, parsedInteger(raw, fallback));
 const answerTimeout = (raw: string | undefined, fallback: number): number =>
-  Math.min(600_000, Math.max(1_000, parsedInteger(raw, fallback)));
+  Math.min(1_800_000, Math.max(1_000, parsedInteger(raw, fallback)));
 const answerAttempts = (raw: string | undefined, fallback: number): number =>
   Math.min(25, Math.max(1, parsedInteger(raw, fallback)));
 
@@ -56,7 +56,7 @@ export const localAiClientDefaultSpec: Record<LocalAiClientFlowKey, FlowSpec> =
     },
     mcp_memory_answer: {
       prefix: "MEMORY_ANSWER",
-      timeoutMs: 120_000,
+      timeoutMs: 1_800_000,
       parseTimeout: answerTimeout,
       parseAttempts: answerAttempts
     },
@@ -97,10 +97,10 @@ export const documentDefault = (
   source: "code",
   available: true,
   persistable:
-    assignment.timeout_ms <= 600_000 && assignment.max_attempts <= 25,
+    assignment.timeout_ms <= 1_800_000 && assignment.max_attempts <= 25,
   assignment,
   reason:
-    assignment.timeout_ms <= 600_000 && assignment.max_attempts <= 25
+    assignment.timeout_ms <= 1_800_000 && assignment.max_attempts <= 25
       ? null
       : "Effective runtime default exceeds persisted assignment limits; choose bounded values before saving."
 });
@@ -131,12 +131,14 @@ export const environmentDefaultFor = (
     const raw = environment[`${spec.prefix}_${suffix}`]?.trim();
     return raw || undefined;
   };
+  const timeoutSuffix =
+    flowKey === "mcp_memory_answer" ? "HARD_TIMEOUT_MS" : "TIMEOUT_MS";
   const hasEnvironmentValue = [
     "PROVIDER",
     "AI_CLIENT_INSTANCE",
     "MODEL",
     "REASONING_EFFORT",
-    "TIMEOUT_MS",
+    timeoutSuffix,
     "MAX_ATTEMPTS"
   ].some((suffix) => value(suffix) !== undefined);
   if (!base) {
@@ -168,7 +170,7 @@ export const environmentDefaultFor = (
       (provider === "claude" && model === "haiku"
         ? "none"
         : base.reasoning_effort),
-    timeout_ms: spec.parseTimeout(value("TIMEOUT_MS"), base.timeout_ms),
+    timeout_ms: spec.parseTimeout(value(timeoutSuffix), base.timeout_ms),
     max_attempts: spec.parseAttempts(value("MAX_ATTEMPTS"), base.max_attempts)
   };
   return {

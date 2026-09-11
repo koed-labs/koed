@@ -6,7 +6,17 @@ import {
   type MemoryAnswerWorkerConfig,
   type MemoryAnswerWorkerResponse
 } from "./answer-worker.js";
-import type { AiClientModelCapability } from "@koed/shared";
+import {
+  memoryAnswerTaskClaimResponseSchema,
+  memoryAnswerTaskResponseSchema,
+  type AcceptMemoryAnswerTaskInput,
+  type AiClientModelCapability,
+  type ClaimMemoryAnswerTaskInput,
+  type CompleteMemoryAnswerTaskInput,
+  type FailMemoryAnswerTaskInput,
+  type HeartbeatMemoryAnswerTaskInput,
+  type MemoryAnswerTask
+} from "@koed/shared";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 export {
   aiClientInstanceRegistryPath,
@@ -833,6 +843,86 @@ export class MemoryApiClient {
     input: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     return this.request("POST", "/v1/memory/questions/final", input);
+  }
+
+  async acceptMemoryAnswerTask(
+    input: AcceptMemoryAnswerTaskInput
+  ): Promise<{ task: MemoryAnswerTask }> {
+    return memoryAnswerTaskResponseSchema.parse(
+      await this.request("POST", "/v1/memory/answer-tasks", input)
+    );
+  }
+
+  async getMemoryAnswerTask(
+    taskId: string
+  ): Promise<{ task: MemoryAnswerTask }> {
+    return memoryAnswerTaskResponseSchema.parse(
+      await this.request(
+        "GET",
+        `/v1/memory/answer-tasks/${encodeURIComponent(taskId)}`
+      )
+    );
+  }
+
+  async claimMemoryAnswerTask(input: ClaimMemoryAnswerTaskInput) {
+    return memoryAnswerTaskClaimResponseSchema.parse(
+      await this.request("POST", "/v1/memory/answer-tasks/claim", input)
+    );
+  }
+
+  async heartbeatMemoryAnswerTask(
+    taskId: string,
+    input: HeartbeatMemoryAnswerTaskInput
+  ): Promise<{ task: MemoryAnswerTask }> {
+    return memoryAnswerTaskResponseSchema.parse(
+      await this.request(
+        "POST",
+        `/v1/memory/answer-tasks/${encodeURIComponent(taskId)}/heartbeat`,
+        input
+      )
+    );
+  }
+
+  async cancelMemoryAnswerTask(
+    taskId: string
+  ): Promise<{ task: MemoryAnswerTask }> {
+    return memoryAnswerTaskResponseSchema.parse(
+      await this.request(
+        "POST",
+        `/v1/memory/answer-tasks/${encodeURIComponent(taskId)}/cancel`,
+        {}
+      )
+    );
+  }
+
+  async completeMemoryAnswerTask(
+    taskId: string,
+    input: CompleteMemoryAnswerTaskInput
+  ): Promise<{ task: MemoryAnswerTask }> {
+    return memoryAnswerTaskResponseSchema.parse(
+      await this.request(
+        "POST",
+        `/v1/memory/answer-tasks/${encodeURIComponent(taskId)}/complete`,
+        input
+      )
+    );
+  }
+
+  async failMemoryAnswerTask(
+    taskId: string,
+    input: FailMemoryAnswerTaskInput
+  ): Promise<{ task: MemoryAnswerTask }> {
+    return memoryAnswerTaskResponseSchema.parse(
+      await this.request(
+        "POST",
+        `/v1/memory/answer-tasks/${encodeURIComponent(taskId)}/fail`,
+        input
+      )
+    );
+  }
+
+  async deleteExpiredMemoryAnswerTasks(): Promise<{ deleted: number }> {
+    return this.request("DELETE", "/v1/memory/answer-tasks/expired");
   }
 
   async createPendingDesktopAsk(

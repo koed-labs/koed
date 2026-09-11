@@ -6,6 +6,7 @@ import {
   type MemoryAnswerConversationTurn,
   type MemoryAnswerRetrievalClient,
   type MemoryAnswerResponseDetail,
+  type MemoryAnswerWorkerResponse,
   resolveMemoryAnswerWorkerConfig
 } from "./answer-worker.js";
 import type { CuratedMemoryReviewServiceHandle as LocalCuratedMemoryReviewServiceHandle } from "./curated-memory-review-service.js";
@@ -44,7 +45,15 @@ import type {
   LocalRuntimeToolName
 } from "./local-runtime-protocol.js";
 
-type McpMemoryQuestion = { id: string };
+type McpMemoryQuestion = {
+  id: string;
+  answerMarkdown?: string | null;
+  citations?: unknown[] | null;
+  evidence?: unknown[] | null;
+  localMemoryWorker?: Record<string, unknown> | null;
+  response?: Record<string, unknown> | null;
+  retrieval?: Record<string, unknown> | null;
+};
 
 const questionFromResponse = (response: Record<string, unknown>) => {
   const question = response.question;
@@ -122,6 +131,10 @@ export interface MemoryToolExecutorServices {
 
 export interface TrustedMemoryAnswerExecutionOptions {
   conversationContext?: readonly MemoryAnswerConversationTurn[];
+  idempotencyKey?: string;
+  onQuestionRecorded?: (question: McpMemoryQuestion) => void;
+  requireQuestionPersistence?: boolean;
+  onProgress?: (status: string) => void;
   origin: "desktop_ask" | "mcp_memory_answer";
   pendingQuestionId?: string;
 }
@@ -224,6 +237,22 @@ export class MemoryToolExecutor {
 
   async capabilities(): Promise<BackendToolCapabilities> {
     return backendToolCapabilitiesFrom(await this.client.capabilities());
+  }
+
+  durableMemoryAnswerEligible(
+    rawInput: Record<string, unknown>,
+    caller: LocalRuntimeCallerContext
+  ): boolean {
+    const input = memoryAnswerInputSchema.parse(rawInput);
+    const projectId =
+      input.search_domain === "project"
+        ? normalizeProjectId(input.project_id, caller)
+        : input.project_id;
+    return !resolveProjectTeamWorkspaceRoute({
+      projectRoot: input.search_domain === "project" ? projectId : undefined,
+      requestedTeamWorkspaceId: input.team_workspace_id,
+      env: this.environment
+    }).teamWorkspaceId;
   }
 
   async executeDesktopAsk(
@@ -335,6 +364,68 @@ export class MemoryToolExecutor {
     }
   }
 
+  async executeMemoryAnswerTask(
+    input: MemoryAnswerToolInput,
+    caller: LocalRuntimeCallerContext,
+    taskId: string,
+    signal?: AbortSignal,
+    onProgress?: (status: string) => void
+  ): Promise<{ questionId: string; result: Record<string, unknown> }> {
+    if (!this.durableMemoryAnswerEligible(input, caller)) {
+      throw Object.assign(
+        new Error(
+          "Memory Answer task is no longer eligible for Personal execution"
+        ),
+        {
+          memoryAnswerTaskErrorCode: "personal_route_changed",
+          retryable: false
+        }
+      );
+    }
+    let recordedQuestion: McpMemoryQuestion | undefined;
+    const result = await this.executeMemoryAnswer(
+      input,
+      caller,
+      {
+        origin: "mcp_memory_answer",
+        idempotencyKey: `memory-answer-task:${taskId}`,
+        requireQuestionPersistence: true,
+        onProgress,
+        onQuestionRecorded: (question) => {
+          recordedQuestion = question;
+        }
+      },
+      signal
+    );
+    if (!recordedQuestion) {
+      throw new Error("Memory Answer task did not persist a final question");
+    }
+    const persisted = recordedQuestion.response;
+    const persistedWorker =
+      recordedQuestion.localMemoryWorker ?? persisted?.localMemoryWorker;
+    const authoritativeResult =
+      persisted && persistedWorker
+        ? toolAnswerResponse(
+            {
+              ...persisted,
+              markdown:
+                recordedQuestion.answerMarkdown ?? persisted.markdown ?? "",
+              evidence: recordedQuestion.evidence ?? undefined,
+              citations: recordedQuestion.citations ?? undefined,
+              retrieval: recordedQuestion.retrieval ??
+                (persisted.retrieval as
+                  | Record<string, unknown>
+                  | undefined) ?? {
+                  evidenceCount: recordedQuestion.evidence?.length ?? 0
+                },
+              localMemoryWorker: persistedWorker
+            } as MemoryAnswerWorkerResponse,
+            input.include_evidence ? "with_evidence" : input.response_detail
+          )
+        : result;
+    return { questionId: recordedQuestion.id, result: authoritativeResult };
+  }
+
   async executeMemoryAnswer(
     input: MemoryAnswerToolInput,
     caller: LocalRuntimeCallerContext,
@@ -426,6 +517,19 @@ export class MemoryToolExecutor {
             localEdgeClientCredential!.authorization
           )
         : this.client;
+    const progressAwareRetrievalClient: MemoryAnswerRetrievalClient = {
+      search: async (searchInput) => {
+        const result = await retrievalClient.search(searchInput);
+        execution.onProgress?.("retrieval search completed");
+        return result;
+      },
+      expand: async (nodeId, expandInput) => {
+        const result = await retrievalClient.expand(nodeId, expandInput);
+        execution.onProgress?.("memory expansion completed");
+        return result;
+      }
+    };
+    execution.onProgress?.("answer synthesis started");
     const evidence =
       teamWorkspaceId && upstreamBackendId
         ? await this.client.teamMemoryAnswer(
@@ -452,7 +556,7 @@ export class MemoryToolExecutor {
       this.services.answerWithMemoryWorker ?? answerWithMemoryWorker
     )(evidence, {
       config: workerConfig,
-      client: retrievalClient,
+      client: progressAwareRetrievalClient,
       retrievalScope,
       searchDomain: input.search_domain,
       projectId,
@@ -465,13 +569,17 @@ export class MemoryToolExecutor {
       responseDetail: "internal",
       retrievalHints: retrieval_hints,
       conversationContext: execution.conversationContext,
-      signal
+      signal,
+      onProgress: execution.onProgress
     });
+    execution.onProgress?.("answer synthesis completed");
     if (signal?.aborted) throw new Error("Koed memory request was cancelled");
     let recordedQuestion: McpMemoryQuestion | null = null;
     const finalQuestionInput = answer.localMemoryWorker.usedFallback
       ? {
-          idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
+          idempotency_key:
+            execution.idempotencyKey ??
+            `memory-answer:${answer.localMemoryWorker.jobId}`,
           query: answerInput.query,
           origin: execution.origin,
           retrieval_scope: retrievalScope,
@@ -487,7 +595,9 @@ export class MemoryToolExecutor {
           local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
         }
       : {
-          idempotency_key: `memory-answer:${answer.localMemoryWorker.jobId}`,
+          idempotency_key:
+            execution.idempotencyKey ??
+            `memory-answer:${answer.localMemoryWorker.jobId}`,
           query: answerInput.query,
           origin: execution.origin,
           retrieval_scope: retrievalScope,
@@ -541,6 +651,9 @@ export class MemoryToolExecutor {
             : await this.client.createFinalQuestion(finalQuestionInput)
         );
       } catch (error) {
+        if (execution.requireQuestionPersistence) {
+          throw error;
+        }
         logger.warn(
           { err: error, jobId: answer.localMemoryWorker.jobId },
           "koed memory_answer question history persistence skipped"
@@ -554,6 +667,9 @@ export class MemoryToolExecutor {
       recordedQuestion,
       upstreamBackendId
     );
+    if (recordedQuestion) {
+      execution.onQuestionRecorded?.(recordedQuestion);
+    }
     return toolAnswerResponse(answer, requestedResponseDetail);
   }
 

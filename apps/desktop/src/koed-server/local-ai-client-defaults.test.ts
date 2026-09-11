@@ -23,12 +23,12 @@ describe("Local AI Client runtime defaults", () => {
     expect(
       defaults(
         {
-          MEMORY_ANSWER_TIMEOUT_MS: "999999tail",
+          MEMORY_ANSWER_HARD_TIMEOUT_MS: "9999999tail",
           MEMORY_ANSWER_MAX_ATTEMPTS: "0tail"
         },
         "mcp_memory_answer"
       ).assignment
-    ).toMatchObject({ timeout_ms: 600_000, max_attempts: 1 });
+    ).toMatchObject({ timeout_ms: 1_800_000, max_attempts: 1 });
   });
 
   it("uses LCM parseInt fallback and minimum without upper clamp", () => {

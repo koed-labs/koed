@@ -127,6 +127,7 @@ export interface CodexAppServerRunConfig {
   approvalsReviewer?: "user" | "auto_review";
   /** Direct-call diagnostics only; ordinary product calls leave this disabled. */
   captureProcessMetrics?: boolean;
+  onProviderActivity?: (status: string) => void;
   dynamicTools?: CodexAppServerDynamicToolSpec[];
   dynamicToolHandler?: (
     call: CodexAppServerDynamicToolCall
@@ -157,6 +158,7 @@ export interface CodexAppServerJsonTaskConfig {
   clientName: string;
   baseInstructions: string;
   developerInstructions?: string;
+  onProviderActivity?: (status: string) => void;
 }
 
 export interface CodexAppServerRunResult {
@@ -1772,7 +1774,17 @@ export class CodexAppServerThreadSession {
       config.appServerBinary,
       config.cwd,
       this.env,
-      undefined,
+      config.onProviderActivity
+        ? (event) => {
+            if (
+              event.method.startsWith("item/") ||
+              event.method.startsWith("turn/") ||
+              event.method === "thread/tokenUsage/updated"
+            ) {
+              config.onProviderActivity?.("Codex provider activity");
+            }
+          }
+        : undefined,
       { captureProcessMetrics: config.captureProcessMetrics }
     );
   }
@@ -1967,7 +1979,8 @@ export const runCodexAppServerJsonTask = (
       clientName: config.clientName,
       baseInstructions: config.baseInstructions,
       developerInstructions:
-        config.developerInstructions ?? koedAiClientWorkerDeveloperInstructions
+        config.developerInstructions ?? koedAiClientWorkerDeveloperInstructions,
+      onProviderActivity: config.onProviderActivity
     },
     timeoutMs
   );

@@ -5,7 +5,7 @@ import {
   MEMORY_RETRIEVAL_HINT_MAX_COUNT,
   MEMORY_RETRIEVAL_HINT_MAX_LENGTH,
   MEMORY_RETRIEVAL_SEMANTIC_HINT_MAX_COUNT,
-  MEMORY_ANSWER_TIMEOUT_MAX_MS,
+  MEMORY_ANSWER_HARD_TIMEOUT_MAX_MS,
   EMBEDDING_RETRIEVAL_DOCUMENT_TRANSFORM,
   EMBEDDING_RETRIEVAL_QUERY_TRANSFORM,
   resolveSupportedEmbeddingModelConfig
@@ -50,7 +50,7 @@ import {
 } from "./prompt-loader.js";
 
 const CODEX_ANSWER_PROVIDER = "codex";
-const DEFAULT_ANSWER_TIMEOUT_MS = 120_000;
+const DEFAULT_ANSWER_TIMEOUT_MS = 30 * 60_000;
 export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-worker-v9";
 export const MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION = "memory-answer-v1";
 const MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE = "koed_memory";
@@ -564,9 +564,10 @@ export const resolveMemoryAnswerWorkerConfig = (
       resolveEnvValue(env, "MEMORY_ANSWER_REASONING_EFFORT") ??
       "low",
     timeoutMs: parsePositiveInteger(
-      overrides.timeoutMs ?? resolveEnvValue(env, "MEMORY_ANSWER_TIMEOUT_MS"),
+      overrides.timeoutMs ??
+        resolveEnvValue(env, "MEMORY_ANSWER_HARD_TIMEOUT_MS"),
       DEFAULT_ANSWER_TIMEOUT_MS,
-      { min: 1000, max: MEMORY_ANSWER_TIMEOUT_MAX_MS }
+      { min: 1000, max: MEMORY_ANSWER_HARD_TIMEOUT_MAX_MS }
     ),
     maxAttempts: parsePositiveInteger(
       overrides.maxAttempts ??
@@ -2854,7 +2855,8 @@ const runClaudeMemoryAnswer = async (
   handler: (
     call: CodexAppServerDynamicToolCall
   ) => Promise<CodexAppServerDynamicToolResponse>,
-  callerSignal?: AbortSignal
+  callerSignal?: AbortSignal,
+  onProgress?: (status: string) => void
 ): Promise<CodexAnswerResult> => {
   const invoke = (toolName: string, args: Record<string, unknown>) =>
     handler({
@@ -3005,11 +3007,15 @@ const runClaudeMemoryAnswer = async (
         strictMcpConfig: true,
         settingSources: [],
         persistSession: false,
+        includePartialMessages: true,
         maxTurns: Math.max(2, config.maxSearches + config.maxExpansions + 1)
       }
     });
     if (callerSignal?.aborted) stream.close();
     for await (const message of stream) {
+      if (message.type !== "system") {
+        onProgress?.("Claude provider activity");
+      }
       if ("session_id" in message && typeof message.session_id === "string") {
         threadId = message.session_id;
       }
@@ -3625,6 +3631,7 @@ const runDynamicToolMemoryAnswer = async (
     evaluation: ResolvedMemoryAnswerEvaluationController;
     promptTemplate: LoadedPrompt;
     signal?: AbortSignal;
+    onProgress?: (status: string) => void;
     captureProcessMetrics?: boolean;
     /** Trusted local conversation context. This value never changes retrieval authorization. */
     conversationContext?: readonly MemoryAnswerConversationTurn[];
@@ -3805,6 +3812,7 @@ const runDynamicToolMemoryAnswer = async (
           systemPrompt: koedMemoryAnswerBaseInstructions,
           developerInstructions: koedMemoryAnswerDeveloperInstructions,
           signal: options.signal,
+          onProgress: options.onProgress,
           outputSchema: {
             type: "object",
             properties: {
@@ -3847,7 +3855,8 @@ const runDynamicToolMemoryAnswer = async (
           options.config,
           remaining,
           dynamicToolHandler,
-          options.signal
+          options.signal,
+          options.onProgress
         ),
         state
       };
@@ -3863,7 +3872,8 @@ const runDynamicToolMemoryAnswer = async (
       developerInstructions: koedMemoryAnswerDeveloperInstructions,
       dynamicTools: dynamicToolSpecs(),
       dynamicToolHandler,
-      captureProcessMetrics: options.captureProcessMetrics
+      captureProcessMetrics: options.captureProcessMetrics,
+      onProviderActivity: options.onProgress
     });
     const abort = () => session.close();
     options.signal?.addEventListener("abort", abort, { once: true });
@@ -4075,6 +4085,7 @@ export const answerWithMemoryWorker = async (
     limit?: number;
     responseDetail?: MemoryAnswerResponseDetail;
     signal?: AbortSignal;
+    onProgress?: (status: string) => void;
     retrievalHints?: MemoryAnswerRetrievalHints;
     evaluationController?: MemoryAnswerEvaluationController;
     /** Direct-call Retrieval Arena telemetry; never exposed through API/MCP input. */
@@ -4150,7 +4161,8 @@ export const answerWithMemoryWorker = async (
       promptTemplate,
       captureProcessMetrics: options.captureProcessMetrics,
       conversationContext: options.conversationContext,
-      signal: options.signal
+      signal: options.signal,
+      onProgress: options.onProgress
     });
     return compactMemoryAnswerPayload(
       {

@@ -260,7 +260,8 @@ describe("Koed MCP 2026-07-28 protocol", () => {
         }
       }),
       expect.any(Object),
-      expect.any(AbortSignal)
+      expect.any(AbortSignal),
+      expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f-]{27}:[0-9]+$/)
     );
   });
 

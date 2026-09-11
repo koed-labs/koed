@@ -96,6 +96,6 @@ The throwaway variants and switcher are removed.
 
 ## Database schema
 
-Migration `0038_conversation_agent_default` adds the Conversations setting.
+Migration `0039_conversation_agent_default` adds the Conversations setting.
 Migration `0037_coding_project_runtime` already creates the runtime acknowledgement column.
 The alpha migration chain does not include a repair for earlier development versions.

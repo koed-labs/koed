@@ -53,6 +53,7 @@ export interface AiClientRunConfig {
   developerInstructions?: string;
   outputSchema?: Record<string, unknown>;
   signal?: AbortSignal;
+  onProgress?: (status: string) => void;
 }
 
 export interface AiClientRunResult {
@@ -780,12 +781,15 @@ export const runClaudeAgentSdkTask = async (
         settingSources: [],
         persistSession: false,
         maxTurns: 1,
-        includePartialMessages: false,
+        includePartialMessages: Boolean(config.onProgress),
         forwardSubagentText: false
       }
     });
     for await (const message of stream) {
       providerEvents.push(message);
+      if (message.type !== "system") {
+        config.onProgress?.("Claude provider activity");
+      }
       if ("session_id" in message && typeof message.session_id === "string") {
         sessionId = message.session_id;
       }
@@ -909,27 +913,42 @@ const supportedCapabilityIds = (): Set<string> => {
   );
 };
 
+const capabilitySupportFor = (
+  id: (typeof aiClientCapabilityIds)[keyof typeof aiClientCapabilityIds],
+  driver: AiClientProvider
+): AiClientCapabilityDescriptor["support"] => {
+  if (id === aiClientCapabilityIds.hostTaskNotifications) {
+    return driver === "claude" ? "unsupported" : "requires_bridge";
+  }
+  if (id === aiClientCapabilityIds.modelContinuationDuringTool) {
+    return driver === "claude" ? "unsupported" : "requires_bridge";
+  }
+  return supportedCapabilityIds().has(id) ? "supported" : "unsupported";
+};
+
 const capability = (
   id: (typeof aiClientCapabilityIds)[keyof typeof aiClientCapabilityIds],
   driver: AiClientProvider,
   synthesisReady: boolean,
   recoveryAction?: AiClientRecoveryActionId
 ): AiClientCapabilityDescriptor => {
-  const supported = supportedCapabilityIds().has(id);
-  const readiness = !supported
-    ? "not_ready"
-    : id === aiClientCapabilityIds.localSynthesis
-      ? synthesisReady
-        ? "ready"
-        : "not_ready"
-      : managedCapabilityIds.has(id)
-        ? implementedManagedCapabilityIds.has(id)
+  const support = capabilitySupportFor(id, driver);
+  const readiness =
+    support !== "supported"
+      ? "not_ready"
+      : id === aiClientCapabilityIds.localSynthesis ||
+          id === aiClientCapabilityIds.durableMemoryAnswer
+        ? synthesisReady
           ? "ready"
           : "not_ready"
-        : "unknown";
+        : managedCapabilityIds.has(id)
+          ? implementedManagedCapabilityIds.has(id)
+            ? "ready"
+            : "not_ready"
+          : "unknown";
   return {
     id,
-    support: supported ? "supported" : "unsupported",
+    support,
     readiness,
     diagnostics: [],
     ...(recoveryAction
@@ -1036,7 +1055,8 @@ const codexDriver: AiClientDriver = {
         baseInstructions: config.systemPrompt,
         developerInstructions:
           config.developerInstructions ??
-          koedAiClientWorkerDeveloperInstructions
+          koedAiClientWorkerDeveloperInstructions,
+        onProviderActivity: config.onProgress
       },
       timeoutMs
     );

@@ -222,6 +222,92 @@ describe("MemoryToolExecutor", () => {
     );
   });
 
+  it("uses the persisted question result after an idempotent task retry", async () => {
+    const persistedWorker = {
+      jobId: "first-attempt-job",
+      model: "fixture-model",
+      provider: "codex" as const,
+      promptVersion: "test",
+      usedFallback: false
+    };
+    const client = {
+      accessCheck: vi.fn(async () => ({})),
+      createFinalQuestion: vi.fn(async () => ({
+        question: {
+          id: "11111111-1111-4111-8111-111111111111",
+          answerMarkdown: "Persisted first-attempt answer",
+          evidence: [],
+          citations: [],
+          retrieval: { evidenceCount: 0 },
+          localMemoryWorker: persistedWorker,
+          response: {
+            markdown: "Persisted first-attempt answer",
+            retrieval: { evidenceCount: 0 },
+            localMemoryWorker: persistedWorker
+          }
+        }
+      })),
+      listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
+      recordTokenUsage: vi.fn(async () => ({}))
+    } as unknown as MemoryApiClient;
+    const executor = new MemoryToolExecutor(
+      client,
+      {},
+      {
+        answerWithMemoryWorker: async (payload) => ({
+          ...payload,
+          markdown: "Different retry answer",
+          retrieval: { evidenceCount: 0 },
+          localMemoryWorker: {
+            ...persistedWorker,
+            jobId: "retry-job"
+          }
+        })
+      }
+    );
+
+    const completed = await executor.executeMemoryAnswerTask(
+      {
+        include_evidence: false,
+        limit: 10,
+        query: "What did we decide?",
+        response_detail: "answer_only",
+        retrieval_hints: {},
+        search_domain: "global"
+      },
+      { cwd: "/work/requesting-project" },
+      "22222222-2222-4222-8222-222222222222"
+    );
+
+    expect(completed).toMatchObject({
+      questionId: "11111111-1111-4111-8111-111111111111",
+      result: { markdown: "Persisted first-attempt answer" }
+    });
+  });
+
+  it("terminally rejects a recovered task whose route is now Team-owned", async () => {
+    const executor = new MemoryToolExecutor({} as MemoryApiClient, {});
+
+    await expect(
+      executor.executeMemoryAnswerTask(
+        {
+          include_evidence: false,
+          limit: 10,
+          query: "What did we decide?",
+          response_detail: "answer_only",
+          retrieval_hints: {},
+          search_domain: "global",
+          team_workspace_id: "11111111-1111-4111-8111-111111111111"
+        },
+        { cwd: "/work/requesting-project" },
+        "22222222-2222-4222-8222-222222222222"
+      )
+    ).rejects.toMatchObject({
+      memoryAnswerTaskErrorCode: "personal_route_changed",
+      retryable: false
+    });
+  });
+
   it("creates a pending Desktop Ask turn before synthesis and returns display-safe detail", async () => {
     const callOrder: string[] = [];
     const question = {

@@ -2,6 +2,10 @@
 
 Koed supports independently installed Pi as an AI Client driver. Koed does not bundle Pi, store Pi provider credentials, or use Codex or Claude Code as fallback for Pi work.
 
+Pi uses the [durable Personal Memory Answer path](durable-memory-answer.md) and
+waits for its terminal tool body. Detached message injection remains disabled
+until Pi ordering, provenance, and restart recovery can be proven.
+
 ## Requirements
 
 - Pi `0.84.2` or newer

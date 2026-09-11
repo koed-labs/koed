@@ -60,6 +60,11 @@ Runtime.
 
 ## Consequences
 
+ADR 0043 amends cancellation ownership for Personal Memory Answer: after
+durable acceptance, stdio or request closure detaches the waiter and does not
+cancel the task. Explicit authorized cancellation and runtime watchdog policy
+remain cancellation authority.
+
 - Multiple Codex sessions have independent stdio adapters but share one durable
   local runtime.
 - Starting or stopping an adapter cannot start or stop capture, LCM, review, or
