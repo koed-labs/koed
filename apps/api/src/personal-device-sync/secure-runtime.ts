@@ -157,13 +157,8 @@ export const pdsSecureProviderEnvironment = (
   USER: environment.USER,
   LANG: environment.LANG,
   LC_ALL: environment.LC_ALL,
-  ELECTRON_RUN_AS_NODE:
-    environment.PDS_SECRET_PROVIDER?.trim() === "desktop_bridge"
-      ? "1"
-      : environment.ELECTRON_RUN_AS_NODE,
-  PDS_DESKTOP_SECRET_BRIDGE_SOCKET:
-    environment.PDS_DESKTOP_SECRET_BRIDGE_SOCKET,
-  PDS_DESKTOP_SECRET_BRIDGE_TOKEN: environment.PDS_DESKTOP_SECRET_BRIDGE_TOKEN
+  KOED_HOME: environment.KOED_HOME,
+  ELECTRON_RUN_AS_NODE: environment.ELECTRON_RUN_AS_NODE
 });
 
 const providerArgs = (environment: NodeJS.ProcessEnv): string[] => {
@@ -305,7 +300,7 @@ const configuredSecretResolver = (
   dependencies: { resolveHeadlessSecret?: PdsSecretResolver }
 ): PdsSecretResolver | null => {
   const provider = environment.PDS_SECRET_PROVIDER?.trim();
-  if (provider !== "headless" && provider !== "desktop_bridge") return null;
+  if (provider !== "headless") return null;
   return (
     dependencies.resolveHeadlessSecret ??
     ((reference: string) =>

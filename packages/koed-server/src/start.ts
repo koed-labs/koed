@@ -65,7 +65,7 @@ import {
 } from "./local-api-token.js";
 import { migrateKoedOwnedCodexRegistrationBestEffort } from "./ai-client-registry.js";
 import { resolveTeamCollaborationEnabled } from "@koed/shared";
-import { bundledPdsSecretProviderEnvironment } from "./native-secret-provider.js";
+import { bundledPdsSecretProviderEnvironment } from "./application-secret-provider.js";
 export {
   provisionDesktopApiToken,
   provisionDesktopLocalCredential
@@ -368,6 +368,7 @@ const localServiceEnv = (
       ...repoEnv,
       ...environment
     }),
+    KOED_HOME: paths.koedHome,
     ...(apiToken ? { MEMORY_API_TOKEN: apiToken.token } : {}),
     NODE_ENV:
       environment.API_NODE_ENV ??

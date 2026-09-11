@@ -83,19 +83,19 @@ describe("Personal Sync control client", () => {
     );
   });
 
-  it("runs the Desktop secret bridge provider through Electron's Node mode", () => {
+  it("passes only local store location to the application provider", () => {
     expect(
       personalSyncProviderEnvironment({
-        ELECTRON_RUN_AS_NODE: undefined,
-        PDS_SECRET_PROVIDER: "desktop_bridge"
-      }).ELECTRON_RUN_AS_NODE
-    ).toBe("1");
-    expect(
-      personalSyncProviderEnvironment({
-        ELECTRON_RUN_AS_NODE: "custom",
+        KOED_HOME: "/tmp/koed",
         PDS_SECRET_PROVIDER: "headless"
-      }).ELECTRON_RUN_AS_NODE
-    ).toBe("custom");
+      })
+    ).toMatchObject({ KOED_HOME: "/tmp/koed" });
+    expect(
+      personalSyncProviderEnvironment({
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/tmp/provider"
+      })
+    ).not.toHaveProperty("PDS_SECRET_PROVIDER_COMMAND");
   });
 
   it("uses versioned scrypt/AES-GCM with metadata AAD", () => {

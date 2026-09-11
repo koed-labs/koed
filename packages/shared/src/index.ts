@@ -808,6 +808,10 @@ export {
   updateCollaborationPendingSendState
 } from "./collaboration-pending-send-store.js";
 export {
+  createPdsApplicationSecretStore,
+  pdsApplicationSecretStorePaths
+} from "./pds-secret-store.js";
+export {
   deleteLocalEdgeClientCredential,
   localEdgeClientCredentialReferenceFor,
   readLocalEdgeClientCredentialAuthorization,
@@ -875,6 +879,11 @@ export type {
   CollaborationPendingSendInput,
   CollaborationPendingSendRecord
 } from "./collaboration-pending-send-store.js";
+export type {
+  PdsApplicationSecretStore,
+  PdsApplicationSecretStoreOptions,
+  PdsApplicationSecretStorePaths
+} from "./pds-secret-store.js";
 export type {
   DesktopLocalCredentialAuthorization,
   DesktopLocalCredentialInput,

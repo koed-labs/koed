@@ -41,7 +41,7 @@ import {
 import { ensureDeviceIdentity } from "./device-identity.js";
 import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
 import { redeemPersonalDevicePairing } from "./personal-device-pairing-client.js";
-import { runNativeSecretProvider } from "./native-secret-provider.js";
+import { runApplicationSecretProvider } from "./application-secret-provider.js";
 import type { KoedServerPaths } from "./paths.js";
 
 const KIT_FORMAT = "koed/pds-recovery-kit/v1";
@@ -671,13 +671,8 @@ export const personalSyncProviderEnvironment = (
   USER: environment.USER,
   LANG: environment.LANG,
   LC_ALL: environment.LC_ALL,
-  ELECTRON_RUN_AS_NODE:
-    environment.PDS_SECRET_PROVIDER?.trim() === "desktop_bridge"
-      ? "1"
-      : environment.ELECTRON_RUN_AS_NODE,
-  PDS_DESKTOP_SECRET_BRIDGE_SOCKET:
-    environment.PDS_DESKTOP_SECRET_BRIDGE_SOCKET,
-  PDS_DESKTOP_SECRET_BRIDGE_TOKEN: environment.PDS_DESKTOP_SECRET_BRIDGE_TOKEN
+  KOED_HOME: environment.KOED_HOME,
+  ELECTRON_RUN_AS_NODE: environment.ELECTRON_RUN_AS_NODE
 });
 
 const providerArgs = (environment: NodeJS.ProcessEnv): string[] => {
@@ -700,8 +695,7 @@ const providerArgs = (environment: NodeJS.ProcessEnv): string[] => {
 };
 
 const validSecretProvider = (environment: NodeJS.ProcessEnv): boolean =>
-  environment.PDS_SECRET_PROVIDER?.trim() === "headless" ||
-  environment.PDS_SECRET_PROVIDER?.trim() === "desktop_bridge";
+  environment.PDS_SECRET_PROVIDER?.trim() === "headless";
 
 const runSecretProvider = async (
   operation: "get" | "put" | "delete",
@@ -712,7 +706,12 @@ const runSecretProvider = async (
   const provider = environment.PDS_SECRET_PROVIDER?.trim();
   const command = environment.PDS_SECRET_PROVIDER_COMMAND?.trim();
   if (!provider && !command) {
-    const result = await runNativeSecretProvider(operation, reference, value);
+    const result = await runApplicationSecretProvider(
+      operation,
+      reference,
+      value,
+      environment
+    );
     return { ok: result.ok, stdout: result.value ?? "" };
   }
   if (

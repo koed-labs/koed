@@ -9,7 +9,6 @@ import {
   createReloadablePdsSecureKeyProviderFromEnvironment,
   createPdsSecureRuntimeFromEnvironment,
   createPdsSecureRuntimeForApiStartup,
-  pdsSecureProviderEnvironment,
   serializePdsPackageForEncryptedStorage
 } from "./secure-runtime.js";
 
@@ -114,14 +113,6 @@ describe("PDS secure runtime", () => {
     });
   });
 
-  it("runs the Desktop secret bridge provider through Electron's Node mode", () => {
-    expect(
-      pdsSecureProviderEnvironment({
-        PDS_SECRET_PROVIDER: "desktop_bridge"
-      }).ELECTRON_RUN_AS_NODE
-    ).toBe("1");
-  });
-
   it("loads and verifies a headless authority signer by opaque reference", async () => {
     const pair = generateKeyPairSync("ed25519");
     const privateJwk = pair.privateKey.export({ format: "jwk" });
@@ -154,13 +145,13 @@ describe("PDS secure runtime", () => {
     expect(runtime.secureKeyProvider).toBeNull();
   });
 
-  it("loads a separate local authority from the Desktop secret bridge", async () => {
+  it("loads a separate local authority from the application provider", async () => {
     const pair = generateKeyPairSync("ed25519");
     const privateJwk = pair.privateKey.export({ format: "jwk" });
     const runtime = await createPdsSecureRuntimeFromEnvironment(
       {
-        PDS_SECRET_PROVIDER: "desktop_bridge",
-        PDS_SECRET_PROVIDER_COMMAND: "/desktop/secret-bridge",
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
         PDS_AUTHORITY_SECRET_REF: "pds-authority"
       },
       {
@@ -189,8 +180,8 @@ describe("PDS secure runtime", () => {
     const delays: number[] = [];
     const runtime = await createPdsSecureRuntimeForApiStartup(
       {
-        PDS_SECRET_PROVIDER: "desktop_bridge",
-        PDS_SECRET_PROVIDER_COMMAND: "/desktop/secret-bridge",
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
         PDS_AUTHORITY_SECRET_REF: "pds-authority"
       },
       {
@@ -224,8 +215,8 @@ describe("PDS secure runtime", () => {
     await expect(
       createPdsSecureRuntimeForApiStartup(
         {
-          PDS_SECRET_PROVIDER: "desktop_bridge",
-          PDS_SECRET_PROVIDER_COMMAND: "/desktop/secret-bridge",
+          PDS_SECRET_PROVIDER: "headless",
+          PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
           PDS_AUTHORITY_SECRET_REF: "pds-authority"
         },
         {
@@ -309,8 +300,8 @@ describe("PDS secure runtime", () => {
     await expect(
       createPdsSecureRuntimeFromEnvironment(
         {
-          PDS_SECRET_PROVIDER: "desktop_bridge",
-          PDS_SECRET_PROVIDER_COMMAND: "/desktop/bridge",
+          PDS_SECRET_PROVIDER: "headless",
+          PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
           PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
         },
         { resolveHeadlessSecret: async () => secret }
@@ -318,13 +309,13 @@ describe("PDS secure runtime", () => {
     ).resolves.toEqual({ authoritySigner: null, secureKeyProvider: null });
   });
 
-  it("adopts a protected Desktop runtime after API startup", async () => {
+  it("adopts a protected application runtime after API startup", async () => {
     let stored: string | null = null;
     const resolved: string[] = [];
     const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
       {
-        PDS_SECRET_PROVIDER: "desktop_bridge",
-        PDS_SECRET_PROVIDER_COMMAND: "/desktop/bridge",
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
         PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
       },
       {

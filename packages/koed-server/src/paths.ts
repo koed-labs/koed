@@ -65,12 +65,18 @@ export const resolveKoedHome = (
   environment: NodeJS.ProcessEnv = process.env
 ): string => {
   const configured = environment.KOED_HOME?.trim();
-  if (configured && documentationPlaceholderPath(configured)) {
+  const expanded =
+    configured === "~"
+      ? homedir()
+      : configured?.startsWith("~/") || configured?.startsWith("~\\")
+        ? resolve(homedir(), configured.slice(2))
+        : configured;
+  if (expanded && documentationPlaceholderPath(expanded)) {
     throw new Error(
-      `KOED_HOME is set to the documentation placeholder ${configured}. Unset KOED_HOME or set it to a writable local state directory such as ${resolve(`${homedir()}/.koed`)}.`
+      `KOED_HOME is set to the documentation placeholder ${expanded}. Unset KOED_HOME or set it to a writable local state directory such as ${resolve(`${homedir()}/.koed`)}.`
     );
   }
-  return resolve(configured || `${homedir()}/.koed`);
+  return resolve(expanded || `${homedir()}/.koed`);
 };
 
 export const resolveKoedServerPaths = (

@@ -1,12 +1,15 @@
 # Handoff: Unify PDS Secret Storage Across Electron and Headless CLI
 
+Status: Implementation in progress on `docs/pds-secret-storage-handoff`.
+
 ## Task
 
 Refactor Koed Personal Device Sync (PDS) secret storage to use one consistent Koed-owned application-managed local secret-store model across Electron/Desktop and standalone/headless `koed-server` CLI.
 
 Remove the current split where Electron uses its Desktop/platform `safeStorage` bridge and headless CLI uses `keytar`/native OS credential storage. The PDS store must not require Keychain, Credential Manager, Secret Service/KWallet, D-Bus, Electron, or an interactive session on either path. Preserve Tailscale pairing and SSH-only `personal-sync join redeem`.
 
-This document is a handoff for a future implementation agent. Do not treat it as completed work.
+This document records continuation scope and acceptance evidence. Do not mark
+complete until platform and end-to-end checks pass.
 
 ## Context
 
@@ -65,6 +68,12 @@ Validation before this handoff:
 
 T3Code was inspected at `/Users/jedd/.cache/checkouts/github.com/pingdotgg/t3code`. Its `apps/server/src/auth/ServerSecretStore.ts` creates a `0700` secrets directory, stores `0600` files, writes atomically, and reads directly from headless processes. It does not depend on `keytar` for server secret storage.
 
+Continuation implementation now uses Koed's shared encrypted-state transaction
+core for an application-managed PDS store at `KOED_HOME/secrets`. Electron,
+headless CLI, API, and Worker use the same store contract. Legacy Electron
+OS-store state and branch-created keytar state are intentionally not migrated
+or deleted.
+
 ## Decisions
 
 - Remove the requirement for `keytar`/Keychain/Secret Service access from headless PDS operation.
@@ -90,15 +99,15 @@ The implementation agent should reconcile this change with the proposal's config
 
 ## Acceptance criteria
 
-- [ ] Standalone/headless `koed-server` can perform PDS secret get/put/delete without `keytar`, Keychain, D-Bus, Electron, or an interactive session.
+- [x] Standalone/headless `koed-server` can perform PDS secret get/put/delete without `keytar`, Keychain, D-Bus, Electron, or an interactive session.
 - [ ] SSH-only pairing completes on studio using `personal-sync join redeem --link-stdin` or `--link-fd`.
-- [ ] Electron/Desktop and headless use the same application-managed secret-store contract and documented state model.
-- [ ] PDS secrets never appear in process arguments, environment variables, logs, queue payloads, or ordinary world/group-readable files.
-- [ ] Store directory/file permissions, atomic writes, cleanup, reference validation, size limits, and crash/restart behavior are tested.
-- [ ] Existing Electron `pds-secrets.json` state and any branch-created keytar state are handled deliberately. The Simple Server Proposal permits a fresh alpha `KOED_HOME`/database cutover without credential or enrollment migration, so a documented reset/non-migration path is acceptable; do not silently discard state.
-- [ ] Tailscale pairing behavior remains intact.
-- [ ] `/docs` documentation reflects the new provider/storage model and SSH setup.
-- [ ] Relevant tests, typechecks, builds, and Prettier checks pass.
+- [x] Electron/Desktop and headless use the same application-managed secret-store contract and documented state model.
+- [x] PDS secrets never appear in process arguments, environment variables, logs, queue payloads, or ordinary world/group-readable files.
+- [x] Store directory/file permissions, atomic writes, cleanup, reference validation, size limits, and restart behavior are covered by shared store and provider tests; platform crash injection remains pending.
+- [x] Existing Electron `pds-secrets.json` state and branch-created keytar state are handled deliberately through documented non-migration and fresh-`KOED_HOME` reset behavior.
+- [x] Tailscale pairing code remains present and its existing tests pass.
+- [x] `/docs` documentation reflects new provider/storage model and SSH setup.
+- [ ] Relevant full tests, typechecks, builds, Prettier checks, and studio SSH e2e pass.
 
 ## Constraints
 

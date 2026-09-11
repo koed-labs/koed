@@ -1,13 +1,15 @@
 # Personal Collaboration Sync And Cross-Platform Secret Providers
 
-Status: Accepted; Personal Notes are superseded by
-[ADR 0032](./0032-first-class-revisioned-personal-notes.md).
+Status: Accepted for Personal collaboration; its PDS secure-provider
+section is superseded by [ADR 0044](./0044-application-managed-pds-secret-storage.md).
+Personal Notes are superseded by [ADR 0032](./0032-first-class-revisioned-personal-notes.md).
 
 Related decisions:
 
 - [0012 Symmetric Replicated Personal Memory](./0012-symmetric-replicated-personal-memory.md)
 - [0013 Team Collaboration Uses Device-Mediated, Server-Authorized Operations](./0013-team-collaboration-authority.md)
 - [0014 Hosted Personal Source Replication](./0014-hosted-personal-source-replication.md)
+- [0044 Application-Managed PDS Secret Storage](./0044-application-managed-pds-secret-storage.md)
 
 ## Context
 
@@ -51,36 +53,11 @@ independently from Personal collaboration replication.
 
 ### Secure secret providers
 
-Desktop must expose one authenticated local-only secret-provider bridge to its
-direct `koed-server` and Worker children. The bridge supports bounded `put`,
-`get`, and `delete` operations by opaque reference; renderer IPC, ordinary
-configuration, logs, and status never receive secret values. A per-launch
-bridge capability is child-process configuration, not PDS material; it is never
-exposed to renderer IPC or persisted state.
-
-The bridge uses platform-backed storage only:
-
-- macOS: Keychain through Electron `safeStorage`.
-- Windows: DPAPI through Electron `safeStorage`.
-- Linux: Secret Service/libsecret or KWallet through Electron `safeStorage`.
-- WSL: Windows-host DPAPI through a narrowly scoped native helper when the
-  Windows host is available.
-
-Electron's `basic_text` backend, unavailable secure storage, unsafe store
-paths, and unsupported platform backends fail closed. WSL uses a real Linux
-secret service when one is available and otherwise uses the Windows-host DPAPI
-provider. The helper is compiled from the source shipped with Koed using the
-Windows framework compiler, accepts only bounded `get`, `put`, and `delete`
-operations, and stores only DPAPI ciphertext. It must not silently store PDS
-material in a plaintext file or environment variable. A Linux desktop without
-a supported native keyring is a PDS-unavailable state, not an instruction to
-install arbitrary secret tooling.
-
-The local bridge has a per-launch random capability, private socket/pipe
-endpoint, bounded framed requests, reference validation, and strict process
-lifetime. Its capability is supplied only to the direct child invocation. When
-Electron is the provider executable, Koed explicitly starts the provider script
-in Electron's Node mode rather than relying on ambient child-process state.
+PDS secret custody is superseded by
+[ADR 0044](./0044-application-managed-pds-secret-storage.md). The historical
+platform-provider bridge and OS credential-store split described here are not
+used by current PDS runtime storage. Personal collaboration authority remains
+separate from PDS source replication and follows the decisions above.
 
 ## Consequences
 
@@ -93,9 +70,10 @@ in Electron's Node mode rather than relying on ambient child-process state.
   remote authority is reachable.
 - A local-only Koed installation remains fully usable, but its Personal
   channels are local-only until the User explicitly connects a backend.
-- PDS setup is available only where a platform secure provider is genuinely
-  usable. This is an explicit readiness state, not a degraded security mode.
+- PDS setup is available only where the application-managed store is genuinely
+  usable. Unsafe filesystem state is an explicit readiness failure, not a
+  degraded security mode.
 - The implementation needs negative tests for cross-user access, stale or
-  replayed events, revoked device credentials, unauthenticated secret-bridge
-  requests, plaintext storage, unsafe bridge directories, insecure Linux
-  backends, and concurrent secret mutations.
+  replayed events, revoked device credentials, unauthorized provider requests,
+  plaintext storage, unsafe directories/files, malformed envelopes, and
+  concurrent secret mutations.

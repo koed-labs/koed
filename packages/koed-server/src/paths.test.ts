@@ -1,5 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -30,6 +30,13 @@ describe("KOED_HOME resolution", () => {
   it("rejects documentation placeholder KOED_HOME values", () => {
     expect(() => resolveKoedHome({ KOED_HOME: "/path/to" })).toThrow(
       "KOED_HOME is set to the documentation placeholder /path/to."
+    );
+  });
+
+  it("expands home-relative KOED_HOME consistently with Desktop", () => {
+    expect(resolveKoedHome({ KOED_HOME: "~" })).toBe(homedir());
+    expect(resolveKoedHome({ KOED_HOME: "~/.koed-test" })).toBe(
+      resolve(homedir(), ".koed-test")
     );
   });
 

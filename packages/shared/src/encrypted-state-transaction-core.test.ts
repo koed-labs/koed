@@ -1,4 +1,11 @@
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  utimesSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -181,6 +188,85 @@ describe("internal encrypted-state transaction core", () => {
     expect(core.readFailClosed()).toBeNull();
     expect(() => core.read()).toThrow("malformed");
     expect(() => core.readOrCreateKey()).toThrow("key is missing or invalid");
+  });
+
+  it("does not recover a lock held by a live process after lease expiry", async () => {
+    const { storePath, keyPath } = await fixtureCore();
+    const staleAt = Date.now() - 5_000;
+    mkdirSync(join(storePath, ".."), { recursive: true });
+    writeFileSync(
+      `${storePath}.lock`,
+      `${JSON.stringify({
+        version: 1,
+        ownerToken: "A".repeat(43),
+        pid: process.pid,
+        createdAtEpochMs: staleAt
+      })}\n`,
+      "utf8"
+    );
+    utimesSync(`${storePath}.lock`, new Date(staleAt), new Date(staleAt));
+    const locked = createEncryptedStateTransactionCore<FixtureState>({
+      storePath,
+      keyPath,
+      keySalt: "test-only-v1",
+      createEmpty: (now) => ({
+        schemaVersion: 1,
+        updatedAt: now,
+        upstream: {},
+        localEdge: {},
+        untouchedLegacyDomain: {}
+      }),
+      parse: (raw) => raw as FixtureState,
+      deps: { lockTimeoutMs: 0, staleLockMs: 1_000 }
+    });
+    expect(() =>
+      locked.mutate({
+        domains: ["upstream_credential"],
+        apply: () => ({ result: undefined, changed: false })
+      })
+    ).toThrow("Timed out acquiring");
+  });
+
+  it("recovers an aged lock when PID identity changed", async () => {
+    const { storePath, keyPath } = await fixtureCore();
+    const staleAt = Date.now() - 5_000;
+    mkdirSync(join(storePath, ".."), { recursive: true });
+    writeFileSync(
+      `${storePath}.lock`,
+      `${JSON.stringify({
+        version: 2,
+        ownerToken: "A".repeat(43),
+        pid: process.pid,
+        ownerStartTime: "old-process-start",
+        createdAtEpochMs: staleAt
+      })}\n`,
+      "utf8"
+    );
+    utimesSync(`${storePath}.lock`, new Date(staleAt), new Date(staleAt));
+    const recovered = createEncryptedStateTransactionCore<FixtureState>({
+      storePath,
+      keyPath,
+      keySalt: "test-only-v1",
+      createEmpty: (now) => ({
+        schemaVersion: 1,
+        updatedAt: now,
+        upstream: {},
+        localEdge: {},
+        untouchedLegacyDomain: {}
+      }),
+      parse: (raw) => raw as FixtureState,
+      deps: {
+        isProcessAlive: () => true,
+        processStartTime: () => "new-process-start",
+        lockTimeoutMs: 0,
+        staleLockMs: 1_000
+      }
+    });
+    recovered.mutate({
+      domains: ["upstream_credential"],
+      apply: () => ({ result: undefined, changed: false })
+    });
+    expect(existsSync(`${storePath}.lock`)).toBe(false);
   });
 
   it("times out on a live lock without mutating state", async () => {

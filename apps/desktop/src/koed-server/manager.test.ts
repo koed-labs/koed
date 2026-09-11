@@ -1271,7 +1271,7 @@ describe("Koed server desktop manager", () => {
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/packages/koed-server/dist/cli.js",
-      environment: { PDS_DESKTOP_SECRET_STORAGE: "native_os" },
+      environment: { PDS_DESKTOP_SECRET_STORAGE: "application_managed" },
       createCliInvocation: (args) => ({
         command: "/node",
         args: ["/repo/packages/koed-server/dist/cli.js", ...args],
@@ -1299,8 +1299,7 @@ describe("Koed server desktop manager", () => {
       state: "healthy",
       personalDeviceSync: {
         state: "healthy",
-        message:
-          "Secure device storage is available through the operating system."
+        message: "Application-managed local device storage is available."
       }
     });
     expect(calls.slice(0, 2)).toEqual(

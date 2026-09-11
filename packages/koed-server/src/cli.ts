@@ -88,7 +88,7 @@ import {
   rotateDeviceIdentity
 } from "./device-identity.js";
 import { runPersonalSyncCommand } from "./personal-sync.js";
-import { runNativeSecretProvider } from "./native-secret-provider.js";
+import { runApplicationSecretProvider } from "./application-secret-provider.js";
 import type { KoedServerDoctorResult } from "./types.js";
 
 export const usageText = `Usage: koed-server <command> [options]
@@ -481,7 +481,7 @@ const readSecretStdin = (): string | null => {
   }
 };
 
-const runNativeSecretProviderCli = async (
+const runApplicationSecretProviderCli = async (
   args: string[],
   stdout: Pick<NodeJS.WritableStream, "write">
 ): Promise<number> => {
@@ -499,10 +499,11 @@ const runNativeSecretProviderCli = async (
   }
   const value = operation === "put" ? readSecretStdin() : undefined;
   if (operation === "put" && value === null) return 1;
-  const result = await runNativeSecretProvider(
+  const result = await runApplicationSecretProvider(
     operation,
     reference,
-    value ?? undefined
+    value ?? undefined,
+    process.env
   );
   if (!result.ok) return 1;
   if (operation === "get" && result.value !== null) stdout.write(result.value);
@@ -588,7 +589,7 @@ export const runKoedServerCli = async (
     }
 
     if (command === "secret-provider") {
-      return await runNativeSecretProviderCli(args, stdout);
+      return await runApplicationSecretProviderCli(args, stdout);
     }
 
     if (command === "status") {

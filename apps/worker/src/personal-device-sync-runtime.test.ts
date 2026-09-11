@@ -372,7 +372,7 @@ describe("PDS session materialization", () => {
     const runtime = createReloadablePdsWorkerRuntimeFromEnvironment({
       repository: {} as MemorySourceRepository,
       envelopeEncryptionProvider: {} as never,
-      environment: { PDS_SECRET_PROVIDER: "desktop_bridge" },
+      environment: { PDS_SECRET_PROVIDER: "headless" },
       resolveSecret: () => (available ? secret : null),
       createRuntime
     });
@@ -408,7 +408,7 @@ describe("PDS session materialization", () => {
     ).toBeNull();
   });
 
-  it("accepts the bounded Desktop secret bridge provider contract", () => {
+  it("accepts the bounded application provider contract", () => {
     const secret = {
       version: 1,
       userId: "user",
@@ -438,7 +438,7 @@ describe("PDS session materialization", () => {
       }
     };
     const resolved = resolvePdsProviderRuntimeSecret({
-      PDS_SECRET_PROVIDER: "desktop_bridge",
+      PDS_SECRET_PROVIDER: "headless",
       PDS_SECRET_PROVIDER_COMMAND: process.execPath,
       PDS_SECRET_PROVIDER_COMMAND_ARGS_JSON: JSON.stringify([
         "-e",
@@ -449,10 +449,10 @@ describe("PDS session materialization", () => {
     expect(resolved).toEqual(secret);
   });
 
-  it("rejects a Desktop bridge runtime without the opaque provider command", () => {
+  it("rejects an application provider runtime without the opaque provider command", () => {
     expect(
       resolvePdsProviderRuntimeSecret({
-        PDS_SECRET_PROVIDER: "desktop_bridge",
+        PDS_SECRET_PROVIDER: "headless",
         PDS_RUNTIME_SECRET_REF: "pds-runtime"
       })
     ).toBeNull();

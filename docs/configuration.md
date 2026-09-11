@@ -269,43 +269,40 @@ material, proof references, paths, and fingerprints.
 
 ## Personal Device Sync V1 authority configuration
 
-PDS uses a secure secret provider. Local Koed installs automatically use the
-bundled native OS-backed provider (`keytar`) when no provider is configured;
-it stores PDS material in macOS Keychain, Windows Credential Manager, or the
-Linux Secret Service/KWallet backend. This makes standalone `koed-server`
-commands, including SSH-only pairing, work without Desktop or manual provider
-environment variables. If the native OS store is unavailable, configure an
-Operator-managed provider with `PDS_SECRET_PROVIDER=headless` and
-`PDS_SECRET_PROVIDER_COMMAND`; Koed invokes it with a bounded `get`, `put`, or
-`delete` operation and an opaque reference. Provider `put` receives generated
-material on stdin and `get` returns it on stdout inside the local process
-boundary. No secret appears in command arguments, ordinary configuration,
-status, logs, queue payloads, or `KOED_HOME` state.
+PDS uses one Koed-owned application-managed secret store for standalone
+`koed-server`, Worker, API, and Desktop. By default it lives under
+`KOED_HOME/secrets`:
 
-Packaged Desktop provisions a separate local Authority signing key through its
-platform-backed provider and gives the trusted local API child only the opaque
-`PDS_AUTHORITY_SECRET_REF`. This enables the co-located local-only
-Authority/Relay service role without placing Authority material in the device
-runtime secret, renderer IPC, or ordinary configuration. It does not change
-the active-device or recovery-root authorization required for governance.
+- `pds-secrets.json` stores AES-256-GCM envelopes keyed by opaque references.
+- `pds-secret-store.key` stores the local application-store key.
 
-Desktop configures its provider automatically. It uses Keychain on macOS,
-DPAPI on native Windows, and Electron's verified Secret Service/KWallet backend
-on Linux. WSL uses a narrowly scoped Windows-host DPAPI helper when its Windows host is
-available, so normal WSL users do not need to install or configure a Linux
-keyring daemon. The direct local `koed-server` and Worker children receive only
-a per-launch bridge capability and may perform bounded opaque-reference
-operations; they do not receive PDS secret values. Electron's Linux
-`basic_text` fallback is rejected. If no platform provider is usable, Desktop
-reports PDS unavailable while local capture and Recall remain usable; it never
-stores PDS material in plaintext or asks a User to put it in an environment
-variable. Never set raw `PDS_AUTHORITY_*`, group keys, recovery material,
-private keys, passwords, or `env://` PDS secret values.
+Koed creates the directory with mode `0700` and files with mode `0600`. Writes
+use bounded values, owner-only temporary files, fsync, atomic rename, and an
+inter-process lock. Symlinks, unsafe permissions, malformed state, missing
+keys, and oversized values fail closed. The store provides same-user/root
+filesystem trust; it does not claim protection from that account. Native Windows
+ACL validation is not part of this build; use WSL for Windows-hosted local
+runtime work.
 
-Desktop loads its window before it accesses this provider. Provider setup still
-finishes before the managed runtime starts, so children never start with a
-partially initialized secret bridge. This order keeps the window available when
-the operating system pauses for credential-provider interaction.
+Desktop and headless `koed-server` use this same store. Desktop does not use
+Electron `safeStorage`, Keychain, Credential Manager, Secret Service/KWallet,
+D-Bus, WSL DPAPI, or an interactive credential session for PDS. Child services
+receive only the store location and opaque reference through their normal
+provider command; secret values never appear in arguments, environment values,
+ordinary configuration, status, logs, queue payloads, or renderer IPC.
+
+The default bundled provider is configured automatically. An explicitly
+configured `PDS_SECRET_PROVIDER=headless` and
+`PDS_SECRET_PROVIDER_COMMAND` remains an Operator-managed override for
+special deployments; it receives bounded `get`, `put`, or `delete` requests
+with opaque references and must preserve the same no-plaintext boundary.
+Never set raw `PDS_AUTHORITY_*`, group keys, recovery material, private keys,
+passwords, or `env://` PDS secret values.
+
+PDS secret state is not migrated from prior Electron `pds-secrets.json` files
+or branch-created OS credential-store entries. Fresh alpha setup may use a new
+`KOED_HOME`; re-enroll devices when changing store state. Koed does not silently
+delete legacy state.
 
 PDS relay capability additionally requires usable Authority state and migrated
 relay repository. Relay requests authenticate only with an unexpired

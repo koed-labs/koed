@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   createElectronNodeEnv,
-  createNodeEntrypointInvocation,
   createKoedServerCliInvocation,
   resolveElectronNodeExecPath,
   resolveKoedServerPaths
@@ -116,25 +115,6 @@ describe("Koed Desktop Node entrypoint runtime", () => {
     expect(invocation.env).toEqual({ KOED_REPO_ROOT: "/repo" });
   });
 
-  it("uses the checkout Node runtime for development support scripts", () => {
-    const invocation = createNodeEntrypointInvocation(
-      "/repo/apps/desktop/dist-electron/pds-secret-bridge-provider.js",
-      [],
-      {
-        appIsPackaged: false,
-        electronExecPath: "/repo/node_modules/.bin/electron",
-        platform: "darwin",
-        environment: { KOED_REPO_ROOT: "/repo" }
-      }
-    );
-
-    expect(invocation).toEqual({
-      command: "node",
-      args: ["/repo/apps/desktop/dist-electron/pds-secret-bridge-provider.js"],
-      env: { KOED_REPO_ROOT: "/repo" }
-    });
-  });
-
   it("uses the app executable for packaged Electron node mode", () => {
     const execPath = resolveElectronNodeExecPath({
       appIsPackaged: true,
@@ -166,29 +146,5 @@ describe("Koed Desktop Node entrypoint runtime", () => {
       "status"
     ]);
     expect(invocation.env.ELECTRON_RUN_AS_NODE).toBe("1");
-  });
-
-  it("wraps packaged support scripts with the runner", () => {
-    const invocation = createNodeEntrypointInvocation(
-      "/app/pds-secret-bridge-provider.js",
-      [],
-      {
-        appIsPackaged: true,
-        electronExecPath: "/Applications/Koed.app/Contents/MacOS/Koed",
-        platform: "darwin",
-        resourcesPath: "/Applications/Koed.app/Contents/Resources",
-        environment: {}
-      }
-    );
-
-    expect(invocation).toEqual({
-      command: "/Applications/Koed.app/Contents/MacOS/Koed",
-      args: [
-        "/Applications/Koed.app/Contents/Resources/app.asar.unpacked/dist-electron/koed-server/node-entrypoint-runner.js",
-        "node-script",
-        "/app/pds-secret-bridge-provider.js"
-      ],
-      env: { ELECTRON_RUN_AS_NODE: "1" }
-    });
   });
 });

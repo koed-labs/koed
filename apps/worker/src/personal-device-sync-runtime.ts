@@ -119,10 +119,8 @@ const providerEnvironment = (
   USER: environment.USER,
   LANG: environment.LANG,
   LC_ALL: environment.LC_ALL,
-  ELECTRON_RUN_AS_NODE: environment.ELECTRON_RUN_AS_NODE,
-  PDS_DESKTOP_SECRET_BRIDGE_SOCKET:
-    environment.PDS_DESKTOP_SECRET_BRIDGE_SOCKET,
-  PDS_DESKTOP_SECRET_BRIDGE_TOKEN: environment.PDS_DESKTOP_SECRET_BRIDGE_TOKEN
+  KOED_HOME: environment.KOED_HOME,
+  ELECTRON_RUN_AS_NODE: environment.ELECTRON_RUN_AS_NODE
 });
 
 const providerArgs = (environment: NodeJS.ProcessEnv): string[] => {
@@ -147,7 +145,7 @@ export const resolvePdsProviderRuntimeSecret = (
   environment: NodeJS.ProcessEnv
 ): RuntimeSecret | null => {
   const provider = environment.PDS_SECRET_PROVIDER?.trim();
-  if (provider !== "headless" && provider !== "desktop_bridge") return null;
+  if (provider !== "headless") return null;
   const reference = environment.PDS_RUNTIME_SECRET_REF?.trim();
   const command = environment.PDS_SECRET_PROVIDER_COMMAND?.trim();
   if (
@@ -1627,7 +1625,7 @@ export const createReloadablePdsWorkerRuntimeFromEnvironment = (
 ): PdsWorkerSecureRuntime | null => {
   const environment = input.environment ?? process.env;
   const provider = environment.PDS_SECRET_PROVIDER?.trim();
-  if (provider !== "headless" && provider !== "desktop_bridge") return null;
+  if (provider !== "headless") return null;
   const resolveSecret = input.resolveSecret ?? resolvePdsProviderRuntimeSecret;
   const createRuntime = input.createRuntime ?? createPdsWorkerRuntimeFromSecret;
   let runtimeFingerprint: string | null = null;

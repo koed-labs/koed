@@ -457,10 +457,10 @@ tests, and future route review. It distinguishes:
 - `pds_browser_governance`: browser-session-only Personal Device Group genesis,
   challenge, transition, policy, and Remote Account Link routes. Bearer API
   Tokens and device credentials are denied; active-device/recovery signatures
-  remain required in request body and Authority countersigns via a configured
-  secret provider. Standalone local Koed installs default to the bundled
-  native OS-backed provider; Desktop may instead inject its authenticated local
-  platform-provider bridge.
+  remain required in request body and Authority countersigns through the
+  application-managed PDS secret store. Standalone local Koed and Desktop use
+  the same owner-only `KOED_HOME/secrets` store; no OS credential provider or
+  Desktop child-process bridge is required.
 - `upstream_credential` and `internal_service_token`: explicit future
   boundaries that must remain `not_implemented` until the corresponding relay
   or internal-service design exists.

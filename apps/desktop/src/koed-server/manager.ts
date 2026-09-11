@@ -45,6 +45,7 @@ import {
   discoverProjectMetadata,
   listProjectMetadata,
   loadRepoEnv,
+  resolveKoedHome,
   resolveKoedServerConfig,
   resolveKoedServerPaths,
   runPersonalSyncCommand,
@@ -60,7 +61,6 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type {
   ComponentState,
@@ -398,16 +398,6 @@ const waitForAbortOrDelay = (
       { once: true }
     );
   });
-
-const resolveKoedHome = (environment: NodeJS.ProcessEnv): string => {
-  const configured = environment.KOED_HOME?.trim();
-  if (!configured) return resolve(homedir(), ".koed");
-  if (configured === "~") return homedir();
-  if (configured.startsWith("~/") || configured.startsWith("~\\")) {
-    return resolve(homedir(), configured.slice(2));
-  }
-  return resolve(configured);
-};
 
 const resolveLocalAppCredentialPath = (
   environment: NodeJS.ProcessEnv
@@ -1247,23 +1237,21 @@ const componentHealthy = (value: unknown): boolean =>
 const personalDeviceSyncComponent = (
   environment: NodeJS.ProcessEnv
 ): ComponentStatus => {
-  switch (environment.PDS_DESKTOP_SECRET_STORAGE) {
-    case "native_os":
-      return diagnosticComponent(
-        "healthy",
-        "Secure device storage is available through the operating system."
-      );
-    case "windows_dpapi_wsl":
-      return diagnosticComponent(
-        "healthy",
-        "Secure device storage is available through Windows DPAPI."
-      );
-    default:
-      return diagnosticComponent(
-        "needs_attention",
-        "Personal Device Sync is unavailable because this device has no supported secure storage. Local Memory remains available."
-      );
+  if (
+    environment.PDS_DESKTOP_SECRET_STORAGE === "application_managed" ||
+    environment.PDS_DESKTOP_SECRET_STORAGE === "operator_managed"
+  ) {
+    return diagnosticComponent(
+      "healthy",
+      environment.PDS_DESKTOP_SECRET_STORAGE === "operator_managed"
+        ? "Operator-managed local device storage is available."
+        : "Application-managed local device storage is available."
+    );
   }
+  return diagnosticComponent(
+    "needs_attention",
+    "Personal Device Sync is unavailable because local device storage is not ready. Local Memory remains available."
+  );
 };
 
 export const setupServicesHealthy = (value: unknown): boolean => {
@@ -1574,14 +1562,7 @@ export const createKoedServerManager = ({
     },
     caller: { cwd: string }
   ): Promise<Record<string, unknown>> => {
-    const configuredHome = environment.KOED_HOME?.trim();
-    const koedHome = !configuredHome
-      ? resolve(homedir(), ".koed")
-      : configuredHome === "~"
-        ? homedir()
-        : configuredHome.startsWith("~/")
-          ? resolve(homedir(), configuredHome.slice(2))
-          : resolve(configuredHome);
+    const koedHome = resolveKoedHome(environment);
     const registrationPath = resolve(koedHome, "run", "local-ai-runtime.json");
     const stats = statSync(registrationPath);
     if (

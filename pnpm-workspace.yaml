@@ -17,4 +17,3 @@ allowBuilds:
   protobufjs: false
   sharp: true
   node-pty: true
-  keytar: true

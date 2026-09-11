@@ -6,6 +6,7 @@ Related decisions:
 
 - [0012 Symmetric Replicated Personal Memory](./0012-symmetric-replicated-personal-memory.md)
 - [0018 Personal Collaboration Sync And Cross-Platform Secret Providers](./0018-personal-collaboration-and-cross-platform-secret-providers.md)
+- [0044 Application-Managed PDS Secret Storage](./0044-application-managed-pds-secret-storage.md)
 - [Personal Device Sync Protocol V1](../personal-device-sync-protocol.md)
 
 ## Context
@@ -26,10 +27,10 @@ the same membership and package protocols; neither creates a second sync
 protocol. In the local self-hosted topology, the
 inviting installation may co-locate the neutral PDS Authority/Relay service
 role and provides a narrowly scoped route to it. The Authority has a separate
-signing identity in Desktop's secure provider and no group content keys; it is
-not the inviting device's member identity. That route is an availability
-dependency for replication, not a source-of-truth or plaintext Memory
-authority.
+signing identity in the application-managed PDS secret store and no group
+content keys; it is not the inviting device's member identity. That route is an
+availability dependency for replication, not a source-of-truth or plaintext
+Memory authority.
 
 ## Decision
 
@@ -106,31 +107,28 @@ passes the recovery code to `koed-server` through an owner-only temporary file
 descriptor, and never persists or logs the plaintext code.
 
 Desktop provisions the local Authority signing key as a separate opaque secret
-and verifies it before starting the API child. The bridge may resolve that
-specific Authority reference for the trusted local API process; Authority
-private material remains forbidden inside shared device runtime payloads. WSL
-DPAPI references are namespaced by Desktop profile so isolated local devices
-cannot overwrite one another in the Windows-host store.
+and verifies it before starting the API child. The API and Worker resolve only
+opaque references through the application-managed store; Authority private
+material remains forbidden inside shared device runtime payloads and renderer
+IPC. Store reads fail closed on unsafe permissions, malformed state, missing
+keys, or failed authentication.
 
-Desktop warms the fixed Authority and PDS runtime references once in its trusted
-main process after the platform store has been verified. API and Worker child
-reads use that bounded in-memory cache through the private bridge; writes and
-deletes reach the platform store before changing the cache. A platform-store
-read failure aborts startup rather than being treated as an absent credential.
-The cache lasts only for the Desktop process lifetime and never crosses
-renderer IPC.
+Desktop and headless processes use the same `KOED_HOME/secrets/pds-secrets.json`
+store. No platform credential provider, in-memory bridge cache, or Electron
+child-process bridge is required. Writes use the store's atomic locking path so
+concurrent Desktop and service mutations cannot overwrite each other.
 
-A platform-protected runtime is not enrollment by itself. If its profile-local
+A protected local runtime is not enrollment by itself. If its profile-local
 Personal database has no matching group and local User binding, Desktop reports
 recovery as required and must not render cached members as connected. Reusing a
 profile path after deleting its database therefore cannot silently attach the
-new local Personal principal to credentials retained by the operating system.
+new local Personal principal to secrets retained in the application store.
 
 The joining device still generates its own Ed25519 and X25519 keys. The active
 device signs the membership transition and creates recipient envelopes through
 the existing PDS implementation. The Authority countersigns it, both devices
 acknowledge the new epoch, and the joining device stores only its own secrets
-through the platform-backed provider.
+through the application-managed PDS store.
 
 Pairing progress uses held encrypted requests and Desktop IPC completion. It
 does not poll. Closing an invitation before approval cancels it. Once the

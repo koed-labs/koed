@@ -239,11 +239,13 @@ local-edge flows.
 
 PDS local source publication is opt-in. Browser-authenticated PDS close/status/
 retry/pause routes require Authority, envelope encryption, configured secret
-reference runtime, relay, and current worker heartbeat. Headless runtime uses
-Operator-managed secret reference; Desktop host installs keychain adapter. No
-raw environment/config or API Token can supply group/private keys. Missing
-provider, limited Desktop adapter, expired authority context, or package
-incompatibility disables PDS transfer only; capture and Recall continue locally.
+reference runtime, relay, and current worker heartbeat. Standalone and Desktop
+runtime use the same application-managed store under `KOED_HOME/secrets`; no
+OS keychain, Electron session, D-Bus service, or interactive SSH credential
+session is required. No raw environment/config or API Token can supply
+group/private keys. Unsafe store state, missing provider command, expired
+authority context, or package incompatibility disables PDS transfer only;
+capture and Recall continue locally.
 
 Close locks Session, exact ordered items, policy/pause state, and origin sequence
 in one transaction. Crypto/envelope failure rolls all rows and sequence allocation
@@ -271,9 +273,9 @@ on the Authority device, and completes local enrollment. Use `--link-stdin` or
 It uses the Koed local Desktop credential only for the loopback reconciliation
 step; no Desktop window is required on the joining device. Redeem resolves the
 local API from Koed's configured port; set `PDS_LOCAL_CONTROL_URL` only when
-that API uses a non-default local URL. The joining User's OS credential store
-must be available to the SSH session (for example, an unlocked login Keychain
-on macOS); otherwise use an Operator-managed provider.
+that API uses a non-default local URL. The joining User needs filesystem access
+to its local `KOED_HOME`; no OS credential store or interactive session is
+required.
 
 ```bash
 node packages/koed-server/dist/cli.js personal-sync status --json
@@ -302,13 +304,11 @@ durable pending activation status. Arbitrary device IDs cannot succeed.
 descriptor; never put recovery passwords in arguments, environment, logs, or
 config. Recovery-kit descriptor is strict scrypt/AES-256-GCM with canonical
 metadata AAD, fixed salt/nonce/tag lengths, 0600 atomic fsync write, and
-symlink refusal. Desktop uses a local-only authenticated bridge to its
-platform-backed provider: Keychain on macOS, DPAPI on native Windows, verified
-Secret Service/KWallet on Linux, and a native Windows-host DPAPI helper for WSL
-where available.
-Electron's insecure `basic_text` fallback is rejected. Missing secure storage
-disables PDS only; Desktop never writes PDS secrets to plaintext state,
-configuration, or environment. Association and Remote Account Links alone
+symlink refusal. PDS runtime and Authority material use the application-managed
+`KOED_HOME/secrets/pds-secrets.json` store with a separate local key file,
+owner-only permissions, bounded references, atomic writes, and inter-process
+locking. Existing Electron OS-store state is not migrated; changing
+`KOED_HOME` requires re-enrollment. Association and Remote Account Links alone
 synchronize nothing.
 
 ### Same-network or Tailscale Desktop pairing

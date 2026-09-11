@@ -31,7 +31,6 @@ import {
   type KoedServerManager
 } from "./koed-server/manager.js";
 import {
-  createNodeEntrypointInvocation,
   createKoedServerCliInvocation,
   resolveKoedServerPaths
 } from "./koed-server/runtime.js";
@@ -39,18 +38,13 @@ import {
   KOED_APP_SCHEME,
   resolveAppProtocolRequest
 } from "./window/app-protocol.js";
-import {
-  createCachedPdsDesktopSecretStore,
-  createPdsDesktopSecretStore
-} from "./pds-secure-provider.js";
+import { createManagedConversationDraftStore } from "./managed-conversation-draft-store.js";
+import { createPdsDesktopSecretStore } from "./pds-secure-provider.js";
 import {
   ensurePdsDesktopAuthority,
   PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE
 } from "./pds-authority.js";
-import {
-  startPdsSecretBridge,
-  type PdsSecretBridge
-} from "./pds-secret-bridge.js";
+import { resolveKoedHome as resolveApplicationKoedHome } from "@koed/koed-server";
 import { resolveDevServerUrl } from "./window/dev-server-url.js";
 import { createExternalUrlOpener } from "./window/external-url-opener.js";
 import { desktopThemeChromeColor } from "./window/theme-colors.js";
@@ -110,7 +104,6 @@ const allowedRendererOrigins = new Set([
 app.setName(appName);
 
 let themePreference: DesktopThemePreference = "system";
-let pdsSecretBridge: PdsSecretBridge | null = null;
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
 let desktopMenuBar: DesktopMenuBar | null = null;
@@ -186,7 +179,9 @@ const openExternal = createExternalUrlOpener({
 });
 
 const createServerManager = (
-  managedConversationDraftStore?: ReturnType<typeof createPdsDesktopSecretStore>
+  managedConversationDraftStore?: ReturnType<
+    typeof createPdsDesktopSecretStore
+  > | null
 ): KoedServerManager =>
   createKoedServerManager({
     repoRoot,
@@ -362,9 +357,8 @@ const bootstrap = async () => {
   );
   themePreference = readDesktopThemePreference(themePreferenceFile);
   nativeTheme.themeSource = themePreference;
-  const managedConversationDraftStore = createPdsDesktopSecretStore({
-    userDataPath: app.getPath("userData"),
-    storeFilename: "managed-conversation-drafts.json"
+  const managedConversationDraftStore = createManagedConversationDraftStore({
+    userDataPath: app.getPath("userData")
   });
   koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
   koedServer = createServerManager(managedConversationDraftStore);
@@ -437,41 +431,32 @@ const bootstrap = async () => {
     createWindow,
     resumeRuntime: async () => {
       const persistentPdsStore = createPdsDesktopSecretStore({
-        userDataPath: app.getPath("userData")
+        userDataPath: resolveApplicationKoedHome(koedEnvironment),
+        environment: koedEnvironment
       });
-      koedEnvironment.PDS_DESKTOP_SECRET_STORAGE =
-        persistentPdsStore?.providerKind ?? "unavailable";
+      koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
       if (persistentPdsStore) {
-        await ensurePdsDesktopAuthority(persistentPdsStore);
-        const runtimeReference =
-          koedEnvironment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime";
-        const pdsStore = await createCachedPdsDesktopSecretStore(
-          persistentPdsStore,
-          [PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE, runtimeReference]
+        try {
+          await ensurePdsDesktopAuthority(persistentPdsStore);
+          koedEnvironment.PDS_DESKTOP_SECRET_STORAGE =
+            persistentPdsStore.providerKind;
+          const runtimeReference =
+            koedEnvironment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime";
+          koedEnvironment.PDS_AUTHORITY_SECRET_REF =
+            PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE;
+          koedEnvironment.PDS_RUNTIME_SECRET_REF = runtimeReference;
+        } catch {
+          koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
+          delete koedEnvironment.PDS_AUTHORITY_SECRET_REF;
+          console.warn(
+            "PDS local device storage is unavailable; Local Memory remains available."
+          );
+        }
+      } else {
+        delete koedEnvironment.PDS_AUTHORITY_SECRET_REF;
+        console.warn(
+          "PDS local device storage provider is unavailable; Local Memory remains available."
         );
-        const providerPath = resolve(appDir, "pds-secret-bridge-provider.js");
-        const providerInvocation = createNodeEntrypointInvocation(
-          providerPath,
-          [],
-          {
-            appIsPackaged: app.isPackaged,
-            electronExecPath: process.execPath,
-            platform: process.platform,
-            resourcesPath: process.resourcesPath,
-            environment: koedEnvironment,
-            existsSync
-          }
-        );
-        pdsSecretBridge = await startPdsSecretBridge({
-          koedHome: koedEnvironment.KOED_HOME ?? app.getPath("userData"),
-          providerProgram: providerInvocation.command,
-          providerArgs: providerInvocation.args,
-          store: pdsStore
-        });
-        Object.assign(koedEnvironment, pdsSecretBridge.environment);
-        koedEnvironment.PDS_AUTHORITY_SECRET_REF =
-          PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE;
-        koedEnvironment.PDS_RUNTIME_SECRET_REF = runtimeReference;
       }
       const result = await server.resume();
       if (shouldRefreshLocalAiClientsAfterResume(result)) {
@@ -524,8 +509,6 @@ app.on("before-quit", (event) => {
   void (async () => {
     await managedPreviewController.close();
     await koedServer?.stop();
-    await pdsSecretBridge?.close();
-    pdsSecretBridge = null;
     desktopMenuBar?.dispose();
     desktopMenuBar = null;
     koedServerStoppedForQuit = true;
