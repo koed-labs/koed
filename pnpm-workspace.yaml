@@ -7,6 +7,12 @@ trustPolicy: no-downgrade
 trustPolicyIgnoreAfter: 525600
 blockExoticSubdeps: true
 strictDepBuilds: true
+
+# Electron's old ZIP reader silently stops extracting on newer Node releases.
+# https://github.com/electron/electron/issues/51619
+overrides:
+  "extract-zip@2.0.1>yauzl": "3.4.0"
+
 allowBuilds:
   argon2: true
   electron: true
